@@ -616,8 +616,16 @@ func CellClass(plural, col string, cell any) string {
 			return "has-text-success"
 		}
 	case "namespaces":
-		if col == "Status" && value == "Active" {
-			return "has-text-success"
+		if col == "Status" {
+			switch value {
+			case "Active":
+				return "has-text-success"
+			case "Terminating":
+				// A stuck-Terminating namespace is operationally a warning; map it to
+				// the warn tone so the redesign status dot reads `.ro-dot.warn`
+				// (statusTone "has-text-warning" -> "warn").
+				return "has-text-warning"
+			}
 		}
 	case "deployments":
 		if col == "Available" && value == "0" {

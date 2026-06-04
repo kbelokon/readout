@@ -84,6 +84,14 @@ func TestTableBranchCoverageForFiltersStatusAndInsertion(t *testing.T) {
 	if CellClass("pods", "Restarts", 0) != "has-text-grey" || CellClass("pods", "Restarts", 3) != "has-text-warning" || CellClass("pods", "Restarts", 4) != "has-text-danger" {
 		t.Fatal("numeric restart count formatting mismatch")
 	}
+	// namespaces Status: Active -> success, Terminating -> warning (a stuck
+	// Terminating namespace is operationally a warning -> redesign .ro-dot.warn).
+	if CellClass("namespaces", "Status", "Active") != "has-text-success" {
+		t.Fatalf("namespace Active class = %q, want has-text-success", CellClass("namespaces", "Status", "Active"))
+	}
+	if CellClass("namespaces", "Status", "Terminating") != "has-text-warning" {
+		t.Fatalf("namespace Terminating class = %q, want has-text-warning", CellClass("namespaces", "Status", "Terminating"))
+	}
 
 	table = Table{Columns: []Column{{Name: "Name"}}, Rows: []Row{{Cells: []any{"x"}, Object: map[string]any{"metadata": map[string]any{"labels": map[string]any{"z": "last", "a": "first"}}}}}}
 	AddLabelColumns(&table, "first,second,third")
