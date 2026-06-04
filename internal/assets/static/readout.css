@@ -2145,7 +2145,11 @@
     /* restarts */
     .restarts.zero { color: var(--text-faint); }
     .restarts.some { color: var(--st-warn); }
-    .restarts .ago { color: var(--text-faint); }
+    /* The "(… ago)" suffix is an ADJACENT SIBLING of .restarts in the cell
+       (restartsCell emits `<span class="restarts some">N</span> <span
+       class="ago">(…)</span>`), so the muting must match the sibling, not a
+       descendant -- the old `.restarts .ago` descendant selector never applied. */
+    .restarts + .ago { color: var(--text-faint); }
 
     /* age buckets (redesign bare variant; same --age-* tokens, recoloured) */
     .age-fresh { color: var(--age-fresh); }

@@ -1,0 +1,46 @@
+{
+  "kind": "Table",
+  "apiVersion": "meta.k8s.io/v1",
+  "metadata": {
+    "resourceVersion": "33345"
+  },
+  "columnDefinitions": [
+    {"name": "Name", "type": "string", "format": "name", "priority": 0},
+    {"name": "Type", "type": "string", "format": "", "priority": 0},
+    {"name": "Cluster-IP", "type": "string", "format": "", "priority": 0},
+    {"name": "Port(s)", "type": "string", "format": "", "priority": 0},
+    {"name": "Age", "type": "string", "format": "", "priority": 0}
+  ],
+  "rows": [
+    {
+      "cells": ["frontend", "ClusterIP", "10.96.0.10", "80/TCP", "12d"],
+      "object": {
+        "kind": "PartialObjectMetadata",
+        "apiVersion": "meta.k8s.io/v1",
+        "metadata": {
+          "name": "frontend",
+          "namespace": "default",
+          "uid": "00000000-0000-0000-0000-000000000201",
+          "resourceVersion": "33340",
+          "creationTimestamp": "2026-05-23T12:00:00Z",
+          "labels": {"app": "frontend"}
+        }
+      }
+    },
+    {
+      "cells": ["kubernetes", "ClusterIP", "10.96.0.1", "443/TCP", "30d"],
+      "object": {
+        "kind": "PartialObjectMetadata",
+        "apiVersion": "meta.k8s.io/v1",
+        "metadata": {
+          "name": "kubernetes",
+          "namespace": "default",
+          "uid": "00000000-0000-0000-0000-000000000202",
+          "resourceVersion": "33341",
+          "creationTimestamp": "2026-05-05T12:00:00Z",
+          "labels": {"component": "apiserver"}
+        }
+      }
+    }
+  ]
+}

@@ -244,20 +244,6 @@ func numericCell(cell any) (float64, bool) {
 	}
 }
 
-func readyClass(value string) string {
-	left, right, ok := strings.Cut(value, "/")
-	if !ok {
-		return ""
-	}
-	if left == "0" {
-		return "has-text-danger"
-	}
-	if left == right {
-		return "has-text-success"
-	}
-	return "has-text-warning"
-}
-
 func formatTimestamp(value string) string {
 	return strings.TrimSuffix(strings.ReplaceAll(value, "T", " "), "Z")
 }

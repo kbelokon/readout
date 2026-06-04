@@ -53,7 +53,7 @@ func TestTableCellFormattingHelpers(t *testing.T) {
 	if cellClass(&table, 1, "Running") != "has-text-success" || cellClass(&table, 1, "Completed") != "has-text-info" || cellClass(&table, 1, "ImagePullBackOff") != "has-text-danger" || cellClass(&table, 1, "Pending") != "has-text-warning" {
 		t.Fatalf("cellClass mismatch")
 	}
-	if cellClass(&table, -1, "x") != "" || readyClass("0/2") != "has-text-danger" || readyClass("2/2") != "has-text-success" || readyClass("1/2") != "has-text-warning" || readyClass("ready") != "" {
+	if cellClass(&table, -1, "x") != "" || readyRatioClass("0/2") != "zero" || readyRatioClass("2/2") != "full" || readyRatioClass("1/2") != "partial" || readyRatioClass("ready") != "" {
 		t.Fatalf("ready/cell class bounds mismatch")
 	}
 	if cpuFormat(json.Number("0.25")) != "250m" || cpuFormat("bad") != "bad" {

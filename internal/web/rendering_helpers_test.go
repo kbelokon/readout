@@ -56,8 +56,8 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	if cpuFormat(0.25) != "250m" || memoryMiBFormat(float64(2*1024*1024)) != "2" || cpuFormat("bad") != "bad" {
 		t.Fatal("resource format mismatch")
 	}
-	if readyClass("0/2") != "has-text-danger" || readyClass("2/2") != "has-text-success" || readyClass("1/2") != "has-text-warning" || readyClass("x") != "" {
-		t.Fatal("readyClass mismatch")
+	if readyRatioClass("0/2") != "zero" || readyRatioClass("2/2") != "full" || readyRatioClass("1/2") != "partial" || readyRatioClass("x") != "" {
+		t.Fatal("readyRatioClass mismatch")
 	}
 	if _, ok := numericCell(json.Number("3.5")); !ok {
 		t.Fatal("json.Number should be numeric")

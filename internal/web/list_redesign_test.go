@@ -244,6 +244,142 @@ func TestPodsListRendersRichCells(t *testing.T) {
 	}
 }
 
+// statesRow returns the body row for a pod in the "states" namespace, addressed
+// by its detail link (the pod-name split keeps the full name in the href).
+func statesRow(p *page, name string) *goquery.Selection {
+	return p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/states/pods/` + name + `"])`)
+}
+
+// TestPodsListTransientStatusPulsesThroughRender closes the load-bearing gap: the
+// POSITIVE pulse direction reaching the DOM. It drives the real handler against
+// the "states" pods fixture (statusTone + transientPodPhase run in assembly), and
+// asserts that a TRANSIENT pod's status dot pulses while a STEADY Running pod in
+// the SAME render does not. Reverting dotClass2 to never append " pulse" makes
+// this fail (the transient rows lose their .ro-dot.pulse).
+func TestPodsListTransientStatusPulsesThroughRender(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC))
+	p := get(t, app, "/clusters/test/namespaces/states/pods", http.StatusOK)
+
+	// A ContainerCreating pod pulses (transient): exactly one .ro-dot.pulse in its
+	// row, and it is the warn-toned dot.
+	creating := statesRow(p, "web-creating-7c9f7cd495-6fff6")
+	if creating.Length() == 0 {
+		t.Fatalf("ContainerCreating pod row missing")
+	}
+	if got := creating.Find(".ro-dot.pulse").Length(); got != 1 {
+		t.Fatalf("ContainerCreating dot pulse count = %d, want 1", got)
+	}
+	if creating.Find(".cell-status.warn .ro-dot.warn.pulse").Length() != 1 {
+		t.Fatalf("ContainerCreating status cell missing .cell-status.warn > .ro-dot.warn.pulse")
+	}
+
+	// A Terminating pod also pulses (transient).
+	terminating := statesRow(p, "web-terminating-7c9f7cd495-aaaaa")
+	if terminating.Find(".ro-dot.pulse").Length() != 1 {
+		t.Fatalf("Terminating dot must pulse (transient): %s", normSpace(terminating.Text()))
+	}
+
+	// A steady Running pod in the SAME render does NOT pulse.
+	steady := statesRow(p, "web-steady-7c9f7cd495-ccccc")
+	if steady.Find(".cell-status.ok .ro-dot.ok").Length() != 1 {
+		t.Fatalf("steady Running status cell missing .cell-status.ok > .ro-dot.ok")
+	}
+	if steady.Find(".ro-dot.pulse").Length() != 0 {
+		t.Fatalf("steady Running dot must NOT pulse")
+	}
+
+	// Whole-render sanity: exactly the two transient pods pulse (creating +
+	// terminating), so a broadened-pulse regression that animated steady states
+	// would also trip here.
+	if got := p.doc.Find(".ro-dot.pulse").Length(); got != 2 {
+		t.Fatalf("transient pulse dots in render = %d, want 2 (creating + terminating)", got)
+	}
+}
+
+// TestPodsListReadyAndRestartTonesThroughRender closes the ready partial/zero +
+// restarts some/.ago gap in the DOM. It drives the real handler against the
+// "states" fixture (readyRatioClass + splitRestarts run in assembly) and asserts
+// the partial/zero ratio tones and the restarted "(… ago)" suffix reach the DOM.
+func TestPodsListReadyAndRestartTonesThroughRender(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC))
+	p := get(t, app, "/clusters/test/namespaces/states/pods", http.StatusOK)
+
+	// ready 0/1 -> .ready.zero (ContainerCreating pod).
+	zero := statesRow(p, "web-creating-7c9f7cd495-6fff6")
+	if got := normSpace(zero.Find(".ready.zero").Text()); got != "0/1" {
+		t.Fatalf("0/1 pod ready cell = %q, want 0/1 in .ready.zero", got)
+	}
+
+	// ready 2/3 -> .ready.partial; restarts "5 (2m ago)" -> .restarts.some + the
+	// muted .ago suffix carrying "(2m ago)".
+	degraded := statesRow(p, "web-degraded-7c9f7cd495-bbbbb")
+	if got := normSpace(degraded.Find(".ready.partial").Text()); got != "2/3" {
+		t.Fatalf("2/3 pod ready cell = %q, want 2/3 in .ready.partial", got)
+	}
+	if got := normSpace(degraded.Find(".restarts.some").Text()); got != "5" {
+		t.Fatalf("restarted pod count = %q, want 5 in .restarts.some", got)
+	}
+	// The "(… ago)" suffix is an adjacent sibling of .restarts inside the same
+	// restarts cell (the cell holding .restarts.some). Find .ago there.
+	restartCell := degraded.Find("td").FilterFunction(func(_ int, s *goquery.Selection) bool {
+		return s.Find(".restarts.some").Length() == 1
+	}).First()
+	if got := normSpace(restartCell.Find(".ago").Text()); got != "(2m ago)" {
+		t.Fatalf("restarted pod ago suffix = %q, want (2m ago)", got)
+	}
+	// The .ago span sits immediately after .restarts (the CSS muting matches
+	// `.restarts + .ago`), so a sibling-vs-descendant regression in the markup
+	// would surface as a missing adjacent .ago.
+	if restartCell.Find(".restarts + .ago").Length() != 1 {
+		t.Fatalf("ago suffix must be an adjacent sibling of .restarts")
+	}
+
+	// Cross-check the render carries all three ratio tones at least once, so a
+	// regression collapsing the ratio classification surfaces here.
+	for _, tone := range []string{".ready.full", ".ready.partial", ".ready.zero"} {
+		if p.doc.Find(tone).Length() == 0 {
+			t.Fatalf("ready ratio tone %s missing from the states render", tone)
+		}
+	}
+}
+
+// TestGenericKindListRendersThroughRealAssembly closes the generic-fallback gap
+// at the PRODUCTION boundary: it drives a generic kind (services -- no Status
+// column, no per-kind rich cells) through the real handler + buildCellView, so
+// the `colName == "Status"` gate is genuinely exercised. The rows render from the
+// Table API with the sticky td.cell-name and NO status dot anywhere (a regression
+// that broadened the status-dot branch to a non-pod kind would trip the dot
+// count).
+func TestGenericKindListRendersThroughRealAssembly(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC))
+	p := get(t, app, "/clusters/test/namespaces/default/services", http.StatusOK)
+
+	// Canonical table shell + the generic rows from the Table API.
+	p.wantHas(".ro-table-wrap table.ro-table")
+	if got := p.texts("td.cell-name"); strings.Join(got, "|") != "frontend|kubernetes" {
+		t.Fatalf("service name cells = %v, want [frontend kubernetes]", got)
+	}
+	// The name cell links to the object via the generic name branch.
+	p.wantAttr("td.cell-name a", "href", "/clusters/test/namespaces/default/services/frontend")
+	// A generic kind has no Status column -> NO status dot is emitted anywhere
+	// (the production status-dot branch is pod/per-kind gated).
+	if got := p.doc.Find(".ro-dot").Length(); got != 0 {
+		t.Fatalf("generic kind emitted %d status dot(s), want 0", got)
+	}
+	// Identifier columns (Cluster-IP, Port(s)) are never truncated.
+	if p.doc.Find("td.trunc").Length() != 0 {
+		t.Fatalf("generic identifier cells must not carry .trunc")
+	}
+	// The Table-API cell values reach the DOM (Cluster-IP + ports).
+	frontend := p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/default/services/frontend"])`)
+	rowText := normSpace(frontend.Text())
+	for _, want := range []string{"ClusterIP", "10.96.0.10", "80/TCP"} {
+		if !strings.Contains(rowText, want) {
+			t.Fatalf("generic service row missing %q: %q", want, rowText)
+		}
+	}
+}
+
 // TestResourceTableGenericFallbackReskins proves an UNMOCKED kind (no per-kind
 // rich cells) still renders its rows from the k8s Table cells, just reskinned:
 // the canonical .ro-table, the sticky td.cell-name name link, and every other

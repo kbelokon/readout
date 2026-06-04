@@ -402,6 +402,16 @@ func newRecordingServerFakeAPI(t *testing.T, lastAuth *authRecorder) *httptest.S
 		_, _ = w.Write(readFixture(t, "data/pod_log.txt"))
 	})
 	mux.HandleFunc("/api/v1/pods", tableOrList("data/pods_table.json", "data/pods_with_node_list.json"))
+	// Pods in the "states" namespace exercise the redesign status/ready/restart
+	// tones END TO END: a transient pod (ContainerCreating/Terminating) pulses, a
+	// degraded pod is 2/3 partial with restarts, a steady pod does not pulse. The
+	// resource-list path always requests the server-side Table, so the Table
+	// fixture is served directly.
+	mux.HandleFunc("/api/v1/namespaces/states/pods", fixture("data/pods_states_table.json"))
+	// Services in "default" exercise the GENERIC fallback through the real
+	// assembly: a kind with NO Status column and no per-kind rich cells renders
+	// its rows from the Table API with no status dot.
+	mux.HandleFunc("/api/v1/namespaces/default/services", fixture("data/services_table.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/events", fixture("data/render_events_nginx.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/secrets", tableOrList("data/render_secrets_table.json", "data/secrets_list.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/secrets/my-secret", fixture("data/render_secret.json"))
