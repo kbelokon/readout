@@ -149,8 +149,11 @@ func TestPaletteRendersGroupedDataDriven(t *testing.T) {
 	// EMPTY container readout.js writes the grouped rows into at open time.
 	p.wantAttr("#ro-palette-input", "role", "combobox")
 	p.wantAttr("#ro-palette-list", "role", "listbox")
-	if rows := p.count("#ro-palette-list .ro-pal-item"); rows != 0 {
-		t.Fatalf("server-rendered palette list should be empty (JS fills it), got %d rows", rows)
+	// Structural emptiness: the list ships with NO children at all (JS fills it
+	// at open). Asserting any descendant (not just .ro-pal-item) catches a
+	// regression that server-renders rows with any element/class.
+	if kids := p.count("#ro-palette-list *"); kids != 0 {
+		t.Fatalf("server-rendered palette list should ship empty (JS fills it), got %d descendants", kids)
 	}
 
 	// The retired markup is GONE: no old panel/row classes and, crucially, no
