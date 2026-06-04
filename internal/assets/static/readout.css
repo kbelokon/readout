@@ -1749,121 +1749,18 @@
     }
 
     /* ---------------------------------------------------------------------------
-       ⌘K jump-to palette -- additive, token-driven overlay.
+       ⌘K jump-to palette -- RETIRED here (Unit 4).
 
-       It SHIPS hidden via the Bulma `is-hidden` utility (display:none -- a class,
-       never inline style); readout.js adds `is-active` to reveal it. All colours
-       are tokens so it follows light/dark for free; no forced-priority override
-       (the app layer already wins by order). Mono kind-tags reuse .ro-ktag
-       . It owns no data -- the JS fills the list from links already on
-       the page and each row is a real <a> navigating via its existing GET href. */
-    .ro-palette {
-        position: fixed;
-        inset: 0;
-        z-index: 60;            /* above the fixed navbar (Bulma navbar is 30) */
-        display: flex;
-        align-items: flex-start;
-        justify-content: center;
-        padding: 12vh 1rem 1rem;
-    }
-    .ro-palette-backdrop {
-        position: absolute;
-        inset: 0;
-        background: var(--overlay-bg);
-    }
-    .ro-palette-panel {
-        position: relative;     /* above the backdrop */
-        width: 100%;
-        max-width: 40rem;
-        max-height: 70vh;
-        display: flex;
-        flex-direction: column;
-        background: var(--surface);
-        border: 1px solid var(--border-strong);
-        border-radius: var(--radius);
-        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
-        overflow: hidden;
-        animation: ro-palette-in 0.12s ease-out;
-    }
-    @keyframes ro-palette-in {
-        from { opacity: 0; transform: translateY(-6px); }
-        to   { opacity: 1; transform: translateY(0); }
-    }
-    .ro-palette-head {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.625rem 0.75rem;
-        border-bottom: 1px solid var(--border);
-    }
-    .ro-palette-search-icon { color: var(--text-faint); }
-    .ro-palette-input {
-        flex: 1 1 auto;
-        min-width: 0;
-        border: 0;
-        background: transparent;
-        color: var(--text);
-        font-family: var(--font-ui);
-        font-size: 0.9375rem;
-        line-height: 1.4;
-        padding: 0.125rem 0;
-    }
-    .ro-palette-input:focus { outline: none; }
-    .ro-palette-input::placeholder { color: var(--text-faint); }
-    .ro-palette-esc { flex: 0 0 auto; }
-    .ro-palette-list {
-        list-style: none;
-        margin: 0;
-        padding: 0.375rem;
-        overflow-y: auto;
-    }
-    .ro-palette-item { margin: 0; }
-    .ro-palette-row {
-        display: flex;
-        align-items: center;
-        gap: 0.625rem;
-        padding: 0.4375rem 0.5rem;
-        border-radius: var(--radius-sm);
-        color: var(--text);
-        text-decoration: none;
-    }
-    /* Hover + keyboard-active highlight share one look (the JS marks the active
-       row .is-active as arrows/typing move it; the mouse hover matches it). */
-    .ro-palette-row:hover,
-    .ro-palette-row.is-active {
-        background: var(--accent-weak);
-        color: var(--accent-text);
-    }
-    .ro-palette-tag { margin-top: 0; }
-    .ro-palette-label {
-        flex: 1 1 auto;
-        min-width: 0;
-        font-family: var(--font-mono);
-        font-size: 0.8125rem;
-        color: var(--id-color);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-    .ro-palette-row:hover .ro-palette-label,
-    .ro-palette-row.is-active .ro-palette-label { color: var(--accent-text); }
-    .ro-palette-path {
-        flex: 0 0 auto;
-        font-family: var(--font-mono);
-        font-size: 0.6875rem;
-        color: var(--text-faint);
-    }
-    .ro-palette-empty {
-        margin: 0;
-        padding: 0.75rem 0.875rem 1rem;
-        color: var(--text-faint);
-        font-size: 0.8125rem;
-    }
-
-    /* Reduced-motion: the palette appears with no slide/fade (it just shows). */
-    @media (prefers-reduced-motion: reduce) {
-        .ro-palette-panel { animation: none; }
-    }
+       The pre-redesign overlay (`.ro-palette` / `.ro-palette-panel` / `-head` /
+       `-input` / `-list` / `-row` / `-tag` / `-label` / `-path` / `-empty` + the
+       `ro-palette-in` keyframe) is gone. Its markup was deleted in
+       components.templ and its bare `.ro-palette` selector collided with the
+       redesign inner panel (`.ro-rd .ro-palette`, defined further below). Unit 2
+       lifted the redesign palette under the `.ro-rd.ro-palette-backdrop` marker
+       and noted "Unit 4 retires it" -- this is that retirement. The redesign
+       palette + its reduced-motion guard live in the REDESIGN COMPONENT PORT
+       block below (search the `⌘K PALETTE (redesign canonical .ro-pal-*)`
+       banner). */
 
     /* ===========================================================================
        REDESIGN COMPONENT PORT (Unit 2, additive). The component classes below are

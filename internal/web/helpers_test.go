@@ -43,7 +43,7 @@ func TestFormattingHelpers(t *testing.T) {
 	if cellDisplayString(nil) != "" || cellString(kube.Row{Cells: []any{nil}}, 0) != "" || cellString(kube.Row{Cells: []any{"ok"}}, 0) != "ok" {
 		t.Fatalf("cell display string mismatch")
 	}
-	if !strings.Contains(commandPalette(), `id="ro-palette"`) || !strings.Contains(commandPalette(), `id="ro-palette-row-tmpl"`) || !strings.Contains(icon("missing"), "<circle") {
+	if !strings.Contains(commandPalette(), `id="ro-palette"`) || !strings.Contains(commandPalette(), `id="ro-palette-list"`) || strings.Contains(commandPalette(), `ro-palette-row-tmpl`) || !strings.Contains(icon("missing"), "<circle") {
 		t.Fatalf("command palette/icon fallback mismatch")
 	}
 }

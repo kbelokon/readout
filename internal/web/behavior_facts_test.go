@@ -24,6 +24,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -32,7 +33,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 )
@@ -116,61 +116,76 @@ func TestBehaviorAppChromeAndJSContract(t *testing.T) {
 	pExplicit.wantAttr("html", "data-theme", "dark")
 }
 
-func TestBehaviorCommandPaletteTemplate(t *testing.T) {
+// TestPaletteRendersGroupedDataDriven pins the redesign ⌘K palette overlay
+// (Unit 4, D10): the server emits a STATIC overlay shell -- the rows are built
+// client-side by readout.js from the #ro-palette-data JSON blob (no <template>,
+// no DOM harvest). The overlay ROOT carries BOTH `ro-rd` AND
+// `ro-palette-backdrop` so the redesign palette container CSS (gated by `.ro-rd`
+// on the backdrop root, since the overlay lives outside the `.ro-rd` content
+// subtree) applies. The `.ro-pal-*` search/list/foot vocabulary is the JS +
+// base.css contract; the retired old `.ro-palette-panel/-row` + the
+// `<template id="ro-palette-row-tmpl">` MUST be gone.
+func TestPaletteRendersGroupedDataDriven(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
-	// The palette ships hidden on every page; assert it on the clusters page so
-	// the fact does not depend on any list data.
+	// The palette ships on every page; assert it on the clusters page so the
+	// structural fact does not depend on any list data.
 	p := get(t, app, "/clusters", http.StatusOK)
 
-	// Outer overlay: hidden via the Bulma is-hidden CLASS (not inline style), a
-	// dialog. readout.js toggles is-active to show it.
-	p.wantHas("#ro-palette.ro-palette.is-hidden")
+	// Outer overlay: a dialog whose ROOT carries the D13 redesign marker AND the
+	// canonical backdrop class on the SAME element (so `.ro-rd.ro-palette-backdrop`
+	// matches). readout.js toggles the `open` class to reveal it (no is-hidden).
+	p.wantHas("#ro-palette.ro-rd.ro-palette-backdrop")
 	p.wantAttr("#ro-palette", "role", "dialog")
 	p.wantAttr("#ro-palette", "aria-hidden", "true")
 
-	// The backdrop carries the close marker the click handler keys off.
-	p.wantAttr(".ro-palette-backdrop", "data-palette-close", "true")
+	// The inner panel + the grouped data-driven palette vocabulary.
+	p.wantHas("#ro-palette .ro-palette")
+	p.wantHas("#ro-palette .ro-palette .ro-pal-search")
+	p.wantHas("#ro-palette .ro-pal-search .ico svg") // the search glyph
+	p.wantHas("#ro-palette-scope.ro-pal-scope")      // scope chip JS fills from the blob
+	p.wantHas("#ro-palette .ro-pal-foot")            // keyboard-hint footer
 
-	// Query box + list + empty-state ids the input/filter handlers resolve.
+	// Query box + list ids the input/keydown handlers resolve. The list is the
+	// EMPTY container readout.js writes the grouped rows into at open time.
 	p.wantAttr("#ro-palette-input", "role", "combobox")
 	p.wantAttr("#ro-palette-list", "role", "listbox")
-	p.wantHas("#ro-palette-empty.is-hidden")
+	if rows := p.count("#ro-palette-list .ro-pal-item"); rows != 0 {
+		t.Fatalf("server-rendered palette list should be empty (JS fills it), got %d rows", rows)
+	}
 
-	// The row <template>: renderPaletteTargets clones #ro-palette-row-tmpl and
-	// fills .ro-palette-tag / .ro-palette-label / .ro-palette-path on the
-	// real <a class="ro-palette-row" role="option">. goquery does not descend
-	// into <template> content for normal Find, so address the template by id and
-	// parse its inner HTML.
-	tmpl := p.doc.Find("template#ro-palette-row-tmpl")
-	if tmpl.Length() != 1 {
-		t.Fatalf("expected exactly one #ro-palette-row-tmpl, got %d", tmpl.Length())
+	// The retired markup is GONE: no old panel/row classes and, crucially, no
+	// <template> (the data-driven palette builds rows from the JSON blob, never a
+	// cloned template).
+	p.wantAbsent(".ro-palette-panel")
+	p.wantAbsent(".ro-palette-row")
+	p.wantAbsent(".ro-palette-list") // OLD <ul class="ro-palette-list">; new list is .ro-pal-list
+	p.wantAbsent("template#ro-palette-row-tmpl")
+	p.wantAbsent("[data-palette-close]")
+
+	// The #ro-palette-data blob the JS reads is present, application/json, and a
+	// GROUPED shape (clusters / namespaces / kinds / actions) -- the contract the
+	// palette builds its groups from. (TestLayoutPaletteDataBlob asserts the field
+	// values; here we certify the rendered overlay is wired to a valid grouped blob.)
+	blob := p.doc.Find(`script#ro-palette-data`)
+	if blob.Length() != 1 {
+		t.Fatalf("expected exactly one #ro-palette-data script, got %d", blob.Length())
 	}
-	inner, err := tmpl.Html()
-	if err != nil {
-		t.Fatalf("read template html: %v", err)
+	if typ, _ := blob.Attr("type"); typ != "application/json" {
+		t.Fatalf("#ro-palette-data type = %q, want application/json", typ)
 	}
-	// Assert the JS contract structurally, not as adjacent-attribute substrings:
-	// goquery/x/net does not preserve source attribute order when it re-serializes
-	// the <template> inner HTML, so a textual `class="..." role="..."` match is
-	// brittle across x/net versions. Re-parse the fragment and check each element
-	// carries its required class (and the row its role) on the element itself.
-	frag, err := goquery.NewDocumentFromReader(strings.NewReader(inner))
-	if err != nil {
-		t.Fatalf("parse palette row template fragment: %v", err)
+	var data paletteFeedJSON
+	if err := json.Unmarshal([]byte(blob.Text()), &data); err != nil {
+		t.Fatalf("parse #ro-palette-data JSON: %v\nblob=%s", err, blob.Text())
 	}
-	row := frag.Find("a.ro-palette-row")
-	if row.Length() != 1 || row.AttrOr("role", "") != "option" {
-		t.Fatalf("palette row needs one <a class=ro-palette-row role=option>\ntemplate=%s", inner)
+	// Grouped shape: the clusters group is always populated (the registry is
+	// request-independent), and the actions group always carries the "All clusters"
+	// jump -- so the palette has at least two non-empty groups to render even on the
+	// cluster-less entry page.
+	if len(data.Clusters) == 0 {
+		t.Fatalf("palette blob clusters group is empty; want the registry clusters")
 	}
-	for _, sel := range []string{
-		"li.ro-palette-item",
-		"span.ro-ktag.ro-palette-tag",
-		"span.ro-palette-label",
-		"span.ro-palette-path",
-	} {
-		if frag.Find(sel).Length() != 1 {
-			t.Fatalf("palette row template missing %q\ntemplate=%s", sel, inner)
-		}
+	if len(data.Actions) == 0 {
+		t.Fatalf("palette blob actions group is empty; want at least the All-clusters jump")
 	}
 }
 

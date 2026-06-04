@@ -55,9 +55,14 @@ func iconC(name string) templ.Component {
 // " ro-label-app" suffix for app.kubernetes.io/* keys via appLabelClassC.
 
 // CommandPalette is the ⌘K jump-to overlay, included once per page in the
-// layout. It owns no data; readout.js harvests on-page nav targets and clones
-// #ro-palette-row-tmpl. The ids/classes/roles here are a hard JS contract --
-// the palette must stay a real <template> with these exact ids.
+// layout. It owns no data: readout.js reads the server-built #ro-palette-data
+// JSON blob (D10) and builds the grouped rows into #ro-palette-list at open
+// time. The overlay ROOT carries BOTH `ro-rd` AND `ro-palette-backdrop` (D13:
+// the redesign palette container rules are gated by the `ro-rd` marker ON the
+// backdrop root, since the overlay lives OUTSIDE the `.ro-rd` content subtree);
+// readout.js toggles the `open` class to reveal it. The ids/classes/roles here
+// are a hard JS contract -- the search input, the list container, and the
+// `.ro-pal-*` row vocabulary the JS writes into must match base.css + the JS.
 func CommandPalette() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -79,7 +84,7 @@ func CommandPalette() templ.Component {
 			templ_7745c5c3_Var2 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"ro-palette\" class=\"ro-palette is-hidden\" role=\"dialog\" aria-modal=\"true\" aria-label=\"Jump to\" aria-hidden=\"true\"><div class=\"ro-palette-backdrop\" data-palette-close=\"true\"></div><div class=\"ro-palette-panel\" role=\"document\"><div class=\"ro-palette-head\"><span class=\"ro-palette-search-icon icon\" aria-hidden=\"true\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"ro-palette\" class=\"ro-rd ro-palette-backdrop\" role=\"dialog\" aria-modal=\"true\" aria-label=\"Jump to\" aria-hidden=\"true\"><div class=\"ro-palette\" role=\"document\"><div class=\"ro-pal-search\"><span class=\"ico\" aria-hidden=\"true\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -87,7 +92,7 @@ func CommandPalette() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</span><input id=\"ro-palette-input\" class=\"ro-palette-input\" type=\"text\" placeholder=\"Jump to cluster, namespace, type, or section…\" autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"off\" spellcheck=\"false\" role=\"combobox\" aria-expanded=\"true\" aria-controls=\"ro-palette-list\" aria-autocomplete=\"list\" aria-label=\"Jump to\"><kbd class=\"ro-kbd ro-palette-esc\" aria-hidden=\"true\">Esc</kbd></div><ul id=\"ro-palette-list\" class=\"ro-palette-list\" role=\"listbox\" aria-label=\"Jump targets\"></ul><p id=\"ro-palette-empty\" class=\"ro-palette-empty is-hidden\">No matching targets.</p></div></div><template id=\"ro-palette-row-tmpl\"><li class=\"ro-palette-item\" role=\"presentation\"><a class=\"ro-palette-row\" role=\"option\" href=\"#\" tabindex=\"-1\"><span class=\"ro-ktag ro-palette-tag\" aria-hidden=\"true\"></span><span class=\"ro-palette-label\"></span><span class=\"ro-palette-path\"></span></a></li></template>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</span><input id=\"ro-palette-input\" type=\"text\" placeholder=\"Jump to a cluster, namespace, resource type, or action…\" autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"off\" spellcheck=\"false\" role=\"combobox\" aria-expanded=\"true\" aria-controls=\"ro-palette-list\" aria-autocomplete=\"list\" aria-label=\"Jump to\"><span id=\"ro-palette-scope\" class=\"ro-pal-scope\" aria-hidden=\"true\" hidden></span></div><div id=\"ro-palette-list\" class=\"ro-pal-list\" role=\"listbox\" aria-label=\"Jump targets\"></div><div class=\"ro-pal-foot\"><span class=\"hint\"><kbd class=\"ro-kbd\">&#8593;</kbd><kbd class=\"ro-kbd\">&#8595;</kbd> navigate</span><span class=\"hint\"><kbd class=\"ro-kbd\">&#8629;</kbd> open</span><span class=\"hint\"><kbd class=\"ro-kbd\">esc</kbd> close</span><span class=\"spacer\"></span><span class=\"hint\">readout</span></div></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -126,7 +131,7 @@ func defaultFooter() templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(version.Version)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/components.templ`, Line: 37, Col: 116}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/components.templ`, Line: 41, Col: 116}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
