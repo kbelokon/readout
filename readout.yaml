@@ -1,0 +1,175 @@
+# readout configuration.
+#
+# Run with: readout --config readout.yaml
+#
+# Bootstrap flags (--config, --port, --debug, --version) are the only flags;
+# everything else is configured here. Secrets are NOT written in this file --
+# they come from the environment (see "Secrets" at the bottom). Environment
+# values override the file.
+#
+# This file is parsed with sigs.k8s.io/yaml, which routes YAML through JSON:
+# anchors/merge keys are not supported and comments are not round-tripped, but
+# every standard YAML scalar/list/map form below works. Unknown keys are
+# rejected, so a typo fails fast at startup.
+
+# TCP port to listen on. The --port flag overrides this.
+port: 8080
+
+# Namespace allow/deny. Regular expressions (RE2). Exclude wins over include;
+# an empty include list means "all namespaces". Cluster-scoped objects are
+# never excluded by namespace.
+includeNamespaces: []
+excludeNamespaces:
+  - kube-.*
+
+# Statically configured clusters (name + apiserver URL). Omit to use the local
+# kubeconfig instead (kubeconfigPath / kubeconfigContexts below).
+clusters:
+  - name: local
+    url: https://127.0.0.1:6443
+
+# kubeconfig discovery (used when no static clusters are listed).
+kubeconfigPath: ""
+kubeconfigContexts: []
+
+# Cluster registry: a small JSON endpoint that lists clusters dynamically.
+clusterRegistryUrl: ""
+clusterRegistryBearerTokenPath: ""
+clusterLabelSelector: {}
+
+# Per-request cluster auth: forward the frontend session token, or read a
+# bearer token from a file.
+clusterAuthTokenPath: ""
+clusterAuthUseSessionToken: false
+
+# Behavior toggles.
+showContainerLogs: false   # enable the container-logs tab
+noAccessLogs: false        # silence per-request access logging
+includeSecrets: false      # re-admit the Secret resource type (values stay masked)
+
+# Custom HTML partials / static assets (operator overrides).
+templatesPath: ""
+staticAssetsPath: ""
+
+# External links rendered next to objects, label values, and timestamps.
+# Keyed by resource-type plural (objectLinks/timestampLinks) or label name
+# (labelLinks). Each link is {href, icon, title}; icon/title are optional and
+# default to a generic external-link glyph. href templates expand {name},
+# {namespace}, {value}, {timestamp} at render time.
+objectLinks:
+  pods:
+    - href: https://grafana.example/d/pods?var-pod={name}&var-namespace={namespace}
+      icon: chart-line
+      title: Pod dashboard
+labelLinks:
+  team:
+    - href: https://wiki.example/teams/{value}
+      title: Team page
+timestampLinks:
+  events:
+    - href: https://logs.example/?time={timestamp}
+      icon: clock
+      title: Logs at this time
+
+# Extra columns appended to resource tables, keyed by resource-type plural.
+#
+# Custom columns are kubectl-style JSONPath expressions ("NAME:path"), matching
+# `kubectl get -o custom-columns`. A bare path (spec.containers[*].image) and a
+# braced template ({.spec.containers[*].image}) are both accepted. Multi-value
+# results render space-joined.
+labelColumns:
+  pods: app
+hiddenColumns:
+  pods: ""
+customColumns:
+  pods: "Image:{.spec.containers[*].image}"
+  nodes: "Zone:.metadata.labels.topology\\.kubernetes\\.io/zone"
+
+# Pin a preferred apiVersion per resource-type plural (e.g. when several
+# versions are served and the newest is not the one you want listed).
+preferredApiVersions:
+  ingresses: networking.k8s.io/v1
+
+# Theme: the default and the operator-allowed options.
+defaultTheme: dark
+themeOptions:
+  - dark
+  - light
+
+# Cross-links to other readout instances (name + base URL).
+externalClusters: []
+
+# Sidebar navigation. ORDERED: groups render top-to-bottom in the order written
+# here (not alphabetically). Each group is a heading label plus the resource
+# types listed under it. Omit this block to use the built-in default layout.
+sidebar:
+  - label: Cluster Resources
+    resources:
+      - namespaces
+      - nodes
+      - persistentvolumes
+  - label: Controllers
+    resources:
+      - deployments
+      - cronjobs
+      - jobs
+      - daemonsets
+      - statefulsets
+  - label: Pod Management
+    resources:
+      - ingresses
+      - services
+      - pods
+      - configmaps
+
+# Multi-resource search.
+search:
+  defaultResourceTypes:
+    - pods
+    - deployments
+    - services
+  offeredResourceTypes:
+    - pods
+    - deployments
+    - services
+    - nodes
+    - configmaps
+  maxConcurrency: 100
+
+# Authentication.
+#   mode: none | headers | oidc
+#   headers: trust reverse-proxy identity headers
+#   oidc:    OpenID Connect login (client secret comes from the environment)
+auth:
+  mode: none
+  trustedHeaders:
+    user: X-Forwarded-User
+    email: X-Forwarded-Email
+    groups: X-Forwarded-Groups
+  oidc:
+    issuerUrl: ""
+    clientId: ""
+    # clientIdFile / clientSecretFile read the value from a mounted file
+    # (alternative to the READOUT_OIDC_CLIENT_* env vars).
+    clientIdFile: ""
+    clientSecretFile: ""
+    redirectUrl: ""
+    authorizeUrl: ""
+    tokenUrl: ""
+    scope: ""
+
+# External JSON HTTP hooks (replace the upstream in-process coroutine hooks).
+hooks:
+  authorizationUrl: ""
+  resourcePrerenderUrl: ""
+
+# Secrets come from the environment, never this file. Environment overrides the
+# file for these:
+#
+#   READOUT_SESSION_SECRET                signing key for session cookies
+#   READOUT_OIDC_CLIENT_ID                OIDC client id
+#   READOUT_OIDC_CLIENT_SECRET            OIDC client secret
+#   READOUT_OIDC_ISSUER_URL               OIDC issuer URL
+#   READOUT_OIDC_REDIRECT_URL             OIDC redirect URL
+#   READOUT_AUTHORIZATION_HOOK_URL        authorization hook URL
+#   READOUT_RESOURCE_PRERENDER_HOOK_URL   resource-prerender hook URL

@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: readout
+  labels:
+    application: readout
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      application: readout
+  template:
+    metadata:
+      labels:
+        application: readout
+    spec:
+      serviceAccountName: readout
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: readout
+          image: ghcr.io/kbelokon/readout:0.1.0
+          args:
+            - --config
+            - /etc/readout/readout.yaml
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/readout
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: readout

@@ -1,0 +1,76 @@
+readout
+Copyright (C) the readout authors.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License version 3, as published by the Free
+Software Foundation. See the LICENSE file for the full text.
+
+================================================================================
+Upstream
+================================================================================
+
+readout is a Go reimplementation and derivative of kube-web-view by Henning
+Jacobs, and inherits kube-web-view's GNU GPL-3.0 license.
+
+  kube-web-view
+  Copyright (C) Henning Jacobs
+  Licensed under the GNU General Public License, version 3.
+  https://codeberg.org/hjacobs/kube-web-view
+  (GitHub mirror: https://github.com/hjacobs/kube-web-view)
+
+================================================================================
+Bundled third-party components
+================================================================================
+
+This software embeds the following third-party components. Their full license
+texts are in internal/assets/static/LICENSES/ (where present) or in the header
+of the bundled file. Each remains under its own license.
+
+  Bulma
+  Copyright (c) Jeremy Thomas
+  MIT License.
+  https://github.com/jgthms/bulma
+  (bundled: internal/assets/static/bulma.min.css; MIT notice in the file header)
+
+  Geist and Geist Mono fonts
+  Copyright (c) 2023 Vercel, in collaboration with basement.studio
+  SIL Open Font License, Version 1.1.
+  https://github.com/vercel/geist-font
+  (bundled: internal/assets/static/fonts/Geist-Variable.woff2,
+   internal/assets/static/fonts/GeistMono-Variable.woff2;
+   license: internal/assets/static/LICENSES/geist-OFL.txt)
+
+  htmx
+  Copyright (c) 2020, Big Sky Software
+  BSD Zero Clause License (0BSD).
+  https://github.com/bigskysoftware/htmx
+  (bundled: internal/assets/static/htmx.min.js;
+   license: internal/assets/static/LICENSES/htmx.txt)
+
+  idiomorph
+  BSD Zero Clause License (0BSD).
+  https://github.com/bigskysoftware/idiomorph
+  (bundled: internal/assets/static/idiomorph-ext.min.js;
+   license: internal/assets/static/LICENSES/idiomorph.txt)
+
+  htmx preload extension
+  Copyright (c) 2024 Alexander Petros and Mariss Tubelis
+  BSD Zero Clause License (0BSD).
+  https://github.com/bigskysoftware/htmx-extensions
+  (bundled: internal/assets/static/preload.min.js;
+   license: internal/assets/static/LICENSES/htmx-ext-preload.txt)
+
+  Lucide icons
+  Copyright (c) Lucide Icons and Contributors
+  ISC License (Lucide); a subset of icons is derived from Feather under the MIT
+  License, Copyright (c) 2013-present Cole Bemis.
+  https://github.com/lucide-icons/lucide
+  (license: internal/assets/static/LICENSES/lucide.txt)
+
+  Pygments syntax-highlight styles
+  Copyright (c) 2006 and later, the Pygments team
+  BSD 2-Clause "Simplified" License.
+  https://github.com/pygments/pygments
+  (the ".highlight .*" CSS palettes in internal/assets/static/readout.css are the
+   verbatim output of Pygments' "friendly" and "native" style definitions;
+   license: internal/assets/static/LICENSES/pygments.txt)

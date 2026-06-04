@@ -1,0 +1,50 @@
+version: 2
+project_name: readout
+before:
+  hooks:
+    - go install github.com/a-h/templ/cmd/templ@v0.3.1020
+    - templ generate
+builds:
+  - id: readout
+    main: ./cmd/readout
+    binary: readout
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/kbelokon/readout/internal/version.Version={{ .Version }}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+dockers:
+  - image_templates: ["ghcr.io/kbelokon/readout:{{ .Version }}-amd64"]
+    use: buildx
+    dockerfile: Dockerfile.goreleaser
+    goarch: amd64
+    build_flag_templates: ["--platform=linux/amd64"]
+    extra_files: [LICENSE, NOTICE]
+  - image_templates: ["ghcr.io/kbelokon/readout:{{ .Version }}-arm64"]
+    use: buildx
+    dockerfile: Dockerfile.goreleaser
+    goarch: arm64
+    build_flag_templates: ["--platform=linux/arm64"]
+    extra_files: [LICENSE, NOTICE]
+docker_manifests:
+  - name_template: "ghcr.io/kbelokon/readout:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/kbelokon/readout:{{ .Version }}-amd64"
+      - "ghcr.io/kbelokon/readout:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/kbelokon/readout:latest"
+    image_templates:
+      - "ghcr.io/kbelokon/readout:{{ .Version }}-amd64"
+      - "ghcr.io/kbelokon/readout:{{ .Version }}-arm64"
+changelog:
+  use: github
+release:
+  github:
+    owner: kbelokon
+    name: readout

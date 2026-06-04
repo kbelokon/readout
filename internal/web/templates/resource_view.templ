@@ -1,0 +1,377 @@
+package templates
+
+// resource_view.templ is the resource-view (object detail) page body: the
+// breadcrumb, the title (name + kind badge + download/extra-link buttons +
+// created/version meta), the Default/YAML/Logs tabs, and -- in the default
+// (non-YAML) view -- the label/annotation chips, the optional Node summary
+// blocks, the owners line, the masked-Secret block, the per-key YAML cards, the
+// Namespace extra links, the related-pods subtable, and the Events table. In the
+// YAML view it emits the highlighted-YAML block.
+//
+// Every value is resolved in the package-web assembly layer (buildDetailView) and
+// carried in DetailData; the renderer touches no request and no kube client. The
+// highlighted-YAML innerHTML (both the YAML-view block and each card's content)
+// is produced by the package-web YAML highlighter and injected via templ.Raw --
+// it is a trusted <pre>-bearing string with significant whitespace. Inline-SVG
+// icons ride in as raw strings too. The behavior-fact net pins the kind badge,
+// the tab set + active tab, the YAML card data-name sections + copy buttons, the
+// events subtable, the Node system-info, and the Pygments-compatible YAML id
+// scheme.
+
+// DetailData is the resolved resource-view input.
+type DetailData struct {
+	Breadcrumb DetailBreadcrumb
+
+	Name         string
+	Kind         string
+	DownloadHref string
+	DownloadIcon string
+	Links        []DetailLink
+	CreatedMeta  string
+	Version      string
+
+	DefaultTabActive bool
+	YAMLTabActive    bool
+	LogsHref         string
+
+	IsYAMLView      bool
+	HighlightedYAML string // trusted highlighted-YAML HTML (YAML view)
+
+	Labels      []DetailLabelChip
+	Annotations []AnnotationChip
+	Node        *NodeSummary
+
+	Owners []OwnerLink
+
+	Secret    *SecretData
+	YAMLCards []YAMLCard
+
+	ShowNamespaceLinks bool
+	AllObjectsHref     string
+	ResourceTypesHref  string
+
+	RelatedPods *Subtable
+	Events      []EventRow
+}
+
+// DetailBreadcrumb is the resource-view breadcrumb (cluster [+ namespace +
+// plural] + the active object name).
+type DetailBreadcrumb struct {
+	ClusterHref   string
+	Cluster       string
+	ShowNamespace bool
+	NamespaceHref string
+	Namespace     string
+	PluralHref    string
+	Plural        string
+	Name          string
+}
+
+// DetailLink is one extra header button (object/label hook link).
+type DetailLink struct {
+	Href  string
+	Title string
+	Icon  string
+}
+
+// DetailLabelChip is one label pill on the detail page: an anchor to the
+// selector-filtered list (distinct from the cluster page's non-link LabelChip).
+// Class is the FULL ro-chip class incl. the app accent.
+type DetailLabelChip struct {
+	Href  string
+	Class string
+	Key   string
+	Val   string
+}
+
+// AnnotationChip is a non-link annotation pill (key + truncated value).
+type AnnotationChip struct {
+	Key string
+	Val string
+}
+
+// OwnerLink is one owner reference: either a kind/name split (rendered with the
+// "(Kind)" suffix) or a plain title.
+type OwnerLink struct {
+	Href  string
+	Kind  string
+	Name  string
+	Title string
+	Split bool
+}
+
+// NodeSummary holds the Node-kind bespoke summary blocks.
+type NodeSummary struct {
+	Conditions  []NodeCondition
+	HasCapAlloc bool
+	Capacity    *KVList
+	Allocatable *KVList
+	NodeInfo    *KVList
+}
+
+// NodeCondition is one Node condition pill.
+type NodeCondition struct {
+	Tone  string
+	Title string
+	Type  string
+	Value string
+}
+
+// KVList is a sorted key/value definition list (with an optional key prefix the
+// allocatable column uses).
+type KVList struct {
+	Rows []KVRow
+}
+
+// KVRow is one dt/dd pair (Key already carries any prefix).
+type KVRow struct {
+	Key string
+	Val string
+}
+
+// SecretData is the masked Secret data block (key names only; values masked).
+type SecretData struct {
+	KeyCount int
+	Keys     []string
+}
+
+// YAMLCard is one collapsible per-section YAML card. Content is the trusted
+// highlighted-YAML HTML for the section, injected raw.
+type YAMLCard struct {
+	Name     string
+	Title    string
+	CopyIcon string
+	Content  string
+}
+
+// EventRow is one event row in the Events subtable. The *Class fields are the
+// resolved cell classes (assembled in build_resource.go from the events/<column>
+// cell class and the age class for lastTimestamp at days=1):
+// TypeClass classes the Type <td> AND its ro-status-dot span, ReasonClass the
+// Reason <td>, AgeClass the Age <td>. The Message <td> carries the static
+// ro-event-msg class (emitted below, not threaded through data).
+type EventRow struct {
+	Type        string
+	TypeClass   string
+	Reason      string
+	ReasonClass string
+	Age         string
+	AgeClass    string
+	From        string
+	Message     string
+}
+
+// Subtable is the related-pods subtable on the detail page. ShowNamespace gates
+// the leading Namespace column + cell; EmptyColspan + EmptyTitle drive the
+// empty-state row (EmptyTitle is the full trusted "No <Kind> objects ... found."
+// sentence, precomputed so it emits via a single @templ.Raw -- see emptyTitle).
+type Subtable struct {
+	ShowNamespace bool
+	Columns       []SubtableColumn
+	CreatedHref   string
+	Rows          []SubtableRow
+	EmptyColspan  int
+	EmptyTitle    string
+}
+
+// SubtableColumn is one related-pods column header.
+type SubtableColumn struct {
+	Description string
+	SortHref    string
+	Name        string
+}
+
+// SubtableRow is one related-pods row.
+type SubtableRow struct {
+	StatusClass  string
+	ShowNs       bool
+	NsHref       string
+	Namespace    string
+	Cells        []SubtableCell
+	CreatedClass string
+	CreatedText  string
+}
+
+// SubtableCell is one related-pods cell (matches package-web subtableCell).
+type SubtableCell struct {
+	Kind  CellKind
+	Value string
+	Class string
+	Href  string
+}
+
+templ ResourceView(d DetailData) {
+	@detailBreadcrumb(d.Breadcrumb)
+	<h1 class="title">{ d.Name }<span class="ro-kind-badge">{ d.Kind }</span> <span class="links"><a href={ templ.SafeURL(d.DownloadHref) } title="Download resource object as YAML" class="button ro-btn-quiet"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
+		for _, link := range d.Links {
+			<a href={ templ.SafeURL(link.Href) } class="button ro-btn-quiet ro-link-out" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
+		}</span> <span class="meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></h1>
+	<div class="tabs is-small ro-detail-tabs"><ul>@detailTab(d.DefaultTabActive, "?", "Default")@detailTab(d.YAMLTabActive, "?view=yaml", "YAML")
+		if d.LogsHref != "" {
+			<li><a href={ templ.SafeURL(d.LogsHref) }>Logs</a></li>
+		}
+		</ul></div>
+	if d.IsYAMLView {
+		<div>@templ.Raw(d.HighlightedYAML)</div>
+	} else {
+		@detailBody(d)
+	}
+}
+
+// detailBody is the non-YAML detail view: summary chips + node summary + owners
+// + secret block + YAML cards + namespace links + related pods + events.
+templ detailBody(d DetailData) {
+	if len(d.Labels) > 0 {
+		<div class="section ro-section"><div class="ro-section-label">Labels</div><div class="ro-chips">
+			for _, chip := range d.Labels {
+				<a href={ templ.SafeURL(chip.Href) } class={ chip.Class }><span class="tag is-link">{ chip.Key + ": " + chip.Val }</span></a>
+			}
+			</div></div>
+	}
+	if len(d.Annotations) > 0 {
+		<div class="section ro-section"><div class="ro-section-label">Annotations</div><div class="ro-chips">
+			for _, chip := range d.Annotations {
+				<span class="tag ro-chip ro-chip-trunc">{ chip.Key + ": " + chip.Val }</span>
+			}
+			</div></div>
+	}
+	if d.Node != nil {
+		@nodeSummary(*d.Node)
+	}
+	if len(d.Owners) > 0 {
+		<div class="section ro-section ro-owner">{ ownerLabel(len(d.Owners)) + ":" }
+			for _, owner := range d.Owners {
+				if owner.Split {
+					<a href={ templ.SafeURL(owner.Href) }>{ owner.Name }{ " " }<span class="kind">{ "(" + owner.Kind + ")" }</span></a>{ " " }
+				} else {
+					<a href={ templ.SafeURL(owner.Href) }>{ owner.Title }</a>{ " " }
+				}
+			}
+			</div>
+	}
+	if d.Secret != nil {
+		<div class="section ro-section ro-secret-data" data-name="data"><article class="ro-notice ro-notice-info" role="note"><p class="ro-notice-title">Values masked</p><p>Secret values are base64-encoded in the Kubernetes API and are shown masked. This is a read-only view; the real values are never sent to your browser.</p></article><div class="ro-section-label">@templ.Raw("Data &middot; " + itoa(d.Secret.KeyCount) + " key" + pluralSuffix(d.Secret.KeyCount))</div><dl class="ro-secret-rows">
+			for _, key := range d.Secret.Keys {
+				<div class="ro-secret-row"><dt class="ro-secret-key">{ key }</dt><dd class="ro-secret-val"><span class="ro-secret-mask" aria-label="value masked">{ "••••••••" }</span></dd></div>
+			}
+			</dl></div>
+	}
+	for _, card := range d.YAMLCards {
+		<div class="section collapsible ro-yaml-card" data-name={ card.Name }><div class="ro-card-head"><h4 class="title is-5">{ card.Title }</h4><button type="button" class="ro-copy-btn" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="content">@templ.Raw(card.Content)</div></div>
+	}
+	if d.ShowNamespaceLinks {
+		<div class="section"><a href={ templ.SafeURL(d.AllObjectsHref) }>Show all objects in this namespace</a></div>
+		<div class="section"><a href={ templ.SafeURL(d.ResourceTypesHref) }>Show Resource Types in this namespace</a></div>
+	}
+	if d.RelatedPods != nil {
+		@subtableC(*d.RelatedPods)
+	}
+	<div class="section collapsible" data-name="events"><h4 class="title is-5">Events</h4><table class="table ro-list-table ro-subtable"><thead><tr><th>Type</th><th>Reason</th><th>Age</th><th>From</th><th>Message</th></tr></thead><tbody>
+		if len(d.Events) == 0 {
+			<tr><td colspan="5">No events found.</td></tr>
+		} else {
+			for _, ev := range d.Events {
+				<tr><td class={ ev.TypeClass }><span class={ "ro-status-dot " + ev.TypeClass } aria-hidden="true"></span>{ ev.Type }</td><td class={ ev.ReasonClass }>{ ev.Reason }</td><td class={ ev.AgeClass }>{ ev.Age }</td><td>{ ev.From }</td><td class="ro-event-msg">{ ev.Message }</td></tr>
+			}
+		}
+		</tbody></table></div>
+}
+
+templ nodeSummary(n NodeSummary) {
+	if len(n.Conditions) > 0 {
+		<div class="section ro-section"><div class="ro-section-label">Conditions</div><div class="ro-chips ro-cond-pills">
+			for _, cond := range n.Conditions {
+				<span class={ "ro-cond-pill " + cond.Tone } title={ cond.Title }><span class="ro-status-dot" aria-hidden="true"></span><span class="ro-cond-name">{ cond.Type }</span> <span class="ro-cond-val">{ cond.Value }</span></span>
+			}
+			</div></div>
+	}
+	if n.HasCapAlloc {
+		<div class="section ro-section"><div class="ro-section-label">Capacity / Allocatable</div><div class="ro-kv-cols">
+			if n.Capacity != nil {
+				@kvList(*n.Capacity)
+			}
+			if n.Allocatable != nil {
+				@kvList(*n.Allocatable)
+			}
+			</div></div>
+	}
+	if n.NodeInfo != nil {
+		<div class="section ro-section"><div class="ro-section-label">System Info</div>@kvList(*n.NodeInfo)</div>
+	}
+}
+
+templ kvList(l KVList) {
+	<dl class="ro-kv">
+		for _, row := range l.Rows {
+			<div class="ro-kv-row"><dt>{ row.Key }</dt><dd>{ row.Val }</dd></div>
+		}
+		</dl>
+}
+
+templ detailBreadcrumb(b DetailBreadcrumb) {
+	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul><li><a href={ templ.SafeURL(b.ClusterHref) }>{ b.Cluster }</a></li>
+		if b.ShowNamespace {
+			<li><a href={ templ.SafeURL(b.NamespaceHref) }>{ b.Namespace }</a></li><li><a href={ templ.SafeURL(b.PluralHref) }>{ b.Plural }</a></li>
+		} else {
+			<li><a href={ templ.SafeURL(b.PluralHref) }>{ b.Plural }</a></li>
+		}
+		<li class="is-active"><a href="#">{ b.Name }</a></li></ul></nav>
+}
+
+// detailTab renders one detail-page tab <li>; the active tab carries the
+// is-active class as an attribute, matching the activeAttr branch.
+templ detailTab(active bool, href, label string) {
+	if active {
+		<li class="is-active"><a href={ templ.SafeURL(href) }>{ label }</a></li>
+	} else {
+		<li><a href={ templ.SafeURL(href) }>{ label }</a></li>
+	}
+}
+
+// subtableC renders the related-pods subtable: a collapsible section + a
+// ro-subtable table with the optional leading Namespace column, the column sort
+// headers, and per-row cells branched on Kind (name / node / status / plain).
+templ subtableC(s Subtable) {
+	<div class="section collapsible" data-name="pods"><h4 class="title is-5">Pods</h4><table class="table ro-list-table ro-subtable"><thead><tr>
+		if s.ShowNamespace {
+			<th>Namespace</th>
+		}
+		for _, col := range s.Columns {
+			<th title={ col.Description }><a href={ templ.SafeURL(col.SortHref) }>{ col.Name }</a></th>
+		}
+		<th><a href={ templ.SafeURL(s.CreatedHref) }>Created</a></th></tr></thead><tbody>
+		if len(s.Rows) == 0 {
+			<tr><td colspan={ itoa(s.EmptyColspan) }>@templ.Raw(s.EmptyTitle)</td></tr>
+		} else {
+			for _, row := range s.Rows {
+				<tr class={ row.StatusClass }>
+					if row.ShowNs {
+						<td><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></td>
+					}
+					for i, cell := range row.Cells {
+						@subtableCell(i, cell)
+					}
+					<td class={ row.CreatedClass }>{ row.CreatedText }</td></tr>
+			}
+		}
+		</tbody></table></div>
+}
+
+// subtableCell renders one related-pods cell. Cell 0 is the name link; the rest
+// share the cellClass <td> and branch on Kind (node link / status dot / plain).
+templ subtableCell(idx int, cell SubtableCell) {
+	if idx == 0 {
+		<td class="ro-cell-name"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
+	} else {
+		<td class={ cell.Class }>
+			switch cell.Kind {
+				case CellNode:
+					<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
+				case CellStatus:
+					<span class={ "ro-status-dot " + cell.Href } aria-hidden="true"></span>{ cell.Value }
+				default:
+					{ cell.Value }
+			}
+			</td>
+	}
+}

@@ -1,0 +1,61 @@
+package templates
+
+// clusters.templ is the clusters-list page body: the count heading, the
+// filter tools form, and the search-select table with the per-row checkbox
+// (data-toggle-button="search-clusters-button") + the disabled search button.
+// All request-derived values (the filtered row set, the chip hrefs with their
+// url.QueryEscape'd selector, the count) are resolved in the handler and carried
+// in ClustersData; the renderer touches no request.
+
+// ClustersData is the resolved clusters-list input.
+type ClustersData struct {
+	Count         int
+	SelectorValue string // current ?selector= value (hidden form input)
+	FilterValue   string // current ?filter= value (form round-trip)
+	Rows          []ClusterRow
+	ExternalRows  []ExternalClusterRow
+}
+
+// ClusterRow is one in-cluster row: name + API URL + the label chips. Each chip
+// carries its precomputed /clusters?selector= href (key/val url.QueryEscape'd)
+// and the FULL ro-chip class (incl. the app.kubernetes.io accent).
+type ClusterRow struct {
+	Name  string
+	URL   string
+	Chips []Chip
+}
+
+// ExternalClusterRow is one configured external cluster (a link out).
+type ExternalClusterRow struct {
+	Name string
+	URL  string
+}
+
+// Chip is one label key=value pill with its resolved selector href and class.
+type Chip struct {
+	Href  string
+	Class string
+	Key   string
+	Val   string
+}
+
+templ Clusters(d ClustersData) {
+	<h1 class="title">Clusters <span class="ro-count">{ itoa(d.Count) }</span></h1>
+	<form action="#" method="get" class="tools-form is-active"><input type="hidden" name="selector" value={ d.SelectorValue }><div class="field is-horizontal"><div class="field-body"><div class="field has-addons"><p class="control is-expanded has-icons-left"><input class="input" type="text" placeholder="Filter clusters" name="filter" value={ d.FilterValue }><span class="icon is-small is-left">@iconC("filter")</span></p><div class="control"><button class="button ro-btn-quiet" type="submit">Filter</button></div></div></div></div></form>
+	<form action="/search" method="get"><table class="table ro-list-table ro-select-table has-bottom-controls"><thead><tr><th></th><th>Name</th><th>API URL</th><th>Labels</th></tr></thead><tbody>
+		for _, row := range d.Rows {
+			<tr><td><input type="checkbox" name="cluster" value={ row.Name } data-toggle-button="search-clusters-button"></td><td class="ro-cell-name"><a href={ templ.SafeURL(clusterHref(row.Name)) }>{ row.Name }</a></td><td class="ro-cell-url">{ row.URL }</td><td>
+				if len(row.Chips) > 0 {
+					<div class="ro-chips">
+						for _, chip := range row.Chips {
+							<a href={ templ.SafeURL(chip.Href) } class={ chip.Class }><span class="tag is-link">{ chip.Key }: { chip.Val }</span></a>
+						}
+						</div>
+				}
+				</td></tr>
+		}
+		for _, ext := range d.ExternalRows {
+			<tr><td></td><td class="ro-cell-name"><a href={ templ.SafeURL(ext.URL) } class="ro-ext-link">{ ext.Name } <span class="icon">@iconC("external-link-alt")</span></a></td><td class="ro-cell-url">{ ext.URL }</td><td></td></tr>
+		}
+		</tbody></table><div class="control bottom-controls"><button class="button is-primary" type="submit" id="search-clusters-button" disabled><span class="icon">@iconC("search")</span><span>Search in selected clusters</span></button></div></form>
+}

@@ -1,0 +1,44 @@
+# golangci-lint v2 configuration for readout.
+#
+# Starts from an empty linter set and enables an explicit, auditable list so the
+# "standard" default cannot drift between releases. The per-call regexp.Compile
+# in internal/kube is intentionally not lint-enforced: gocritic regexpMust only
+# fires on regexp.MustCompile of a named const, and forbidigo cannot tell a
+# package-level var from an in-function compile.
+version: "2"
+
+linters:
+  # Start from a known-empty set and enable an explicit, auditable list rather
+  # than relying on the "standard" default drifting between releases.
+  default: none
+  enable:
+    - errcheck      # unchecked errors
+    - govet         # same passes as `go vet`
+    - ineffassign   # ineffectual assignments
+    - staticcheck   # the staticcheck rule set (SA/ST/QF)
+    - unused        # unused consts/vars/funcs/types
+    - gocritic      # bug/perf/style diagnostics (regexpMust, rangeValCopy, ...)
+  settings:
+    gocritic:
+      # The diagnostic + performance tags pull in rangeValCopy, hugeParam,
+      # regexpMust, etc. (regexpMust catches `regexp.MustCompile(<const>)`; see
+      # the regexp-linter note in the header for why the per-call literal
+      # compiles in internal/kube are NOT caught by any v2.11 linter).
+      enabled-tags:
+        - diagnostic
+        - performance
+  exclusions:
+    # Defaults exclude legacy/generated noise; keep them. Generated templ output
+    # (*_templ.go, added in later waves) is excluded so codegen is not linted.
+    generated: lax
+    paths:
+      - ".*_templ\\.go$"
+
+formatters:
+  enable:
+    - gofumpt   # stricter gofmt superset
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - ".*_templ\\.go$"

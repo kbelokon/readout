@@ -1,0 +1,21 @@
+{
+  "kind": "NodeList",
+  "apiVersion": "v1",
+  "metadata": {"resourceVersion": "600"},
+  "items": [
+    {
+      "kind": "Node",
+      "apiVersion": "v1",
+      "metadata": {
+        "name": "127.0.0.1",
+        "uid": "00000000-0000-0000-0000-0000000000n1",
+        "resourceVersion": "601",
+        "creationTimestamp": "2024-01-01T00:00:00Z",
+        "labels": {"kubernetes.io/hostname": "127.0.0.1"}
+      },
+      "status": {
+        "addresses": [{"type": "InternalIP", "address": "127.0.0.1"}]
+      }
+    }
+  ]
+}

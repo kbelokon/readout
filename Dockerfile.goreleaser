@@ -1,0 +1,6 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY readout /readout
+COPY LICENSE NOTICE /
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/readout"]

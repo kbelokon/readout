@@ -1,0 +1,44 @@
+{
+  "kind": "Table",
+  "apiVersion": "meta.k8s.io/v1",
+  "metadata": {"resourceVersion": "200"},
+  "columnDefinitions": [
+    {"name": "Name", "type": "string", "format": "name", "priority": 0, "description": "Name of the pod"},
+    {"name": "Ready", "type": "string", "format": "", "priority": 0, "description": "Containers ready"},
+    {"name": "Status", "type": "string", "format": "", "priority": 0, "description": "Pod status"},
+    {"name": "Restarts", "type": "string", "format": "", "priority": 0, "description": "Restart count"},
+    {"name": "Age", "type": "string", "format": "", "priority": 0, "description": "Age of the pod"}
+  ],
+  "rows": [
+    {
+      "cells": ["nginx", "1/1", "Running", "0", "10m"],
+      "object": {
+        "kind": "PartialObjectMetadata",
+        "apiVersion": "meta.k8s.io/v1",
+        "metadata": {
+          "name": "nginx",
+          "namespace": "default",
+          "uid": "00000000-0000-0000-0000-000000000001",
+          "resourceVersion": "201",
+          "creationTimestamp": "2024-03-01T10:00:00Z",
+          "labels": {"app": "nginx"}
+        }
+      }
+    },
+    {
+      "cells": ["my-app", "1/1", "Running", "0", "5m"],
+      "object": {
+        "kind": "PartialObjectMetadata",
+        "apiVersion": "meta.k8s.io/v1",
+        "metadata": {
+          "name": "my-app",
+          "namespace": "default",
+          "uid": "00000000-0000-0000-0000-000000000002",
+          "resourceVersion": "202",
+          "creationTimestamp": "2024-03-02T11:30:00Z",
+          "labels": {"app": "my-app"}
+        }
+      }
+    }
+  ]
+}

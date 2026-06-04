@@ -1,0 +1,247 @@
+package templates
+
+import "strings"
+
+// search.templ is the search page body. It renders the breadcrumb, the title,
+// the tools-form (Search Text + the Resource Types checkbox list with the
+// .unselect control), the ro-scope chip strip, the .search-result cards (kind
+// tag + title + meta + snippet <em> highlights + label chips), the "no results"
+// block, the count/duration footer with the "repeat across all namespaces"
+// link, and the per-cluster `message is-danger` error articles (partial
+// failures).
+//
+// Every value is resolved in the package-web assembly layer (buildSearchView)
+// and carried in SearchData; the renderer touches no request and no kube client.
+// Inline-SVG icons ride in as raw strings via @templ.Raw. The behavior-fact net
+// pins the result cards, the snippet highlight, the type checkboxes + .unselect,
+// the scope chips, the count footer, and a per-cluster error article.
+
+// SearchData is the resolved search-page input.
+type SearchData struct {
+	Breadcrumb SearchBreadcrumb
+
+	Query           string
+	Cluster         string // hidden form input (cluster=...)
+	Namespace       string // hidden form input (namespace=...)
+	IsAllNamespaces bool
+
+	SearchIcon   string // inline-SVG for the search field
+	UnselectIcon string // inline-SVG for the unselect-all button
+
+	OfferedTypes  []SearchTypeOption
+	IsAllClusters bool
+	ScopeClusters []SearchScopeChip
+	AllTypes      bool // resource_types covers every offered type ("type all")
+	SelectedTypeCount int
+
+	Results       []SearchResultCard
+	HasQuery      bool
+	ResultSummary string // the "N results found. Searched ..." sentence
+
+	AllNamespacesHref string // "Repeat search across all namespaces" ("" => hidden)
+
+	ClusterErrors []SearchClusterErrors
+}
+
+// SearchBreadcrumb is the search-page breadcrumb (all / cluster / namespace /
+// search).
+type SearchBreadcrumb struct {
+	IsAllClusters bool
+
+	Cluster     string
+	ClusterHref string
+
+	IsAllNamespaces  bool
+	AllNamespaces    string // /clusters/<c>/namespaces
+	Namespace        string
+	NamespaceHref    string
+	ShowNamespace    bool // a single namespace crumb should render
+	ShowAllNamespace bool // the "all" namespaces crumb should render
+}
+
+// SearchTypeOption is one resource-type checkbox: Plural is the input value,
+// Kind is the label text, Checked marks a type in the current selection.
+type SearchTypeOption struct {
+	Plural  string
+	Kind    string
+	Checked bool
+}
+
+// SearchScopeChip is one scope chip in the ro-scope strip.
+type SearchScopeChip struct {
+	Name string
+}
+
+// SearchResultCard is one .search-result card: the kind tag, the title link, the
+// kind/path/created meta, the snippet highlights, and the label chips.
+type SearchResultCard struct {
+	Kind     string
+	KindTag  string // kind_abbrev (PO/SV/...) or first 2 chars uppercased
+	KindLow  string // kind|lower for the meta line
+	Title    string
+	Link     string
+	Created  string // formatted (T->space, trailing Z stripped); "" => no meta
+	Snippets []SearchSnippet
+	Chips    []Chip
+}
+
+// SearchSnippet is one (pre, match, post) snippet for the <em> highlight.
+type SearchSnippet struct {
+	Pre   string
+	Match string
+	Post  string
+}
+
+// SearchClusterErrors is one cluster's danger article: the heading label and the
+// per-resource-type failure lines.
+type SearchClusterErrors struct {
+	Cluster string
+	Header  string // "Error(s) for cluster <name>"
+	Lines   []string
+}
+
+templ Search(d SearchData) {
+	@searchBreadcrumb(d.Breadcrumb)
+	<h1 class="title">Search</h1>
+	<form action="/search" method="get" class="tools-form is-active"><input type="hidden" name="cluster" value={ d.Cluster }><input type="hidden" name="namespace" value={ d.Namespace }><div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Search Text</label></div><div class="field-body"><div class="field has-addons"><p class="control is-expanded has-icons-left"><input class="input" type="text" placeholder="Search query text" name="q" value={ d.Query }><span class="icon is-small is-left">@templ.Raw(d.SearchIcon)</span></p><div class="control"><button class="button is-primary" type="submit">Search!</button></div></div></div></div><div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Resource Types</label></div><div class="field-body"><div class="field"><p class="control checkboxes" id="type-checkboxes">
+		for _, opt := range d.OfferedTypes {
+			@searchTypeCheckbox(opt)
+		}
+		<a class="button is-light unselect" title="unselect all types" data-target="type-checkboxes"><span class="icon">@templ.Raw(d.UnselectIcon)</span><span>unselect all</span></a></p></div></div></div></form>
+	if d.HasQuery {
+		<div class="ro-scope"><span class="ro-scope-label">scope:</span>
+			if d.IsAllClusters && len(d.ScopeClusters) == 0 {
+				<span class="ro-scope-chip">all clusters</span>
+			} else {
+				for _, chip := range d.ScopeClusters {
+					<span class="ro-scope-chip">{ chip.Name }</span>
+				}
+			}
+			if d.AllTypes {
+				<span class="ro-scope-chip is-muted">type all</span>
+			} else {
+				<span class="ro-scope-chip is-muted">{ "type " + itoa(d.SelectedTypeCount) }</span>
+			}
+			</div>
+	}
+	if len(d.Results) > 0 {
+		for _, card := range d.Results {
+			@searchResultCard(card)
+		}
+	} else if d.HasQuery {
+		<div class="ro-noresults"><p>@templ.Raw(noResultsText(d.Query))</p></div>
+	}
+	if d.HasQuery {
+		<div class="ro-search-count">
+			if d.AllNamespacesHref != "" {
+				<p><a href={ templ.SafeURL(d.AllNamespacesHref) }>Repeat search across all namespaces</a></p>
+			}
+			<p>{ d.ResultSummary }</p></div>
+	}
+	for _, ce := range d.ClusterErrors {
+		<article class="message is-danger"><div class="message-header"><p>{ ce.Header }</p></div><div class="message-body">
+			for _, line := range ce.Lines {
+				<p>{ line }</p>
+			}
+			</div></article>
+	}
+}
+
+// searchTypeCheckbox renders one resource-type checkbox; the checked variant
+// carries the boolean `checked` attribute.
+templ searchTypeCheckbox(opt SearchTypeOption) {
+	if opt.Checked {
+		<label class="checkbox"><input type="checkbox" name="type" value={ opt.Plural } checked> { opt.Kind }</label>
+	} else {
+		<label class="checkbox"><input type="checkbox" name="type" value={ opt.Plural }> { opt.Kind }</label>
+	}
+}
+
+// searchResultCard renders one .search-result card.
+templ searchResultCard(card SearchResultCard) {
+	<div class="search-result"><span class="ro-ktag" title={ card.Kind }>{ card.KindTag }</span><div class="r-main"><a class="r-title" href={ templ.SafeURL(card.Link) }>{ card.Title }</a><div class="r-meta"><span class="r-kind">{ card.KindLow }</span><a class="r-path" href={ templ.SafeURL(card.Link) }>{ card.Link }</a>
+		if card.Created != "" {
+			<span class="sep">·</span>{ card.Created }
+		}
+		</div>
+		for _, snip := range card.Snippets {
+			<div class="r-snip match">@templ.Raw(snippetHTML(snip))</div>
+		}
+		if len(card.Chips) > 0 {
+			<div class="ro-chips r-labels">
+				for _, chip := range card.Chips {
+					<a href={ templ.SafeURL(chip.Href) } class={ chip.Class }><span class="tag is-link">{ chip.Key + ": " + chip.Val }</span></a>
+				}
+				</div>
+		}
+		</div></div>
+}
+
+// searchBreadcrumb renders the search-page breadcrumb (all / cluster /
+// namespace / search).
+templ searchBreadcrumb(b SearchBreadcrumb) {
+	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul>
+		if b.IsAllClusters {
+			<li><a href="/clusters">all</a></li>
+		} else if b.Cluster != "" {
+			<li><a href={ templ.SafeURL(b.ClusterHref) }>{ b.Cluster }</a></li>
+			if b.ShowAllNamespace {
+				<li><a href={ templ.SafeURL(b.AllNamespaces) }>all</a></li>
+			} else if b.ShowNamespace {
+				<li><a href={ templ.SafeURL(b.NamespaceHref) }>{ b.Namespace }</a></li>
+			}
+		}
+		<li class="is-active"><a href="#">search</a></li></ul></nav>
+}
+
+// noResultsText is the trusted "No results found for "<q>"." sentence,
+// html-escaped here so it emits via a single @templ.Raw (a text node after
+// @templ.Raw would be parsed as that call's dropped children).
+func noResultsText(query string) string {
+	return `No results found for "` + escapeHTML(query) + `".`
+}
+
+// snippetHTML is one snippet's trusted HTML: pre + <em>match</em> + post, each
+// segment html-escaped, assembled as one string so the <em> highlight emits via
+// a single @templ.Raw without a stray text node after the raw call.
+func snippetHTML(s SearchSnippet) string {
+	return escapeHTML(s.Pre) + "<em>" + escapeHTML(s.Match) + "</em>" + escapeHTML(s.Post)
+}
+
+// KindAbbrev is the two-letter kind tag for the well-known kinds, falling back
+// to the first two characters of the Kind uppercased. Exported so the
+// package-web assembly (toSearchData) resolves the same tag the template would.
+func KindAbbrev(kind string) string {
+	switch kind {
+	case "Pod":
+		return "PO"
+	case "Service":
+		return "SV"
+	case "ConfigMap":
+		return "CM"
+	case "Secret":
+		return "SE"
+	case "Deployment":
+		return "DE"
+	case "ReplicaSet":
+		return "RS"
+	case "StatefulSet":
+		return "ST"
+	case "DaemonSet":
+		return "DS"
+	case "Namespace":
+		return "NS"
+	case "Node":
+		return "ND"
+	case "Ingress":
+		return "IN"
+	case "CronJob":
+		return "CJ"
+	case "Cluster":
+		return "CL"
+	}
+	if len(kind) >= 2 {
+		return strings.ToUpper(kind[:2])
+	}
+	return strings.ToUpper(kind)
+}

@@ -1,0 +1,2412 @@
+/* readout.css -- the single app stylesheet.
+ *
+ * Cascade layers. The order below is the cascade order: later-named layers
+ * WIN over earlier ones regardless of selector specificity. So:
+ *
+ *     bulma   -- the vendored framework (imported INTO the layer below, not via
+ *                a bare <link>: an unlayered <link> would outrank every layered
+ *                rule and defeat the point);
+ *     theme   -- theme-scoped colours + the Pygments syntax-highlight palette
+ *                (light default, dark under [data-theme=dark] / prefers dark);
+ *     app     -- our own component rules. App beats bulma by layer order, so app
+ *                rules win WITHOUT any forced-priority override.
+ *
+ * The @layer statement and the @import MUST come before any style rule (only
+ * comments may precede them) or the @import is dropped by the parser.
+ * bulma.min.css sits next to this file in /assets/, so the relative URL resolves
+ * same-origin (no CDN, no build step).
+ */
+@layer bulma, theme, app;
+@import url('bulma.min.css') layer(bulma);
+
+/* Self-hosted fonts. Geist (UI) + Geist Mono (data), vendored as local
+   variable woff2 next to this file in /assets/fonts/, so the relative URL below
+   resolves SAME-ORIGIN -- no Google Fonts, no CDN at runtime (the CSP is
+   `default-src 'self'` with no font-src, so cross-origin font fetches are
+   blocked). One variable woff2 per family covers the whole weight range
+   (100..900). @font-face rules are global descriptors and intentionally sit
+   OUTSIDE the cascade layers (only @layer/@import may precede them).
+
+   Geist Mono is the DATA face: tabular figures are baked in here
+   (`font-feature-settings: "tnum" 1`) so columns of numbers/ages align by
+   default wherever --font-mono is applied. */
+@font-face {
+    font-family: "Geist";
+    src: url('fonts/Geist-Variable.woff2') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Geist Mono";
+    src: url('fonts/GeistMono-Variable.woff2') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+    font-feature-settings: "tnum" 1;
+}
+
+:root {
+    /* Font tokens, wired onto body/code; both carry a sane fallback
+       stack so text stays readable while the woff2 loads (font-display: swap)
+       or if it ever fails. --font-mono inherits the tabular figures baked into
+       the Geist Mono @font-face above. */
+    --font-ui: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+@layer app {
+    html { overflow: scroll; }
+
+    /* Accessibility: a VISIBLE keyboard focus ring on every interactive element
+       (acceptance: "keyboard focus is visible"). Several controls only carry a
+       :focus surface/colour tint (navbar items, buttons, the copy/fold controls)
+       and a few carry no focus feedback at all (sort-header links, ⌘K palette
+       rows, in-content links) -- so a keyboard user could not always SEE where
+       focus is. This baseline draws an accent outline ONLY for keyboard focus
+       (:focus-visible, so a mouse click does not ring), using the theme --accent
+       token so it is high-contrast in BOTH palettes (near-black on light, blue on
+       dark). Component :focus rules below still add their surface tints; this just
+       guarantees the ring. No forced-priority override needed -- the app layer
+       already wins by cascade order. */
+    a:focus-visible,
+    button:focus-visible,
+    select:focus-visible,
+    input:focus-visible,
+    [tabindex]:focus-visible,
+    summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
+    }
+
+    /* ---------------------------------------------------------------------------
+       Type split (the redesign's core move): CALM CHROME / LOUD DATA.
+
+       CHROME is the quiet grotesk (--font-ui): the whole page inherits it from
+       <body>, so nav, sidebar, sidebar labels, titles and prose are grotesk
+       without being named one by one. DATA is the monospace face (--font-mono):
+       identifiers, namespaces, YAML, numbers, ages, kind/label tags and the
+       breadcrumb path are opted INTO mono so columns of identifiers and numerics
+       align (tabular figures are baked into the Geist Mono @font-face, so mono
+       elements get aligned numerals for free). Both vars carry a fallback stack
+       (declared on :root) so text stays readable while the woff2 loads.
+
+       Beats Bulma's font-family by layer order alone (the app layer wins).
+
+       <body> is the page shell: it carries the grotesk UI face AND the theme
+       foundation (page surface + base text colour) from tokens, so the whole
+       app picks up the right palette per theme. The one blue / off-white
+       identifier hue (--id-color) is wired onto links here -- the token comment
+       defines it as "identifiers + links", and it is the only saturated colour
+       in the chrome. Component surfaces (navbar/table/sidebar fills) are later
+       units; this is just the shared root. */
+    body {
+        font-family: var(--font-ui);
+        background: var(--bg);
+        color: var(--text);
+    }
+    a { color: var(--id-color); }
+
+    /* DATA -> mono. Code/pre/highlight (YAML + resource blocks), the breadcrumb
+       path, kind/label tags, and table cells (identifiers + numerics + ages).
+       The breadcrumb is a quiet mono path, so it takes the muted data colour. */
+    code,
+    pre,
+    .highlight,
+    .highlight pre,
+    nav.breadcrumb,
+    .tag,
+    table.table th,
+    table.table td { font-family: var(--font-mono); }
+
+    /* ---------------------------------------------------------------------------
+       Breadcrumb -> quiet mono path. The real cluster / namespace /
+       endpoint links are KEPT (the template still renders them as <a>); this only
+       restyles them into a calm technical path: small mono type, muted links that
+       warm to the accent on hover, faint "/" separators (Bulma draws the slash via
+       li+li::before -- we just recolour + dim it), and the trailing current
+       segment in plain body text. Bulma marks the last <li> .is-active with
+       pointer-events:none, so the current page reads as static text while every
+       ancestor segment stays a working link. App layer wins over bulma by order --
+       no forced-priority override. */
+    nav.breadcrumb.ro-breadcrumb {
+        font-size: 0.78rem;
+        margin-bottom: 0.85rem;
+    }
+    nav.breadcrumb.ro-breadcrumb a {
+        color: var(--text-muted);
+        padding: 0 0.4em;
+    }
+    nav.breadcrumb.ro-breadcrumb a:hover { color: var(--accent-text); }
+    nav.breadcrumb.ro-breadcrumb li.is-active a { color: var(--text); }
+    nav.breadcrumb.ro-breadcrumb li + li::before {
+        color: var(--text-faint);
+        opacity: 0.5;
+    }
+
+    /* App-shell view transitions. With globalViewTransitions on, an
+       hx-boost navigation crossfades the whole page via the default `root`
+       snapshot -- which snapshots the navbar + sidebar too, so a transition that
+       does not settle cleanly (e.g. a slow cluster-API page render) can leave a
+       ghost of the previous sidebar beside the new page until the next
+       transition clears it. Giving the persistent shell elements their own
+       view-transition-name takes them OUT of the root snapshot: the browser
+       matches them across the swap by name and holds them continuous (no
+       crossfade, no ghost), so only <main> animates -- the cleaner, SPA-like
+       result. Each name must be unique and appear at most once in the DOM. */
+    nav.navbar { view-transition-name: ro-navbar; }
+    aside.menu { view-transition-name: ro-sidebar; }
+
+    /* Inline-SVG icons (Lucide) emitted by the partials/icons.html `icon()` macro.
+       The SVGs carry no width/height of their own, so they size to the Bulma
+       `.icon` span here; stroke="currentColor" makes them follow the surrounding
+       (theme-aware) text colour. Replaces the FontAwesome-JS runtime. */
+    .icon svg.lucide-icon {
+        width: 1.25em;
+        height: 1.25em;
+        vertical-align: middle;
+    }
+
+    /* ---------------------------------------------------------------------------
+       Slim quiet topbar. The colored Bulma navbar is re-skinned into a
+       calm technical bar driven by the token system: surface fill + a hairline
+       bottom border, muted text, near-black/blue accent only on focus + the
+       cluster status dot. App beats the bulma layer by cascade order, so these
+       win without any forced-priority override. Structure (burger, has-dropdown,
+       the pinned control ids/forms) is unchanged -- only appearance.
+       --------------------------------------------------------------------------- */
+    nav.navbar.ro-topbar {
+        min-height: 3.125rem;            /* slim 50px bar */
+        align-items: center;
+        padding: 0 0.875rem;
+        background: var(--header-bg);
+        border-bottom: 1px solid var(--border);
+        box-shadow: none;
+    }
+    nav.navbar.ro-topbar .navbar-menu { background: transparent; box-shadow: none; }
+    nav.navbar.ro-topbar .navbar-start,
+    nav.navbar.ro-topbar .navbar-end { align-items: center; }
+    /* a quiet hairline gap between the brand and the rest of the bar */
+    nav.navbar.ro-topbar .navbar-start { gap: 0.25rem; }
+
+    /* Brand: the readout logo (green r + rows) + the mono wordmark. The mark is a
+       CSS mask of /assets/readout-logo.svg filled per theme: bright green
+       (#56E0BC) on the dark header, a darker teal of the same hue (#169873) on
+       the light header so it stays readable on white. No chip. */
+    .navbar-brand .brand-item { padding: 0 0.5rem 0 0.25rem; }
+    .navbar-brand .brand-item:hover { background: transparent; }
+    .brand-logo {
+        width: 1.625rem; height: 1.625rem; flex: 0 0 auto;
+        background: #169873;
+        -webkit-mask: url(/assets/readout-logo.svg) center / contain no-repeat;
+        mask: url(/assets/readout-logo.svg) center / contain no-repeat;
+    }
+    [data-theme="dark"] .brand-logo { background: #56E0BC; }
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .brand-logo { background: #56E0BC; }
+    }
+    .brand-name {
+        font-family: var(--font-mono); font-weight: 600; font-size: 0.78rem;
+        letter-spacing: -0.02em; color: var(--text); white-space: nowrap;
+        margin-left: 0.5rem;
+    }
+
+    /* Top-level text link(s) -- "Clusters". Muted by default, full text + a faint
+       surface wash on hover; the active page reads as plain text (no fill). */
+    .navbar-item.toplink {
+        color: var(--text-muted);
+        border-radius: var(--radius-sm);
+    }
+    .navbar-item.toplink:hover,
+    .navbar-item.toplink:focus { color: var(--text); background: var(--surface-2); }
+    .navbar-item.toplink.is-active { color: var(--text); background: transparent; }
+
+    /* Cluster/namespace context pill (#namespace-dropdown trigger): a bordered
+       surface chip with a status dot + chevron. The dot reuses --st-ok (cluster
+       reachable). Hover firms the border via --border-strong. */
+    .context-dd .navbar-link.context-trigger {
+        display: inline-flex; align-items: center; gap: 0.4375rem;
+        height: 1.875rem; padding: 0 0.5625rem;
+        border: 1px solid var(--border); border-radius: var(--radius-sm);
+        background: var(--surface); color: var(--text);
+        font-family: var(--font-mono); font-size: 0.75rem;
+    }
+    .context-dd .navbar-link.context-trigger:hover,
+    .context-dd .navbar-link.context-trigger:focus { border-color: var(--border-strong); }
+    .context-dd .status-dot {
+        width: 0.375rem; height: 0.375rem; border-radius: 50%;
+        background: var(--st-ok); flex: 0 0 auto;
+    }
+    .context-caret.icon { color: var(--text-faint); }
+    .context-caret.icon svg.lucide-icon { width: 0.75rem; height: 0.75rem; }
+
+    /* Search field: a surface chip on the right with a left search glyph and a
+       decorative kbd hint, sized to a comfortable fixed width; max-width:100%
+       lets it shrink on narrow viewports. */
+    .navbar-end .search-item { justify-content: flex-end; }
+    .navbar-end .search-item form,
+    .navbar-end .search-item .field,
+    .navbar-end .search-item .control { width: 22rem; max-width: 100%; margin-bottom: 0; }
+    .navbar-end .search-item .input {
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        box-shadow: none;
+        font-size: 0.8125rem;
+    }
+    .navbar-end .search-item .input::placeholder { color: var(--text-faint); }
+    .navbar-end .search-item .input:hover { border-color: var(--border-strong); }
+    .navbar-end .search-item .input:focus {
+        border-color: var(--accent);
+        background: var(--surface);
+    }
+    .navbar-end .search-item .control .icon { color: var(--text-faint); }
+    /* the kbd hint sits at the right of the field; pointer-events:none so a click
+       in that zone still lands on the input (it is purely a visual affordance) */
+    .navbar-end .search-item .control.has-icons-right .search-kbd-hint {
+        width: auto; right: 0.4rem; pointer-events: none;
+    }
+    .ro-kbd {
+        font-family: var(--font-mono); font-size: 0.625rem; line-height: 1;
+        padding: 0.125rem 0.3125rem; border-radius: 3px;
+        background: var(--surface-2); border: 1px solid var(--border);
+        color: var(--text-muted);
+    }
+
+    /* Icon controls (refresh trigger + theme toggle) read as square ghost buttons
+       that fill with a faint surface wash on hover and inherit the muted text. */
+    .navbar-end .navbar-icon.button,
+    .navbar-end .refresh-trigger {
+        background: transparent;
+        border: 1px solid transparent;
+        box-shadow: none;
+        color: var(--text-muted);
+        border-radius: var(--radius-sm);
+    }
+    .navbar-end .navbar-icon.button:hover,
+    .navbar-end .navbar-icon.button:focus,
+    .navbar-end .refresh-trigger:hover,
+    .navbar-end .refresh-trigger:focus { background: var(--surface-2); color: var(--text); }
+
+    /* Theme toggle (#btn-theme-toggle): the icon must follow the EFFECTIVE
+       (prefers-aware) palette, NOT the server theme.name -- under the dark
+       default a cookieless light-OS user is theme.name="dark" server-side but
+       LIGHT in reality. So the button renders BOTH glyphs and CSS shows the one
+       that matches the effective palette with zero JS (and the cookieless case
+       resolves for free via the same prefers-color-scheme query the tokens use):
+         - light (default :root, or explicit [data-theme=light]) -> show the moon
+           ("switch to dark");
+         - dark (explicit [data-theme=dark], or system-dark with no data-theme)
+           -> show the sun ("switch to light").
+       Hiding via display:none keeps exactly one glyph in the layout box. */
+    #btn-theme-toggle .theme-icon-light { display: none; }
+    #btn-theme-toggle .theme-icon-dark { display: inline-flex; }
+    [data-theme="dark"] #btn-theme-toggle .theme-icon-light { display: inline-flex; }
+    [data-theme="dark"] #btn-theme-toggle .theme-icon-dark { display: none; }
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) #btn-theme-toggle .theme-icon-light { display: inline-flex; }
+        :root:not([data-theme="light"]) #btn-theme-toggle .theme-icon-dark { display: none; }
+    }
+
+    /* Quiet token-driven action button (object-links / detail-header download /
+       TSV / per-table tools + search). Replaces the old server button-class Bulma
+       colour coupling, which mapped to a blue is-link button in dark and a
+       near-white is-light button in light -- under the dark default a cookieless
+       light-OS user got the wrong (blue) fill since theme.name was "dark" while the
+       real palette was light. This reads correctly in BOTH palettes off tokens: a
+       hairline-bordered surface chip with muted icon text that firms on hover.
+       (Units 7/9 refine the exact object-link / detail-header look; this removes the
+       wrong-colour coupling and leaves a both-theme-correct quiet button.) */
+    .button.ro-btn-quiet {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        box-shadow: none;
+        color: var(--text-muted);
+        border-radius: var(--radius-sm);
+    }
+    .button.ro-btn-quiet:hover,
+    .button.ro-btn-quiet:focus {
+        border-color: var(--border-strong);
+        color: var(--text);
+        background: var(--surface-2);
+    }
+
+    /* Accent-filled action button (the error-page Retry): the one saturated
+       call-to-action against the quiet Back. Uses the accent token pair so it
+       reads correctly in both themes; app beats bulma by layer order. */
+    .button.ro-btn-primary {
+        border: 1px solid var(--accent);
+        background: var(--accent);
+        color: var(--accent-on);
+        border-radius: var(--radius-sm);
+    }
+    .button.ro-btn-primary:hover,
+    .button.ro-btn-primary:focus {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--accent-on);
+        filter: brightness(1.08);
+    }
+    .button.ro-btn-primary .icon svg.lucide-icon { width: 1em; height: 1em; }
+
+    /* Auto-refresh interval picker (navbar #refresh-dropdown). The trigger shows
+       the rotate icon + the current interval ("Off"/"30s"); when refresh is on,
+       the icon spins slowly and the control reads as active (accent wash). The
+       chosen option is emphasised in the dropdown. */
+    .refresh-label { margin-left: 0.4rem; font-size: 0.8125rem; }
+    #refresh-dropdown.refresh-on .refresh-trigger { color: var(--accent-text); background: var(--accent-weak); }
+    #refresh-dropdown.refresh-on .refresh-icon svg { animation: refresh-spin 3s linear infinite; }
+    .navbar-dropdown .refresh-option.is-active { font-weight: 700; }
+    @keyframes refresh-spin { to { transform: rotate(360deg); } }
+
+    /* Dropdown panels (namespace context list + refresh-interval menu) are themed
+       surfaces, not Bulma's default white -- so they read correctly in dark. Items
+       are muted text that firm up on hover; the namespace filter input matches the
+       topbar search chip. */
+    nav.navbar.ro-topbar .navbar-dropdown {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        box-shadow: none;
+    }
+    nav.navbar.ro-topbar .navbar-dropdown .navbar-item {
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+    }
+    nav.navbar.ro-topbar .navbar-dropdown a.navbar-item:hover,
+    nav.navbar.ro-topbar .navbar-dropdown a.navbar-item:focus {
+        color: var(--text);
+        background: var(--surface-2);
+    }
+    #namespace-dropdown .navbar-dropdown .control { padding: 0.375rem 0.75rem; }
+    #namespace-searchbox.input {
+        color: var(--text);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        box-shadow: none;
+        font-family: var(--font-mono);
+    }
+    #namespace-searchbox.input::placeholder { color: var(--text-faint); }
+
+    @keyframes reload {
+        0% { background-image: linear-gradient(to top, #2366d1ff 0%, #2366d100 10%); }
+        10% { background-image: linear-gradient(to top, #2366d1ff 10%, #2366d100 20%); }
+        20% { background-image: linear-gradient(to top, #2366d1ff 20%, #2366d100 30%); }
+        30% { background-image: linear-gradient(to top, #2366d1ff 30%, #2366d100 40%); }
+        40% { background-image: linear-gradient(to top, #2366d1ff 40%, #2366d100 50%); }
+        50% { background-image: linear-gradient(to top, #2366d1ff 50%, #2366d100 60%); }
+        60% { background-image: linear-gradient(to top, #2366d1ff 60%, #2366d100 70%); }
+        70% { background-image: linear-gradient(to top, #2366d1ff 70%, #2366d100 80%); }
+        80% { background-image: linear-gradient(to top, #2366d1ff 80%, #2366d100 90%); }
+        90% { background-image: linear-gradient(to top, #2366d1ff 90%, #2366d100 100%); }
+        100% { background-image: linear-gradient(to top, #2366d1ff 100%, #2366d1ff 100%); }
+    }
+
+    .container.is-fluid { margin-left: 0; padding: 1.5rem 0; }
+
+
+    /* aside menu has toggle for mobile */
+    aside.menu { padding: 1.5rem; margin-top: -1.5rem; }
+
+    /* ---------------------------------------------------------------------------
+       Sidebar -> grouped TEXT navigation. The Bulma menu structure
+       is kept (menu / menu-label / menu-list); only appearance changes, driven by
+       tokens, so app wins over bulma by layer order (no forced-priority override).
+
+       - Group label (menu-label): a quiet uppercase mono caption -- the only role
+         of "Custom Resources" is to be one more such label; it is NOT special-cased
+         (same rule paints every built-in group and the configured CRD group alike,
+         so the nav scales to any configured group / any CRD for free).
+       - Item (menu-item): plain text link, no per-type icon, no count; muted by
+         default, warms to full text + a faint surface wash on hover.
+       - Active item: the link whose target path == the current request path gets
+         .is-active (set in sidebar.html) -> a subtle accent tint PLUS an accent
+         left-bar drawn with ::before (no extra markup, no inline style). This
+         overrides Bulma's own .menu-list a.is-active blue fill via layer order. */
+    aside.menu .menu-label {
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        margin-bottom: 0.5rem;
+    }
+    aside.menu .menu-list a.menu-item {
+        position: relative;
+        display: block;
+        padding: 0.4375rem 0.75rem;
+        border-radius: var(--radius-sm);
+        color: var(--text-muted);
+        background: transparent;
+        font-size: 0.9375rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        transition: background .1s, color .1s;
+    }
+    aside.menu .menu-list a.menu-item:hover {
+        background: var(--surface-2);
+        color: var(--text);
+    }
+    aside.menu .menu-list a.menu-item.is-active {
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        font-weight: 500;
+    }
+    aside.menu .menu-list a.menu-item.is-active::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 2px;
+        height: 0.8125rem;
+        background: var(--accent);
+        border-radius: 1px;
+    }
+
+    main { flex-grow: 1; flex-shrink: 1; }
+
+    h1 .links,
+    h2 .links {
+        margin: 0 1rem;
+    }
+    h1 { display: flex; }
+    h1 .meta,
+    h2 .meta {
+        margin-left: auto;
+        font-size: 1rem;
+        font-weight: normal;
+        padding-top: 0.5rem;
+    }
+
+    /* desktop+ */
+    @media screen and (min-width: 1024px) {
+        aside.menu { flex-grow: 0; flex-shrink: 0; flex-basis: 12rem; padding: 1.5rem; margin-right: 1.5rem; margin-top: -1.5rem; }
+    }
+    /* mobile & touch */
+    @media screen and (max-width: 1023px) {
+
+        /* the open mobile menu is a themed surface panel (matches the bar), so the
+           token-driven search field stays legible -- no hardcoded white override */
+        nav.navbar.ro-topbar .navbar-menu {
+            background: var(--header-bg);
+            border-bottom: 1px solid var(--border);
+        }
+        .navbar-end .search-item form,
+        .navbar-end .search-item .field,
+        .navbar-end .search-item .control { max-width: none; }
+
+        aside.menu { padding: 0.5rem 1.5rem; margin-bottom: 1.5rem; }
+        aside #aside-menu { display: none; padding-top: 1rem; }
+
+        aside a[role="button"] { display: block; height: 1rem;}
+        aside a[role="button"] span { display: block; background: hsl(0, 0%, 71%); position: relative; height: 1px; margin: 0 auto; width: 66%; }
+        aside a[role="button"] span:nth-child(1) { top: calc(50% - 1px); }
+        aside a[role="button"] span:nth-child(2) { top: calc(50% + 1px); }
+
+        #aside-menu.is-active { display: block; }
+
+        main { padding: 0 1.5rem; }
+
+        /* show meta created below title */
+        h1 { display: block; }
+        h1 .meta,
+        h2 .meta {
+            margin-left: 0;
+            display: block;
+        }
+    }
+
+    table th.num:not([align]),
+    table td.num:not([align]) { text-align: right; }
+
+    /* ---------------------------------------------------------------------------
+       Phase strip: a thin semantic tally band ABOVE the list table.
+       A PURE INDICATOR -- the chips carry no links (no click-to-filter). Each chip
+       is a reused .ro-status-dot (coloured by its has-text-* class, same palette
+       as the per-row stripes) + a label + a mono count; the right side is the
+       visible-row total. The dot rule itself lives in @layer theme (shared with the
+       Status cell); this rule only owns the band's layout and the mono numerals. */
+    .ro-phase-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.625rem;
+        padding: 0.5rem 0.875rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        font-size: 0.8125rem;
+    }
+    .ro-phase-tally {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.25rem 1rem;
+        min-width: 0;
+    }
+    .ro-phase-chip {
+        display: inline-flex;
+        align-items: baseline;
+        white-space: nowrap;
+        color: var(--text-muted);
+    }
+    .ro-phase-label { color: var(--text-muted); }
+    .ro-phase-count {
+        margin-left: 0.375rem;
+        font-family: var(--font-mono);
+        font-weight: 600;
+        color: var(--text);
+    }
+    .ro-phase-total {
+        flex: 0 0 auto;
+        font-family: var(--font-mono);
+        color: var(--text-faint);
+        white-space: nowrap;
+    }
+    .ro-phase-total .ro-phase-count { margin-left: 0; }
+
+    /* ---------------------------------------------------------------------------
+       Resource-list table restyle. The list page table is the heart
+       of the app; this turns Bulma's default zebra table into the redesign's calm
+       technical grid: compact density off the shared --row-py/--cell-px tokens,
+       mono sticky headers with quiet sort carets, hover (NOT zebra) row feedback,
+       and mono ellipsized identifiers. App beats the bulma layer by cascade order
+       (no forced-priority override).
+
+       LAYOUT (revised post-delivery on user feedback -- originally pinned
+       table-layout:fixed + ellipsized identifiers, but that clipped the TAIL of a
+       pod name -- exactly the hash/suffix that distinguishes two replicas -- so the
+       names read as duplicates and identification broke). We now use auto layout
+       with width:100%: the table still fills <main> and never horizontally
+       overflows, the short columns size to content, and the Name column takes the
+       remaining width and shows the identifier IN FULL (it wraps only if a name
+       genuinely cannot fit the available width -- see the .ro-cell-name rule).
+
+       The per-row LEFT STATUS STRIPE, the status dot, the has-text-* status
+       colours and the td.age-* scale all live in @layer theme already and
+       are intentionally NOT redefined here -- this rule only owns density,
+       headers, hover and the identifier column. The stripe is an INSET box-shadow
+       on the row's first cell; the extra left padding on the first column keeps
+       text clear of that stripe. */
+    table.table.ro-list-table {
+        table-layout: auto;
+        width: 100%;
+        border-collapse: collapse;
+        background: transparent;
+        font-size: 0.9375rem;
+    }
+
+    /* Select-tables (the clusters list + the cluster's namespace table) lead with
+       a narrow checkbox column. Under table-layout:fixed an unsized column claims
+       an EQUAL share -- a quarter of a 4-column clusters table -- leaving a wide
+       empty gap before the Name. Pin that leading column narrow so the data
+       columns take the width; the checkbox sits centred in it. */
+    table.table.ro-list-table.ro-select-table thead th:first-child,
+    table.table.ro-list-table.ro-select-table tbody td:first-child {
+        width: 2.5rem;
+        text-align: center;
+        padding-left: 0;
+        padding-right: 0;
+    }
+
+    /* Sticky mono header row: a quiet uppercase caption band that stays pinned
+       while the body scrolls. The header cell's <a> IS the sort link (kept in the
+       template); it is muted and warms to full text on hover. */
+    table.table.ro-list-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        text-align: left;
+        background: var(--thead-bg);
+        border-bottom: 1px solid var(--border);
+        border-top: 0;
+        padding: 0.5rem var(--cell-px);
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        white-space: nowrap;
+        user-select: none;
+    }
+    table.table.ro-list-table thead th a {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        color: inherit;
+    }
+    table.table.ro-list-table thead th a:hover { color: var(--text); }
+    /* the sort caret is a quiet small glyph; the column it marks reads firmer
+       (the active sort), since only the sorted header renders a caret at all */
+    table.table.ro-list-table thead th a .icon { color: var(--text-faint); }
+    table.table.ro-list-table thead th a:has(.icon) { color: var(--text); }
+    table.table.ro-list-table thead th a .icon svg.lucide-icon {
+        width: 0.875rem;
+        height: 0.875rem;
+    }
+
+    /* Compact body cells: token density, hairline row rule, single-line ellipsis
+       (fixed layout clips overflow instead of widening the column). Hover -- not
+       zebra -- gives the row feedback. */
+    table.table.ro-list-table tbody td {
+        padding: var(--row-py) var(--cell-px);
+        border-bottom: 1px solid var(--border);
+        border-top: 0;
+        vertical-align: middle;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    table.table.ro-list-table tbody tr { transition: background .08s; }
+    table.table.ro-list-table tbody tr:hover { background: var(--row-hover); }
+    /* keep body text clear of the inset left status stripe on the leading cell */
+    table.table.ro-list-table tbody td:first-child,
+    table.table.ro-list-table thead th:first-child { padding-left: 0.875rem; }
+
+    /* Mono identifier shown IN FULL: the Name cell's link is the one saturated id
+       colour. Under the auto layout above the Name column takes the leftover width
+       and the identifier shows whole on one line; if a name truly cannot fit the
+       available width it WRAPS (breaking the long hash) rather than clipping its
+       tail -- the tail is what distinguishes two replicas, so it must never be
+       hidden. The anchor markup is unchanged (a pinned e2e selector matches it). */
+    table.table.ro-list-table td.ro-cell-name {
+        white-space: normal;
+        overflow: visible;
+    }
+    table.table.ro-list-table td.ro-cell-name a {
+        display: block;
+        overflow-wrap: anywhere;
+    }
+
+    /* Trailing object-links cell -> a QUIET token icon link: saturation is
+       reserved for status/age, so the old saturated is-primary button becomes a
+       borderless muted icon that warms to full text on hover. It carries
+       ro-btn-quiet too, so this just strips the chip chrome down to an icon. */
+    table.table.ro-list-table .button.ro-link-out {
+        background: transparent;
+        border-color: transparent;
+        color: var(--text-faint);
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+    }
+    table.table.ro-list-table .button.ro-link-out:hover,
+    table.table.ro-list-table .button.ro-link-out:focus {
+        background: var(--surface-2);
+        border-color: transparent;
+        color: var(--text);
+    }
+
+    table.table.has-bottom-controls { margin-bottom: 0.5rem; }
+    .bottom-controls { margin-bottom: 1.5rem; }
+
+    /* ---------------------------------------------------------------------------
+       Clusters list / single-cluster overview / Resource Types.
+       The clusters page is sidebar-less by design (no sidebar_menu in its context,
+       so partials/sidebar.html renders empty -- nothing to add here). These pages
+       reuse the .ro-list-table look and the .ro-chip / .ro-ktag;
+       this block adds only the bits unique to them: the title count badge, the one
+       accent action button, the cluster-meta header, and the resource-type
+       group/version/namespaced cells + the CRD badge. App wins by layer order.
+       --------------------------------------------------------------------------- */
+
+    /* Title count badge ("Clusters 4", "Resource Types 19"): a small quiet mono
+       pill after the page title, reusing the surface-2 chip skin. */
+    h1.title .ro-count {
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        font-weight: 600;
+        vertical-align: middle;
+        margin-left: 0.5rem;
+        padding: 0.125rem 0.4375rem;
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        color: var(--text-faint);
+    }
+
+    /* The single accent action button (Search in selected / Filter / Save /
+       Refresh): Bulma's .is-primary teal is re-skinned to the design accent token
+       (near-black in light, blue in dark) so it reads as the one saturated action.
+       App beats the bulma layer by cascade order -- no forced priority. The
+       disabled state quiets to a surface chip until a checkbox arms it. */
+    .button.is-primary {
+        background: var(--accent);
+        border: 1px solid var(--accent);
+        color: var(--accent-on);
+        box-shadow: none;
+        border-radius: var(--radius-sm);
+    }
+    .button.is-primary:hover,
+    .button.is-primary:focus {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-on);
+        filter: brightness(1.08);
+    }
+    .button.is-primary[disabled],
+    .button.is-primary:disabled {
+        background: var(--surface-2);
+        border-color: var(--border);
+        color: var(--text-faint);
+        opacity: 1;
+    }
+
+    /* ---------------------------------------------------------------------------
+       Preferences page. The page is `preferences.html`: a single
+       POST /preferences form (the one allowed write, hx-boost="false") with a
+       theme <select> + the accent Save button. Without these rules the form is
+       un-themed Bulma -- under the dark DEFAULT the <select> renders a white
+       control with Bulma's teal arrow and the .label/icon take Bulma's dark-grey
+       chrome, all of which read wrong on the dark surface. Scoped to `.ro-prefs`
+       (a class on that one form) so it restyles ONLY this page and never reaches
+       the shared .label/.select/.field used by search/tools forms. The Save
+       button already inherits the token .button.is-primary skin above, so it is
+       not restyled here. App wins over the bulma layer by cascade order -- no
+       forced-priority override needed. ------------------------------------- */
+    .ro-prefs .label { color: var(--text-muted); }
+
+    /* The native <select> inside Bulma's `.select` wrapper: tokenise the control
+       (surface fill, token border + text, mono so the theme name reads as data)
+       so it matches the navbar inputs. Bulma draws the dropdown arrow with
+       `.select::after` (a border-triangle in its own link colour); recolour it to
+       a quiet faint token and firm/accent the border on hover/focus like the
+       other token-driven inputs in this app. */
+    .ro-prefs .select select {
+        font-family: var(--font-mono);
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        box-shadow: none;
+    }
+    .ro-prefs .select:not(.is-multiple):not(.is-loading)::after {
+        border-color: var(--text-faint);
+    }
+    .ro-prefs .select select:hover { border-color: var(--border-strong); }
+    .ro-prefs .select select:focus {
+        border-color: var(--accent);
+        background: var(--surface);
+    }
+    /* the leading palette icon in `.control.has-icons-left` reads as a quiet
+       affordance, like the navbar search/field icons. */
+    .ro-prefs .control.has-icons-left .icon { color: var(--text-faint); }
+
+    /* Clusters table: API-URL cell stays a quiet mono string (the value the
+       offline guard asserts is non-empty); a long URL ellipsizes rather than
+       widening the fixed-layout column. */
+    table.table.ro-list-table td.ro-cell-url {
+        font-family: var(--font-mono);
+        color: var(--text-muted);
+    }
+    /* external_url clusters render as a link-out row: the id-colour name + a
+       trailing quiet icon (kept from the template), in the id colour like any
+       identifier link. */
+    table.table.ro-list-table td.ro-cell-name a.ro-ext-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+    }
+    table.table.ro-list-table td.ro-cell-name a.ro-ext-link .icon { color: var(--text-faint); }
+    table.table.ro-list-table td.ro-cell-name a.ro-ext-link:hover .icon { color: var(--accent-text); }
+    table.table.ro-list-table td.ro-cell-name a.ro-ext-link .icon svg.lucide-icon {
+        width: 0.8125rem;
+        height: 0.8125rem;
+    }
+
+    /* Single-cluster overview header: the label chips + a quiet mono API-URL line
+       sit in a compact meta block under the title. */
+    .ro-cluster-meta { margin-bottom: 1.25rem; }
+    .ro-cluster-meta .ro-chips { margin-bottom: 0.625rem; }
+    .ro-meta-line {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+    }
+    .ro-meta-line .ro-meta-key {
+        color: var(--text-faint);
+        margin-right: 0.375rem;
+    }
+
+    /* Resource Types tabs (Cluster / Namespaced): quiet mono caption tabs; the
+       active tab carries the accent text + underline, the rest are muted. The
+       template keeps the real <a> hrefs. */
+    .tabs.ro-rt-tabs { font-family: var(--font-mono); font-size: 0.75rem; margin-bottom: 0.75rem; }
+    .tabs.ro-rt-tabs ul { border-bottom-color: var(--border); }
+    .tabs.ro-rt-tabs li a {
+        color: var(--text-muted);
+        border-bottom-color: transparent;
+        padding: 0.4rem 0.75rem;
+    }
+    .tabs.ro-rt-tabs li a:hover { color: var(--text); border-bottom-color: var(--border-strong); }
+    .tabs.ro-rt-tabs li.is-active a { color: var(--accent-text); border-bottom-color: var(--accent); }
+
+    /* Resource-type row cells: the API GROUP + VERSION read as quiet mono
+       metadata; Namespaced renders true (ok colour) / false (faint). */
+    .ro-rt-group,
+    .ro-rt-version {
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        color: var(--text-muted);
+    }
+    .ro-bool-yes { font-family: var(--font-mono); font-size: 0.71875rem; color: var(--st-ok); }
+    .ro-bool-no  { font-family: var(--font-mono); font-size: 0.71875rem; color: var(--text-faint); }
+
+    /* Kind cell (resource-types + cluster overview): a short mono identifier link
+       in the id colour, kept INLINE (not the ellipsized block .ro-cell-name uses)
+       so the CRD badge sits on the same line beside it. */
+    table.table.ro-list-table td.ro-cell-kind {
+        white-space: nowrap;
+    }
+    table.table.ro-list-table td.ro-cell-kind a {
+        color: var(--id-color);
+    }
+
+    /* CRD badge (F-crdbadge): a small accent-tinted mono tag after a CUSTOM
+       resource's Kind. The CRD check uses a built-in group ALLOWLIST, NOT a
+       "contains a slash" test -- so apps/v1, batch/v1 and the
+       *.k8s.io groups are NOT badged, while cert-manager.io / argoproj.io /
+       monitoring.coreos.com ARE. Reuses the app-label chip tint. */
+    .ro-crd-badge {
+        flex: 0 0 auto;
+        font-family: var(--font-mono);
+        font-size: 0.5625rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--label-app-fg);
+        background: var(--label-app-bg);
+        padding: 0.0625rem 0.3125rem;
+        border-radius: 3px;
+        margin-left: 0.4375rem;
+        vertical-align: middle;
+    }
+
+    div.section { margin: 0 0 1rem 0; padding: 0; }
+    div.section h4.title { margin-bottom: 1rem; }
+
+    /* Collapsible sections (Pods subtable + Events keep the bare collapsible look):
+       the fold target is the h4.title (readout.js toggles `is-collapsed` on the
+       parent .collapsible and syncs `#collapsed=`). A non-card collapsible keeps a
+       quiet hairline under its mono title with a fold caret on hover; the YAML
+       section cards below override the chrome but reuse the SAME fold mechanism. */
+    div.section.collapsible h4.title {
+        cursor: pointer;
+        font-family: var(--font-mono);
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
+    }
+    div.section.collapsible h4.title:hover { border-bottom-color: var(--border-strong); }
+    div.section.collapsible h4.title::after { content: " \25b4"; color: var(--text-faint); }
+    div.section.is-collapsed h4.title { color: var(--text-muted); }
+    div.section.is-collapsed h4.title::after { content: " \25be"; }
+    div.section.is-collapsed .content,
+    div.section.is-collapsed table { display: none; }
+
+    /* ---------------------------------------------------------------------------
+       Detail Default-tab YAML++ section cards. Each top-level
+       object key (spec, status, ...) renders as a bordered card: a card-head bar
+       (mono title + a quiet per-section "copy" button) over a line-numbered,
+       syntax-highlighted YAML body. The fold is UNCHANGED -- it is still driven by
+       the h4.title click + `#collapsed=` hash sync (readout.js); the card chrome
+       below just re-skins the same .collapsible[data-name] structure. The copy
+       button is a sibling of h4.title (NOT a descendant), so a copy click never
+       matches the fold handler's `closest('.collapsible h4.title')`.
+
+       linenos="table" (now passed for the section cards too, like the YAML tab)
+       emits `div.highlight > table.highlighttable` with the line-number gutter in a
+       SEPARATE `td.linenos` and the code in `td.code`. We neutralise the Pygments
+       block background INSIDE the card so the code sits flush on the card surface
+       (no box-in-box), draw a faint hairline-separated gutter, and let long lines
+       wrap so a 400+ line / CRD object never blows out the card width. */
+    .ro-yaml-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+    }
+    .ro-yaml-card .ro-card-head {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 0.75rem 0.5rem 0.875rem;
+        background: var(--card-head-bg);
+        border-bottom: 1px solid var(--border);
+    }
+    /* the fold target keeps its h4.title role; inside the card it is a flush mono
+       caption with the fold caret moved to the LEFT, and no hairline of its own
+       (the card-head border already separates header from body). */
+    .ro-yaml-card .ro-card-head h4.title {
+        flex: 0 0 auto;
+        margin: 0;
+        font-size: 0.9375rem;
+        font-weight: 600;
+        border-bottom: 0;
+    }
+    /* Suppress the bare-collapsible trailing caret INSIDE a card -- the card draws
+       its own ::before caret on the left. This selector must out-specify
+       `div.section.collapsible h4.title::after` (0,3,3), which a .ro-card-head
+       descendant rule alone (0,3,2) loses to, leaving a stray second caret. */
+    div.section.collapsible.ro-yaml-card .ro-card-head h4.title::after,
+    div.section.collapsible.ro-yaml-card.is-collapsed .ro-card-head h4.title::after { content: ""; }
+    .ro-yaml-card .ro-card-head h4.title::before {
+        content: "\25be";
+        margin-right: 0.4375rem;
+        color: var(--text-faint);
+        font-size: 0.75rem;
+    }
+    .ro-yaml-card.is-collapsed .ro-card-head h4.title::before { content: "\25b8"; }
+    .ro-yaml-card.is-collapsed .ro-card-head { border-bottom: 0; }
+
+    /* Per-section copy button: a quiet token chip (muted icon + mono "copy"
+       label) that warms on hover -- saturation stays reserved for status. The
+       label is swapped to "copied" in JS (textContent), not via CSS content. */
+    .ro-copy-btn {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3125rem;
+        padding: 0.1875rem 0.5rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        line-height: 1.4;
+        cursor: pointer;
+        transition: border-color .12s, color .12s, background .12s;
+    }
+    .ro-copy-btn:hover,
+    .ro-copy-btn:focus {
+        border-color: var(--border-strong);
+        color: var(--text);
+        background: var(--surface-2);
+    }
+    .ro-copy-btn .icon svg.lucide-icon { width: 0.875rem; height: 0.875rem; }
+
+    /* YAML body inside the card: flush on the card surface (kill the Pygments
+       block fill), comfortable padding, small mono type. */
+    .ro-yaml-card .content { margin: 0; }
+    .ro-yaml-card .content .highlight { background: transparent; margin: 0; }
+    .ro-yaml-card .highlighttable {
+        width: 100%;
+        margin: 0;
+        border: 0;
+        background: transparent;
+        border-collapse: collapse;
+        font-size: 0.875rem;
+        line-height: 1.55;
+    }
+    .ro-yaml-card .highlighttable td { border: 0; padding: 0; }
+    .ro-yaml-card .highlighttable td.linenos,
+    .ro-yaml-card .highlighttable td.code { vertical-align: top; }
+    /* line-number gutter: faint, right-aligned, hairline-separated, NOT selectable
+       (so a drag-select / the copy reads code only). The anchors stay clickable
+       (the .linenos a handler + yaml-line-N highlight are unchanged). */
+    .ro-yaml-card .highlighttable td.linenos {
+        width: 1px;
+        white-space: nowrap;
+        padding: 0.625rem 0.625rem 0.625rem 0.875rem;
+        border-right: 1px solid var(--border);
+        background: var(--card-head-bg);
+        user-select: none;
+        text-align: right;
+    }
+    .ro-yaml-card .highlighttable td.linenos .linenodiv pre { margin: 0; background: transparent; }
+    .ro-yaml-card .highlighttable td.linenos a { color: var(--text-faint); }
+    .ro-yaml-card .highlighttable td.linenos a:hover { color: var(--text); }
+    /* code column: padded, and WRAPS long values so a wide CRD line never forces a
+       horizontal scrollbar / breaks the card layout. */
+    .ro-yaml-card .highlighttable td.code { width: 100%; padding: 0.625rem 0.875rem; }
+    .ro-yaml-card .highlighttable td.code pre {
+        margin: 0;
+        background: transparent;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+
+    /* ---------------------------------------------------------------------------
+       Nested-YAML-block folding. readout.js (buildYamlFolds)
+       injects a quiet caret <button>.ro-fold-toggle into each line that opens a
+       nested block, plus a hidden .ro-fold-summary on that line; clicking the
+       toggle adds `ro-line-folded` to the block's deeper-indented child line
+       spans. Presentation only -- the line anchors + raw lines (for copy) are
+       untouched. App layer; no inline style, no forced-priority override. The fold UI works in
+       the section CARDS (Default tab) and the single YAML-tab block alike (both are
+       the same .highlighttable shape), so these rules are NOT card-scoped.
+
+       The toggle is a borderless inline button carrying ONLY a caret (drawn via
+       ::before so it adds no text node -- the copy clone strips the control anyway,
+       but a contentless caret keeps the rendered line text clean too). It points
+       down when expanded, right when folded (matches the section-card caret). */
+    .ro-fold-toggle {
+        display: inline;
+        margin: 0 0.3em 0 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text-faint);
+        font: inherit;
+        line-height: inherit;
+        cursor: pointer;
+        vertical-align: baseline;
+    }
+    .ro-fold-toggle::before { content: "\25be"; }       /* down -- expanded */
+    .ro-fold-toggle.is-folded::before { content: "\25b8"; } /* right -- folded */
+    .ro-fold-toggle:hover,
+    .ro-fold-toggle:focus { color: var(--accent-text); }
+
+    /* The collapsed-block summary ("{ 3 items · 24 lines }") rides the opener line,
+       shown only when that opener is folded. It is faint + slightly italic so it
+       reads as a meta affordance, not YAML content. Driven off the sibling toggle's
+       is-folded state so it appears in lockstep with the caret. */
+    .ro-fold-summary {
+        display: none;
+        color: var(--text-faint);
+        font-style: italic;
+    }
+    .ro-fold-toggle.is-folded ~ .ro-fold-summary { display: inline; }
+
+    /* A folded child line is removed from flow (its raw text stays in the DOM for
+       copy; only the rendering is hidden). */
+    .ro-line-folded { display: none; }
+
+    /* ---------------------------------------------------------------------------
+       Resource-DETAIL header + body. The read-only detail page is
+       raw light Bulma under the dark default otherwise; this skins the parts no
+       other unit owns -- the header (kind badge · mono name · meta · Download-YAML
+       + configured link-outs), the labels/annotations chips, the owner line, the
+       Default/YAML/Logs tabs, and the body tables (controller Pods subtable +
+       Events) + the global footer -- all driven off the token system, so app wins
+       over bulma by layer order (no forced-priority override). The header stays
+       READ-ONLY: the only actions are Download-YAML and the operator-configured
+       object/label link-outs (the `{% for link in links %}` loop), restyled as
+       quiet token icon links via .ro-link-out (shared with the list page).
+
+       The detail page <h1> keeps Bulma's bare `class="title"` (a pinned offline
+       guard matches `<h1 class="title">name` verbatim), so the mono-name treatment
+       is scoped to a title that CONTAINS a kind badge -- i.e. only the detail
+       header, never the list page's plain "Pods" title. */
+    h1.title:has(.ro-kind-badge) {
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 0.625rem;
+        font-family: var(--font-mono);
+        font-size: 1.375rem;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: var(--text);
+    }
+    /* Kind badge: a small uppercase mono pill in the accent-weak wash (matches the
+       sidebar active tint), sitting just after the mono resource name. */
+    .ro-kind-badge {
+        display: inline-flex;
+        align-items: center;
+        height: 1.375rem;
+        padding: 0 0.5rem;
+        border-radius: var(--pill-radius);
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        font-family: var(--font-mono);
+        font-size: 0.625rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        order: -1;            /* badge reads LEFT of the name (markup keeps name first
+                                 so the offline `<h1 class="title">name` pin holds) */
+    }
+    /* Detail-header link-outs (Download-YAML + configured object/label links) are
+       quiet icon buttons; the shared .ro-link-out below collapses the chip chrome
+       to a borderless muted icon. The header .links keeps the existing margin. */
+    h1.title:has(.ro-kind-badge) .meta {
+        font-family: var(--font-ui);
+        color: var(--text-faint);
+        font-size: 0.8125rem;
+    }
+
+    /* The detail link-out icon button (shared name with the list-table trailing
+       link cell): borderless, muted, warms on hover. Scoped to the header
+       .links here so it does not depend on table context. */
+    h1 .links .button.ro-link-out {
+        background: transparent;
+        border-color: transparent;
+        color: var(--text-faint);
+    }
+    h1 .links .button.ro-link-out:hover,
+    h1 .links .button.ro-link-out:focus {
+        background: var(--surface-2);
+        border-color: transparent;
+        color: var(--text);
+    }
+
+    /* Tabs (Default / YAML / Logs) -> a quiet underline tab strip: a hairline
+       baseline, muted labels, the active tab marked by an accent underline + accent
+       text. Bulma's .tabs draws its own bottom border + active colours; app
+       wins by layer order. The <a>s are real navigation links (kept verbatim). */
+    .tabs.ro-detail-tabs {
+        margin-bottom: 1rem;
+        font-size: 0.8125rem;
+    }
+    .tabs.ro-detail-tabs ul {
+        border-bottom: 1px solid var(--border);
+    }
+    .tabs.ro-detail-tabs li a {
+        color: var(--text-muted);
+        border-bottom: 2px solid transparent;
+        padding: 0.5rem 0.75rem;
+    }
+    .tabs.ro-detail-tabs li a:hover {
+        color: var(--text);
+        border-bottom-color: var(--border-strong);
+    }
+    .tabs.ro-detail-tabs li.is-active a {
+        color: var(--accent-text);
+        border-bottom-color: var(--accent);
+    }
+
+    /* Labels / Annotations sections: a quiet uppercase mono caption (matching the
+       sidebar group labels) over a wrapped row of chips. */
+    .ro-section { margin-bottom: 1rem; }
+    .ro-section-label {
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        font-weight: 600;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        margin-bottom: 0.5rem;
+    }
+    .ro-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3125rem;
+        align-items: flex-start;
+    }
+
+    /* Chips. The LABEL chip keeps its selector <a> + the pinned `.tag.is-link`
+       inner span working (the click-to-filter link is load-bearing); we re-skin
+       the tag from Bulma's blue fill to a neutral bordered surface token. The
+       ANNOTATION chip is the same skin on a bare `.tag`. App wins by layer order,
+       so the is-link blue is overridden by cascade order alone (no forced priority). */
+    .ro-chip {
+        display: inline-flex;
+        max-width: 21.25rem;
+        flex: 0 0 auto;
+    }
+    .ro-chip .tag,
+    .tag.ro-chip {
+        height: auto;
+        padding: 0.125rem 0.5rem;
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        line-height: 1.5;
+        white-space: nowrap;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: inline-block;
+        transition: border-color .12s, color .12s;
+    }
+    a.ro-chip:hover .tag { border-color: var(--border-strong); color: var(--text); }
+    .ro-chip-trunc { min-width: 0; }
+    /* app.kubernetes.io/* labels read as a tinted accent chip. */
+    .ro-chip.ro-label-app .tag {
+        background: var(--label-app-bg);
+        border-color: transparent;
+        color: var(--label-app-fg);
+    }
+    a.ro-chip.ro-label-app:hover .tag { border-color: transparent; color: var(--label-app-fg); }
+
+    /* Owner line: a quiet mono line; the owner links carry the accent text colour,
+       the (Kind) suffix is faint. The owner <a>s are kept verbatim. */
+    .ro-owner {
+        font-family: var(--font-mono);
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+    .ro-owner a { color: var(--accent-text); }
+    .ro-owner .kind { color: var(--text-faint); }
+
+    /* Detail body subtables (controller Pods subtable + Events). They reuse the
+       list-table look (mono sticky headers, hover rows, fixed layout,
+       ellipsized identifiers) via the shared .ro-list-table rules, plus the
+       per-row status stripe + status dot (get_row_status_class is in the detail
+       context). .ro-subtable wraps them in a bordered rounded card so they read as
+       a contained block inside the detail flow (the list page table is full-bleed;
+       a detail subtable wants an explicit frame). */
+    table.table.ro-subtable {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+        background: var(--surface);
+    }
+    /* the card border already draws the bottom edge -- drop the last row's rule */
+    table.table.ro-subtable tbody tr:last-child td { border-bottom: 0; }
+    /* the Events message column takes the remaining width and ellipsizes */
+    table.table.ro-subtable td.ro-event-msg { width: 100%; color: var(--text-muted); }
+
+    /* Global footer -> a quiet hairline-topped strip on the page surface (it is raw
+       light Bulma .footer otherwise). The codeberg link keeps the id-colour. */
+    footer.footer.ro-footer {
+        background: var(--bg);
+        border-top: 1px solid var(--border);
+        padding: 1.5rem;
+        color: var(--text-faint);
+        font-size: 0.8125rem;
+    }
+    footer.footer.ro-footer a { color: var(--id-color); }
+
+    a.toggle-tools.is-active span {
+        transform: rotate(180deg);
+    }
+    form.tools-form { display: none; margin-bottom: 1rem; }
+    form.tools-form.is-active { display: block; }
+    form .checkboxes label { margin-right: 0.5rem; padding-top: 0.375em; }
+
+    /* ---------------------------------------------------------------------------
+       Search results. The live API list+filter, the GET form
+       (q/cluster/type), the `.search-result` blocks and the backend `<em>` match
+       highlight are all KEPT -- this only restyles them into the token system: a
+       mono kind-tag, a mono identifier link, a quiet meta line, and the matched
+       term as a calm accent-weak highlight (not the old loud yellow). App wins by
+       layer order; no forced priority.
+       --------------------------------------------------------------------------- */
+
+    /* Scope chips: the active cluster(s) + a muted type-scope chip. Reflects the
+       resolved search_clusters / resource_types passed to the template. */
+    .ro-scope {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.375rem;
+        margin-bottom: 1rem;
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+    }
+    .ro-scope .ro-scope-label { color: var(--text-faint); margin-right: 0.125rem; }
+    .ro-scope-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.125rem 0.5rem;
+        border-radius: var(--radius-sm);
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        white-space: nowrap;
+    }
+    .ro-scope-chip.is-muted {
+        background: var(--surface-2);
+        color: var(--text-faint);
+        border: 1px solid var(--border);
+    }
+
+    /* Generic kind tag (mono 2-letter; first 2 letters or a small open abbrev map
+       with a fallback, so it works for ANY kind incl. CRDs). */
+    .ro-ktag {
+        flex: 0 0 auto;
+        font-family: var(--font-mono);
+        font-size: 0.5625rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--label-app-fg);
+        background: var(--label-app-bg);
+        padding: 0.125rem 0.375rem;
+        border-radius: 3px;
+        margin-top: 0.125rem;
+    }
+
+    /* Each result: kind-tag + a main column (mono name link, meta, snippets). */
+    .search-result {
+        display: flex;
+        gap: 0.75rem;
+        align-items: flex-start;
+        padding: 0.6875rem 0;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 0;
+    }
+    .search-result:last-of-type { border-bottom: 0; }
+    .search-result .r-main { flex: 1 1 auto; min-width: 0; }
+    .search-result .r-title {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--id-color);
+    }
+    .search-result .r-title:hover { text-decoration: underline; text-underline-offset: 2px; }
+    .search-result .r-meta {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 0 0.3125rem;
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        color: var(--text-faint);
+        margin-top: 0.1875rem;
+    }
+    .search-result .r-meta .r-kind { color: var(--text-muted); }
+    .search-result .r-meta .r-path {
+        color: var(--text-faint);
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .search-result .r-meta .r-path:hover { color: var(--text-muted); }
+    .search-result .r-meta .sep { opacity: 0.5; }
+    .search-result .r-snip {
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        color: var(--text-muted);
+        margin-top: 0.375rem;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 0.3125rem 0.5rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    /* the backend <em> highlight -> calm accent-weak token, no loud colour */
+    .search-result em {
+        font-style: normal;
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        border-radius: 2px;
+        padding: 0 0.125rem;
+    }
+    .search-result .r-labels { margin-top: 0.5rem; }
+
+    /* Calm result-count line + no-results state. */
+    .ro-search-count {
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        color: var(--text-faint);
+        margin-top: 1rem;
+    }
+    .ro-search-count a { color: var(--id-color); }
+    .ro-noresults {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+        padding: 1.5rem 0;
+    }
+
+    /* YAML line-number anchor highlight. readout.js toggles this class on the
+       `#yaml-<line>` <span> when a .linenos anchor is clicked or the URL hash
+       names a line, instead of setting el.style.background -- so the colour
+       stays in CSS (tidier; the class swap is also unambiguous under a CSP). */
+    pre > span.yaml-line-highlight { background: hsl(48, 100%, 67%); }
+
+    /* Logs filter form inputs (resource-logs.html). De-inlined from the former
+       inline width + vertical-align attributes so a strict style-src 'self'
+       -- which blocks ALL inline style attributes, not just colours --
+       no longer rejects them. */
+    .logs-tail-input { width: 7rem; vertical-align: baseline; }
+    .logs-filter-input { width: 10rem; vertical-align: baseline; }
+
+    /* Logs screen. The filter form, the container tabs
+       and the <pre> stream consume the redesign tokens. The per-pod identity
+       colour stays on the pod-name prefix via .log-line.log-cN (declared in
+       @layer theme -- a per-pod identity colour, NOT severity); these rules only
+       skin the surrounding chrome + the muted body + a presentation-only
+       WARN/ERROR emphasis that lands on the MESSAGE span, never the pod prefix. */
+    form.ro-logs-form {
+        display: flex; align-items: center; flex-wrap: wrap;
+        gap: 0.5rem; margin-bottom: 1rem;
+        font-family: var(--font-mono); font-size: 0.8125rem;
+        color: var(--text-muted);
+    }
+    form.ro-logs-form .input { vertical-align: baseline; }
+
+    .ro-log-tabs { font-family: var(--font-mono); }
+
+    /* The log stream. Body text is muted so the leading RFC3339 timestamp on each
+       line recedes; the identity-coloured pod prefix and any WARN/ERROR message
+       stand out against it. */
+    pre.ro-logpre {
+        font-family: var(--font-mono);
+        font-size: 0.78125rem; line-height: 1.7;
+        color: var(--text-muted);
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 0.75rem 0.875rem;
+        white-space: pre-wrap; word-break: break-word; overflow: hidden;
+    }
+    pre.ro-logpre .log-ctr { color: var(--text-faint); }
+    pre.ro-logpre .log-msg { color: var(--text-muted); }
+    /* WARN/ERROR: presentation-only emphasis derived in-template from the line
+       text (a static class -- CSP-clean: no inline style/handler). Identity colour
+       remains on the pod prefix; severity is a colour + weight on the message. */
+    pre.ro-logpre .log-msg.log-lvl-warn { color: var(--st-warn); font-weight: 600; }
+    pre.ro-logpre .log-msg.log-lvl-err  { color: var(--st-err);  font-weight: 600; }
+    pre.ro-logpre em { color: var(--text-faint); font-style: normal; }
+
+    /* "Container logs disabled" warning state, re-skinned as a token notice
+       (replaces the Bulma message is-warning article). */
+    .ro-notice {
+        border: 1px solid var(--border);
+        border-left: 0.1875rem solid var(--st-warn);
+        background: var(--st-warn-bg);
+        border-radius: var(--radius);
+        padding: 0.75rem 0.875rem; margin-bottom: 1rem;
+        color: var(--text-muted); font-size: 0.875rem;
+    }
+    .ro-notice .ro-notice-title {
+        color: var(--st-warn); font-weight: 600; margin-bottom: 0.25rem;
+    }
+    .ro-notice code {
+        font-family: var(--font-mono);
+        background: var(--code-bg); color: var(--text);
+        border-radius: var(--radius-sm); padding: 0 0.25rem;
+        white-space: pre-wrap; word-break: break-word;
+    }
+    /* Error-tinted variant: the per-cluster partial-error block. Same notice
+       geometry, err palette instead of warn (left accent + tint + title hue). */
+    .ro-notice.ro-notice-err {
+        border-left-color: var(--st-err);
+        background: var(--st-err-bg);
+    }
+    .ro-notice.ro-notice-err .ro-notice-title { color: var(--st-err); }
+    .ro-notice.ro-notice-err p { margin-bottom: 0.2rem; }
+    /* Info / neutral variant: the Secret masked-data banner. Same notice
+       geometry, info palette instead of warn (left accent + tint + title hue). */
+    .ro-notice.ro-notice-info {
+        border-left-color: var(--st-info);
+        background: var(--st-info-bg);
+    }
+    .ro-notice.ro-notice-info .ro-notice-title { color: var(--st-info); }
+    .ro-notice.ro-notice-info p { margin-bottom: 0.2rem; }
+
+    /* Secret masked-data block: mono key names over masked value rows.
+       There is deliberately NO reveal / decode / copy control -- the backend
+       never sends the real value, so the row only ever shows a masked indicator. */
+    .ro-secret-rows {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+        background: var(--surface);
+    }
+    .ro-secret-row {
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+        padding: 0.5rem 0.875rem;
+        border-top: 1px solid var(--border);
+    }
+    .ro-secret-row:first-child { border-top: 0; }
+    .ro-secret-key {
+        flex: 0 0 auto;
+        min-width: 14rem;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        font-weight: 600;
+        color: var(--text);
+        word-break: break-all;
+    }
+    .ro-secret-val {
+        flex: 1 1 auto;
+        margin: 0;
+    }
+    .ro-secret-mask {
+        font-family: var(--font-mono);
+        letter-spacing: 0.15em;
+        color: var(--text-faint);
+        user-select: none;
+    }
+
+    /* Node detail summary blocks. Node is the ONE kind
+       with bespoke summary blocks; every other kind relies on the generic
+       scaffold + YAML. These sit ADDITIVE above the generic YAML cards.
+
+       Condition pills: a bordered surface pill with a leading status dot + the
+       condition name + a bold True/False value. The pill carries one of the
+       .ro-st-* tone classes, which set `color` -- the .ro-status-dot reuses
+       that via `background: currentColor` (same mechanism as the list-table
+       status dot), so dot + value share the tone with no extra rules. Neutral
+       conditions fall back to the muted faint colour. */
+    .ro-cond-pills { gap: 0.375rem; }
+    .ro-cond-pill {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 0.375rem;
+        padding: 0.1875rem 0.5rem;
+        border-radius: var(--pill-radius);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        line-height: 1.4;
+        color: var(--text-faint);
+    }
+    .ro-cond-pill .ro-cond-name { color: var(--text-muted); }
+    .ro-cond-pill .ro-cond-val { font-weight: 600; color: currentColor; }
+    .ro-cond-pill .ro-status-dot { align-self: center; }
+    .ro-cond-pill.ro-st-ok      { color: var(--st-ok);   border-color: var(--st-ok);   background: var(--st-ok-bg); }
+    .ro-cond-pill.ro-st-warn    { color: var(--st-warn); border-color: var(--st-warn); background: var(--st-warn-bg); }
+    .ro-cond-pill.ro-st-err     { color: var(--st-err);  border-color: var(--st-err);  background: var(--st-err-bg); }
+    .ro-cond-pill.ro-st-neutral { color: var(--text-faint); }
+
+    /* Capacity / Allocatable + System Info key/value grids: a mono kv list with a
+       faint key column and the value in body text. .ro-kv-cols lays the two
+       Capacity / Allocatable lists side by side on wide viewports and stacks
+       them when narrow. */
+    .ro-kv-cols {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+        gap: 0.25rem 2.5rem;
+    }
+    .ro-kv { margin: 0; }
+    .ro-kv-row {
+        display: grid;
+        grid-template-columns: minmax(9rem, max-content) 1fr;
+        gap: 0.5rem 1.5rem;
+        padding: 0.1875rem 0;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        line-height: 1.45;
+    }
+    .ro-kv-row dt { color: var(--text-faint); word-break: break-word; }
+    .ro-kv-row dd { margin: 0; color: var(--text); word-break: break-all; }
+
+    /* Honest partial-results footer line: a quiet warn-toned note that the
+       multi-cluster list is degraded (N of M clusters answered). */
+    .ro-partial-note {
+        color: var(--st-warn);
+        font-size: 0.8125rem;
+        margin-top: 0.25rem;
+    }
+
+    /* HTMX request-indicator styles, vendored. htmx normally INJECTS these
+       as an inline <style> at init, which a strict style-src 'self' blocks; we
+       set includeIndicatorStyles:false in the <meta name="htmx-config"> tag (so
+       htmx skips that injection) and ship the equivalent rules here instead, so
+       hx-indicator request spinners still fade in/out. These match htmx's own
+       injected rules verbatim. */
+    .htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+    .htmx-request .htmx-indicator { opacity: 1; }
+    .htmx-request.htmx-indicator { opacity: 1; }
+
+    /* ---------------------------------------------------------------------------
+       Edge states: full-page error, empty, in-flight progress,
+       auto-refresh changed-cell flash. Tokens only; no inline style, no overrides.
+       --------------------------------------------------------------------------- */
+
+    /* Full-page error (error.html). A calm centered column: a big status code in
+       the error hue, a short title, the REAL apiserver message verbatim in a mono
+       code block (the most useful thing for a read-only RBAC tool -- never hidden),
+       a plain-language hint, then Back (quiet) + Retry (accent) actions. */
+    .ro-error {
+        max-width: 42rem;
+        margin: 3.5rem auto 0;
+        text-align: center;
+    }
+    .ro-error-code {
+        font-family: var(--font-mono);
+        font-size: 4rem;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.03em;
+        color: var(--st-err);
+    }
+    .ro-error-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text);
+        margin: 0.5rem 0 1.25rem;
+    }
+    .ro-error-message {
+        text-align: left;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-left: 0.1875rem solid var(--st-err);
+        border-radius: var(--radius);
+        padding: 0.75rem 0.875rem;
+        margin-bottom: 1rem;
+        overflow-x: auto;
+    }
+    .ro-error-message code {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text);
+        background: transparent;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .ro-error-hint {
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        margin-bottom: 1.5rem;
+    }
+    .ro-error-hint code {
+        font-family: var(--font-mono);
+        background: var(--surface-2);
+        color: var(--text);
+        border-radius: var(--radius-sm);
+        padding: 0 0.25rem;
+    }
+    .ro-error-actions {
+        display: flex;
+        gap: 0.625rem;
+        justify-content: center;
+    }
+
+    /* Empty state (resource-list-content.html). Not an error -- a calm, expected
+       state: the literal "No <Kind> ... found." title plus a quiet nudge. The cell
+       spans the table; the inner block is centered with breathing room so an empty
+       table reads as intentional, not broken. */
+    table.table.ro-list-table tbody tr.ro-empty-row:hover { background: transparent; }
+    table.table.ro-list-table tbody tr.ro-empty-row td { border-bottom: 0; }
+    .ro-empty {
+        text-align: center;
+        padding: 2.5rem 1rem;
+        color: var(--text-muted);
+    }
+    .ro-empty-title {
+        font-family: var(--font-mono);
+        font-size: 0.9375rem;
+        color: var(--text);
+        margin-bottom: 0.35rem;
+    }
+    .ro-empty-hint {
+        font-size: 0.8125rem;
+        color: var(--text-faint);
+    }
+
+    /* In-flight progress bar (resource-list.html). A thin top rail that fades in
+       (via the .htmx-indicator opacity rule above) while the morph-refresh request
+       is in flight; inside it a bar sweeps left-to-right on a loop. Reuses
+       .htmx-indicator for the show/hide -- htmx adds .htmx-request to the container
+       during its request and points hx-indicator at THIS sibling, so no skeleton or
+       table-blanking spinner is needed. The sweep animation is dropped under
+       reduced-motion (see the media block below); the bar still fades in/out. */
+    .ro-progress {
+        position: relative;
+        height: 2px;
+        margin-bottom: 0.5rem;
+        background: var(--surface-2);
+        border-radius: 1px;
+        overflow: hidden;
+    }
+    .ro-progress .ro-progress-bar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        width: 40%;
+        background: var(--accent);
+        border-radius: 1px;
+        animation: ro-progress-sweep 1.1s ease-in-out infinite;
+    }
+    @keyframes ro-progress-sweep {
+        0%   { left: -40%; width: 40%; }
+        50%  { width: 55%; }
+        100% { left: 100%; width: 40%; }
+    }
+
+    /* Auto-refresh changed-cell flash. readout.js adds .ro-cell-changed to a
+       table cell whose text actually changed across a morph refresh; this plays one
+       brief tint fade so the eye is drawn to the delta. The page never jumps (the
+       morph diffs in place); the class is added only off-reduced-motion (the JS
+       hook is not registered under prefers-reduced-motion), and the animation is
+       additionally disabled in the media block below as defence-in-depth. */
+    table.table.ro-list-table tbody td.ro-cell-changed {
+        animation: ro-cell-flash 1s ease-out;
+    }
+    @keyframes ro-cell-flash {
+        0%   { background: var(--accent-weak); }
+        100% { background: transparent; }
+    }
+
+    /* Reduced-motion: disable every decorative animation -- the navbar refresh-spin,
+       the in-flight progress sweep, and the changed-cell flash glow. The
+       progress bar still FADES in/out (a static rail) and the table still morphs in
+       place; users who asked for less motion just get no looping/sweeping/flashing.
+       Honoured purely in CSS so it holds even where the JS hook did register. */
+    @media (prefers-reduced-motion: reduce) {
+        #refresh-dropdown.refresh-on .refresh-icon svg { animation: none; }
+        .ro-progress .ro-progress-bar {
+            animation: none;
+            left: 0;
+            width: 100%;
+            opacity: 0.6;
+        }
+        table.table.ro-list-table tbody td.ro-cell-changed { animation: none; }
+    }
+
+    /* ---------------------------------------------------------------------------
+       ⌘K jump-to palette -- additive, token-driven overlay.
+
+       It SHIPS hidden via the Bulma `is-hidden` utility (display:none -- a class,
+       never inline style); readout.js adds `is-active` to reveal it. All colours
+       are tokens so it follows light/dark for free; no forced-priority override
+       (the app layer already wins by order). Mono kind-tags reuse .ro-ktag
+       . It owns no data -- the JS fills the list from links already on
+       the page and each row is a real <a> navigating via its existing GET href. */
+    .ro-palette {
+        position: fixed;
+        inset: 0;
+        z-index: 60;            /* above the fixed navbar (Bulma navbar is 30) */
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 12vh 1rem 1rem;
+    }
+    .ro-palette-backdrop {
+        position: absolute;
+        inset: 0;
+        background: var(--overlay-bg);
+    }
+    .ro-palette-panel {
+        position: relative;     /* above the backdrop */
+        width: 100%;
+        max-width: 40rem;
+        max-height: 70vh;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+        overflow: hidden;
+        animation: ro-palette-in 0.12s ease-out;
+    }
+    @keyframes ro-palette-in {
+        from { opacity: 0; transform: translateY(-6px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .ro-palette-head {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.625rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+    }
+    .ro-palette-search-icon { color: var(--text-faint); }
+    .ro-palette-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text);
+        font-family: var(--font-ui);
+        font-size: 0.9375rem;
+        line-height: 1.4;
+        padding: 0.125rem 0;
+    }
+    .ro-palette-input:focus { outline: none; }
+    .ro-palette-input::placeholder { color: var(--text-faint); }
+    .ro-palette-esc { flex: 0 0 auto; }
+    .ro-palette-list {
+        list-style: none;
+        margin: 0;
+        padding: 0.375rem;
+        overflow-y: auto;
+    }
+    .ro-palette-item { margin: 0; }
+    .ro-palette-row {
+        display: flex;
+        align-items: center;
+        gap: 0.625rem;
+        padding: 0.4375rem 0.5rem;
+        border-radius: var(--radius-sm);
+        color: var(--text);
+        text-decoration: none;
+    }
+    /* Hover + keyboard-active highlight share one look (the JS marks the active
+       row .is-active as arrows/typing move it; the mouse hover matches it). */
+    .ro-palette-row:hover,
+    .ro-palette-row.is-active {
+        background: var(--accent-weak);
+        color: var(--accent-text);
+    }
+    .ro-palette-tag { margin-top: 0; }
+    .ro-palette-label {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--id-color);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .ro-palette-row:hover .ro-palette-label,
+    .ro-palette-row.is-active .ro-palette-label { color: var(--accent-text); }
+    .ro-palette-path {
+        flex: 0 0 auto;
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        color: var(--text-faint);
+    }
+    .ro-palette-empty {
+        margin: 0;
+        padding: 0.75rem 0.875rem 1rem;
+        color: var(--text-faint);
+        font-size: 0.8125rem;
+    }
+
+    /* Reduced-motion: the palette appears with no slide/fade (it just shows). */
+    @media (prefers-reduced-motion: reduce) {
+        .ro-palette-panel { animation: none; }
+    }
+}
+
+@layer theme {
+    /* ===========================================================================
+       Design tokens (the redesign). Surfaces, accent, identifier hue, the
+       five-status palette, age scale, YAML syntax colours, plus shared
+       geometry/density. Names are theme-NEUTRAL: only the VALUES differ per
+       theme. Light (:root) is the default; dark applies under BOTH an explicit
+       [data-theme="dark"] choice AND @media (prefers-color-scheme: dark) -- so a
+       cookieless user on a dark OS (no data-theme on <html>) follows their OS,
+       while an explicit [data-theme="light"] still wins. This follows the same
+       age/log/Pygments mechanism already in this layer.
+
+       --font-ui / --font-mono are declared on :root above (alongside the
+       @font-face block); the geometry tokens here are SHARED by both themes
+       (that shared frame is what makes light + dark feel like one design). The
+       component rules that CONSUME these vars live in @layer app (this unit
+       wires the type split; later units add navbar/table/etc.).
+       --------------------------------------------------------------------------- */
+
+    :root {
+        /* geometry + density -- SHARED by both themes. Roomy end (was 6px/10px
+           compact, which read as too cramped; bumped to the comfortable 9px/13px). */
+        --row-py: 9px;
+        --cell-px: 13px;
+        --radius: 6px;
+        --radius-sm: 5px;
+        --pill-radius: 4px;
+
+        /* LIGHT palette (Contrast) -- default */
+        --bg: #ffffff;
+        --surface: #ffffff;
+        --surface-2: #f3f3f3;
+        --header-bg: #ffffff;
+        --sidebar-bg: #fbfbfb;
+        --thead-bg: #fafafa;
+        --card-head-bg: #fafafa;
+        --code-bg: #fafafa;
+        --row-hover: #f6f6f6;
+        --overlay-bg: rgba(0,0,0,.26);
+
+        --text: #0a0a0a;
+        --text-muted: #45474c;
+        --text-faint: #8a8d93;
+        --border: #e6e6e8;
+        --border-strong: #0a0a0a;
+
+        --accent: #0a0a0a;            /* primary fills + active markers = near-black */
+        --accent-on: #ffffff;
+        --accent-weak: #f0f0f0;
+        --accent-text: #111111;
+        --id-color: #1a46c2;          /* the one blue: identifiers + links */
+
+        --label-app-bg: #e7eefe;      /* app.kubernetes.io/* label chips */
+        --label-app-fg: #1b46c2;
+
+        --st-ok:   #117a3d; --st-ok-bg:   #e9f6ee;
+        --st-warn: #8a5a06; --st-warn-bg: #f8f0e0;
+        --st-err:  #c22424; --st-err-bg:  #fbeaea;
+        --st-info: #1a52c8; --st-info-bg: #ebf1fe;
+
+        /* age scale -- the freshest-to-oldest age cell colours */
+        --age-fresh: #047a3c; --age-recent: #3a7a52; --age-day: #5f6f64; --age-week: #707070; --age-old: #a0a0a0;
+
+        /* YAML / Pygments-ish syntax */
+        --tok-key: #1a46c2; --tok-str: #117a3d; --tok-num: #8a5a06; --tok-bool: #7a3fd1;
+    }
+
+    /* DARK palette (Terminal) -- the chosen default look */
+    [data-theme="dark"] {
+        --bg: #0d0f13;
+        --surface: #14171d;
+        --surface-2: #1c2027;
+        --header-bg: #0f1216;
+        --sidebar-bg: #0f1216;
+        --thead-bg: #11141a;
+        --card-head-bg: #161a21;
+        --code-bg: #0a0c10;
+        --row-hover: #181c23;
+        --overlay-bg: rgba(0,0,0,.58);
+
+        --text: #d7dce3;
+        --text-muted: #98a1ae;
+        --text-faint: #5d6675;
+        --border: #232831;
+        --border-strong: #363d49;
+
+        --accent: #5b8cff;
+        --accent-on: #07090d;
+        --accent-weak: rgba(91,140,255,.14);
+        --accent-text: #88aaff;
+        --id-color: #cfd6df;          /* off-white (final). Teal alt: #7ed3c1 */
+
+        --label-app-bg: rgba(91,140,255,.16);
+        --label-app-fg: #9ab8ff;
+
+        --st-ok:   #3ddc97; --st-ok-bg:   rgba(61,220,151,.13);
+        --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);
+        --st-err:  #ff6b6b; --st-err-bg:  rgba(255,107,107,.13);
+        --st-info: #74a9ff; --st-info-bg: rgba(116,169,255,.13);
+
+        --age-fresh: #2ecc71; --age-recent: #52c98a; --age-day: #7fae90; --age-week: #9aa0a6; --age-old: #6b7177;
+
+        --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
+    }
+
+    /* Cookieless users on a dark OS get the dark palette; an explicit light
+       choice still wins (same rule the app already uses for age/log/Pygments). */
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+            --bg: #0d0f13; --surface: #14171d; --surface-2: #1c2027;
+            --header-bg: #0f1216; --sidebar-bg: #0f1216; --thead-bg: #11141a;
+            --card-head-bg: #161a21; --code-bg: #0a0c10; --row-hover: #181c23; --overlay-bg: rgba(0,0,0,.58);
+            --text: #d7dce3; --text-muted: #98a1ae; --text-faint: #5d6675;
+            --border: #232831; --border-strong: #363d49;
+            --accent: #5b8cff; --accent-on: #07090d; --accent-weak: rgba(91,140,255,.14); --accent-text: #88aaff; --id-color: #cfd6df;
+            --label-app-bg: rgba(91,140,255,.16); --label-app-fg: #9ab8ff;
+            --st-ok: #3ddc97; --st-ok-bg: rgba(61,220,151,.13);
+            --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);
+            --st-err: #ff6b6b; --st-err-bg: rgba(255,107,107,.13);
+            --st-info: #74a9ff; --st-info-bg: rgba(116,169,255,.13);
+            --age-fresh: #2ecc71; --age-recent: #52c98a; --age-day: #7fae90; --age-week: #9aa0a6; --age-old: #6b7177;
+            --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
+        }
+    }
+
+    /* ---------------------------------------------------------------------------
+       Dynamic colours, de-inlined (CSP).
+       These classes replace the former per-row/per-line inline colour styles, so a
+       strict CSP (default-src 'self'; no style-src 'unsafe-inline') no longer
+       blocks them.
+
+       Class names are theme-NEUTRAL: only the colours differ per theme. Light is
+       the default rule; dark is overridden under BOTH an explicit [data-theme=dark]
+       choice AND @media (prefers-color-scheme: dark) so system-dark users without a
+       theme cookie (no data-theme on <html>) still get the dark palette.
+
+       age-* : timestamp/age cells, freshest -> oldest
+       log-cN: per-pod log-line identity colour; NOT severity.
+       --------------------------------------------------------------------------- */
+
+    /* Age buckets (timestamp/age cells, freshest -> oldest). Driven by the
+       --age-* tokens declared at the top of this layer: the token already
+       carries the right value per theme (light :root / [data-theme=dark] /
+       prefers-dark), so ONE rule set is correct in every theme -- no separate
+       dark/light age overrides needed (single source of truth). */
+    td.age-fresh  { color: var(--age-fresh); }
+    td.age-recent { color: var(--age-recent); }
+    td.age-day    { color: var(--age-day); }
+    td.age-week   { color: var(--age-week); }
+    td.age-old    { color: var(--age-old); }
+
+    /* Status colour, re-skinned to the redesign palette.
+       The cell class resolver still returns Bulma's has-text-* utility strings
+       (the render contract pins them); we only re-point those classes at
+       the five-status tokens so Status words, Restarts and the Ready fraction
+       read in the redesign palette. App beats the bulma layer by cascade order
+       alone (no forced-priority override). has-text-grey is the explicit "muted"
+       cell (Restarts==0, zero CPU/Mem) -> the faint token. */
+    .has-text-danger  { color: var(--st-err); }
+    .has-text-warning { color: var(--st-warn); }
+    .has-text-success { color: var(--st-ok); }
+    .has-text-info    { color: var(--st-info); }
+    .has-text-grey    { color: var(--text-faint); }
+
+    /* Status cell dot: a small inline dot before the colored mono Status word
+       (dot + word, NOT a pill). It inherits the cell's status colour from
+       the same has-text-* class on the <td>/dot, so dot and word match. A neutral
+       cell (no has-text-* match) leaves the dot at the muted faint colour. */
+    .ro-status-dot {
+        display: inline-block; width: 0.4375rem; height: 0.4375rem;
+        border-radius: 50%; margin-right: 0.4375rem; vertical-align: baseline;
+        background: currentColor; color: var(--text-faint);
+    }
+
+    /* Per-row left status stripe: a thin inset bar down the row's leading
+       edge in the matching status colour. Painted as an inset box-shadow on the
+       row's first cell so it does not consume layout width or move any column;
+       neutral rows carry no row-status-* class -> no stripe. */
+    tr.row-status-ok   > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-ok); }
+    tr.row-status-info > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-info); }
+    tr.row-status-warn > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-warn); }
+    tr.row-status-err  > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-err); }
+
+    /* Per-pod log line colours -- light (on the <pre> light background) */
+    .log-line.log-c0 { color: #c0392b; }
+    .log-line.log-c1 { color: #b9530a; }
+    .log-line.log-c2 { color: #897a00; }
+    .log-line.log-c3 { color: #1f8b4c; }
+    .log-line.log-c4 { color: #0e7c86; }
+    .log-line.log-c5 { color: #2362c0; }
+    .log-line.log-c6 { color: #7d3cc0; }
+    .log-line.log-c7 { color: #b03088; }
+
+    /* Pygments syntax highlight -- LIGHT / default (style='friendly').
+     * highlight() emits a bare class="highlight" with no inline fallback, so these
+     * rules must live here (theme-scoped) or YAML/resource code blocks lose colour.
+     * Regenerate with:
+     *   from pygments.formatters import HtmlFormatter
+     *   print(HtmlFormatter(style='friendly').get_style_defs('.highlight'))
+     */
+    .highlight .hll { background-color: #ffffcc }
+    .highlight  { background: #f0f0f0; }
+    .highlight .c { color: #60a0b0; font-style: italic } /* Comment */
+    .highlight .err { border: 1px solid #FF0000 } /* Error */
+    .highlight .k { color: #007020; font-weight: bold } /* Keyword */
+    .highlight .o { color: #666666 } /* Operator */
+    .highlight .ch { color: #60a0b0; font-style: italic } /* Comment.Hashbang */
+    .highlight .cm { color: #60a0b0; font-style: italic } /* Comment.Multiline */
+    .highlight .cp { color: #007020 } /* Comment.Preproc */
+    .highlight .cpf { color: #60a0b0; font-style: italic } /* Comment.PreprocFile */
+    .highlight .c1 { color: #60a0b0; font-style: italic } /* Comment.Single */
+    .highlight .cs { color: #60a0b0; background-color: #fff0f0 } /* Comment.Special */
+    .highlight .gd { color: #A00000 } /* Generic.Deleted */
+    .highlight .ge { font-style: italic } /* Generic.Emph */
+    .highlight .gr { color: #FF0000 } /* Generic.Error */
+    .highlight .gh { color: #000080; font-weight: bold } /* Generic.Heading */
+    .highlight .gi { color: #00A000 } /* Generic.Inserted */
+    .highlight .go { color: #888888 } /* Generic.Output */
+    .highlight .gp { color: #c65d09; font-weight: bold } /* Generic.Prompt */
+    .highlight .gs { font-weight: bold } /* Generic.Strong */
+    .highlight .gu { color: #800080; font-weight: bold } /* Generic.Subheading */
+    .highlight .gt { color: #0044DD } /* Generic.Traceback */
+    .highlight .kc { color: #007020; font-weight: bold } /* Keyword.Constant */
+    .highlight .kd { color: #007020; font-weight: bold } /* Keyword.Declaration */
+    .highlight .kn { color: #007020; font-weight: bold } /* Keyword.Namespace */
+    .highlight .kp { color: #007020 } /* Keyword.Pseudo */
+    .highlight .kr { color: #007020; font-weight: bold } /* Keyword.Reserved */
+    .highlight .kt { color: #902000 } /* Keyword.Type */
+    .highlight .m { color: #40a070 } /* Literal.Number */
+    .highlight .s { color: #4070a0 } /* Literal.String */
+    .highlight .na { color: #4070a0 } /* Name.Attribute */
+    .highlight .nb { color: #007020 } /* Name.Builtin */
+    .highlight .nc { color: #0e84b5; font-weight: bold } /* Name.Class */
+    .highlight .no { color: #60add5 } /* Name.Constant */
+    .highlight .nd { color: #555555; font-weight: bold } /* Name.Decorator */
+    .highlight .ni { color: #d55537; font-weight: bold } /* Name.Entity */
+    .highlight .ne { color: #007020 } /* Name.Exception */
+    .highlight .nf { color: #06287e } /* Name.Function */
+    .highlight .nl { color: #002070; font-weight: bold } /* Name.Label */
+    .highlight .nn { color: #0e84b5; font-weight: bold } /* Name.Namespace */
+    .highlight .nt { color: #062873; font-weight: bold } /* Name.Tag */
+    .highlight .nv { color: #bb60d5 } /* Name.Variable */
+    .highlight .ow { color: #007020; font-weight: bold } /* Operator.Word */
+    .highlight .w { color: #bbbbbb } /* Text.Whitespace */
+    .highlight .mb { color: #40a070 } /* Literal.Number.Bin */
+    .highlight .mf { color: #40a070 } /* Literal.Number.Float */
+    .highlight .mh { color: #40a070 } /* Literal.Number.Hex */
+    .highlight .mi { color: #40a070 } /* Literal.Number.Integer */
+    .highlight .mo { color: #40a070 } /* Literal.Number.Oct */
+    .highlight .sa { color: #4070a0 } /* Literal.String.Affix */
+    .highlight .sb { color: #4070a0 } /* Literal.String.Backtick */
+    .highlight .sc { color: #4070a0 } /* Literal.String.Char */
+    .highlight .dl { color: #4070a0 } /* Literal.String.Delimiter */
+    .highlight .sd { color: #4070a0; font-style: italic } /* Literal.String.Doc */
+    .highlight .s2 { color: #4070a0 } /* Literal.String.Double */
+    .highlight .se { color: #4070a0; font-weight: bold } /* Literal.String.Escape */
+    .highlight .sh { color: #4070a0 } /* Literal.String.Heredoc */
+    .highlight .si { color: #70a0d0; font-style: italic } /* Literal.String.Interpol */
+    .highlight .sx { color: #c65d09 } /* Literal.String.Other */
+    .highlight .sr { color: #235388 } /* Literal.String.Regex */
+    .highlight .s1 { color: #4070a0 } /* Literal.String.Single */
+    .highlight .ss { color: #517918 } /* Literal.String.Symbol */
+    .highlight .bp { color: #007020 } /* Name.Builtin.Pseudo */
+    .highlight .fm { color: #06287e } /* Name.Function.Magic */
+    .highlight .vc { color: #bb60d5 } /* Name.Variable.Class */
+    .highlight .vg { color: #bb60d5 } /* Name.Variable.Global */
+    .highlight .vi { color: #bb60d5 } /* Name.Variable.Instance */
+    .highlight .vm { color: #bb60d5 } /* Name.Variable.Magic */
+    .highlight .il { color: #40a070 } /* Literal.Number.Integer.Long */
+
+    /* Dark overrides: explicit [data-theme=dark] choice. Within this layer a
+       [data-theme=dark]-prefixed selector out-specifies the light default above,
+       so the dark palette wins when the user pinned dark. */
+    /* (age dark override removed: td.age-* now consume the --age-* token, which
+       already carries the dark value under [data-theme="dark"].) */
+    [data-theme="dark"] .log-line.log-c0 { color: #ff6b6b; }
+    [data-theme="dark"] .log-line.log-c1 { color: #ffa94d; }
+    [data-theme="dark"] .log-line.log-c2 { color: #ffd43b; }
+    [data-theme="dark"] .log-line.log-c3 { color: #69db7c; }
+    [data-theme="dark"] .log-line.log-c4 { color: #3bc9db; }
+    [data-theme="dark"] .log-line.log-c5 { color: #74a9ff; }
+    [data-theme="dark"] .log-line.log-c6 { color: #b197fc; }
+    [data-theme="dark"] .log-line.log-c7 { color: #f783ac; }
+
+    /* Pygments dark override (style='native'), scoped to an explicit dark choice.
+     * Regenerate with HtmlFormatter(style='native').get_style_defs('.highlight'). */
+    [data-theme="dark"] .highlight .hll { background-color: #404040 }
+    [data-theme="dark"] .highlight  { background: #202020; color: #d0d0d0 }
+    [data-theme="dark"] .highlight .c { color: #999999; font-style: italic } /* Comment */
+    [data-theme="dark"] .highlight .err { color: #a61717; background-color: #e3d2d2 } /* Error */
+    [data-theme="dark"] .highlight .esc { color: #d0d0d0 } /* Escape */
+    [data-theme="dark"] .highlight .g { color: #d0d0d0 } /* Generic */
+    [data-theme="dark"] .highlight .k { color: #6ab825; font-weight: bold } /* Keyword */
+    [data-theme="dark"] .highlight .l { color: #d0d0d0 } /* Literal */
+    [data-theme="dark"] .highlight .n { color: #d0d0d0 } /* Name */
+    [data-theme="dark"] .highlight .o { color: #d0d0d0 } /* Operator */
+    [data-theme="dark"] .highlight .x { color: #d0d0d0 } /* Other */
+    [data-theme="dark"] .highlight .p { color: #d0d0d0 } /* Punctuation */
+    [data-theme="dark"] .highlight .ch { color: #999999; font-style: italic } /* Comment.Hashbang */
+    [data-theme="dark"] .highlight .cm { color: #999999; font-style: italic } /* Comment.Multiline */
+    [data-theme="dark"] .highlight .cp { color: #cd2828; font-weight: bold } /* Comment.Preproc */
+    [data-theme="dark"] .highlight .cpf { color: #999999; font-style: italic } /* Comment.PreprocFile */
+    [data-theme="dark"] .highlight .c1 { color: #999999; font-style: italic } /* Comment.Single */
+    [data-theme="dark"] .highlight .cs { color: #e50808; font-weight: bold; background-color: #520000 } /* Comment.Special */
+    [data-theme="dark"] .highlight .gd { color: #d22323 } /* Generic.Deleted */
+    [data-theme="dark"] .highlight .ge { color: #d0d0d0; font-style: italic } /* Generic.Emph */
+    [data-theme="dark"] .highlight .gr { color: #d22323 } /* Generic.Error */
+    [data-theme="dark"] .highlight .gh { color: #ffffff; font-weight: bold } /* Generic.Heading */
+    [data-theme="dark"] .highlight .gi { color: #589819 } /* Generic.Inserted */
+    [data-theme="dark"] .highlight .go { color: #cccccc } /* Generic.Output */
+    [data-theme="dark"] .highlight .gp { color: #aaaaaa } /* Generic.Prompt */
+    [data-theme="dark"] .highlight .gs { color: #d0d0d0; font-weight: bold } /* Generic.Strong */
+    [data-theme="dark"] .highlight .gu { color: #ffffff; text-decoration: underline } /* Generic.Subheading */
+    [data-theme="dark"] .highlight .gt { color: #d22323 } /* Generic.Traceback */
+    [data-theme="dark"] .highlight .kc { color: #6ab825; font-weight: bold } /* Keyword.Constant */
+    [data-theme="dark"] .highlight .kd { color: #6ab825; font-weight: bold } /* Keyword.Declaration */
+    [data-theme="dark"] .highlight .kn { color: #6ab825; font-weight: bold } /* Keyword.Namespace */
+    [data-theme="dark"] .highlight .kp { color: #6ab825 } /* Keyword.Pseudo */
+    [data-theme="dark"] .highlight .kr { color: #6ab825; font-weight: bold } /* Keyword.Reserved */
+    [data-theme="dark"] .highlight .kt { color: #6ab825; font-weight: bold } /* Keyword.Type */
+    [data-theme="dark"] .highlight .ld { color: #d0d0d0 } /* Literal.Date */
+    [data-theme="dark"] .highlight .m { color: #3677a9 } /* Literal.Number */
+    [data-theme="dark"] .highlight .s { color: #ed9d13 } /* Literal.String */
+    [data-theme="dark"] .highlight .na { color: #bbbbbb } /* Name.Attribute */
+    [data-theme="dark"] .highlight .nb { color: #24909d } /* Name.Builtin */
+    [data-theme="dark"] .highlight .nc { color: #447fcf; text-decoration: underline } /* Name.Class */
+    [data-theme="dark"] .highlight .no { color: #40ffff } /* Name.Constant */
+    [data-theme="dark"] .highlight .nd { color: #ffa500 } /* Name.Decorator */
+    [data-theme="dark"] .highlight .ni { color: #d0d0d0 } /* Name.Entity */
+    [data-theme="dark"] .highlight .ne { color: #bbbbbb } /* Name.Exception */
+    [data-theme="dark"] .highlight .nf { color: #447fcf } /* Name.Function */
+    [data-theme="dark"] .highlight .nl { color: #d0d0d0 } /* Name.Label */
+    [data-theme="dark"] .highlight .nn { color: #447fcf; text-decoration: underline } /* Name.Namespace */
+    [data-theme="dark"] .highlight .nx { color: #d0d0d0 } /* Name.Other */
+    [data-theme="dark"] .highlight .py { color: #d0d0d0 } /* Name.Property */
+    [data-theme="dark"] .highlight .nt { color: #6ab825; font-weight: bold } /* Name.Tag */
+    [data-theme="dark"] .highlight .nv { color: #40ffff } /* Name.Variable */
+    [data-theme="dark"] .highlight .ow { color: #6ab825; font-weight: bold } /* Operator.Word */
+    [data-theme="dark"] .highlight .w { color: #666666 } /* Text.Whitespace */
+    [data-theme="dark"] .highlight .mb { color: #3677a9 } /* Literal.Number.Bin */
+    [data-theme="dark"] .highlight .mf { color: #3677a9 } /* Literal.Number.Float */
+    [data-theme="dark"] .highlight .mh { color: #3677a9 } /* Literal.Number.Hex */
+    [data-theme="dark"] .highlight .mi { color: #3677a9 } /* Literal.Number.Integer */
+    [data-theme="dark"] .highlight .mo { color: #3677a9 } /* Literal.Number.Oct */
+    [data-theme="dark"] .highlight .sa { color: #ed9d13 } /* Literal.String.Affix */
+    [data-theme="dark"] .highlight .sb { color: #ed9d13 } /* Literal.String.Backtick */
+    [data-theme="dark"] .highlight .sc { color: #ed9d13 } /* Literal.String.Char */
+    [data-theme="dark"] .highlight .dl { color: #ed9d13 } /* Literal.String.Delimiter */
+    [data-theme="dark"] .highlight .sd { color: #ed9d13 } /* Literal.String.Doc */
+    [data-theme="dark"] .highlight .s2 { color: #ed9d13 } /* Literal.String.Double */
+    [data-theme="dark"] .highlight .se { color: #ed9d13 } /* Literal.String.Escape */
+    [data-theme="dark"] .highlight .sh { color: #ed9d13 } /* Literal.String.Heredoc */
+    [data-theme="dark"] .highlight .si { color: #ed9d13 } /* Literal.String.Interpol */
+    [data-theme="dark"] .highlight .sx { color: #ffa500 } /* Literal.String.Other */
+    [data-theme="dark"] .highlight .sr { color: #ed9d13 } /* Literal.String.Regex */
+    [data-theme="dark"] .highlight .s1 { color: #ed9d13 } /* Literal.String.Single */
+    [data-theme="dark"] .highlight .ss { color: #ed9d13 } /* Literal.String.Symbol */
+    [data-theme="dark"] .highlight .bp { color: #24909d } /* Name.Builtin.Pseudo */
+    [data-theme="dark"] .highlight .fm { color: #447fcf } /* Name.Function.Magic */
+    [data-theme="dark"] .highlight .vc { color: #40ffff } /* Name.Variable.Class */
+    [data-theme="dark"] .highlight .vg { color: #40ffff } /* Name.Variable.Global */
+    [data-theme="dark"] .highlight .vi { color: #40ffff } /* Name.Variable.Instance */
+    [data-theme="dark"] .highlight .vm { color: #40ffff } /* Name.Variable.Magic */
+    [data-theme="dark"] .highlight .il { color: #3677a9 } /* Literal.Number.Integer.Long */
+
+    /* System dark (no data-theme cookie): re-use the dark palette via the OS
+       preference. Bare selectors here tie specificity with the light defaults, so
+       this block MUST follow them (it does -- source order in-layer breaks the
+       tie). A user who explicitly picked LIGHT must keep light even on a dark OS,
+       so the light palette is re-asserted under [data-theme="light"] inside. */
+    @media (prefers-color-scheme: dark) {
+        /* (age handled by the --age-* token under :root:not([data-theme=light]);
+           no per-bucket age rule needed here.) */
+        .log-line.log-c0 { color: #ff6b6b; }
+        .log-line.log-c1 { color: #ffa94d; }
+        .log-line.log-c2 { color: #ffd43b; }
+        .log-line.log-c3 { color: #69db7c; }
+        .log-line.log-c4 { color: #3bc9db; }
+        .log-line.log-c5 { color: #74a9ff; }
+        .log-line.log-c6 { color: #b197fc; }
+        .log-line.log-c7 { color: #f783ac; }
+
+        .highlight .hll { background-color: #404040 }
+        .highlight  { background: #202020; color: #d0d0d0 }
+        .highlight .c { color: #999999; font-style: italic }
+        .highlight .err { color: #a61717; background-color: #e3d2d2 }
+        .highlight .esc { color: #d0d0d0 }
+        .highlight .g { color: #d0d0d0 }
+        .highlight .k { color: #6ab825; font-weight: bold }
+        .highlight .l { color: #d0d0d0 }
+        .highlight .n { color: #d0d0d0 }
+        .highlight .o { color: #d0d0d0 }
+        .highlight .x { color: #d0d0d0 }
+        .highlight .p { color: #d0d0d0 }
+        .highlight .ch { color: #999999; font-style: italic }
+        .highlight .cm { color: #999999; font-style: italic }
+        .highlight .cp { color: #cd2828; font-weight: bold }
+        .highlight .cpf { color: #999999; font-style: italic }
+        .highlight .c1 { color: #999999; font-style: italic }
+        .highlight .cs { color: #e50808; font-weight: bold; background-color: #520000 }
+        .highlight .gd { color: #d22323 }
+        .highlight .ge { color: #d0d0d0; font-style: italic }
+        .highlight .gr { color: #d22323 }
+        .highlight .gh { color: #ffffff; font-weight: bold }
+        .highlight .gi { color: #589819 }
+        .highlight .go { color: #cccccc }
+        .highlight .gp { color: #aaaaaa }
+        .highlight .gs { color: #d0d0d0; font-weight: bold }
+        .highlight .gu { color: #ffffff; text-decoration: underline }
+        .highlight .gt { color: #d22323 }
+        .highlight .kc { color: #6ab825; font-weight: bold }
+        .highlight .kd { color: #6ab825; font-weight: bold }
+        .highlight .kn { color: #6ab825; font-weight: bold }
+        .highlight .kp { color: #6ab825 }
+        .highlight .kr { color: #6ab825; font-weight: bold }
+        .highlight .kt { color: #6ab825; font-weight: bold }
+        .highlight .ld { color: #d0d0d0 }
+        .highlight .m { color: #3677a9 }
+        .highlight .s { color: #ed9d13 }
+        .highlight .na { color: #bbbbbb }
+        .highlight .nb { color: #24909d }
+        .highlight .nc { color: #447fcf; text-decoration: underline }
+        .highlight .no { color: #40ffff }
+        .highlight .nd { color: #ffa500 }
+        .highlight .ni { color: #d0d0d0 }
+        .highlight .ne { color: #bbbbbb }
+        .highlight .nf { color: #447fcf }
+        .highlight .nl { color: #d0d0d0 }
+        .highlight .nn { color: #447fcf; text-decoration: underline }
+        .highlight .nx { color: #d0d0d0 }
+        .highlight .py { color: #d0d0d0 }
+        .highlight .nt { color: #6ab825; font-weight: bold }
+        .highlight .nv { color: #40ffff }
+        .highlight .ow { color: #6ab825; font-weight: bold }
+        .highlight .w { color: #666666 }
+        .highlight .mb { color: #3677a9 }
+        .highlight .mf { color: #3677a9 }
+        .highlight .mh { color: #3677a9 }
+        .highlight .mi { color: #3677a9 }
+        .highlight .mo { color: #3677a9 }
+        .highlight .sa { color: #ed9d13 }
+        .highlight .sb { color: #ed9d13 }
+        .highlight .sc { color: #ed9d13 }
+        .highlight .dl { color: #ed9d13 }
+        .highlight .sd { color: #ed9d13 }
+        .highlight .s2 { color: #ed9d13 }
+        .highlight .se { color: #ed9d13 }
+        .highlight .sh { color: #ed9d13 }
+        .highlight .si { color: #ed9d13 }
+        .highlight .sx { color: #ffa500 }
+        .highlight .sr { color: #ed9d13 }
+        .highlight .s1 { color: #ed9d13 }
+        .highlight .ss { color: #ed9d13 }
+        .highlight .bp { color: #24909d }
+        .highlight .fm { color: #447fcf }
+        .highlight .vc { color: #40ffff }
+        .highlight .vg { color: #40ffff }
+        .highlight .vi { color: #40ffff }
+        .highlight .vm { color: #40ffff }
+        .highlight .il { color: #3677a9 }
+
+        /* Explicit LIGHT choice pinned -- re-assert the light palette so a light
+           cookie wins on a dark OS. (Age omitted: the --age-* token is NOT
+           overridden to dark under [data-theme="light"] -- the media token block
+           is gated :not([data-theme="light"]) -- so age stays light here too.) */
+        [data-theme="light"] .log-line.log-c0 { color: #c0392b; }
+        [data-theme="light"] .log-line.log-c1 { color: #b9530a; }
+        [data-theme="light"] .log-line.log-c2 { color: #897a00; }
+        [data-theme="light"] .log-line.log-c3 { color: #1f8b4c; }
+        [data-theme="light"] .log-line.log-c4 { color: #0e7c86; }
+        [data-theme="light"] .log-line.log-c5 { color: #2362c0; }
+        [data-theme="light"] .log-line.log-c6 { color: #7d3cc0; }
+        [data-theme="light"] .log-line.log-c7 { color: #b03088; }
+
+        [data-theme="light"] .highlight .hll { background-color: #ffffcc }
+        [data-theme="light"] .highlight  { background: #f0f0f0; }
+        [data-theme="light"] .highlight .c { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .err { border: 1px solid #FF0000 }
+        [data-theme="light"] .highlight .k { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .o { color: #666666 }
+        [data-theme="light"] .highlight .ch { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .cm { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .cp { color: #007020 }
+        [data-theme="light"] .highlight .cpf { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .c1 { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .cs { color: #60a0b0; background-color: #fff0f0 }
+        [data-theme="light"] .highlight .gd { color: #A00000 }
+        [data-theme="light"] .highlight .ge { font-style: italic }
+        [data-theme="light"] .highlight .gr { color: #FF0000 }
+        [data-theme="light"] .highlight .gh { color: #000080; font-weight: bold }
+        [data-theme="light"] .highlight .gi { color: #00A000 }
+        [data-theme="light"] .highlight .go { color: #888888 }
+        [data-theme="light"] .highlight .gp { color: #c65d09; font-weight: bold }
+        [data-theme="light"] .highlight .gs { font-weight: bold }
+        [data-theme="light"] .highlight .gu { color: #800080; font-weight: bold }
+        [data-theme="light"] .highlight .gt { color: #0044DD }
+        [data-theme="light"] .highlight .kc { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .kd { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .kn { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .kp { color: #007020 }
+        [data-theme="light"] .highlight .kr { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .kt { color: #902000 }
+        [data-theme="light"] .highlight .m { color: #40a070 }
+        [data-theme="light"] .highlight .s { color: #4070a0 }
+        [data-theme="light"] .highlight .na { color: #4070a0 }
+        [data-theme="light"] .highlight .nb { color: #007020 }
+        [data-theme="light"] .highlight .nc { color: #0e84b5; font-weight: bold }
+        [data-theme="light"] .highlight .no { color: #60add5 }
+        [data-theme="light"] .highlight .nd { color: #555555; font-weight: bold }
+        [data-theme="light"] .highlight .ni { color: #d55537; font-weight: bold }
+        [data-theme="light"] .highlight .ne { color: #007020 }
+        [data-theme="light"] .highlight .nf { color: #06287e }
+        [data-theme="light"] .highlight .nl { color: #002070; font-weight: bold }
+        [data-theme="light"] .highlight .nn { color: #0e84b5; font-weight: bold }
+        [data-theme="light"] .highlight .nt { color: #062873; font-weight: bold }
+        [data-theme="light"] .highlight .nv { color: #bb60d5 }
+        [data-theme="light"] .highlight .ow { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .w { color: #bbbbbb }
+        [data-theme="light"] .highlight .mb { color: #40a070 }
+        [data-theme="light"] .highlight .mf { color: #40a070 }
+        [data-theme="light"] .highlight .mh { color: #40a070 }
+        [data-theme="light"] .highlight .mi { color: #40a070 }
+        [data-theme="light"] .highlight .mo { color: #40a070 }
+        [data-theme="light"] .highlight .sa { color: #4070a0 }
+        [data-theme="light"] .highlight .sb { color: #4070a0 }
+        [data-theme="light"] .highlight .sc { color: #4070a0 }
+        [data-theme="light"] .highlight .dl { color: #4070a0 }
+        [data-theme="light"] .highlight .sd { color: #4070a0; font-style: italic }
+        [data-theme="light"] .highlight .s2 { color: #4070a0 }
+        [data-theme="light"] .highlight .se { color: #4070a0; font-weight: bold }
+        [data-theme="light"] .highlight .sh { color: #4070a0 }
+        [data-theme="light"] .highlight .si { color: #70a0d0; font-style: italic }
+        [data-theme="light"] .highlight .sx { color: #c65d09 }
+        [data-theme="light"] .highlight .sr { color: #235388 }
+        [data-theme="light"] .highlight .s1 { color: #4070a0 }
+        [data-theme="light"] .highlight .ss { color: #517918 }
+        [data-theme="light"] .highlight .bp { color: #007020 }
+        [data-theme="light"] .highlight .fm { color: #06287e }
+        [data-theme="light"] .highlight .vc { color: #bb60d5 }
+        [data-theme="light"] .highlight .vg { color: #bb60d5 }
+        [data-theme="light"] .highlight .vi { color: #bb60d5 }
+        [data-theme="light"] .highlight .vm { color: #bb60d5 }
+        [data-theme="light"] .highlight .il { color: #40a070 }
+    }
+}

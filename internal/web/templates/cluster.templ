@@ -1,0 +1,91 @@
+package templates
+
+// cluster.templ is the cluster-overview page body: the breadcrumb + title, the
+// cluster meta line + label chips, the Namespaces search-select table (with the
+// data-toggle-button="search-namespaces-button" hook and per-row age cell
+// class), and the Cluster Resource Types table. The behavior-fact net pins the
+// namespace rows, the search-select hook, the per-bucket age cell class, and the
+// cluster-scoped kind links.
+
+// ClusterData is the resolved cluster-overview input. ClusterChips are the
+// /clusters?selector= label pills on the meta line (anchor style); each
+// NamespaceRow carries its own non-link label chips, the pods link, and the
+// precomputed age cell class + created text. ResourceTypes are the cluster
+// resource-type rows.
+type ClusterData struct {
+	Name          string
+	URL           string
+	ClusterChips  []Chip
+	Namespaces    []NamespaceRow
+	ResourceTypes []ClusterResourceTypeRow
+}
+
+// NamespaceRow is one namespace in the Namespaces table.
+type NamespaceRow struct {
+	Name       string
+	PodsHref   string
+	Chips      []LabelChip
+	AgeClass   string
+	Created    string
+}
+
+// LabelChip is a non-link label pill (the namespace-row chips render as a
+// <span> with an inner <span class="tag">, distinct from the anchor chips on
+// the meta line). Class is the FULL ro-chip class incl. the app accent.
+type LabelChip struct {
+	Class string
+	Key   string
+	Val   string
+}
+
+// ClusterResourceTypeRow is one cluster resource-type row (Kind + CRD badge,
+// API group, version) linking to the cluster-scoped list.
+type ClusterResourceTypeRow struct {
+	Href    string
+	Kind    string
+	IsCRD   bool
+	Group   string
+	Version string
+}
+
+templ Cluster(d ClusterData) {
+	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul><li class="is-active"><a href={ templ.SafeURL(clusterHref(d.Name)) }>{ d.Name }</a></li></ul></nav>
+	<h1 class="title">{ d.Name }</h1>
+	<div class="ro-cluster-meta">
+		if len(d.ClusterChips) > 0 {
+			<div class="ro-chips">
+				for _, chip := range d.ClusterChips {
+					<a href={ templ.SafeURL(chip.Href) } class={ chip.Class }><span class="tag is-link">{ chip.Key }: { chip.Val }</span></a>
+				}
+				</div>
+		}
+		<div class="ro-meta-line"><span class="ro-meta-key">API URL</span> { d.URL }</div></div>
+	<div class="section"><h4 class="title is-5">Namespaces</h4><form action="/search" method="get"><input type="hidden" name="cluster" value={ d.Name }><table class="table ro-list-table ro-select-table has-bottom-controls"><thead><tr><th></th><th>Name</th><th>Labels</th><th>Created</th></tr></thead><tbody>
+		for _, ns := range d.Namespaces {
+			<tr><td><input type="checkbox" name="namespace" value={ ns.Name } data-toggle-button="search-namespaces-button"></td><td class="ro-cell-name"><a href={ templ.SafeURL(ns.PodsHref) }>{ ns.Name }</a></td><td>
+				if len(ns.Chips) > 0 {
+					<div class="ro-chips">
+						for _, chip := range ns.Chips {
+							<span class={ chip.Class }><span class="tag">{ chip.Key }: { chip.Val }</span></span>
+						}
+						</div>
+				}
+				</td><td class={ ns.AgeClass }>{ ns.Created }</td></tr>
+		}
+		if len(d.Namespaces) == 0 {
+			<tr><td colspan="4">No namespaces found.</td></tr>
+		}
+		</tbody></table><div class="control bottom-controls"><button class="button is-primary" type="submit" id="search-namespaces-button" disabled><span class="icon">@iconC("search")</span><span>Search in selected namespaces</span></button></div></form></div>
+	<div class="section"><h4 class="title is-5">Cluster Resource Types</h4><table class="table ro-list-table"><thead><tr><th>Kind</th><th>API Group</th><th>Version</th></tr></thead><tbody>
+		if len(d.ResourceTypes) == 0 {
+			<tr><td colspan="3">No resource types found.</td></tr>
+		}
+		for _, rt := range d.ResourceTypes {
+			<tr><td class="ro-cell-kind"><a href={ templ.SafeURL(rt.Href) }>{ rt.Kind }</a>
+				if rt.IsCRD {
+					{ " " }<span class="ro-crd-badge" title="Custom Resource Definition">CRD</span>
+				}
+				</td><td class="ro-rt-group">{ rt.Group }</td><td class="ro-rt-version">{ rt.Version }</td></tr>
+		}
+		</tbody></table></div>
+}

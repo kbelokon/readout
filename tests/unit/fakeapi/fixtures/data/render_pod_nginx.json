@@ -1,0 +1,22 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "nginx",
+    "namespace": "default",
+    "uid": "00000000-0000-0000-0000-000000000001",
+    "resourceVersion": "201",
+    "creationTimestamp": "2024-03-01T10:00:00Z",
+    "labels": {"app": "nginx"},
+    "annotations": {"example.com/note": "generic-annotation"}
+  },
+  "spec": {
+    "containers": [
+      {"name": "nginx", "image": "nginx:1.27"}
+    ]
+  },
+  "status": {
+    "phase": "Running",
+    "podIP": "127.0.0.1"
+  }
+}

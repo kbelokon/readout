@@ -1,0 +1,20 @@
+# Build / release output
+/dist/
+/out/
+/tmp/
+# root-anchored: the compiled binary at the repo root, NOT the cmd/readout/ package
+/readout
+*.out
+coverage.*
+
+# Local tooling / editor / scratch
+.DS_Store
+.idea/
+.vscode/
+# root-anchored: locally downloaded tool binaries, not any nested dir of that name
+/kind
+/kubectl
+
+# Never publish: forge notes and parity artifacts
+docs/
+test-artifacts/

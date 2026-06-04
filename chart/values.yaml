@@ -1,0 +1,60 @@
+image:
+  repository: ghcr.io/kbelokon/readout
+  tag: 0.1.0
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 80
+
+# readout configuration. This whole block is serialized verbatim into a
+# ConfigMap as readout.yaml and mounted at /etc/readout/readout.yaml; the
+# container runs with --config /etc/readout/readout.yaml. The schema matches
+# readout.yaml. Secrets are NOT placed here -- they come from READOUT_* env
+# (see env / envFrom below), which override the file at startup.
+config:
+  port: 8080
+  excludeNamespaces:
+    - kube-.*
+  showContainerLogs: false
+  includeSecrets: false
+  auth:
+    mode: none   # safe default: no identity trusted. Set behind a real auth layer.
+    # mode: headers
+    # DANGER: header-trust auth is ONLY safe behind a reverse proxy that strips and
+    # re-sets X-Forwarded-User/Email/Groups. Without such a proxy any client can
+    # impersonate any user. Enable only when such a proxy is in front.
+    # trustedHeaders:
+    #   user: X-Forwarded-User
+    #   email: X-Forwarded-Email
+    #   groups: X-Forwarded-Groups
+
+# READOUT_* secret environment. `env` adds literal name/value pairs;
+# `envFrom` references existing Secrets/ConfigMaps (e.g. a Secret holding
+# READOUT_SESSION_SECRET / READOUT_OIDC_CLIENT_SECRET). Secrets never go in the
+# ConfigMap above.
+env: []
+#  - name: READOUT_SESSION_SECRET
+#    valueFrom:
+#      secretKeyRef:
+#        name: readout
+#        key: session-secret
+envFrom: []
+#  - secretRef:
+#      name: readout
+
+resources: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
