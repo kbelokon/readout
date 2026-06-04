@@ -1896,6 +1896,10 @@
     }
     .ro-rd .ro-phase-tally { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
     .ro-rd .ro-phase-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-muted); }
+    /* `margin-left: 0` OVERRIDES the leaking old bare `.ro-phase-count
+       { margin-left: 0.375rem }`: base.css gives the count no margin -- the
+       label->count spacing is the chip's `gap: 7px`, so the leak doubled it to ~13px. */
+    .ro-rd .ro-phase-count { margin-left: 0; }
 
     /* ---------------------------------------------------------------- STATUS DOTS */
     .ro-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; }
@@ -2101,7 +2105,10 @@
        existing app rule. Non-colliding net-new names stay bare. */
     .ro-detail-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 2px 0 14px; }
     .ro-detail-title .ro-title { font-size: 23px; }
-    .ro-rd .ro-kind-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
+    /* `order: 0` OVERRIDES the leaking old bare `.ro-kind-badge { order: -1 }` (the
+       only `order:` in the stylesheet): base.css sets no order, so the badge follows
+       DOM order -- `name [BADGE]`, not `[BADGE] name`. */
+    .ro-rd .ro-kind-badge { order: 0; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
         text-transform: uppercase; padding: 3px 8px; border-radius: 5px;
         background: var(--accent-weak); color: var(--accent); }
     .ro-detail-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); margin-left: auto; }
@@ -2117,7 +2124,10 @@
 
     /* sections (redesign) -- canonical names under the .ro-rd content marker */
     .ro-rd .ro-section { margin: 0 0 22px; }
-    .ro-rd .ro-section-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
+    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-section-label
+       { font-weight: 600 }`: base.css keeps the 10px uppercase mono caption at
+       normal weight. */
+    .ro-rd .ro-section-label { font-weight: 400; font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
         text-transform: uppercase; color: var(--text-faint); margin: 0 0 9px; }
 
     /* key/value lists (node capacity, system info) -- redesign */
@@ -2145,7 +2155,11 @@
     .ro-rd .ro-cond-pill .ro-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: none; }
 
     /* owners line (redesign) */
-    .ro-rd .ro-owner { font-size: 13px; color: var(--text-muted); }
+    /* `font-family: inherit` OVERRIDES the leaking old bare `.ro-owner
+       { font-family: var(--font-mono) }`: base.css puts mono only on the owner
+       LINKS (`.ro-owner a`), so the "Owner …" prefix text reads in the body UI
+       font, not mono. */
+    .ro-rd .ro-owner { font-family: inherit; font-size: 13px; color: var(--text-muted); }
     .ro-rd .ro-owner a { font-family: var(--font-mono); }
     .ro-rd .ro-owner .kind { color: var(--text-faint); }
 
@@ -2163,7 +2177,10 @@
     .ro-rd .ro-copy-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
         font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
         background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px; cursor: pointer; }
-    .ro-rd .ro-copy-btn:hover { color: var(--text); border-color: var(--border-strong); }
+    /* `background: transparent` OVERRIDES the leaking old bare `.ro-copy-btn:hover
+       { background: var(--surface-2) }`: base.css keeps the copy button's hover
+       transparent (it changes only color + border-color). */
+    .ro-rd .ro-copy-btn:hover { background: transparent; color: var(--text); border-color: var(--border-strong); }
 
     /* YAML / code block (redesign bare variant) */
     .ro-yaml { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
@@ -2247,7 +2264,12 @@
        redesign chip look applies only there while live Search keeps its app rule. */
     .ro-rd .ro-scope { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 16px; font-size: 12px; }
     .ro-rd .ro-scope .lbl { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
-    .ro-rd .ro-scope-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+    /* `background: transparent` OVERRIDES the leaking old bare `.ro-scope-chip
+       { background: var(--accent-weak) }`: base.css wants a transparent bordered
+       pill (only `.err` carries its own bg, re-asserted by `.ro-rd .ro-scope-chip.err`
+       below). Fixes the unwanted faint-green fill on the Search `.ok` chips + the
+       empty-filtered filter chips. */
+    .ro-rd .ro-scope-chip { background: transparent; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
         border: 1px solid var(--border); font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); }
     .ro-rd .ro-scope-chip .ro-dot { box-shadow: none; width: 6px; height: 6px; }
     .ro-rd .ro-scope-chip.ok { color: var(--text); }
