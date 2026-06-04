@@ -526,9 +526,9 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	// response: a hidden `.ro-banner.warn` readout.js reveals on an auto-refresh
 	// error, dimming the rows in #resource-list-content (the morph target) instead
 	// of blanking them. The server never decides "stale" -- there is no last-good
-	// cache; the client does, on a refresh error that keeps the rows.
+	// cache; the client does, on a refresh error that keeps the rows. The dim
+	// target id is owned by readout.js (hardcoded), so it is not threaded here.
 	v.StaleBanner = true
-	v.StaleDimTarget = "resource-list-content"
 
 	// Active filters drive the empty-FILTERED state (removable chips + Clear) vs
 	// the plainly-empty state (broad action). Resolved once for the page (the
@@ -658,6 +658,7 @@ func (s *Server) buildListState(r *http.Request, lc *listContext) *listStateView
 		Namespace: lc.Namespace,
 		RetryHref: r.URL.String(),
 		BackHref:  "/clusters",
+		SourceErr: err,
 	}
 	if forbidden {
 		state.Kind = stateForbidden

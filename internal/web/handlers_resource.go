@@ -59,8 +59,22 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, err)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	view := s.buildListView(r, &ctx)
+	// AUTO-REFRESH stale invariant (D11): the full page renders a whole-list
+	// forbidden/unreachable state card (a first load has no rows to keep), but this
+	// `_table` partial is the ro:refresh target morphed in place. Returning a
+	// 200-with-state-card here would swap the last-good rows OUT for the card and
+	// then htmx:afterSwap would clear the stale dim -- defeating the stale path. So
+	// when buildListView produced a whole-list failure state, surface its source
+	// error as a NON-2xx instead: htmx does not swap on error (the existing rows
+	// stay), and htmx:responseError fires the client-side stale banner + dim. A
+	// partial EMPTY / empty-filtered (zero rows, no error -> no State) still renders
+	// normally; only the unreachable/forbidden whole-list error goes non-2xx.
+	if view.State != nil {
+		s.error(w, r, view.State.SourceErr)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.ResourceTable(toListData(&view)).Render(r.Context(), w)
 }
 

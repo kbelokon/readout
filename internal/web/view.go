@@ -44,14 +44,13 @@ type listView struct {
 	// multi-type list keeps its tables and the per-type errors are dropped here).
 	State *listStateView
 
-	// StaleBanner / StaleDimTarget feed the CLIENT-SIDE stale path (D11): a
-	// hidden `.ro-banner.warn` that readout.js reveals (and a dim class it adds to
-	// StaleDimTarget) when an auto-refresh request errors. Pre-rendered so the
+	// StaleBanner feeds the CLIENT-SIDE stale path (D11): a hidden
+	// `.ro-banner.warn` that readout.js reveals (and dims #resource-list-content,
+	// the id the JS owns) when an auto-refresh request errors. Pre-rendered so the
 	// markup hooks exist in the first server response; the server never decides
 	// "stale" (there is no last-good cache) -- only the client does, on a refresh
 	// error that keeps the existing rows.
-	StaleBanner    bool
-	StaleDimTarget string
+	StaleBanner bool
 }
 
 // listKind enumerates the whole-list failure/empty states. emptyState /
@@ -77,6 +76,15 @@ type listStateView struct {
 	Detail    string // forbidden: "403 Forbidden · <reason>"; unreachable: the real error
 	RetryHref string // a read-only GET back to this same list URL
 	BackHref  string // "/clusters"
+
+	// SourceErr is the underlying kube error that produced this state. The FULL
+	// page renders the state card (a first load has no prior rows to keep), but
+	// the AUTO-REFRESH `_table` partial must NOT 200-with-state-card -- morph would
+	// swap the last-good rows out for the card and defeat the stale path. The
+	// partial handler instead surfaces SourceErr via s.error (a non-2xx), so htmx
+	// keeps the existing rows and fires htmx:responseError -> the client-side stale
+	// banner + dim. Carried as plain data (like listView.Errors), no live client.
+	SourceErr error
 }
 
 func (v *listView) Title() string {

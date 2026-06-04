@@ -15,10 +15,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/kbelokon/readout/internal/config"
 )
 
@@ -72,6 +75,51 @@ func newStateFakeAPI(t *testing.T, opts stateFakeOptions) *httptest.Server {
 	}
 	mux.HandleFunc("/api/v1/namespaces/default/pods", podsHandler)
 	mux.HandleFunc("/api/v1/namespaces/default/pods/", podsHandler) // detail Get
+	mux.HandleFunc("/api/v1/pods", podsHandler)
+	mux.HandleFunc("/api/v1/namespaces", fixture("data/render_namespaces_list.json"))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// newToggleableStateAPI builds a single-cluster fake API whose pods endpoint is
+// HEALTHY until `forbid` flips true, then returns a real apiserver 403. The flag
+// is atomic so the concurrent discovery goroutines stay race-safe under -race.
+// It models a list that loaded rows, then went forbidden on the next refresh.
+func newToggleableStateAPI(t *testing.T, forbid *atomic.Bool) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	fixture := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(stateFixture(t, name))
+		}
+	}
+	mux.HandleFunc("/api", fixture("discovery/api.json"))
+	mux.HandleFunc("/api/v1", fixture("discovery/api__v1.json"))
+	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
+	mux.HandleFunc("/apis/apps/v1", fixture("discovery/apis__apps__v1.json"))
+	mux.HandleFunc("/apis/cert-manager.io/v1", fixture("discovery/apis__cert-manager.io__v1.json"))
+	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", fixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
+	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", fixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
+	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
+	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
+	mux.HandleFunc("/version", fixture("discovery/version.json"))
+	podsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if forbid.Load() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","message":"pods is forbidden: User \"viewer\" cannot list resource \"pods\" in API group \"\" in the namespace \"default\"","reason":"Forbidden","details":{"kind":"pods"},"code":403}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.Header.Get("Accept"), "as=Table") {
+			_, _ = w.Write(stateFixture(t, "data/pods_table.json"))
+			return
+		}
+		_, _ = w.Write(stateFixture(t, "data/pods_with_node_list.json"))
+	}
+	mux.HandleFunc("/api/v1/namespaces/default/pods", podsHandler)
 	mux.HandleFunc("/api/v1/pods", podsHandler)
 	mux.HandleFunc("/api/v1/namespaces", fixture("data/render_namespaces_list.json"))
 	server := httptest.NewServer(mux)
@@ -188,6 +236,80 @@ func TestUnreachableRetryIsReadOnlyGET(t *testing.T) {
 	}
 	if p.has(".ro-rd .ro-empty-lg form") || p.has(".ro-rd .ro-empty-lg button[type=submit]") {
 		t.Fatalf("unreachable state must not carry a write form/submit")
+	}
+}
+
+// TestAutoRefreshWholeListErrorIsNon2xxNotStateCard pins the stale-preservation
+// invariant (Wave 7 regression): a single-cluster list loads rows, then the
+// cluster goes forbidden/unreachable. The full-page FIRST LOAD shows the state
+// card (no prior rows to keep), but the AUTO-REFRESH `_table` partial must NOT
+// return a 200 carrying the state card -- morph would swap the last-good rows out
+// for the card and htmx:afterSwap would clear the dim, blanking the data on a
+// transient blip. The partial must instead return a NON-2xx so htmx keeps the
+// existing rows and htmx:responseError fires the client-side stale path.
+//
+// MUTATION CHECK (documented): with the OLD partial behaviour (render
+// ResourceTable at 200 regardless of view.State), the partial GET below returned
+// 200 with the "Not allowed to list pods..." card -- so the `code == 200` /
+// state-card-body assertions here FAIL. Verified by reverting resourceListPartial
+// to the unconditional 200 render: this test went red (partial code = 200, body
+// carried `.ro-empty-lg`).
+func TestAutoRefreshWholeListErrorIsNon2xxNotStateCard(t *testing.T) {
+	var forbid atomic.Bool
+	api := newToggleableStateAPI(t, &forbid)
+	app := newStateServer(t, api.URL)
+
+	// First load (full page) succeeds with rows -- the baseline last-good data.
+	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
+	if got := p.texts("td.cell-name"); len(got) == 0 {
+		t.Fatalf("first load rendered no rows; cannot exercise stale preservation")
+	}
+
+	// The cluster now fails on the next fetch (forbidden whole-list).
+	forbid.Store(true)
+
+	// Sanity: the FULL page now renders the state card (first-load behaviour
+	// unchanged -- there are no prior rows in a fresh full-page request).
+	full := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
+	full.wantHas(".ro-rd .ro-empty-lg h3") // the whole-list state card
+
+	// The AUTO-REFRESH partial (ro:refresh target) must NOT 200-with-state-card.
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/_table", nil))
+	if rec.Code == http.StatusOK {
+		t.Fatalf("partial refresh on a whole-list error returned 200 (morph would blank the rows); want a non-2xx so htmx keeps them. body=%s", rec.Body.String())
+	}
+	if rec.Code < 400 {
+		t.Fatalf("partial refresh status = %d, want a >=400 error so htmx:responseError fires", rec.Code)
+	}
+	// And it must NOT carry the state card markup (which would be swapped in if the
+	// non-2xx body were ever morphed); the body is the error page, not the card.
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse partial body: %v", err)
+	}
+	if doc.Find(".ro-empty-lg").Length() != 0 {
+		t.Fatalf("partial error response must not carry the whole-list state card; body=%s", rec.Body.String())
+	}
+}
+
+// TestAutoRefreshEmptyPartialStillRendersNormally pins the boundary of the fix: a
+// partial refresh that comes back EMPTY (zero rows, NO error -> no whole-list
+// State) still renders a normal 200 table fragment (the empty-state row), NOT a
+// non-2xx. Only the unreachable/forbidden whole-list ERROR goes non-2xx.
+func TestAutoRefreshEmptyPartialStillRendersNormally(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/empty/pods/_table", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty partial refresh status = %d, want 200 (an empty list is not an error)\nbody=%s", rec.Code, rec.Body.String())
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse empty partial body: %v", err)
+	}
+	if doc.Find(".ro-empty-row .ro-empty-title").Length() == 0 {
+		t.Fatalf("empty partial refresh must render the empty-state row; body=%s", rec.Body.String())
 	}
 }
 
@@ -317,6 +439,28 @@ func TestStatesStaleHandlerInReadoutJS(t *testing.T) {
 	if strings.Contains(js, "innerHTML = ''") {
 		t.Fatalf("stale path must not blank the rows")
 	}
+
+	// Gate is REAL, not just tokens-present: the stale handlers must be GATED on
+	// the refresh element id (#resource-list-content), so a refactor that marked
+	// EVERY htmx error stale (dropping the gate) would fail here. Pin (a) the
+	// literal id gate substring, and (b) that the responseError listener routes
+	// through the gate (isListRefreshEvent) rather than calling markListStale
+	// unconditionally.
+	if !strings.Contains(js, "id === 'resource-list-content'") {
+		t.Fatalf("readout.js stale handler missing the literal refresh-element-id gate")
+	}
+	gatedResponseError := regexp.MustCompile(`(?s)htmx:responseError.{0,200}isListRefreshEvent`)
+	if !gatedResponseError.MatchString(js) {
+		t.Fatalf("htmx:responseError handler is not gated on isListRefreshEvent (would mark every htmx error stale)")
+	}
+	// The reveal/clear is not dropped: marking stale reveals the banner and a
+	// recovered refresh re-hides it (banner.hidden flips both ways).
+	if !strings.Contains(js, "banner.hidden = false") {
+		t.Fatalf("stale handler must reveal the banner (banner.hidden = false)")
+	}
+	if !strings.Contains(js, "banner.hidden = true") {
+		t.Fatalf("recovered refresh must re-hide the banner (banner.hidden = true)")
+	}
 }
 
 // TestForbiddenDetailState proves the detail page also ships the forbidden state:
@@ -330,7 +474,9 @@ func TestForbiddenDetailState(t *testing.T) {
 	// The detail chrome (breadcrumb) is intact; the body is the forbidden state.
 	p.wantHas(".ro-rd .ro-breadcrumb")
 	title := p.text(".ro-rd .ro-empty-lg h3")
-	for _, needle := range []string{"pods", "default"} {
+	// The detail verb is the distinct literal "get" (build_resource.go), NOT the
+	// list verb "list" -- pin it so a wrong/empty detail verb is caught.
+	for _, needle := range []string{"get", "pods", "default"} {
 		if !strings.Contains(title, needle) {
 			t.Fatalf("detail forbidden title %q missing %q", title, needle)
 		}
