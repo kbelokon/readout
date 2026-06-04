@@ -526,6 +526,18 @@
     table th.num:not([align]),
     table td.num:not([align]) { text-align: right; }
 
+    /* NOTE (Unit 16): the pre-redesign `.ro-list-table` table system (the bare
+       `table.table.ro-list-table` density/header/cell/name rules + its
+       `.ro-cell-name`/`.ro-cell-url`/`.ro-cell-kind`/`.ro-ext-link`/`.ro-link-out`/
+       `.ro-empty-row`/`.ro-cell-changed` descendants) was REMOVED here: every
+       migrated screen now renders the redesign `.ro-table` (in `.ro-table-wrap`),
+       and `.ro-list-table` is emitted by no template / generated Go / readout.js
+       (verified by grep), so those rules matched nothing. The redesign `.ro-table`
+       system + the `.ro-rd .ro-cell-url`/`.ro-rd .ro-ext-link`/`.res-kind` rules
+       below own these screens now. The `.ro-status-dot` (old list status dot) and
+       `.log-msg`/`.log-ctr`/`.log-lvl-*` (old per-severity log spans) classes were
+       likewise removed -- nothing emits them. */
+
     /* ---------------------------------------------------------------------------
        Phase strip: a thin semantic tally band ABOVE the list table.
        A PURE INDICATOR -- the chips carry no links (no click-to-filter). Each chip
@@ -573,138 +585,6 @@
         white-space: nowrap;
     }
     .ro-phase-total .ro-phase-count { margin-left: 0; }
-
-    /* ---------------------------------------------------------------------------
-       Resource-list table restyle. The list page table is the heart
-       of the app; this turns Bulma's default zebra table into the redesign's calm
-       technical grid: compact density off the shared --row-py/--cell-px tokens,
-       mono sticky headers with quiet sort carets, hover (NOT zebra) row feedback,
-       and mono ellipsized identifiers. App beats the bulma layer by cascade order
-       (no forced-priority override).
-
-       LAYOUT (revised post-delivery on user feedback -- originally pinned
-       table-layout:fixed + ellipsized identifiers, but that clipped the TAIL of a
-       pod name -- exactly the hash/suffix that distinguishes two replicas -- so the
-       names read as duplicates and identification broke). We now use auto layout
-       with width:100%: the table still fills <main> and never horizontally
-       overflows, the short columns size to content, and the Name column takes the
-       remaining width and shows the identifier IN FULL (it wraps only if a name
-       genuinely cannot fit the available width -- see the .ro-cell-name rule).
-
-       The per-row LEFT STATUS STRIPE, the status dot, the has-text-* status
-       colours and the td.age-* scale all live in @layer theme already and
-       are intentionally NOT redefined here -- this rule only owns density,
-       headers, hover and the identifier column. The stripe is an INSET box-shadow
-       on the row's first cell; the extra left padding on the first column keeps
-       text clear of that stripe. */
-    table.table.ro-list-table {
-        table-layout: auto;
-        width: 100%;
-        border-collapse: collapse;
-        background: transparent;
-        font-size: 0.9375rem;
-    }
-
-    /* Select-tables (the clusters list + the cluster's namespace table) lead with
-       a narrow checkbox column. Under table-layout:fixed an unsized column claims
-       an EQUAL share -- a quarter of a 4-column clusters table -- leaving a wide
-       empty gap before the Name. Pin that leading column narrow so the data
-       columns take the width; the checkbox sits centred in it. */
-    table.table.ro-list-table.ro-select-table thead th:first-child,
-    table.table.ro-list-table.ro-select-table tbody td:first-child {
-        width: 2.5rem;
-        text-align: center;
-        padding-left: 0;
-        padding-right: 0;
-    }
-
-    /* Sticky mono header row: a quiet uppercase caption band that stays pinned
-       while the body scrolls. The header cell's <a> IS the sort link (kept in the
-       template); it is muted and warms to full text on hover. */
-    table.table.ro-list-table thead th {
-        position: sticky;
-        top: 0;
-        z-index: 1;
-        text-align: left;
-        background: var(--thead-bg);
-        border-bottom: 1px solid var(--border);
-        border-top: 0;
-        padding: 0.5rem var(--cell-px);
-        font-family: var(--font-mono);
-        font-size: 0.71875rem;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        color: var(--text-faint);
-        white-space: nowrap;
-        user-select: none;
-    }
-    table.table.ro-list-table thead th a {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.25rem;
-        color: inherit;
-    }
-    table.table.ro-list-table thead th a:hover { color: var(--text); }
-    /* the sort caret is a quiet small glyph; the column it marks reads firmer
-       (the active sort), since only the sorted header renders a caret at all */
-    table.table.ro-list-table thead th a .icon { color: var(--text-faint); }
-    table.table.ro-list-table thead th a:has(.icon) { color: var(--text); }
-    table.table.ro-list-table thead th a .icon svg.lucide-icon {
-        width: 0.875rem;
-        height: 0.875rem;
-    }
-
-    /* Compact body cells: token density, hairline row rule, single-line ellipsis
-       (fixed layout clips overflow instead of widening the column). Hover -- not
-       zebra -- gives the row feedback. */
-    table.table.ro-list-table tbody td {
-        padding: var(--row-py) var(--cell-px);
-        border-bottom: 1px solid var(--border);
-        border-top: 0;
-        vertical-align: middle;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    table.table.ro-list-table tbody tr { transition: background .08s; }
-    table.table.ro-list-table tbody tr:hover { background: var(--row-hover); }
-    /* keep body text clear of the inset left status stripe on the leading cell */
-    table.table.ro-list-table tbody td:first-child,
-    table.table.ro-list-table thead th:first-child { padding-left: 0.875rem; }
-
-    /* Mono identifier shown IN FULL: the Name cell's link is the one saturated id
-       colour. Under the auto layout above the Name column takes the leftover width
-       and the identifier shows whole on one line; if a name truly cannot fit the
-       available width it WRAPS (breaking the long hash) rather than clipping its
-       tail -- the tail is what distinguishes two replicas, so it must never be
-       hidden. The anchor markup is unchanged (a pinned e2e selector matches it). */
-    table.table.ro-list-table td.ro-cell-name {
-        white-space: normal;
-        overflow: visible;
-    }
-    table.table.ro-list-table td.ro-cell-name a {
-        display: block;
-        overflow-wrap: anywhere;
-    }
-
-    /* Trailing object-links cell -> a QUIET token icon link: saturation is
-       reserved for status/age, so the old saturated is-primary button becomes a
-       borderless muted icon that warms to full text on hover. It carries
-       ro-btn-quiet too, so this just strips the chip chrome down to an icon. */
-    table.table.ro-list-table .button.ro-link-out {
-        background: transparent;
-        border-color: transparent;
-        color: var(--text-faint);
-        padding-left: 0.5rem;
-        padding-right: 0.5rem;
-    }
-    table.table.ro-list-table .button.ro-link-out:hover,
-    table.table.ro-list-table .button.ro-link-out:focus {
-        background: var(--surface-2);
-        border-color: transparent;
-        color: var(--text);
-    }
 
     table.table.has-bottom-controls { margin-bottom: 0.5rem; }
     .bottom-controls { margin-bottom: 1.5rem; }
@@ -772,6 +652,14 @@
        button already inherits the token .button.is-primary skin above, so it is
        not restyled here. App wins over the bulma layer by cascade order -- no
        forced-priority override needed. ------------------------------------- */
+    /* (Unit 16) the Bulma `.box` shell still used Bulma's own dark grey; pin it to
+       the redesign surface so the preferences form card matches the rest of the
+       redesign (not Bulma's grey). */
+    .ro-prefs.box {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+    }
     .ro-prefs .label { color: var(--text-muted); }
 
     /* The native <select> inside Bulma's `.select` wrapper: tokenise the control
@@ -800,27 +688,11 @@
        affordance, like the navbar search/field icons. */
     .ro-prefs .control.has-icons-left .icon { color: var(--text-faint); }
 
-    /* Clusters table: API-URL cell stays a quiet mono string (the value the
-       offline guard asserts is non-empty); a long URL ellipsizes rather than
-       widening the fixed-layout column. */
-    table.table.ro-list-table td.ro-cell-url {
-        font-family: var(--font-mono);
-        color: var(--text-muted);
-    }
-    /* external_url clusters render as a link-out row: the id-colour name + a
-       trailing quiet icon (kept from the template), in the id colour like any
-       identifier link. */
-    table.table.ro-list-table td.ro-cell-name a.ro-ext-link {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.375rem;
-    }
-    table.table.ro-list-table td.ro-cell-name a.ro-ext-link .icon { color: var(--text-faint); }
-    table.table.ro-list-table td.ro-cell-name a.ro-ext-link:hover .icon { color: var(--accent-text); }
-    table.table.ro-list-table td.ro-cell-name a.ro-ext-link .icon svg.lucide-icon {
-        width: 0.8125rem;
-        height: 0.8125rem;
-    }
+    /* (Unit 16) the pre-redesign `.ro-list-table td.ro-cell-url` + the
+       `.ro-list-table td.ro-cell-name a.ro-ext-link` link-out rules were removed:
+       the redesign Clusters table is `.ro-table.ro-select-table` (under `.ro-rd`),
+       styled by the canonical `.ro-rd .ro-cell-url` + `.ro-rd .ro-ext-link` rules
+       below. */
 
     /* Single-cluster overview header: the label chips + a quiet mono API-URL line
        sit in a compact meta block under the title. */
@@ -836,18 +708,11 @@
         margin-right: 0.375rem;
     }
 
-    /* Resource Types tabs (Cluster / Namespaced): quiet mono caption tabs; the
-       active tab carries the accent text + underline, the rest are muted. The
-       template keeps the real <a> hrefs. */
-    .tabs.ro-rt-tabs { font-family: var(--font-mono); font-size: 0.75rem; margin-bottom: 0.75rem; }
-    .tabs.ro-rt-tabs ul { border-bottom-color: var(--border); }
-    .tabs.ro-rt-tabs li a {
-        color: var(--text-muted);
-        border-bottom-color: transparent;
-        padding: 0.4rem 0.75rem;
-    }
-    .tabs.ro-rt-tabs li a:hover { color: var(--text); border-bottom-color: var(--border-strong); }
-    .tabs.ro-rt-tabs li.is-active a { color: var(--accent-text); border-bottom-color: var(--accent); }
+    /* (Unit 16) the pre-redesign Bulma `.tabs.ro-rt-tabs li …` rules were removed:
+       resource_types now emits `<div class="ro-tabs ro-rt-tabs">` with bare `<a>`
+       anchors (no `.tabs`, no `<li>`), styled by the redesign `.ro-rd .ro-tabs`
+       chrome; the `.ro-rt-tabs` marker is KEEP-AS-IS but its old `.tabs`/`<li>`
+       rules matched nothing. */
 
     /* Resource-type row cells: the API GROUP + VERSION read as quiet mono
        metadata; Namespaced renders true (ok colour) / false (faint). */
@@ -859,16 +724,6 @@
     }
     .ro-bool-yes { font-family: var(--font-mono); font-size: 0.71875rem; color: var(--st-ok); }
     .ro-bool-no  { font-family: var(--font-mono); font-size: 0.71875rem; color: var(--text-faint); }
-
-    /* Kind cell (resource-types + cluster overview): a short mono identifier link
-       in the id colour, kept INLINE (not the ellipsized block .ro-cell-name uses)
-       so the CRD badge sits on the same line beside it. */
-    table.table.ro-list-table td.ro-cell-kind {
-        white-space: nowrap;
-    }
-    table.table.ro-list-table td.ro-cell-kind a {
-        color: var(--id-color);
-    }
 
     /* CRD badge (F-crdbadge): a small accent-tinted mono tag after a CUSTOM
        resource's Kind. The CRD check uses a built-in group ALLOWLIST, NOT a
@@ -1242,13 +1097,14 @@
     .ro-owner a { color: var(--accent-text); }
     .ro-owner .kind { color: var(--text-faint); }
 
-    /* Detail body subtables (controller Pods subtable + Events). They reuse the
-       list-table look (mono sticky headers, hover rows, fixed layout,
-       ellipsized identifiers) via the shared .ro-list-table rules, plus the
-       per-row status stripe + status dot (get_row_status_class is in the detail
-       context). .ro-subtable wraps them in a bordered rounded card so they read as
-       a contained block inside the detail flow (the list page table is full-bleed;
-       a detail subtable wants an explicit frame). */
+    /* Detail body subtables (controller Pods subtable + Events) -- the
+       pre-redesign `.ro-subtable` skin. NOTE (Unit 16): the migrated detail page
+       (resource_view.templ `subtableC` / `eventsSection`) renders the subtable as a
+       `.ro-table-wrap > .ro-table` (the same redesign table the list uses), NOT
+       `table.table.ro-subtable`, so these `.ro-subtable` rules no longer match the
+       emitted markup. They are LEFT IN PLACE here (out of this unit's teardown
+       scope -- `.ro-subtable` is not in the colliding-family list and is not a
+       net-new retired class), but they are effectively inert. */
     table.table.ro-subtable {
         border: 1px solid var(--border);
         border-radius: var(--radius);
@@ -1447,13 +1303,11 @@
         padding: 0.75rem 0.875rem;
         white-space: pre-wrap; word-break: break-word; overflow: hidden;
     }
-    pre.ro-logpre .log-ctr { color: var(--text-faint); }
-    pre.ro-logpre .log-msg { color: var(--text-muted); }
-    /* WARN/ERROR: presentation-only emphasis derived in-template from the line
-       text (a static class -- CSP-clean: no inline style/handler). Identity colour
-       remains on the pod prefix; severity is a colour + weight on the message. */
-    pre.ro-logpre .log-msg.log-lvl-warn { color: var(--st-warn); font-weight: 600; }
-    pre.ro-logpre .log-msg.log-lvl-err  { color: var(--st-err);  font-weight: 600; }
+    /* (Unit 16) the dead per-severity log rules (`.log-ctr`, `.log-msg`,
+       `.log-msg.log-lvl-warn|err`) were removed: the redesign log stream renders
+       bare messages (`.log-line > .log-src/.log-cN/.log-ts` + plain text), so none
+       of those classes is emitted. The per-pod identity colour lives on `.log-cN`
+       (@layer theme) and `.log-src`/`.log-ts` are styled in the redesign block. */
     pre.ro-logpre em { color: var(--text-faint); font-style: normal; }
 
     /* "Container logs disabled" warning state, re-skinned as a token notice
@@ -1555,7 +1409,6 @@
     }
     .ro-cond-pill .ro-cond-name { color: var(--text-muted); }
     .ro-cond-pill .ro-cond-val { font-weight: 600; color: currentColor; }
-    .ro-cond-pill .ro-status-dot { align-self: center; }
     .ro-cond-pill.ro-st-ok      { color: var(--st-ok);   border-color: var(--st-ok);   background: var(--st-ok-bg); }
     .ro-cond-pill.ro-st-warn    { color: var(--st-warn); border-color: var(--st-warn); background: var(--st-warn-bg); }
     .ro-cond-pill.ro-st-err     { color: var(--st-err);  border-color: var(--st-err);  background: var(--st-err-bg); }
@@ -1668,9 +1521,10 @@
     /* Empty state (resource-list-content.html). Not an error -- a calm, expected
        state: the literal "No <Kind> ... found." title plus a quiet nudge. The cell
        spans the table; the inner block is centered with breathing room so an empty
-       table reads as intentional, not broken. */
-    table.table.ro-list-table tbody tr.ro-empty-row:hover { background: transparent; }
-    table.table.ro-list-table tbody tr.ro-empty-row td { border-bottom: 0; }
+       table reads as intentional, not broken. (Unit 16: the dead
+       `.ro-list-table tr.ro-empty-row` hover/border rules were removed -- the
+       redesign empty row rides in a `.ro-table`, and the `.ro-empty-lg` card owns
+       the empty state.) */
     .ro-empty {
         text-align: center;
         padding: 2.5rem 1rem;
@@ -1723,8 +1577,11 @@
        brief tint fade so the eye is drawn to the delta. The page never jumps (the
        morph diffs in place); the class is added only off-reduced-motion (the JS
        hook is not registered under prefers-reduced-motion), and the animation is
-       additionally disabled in the media block below as defence-in-depth. */
-    table.table.ro-list-table tbody td.ro-cell-changed {
+       additionally disabled in the media block below as defence-in-depth.
+       (Unit 16: retargeted from the retired `.ro-list-table` to the redesign
+       `.ro-table` so the JS-driven flash actually lands on the live table cells --
+       readout.js adds `.ro-cell-changed` to `.ro-table` `<td>`s on morph.) */
+    .ro-table tbody td.ro-cell-changed {
         animation: ro-cell-flash 1s ease-out;
     }
     @keyframes ro-cell-flash {
@@ -1745,7 +1602,7 @@
             width: 100%;
             opacity: 0.6;
         }
-        table.table.ro-list-table tbody td.ro-cell-changed { animation: none; }
+        .ro-table tbody td.ro-cell-changed { animation: none; }
     }
 
     /* ---------------------------------------------------------------------------
@@ -2121,6 +1978,12 @@
     td.cell-node a { color: var(--text-muted); }
     td.cell-node a:hover { color: var(--accent); }
     .ro-table td.faint { color: var(--text-faint); }
+    /* (Unit 16) `.faint` utility for the empty-placeholder em-dash. Migrated
+       content emits a bare `<span class="faint">—</span>` for empty node
+       roles/conditions + namespace label chips + the Search "no namespace" cell;
+       only `.ro-table td.faint` existed, so a bare span read at full text colour.
+       Scoped under the `.ro-rd` content marker (every emitter is inside it). */
+    .ro-rd .faint { color: var(--text-faint); }
 
     /* truncation reserved for long secondary free-text ONLY -- never identifiers. */
     .ro-table .trunc { display: inline-block; max-width: 360px; overflow: hidden;
@@ -2790,15 +2653,10 @@
     .has-text-info    { color: var(--st-info); }
     .has-text-grey    { color: var(--text-faint); }
 
-    /* Status cell dot: a small inline dot before the colored mono Status word
-       (dot + word, NOT a pill). It inherits the cell's status colour from
-       the same has-text-* class on the <td>/dot, so dot and word match. A neutral
-       cell (no has-text-* match) leaves the dot at the muted faint colour. */
-    .ro-status-dot {
-        display: inline-block; width: 0.4375rem; height: 0.4375rem;
-        border-radius: 50%; margin-right: 0.4375rem; vertical-align: baseline;
-        background: currentColor; color: var(--text-faint);
-    }
+    /* (Unit 16) the old `.ro-status-dot` (pre-redesign list status dot) rule was
+       removed -- it is emitted by no template / generated Go / readout.js; the
+       redesign status dot is `.ro-dot.<ok|warn|err|info|mute>` (defined in
+       @layer app). */
 
     /* Per-row left status stripe: a thin inset bar down the row's leading
        edge in the matching status colour. Painted as an inset box-shadow on the
