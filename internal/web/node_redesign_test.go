@@ -307,6 +307,12 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 	workerObj := nodeObject("worker-1", cap, []any{
 		map[string]any{"type": "Ready", "status": "True"},
 	}, "worker")
+	// A worker node at 60% CPU (mid bucket) that is also NotReady (Ready=False ->
+	// an abnormal err condition pill). One row closes BOTH the .cap.mid and the
+	// .ro-cond-pill.err DOM gaps.
+	downObj := nodeObject("down-1", cap, []any{
+		map[string]any{"type": "Ready", "status": "False"},
+	}, "worker")
 
 	table := &kube.Table{
 		Resource: kube.ResourceType{Plural: "nodes", Kind: "Node", Namespaced: false, Version: "v1", APIVersion: "v1"},
@@ -317,6 +323,7 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 		Rows: []kube.Row{
 			{Cluster: "test", Object: cpObj, Cells: []any{"cp-1", "control-plane", 3.4, "MemoryPressure"}},
 			{Cluster: "test", Object: workerObj, Cells: []any{"worker-1", "worker", 1.0, "—"}},
+			{Cluster: "test", Object: downObj, Cells: []any{"down-1", "worker", 2.4, "Ready"}},
 		},
 	}
 	lc := &listContext{Cluster: "test", Plural: "nodes", ClusterCount: 1, Tables: []kube.Table{*table}}
@@ -363,13 +370,62 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 	if workerRow.Find(".ro-role-chip.cp").Length() != 0 {
 		t.Fatalf("worker role chip must not carry .cp")
 	}
-	// Exactly one .cp chip + one condition pill in the whole node render (a
-	// regression that broadened either would trip these counts).
+	// CPU 1.0/4 -> 25% -> .cap.lo (the green/low bucket) reaches the DOM with its
+	// fill bar + width. Closes the .cap.lo render-coverage gap.
+	if workerRow.Find(".cap.lo .cap-bar > i").Length() != 1 {
+		t.Fatalf("worker-1 cpu cell missing .cap.lo > .cap-bar > i: %s", normSpace(workerRow.Text()))
+	}
+	if width, _ := workerRow.Find(".cap.lo .cap-bar > i").Attr("style"); !strings.Contains(width, "width:25%") {
+		t.Fatalf("worker-1 cpu bar width = %q, want width:25%%", width)
+	}
+
+	// The down-1 row is at CPU 2.4/4 -> 60% -> .cap.mid (the amber/mid bucket) AND
+	// NotReady (Ready=False -> an err condition pill). Closes the .cap.mid and the
+	// .ro-cond-pill.err render-coverage gaps in one row.
+	downRow := doc.Find(`tr:has(td.cell-name a:contains("down-1"))`)
+	if downRow.Length() == 0 {
+		t.Fatalf("down-1 node row missing")
+	}
+	if downRow.Find(".cap.mid .cap-bar > i").Length() != 1 {
+		t.Fatalf("down-1 cpu cell missing .cap.mid > .cap-bar > i: %s", normSpace(downRow.Text()))
+	}
+	if width, _ := downRow.Find(".cap.mid .cap-bar > i").Attr("style"); !strings.Contains(width, "width:60%") {
+		t.Fatalf("down-1 cpu bar width = %q, want width:60%%", width)
+	}
+	if downRow.Find(".ro-cond-pill.err .ro-cond-name").Length() != 1 {
+		t.Fatalf("down-1 missing .ro-cond-pill.err > .ro-cond-name: %s", normSpace(downRow.Text()))
+	}
+	if got := normSpace(downRow.Find(".ro-cond-pill.err .ro-cond-name").Text()); got != "Ready" {
+		t.Fatalf("down-1 err condition name = %q, want Ready (the NotReady condition)", got)
+	}
+	// down-1 is a worker -> its role chip must NOT carry .cp.
+	if downRow.Find(".ro-role-chip.cp").Length() != 0 {
+		t.Fatalf("down-1 worker role chip must not carry .cp")
+	}
+
+	// Whole-render counts. Only cp-1 is control-plane, so exactly one .cp chip. Two
+	// abnormal condition pills now reach the DOM (cp-1 MemoryPressure=warn, down-1
+	// Ready=err), so the total pill count is 2 -- and asserting exactly one warn +
+	// one err keeps a broadened-tone regression (e.g. condPillClass mapping the
+	// wrong token) trippable.
 	if doc.Find(".ro-role-chip.cp").Length() != 1 {
 		t.Fatalf(".cp chip count = %d, want 1", doc.Find(".ro-role-chip.cp").Length())
 	}
-	if doc.Find(".ro-cond-pill").Length() != 1 {
-		t.Fatalf("condition pill count = %d, want 1 (only the abnormal one)", doc.Find(".ro-cond-pill").Length())
+	if doc.Find(".ro-cond-pill").Length() != 2 {
+		t.Fatalf("condition pill count = %d, want 2 (cp-1 warn + down-1 err)", doc.Find(".ro-cond-pill").Length())
+	}
+	if doc.Find(".ro-cond-pill.warn").Length() != 1 {
+		t.Fatalf("warn condition pill count = %d, want 1 (cp-1 MemoryPressure)", doc.Find(".ro-cond-pill.warn").Length())
+	}
+	if doc.Find(".ro-cond-pill.err").Length() != 1 {
+		t.Fatalf("err condition pill count = %d, want 1 (down-1 Ready)", doc.Find(".ro-cond-pill.err").Length())
+	}
+	// All three capacity buckets reach the DOM in this single render (lo/mid/hi), so
+	// a templ regression that broke capClass for any one bucket token trips here.
+	for _, bucket := range []string{".cap.lo", ".cap.mid", ".cap.hi"} {
+		if doc.Find(bucket).Length() == 0 {
+			t.Fatalf("capacity bucket %s missing from the node render", bucket)
+		}
 	}
 }
 
