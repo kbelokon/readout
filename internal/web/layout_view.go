@@ -245,7 +245,15 @@ func (s *Server) buildPaletteFeed(cluster, namespace string, navbar *navbarView,
 	for _, meta := range sidebar.Meta {
 		feed.Actions = append(feed.Actions, paletteActionFeed{Label: meta.Text, Href: meta.Href})
 	}
-	feed.Actions = append(feed.Actions, paletteActionFeed{Label: "All clusters", Href: "/clusters"})
+	// "All clusters" navigates; "Toggle theme" carries NO href -- it is a named
+	// CLIENT action the palette JS (choosePaletteRow) interprets by clicking the
+	// server-POST #btn-theme-toggle (the read-only-safe theme flip). The theme
+	// entry serializes as {"label","action":"theme"} with href omitted (omitempty),
+	// which the action==="theme" branch keys off.
+	feed.Actions = append(feed.Actions,
+		paletteActionFeed{Label: "All clusters", Href: "/clusters"},
+		paletteActionFeed{Label: "Toggle theme", Action: "theme"},
+	)
 
 	return feed
 }

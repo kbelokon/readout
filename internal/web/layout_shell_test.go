@@ -223,6 +223,25 @@ func TestLayoutPaletteDataBlob(t *testing.T) {
 			t.Fatalf("action feed entry missing label or target: %+v", a)
 		}
 	}
+
+	// The theme client-action must be present so the palette JS action==="theme"
+	// branch (clicking #btn-theme-toggle) is live: it carries action="theme" and NO
+	// href (a named client action, not a navigation).
+	var themeAction bool
+	for _, a := range data.Actions {
+		if a.Action == "theme" {
+			themeAction = true
+			if a.Href != "" {
+				t.Fatalf("theme action must carry no href, got %q", a.Href)
+			}
+			if a.Label == "" {
+				t.Fatalf("theme action must carry a label")
+			}
+		}
+	}
+	if !themeAction {
+		t.Fatalf("actions feed missing the theme client-action: %+v", data.Actions)
+	}
 }
 
 // paletteFeedJSON mirrors the pinned palette-feed wire shape so the test parses

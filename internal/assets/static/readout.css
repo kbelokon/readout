@@ -1865,6 +1865,96 @@
         100% { box-shadow: 0 0 0 0 rgba(86,224,188,0); }
     }
 
+    /* ---- topbar dropdown panels (namespace context + refresh interval) --------
+       The redesign header.ro-topbar chrome renamed the old Bulma `.navbar-dropdown`
+       panels to NET-NEW class names: `.ctx-menu` (namespace list) and
+       `.refresh-menu` (interval picker). The old styling was scoped to
+       `nav.navbar.ro-topbar .navbar-dropdown`, which no longer matches under
+       <header>, so without these rules the panels render permanently expanded,
+       unpositioned and unstyled inline in the bar. These are additive (no old rule,
+       no .ro-rd collision): an elevated themed popover anchored under its trigger,
+       CLOSED by default, revealed only on the open state.
+
+       Two different open contracts, matching the JS that already drives the
+       triggers (readout.js):
+         - namespace: CLICK-toggled. The delegated click handler toggles `is-active`
+           on the #namespace-dropdown container, so the panel reveals on
+           `#namespace-dropdown.is-active`.
+         - refresh: HOVER/FOCUS-revealed. The old control used Bulma `is-hoverable`
+           (CSS :hover) and there is NO JS open/close handler for it -- `refresh-on`
+           means "an interval is active", not "menu open" -- so the panel reveals on
+           container :hover / :focus-within (the faithful port of is-hoverable). */
+    #namespace-dropdown { position: relative; }
+    #refresh-dropdown { position: relative; }
+
+    .ctx-menu,
+    .refresh-menu {
+        display: none;
+        position: absolute;
+        top: calc(100% + 6px);
+        min-width: 200px;
+        z-index: 60;
+        padding: 5px;
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-pop);
+    }
+    /* refresh menu is right-aligned (it sits at the end of the bar) */
+    .refresh-menu { right: 0; min-width: 150px; }
+    .ctx-menu { left: 0; max-height: 60vh; overflow-y: auto; }
+
+    /* OPEN contracts: closed by default above, shown only on the open state. */
+    #namespace-dropdown.is-active .ctx-menu { display: block; }
+    #refresh-dropdown:hover .refresh-menu,
+    #refresh-dropdown:focus-within .refresh-menu { display: block; }
+
+    /* panel items: muted mono rows that firm up on hover/focus (palette language). */
+    .namespace-item,
+    .refresh-option {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 6px 9px;
+        border: 0;
+        border-radius: var(--radius-sm);
+        background: transparent;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+    }
+    .namespace-item:hover,
+    .namespace-item:focus,
+    .refresh-option:hover,
+    .refresh-option:focus {
+        background: var(--surface-2);
+        color: var(--text);
+    }
+    /* the active (stored) interval reads as selected via the accent wash. */
+    .refresh-option.is-active {
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        font-weight: 600;
+    }
+
+    /* namespace filter input inside the panel: matches the topbar search chip. */
+    .ctx-search { padding: 3px 3px 6px; }
+    #namespace-searchbox {
+        width: 100%;
+        height: 30px;
+        padding: 0 10px;
+        background: var(--surface-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        font-family: var(--font-mono);
+        font-size: 12px;
+    }
+    #namespace-searchbox::placeholder { color: var(--text-faint); }
+    #namespace-searchbox:focus { border-color: var(--accent); background: var(--surface); }
+
     /* icons (lucide-ish via stroke) */
     .ico svg { width: 15px; height: 15px; display: block; stroke: currentColor;
         stroke-width: 1.75; fill: none; stroke-linecap: round; stroke-linejoin: round; }
