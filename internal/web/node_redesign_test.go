@@ -360,9 +360,14 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 	if got := normSpace(cpRow.Find(".ro-role-chip.cp").Text()); got != "control-plane" {
 		t.Fatalf("cp-1 role chip text = %q, want control-plane", got)
 	}
-	// Abnormal MemoryPressure -> a warn condition pill with the .ro-dot + name.
+	// Abnormal MemoryPressure -> a warn condition pill with a TONED dot + name. The
+	// dot must carry the `warn` tone class (`.ro-dot.warn`), matching the err-pill
+	// dot assertion below -- both pin "the tone rides on the dot, not just the pill".
 	if cpRow.Find(".ro-cond-pill.warn .ro-cond-name").Length() != 1 {
 		t.Fatalf("cp-1 missing .ro-cond-pill.warn > .ro-cond-name")
+	}
+	if cpRow.Find(".ro-cond-pill.warn .ro-dot.warn").Length() != 1 {
+		t.Fatalf("cp-1 warn condition dot missing the .ro-dot.warn tone class")
 	}
 	if got := normSpace(cpRow.Find(".ro-cond-pill .ro-cond-name").Text()); got != "MemoryPressure" {
 		t.Fatalf("cp-1 condition name = %q, want MemoryPressure", got)
@@ -404,6 +409,17 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 	}
 	if got := normSpace(downRow.Find(".ro-cond-pill.err .ro-cond-name").Text()); got != "Ready" {
 		t.Fatalf("down-1 err condition name = %q, want Ready (the NotReady condition)", got)
+	}
+	// The err pill's DOT must carry the `err` tone class (`.ro-dot.err`), not a
+	// bare `.ro-dot`: the dot color is driven by the tone class ON the dot via the
+	// global `.ro-dot.err` background rule, and the `.ro-rd .ro-cond-pill` overlay
+	// only tints ok/warn dots -- so a bare dot on an err/mute condition (the
+	// NotReady node, the most severe state) renders INVISIBLE. Asserting
+	// `.ro-cond-pill.err .ro-dot.err` makes that regression trippable: reverting the
+	// emit site to a bare `<span class="ro-dot">` fails this (the `.err` tone would
+	// be absent from the dot).
+	if downRow.Find(".ro-cond-pill.err .ro-dot.err").Length() != 1 {
+		t.Fatalf("down-1 err condition dot missing the .ro-dot.err tone class (invisible-dot regression): %s", normSpace(downRow.Text()))
 	}
 	// down-1 is a worker -> its role chip must NOT carry .cp.
 	if downRow.Find(".ro-role-chip.cp").Length() != 0 {

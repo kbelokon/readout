@@ -945,8 +945,8 @@
        Events) + the global footer -- all driven off the token system, so app wins
        over bulma by layer order (no forced-priority override). The header stays
        READ-ONLY: the only actions are Download-YAML and the operator-configured
-       object/label link-outs (the `{% for link in links %}` loop), restyled as
-       quiet token icon links via .ro-link-out (shared with the list page).
+       object/label link-outs (the link loop), rendered as quiet `.ro-iconbtn`
+       icon buttons (the single authoritative icon-button skin).
 
        The detail page <h1> keeps Bulma's bare `class="title"` (a pinned offline
        guard matches `<h1 class="title">name` verbatim), so the mono-name treatment
@@ -981,28 +981,16 @@
         order: -1;            /* badge reads LEFT of the name (markup keeps name first
                                  so the offline `<h1 class="title">name` pin holds) */
     }
-    /* Detail-header link-outs (Download-YAML + configured object/label links) are
-       quiet icon buttons; the shared .ro-link-out below collapses the chip chrome
-       to a borderless muted icon. The header .links keeps the existing margin. */
+    /* Detail-header meta line. (Unit 16: the header link-outs are now plain
+       `.ro-iconbtn` anchors in `.ro-detail-actions` -- the same icon-button skin as
+       the Download button beside them -- so the dead `h1 .links .button.ro-link-out`
+       rules (which required a `.button` inside `h1 .links`, never emitted) and the
+       `ro-link-out` token on the markup were removed. `.ro-iconbtn` is the single
+       authoritative skin.) */
     h1.title:has(.ro-kind-badge) .meta {
         font-family: var(--font-ui);
         color: var(--text-faint);
         font-size: 0.8125rem;
-    }
-
-    /* The detail link-out icon button (shared name with the list-table trailing
-       link cell): borderless, muted, warms on hover. Scoped to the header
-       .links here so it does not depend on table context. */
-    h1 .links .button.ro-link-out {
-        background: transparent;
-        border-color: transparent;
-        color: var(--text-faint);
-    }
-    h1 .links .button.ro-link-out:hover,
-    h1 .links .button.ro-link-out:focus {
-        background: var(--surface-2);
-        border-color: transparent;
-        color: var(--text);
     }
 
     /* Tabs (Default / YAML / Logs) -> a quiet underline tab strip: a hairline
@@ -2140,14 +2128,20 @@
     .ro-rd .ro-kv-row dt { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); margin: 0; }
     .ro-rd .ro-kv-row dd { font-family: var(--font-mono); font-size: 12px; color: var(--text); margin: 0; text-align: right; }
 
-    /* node condition pills (redesign) */
+    /* node condition pills (redesign). Tone-complete: the pill BODY is tinted per
+       tone (ok/warn/err/info/mute) and the DOT carries its own tone class
+       (`<span class="ro-dot <tone>">`), so the global `.ro-dot.<tone>` background
+       rules paint it -- previously the dot was bare and the overlay only tinted
+       ok/warn, so an `err`/`mute` condition (e.g. a NotReady node) rendered with an
+       invisible dot + untinted pill (the most severe state was the least marked). */
     .ro-rd .ro-cond-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
         border-radius: 999px; font-family: var(--font-mono); font-size: 11.5px; border: 1px solid var(--border); }
     .ro-rd .ro-cond-pill .ro-cond-name { color: var(--text-muted); } .ro-rd .ro-cond-pill .ro-cond-val { color: var(--text); }
-    .ro-rd .ro-cond-pill.ok { background: var(--st-ok-bg); border-color: transparent; }
-    .ro-rd .ro-cond-pill.ok .ro-dot { background: var(--st-ok); }
+    .ro-rd .ro-cond-pill.ok   { background: var(--st-ok-bg);   border-color: transparent; }
     .ro-rd .ro-cond-pill.warn { background: var(--st-warn-bg); border-color: transparent; }
-    .ro-rd .ro-cond-pill.warn .ro-dot { background: var(--st-warn); }
+    .ro-rd .ro-cond-pill.err  { background: var(--st-err-bg);  border-color: transparent; }
+    .ro-rd .ro-cond-pill.info { background: var(--st-info-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill.mute { background: var(--st-mute-bg); border-color: transparent; }
     .ro-rd .ro-cond-pill .ro-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: none; }
 
     /* owners line (redesign) */
@@ -2155,20 +2149,21 @@
     .ro-rd .ro-owner a { font-family: var(--font-mono); }
     .ro-rd .ro-owner .kind { color: var(--text-faint); }
 
-    /* YAML cards (collapsible per-section) -- redesign */
+    /* YAML cards (collapsible per-section) -- redesign. NOTE (Unit 16): the COLLAPSE
+       is driven by `is-collapsed` on the `.collapsible` card (readout.js) + the live
+       `div.section.is-collapsed .content { display:none }` rule above; the markup is
+       `.ro-card-head > h4.title` + `.content` (the highlighted YAML), with no `.fold`
+       / `.ro-card-body` / `.key-count` / `.collapsed` elements. The dead overlay
+       lines that keyed on `.collapsed`/`.ro-card-body`/`.fold`/`.key-count` were
+       removed -- they claimed to own a collapse they never drove. */
     .ro-rd .ro-yaml-card { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin: 0 0 12px; background: var(--surface); }
     .ro-rd .ro-card-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px;
         background: var(--card-head-bg); border-bottom: 1px solid var(--border); cursor: pointer; }
-    .ro-rd .ro-card-head .fold { color: var(--text-faint); display: inline-flex; transition: transform .12s; }
-    .ro-rd .ro-yaml-card.collapsed .fold { transform: rotate(-90deg); }
-    .ro-rd .ro-yaml-card.collapsed .ro-card-body { display: none; }
     .ro-rd .ro-card-head h4 { font-size: 13px; font-weight: 600; margin: 0; }
-    .ro-rd .ro-card-head .key-count { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
     .ro-rd .ro-copy-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
         font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
         background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px; cursor: pointer; }
     .ro-rd .ro-copy-btn:hover { color: var(--text); border-color: var(--border-strong); }
-    .ro-card-body { padding: 4px 0; }
 
     /* YAML / code block (redesign bare variant) */
     .ro-yaml { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.65;

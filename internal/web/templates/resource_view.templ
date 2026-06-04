@@ -238,7 +238,7 @@ templ ResourceView(d DetailData) {
 		} else {
 			<div class="ro-detail-title"><h1 class="ro-title">{ d.Name }</h1> <span class="ro-kind-badge">{ d.Kind }</span><div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } title="Download resource object as YAML" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
 				for _, link := range d.Links {
-					<a href={ templ.SafeURL(link.Href) } class="ro-iconbtn ro-link-out" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
+					<a href={ templ.SafeURL(link.Href) } class="ro-iconbtn" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
 				}</div><span class="ro-detail-meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></div>
 			<div class="ro-tabs">@detailTab(d.DefaultTabActive, "?", "Default")@detailTab(d.YAMLTabActive, "?view=yaml", "YAML")@detailTab(d.EventsTabActive, "?view=events", "Events")
 				if d.LogsHref != "" {
@@ -333,7 +333,7 @@ templ nodeSummary(n NodeSummary) {
 	if len(n.Conditions) > 0 {
 		<div class="ro-section"><div class="ro-section-label">Conditions</div><div class="ro-chips ro-cond-pills">
 			for _, cond := range n.Conditions {
-				<span class={ "ro-cond-pill " + cond.Tone } title={ cond.Title }><span class="ro-dot" aria-hidden="true"></span><span class="ro-cond-name">{ cond.Type }</span> <span class="ro-cond-val">{ cond.Value }</span></span>
+				<span class={ "ro-cond-pill " + cond.Tone } title={ cond.Title }><span class={ dotClass(cond.Tone) } aria-hidden="true"></span><span class="ro-cond-name">{ cond.Type }</span> <span class="ro-cond-val">{ cond.Value }</span></span>
 			}
 			</div></div>
 	}

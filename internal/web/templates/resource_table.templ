@@ -367,7 +367,7 @@ templ tableCell(cell TableCell) {
 			} else {
 				<span class="ro-cond-pills">
 					for _, cond := range cell.Conds {
-						<span class={ condPillClass(cond.Tone) }><span class="ro-dot" aria-hidden="true"></span><span class="ro-cond-name">{ cond.Name }</span></span>{ " " }
+						<span class={ condPillClass(cond.Tone) }><span class={ dotClass(cond.Tone) } aria-hidden="true"></span><span class="ro-cond-name">{ cond.Name }</span></span>{ " " }
 					}
 				</span>
 			}
@@ -518,7 +518,7 @@ templ pcardCell(cell TableCell) {
 			} else {
 				<span class="ro-cond-pills">
 					for _, cond := range cell.Conds {
-						<span class={ condPillClass(cond.Tone) }><span class="ro-dot" aria-hidden="true"></span><span class="ro-cond-name">{ cond.Name }</span></span>{ " " }
+						<span class={ condPillClass(cond.Tone) }><span class={ dotClass(cond.Tone) } aria-hidden="true"></span><span class="ro-cond-name">{ cond.Name }</span></span>{ " " }
 					}
 				</span>
 			}
