@@ -221,10 +221,12 @@ type detailView struct {
 	DownloadHref string
 	Links        []config.Link
 
-	IsYAMLView bool
-	DefaultTab bool   // active flag for the Default tab
-	YAMLTab    bool   // active flag for the YAML tab
-	LogsHref   string // "" unless a Logs tab should render
+	IsYAMLView   bool
+	IsEventsView bool
+	DefaultTab   bool   // active flag for the Default tab
+	YAMLTab      bool   // active flag for the YAML tab
+	EventsTab    bool   // active flag for the Events tab
+	LogsHref     string // "" unless a Logs tab should render
 
 	HighlightedYAML string // precomputed when IsYAMLView (else "")
 
@@ -339,20 +341,19 @@ type subtableCell struct {
 }
 
 // eventView is one rendered event row (already flattened from the raw object).
-// The *Class fields are the resolved cell classes from the events/<column> cell
-// class and the age class for lastTimestamp at days=1:
-// TypeClass is used BOTH on the Type <td> and on its ro-status-dot span, ReasonClass
-// on the Reason <td>, AgeClass on the Age <td>. The Message <td>'s ro-event-msg class
-// is static (emitted in the templ).
+// Tone is the redesign status tone for the Type cell (mute for Normal/unknown,
+// warn for Warning), mapped from the events/Type cell class via statusTone.
+// AgeClass is the age bucket for lastTimestamp at days=1 (the .age-* token on the
+// Age <td>). The Reason cell renders plain and From faint in the redesign; the
+// Message <td>'s ro-event-msg class is static (emitted in the templ).
 type eventView struct {
-	Type        string
-	TypeClass   string
-	Reason      string
-	ReasonClass string
-	Age         string
-	AgeClass    string
-	From        string
-	Message     string
+	Type     string
+	Tone     string
+	Reason   string
+	Age      string
+	AgeClass string
+	From     string
+	Message  string
 }
 
 // searchView is the view model for the search page. Every value the

@@ -86,6 +86,7 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster
 		pageTitle = object.Name() + " (" + object.Kind() + " in " + renderNamespace + ")"
 	}
 
+	viewParam := r.URL.Query().Get("view")
 	v := &detailView{
 		Cluster:      cluster.Name,
 		Namespace:    renderNamespace,
@@ -93,11 +94,13 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster
 		Title:        pageTitle,
 		DownloadHref: objectDownloadYAMLHref(cluster.Name, renderNamespace, &object),
 		Links:        links,
-		IsYAMLView:   r.URL.Query().Get("view") == "yaml",
+		IsYAMLView:   viewParam == "yaml",
+		IsEventsView: viewParam == "events",
 		Owners:       owners,
 	}
-	v.DefaultTab = !v.IsYAMLView
 	v.YAMLTab = v.IsYAMLView
+	v.EventsTab = v.IsEventsView
+	v.DefaultTab = !v.IsYAMLView && !v.IsEventsView
 	if renderNamespace != "" && (object.Kind() == "Pod" || object.Kind() == "Deployment" || object.Kind() == "ReplicaSet" || object.Kind() == "DaemonSet" || object.Kind() == "StatefulSet") {
 		v.LogsHref = fmt.Sprintf("/clusters/%s/namespaces/%s/%s/%s/logs", url.PathEscape(cluster.Name), url.PathEscape(renderNamespace), url.PathEscape(object.Resource.Plural), url.PathEscape(object.Name()))
 	}
@@ -120,7 +123,7 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster
 	// highlighted block was already resolved into v.HighlightedYAML above.
 	v.CreatedMeta = formatTimestamp(object.CreationTimestamp())
 	v.Version = nestedString(object.Raw, "metadata", "resourceVersion")
-	if !v.IsYAMLView {
+	if v.DefaultTab {
 		v.Labels = buildLabelChips(cluster.Name, renderNamespace, &object)
 		v.Annotations = buildAnnotationChips(&object)
 		if object.Kind() == "Node" {
@@ -160,7 +163,7 @@ func buildLabelChips(cluster, namespace string, object *kube.Object) []labelChip
 		}
 		out = append(out, labelChipView{
 			Href:  href,
-			Class: "ro-chip" + appLabelClass(key),
+			Class: redesignChipClass(key),
 			Key:   key,
 			Val:   val,
 		})
@@ -362,10 +365,11 @@ func (e *eventItem) from() string {
 }
 
 // buildEventViews flattens raw event objects into render-ready event rows. The
-// Type/Reason cell classes come from kube.CellClass("events", <column>, <value>)
-// (the SAME helper that classes the list/related-pods cells); the Age cell shows
-// the resolved timestamp (formatTimestamp: 'T'->' ', strip trailing 'Z';
-// "Unknown" when empty) classed by ageClass (a 1-day window); From is the
+// Type cell tone is the redesign status tone mapped from kube.CellClass("events",
+// "Type", <value>) via statusTone, then defaulted to "mute" for a Normal event
+// (which carries no kube class) so the redesign dot still reads grey; the Age
+// cell shows the resolved timestamp (formatTimestamp: 'T'->' ', strip trailing
+// 'Z'; "Unknown" when empty) classed by ageClass (a 1-day window); From is the
 // resolved reporting component. The Message cell's static ro-event-msg class is
 // emitted in the templ. Each event is decoded into eventItem so both the core/v1
 // and events.k8s.io/v1 spellings normalize to one row.
@@ -381,15 +385,18 @@ func (s *Server) buildEventViews(events []map[string]any) []eventView {
 		if timestamp != "" {
 			age = formatTimestamp(timestamp)
 		}
+		tone := statusTone(kube.CellClass("events", "Type", event.Type))
+		if tone == "" {
+			tone = "mute"
+		}
 		out = append(out, eventView{
-			Type:        event.Type,
-			TypeClass:   kube.CellClass("events", "Type", event.Type),
-			Reason:      event.Reason,
-			ReasonClass: kube.CellClass("events", "Reason", event.Reason),
-			Age:         age,
-			AgeClass:    s.ageClass(timestamp),
-			From:        event.from(),
-			Message:     event.message(),
+			Type:     event.Type,
+			Tone:     tone,
+			Reason:   event.Reason,
+			Age:      age,
+			AgeClass: s.ageClass(timestamp),
+			From:     event.from(),
+			Message:  event.message(),
 		})
 	}
 	return out
@@ -453,7 +460,10 @@ func (s *Server) buildSubtableView(r *http.Request, table *kube.Table, namespace
 				sc.Href = "/clusters/" + url.PathEscape(rowCluster) + "/nodes/" + url.PathEscape(sc.Value)
 			case "Status":
 				sc.Kind = cellStatus
-				sc.Href = cellClass(table, idx, cell) // status-dot class (no age augmentation)
+				// Carry the redesign status tone (ok/warn/err/info/mute) so the
+				// related-pods status cell renders the .cell-status/.ro-dot pair
+				// like the list, not a Bulma text colour. "" tone -> a bare dot.
+				sc.Href = statusTone(cellClass(table, idx, cell))
 			default:
 				sc.Kind = cellPlain
 			}

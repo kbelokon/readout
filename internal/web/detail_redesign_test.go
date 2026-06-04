@@ -1,0 +1,286 @@
+package web
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/PuerkitoBio/goquery"
+	"github.com/kbelokon/readout/internal/kube"
+	"github.com/kbelokon/readout/internal/web/templates"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+)
+
+// detail_redesign_test.go pins the redesign object-detail spine through the REAL
+// render pipeline (buildDetailView assembly -> toDetailData bridge -> the
+// ResourceView templ). Each fact is an independent statement about how an object
+// maps onto the redesign detail vocabulary -- the .ro-rd content marker, the
+// .ro-detail-title / .ro-kind-badge header, the Default/YAML/Events(/Logs) tabs,
+// the app.kubernetes.io/* -> .ro-chip.app accent, the collapsible+copyable YAML
+// cards, the toned Events table, and the chroma token spans in the YAML body.
+
+// detailObject builds a kube.Object for the given kind/labels, used to drive the
+// detail assembly without a fake-API round-trip.
+func detailObject(plural, kind string, namespaced bool, labels, annotations map[string]any) *kube.Object {
+	rt := kube.ResourceType{APIVersion: "v1", Version: "v1", Plural: plural, Kind: kind, Namespaced: namespaced}
+	md := map[string]any{
+		"name":              strings.ToLower(kind) + "-0",
+		"creationTimestamp": "2024-03-01T08:00:00Z",
+		"resourceVersion":   "12345",
+	}
+	if namespaced {
+		md["namespace"] = "default"
+	}
+	if len(labels) > 0 {
+		md["labels"] = labels
+	}
+	if len(annotations) > 0 {
+		md["annotations"] = annotations
+	}
+	obj := kube.NewObject(&rt, &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       kind,
+		"metadata":   md,
+		"spec":       map[string]any{"replicas": int64(1)},
+		"status":     map[string]any{"phase": "Running"},
+	}})
+	return &obj
+}
+
+// renderDetailView drives a package-web detailView through the REAL bridge
+// (toDetailData -> the ResourceView templ) and parses the output, so the detail
+// view-models are asserted through the production render path rather than a
+// hand-built templates.DetailData.
+func renderDetailView(t *testing.T, v *detailView) *goquery.Document {
+	t.Helper()
+	var sb strings.Builder
+	if err := templates.ResourceView(toDetailData(v)).Render(context.Background(), &sb); err != nil {
+		t.Fatalf("render detail view: %v", err)
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(sb.String()))
+	if err != nil {
+		t.Fatalf("parse detail view: %v", err)
+	}
+	return doc
+}
+
+// buildDefaultDetailView assembles a Default-tab detailView for obj through the
+// real assembly helpers (label/annotation chips + YAML cards), mirroring the
+// non-YAML branch of buildDetailView without the live kube client.
+func buildDefaultDetailView(t *testing.T, obj *kube.Object) *detailView {
+	t.Helper()
+	app := newServer(t, baseConfig(t), time.Now())
+	v := &detailView{
+		Cluster:      "test",
+		Namespace:    obj.Namespace(),
+		Object:       *obj,
+		DefaultTab:   true,
+		CreatedMeta:  formatTimestamp(obj.CreationTimestamp()),
+		Version:      nestedString(obj.Raw, "metadata", "resourceVersion"),
+		DownloadHref: objectDownloadYAMLHref("test", obj.Namespace(), obj),
+	}
+	v.Labels = buildLabelChips("test", obj.Namespace(), obj)
+	v.Annotations = buildAnnotationChips(obj)
+	v.YAMLCards = app.buildYAMLCards("test", obj.Namespace(), obj)
+	return v
+}
+
+// TestResourceViewDetailSpine pins the redesign detail header + content marker:
+// the outermost content element carries .ro-rd (D13), the title is the
+// .ro-detail-title row with an H1.ro-title name + a .ro-kind-badge + a quiet
+// .ro-detail-actions Download button + the .ro-detail-meta line.
+func TestResourceViewDetailSpine(t *testing.T) {
+	obj := detailObject("deployments", "Deployment", true, nil, nil)
+	doc := renderDetailView(t, buildDefaultDetailView(t, obj))
+
+	if doc.Find(".ro-rd").Length() == 0 {
+		t.Fatalf("detail view missing the .ro-rd content marker (D13)")
+	}
+	if doc.Find(".ro-rd .ro-detail-title").Length() == 0 {
+		t.Fatalf(".ro-detail-title is not under the .ro-rd marker")
+	}
+	if got := normSpace(doc.Find(".ro-detail-title h1.ro-title").Text()); got != "deployment-0" {
+		t.Fatalf("detail H1 = %q, want deployment-0", got)
+	}
+	if got := normSpace(doc.Find(".ro-detail-title .ro-kind-badge").Text()); got != "Deployment" {
+		t.Fatalf("kind badge = %q, want Deployment", got)
+	}
+	if doc.Find(`.ro-detail-actions a[title="Download resource object as YAML"]`).Length() != 1 {
+		t.Fatalf("missing the quiet Download-YAML action button in .ro-detail-actions")
+	}
+	if got := normSpace(doc.Find(".ro-detail-meta").Text()); got != "created 2024-03-01 08:00:00, version 12345" {
+		t.Fatalf("detail meta = %q", got)
+	}
+}
+
+// TestResourceViewTabsPodVsNonPod pins the tab count rule: a non-pod object gets
+// three tabs (Default / YAML / Events); a Pod (namespaced, with a Logs href)
+// gets a fourth Logs tab. The active tab carries .is-active.
+func TestResourceViewTabsPodVsNonPod(t *testing.T) {
+	// Non-pod: three tabs.
+	nonPod := buildDefaultDetailView(t, detailObject("deployments", "Deployment", true, nil, nil))
+	doc := renderDetailView(t, nonPod)
+	tabs := docTexts(doc, ".ro-tabs a")
+	if strings.Join(tabs, "|") != "Default|YAML|Events" {
+		t.Fatalf("non-pod tabs = %v, want Default|YAML|Events", tabs)
+	}
+	if got := normSpace(doc.Find(".ro-tabs a.is-active").Text()); got != "Default" {
+		t.Fatalf("active tab = %q, want Default", got)
+	}
+
+	// Pod: a Logs href adds the fourth Logs tab.
+	pod := buildDefaultDetailView(t, detailObject("pods", "Pod", true, nil, nil))
+	pod.LogsHref = "/clusters/test/namespaces/default/pods/pod-0/logs"
+	podDoc := renderDetailView(t, pod)
+	podTabs := docTexts(podDoc, ".ro-tabs a")
+	if strings.Join(podTabs, "|") != "Default|YAML|Events|Logs" {
+		t.Fatalf("pod tabs = %v, want Default|YAML|Events|Logs", podTabs)
+	}
+	if href, _ := podDoc.Find(`.ro-tabs a:contains("Logs")`).Attr("href"); href != "/clusters/test/namespaces/default/pods/pod-0/logs" {
+		t.Fatalf("Logs tab href = %q", href)
+	}
+}
+
+// TestDetailLabelAppChip pins the app.kubernetes.io/* label accent: such a label
+// renders as an .ro-chip.app anchor (bare text, no inner .tag) linking to the
+// selector-filtered list, while an ordinary label is a plain .ro-chip with no
+// .app accent.
+func TestDetailLabelAppChip(t *testing.T) {
+	obj := detailObject("deployments", "Deployment", true, map[string]any{
+		"app.kubernetes.io/component": "master",
+		"tier":                        "backend",
+	}, nil)
+	doc := renderDetailView(t, buildDefaultDetailView(t, obj))
+
+	appChip := doc.Find(".ro-chips a.ro-chip.app")
+	if appChip.Length() != 1 {
+		t.Fatalf("expected exactly one .ro-chip.app for the app.kubernetes.io/* label, got %d", appChip.Length())
+	}
+	if got := normSpace(appChip.Text()); got != "app.kubernetes.io/component: master" {
+		t.Fatalf(".app chip text = %q, want app.kubernetes.io/component: master", got)
+	}
+	if href, _ := appChip.Attr("href"); href != "/clusters/test/namespaces/default/deployments?selector=app.kubernetes.io/component=master" {
+		t.Fatalf(".app chip href = %q", href)
+	}
+	// The ordinary "tier" label is a plain .ro-chip without the .app accent.
+	tierChip := doc.Find(`.ro-chips a.ro-chip:not(.app):contains("tier")`)
+	if tierChip.Length() != 1 {
+		t.Fatalf("expected the tier label as a plain .ro-chip (no .app), got %d", tierChip.Length())
+	}
+}
+
+// TestYAMLCardCollapsibleCopyable pins the per-section YAML card contract that
+// readout.js keys off: a collapsible[data-name] card whose head holds the
+// h4.title fold target + the .ro-copy-btn, with the highlighted body in .content.
+func TestYAMLCardCollapsibleCopyable(t *testing.T) {
+	obj := detailObject("deployments", "Deployment", true, nil, nil)
+	doc := renderDetailView(t, buildDefaultDetailView(t, obj))
+
+	// The object's top-level sections (spec/status) each render a card.
+	specCard := doc.Find(`.ro-yaml-card.collapsible[data-name="spec"]`)
+	if specCard.Length() != 1 {
+		t.Fatalf("expected a collapsible spec YAML card, got %d", specCard.Length())
+	}
+	if specCard.Find(".ro-card-head h4.title").Length() != 1 {
+		t.Fatalf("spec card head missing its h4.title fold target")
+	}
+	if specCard.Find(".ro-card-head .ro-copy-btn").Length() != 1 {
+		t.Fatalf("spec card missing its .ro-copy-btn")
+	}
+	if specCard.Find(".content .highlighttable").Length() != 1 {
+		t.Fatalf("spec card body missing the highlighted .content .highlighttable")
+	}
+}
+
+// TestEventsTabTonedTable pins the Events-tab table (the ?view=events branch):
+// the redesign .ro-table renders each event with a toned .cell-status/.ro-dot
+// Type cell, an age-bucketed Age cell, a faint From cell, and the wrapping
+// .ro-event-msg Message cell.
+func TestEventsTabTonedTable(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC))
+	events := app.buildEventViews([]map[string]any{
+		{
+			"type": "Warning", "reason": "Unhealthy",
+			"message":       "Readiness probe failed",
+			"lastTimestamp": "2024-05-31T23:00:00Z",
+			"source":        map[string]any{"component": "kubelet"},
+		},
+		{
+			"type": "Normal", "reason": "Scheduled",
+			"message":       "Successfully assigned default/x to node-1",
+			"lastTimestamp": "2024-03-01T10:00:00Z",
+			"source":        map[string]any{"component": "default-scheduler"},
+		},
+	})
+	v := &detailView{Cluster: "test", Namespace: "default", Object: *detailObject("pods", "Pod", true, nil, nil), EventsTab: true, IsEventsView: true, Events: events}
+	doc := renderDetailView(t, v)
+
+	if doc.Find(".ro-section .ro-table-wrap table.ro-table").Length() != 1 {
+		t.Fatalf("events tab missing the redesign .ro-table")
+	}
+	rows := doc.Find("table.ro-table tbody tr")
+	if rows.Length() != 2 {
+		t.Fatalf("event rows = %d, want 2", rows.Length())
+	}
+	// Warning -> warn tone on the first row; Normal -> mute on the second.
+	warnRow := rows.Eq(0)
+	if warnRow.Find(".cell-status.warn .ro-dot.warn").Length() != 1 {
+		t.Fatalf("Warning event row missing .cell-status.warn > .ro-dot.warn: %s", normSpace(warnRow.Text()))
+	}
+	muteRow := rows.Eq(1)
+	if muteRow.Find(".cell-status.mute .ro-dot.mute").Length() != 1 {
+		t.Fatalf("Normal event row missing .cell-status.mute > .ro-dot.mute: %s", normSpace(muteRow.Text()))
+	}
+	// The Message cell is the one wrapping cell.
+	if got := normSpace(muteRow.Find("td.ro-event-msg").Text()); got != "Successfully assigned default/x to node-1" {
+		t.Fatalf("event message cell = %q", got)
+	}
+	// Age bucket: the 2024-03 event is months before the fixed clock -> age-old.
+	if cls, _ := muteRow.Find("td:nth-child(3)").Attr("class"); cls != "age-old" {
+		t.Fatalf("event age cell class = %q, want age-old", cls)
+	}
+	// From cell is faint.
+	if muteRow.Find("td.faint").Length() == 0 {
+		t.Fatalf("event From cell missing the faint class")
+	}
+}
+
+// TestResourceViewYAMLChromaSpans pins D7 end to end: the YAML tab renders the
+// full manifest through the chroma highlighter (server-side), so the body carries
+// the Pygments token spans (.nt keys, .l unquoted literals) -- the recolour-only
+// path, not a re-tokeniser.
+func TestResourceViewYAMLChromaSpans(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx?view=yaml", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if doc.Find("td.code .nt").Length() == 0 {
+		t.Fatalf("YAML body missing chroma key token spans (.nt)")
+	}
+	if doc.Find("td.code .l").Length() == 0 {
+		t.Fatalf("YAML body missing chroma unquoted-literal token spans (.l)")
+	}
+	// The YAML view is wrapped so the redesign full-manifest styles can hook it.
+	if doc.Find(".ro-rd .ro-yaml-view").Length() == 0 {
+		t.Fatalf("YAML view not wrapped in .ro-rd .ro-yaml-view")
+	}
+}
+
+// docTexts is a goquery convenience mirroring page.texts for a raw document
+// (the detail render helper returns a *goquery.Document, not a *page).
+func docTexts(doc *goquery.Document, selector string) []string {
+	var out []string
+	doc.Find(selector).Each(func(_ int, s *goquery.Selection) {
+		out = append(out, normSpace(s.Text()))
+	})
+	return out
+}

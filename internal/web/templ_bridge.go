@@ -258,8 +258,10 @@ func toDetailData(v *detailView) templates.DetailData {
 		Version:            v.Version,
 		DefaultTabActive:   v.DefaultTab,
 		YAMLTabActive:      v.YAMLTab,
+		EventsTabActive:    v.EventsTab,
 		LogsHref:           v.LogsHref,
 		IsYAMLView:         v.IsYAMLView,
+		IsEventsView:       v.IsEventsView,
 		HighlightedYAML:    v.HighlightedYAML,
 		ShowNamespaceLinks: v.ShowNamespaceLinks,
 		AllObjectsHref:     v.AllObjectsHref,
@@ -296,7 +298,7 @@ func toDetailData(v *detailView) templates.DetailData {
 	}
 	for i := range v.Events {
 		ev := &v.Events[i]
-		d.Events = append(d.Events, templates.EventRow{Type: ev.Type, TypeClass: ev.TypeClass, Reason: ev.Reason, ReasonClass: ev.ReasonClass, Age: ev.Age, AgeClass: ev.AgeClass, From: ev.From, Message: ev.Message})
+		d.Events = append(d.Events, templates.EventRow{Type: ev.Type, Tone: ev.Tone, Reason: ev.Reason, Age: ev.Age, AgeClass: ev.AgeClass, From: ev.From, Message: ev.Message})
 	}
 	return d
 }

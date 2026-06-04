@@ -555,13 +555,14 @@ func appLabelClass(key string) string {
 	return ""
 }
 
-// listChipClass is the FULL redesign list-chip class for a label key: the
+// redesignChipClass is the FULL redesign chip class for a label key: the
 // canonical "ro-chip", plus the " app" accent token for app.kubernetes.io/*
 // labels. It reuses the same app.kubernetes.io/ recognition as appLabelClass /
-// chipClass, but emits the redesign canonical ".app" token (scoped under the list
-// shell's .ro-rd marker) instead of the detail-page ".ro-label-app" accent, so the
-// namespace label chips match the mockup `<span class="ro-chip app">` vocabulary.
-func listChipClass(key string) string {
+// chipClass, but emits the redesign canonical ".app" token (scoped under a
+// migrated screen's .ro-rd marker) instead of the legacy ".ro-label-app" accent,
+// so the list namespace chips AND the detail label chips match the mockup
+// `<span class="ro-chip app">` vocabulary.
+func redesignChipClass(key string) string {
 	if strings.HasPrefix(key, "app.kubernetes.io/") {
 		return "ro-chip app"
 	}
@@ -585,7 +586,7 @@ func namespaceLabelChips(obj map[string]any) []chipView {
 	sort.Strings(keys)
 	chips := make([]chipView, 0, len(keys))
 	for _, key := range keys {
-		chips = append(chips, chipView{Class: listChipClass(key), Text: key + ": " + labels[key]})
+		chips = append(chips, chipView{Class: redesignChipClass(key), Text: key + ": " + labels[key]})
 	}
 	return chips
 }

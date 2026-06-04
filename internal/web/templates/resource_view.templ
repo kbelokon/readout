@@ -32,9 +32,11 @@ type DetailData struct {
 
 	DefaultTabActive bool
 	YAMLTabActive    bool
+	EventsTabActive  bool
 	LogsHref         string
 
 	IsYAMLView      bool
+	IsEventsView    bool
 	HighlightedYAML string // trusted highlighted-YAML HTML (YAML view)
 
 	Labels      []DetailLabelChip
@@ -144,21 +146,21 @@ type YAMLCard struct {
 	Content  string
 }
 
-// EventRow is one event row in the Events subtable. The *Class fields are the
-// resolved cell classes (assembled in build_resource.go from the events/<column>
-// cell class and the age class for lastTimestamp at days=1):
-// TypeClass classes the Type <td> AND its ro-status-dot span, ReasonClass the
-// Reason <td>, AgeClass the Age <td>. The Message <td> carries the static
-// ro-event-msg class (emitted below, not threaded through data).
+// EventRow is one event row in the Events tab table. Tone is the redesign
+// status-dot/cell-status tone for the Type cell (mute for Normal/unknown, warn
+// for Warning), resolved in build_resource.go from the events/Type cell class.
+// AgeClass is the age bucket class for lastTimestamp at days=1 (the .age-* token
+// on the Age <td>). The Reason cell renders plain and the From cell faint
+// (redesign reserves saturation for status); the Message <td> carries the
+// wrapping ro-event-msg class (emitted below, not threaded through data).
 type EventRow struct {
-	Type        string
-	TypeClass   string
-	Reason      string
-	ReasonClass string
-	Age         string
-	AgeClass    string
-	From        string
-	Message     string
+	Type     string
+	Tone     string
+	Reason   string
+	Age      string
+	AgeClass string
+	From     string
+	Message  string
 }
 
 // Subtable is the related-pods subtable on the detail page. ShowNamespace gates
@@ -200,38 +202,51 @@ type SubtableCell struct {
 	Href  string
 }
 
+// ResourceView is the redesign object-detail page body. The outermost element
+// carries the `ro-rd` content marker (D13) so the canonical class names below
+// (.ro-detail-title, .ro-kind-badge, .ro-section, .ro-chip, .ro-yaml-card,
+// .ro-event-msg, ...) resolve to the redesign CSS scoped under .ro-rd. The page
+// is server-driven and READ-ONLY: Default / YAML / Events are separate GETs
+// (?, ?view=yaml, ?view=events), Logs is a pod-only link.
 templ ResourceView(d DetailData) {
-	@detailBreadcrumb(d.Breadcrumb)
-	<h1 class="title">{ d.Name }<span class="ro-kind-badge">{ d.Kind }</span> <span class="links"><a href={ templ.SafeURL(d.DownloadHref) } title="Download resource object as YAML" class="button ro-btn-quiet"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
-		for _, link := range d.Links {
-			<a href={ templ.SafeURL(link.Href) } class="button ro-btn-quiet ro-link-out" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
-		}</span> <span class="meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></h1>
-	<div class="tabs is-small ro-detail-tabs"><ul>@detailTab(d.DefaultTabActive, "?", "Default")@detailTab(d.YAMLTabActive, "?view=yaml", "YAML")
-		if d.LogsHref != "" {
-			<li><a href={ templ.SafeURL(d.LogsHref) }>Logs</a></li>
+	<div class="ro-rd">
+		@detailBreadcrumb(d.Breadcrumb)
+		<div class="ro-detail-title"><h1 class="ro-title">{ d.Name }</h1> <span class="ro-kind-badge">{ d.Kind }</span><div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } title="Download resource object as YAML" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
+			for _, link := range d.Links {
+				<a href={ templ.SafeURL(link.Href) } class="ro-iconbtn ro-link-out" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
+			}</div><span class="ro-detail-meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></div>
+		<div class="ro-tabs">@detailTab(d.DefaultTabActive, "?", "Default")@detailTab(d.YAMLTabActive, "?view=yaml", "YAML")@detailTab(d.EventsTabActive, "?view=events", "Events")
+			if d.LogsHref != "" {
+				<a href={ templ.SafeURL(d.LogsHref) }>Logs</a>
+			}
+			</div>
+		if d.IsYAMLView {
+			<div class="ro-yaml-view">@templ.Raw(d.HighlightedYAML)</div>
+		} else if d.IsEventsView {
+			@eventsSection(d.Events)
+		} else {
+			@detailBody(d)
 		}
-		</ul></div>
-	if d.IsYAMLView {
-		<div>@templ.Raw(d.HighlightedYAML)</div>
-	} else {
-		@detailBody(d)
-	}
+	</div>
 }
 
-// detailBody is the non-YAML detail view: summary chips + node summary + owners
-// + secret block + YAML cards + namespace links + related pods + events.
+// detailBody is the Default-tab detail view: label/annotation chips + the
+// optional kind-specific summary (node capacity/conditions) ABOVE the YAML
+// cards + owners + masked-secret block + per-section collapsible/copyable YAML
+// cards + namespace links + the related-pods subtable. Events live in their own
+// tab (eventsSection), not here.
 templ detailBody(d DetailData) {
 	if len(d.Labels) > 0 {
-		<div class="section ro-section"><div class="ro-section-label">Labels</div><div class="ro-chips">
+		<div class="ro-section"><div class="ro-section-label">Labels</div><div class="ro-chips">
 			for _, chip := range d.Labels {
-				<a href={ templ.SafeURL(chip.Href) } class={ chip.Class }><span class="tag is-link">{ chip.Key + ": " + chip.Val }</span></a>
+				<a href={ templ.SafeURL(chip.Href) } class={ chip.Class }>{ chip.Key + ": " + chip.Val }</a>
 			}
 			</div></div>
 	}
 	if len(d.Annotations) > 0 {
-		<div class="section ro-section"><div class="ro-section-label">Annotations</div><div class="ro-chips">
+		<div class="ro-section"><div class="ro-section-label">Annotations</div><div class="ro-chips">
 			for _, chip := range d.Annotations {
-				<span class="tag ro-chip ro-chip-trunc">{ chip.Key + ": " + chip.Val }</span>
+				<span class="ro-chip anno" title={ chip.Key + ": " + chip.Val }>{ chip.Key + ": " + chip.Val }</span>
 			}
 			</div></div>
 	}
@@ -239,7 +254,7 @@ templ detailBody(d DetailData) {
 		@nodeSummary(*d.Node)
 	}
 	if len(d.Owners) > 0 {
-		<div class="section ro-section ro-owner">{ ownerLabel(len(d.Owners)) + ":" }
+		<div class="ro-section ro-owner">{ ownerLabel(len(d.Owners)) + " " }
 			for _, owner := range d.Owners {
 				if owner.Split {
 					<a href={ templ.SafeURL(owner.Href) }>{ owner.Name }{ " " }<span class="kind">{ "(" + owner.Kind + ")" }</span></a>{ " " }
@@ -260,33 +275,44 @@ templ detailBody(d DetailData) {
 		<div class="section collapsible ro-yaml-card" data-name={ card.Name }><div class="ro-card-head"><h4 class="title is-5">{ card.Title }</h4><button type="button" class="ro-copy-btn" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="content">@templ.Raw(card.Content)</div></div>
 	}
 	if d.ShowNamespaceLinks {
-		<div class="section"><a href={ templ.SafeURL(d.AllObjectsHref) }>Show all objects in this namespace</a></div>
-		<div class="section"><a href={ templ.SafeURL(d.ResourceTypesHref) }>Show Resource Types in this namespace</a></div>
+		<div class="ro-section"><a href={ templ.SafeURL(d.AllObjectsHref) }>Show all objects in this namespace</a></div>
+		<div class="ro-section"><a href={ templ.SafeURL(d.ResourceTypesHref) }>Show Resource Types in this namespace</a></div>
 	}
 	if d.RelatedPods != nil {
 		@subtableC(*d.RelatedPods)
 	}
-	<div class="section collapsible" data-name="events"><h4 class="title is-5">Events</h4><table class="table ro-list-table ro-subtable"><thead><tr><th>Type</th><th>Reason</th><th>Age</th><th>From</th><th>Message</th></tr></thead><tbody>
-		if len(d.Events) == 0 {
-			<tr><td colspan="5">No events found.</td></tr>
-		} else {
-			for _, ev := range d.Events {
-				<tr><td class={ ev.TypeClass }><span class={ "ro-status-dot " + ev.TypeClass } aria-hidden="true"></span>{ ev.Type }</td><td class={ ev.ReasonClass }>{ ev.Reason }</td><td class={ ev.AgeClass }>{ ev.Age }</td><td>{ ev.From }</td><td class="ro-event-msg">{ ev.Message }</td></tr>
-			}
-		}
-		</tbody></table></div>
 }
 
+// eventsSection is the Events-tab view: a labelled section wrapping the toned
+// events table (redesign .ro-table). The Type cell is a status-dot/cell-status
+// pair toned mute (Normal) or warn (Warning); Age carries its age-bucket class;
+// From is faint; Message is the wrapping .ro-event-msg cell. Read-only.
+templ eventsSection(events []EventRow) {
+	<div class="ro-section"><div class="ro-section-label">Events</div><div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Type</th><th>Reason</th><th>Age</th><th>From</th><th>Message</th></tr></thead><tbody>
+		if len(events) == 0 {
+			<tr><td colspan="5">No events found.</td></tr>
+		} else {
+			for _, ev := range events {
+				<tr><td><span class={ cellStatusClass(ev.Tone) }><span class={ dotClass(ev.Tone) } aria-hidden="true"></span>{ ev.Type }</span></td><td>{ ev.Reason }</td><td class={ numClass(ev.AgeClass) }>{ ev.Age }</td><td class="faint">{ ev.From }</td><td class="ro-event-msg">{ ev.Message }</td></tr>
+			}
+		}
+		</tbody></table></div></div>
+}
+
+// nodeSummary renders the Node-kind summaries (conditions / capacity-allocatable
+// / system info) ABOVE the YAML cards. Each condition is a redesign
+// `.ro-cond-pill.<tone>` with a `.ro-dot`; the capacity/system-info blocks are
+// redesign `.ro-kv` definition lists.
 templ nodeSummary(n NodeSummary) {
 	if len(n.Conditions) > 0 {
-		<div class="section ro-section"><div class="ro-section-label">Conditions</div><div class="ro-chips ro-cond-pills">
+		<div class="ro-section"><div class="ro-section-label">Conditions</div><div class="ro-chips ro-cond-pills">
 			for _, cond := range n.Conditions {
-				<span class={ "ro-cond-pill " + cond.Tone } title={ cond.Title }><span class="ro-status-dot" aria-hidden="true"></span><span class="ro-cond-name">{ cond.Type }</span> <span class="ro-cond-val">{ cond.Value }</span></span>
+				<span class={ "ro-cond-pill " + cond.Tone } title={ cond.Title }><span class="ro-dot" aria-hidden="true"></span><span class="ro-cond-name">{ cond.Type }</span> <span class="ro-cond-val">{ cond.Value }</span></span>
 			}
 			</div></div>
 	}
 	if n.HasCapAlloc {
-		<div class="section ro-section"><div class="ro-section-label">Capacity / Allocatable</div><div class="ro-kv-cols">
+		<div class="ro-section"><div class="ro-section-label">Capacity / Allocatable</div><div class="ro-kv-cols">
 			if n.Capacity != nil {
 				@kvList(*n.Capacity)
 			}
@@ -296,7 +322,7 @@ templ nodeSummary(n NodeSummary) {
 			</div></div>
 	}
 	if n.NodeInfo != nil {
-		<div class="section ro-section"><div class="ro-section-label">System Info</div>@kvList(*n.NodeInfo)</div>
+		<div class="ro-section"><div class="ro-section-label">System Info</div>@kvList(*n.NodeInfo)</div>
 	}
 }
 
@@ -318,21 +344,22 @@ templ detailBreadcrumb(b DetailBreadcrumb) {
 		<li class="is-active"><a href="#">{ b.Name }</a></li></ul></nav>
 }
 
-// detailTab renders one detail-page tab <li>; the active tab carries the
-// is-active class as an attribute, matching the activeAttr branch.
+// detailTab renders one redesign detail-page tab anchor; the active tab carries
+// the is-active class (the .ro-tabs underline marker).
 templ detailTab(active bool, href, label string) {
 	if active {
-		<li class="is-active"><a href={ templ.SafeURL(href) }>{ label }</a></li>
+		<a href={ templ.SafeURL(href) } class="is-active">{ label }</a>
 	} else {
-		<li><a href={ templ.SafeURL(href) }>{ label }</a></li>
+		<a href={ templ.SafeURL(href) }>{ label }</a>
 	}
 }
 
-// subtableC renders the related-pods subtable: a collapsible section + a
-// ro-subtable table with the optional leading Namespace column, the column sort
-// headers, and per-row cells branched on Kind (name / node / status / plain).
+// subtableC renders the related-pods subtable as a collapsible section (the
+// data-name="pods" fold target + the .ro-table-wrap > .ro-table redesign table),
+// sharing the list cell vocabulary (sticky td.cell-name, td.cell-node, the
+// .cell-status/.ro-dot status pair) since the detail page now carries .ro-rd.
 templ subtableC(s Subtable) {
-	<div class="section collapsible" data-name="pods"><h4 class="title is-5">Pods</h4><table class="table ro-list-table ro-subtable"><thead><tr>
+	<div class="section collapsible" data-name="pods"><h4 class="title is-5">Pods</h4><div class="ro-table-wrap"><table class="ro-table"><thead><tr>
 		if s.ShowNamespace {
 			<th>Namespace</th>
 		}
@@ -344,34 +371,34 @@ templ subtableC(s Subtable) {
 			<tr><td colspan={ itoa(s.EmptyColspan) }>@templ.Raw(s.EmptyTitle)</td></tr>
 		} else {
 			for _, row := range s.Rows {
-				<tr class={ row.StatusClass }>
+				<tr class={ rowClass(row.StatusClass) }>
 					if row.ShowNs {
-						<td><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></td>
+						<td class="cell-ns"><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></td>
 					}
 					for i, cell := range row.Cells {
 						@subtableCell(i, cell)
 					}
-					<td class={ row.CreatedClass }>{ row.CreatedText }</td></tr>
+					<td class={ numClass(row.CreatedClass) }>{ row.CreatedText }</td></tr>
 			}
 		}
-		</tbody></table></div>
+		</tbody></table></div></div>
 }
 
-// subtableCell renders one related-pods cell. Cell 0 is the name link; the rest
-// share the cellClass <td> and branch on Kind (node link / status dot / plain).
+// subtableCell renders one related-pods cell in the redesign vocabulary. Cell 0
+// is the sticky name link (td.cell-name); a Node cell links in td.cell-node; a
+// Status cell is the .cell-status/.ro-dot pair toned by Href (the redesign tone);
+// the rest are plain cells carrying the cellClass.
 templ subtableCell(idx int, cell SubtableCell) {
 	if idx == 0 {
-		<td class="ro-cell-name"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
+		<td class="cell-name"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
 	} else {
-		<td class={ cell.Class }>
-			switch cell.Kind {
-				case CellNode:
-					<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
-				case CellStatus:
-					<span class={ "ro-status-dot " + cell.Href } aria-hidden="true"></span>{ cell.Value }
-				default:
-					{ cell.Value }
-			}
-			</td>
+		switch cell.Kind {
+			case CellNode:
+				<td class="cell-node"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
+			case CellStatus:
+				<td><span class={ cellStatusClass(cell.Href) }><span class={ dotClass(cell.Href) } aria-hidden="true"></span>{ cell.Value }</span></td>
+			default:
+				<td class={ cell.Class }>{ cell.Value }</td>
+		}
 	}
 }

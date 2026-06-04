@@ -153,29 +153,31 @@ func sidebarResourceText(plural string) string {
 	}
 }
 
-// nodeConditionTone maps a Node condition (type + status) to the semantic pill
-// tone class. It is the one detail-summary helper still used after the templ
-// migration -- buildNodeSummaryView (build_resource.go) consumes it to resolve
-// the Node condition pills; the string render funcs that also used it are gone.
+// nodeConditionTone maps a Node condition (type + status) to the redesign pill
+// tone token (ok/warn/err/mute). buildNodeSummaryView (build_resource.go)
+// consumes it to resolve the detail-page Node condition pills, which render under
+// the .ro-rd marker as `.ro-cond-pill.<tone>` with a `.ro-dot` -- matching the
+// redesign detail CSS. (The list-cell node conditions use nodeConditionListTone,
+// which shares this healthy/abnormal polarity.)
 func nodeConditionTone(typ, status string) string {
 	switch typ {
 	case "Ready":
 		if status == "True" {
-			return "ro-st-ok"
+			return "ok"
 		}
-		return "ro-st-err"
+		return "err"
 	case "NetworkUnavailable":
 		if status == "True" {
-			return "ro-st-err"
+			return "err"
 		}
-		return "ro-st-ok"
+		return "ok"
 	case "MemoryPressure", "DiskPressure", "PIDPressure":
 		if status == "True" {
-			return "ro-st-warn"
+			return "warn"
 		}
-		return "ro-st-ok"
+		return "ok"
 	default:
-		return "ro-st-neutral"
+		return "mute"
 	}
 }
 

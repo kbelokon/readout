@@ -596,63 +596,73 @@ func TestBehaviorPodDetailFacts(t *testing.T) {
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
 
 	p.wantText("title", "nginx (Pod in default) - readout")
-	p.wantText("h1.title .ro-kind-badge", "Pod")
-	p.wantAttr(`h1.title a[title="Download resource object as YAML"]`, "href", "/clusters/test/namespaces/default/pods/nginx?download=yaml")
+	// Redesign detail spine: .ro-detail-title carries the H1 name + the kind
+	// badge; the Download-YAML affordance is a quiet icon button in .ro-detail-actions.
+	p.wantText(".ro-detail-title .ro-kind-badge", "Pod")
+	p.wantText(".ro-detail-title h1.ro-title", "nginx")
+	p.wantAttr(`.ro-detail-actions a[title="Download resource object as YAML"]`, "href", "/clusters/test/namespaces/default/pods/nginx?download=yaml")
+	// The detail page carries the .ro-rd content marker so the canonical class
+	// names route to the redesign CSS (D13).
+	p.wantHas(".ro-rd .ro-detail-title")
 
-	// Detail tabs: Default active, YAML + Logs present.
-	tabs := p.texts(".ro-detail-tabs li a")
-	if strings.Join(tabs, "|") != "Default|YAML|Logs" {
-		t.Fatalf("detail tabs = %v", tabs)
+	// Redesign tabs (.ro-tabs bare anchors): a Pod gets four -- Default active,
+	// then YAML / Events / Logs.
+	tabs := p.texts(".ro-tabs a")
+	if strings.Join(tabs, "|") != "Default|YAML|Events|Logs" {
+		t.Fatalf("detail tabs = %v, want Default|YAML|Events|Logs", tabs)
 	}
-	p.wantText(".ro-detail-tabs li.is-active a", "Default")
+	p.wantText(".ro-tabs a.is-active", "Default")
+	p.wantAttr(`.ro-tabs a:contains("Events")`, "href", "?view=events")
 
-	// Summary sections (check_detail-style): Spec + Status YAML cards + the
-	// Events collapsible carrying data-name="events".
+	// Default tab: Spec + Status YAML cards (collapsible[data-name] + copyable),
+	// NOT the events table (events moved to their own tab).
 	cardNames := p.attrs(".ro-yaml-card", "data-name")
 	assertContainsAll(t, "yaml card sections", cardNames, "spec", "status")
-	p.wantHas(`.collapsible[data-name="events"]`)
-	// The Events subtable renders the fixture's Scheduled event (cell values).
-	eventsTable := p.doc.Find(`.collapsible[data-name="events"] table`)
-	if !strings.Contains(eventsTable.Text(), "Successfully assigned default/nginx") {
-		t.Fatalf("events table missing the Scheduled event: %q", eventsTable.Text())
-	}
-	// Event-row CELL CLASSES are pinned per cell. For the fixture's single event
-	// (type=Normal, reason=Scheduled, lastTimestamp 2024-03 so it is age-old
-	// under time.Now(), with a message):
-	//  - Message cell carries the static ro-event-msg class.
-	//  - Type cell carries a ro-status-dot span (the type tone is "" for Normal,
-	//    so the span class is exactly "ro-status-dot ").
-	//  - Reason cell carries the events/Reason/Scheduled cell class
-	//    has-text-success.
-	//  - Age cell carries the age class for lastTimestamp at days=1 == age-old.
-	eventRow := p.doc.Find(`.collapsible[data-name="events"] tbody tr`)
+	p.wantHas(".ro-yaml-card .ro-copy-btn")
+	p.wantAbsent(".ro-event-msg") // events render only under ?view=events
+	// Labels + the generic annotation surface.
+	p.wantBodyContains("generic-annotation")
+}
+
+// TestBehaviorPodEventsTabFacts pins the Events TAB (a separate ?view=events
+// GET): the toned events table renders the fixture's single Scheduled event with
+// the redesign status-dot/cell-status pair on the Type cell, the age bucket on
+// the Age cell, and the wrapping .ro-event-msg on the Message cell.
+func TestBehaviorPodEventsTabFacts(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx?view=events", http.StatusOK)
+
+	// Events is the active tab.
+	p.wantText(".ro-tabs a.is-active", "Events")
+	// The events table is the redesign .ro-table inside .ro-table-wrap.
+	p.wantHas(".ro-section .ro-table-wrap table.ro-table")
+
+	eventRow := p.doc.Find("table.ro-table tbody tr")
 	if eventRow.Length() != 1 {
 		t.Fatalf("expected exactly one event row, got %d", eventRow.Length())
 	}
+	// The Message cell is the one wrapping cell (td.ro-event-msg).
 	if got := normSpace(eventRow.Find("td.ro-event-msg").Text()); got != "Successfully assigned default/nginx to 127.0.0.1" {
 		t.Fatalf("event message cell (td.ro-event-msg) = %q, want the Scheduled message", got)
 	}
-	if eventRow.Find("td .ro-status-dot").Length() != 1 {
-		t.Fatalf("event Type cell missing its ro-status-dot span")
+	// Type cell: a Normal event tones to mute -> .cell-status.mute with a .ro-dot.mute.
+	if eventRow.Find(".cell-status.mute .ro-dot.mute").Length() != 1 {
+		t.Fatalf("event Type cell missing .cell-status.mute > .ro-dot.mute: %s", normSpace(eventRow.Text()))
 	}
-	if reasonCls, _ := eventRow.Find("td:nth-child(2)").Attr("class"); reasonCls != "has-text-success" {
-		t.Fatalf("event Reason cell class = %q, want has-text-success (get_cell_class events/Reason/Scheduled)", reasonCls)
+	if got := normSpace(eventRow.Find(".cell-status").Text()); got != "Normal" {
+		t.Fatalf("event Type text = %q, want Normal", got)
 	}
+	// Age cell carries the age class for lastTimestamp at days=1 == age-old.
 	if ageCls, _ := eventRow.Find("td:nth-child(3)").Attr("class"); ageCls != "age-old" {
 		t.Fatalf("event Age cell class = %q, want age-old (age_color lastTimestamp days=1)", ageCls)
 	}
-	// Labels + the generic annotation surface.
-	p.wantBodyContains("generic-annotation")
-
-	// Each YAML card carries a per-section copy button (readout.js .ro-copy-btn).
-	p.wantHas(".ro-yaml-card .ro-copy-btn")
 }
 
 func TestBehaviorPodYAMLViewIDScheme(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx?view=yaml", http.StatusOK)
 
-	p.wantText(".ro-detail-tabs li.is-active a", "YAML")
+	p.wantText(".ro-tabs a.is-active", "YAML")
 
 	// Pygments-compatible highlight table: linenos column + code column.
 	p.wantHas("table.highlighttable td.linenos")
@@ -665,6 +675,18 @@ func TestBehaviorPodYAMLViewIDScheme(t *testing.T) {
 	p.wantHas("td.code pre span#yaml-line-2")
 	p.wantHas(`td.linenos a[href="#line-1"]`)
 
+	// D7: chroma server-side highlighting stays -- the YAML body carries the
+	// Pygments token spans (recoloured by Unit 2's CSS, not re-tokenised). The
+	// nginx manifest has mapping keys (.nt) and an unquoted literal value (.l, the
+	// kind/apiVersion scalars), so both classes must appear in the code cell.
+	p.wantHas("td.code .highlight .nt, td.code pre .nt")
+	if p.count("td.code .nt") == 0 {
+		t.Fatalf("YAML body missing chroma key token spans (.nt)")
+	}
+	if p.count("td.code .l") == 0 {
+		t.Fatalf("YAML body missing chroma unquoted-literal token spans (.l)")
+	}
+
 	// Body fact: apiVersion + kind are present (check_yaml).
 	p.wantBodyContains("apiVersion")
 	if !strings.Contains(p.text("span#yaml-line-2"), "Pod") {
@@ -675,33 +697,35 @@ func TestBehaviorPodYAMLViewIDScheme(t *testing.T) {
 func TestBehaviorNodeDetailFacts(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/nodes/worker-1", http.StatusOK)
-	p.wantText("h1.title .ro-kind-badge", "Node")
+	p.wantText(".ro-detail-title .ro-kind-badge", "Node")
 	// System info renders + the field-selected pods subtable carries data-name.
 	p.wantBodyContains("kubeletVersion")
 	p.wantBodyContains("v1.29.2")
 	p.wantHas(`[data-name="pods"]`)
+	// The related-pods subtable migrated to the redesign .ro-table.
+	p.wantHas(`.collapsible[data-name="pods"] .ro-table-wrap table.ro-table`)
 
 	// Node summary blocks (named facts replacing the retired TestRenderNodeSummary
 	// byte asserts). The three section labels are present, in order.
 	sectionLabels := p.texts(".ro-section .ro-section-label")
 	assertContainsAll(t, "node section labels", sectionLabels, "Conditions", "Capacity / Allocatable", "System Info")
 
-	// Condition pills: the Ready=True pill carries the ok tone + the dot + the
-	// name/value spans. nodeConditionTone(Ready,True)=ro-st-ok; the fixture's
-	// pressure conditions are False so they are ok too -- assert the Ready pill
-	// precisely (tone bound to the condition, not "some pill exists").
+	// Condition pills: the Ready=True pill carries the redesign ok tone + the
+	// .ro-dot + the name/value spans. nodeConditionTone(Ready,True)=ok; the
+	// fixture's pressure conditions are False so they are ok too -- assert the
+	// Ready pill precisely (tone bound to the condition, not "some pill exists").
 	readyPill := p.doc.Find(`.ro-cond-pill:has(.ro-cond-name:contains("Ready"))`)
 	if readyPill.Length() != 1 {
 		t.Fatalf("expected exactly one Ready condition pill, got %d", readyPill.Length())
 	}
-	if cls, _ := readyPill.Attr("class"); !strings.Contains(cls, "ro-st-ok") {
-		t.Fatalf("Ready=True pill tone = %q, want ro-st-ok", cls)
+	if cls, _ := readyPill.Attr("class"); !strings.Contains(cls, "ok") {
+		t.Fatalf("Ready=True pill tone = %q, want ok", cls)
 	}
 	if normSpace(readyPill.Find(".ro-cond-val").Text()) != "True" {
 		t.Fatalf("Ready pill value = %q, want True", normSpace(readyPill.Find(".ro-cond-val").Text()))
 	}
-	if readyPill.Find(".ro-status-dot").Length() != 1 {
-		t.Fatalf("Ready pill missing its status dot")
+	if readyPill.Find(".ro-dot").Length() != 1 {
+		t.Fatalf("Ready pill missing its .ro-dot")
 	}
 
 	// Capacity / Allocatable KV rows: the allocatable column prefixes its keys
@@ -720,12 +744,11 @@ func TestBehaviorNodeDetailFacts(t *testing.T) {
 	}
 }
 
-// TestBehaviorDetailLabelChips pins the resource-view label/annotation chips
-// (named facts replacing the retired renderObjectSummary byte asserts in
-// TestObjectRenderingLinksAndSearchHelpers): each label is an anchor to the
-// selector-filtered list with the ro-chip class, the selector value kept
-// literal (key=value, NOT url-encoded), and the app.kubernetes.io/* accent on
-// the matching key. The annotations render as non-link ro-chip-trunc pills.
+// TestBehaviorDetailLabelChips pins the resource-view label/annotation chips in
+// the redesign vocabulary: each label is an anchor to the selector-filtered list
+// carrying the bare .ro-chip class (label text directly inside, no inner .tag),
+// the selector value kept literal (key=value, NOT url-encoded). The annotations
+// render as non-link .ro-chip.anno pills that truncate with a title= tooltip.
 func TestBehaviorDetailLabelChips(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
@@ -743,18 +766,24 @@ func TestBehaviorDetailLabelChips(t *testing.T) {
 	if !strings.HasPrefix(href, "/clusters/test/namespaces/default/pods?selector=") || strings.Contains(href, "%3D") {
 		t.Fatalf("label chip href = %q, want a literal selector=key=value link", href)
 	}
-	// The nginx pod fixture carries app=nginx; that chip's exact selector href.
+	// The nginx pod fixture carries app=nginx; that chip's exact selector href +
+	// its bare-text label (the redesign chip has no inner .tag).
 	appChip := p.doc.Find(`.ro-chips a[href="/clusters/test/namespaces/default/pods?selector=app=nginx"]`)
 	if appChip.Length() != 1 {
 		t.Fatalf("expected the app=nginx label chip with a literal selector href, hrefs=%v", p.attrs(".ro-chips a.ro-chip", "href"))
 	}
-	p.wantText("a.ro-chip .tag.is-link", "app: nginx")
+	if got := normSpace(appChip.Text()); got != "app: nginx" {
+		t.Fatalf("label chip text = %q, want app: nginx", got)
+	}
 
-	// Annotations render as non-link truncated pills (the fixture's
-	// example.com/note: generic-annotation), replacing the body-contains check.
+	// Annotations render as non-link .ro-chip.anno pills carrying the full value
+	// in title= (the fixture's example.com/note: generic-annotation).
 	p.wantText(`.ro-section:has(.ro-section-label:contains("Annotations")) .ro-section-label`, "Annotations")
-	annText := p.texts("span.tag.ro-chip.ro-chip-trunc")
+	annText := p.texts("span.ro-chip.anno")
 	assertContainsAll(t, "annotation chips", annText, "example.com/note: generic-annotation")
+	if title, _ := p.doc.Find("span.ro-chip.anno").First().Attr("title"); title != "example.com/note: generic-annotation" {
+		t.Fatalf("annotation chip title = %q, want the full key: value tooltip", title)
+	}
 }
 
 // TestBehaviorDetailBreadcrumb pins the resource-view object breadcrumb (named
@@ -1019,7 +1048,7 @@ func TestBehaviorSecretBarrierMaskedOn(t *testing.T) {
 	// Secret DETAIL: masked-values notice + per-key mask, no raw base64 anywhere,
 	// and the annotations are replaced with the hidden marker.
 	detail := get(t, app, "/clusters/test/namespaces/default/secrets/my-secret", http.StatusOK)
-	detail.wantText("h1.title .ro-kind-badge", "Secret")
+	detail.wantText(".ro-detail-title .ro-kind-badge", "Secret")
 	detail.wantHas(".ro-secret-data")
 	detail.wantText(".ro-secret-data .ro-notice-title", "Values masked")
 	keys := detail.texts(".ro-secret-key")
