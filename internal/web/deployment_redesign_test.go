@@ -330,6 +330,11 @@ func TestDeploymentListThroughHandlerPreservesGenerics(t *testing.T) {
 
 	doneObj := deploymentObject("web", 2, depStatus(2, 2, 2, 2, "NewReplicaSetAvailable"), false)
 	rollObj := deploymentObject("worker", 3, depStatus(3, 1, 2, 1, "ReplicaSetUpdated"), false)
+	// A cold deployment (3 desired, 0 ready) exercises the .rep-num.zero tone, and a
+	// paused deployment (spec.paused) exercises the .rollout.paused state -- both
+	// confirmed in the DOM through the REAL bridge below.
+	coldObj := deploymentObject("cold", 3, depStatus(3, 0, 0, 0, "ReplicaSetUpdated"), false)
+	pausedObj := deploymentObject("held", 2, depStatus(2, 2, 2, 2, "NewReplicaSetAvailable"), true)
 
 	table := &kube.Table{
 		Resource: kube.ResourceType{Group: "apps", Plural: "deployments", Kind: "Deployment", Namespaced: true, Version: "v1", APIVersion: "apps/v1"},
@@ -340,6 +345,8 @@ func TestDeploymentListThroughHandlerPreservesGenerics(t *testing.T) {
 		Rows: []kube.Row{
 			{Cluster: "test", Object: doneObj, Cells: []any{"web", "2/2", "2", "2", "5m"}},
 			{Cluster: "test", Object: rollObj, Cells: []any{"worker", "1/3", "2", "1", "5m"}},
+			{Cluster: "test", Object: coldObj, Cells: []any{"cold", "0/3", "0", "0", "5m"}},
+			{Cluster: "test", Object: pausedObj, Cells: []any{"held", "2/2", "2", "2", "5m"}},
 		},
 	}
 	// Run the REAL column decoration that applyTableOptions performs for the
@@ -352,25 +359,73 @@ func TestDeploymentListThroughHandlerPreservesGenerics(t *testing.T) {
 	v := app.buildListView(req, lc)
 	doc := renderListView(t, &v)
 
-	// Both replica tracks render (one per row).
-	if got := doc.Find(".rep .rep-track").Length(); got != 2 {
-		t.Fatalf("replica tracks = %d, want 2 (one per deployment row)", got)
+	// A replica track renders for every row (one per deployment).
+	if got := doc.Find(".rep .rep-track").Length(); got != 4 {
+		t.Fatalf("replica tracks = %d, want 4 (one per deployment row)", got)
 	}
-	// The done deployment renders a .rollout.done pill; the rolling one .rollout.prog.
+
+	// rep-num ratio tones reach the DOM through the real pipeline: the web row (2/2)
+	// is full, the worker row (1/3) is partial, the cold row (0/3) is zero. Asserting
+	// the tone ON the matching row pins the bridge's Ratio->repNumClass mapping, not a
+	// view-model echo.
+	webRow := doc.Find(`tr:has(td.cell-name a:contains("web"))`)
+	if webRow.Length() == 0 {
+		t.Fatalf("web deployment row missing")
+	}
+	if got := normSpace(webRow.Find(".rep-num.full").Text()); got != "2/2" {
+		t.Fatalf("web row rep-num.full = %q, want 2/2 (all ready -> full)", got)
+	}
+	workerRow := doc.Find(`tr:has(td.cell-name a:contains("worker"))`)
+	if got := normSpace(workerRow.Find(".rep-num.partial").Text()); got != "1/3" {
+		t.Fatalf("worker row rep-num.partial = %q, want 1/3 (some ready -> partial)", got)
+	}
+	coldRow := doc.Find(`tr:has(td.cell-name a:contains("cold"))`)
+	if got := normSpace(coldRow.Find(".rep-num.zero").Text()); got != "0/3" {
+		t.Fatalf("cold row rep-num.zero = %q, want 0/3 (none ready -> zero)", got)
+	}
+	// Whole-render tone counts: exactly one full + one partial + one zero (the paused
+	// 'held' row is also 2/2 -> full, so full is two). A regression that broadened a
+	// tone would trip these counts.
+	if got := doc.Find(".rep-num.full").Length(); got != 2 {
+		t.Fatalf(".rep-num.full count = %d, want 2 (web 2/2 + held 2/2)", got)
+	}
+	if got := doc.Find(".rep-num.partial").Length(); got != 1 {
+		t.Fatalf(".rep-num.partial count = %d, want 1 (worker 1/3)", got)
+	}
+	if got := doc.Find(".rep-num.zero").Length(); got != 1 {
+		t.Fatalf(".rep-num.zero count = %d, want 1 (cold 0/3)", got)
+	}
+
+	// Rollout states reach the DOM through the real bridge: done (web), prog (worker
+	// + cold, both mid-flight), paused (held). The state is asserted ON the matching
+	// row, pinning the decorateDeploymentColumns + buildCellView + toTableData rollout
+	// mapping -- NOT a hand-built TableCell. The paused row in particular is the gap
+	// assertRolloutRenders bypassed.
+	if webRow.Find(".rollout.done").Length() != 1 {
+		t.Fatalf("web row should carry .rollout.done (the complete deployment)")
+	}
+	if workerRow.Find(".rollout.prog").Length() != 1 {
+		t.Fatalf("worker row should carry .rollout.prog (the rolling deployment)")
+	}
 	if doc.Find(".rollout.done").Length() != 1 {
-		t.Fatalf("want one .rollout.done (the complete deployment)")
+		t.Fatalf(".rollout.done count = %d, want 1 (only web is complete)", doc.Find(".rollout.done").Length())
 	}
-	if doc.Find(".rollout.prog").Length() != 1 {
-		t.Fatalf("want one .rollout.prog (the rolling deployment)")
+	if doc.Find(".rollout.paused").Length() != 1 {
+		t.Fatalf("want one .rollout.paused (the paused deployment) through the real bridge")
+	}
+	// The paused pill lands on the 'held' row and carries its label + icon.
+	heldRow := doc.Find(`tr:has(td.cell-name a:contains("held"))`)
+	pausedPill := heldRow.Find(".rollout.paused")
+	if pausedPill.Length() != 1 || !strings.Contains(normSpace(pausedPill.Text()), "paused") {
+		t.Fatalf("held row paused pill = %q, want a .rollout.paused with 'paused' label", normSpace(heldRow.Text()))
+	}
+	if pausedPill.Find("svg").Length() == 0 {
+		t.Fatalf("paused rollout pill missing its icon svg")
 	}
 
 	// The Up-to-date / Available generic numeric cells survive: the web row's
 	// Up-to-date=2 and Available=2 still appear as plain cell text (not swallowed by
 	// the rich cells).
-	webRow := doc.Find(`tr:has(td.cell-name a:contains("web"))`)
-	if webRow.Length() == 0 {
-		t.Fatalf("web deployment row missing")
-	}
 	cellTexts := webRow.Find("td").Map(func(_ int, s *goquery.Selection) string { return normSpace(s.Text()) })
 	if !containsString(cellTexts, "2") {
 		t.Fatalf("Up-to-date/Available generic cells missing from web row: %v", cellTexts)
