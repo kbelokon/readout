@@ -12,50 +12,26 @@ import (
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
-// build_cluster.go assembles the templ view models for the clusters-list,
+// build_cluster.go assembles the templ view models for the clusters-entry,
 // cluster-overview, and resource-types pages from the request + kube data. It is
-// the handler-side seam: every request-derived value (filtered rows, chip hrefs
-// with their url.QueryEscape'd selector, age cell classes, the kind links) is
-// resolved here so the templ components render plain data. The hrefs/classes/
-// escaping are pinned by the behavior-fact net.
+// the handler-side seam: every request-derived value (filtered rows, the
+// redesign non-link label chips, age cell classes, the kind links) is resolved
+// here so the templ components render plain data. The hrefs/classes/escaping are
+// pinned by the behavior-fact net.
 
-// anchorChips builds the /clusters?selector= label pills (anchor style) used on
-// the clusters list and the cluster-overview meta line. The href uses
-// url.QueryEscape on key and value (matching the prior render); the class is the
-// full ro-chip class incl. the app.kubernetes.io accent.
-func anchorChips(labels map[string]string) []templates.Chip {
-	keys := sortedKeys(labels)
-	chips := make([]templates.Chip, 0, len(keys))
-	for _, key := range keys {
-		val := labels[key]
-		chips = append(chips, templates.Chip{
-			Href:  "/clusters?selector=" + url.QueryEscape(key) + "=" + url.QueryEscape(val),
-			Class: chipClass(key),
-			Key:   key,
-			Val:   val,
-		})
-	}
-	return chips
-}
-
-// labelChips builds the non-link namespace-row label pills (a <span> with an
-// inner <span class="tag">), matching the cluster.html namespace chip markup.
+// labelChips builds the redesign non-link label pills (D11/D13) shared by the
+// clusters-entry rows, the cluster-overview meta line, and the namespace rows.
+// Each pill renders as `<span class={Class}>key: val</span>`; Class is the
+// canonical redesign chip class (`ro-chip`, plus the ` app` accent token for
+// app.kubernetes.io/* labels via redesignChipClass) so it matches the migrated
+// list/detail `.ro-chip` vocabulary scoped under the page's .ro-rd marker.
 func labelChips(labels map[string]string) []templates.LabelChip {
 	keys := sortedKeys(labels)
 	chips := make([]templates.LabelChip, 0, len(keys))
 	for _, key := range keys {
-		chips = append(chips, templates.LabelChip{Class: chipClass(key), Key: key, Val: labels[key]})
+		chips = append(chips, templates.LabelChip{Class: redesignChipClass(key), Key: key, Val: labels[key]})
 	}
 	return chips
-}
-
-// chipClass is the full ro-chip class string with the app.kubernetes.io accent
-// appended, matching appLabelClass(key) used inline in the prior render.
-func chipClass(key string) string {
-	if strings.HasPrefix(key, "app.kubernetes.io/") {
-		return "ro-chip ro-label-app"
-	}
-	return "ro-chip"
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -86,7 +62,7 @@ func (s *Server) buildClustersData(selector, filter string) templates.ClustersDa
 		data.Rows = append(data.Rows, templates.ClusterRow{
 			Name:  cluster.Name,
 			URL:   cluster.URL,
-			Chips: anchorChips(cluster.Labels),
+			Chips: labelChips(cluster.Labels),
 		})
 	}
 	for name, href := range s.cfg.ExternalClusters {
@@ -103,7 +79,7 @@ func (s *Server) buildClusterData(cluster *kube.Cluster, namespaceRT *kube.Resou
 	data := templates.ClusterData{
 		Name:         cluster.Name,
 		URL:          cluster.URL,
-		ClusterChips: anchorChips(cluster.Labels),
+		ClusterChips: labelChips(cluster.Labels),
 	}
 	for i := range namespaces.Items {
 		object := kube.NewObject(namespaceRT, &namespaces.Items[i])

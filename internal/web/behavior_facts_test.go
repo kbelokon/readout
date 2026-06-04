@@ -202,21 +202,34 @@ func TestBehaviorClustersPage(t *testing.T) {
 	p := get(t, app, "/clusters", http.StatusOK)
 
 	p.wantText("title", "Clusters - readout")
-	p.wantText("h1.title", "Clusters 1")
+	// Redesign entry page (D4/D13): the content root carries the .ro-rd marker and
+	// the title is the .ro-title-row (.ro-title + .ro-count), not the Bulma h1.title.
+	p.wantHas(".ro-rd")
+	p.wantText(".ro-title-row .ro-title", "Clusters")
+	p.wantText(".ro-title-row .ro-count", "1")
 
-	// Exactly one cluster row ("test"), addressed by its ro-cell-name selector.
-	if got := p.texts("td.ro-cell-name"); strings.Join(got, "|") != "test" {
+	// Redesign select-table: the cluster name is the net-new canonical `.cl-name`
+	// mono-link cell, the API URL is the canonical `.ro-cell-url` cell rendered
+	// FULL (never truncated). Exactly one cluster row ("test").
+	if got := p.texts("td.cl-name"); strings.Join(got, "|") != "test" {
 		t.Fatalf("cluster rows = %v, want [test]", got)
 	}
-	p.wantAttr("td.ro-cell-name a", "href", "/clusters/test")
+	p.wantAttr("td.cl-name a", "href", "/clusters/test")
+	// The API-URL cell carries the full URL verbatim (no truncation / ellipsis).
+	apiURL := p.text("td.ro-cell-url")
+	if !strings.HasPrefix(apiURL, "http") || strings.Contains(apiURL, "…") {
+		t.Fatalf("API URL cell = %q, want the full untruncated URL", apiURL)
+	}
 
-	// The clusters page must NOT render the sidebar resource labels (check_clusters).
+	// The clusters page must NOT render the sidebar resource labels (no sidebar /
+	// no namespace context on the entry page, D11).
 	p.wantAbsent(".menu-label")
+	p.wantAbsent(".ro-sidebar")
 
 	// Search-select contract: a per-row checkbox carries data-toggle-button
-	// pointing at the (initially disabled) search button.
+	// pointing at the (initially disabled, until >=1 selected) primary search CTA.
 	p.wantAttr(`input[type="checkbox"][name="cluster"]`, "data-toggle-button", "search-clusters-button")
-	p.wantHas("#search-clusters-button[disabled]")
+	p.wantHas("button.ro-btn#search-clusters-button[disabled]")
 }
 
 // ---------------------------------------------------------------------------
@@ -229,17 +242,23 @@ func TestBehaviorClusterOverview(t *testing.T) {
 	p := get(t, app, "/clusters/test", http.StatusOK)
 
 	p.wantText("title", "test Cluster - readout")
-	p.wantText("h1.title", "test")
-	p.wantText("h4.title.is-5:first-of-type", "Namespaces")
+	// Redesign overview (D4/D11/D13): the content root carries .ro-rd, the title is
+	// the .ro-title-row, and the section headers are .ro-section-label (the first is
+	// the borrowed select-table's Namespaces section).
+	p.wantHas(".ro-rd")
+	p.wantText(".ro-title-row .ro-title", "test")
+	p.wantText(".ro-section-label:first-of-type", "Namespaces")
 
-	// Namespace rows: cell VALUES + the search-select data-toggle-button.
-	if got := p.texts("td.ro-cell-name"); strings.Join(got, "|") != "default|kube-system|my-app" {
+	// Namespace rows ride the BORROWED clusters `.ro-select-table` treatment (D11):
+	// the name cell is the canonical `.cl-name` mono link. Cell VALUES + the
+	// search-select data-toggle-button.
+	if got := p.texts("td.cl-name"); strings.Join(got, "|") != "default|kube-system|my-app" {
 		t.Fatalf("namespace rows = %v, want [default kube-system my-app]", got)
 	}
 	p.wantAttr(`input[type="checkbox"][name="namespace"]`, "data-toggle-button", "search-namespaces-button")
-	p.wantHas("#search-namespaces-button[disabled]")
+	p.wantHas("button.ro-btn#search-namespaces-button[disabled]")
 	// Clicking a namespace drops into its pods (the redesign contract).
-	p.wantAttr("td.ro-cell-name a", "href", "/clusters/test/namespaces/default/pods")
+	p.wantAttr("td.cl-name a", "href", "/clusters/test/namespaces/default/pods")
 
 	// Cluster resource types include the cluster-scoped CSINode (storage.k8s.io)
 	// and Node. These are the cluster-scoped matrix cells. (The kind name is the
