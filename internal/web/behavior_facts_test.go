@@ -813,7 +813,17 @@ func TestBehaviorLogsPage(t *testing.T) {
 	cfg.ShowContainerLogs = true
 	app := newServer(t, cfg, time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx/logs", http.StatusOK)
-	p.wantText(".tabs li.is-active a", "Logs")
+	// The logs body carries the .ro-rd content marker (D13) and shares the detail
+	// title + .ro-tabs chrome with resource_view (Default/YAML/Events/Logs, Logs
+	// active here) so the two screens read consistently.
+	p.wantHas(".ro-rd")
+	p.wantText(".ro-rd .ro-detail-title .ro-kind-badge", "Pod")
+	if tabs := p.texts(".ro-rd .ro-tabs a"); strings.Join(tabs, "|") != "Default|YAML|Events|Logs" {
+		t.Fatalf("logs tabs = %v, want Default|YAML|Events|Logs", tabs)
+	}
+	p.wantText(".ro-rd .ro-tabs a.is-active", "Logs")
+	// The tail/filter/Refresh form renders.
+	p.wantHas("form.ro-logs-form")
 	// Log lines render in a ro-logpre block; the fixture's "GET / 200" shows.
 	p.wantHas("pre.ro-logpre")
 	if !strings.Contains(p.text("pre.ro-logpre"), "GET / 200") {

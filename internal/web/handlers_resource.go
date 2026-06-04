@@ -214,8 +214,10 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 	data := templates.LogsData{
 		Breadcrumb:        objectBreadcrumb(cluster.Name, namespace, &object),
 		Name:              object.Name(),
+		Kind:              object.Kind(),
 		DefaultHref:       base,
 		YAMLHref:          base + "?view=yaml",
+		EventsHref:        base + "?view=events",
 		ShowContainerLogs: s.cfg.ShowContainerLogs,
 		TailLines:         tail,
 		PodCount:          len(pods),
@@ -236,37 +238,56 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 				data.Containers = append(data.Containers, tab)
 			}
 		}
-		data.LogPre = logPreHTML(lines, selectedContainer, filterText)
+		data.LogPre = logPreHTML(lines, filterText)
 	}
 	s.pageComponent(w, r, pageTitle, templates.Logs(data))
 }
 
 // logPreHTML builds the trusted <pre class="ro-logpre"> block: a leading
-// newline, one line per entry (pod color span + optional container span + the
-// level-classed message span, each newline-terminated), and the case-sensitive
-// "no matching logs" note. The whitespace here is significant, so it is emitted
-// as a raw string and injected via templ.Raw.
-func logPreHTML(lines []logLine, selectedContainer, filterText string) string {
+// newline, then one .log-line block span per entry. Each line follows the
+// redesign structure (D13 / mockup): the .log-src source pod, the colored
+// .log-cN container name (palette index = podColor(container), the CRC32 mod-8
+// hash so every container keeps a stable identity colour), the .log-ts
+// timestamp split off the entry's first line, then the bare message. A
+// continuation entry (a wrapped line with no timestamp prefix, folded into the
+// previous block with a '\n') has no .log-ts and renders its whole text as the
+// message. The case-sensitive "no matching logs" note closes a filtered-empty
+// stream. The whitespace here is significant, so the block is emitted as a raw
+// string and injected via templ.Raw.
+func logPreHTML(lines []logLine, filterText string) string {
 	var b strings.Builder
 	b.WriteString(`<pre class="ro-logpre">` + "\n")
 	for _, l := range lines {
-		msgClass := "log-msg"
-		if strings.Contains(l.Text, "ERROR") || strings.Contains(l.Text, "error") {
-			msgClass += " log-lvl-err"
-		} else if strings.Contains(l.Text, "WARN") || strings.Contains(l.Text, "warn") {
-			msgClass += " log-lvl-warn"
+		ts, msg := splitLogTimestamp(l.Text)
+		b.WriteString(`<span class="log-line">`)
+		fmt.Fprintf(&b, `<span class="log-src">%s</span> `, html.EscapeString(l.Pod))
+		fmt.Fprintf(&b, `<span class="%s">%s</span> `, html.EscapeString(podColor(l.Container)), html.EscapeString(l.Container))
+		if ts != "" {
+			fmt.Fprintf(&b, `<span class="log-ts">%s</span> `, html.EscapeString(ts))
 		}
-		fmt.Fprintf(&b, `<span class="log-line %s">%s</span> `, html.EscapeString(podColor(l.Pod)), html.EscapeString(l.Pod))
-		if selectedContainer == "" {
-			fmt.Fprintf(&b, `<span class="log-ctr">%s</span> `, html.EscapeString(l.Container))
-		}
-		fmt.Fprintf(&b, `<span class="%s">%s</span>`+"\n", html.EscapeString(msgClass), html.EscapeString(l.Text))
+		b.WriteString(html.EscapeString(msg))
+		b.WriteString("</span>\n")
 	}
 	if filterText != "" && len(lines) == 0 {
 		b.WriteString(`<em>No matching logs found. Please note that the filter text is case sensitive!</em>`)
 	}
 	b.WriteString(`</pre>`)
 	return b.String()
+}
+
+// splitLogTimestamp splits a log entry's leading RFC3339 timestamp token off the
+// rest of the text, so the renderer can wrap it in a faint .log-ts span and leave
+// the message bare (matching the redesign mockup). Logs are fetched with
+// Timestamps:true, so an entry's first line begins with a parseable timestamp;
+// when it does, ts is that token and msg is the remainder. A line without a
+// parseable timestamp prefix (a folded continuation, e.g. a wrapped stack frame)
+// yields an empty ts and the full text as msg.
+func splitLogTimestamp(text string) (ts, msg string) {
+	if !hasLogTimestamp(text) {
+		return "", text
+	}
+	ts, msg, _ = strings.Cut(text, " ")
+	return ts, msg
 }
 
 func (s *Server) downloadYAML(w http.ResponseWriter, r *http.Request, obj map[string]any) {
