@@ -555,6 +555,53 @@ func appLabelClass(key string) string {
 	return ""
 }
 
+// listChipClass is the FULL redesign list-chip class for a label key: the
+// canonical "ro-chip", plus the " app" accent token for app.kubernetes.io/*
+// labels. It reuses the same app.kubernetes.io/ recognition as appLabelClass /
+// chipClass, but emits the redesign canonical ".app" token (scoped under the list
+// shell's .ro-rd marker) instead of the detail-page ".ro-label-app" accent, so the
+// namespace label chips match the mockup `<span class="ro-chip app">` vocabulary.
+func listChipClass(key string) string {
+	if strings.HasPrefix(key, "app.kubernetes.io/") {
+		return "ro-chip app"
+	}
+	return "ro-chip"
+}
+
+// namespaceLabelChips builds the namespace label-chip view models from the row
+// object's metadata.labels (sorted by key for a stable order). Each chip carries
+// the redesign chip class (the .app accent for app.kubernetes.io/* labels) and its
+// "key: value" text. A namespace with no labels yields nil, so the renderer shows
+// the muted "—".
+func namespaceLabelChips(obj map[string]any) []chipView {
+	labels, _, _ := unstructured.NestedStringMap(obj, "metadata", "labels")
+	if len(labels) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	chips := make([]chipView, 0, len(keys))
+	for _, key := range keys {
+		chips = append(chips, chipView{Class: listChipClass(key), Text: key + ": " + labels[key]})
+	}
+	return chips
+}
+
+// namespaceLabelsText is the plain DISPLAY value for the synthetic namespace
+// Labels column: the sorted comma-joined "key=value" labels, or "—" when the
+// namespace has no labels (so the generic fallback / TSV / sort sees the same "—"
+// the rich chips renderer shows for an unlabeled namespace).
+func namespaceLabelsText(obj map[string]any) string {
+	labels, _, _ := unstructured.NestedStringMap(obj, "metadata", "labels")
+	if len(labels) == 0 {
+		return "—"
+	}
+	return formatLabels(labels)
+}
+
 func cellClass(table *kube.Table, idx int, cell any) string {
 	if idx < 0 || idx >= len(table.Columns) {
 		return ""

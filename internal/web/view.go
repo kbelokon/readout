@@ -155,6 +155,21 @@ type cellView struct {
 	// (done/prog/paused); the renderer maps it to the .rollout.<state> class + icon.
 	// Value carries the rollout label ("up to date"/"rolling out"/"paused").
 	RolloutState string
+
+	// Chips are the namespace label chips for cellChips: one per metadata.labels
+	// entry (sorted), each carrying its chip class (the .app accent for
+	// app.kubernetes.io/* labels) + its "key: value" text. Empty means a namespace
+	// with no labels, rendered as a muted "—".
+	Chips []chipView
+}
+
+// chipView is one namespace label chip: Class is the FULL redesign chip class
+// (the canonical "ro-chip" + the " app" accent token for app.kubernetes.io/*
+// labels, scoped under the list shell's .ro-rd marker), Text is the "key: value"
+// label shown in the pill.
+type chipView struct {
+	Class string
+	Text  string
 }
 
 // repSegment is one deployment replica-track segment. State is "" for a filled
@@ -190,6 +205,7 @@ const (
 	cellConditions
 	cellReplicas
 	cellRollout
+	cellChips
 )
 
 // detailView is the view model for the resource-view (object detail) page. The

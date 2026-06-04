@@ -149,6 +149,16 @@ type TableCell struct {
 	RepNum       string       // deployment ready/desired ratio text (.rep-num truth)
 	RolloutState string       // deployment rollout state (done/prog/paused)
 	RolloutIcon  string       // pre-rendered rollout glyph (raw SVG, themed by state colour)
+
+	Chips []RowChip // namespace label chips (empty -> muted "—")
+}
+
+// RowChip is one namespace label chip: Class is the full redesign chip class
+// (`ro-chip` + the ` app` accent token for app.kubernetes.io/* labels), Text is
+// the "key: value" label shown in the pill.
+type RowChip struct {
+	Class string
+	Text  string
 }
 
 // Cond is one abnormal node condition pill (name + redesign tone warn/err/ok).
@@ -182,6 +192,7 @@ const (
 	CellConditions
 	CellReplicas
 	CellRollout
+	CellChips
 )
 
 // ResourceTable renders the full table fragment (one block per table + the
@@ -311,6 +322,18 @@ templ tableCell(cell TableCell) {
 			</span><span class={ repNumClass(cell.Ratio) }>{ cell.RepNum }</span></span></td>
 	} else if cell.Kind == CellRollout {
 		<td><span class={ rolloutClass(cell.RolloutState) }><span class="ico sm">@templ.Raw(cell.RolloutIcon)</span>{ cell.Value }</span></td>
+	} else if cell.Kind == CellChips {
+		<td>
+			if len(cell.Chips) == 0 {
+				<span class="faint">—</span>
+			} else {
+				<div class="ro-chips">
+					for _, chip := range cell.Chips {
+						<span class={ chip.Class }>{ chip.Text }</span>
+					}
+				</div>
+			}
+			</td>
 	} else {
 		<td class={ cellTdClass(cell.Class, cell.ColClass, cell.Trunc) } title={ cell.Title }>
 			switch cell.Kind {

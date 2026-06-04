@@ -209,6 +209,9 @@ func toTableData(t *tableView) templates.TableData {
 			for _, seg := range cell.RepSegments {
 				tc.RepSegments = append(tc.RepSegments, templates.RepSegment{State: seg.State})
 			}
+			for _, chip := range cell.Chips {
+				tc.Chips = append(tc.Chips, templates.RowChip{Class: chip.Class, Text: chip.Text})
+			}
 			if cell.Kind == cellRollout {
 				tc.RolloutIcon = icon(rolloutIconName(cell.RolloutState))
 			}

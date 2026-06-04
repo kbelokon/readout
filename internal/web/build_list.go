@@ -200,6 +200,13 @@ func (s *Server) applyTableOptions(r *http.Request, cluster *kube.Cluster, table
 		// the Table already provides becomes the rich replica track in buildCellView.
 		decorateDeploymentColumns(table)
 	}
+	if table.Resource.Plural == "namespaces" {
+		// Namespaces get a synthetic Labels column (chips read from metadata.labels);
+		// the Status column the Table already provides reuses the status-dot cell. No
+		// pods-count column is added -- a Namespace object has no pod count and readout
+		// has no per-namespace pod-count seam.
+		decorateNamespaceColumns(table)
+	}
 	if q.Get("join") == "metrics" && (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") {
 		s.joinMetrics(r.Context(), s.kubeClient(r, cluster), table, namespace, allNamespaces, q.Get("selector"))
 	}
@@ -312,6 +319,27 @@ func decorateDeploymentColumns(table *kube.Table) {
 	for i := range table.Rows {
 		_, label := rolloutState(table.Rows[i].Object)
 		table.Rows[i].Cells = append(table.Rows[i].Cells, label)
+	}
+}
+
+// decorateNamespaceColumns appends the synthetic Labels column and fills each
+// row's cell with the plain label DISPLAY value (the sorted comma-joined labels,
+// or "—" when unlabeled) so sort, TSV, and the generic fallback see a sensible
+// value; the rich cellChips renderer re-reads the row object for the per-label
+// chips (the .app accent for app.kubernetes.io/*). A Namespace object carries NO
+// pod count and readout has no per-namespace pod-count seam, so NO pods-count
+// column is fabricated -- only status (already from the Table), labels, and age.
+// The cell is appended for EVERY row in lockstep with the column, so the table
+// never goes ragged. A "Labels" column that already exists (e.g. a user's
+// labelcols=* produced one) is never duplicated -- the decoration is a no-op then,
+// and that user column keeps falling through to the generic cell.
+func decorateNamespaceColumns(table *kube.Table) {
+	if columnIndex(table.Columns, "Labels") >= 0 {
+		return
+	}
+	table.Columns = append(table.Columns, kube.Column{Name: "Labels"})
+	for i := range table.Rows {
+		table.Rows[i].Cells = append(table.Rows[i].Cells, namespaceLabelsText(table.Rows[i].Object))
 	}
 }
 
@@ -612,6 +640,13 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		// status/conditions/spec.paused.
 		cv.Kind = cellRollout
 		cv.RolloutState, cv.Value = rolloutState(row.Object)
+	case table.Resource.Plural == "namespaces" && colName == "Labels" && table.Columns[i].Label == "":
+		// The synthetic Labels column (added by decorateNamespaceColumns) renders the
+		// namespace label chips read from metadata.labels (the .app accent for
+		// app.kubernetes.io/*). The Label=="" guard keeps a user-added labelcols
+		// "Labels" column (which carries a Label tag) on the generic path instead.
+		cv.Kind = cellChips
+		cv.Chips = namespaceLabelChips(row.Object)
 	case colName == "CPU Usage":
 		cv.Kind = cellCPU
 		cv.Value = cpuFormat(cell)
