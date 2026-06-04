@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/kbelokon/readout/internal/config"
 )
 
@@ -179,12 +180,22 @@ func TestMultiClusterListPartialFailureRendersOthers(t *testing.T) {
 	if strings.Contains(body, "/clusters/zbad/namespaces/default/pods/") {
 		t.Fatalf("failing cluster zbad should contribute no rows: %s", body)
 	}
-	// The partial notice and the failing cluster's error record are present.
-	if !strings.Contains(body, "ro-partial-note") || !strings.Contains(body, "Partial results:") {
-		t.Fatalf("partial notice missing on partial failure: %s", body)
+	// The all-cluster partial-failure banner (redesign `.ro-banner.warn`) and the
+	// failing cluster's per-cluster error line are present. Parse the DOM so this
+	// asserts the banner structure, not an incidental substring.
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse partial-failure body: %v", err)
 	}
-	if !strings.Contains(body, "zbad/pods") {
-		t.Fatalf("failing cluster error record missing (want zbad/pods): %s", body)
+	banner := doc.Find(".ro-banner.warn")
+	if banner.Length() == 0 {
+		t.Fatalf("all-cluster partial-failure banner missing: %s", body)
+	}
+	if got := normSpace(banner.Find(".bn-title").Text()); got != "Partial results: 1 failed" {
+		t.Fatalf("partial banner title = %q, want 'Partial results: 1 failed'", got)
+	}
+	if !strings.Contains(banner.Text(), "zbad/pods") {
+		t.Fatalf("failing cluster error line missing (want zbad/pods): %s", banner.Text())
 	}
 }
 

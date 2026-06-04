@@ -367,8 +367,9 @@ func TestBehaviorPodListFacts(t *testing.T) {
 	p.wantAttr("#resource-list-content", "hx-swap", "morph:innerHTML")
 	p.wantAttr("#resource-list-content", "hx-indicator", "previous .ro-progress")
 
-	// Column headers in order, each linking to its own ?sort=<col>.
-	headers := p.texts("table.ro-list-table thead th")
+	// Column headers in order, each linking to its own ?sort=<col>. The redesign
+	// list engine renders the canonical `.ro-table` inside `.ro-table-wrap`.
+	headers := p.texts("table.ro-table thead th")
 	if strings.Join(headers, "|") != "Name|Ready|Status|Restarts|Age|Created" {
 		t.Fatalf("pod table headers = %v", headers)
 	}
@@ -379,28 +380,35 @@ func TestBehaviorPodListFacts(t *testing.T) {
 		}
 	}
 
-	// Phase strip: the Running tally.
+	// Phase strip: the Running tally (redesign phase strip, dot tone "ok").
 	p.wantText(".ro-phase-label", "Running")
 	p.wantText(".ro-phase-strip .ro-phase-tally .ro-phase-count", "2")
 
-	// Row name cells + their detail links (cell VALUES, not just headers).
-	names := p.texts("td.ro-cell-name")
+	// Row name cells + their detail links (cell VALUES, not just headers). The
+	// sticky name cell is `td.cell-name`; the cell TEXT is the full untruncated
+	// pod name (pn-head+pn-tail when split).
+	names := p.texts("td.cell-name")
 	if strings.Join(names, "|") != "nginx|my-app" {
 		t.Fatalf("pod name cells = %v, want [nginx my-app]", names)
 	}
-	p.wantAttr("td.ro-cell-name a", "href", "/clusters/test/namespaces/default/pods/nginx")
+	p.wantAttr("td.cell-name a", "href", "/clusters/test/namespaces/default/pods/nginx")
 
-	// The nginx row's Status cell value + success class + the status dot.
+	// The nginx row's Status cell value + the redesign status dot toned `ok`
+	// (mapped from the kube success class) inside `.cell-status.ok`.
 	nginxRow := p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/default/pods/nginx"])`)
 	if got := normSpace(nginxRow.Find("td").Eq(2).Text()); got != "Running" {
 		t.Fatalf("nginx Status cell = %q, want Running", got)
 	}
-	if nginxRow.Find(".ro-status-dot.has-text-success").Length() == 0 {
-		t.Fatalf("nginx Status cell missing success status dot")
+	if nginxRow.Find(".cell-status.ok .ro-dot.ok").Length() == 0 {
+		t.Fatalf("nginx Status cell missing the ok status dot")
 	}
-	// Ready cell value 1/1 wrapped in has-text-success.
-	if got := normSpace(nginxRow.Find("td .has-text-success").First().Text()); got != "1/1" {
-		t.Fatalf("nginx Ready cell = %q, want 1/1", got)
+	// Running is a STEADY state -> its dot must NOT pulse.
+	if nginxRow.Find(".ro-dot.pulse").Length() != 0 {
+		t.Fatalf("Running status dot should not pulse (steady state)")
+	}
+	// Ready cell value 1/1 wrapped in `.ready.full` (all replicas ready).
+	if got := normSpace(nginxRow.Find("td .ready.full").First().Text()); got != "1/1" {
+		t.Fatalf("nginx Ready cell = %q, want 1/1 in .ready.full", got)
 	}
 
 	// "Show CPU/Memory Usage" affordance (join=metrics not yet applied).
@@ -441,7 +449,7 @@ func TestBehaviorPodListSortToggle(t *testing.T) {
 	}
 
 	// Ascending name sort: my-app sorts before nginx (row-order cell fact).
-	names := p.texts("td.ro-cell-name")
+	names := p.texts("td.cell-name")
 	if strings.Join(names, "|") != "my-app|nginx" {
 		t.Fatalf("sorted name cells = %v, want [my-app nginx]", names)
 	}
@@ -469,7 +477,7 @@ func TestBehaviorPodListAllNamespaces(t *testing.T) {
 	p := get(t, app, "/clusters/test/namespaces/_all/pods", http.StatusOK)
 
 	p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/_all/pods/_table")
-	headers := p.texts("table.ro-list-table thead th")
+	headers := p.texts("table.ro-table thead th")
 	if headers[0] != "Namespace" {
 		t.Fatalf("all-namespaces first header = %q, want Namespace (headers=%v)", headers[0], headers)
 	}
@@ -501,7 +509,7 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 	t.Run("filter narrows rows and round-trips into the filter input", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?filter=nginx", http.StatusOK)
 		p.wantAttr(`form.tools-form input[name="filter"]`, "value", "nginx")
-		if got := p.texts("td.ro-cell-name"); strings.Join(got, "|") != "nginx" {
+		if got := p.texts("td.cell-name"); strings.Join(got, "|") != "nginx" {
 			t.Fatalf("filter=nginx rows = %v, want [nginx]", got)
 		}
 		p.wantText(".ro-phase-strip .ro-phase-tally .ro-phase-count", "1")
@@ -509,13 +517,14 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 
 	t.Run("a filter matching nothing renders the empty-state row", func(t *testing.T) {
 		// Pins the empty-state sentence "No <Kind> objects in namespace "<ns>"
-		// found." verbatim (the ro-empty-row colspan cell). This guards the templ
-		// empty-state against the @templ.Raw children-drop that would silently lose
-		// the trailing "found." -- a regression the row-bearing facts cannot see.
+		// found." verbatim (the redesign .ro-empty-lg in-table state). This guards
+		// the templ empty-state against the @templ.Raw children-drop that would
+		// silently lose the trailing "found." -- a regression the row-bearing facts
+		// cannot see.
 		p := get(t, app, "/clusters/test/namespaces/default/pods?filter=zzz-no-such-pod", http.StatusOK)
-		p.wantAbsent("td.ro-cell-name")
-		p.wantText(".ro-empty-row .ro-empty-title", `No Pod objects in namespace "default" found.`)
-		p.wantText(".ro-empty-row .ro-empty-hint", "Nothing to show here yet.")
+		p.wantAbsent("td.cell-name")
+		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-title", `No Pod objects in namespace "default" found.`)
+		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-hint", "Nothing to show here yet.")
 	})
 
 	t.Run("hidecols removes the Status column", func(t *testing.T) {
@@ -571,7 +580,7 @@ func TestBehaviorResourceListPartial(t *testing.T) {
 	}
 	// But it DOES carry the table with the real rows.
 	p.wantText("h1.title", "Pods")
-	if got := p.texts("td.ro-cell-name"); strings.Join(got, "|") != "nginx|my-app" {
+	if got := p.texts("td.cell-name"); strings.Join(got, "|") != "nginx|my-app" {
 		t.Fatalf("_table partial rows = %v", got)
 	}
 }
@@ -983,7 +992,7 @@ func TestBehaviorSecretBarrierDefaultOff(t *testing.T) {
 	// error notice, NOT a secret row. No secret name, no raw bytes.
 	list := get(t, app, "/clusters/test/namespaces/default/secrets", http.StatusOK)
 	list.wantBodyContains("resource type not found")
-	list.wantAbsent("td.ro-cell-name")
+	list.wantAbsent("td.cell-name")
 	list.wantBodyExcludes("my-secret")
 	list.wantBodyExcludes(rawPassword)
 

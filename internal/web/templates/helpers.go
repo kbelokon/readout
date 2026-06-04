@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/kbelokon/readout/internal/web/icons"
 )
@@ -92,6 +93,98 @@ func activeSuffix(active bool) string {
 		return " is-active"
 	}
 	return ""
+}
+
+// dotClass is the redesign status-dot class for a phase-strip chip: `ro-dot`
+// plus the tone modifier (ok/warn/err/info/mute) when present. An empty tone
+// (unmocked kind) yields a bare `ro-dot` with no tone colour.
+func dotClass(tone string) string {
+	if tone == "" {
+		return "ro-dot"
+	}
+	return "ro-dot " + tone
+}
+
+// dotClass2 is dotClass for a status CELL, adding `.pulse` for a transient state.
+func dotClass2(tone string, pulse bool) string {
+	cls := dotClass(tone)
+	if pulse {
+		cls += " pulse"
+	}
+	return cls
+}
+
+// cellStatusClass is the redesign status-cell wrapper class (`cell-status` + the
+// tone modifier when present).
+func cellStatusClass(tone string) string {
+	if tone == "" {
+		return "cell-status"
+	}
+	return "cell-status " + tone
+}
+
+// readyClassRD is the redesign ready-ratio span class (`ready` + full|partial|
+// zero). An empty ratio (not an n/d value) yields a bare `ready`.
+func readyClassRD(ratio string) string {
+	if ratio == "" {
+		return "ready"
+	}
+	return "ready " + ratio
+}
+
+// restartsClassRD is the redesign restarts span class (`restarts` + zero|some).
+func restartsClassRD(tone string) string {
+	if tone == "" {
+		return "restarts"
+	}
+	return "restarts " + tone
+}
+
+// thClass is the table header class: the kube column class (e.g. "num" for a
+// numeric column) plus the redesign `sorted` modifier on the active sort column.
+func thClass(colClass string, sorted bool) string {
+	parts := colClass
+	if sorted {
+		parts = strings.TrimSpace(parts + " sorted")
+	}
+	return parts
+}
+
+// rowClass keeps the existing row-status stripe class on the body row (carried
+// through from assembly); empty when the row has no status. The redesign uses it
+// only for the selected-row accent, but the class itself stays byte-stable.
+func rowClass(statusClass string) string { return statusClass }
+
+// numClass passes the age/created cell class through (it already carries `num`
+// when the column is numeric plus the age-* bucket); a no-op join kept for
+// symmetry with the other cell class helpers.
+func numClass(cls string) string { return cls }
+
+// numColClass ensures a right-aligned ratio/restarts cell carries `num` even when
+// the kube column class did not (the ready/restarts columns are string-typed in
+// the server Table so GuessColumnClasses does not mark them numeric).
+func numColClass(colClass string) string {
+	if strings.Contains(" "+colClass+" ", " num ") {
+		return colClass
+	}
+	return strings.TrimSpace("num " + colClass)
+}
+
+// cellTdClass is the generic (non-rich) cell <td> class: the augmented cellClass
+// + the column class, plus `trunc` for a secondary free-text cell.
+func cellTdClass(cellClass, colClass string, trunc bool) string {
+	cls := strings.TrimSpace(cellClass + " " + colClass)
+	if trunc {
+		cls = strings.TrimSpace(cls + " trunc")
+	}
+	return cls
+}
+
+// warnIcon is the redesign partial-failure banner glyph (lucide triangle-alert),
+// wrapped in the same <svg> shell as the icons package glyphs so it themes via
+// `.ico svg`. A static constant: no runtime-derived data crosses it.
+func warnIcon() string {
+	return `<svg xmlns="http://www.w3.org/2000/svg" class="lucide-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`
 }
 
 // emptyColspan computes the empty-row <td> colspan: the kube.Table column count

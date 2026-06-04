@@ -322,8 +322,10 @@ func TestHasLogTimestamp(t *testing.T) {
 // TestToTableDataPhaseChipCarry pins the bridge: kube.PhaseCount -> templates
 // .PhaseChip. The kube-side typed output and the rendered Label/Count are pinned
 // elsewhere, but the field-for-field carry here (incl. the int->string Count via
-// strconv.Itoa) had no isolated guard, so a Class/Label swap or a wrong Count
-// conversion could slip. Assert all three fields together.
+// strconv.Itoa AND the Bulma-tone -> redesign-tone mapping) had no isolated
+// guard, so a Tone/Label swap or a wrong Count conversion could slip. The Tone is
+// asserted against the DOCUMENTED mapping (has-text-danger->err,
+// has-text-success->ok), not by echoing the emitted class.
 func TestToTableDataPhaseChipCarry(t *testing.T) {
 	td := toTableData(&tableView{
 		Phase: []kube.PhaseCount{
@@ -332,8 +334,8 @@ func TestToTableDataPhaseChipCarry(t *testing.T) {
 		},
 	})
 	want := []templates.PhaseChip{
-		{Class: "has-text-danger", Label: "Error", Count: "3"},
-		{Class: "has-text-success", Label: "OK", Count: "0"},
+		{Tone: "err", Label: "Error", Count: "3"},
+		{Tone: "ok", Label: "OK", Count: "0"},
 	}
 	if !reflect.DeepEqual(td.Phase, want) {
 		t.Fatalf("PhaseChip carry = %#v, want %#v", td.Phase, want)

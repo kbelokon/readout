@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +25,112 @@ import (
 
 func podColor(name string) string {
 	return fmt.Sprintf("log-c%d", crc32.ChecksumIEEE([]byte(name))%8)
+}
+
+// podNameHashSuffix matches a Deployment-style pod name (`<workload>-<rs
+// hash>-<pod hash>`) so the workload prefix can render bright and the trailing
+// hash segments muted. Mirrors the design reference shell.js podName():
+// `^(.*?)(-[a-z0-9]{6,10})(-[a-z0-9]{4,5})$`.
+var podNameHashSuffix = regexp.MustCompile(`^(.*?)(-[a-z0-9]{6,10}-[a-z0-9]{4,5})$`)
+
+// replicaSetNameHashSuffix matches a ReplicaSet-style name (`<workload>-<hash>`),
+// a single trailing template-hash segment. Used only for the replicasets kind so
+// arbitrary names (services, configmaps) are never split.
+var replicaSetNameHashSuffix = regexp.MustCompile(`^(.*?)(-[a-z0-9]{6,10})$`)
+
+// splitObjectName splits an identifier into a bright head + a muted hash tail for
+// the sticky name cell. Pod and ReplicaSet names carry a generated template hash
+// suffix that is noise next to the workload name, so it is rendered muted; for
+// every other kind (and any name without a recognisable suffix) the whole name is
+// the head and the tail is empty. The invariant the cell relies on is
+// head+tail == name for ALL inputs (the tail only ever moves the trailing hash
+// out of the head; it never drops or rewrites a character).
+func splitObjectName(plural, name string) (head, tail string) {
+	switch plural {
+	case "pods":
+		if m := podNameHashSuffix.FindStringSubmatch(name); len(m) == 3 && m[1] != "" {
+			return m[1], m[2]
+		}
+	case "replicasets":
+		if m := replicaSetNameHashSuffix.FindStringSubmatch(name); len(m) == 3 && m[1] != "" {
+			return m[1], m[2]
+		}
+	}
+	return name, ""
+}
+
+// statusTone maps the existing kube.CellClass Bulma text-color tone onto the
+// redesign status-dot tone vocabulary (ok/warn/err/info/mute). An empty Bulma
+// class (an unmocked kind, or a value with no recognised status) yields "" so the
+// generic fallback cell emits a dot with no tone colour.
+func statusTone(bulmaClass string) string {
+	switch bulmaClass {
+	case "has-text-success":
+		return "ok"
+	case "has-text-warning":
+		return "warn"
+	case "has-text-danger":
+		return "err"
+	case "has-text-info":
+		return "info"
+	case "has-text-grey":
+		return "mute"
+	default:
+		return ""
+	}
+}
+
+// transientPodPhase reports whether a pod status phase is an in-flight state that
+// should animate (the dot gets .pulse). Per the design rulebook ONLY in-flight
+// states pulse; steady states (Running/Completed/CrashLoopBackOff/Error/...)
+// never animate.
+func transientPodPhase(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "ContainerCreating", "Terminating", "PodInitializing", "Pending":
+		return true
+	}
+	// Init:N/M progress (e.g. "Init:0/1") is an in-flight state too.
+	return strings.HasPrefix(value, "Init:") && !strings.Contains(value, "Error") && !strings.Contains(value, "BackOff")
+}
+
+// readyRatioClass classifies a `n/d` ready ratio into the redesign tone
+// (full/partial/zero): all-ready -> full (green), some-ready -> partial (amber),
+// none-ready -> zero (faint). A value that is not an `n/d` ratio yields "".
+func readyRatioClass(value string) string {
+	left, right, ok := strings.Cut(value, "/")
+	if !ok {
+		return ""
+	}
+	left, right = strings.TrimSpace(left), strings.TrimSpace(right)
+	if left == "0" {
+		return "zero"
+	}
+	if left == right {
+		return "full"
+	}
+	return "partial"
+}
+
+// splitRestarts splits a kube Table Restarts cell into its count and an optional
+// "(… ago)" suffix. The server-side Table renders a restarted pod as
+// "2 (38h ago)"; an unrestarted pod is just "0". The count drives the
+// .restarts.zero|some tone, the ago string (when present) renders muted after it.
+func splitRestarts(value string) (count, ago string) {
+	value = strings.TrimSpace(value)
+	if idx := strings.Index(value, " ("); idx >= 0 {
+		return strings.TrimSpace(value[:idx]), strings.TrimSpace(value[idx+1:])
+	}
+	return value, ""
+}
+
+// restartsTone is the .restarts tone for a count cell: "zero" when the restart
+// count is 0/empty/non-numeric-zero, else "some".
+func restartsTone(count string) string {
+	count = strings.TrimSpace(count)
+	if count == "" || count == "0" {
+		return "zero"
+	}
+	return "some"
 }
 
 func humanTitle(value string) string {

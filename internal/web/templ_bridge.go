@@ -134,6 +134,7 @@ func toListData(v *listView) templates.ListData {
 func toTableData(t *tableView) templates.TableData {
 	td := templates.TableData{
 		Kind:            t.Kind,
+		Count:           len(t.Table.Rows),
 		DownloadTSVHref: t.DownloadTSVHref,
 		SearchHref:      t.SearchHref,
 		DownloadIcon:    icon("download"),
@@ -146,11 +147,12 @@ func toTableData(t *tableView) templates.TableData {
 		ColumnCount:     len(t.Table.Columns),
 		CreatedHref:     t.CreatedHref,
 		CreatedIcon:     t.CreatedIcon,
+		CreatedSorted:   t.CreatedIcon != "",
 		EmptyKind:       t.Table.Resource.Kind,
 	}
 	for _, item := range t.Phase {
 		td.Phase = append(td.Phase, templates.PhaseChip{
-			Class: item.Class,
+			Tone:  statusTone(item.Class),
 			Label: item.Label,
 			Count: strconv.Itoa(item.Count),
 		})
@@ -162,6 +164,7 @@ func toTableData(t *tableView) templates.TableData {
 			SortHref:    t.Columns[i].SortHref,
 			Name:        col.Name,
 			SortIcon:    t.Columns[i].SortIcon,
+			Sorted:      t.Columns[i].SortIcon != "",
 		})
 	}
 	for i := range t.Rows {
@@ -175,18 +178,26 @@ func toTableData(t *tableView) templates.TableData {
 			CreatedClass: row.CreatedClass,
 			CreatedText:  row.CreatedText,
 		}
-		for _, cell := range row.Cells {
-			tc := templates.TableCell{
+		if row.CreatedText != "" {
+			tr.CreatedTitle = "created " + row.CreatedText
+		}
+		for ci := range row.Cells {
+			cell := &row.Cells[ci]
+			tr.Cells = append(tr.Cells, templates.TableCell{
 				Kind:     templates.CellKind(cell.Kind),
 				Value:    cell.Value,
 				Class:    cell.Class,
 				ColClass: cell.ColClass,
 				Href:     cell.Href,
-			}
-			if cell.Kind == cellReady {
-				tc.ReadyClass = readyClass(cell.Value)
-			}
-			tr.Cells = append(tr.Cells, tc)
+				Tone:     cell.Tone,
+				Ratio:    cell.Ratio,
+				Pulse:    cell.Pulse,
+				NameHead: cell.NameHead,
+				NameTail: cell.NameTail,
+				Ago:      cell.Ago,
+				Trunc:    cell.Trunc,
+				Title:    cell.Title,
+			})
 		}
 		td.Rows = append(td.Rows, tr)
 	}

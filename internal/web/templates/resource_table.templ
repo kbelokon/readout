@@ -2,17 +2,25 @@ package templates
 
 // resource_table.templ is the resource-list TABLE fragment (the body of the
 // `.../{plural}/_table` GET partial route AND the inner content of the full
-// list page's #resource-list-content container): per-table title + tools form +
-// phase strip + the ro-list-table itself, then the footer "Found N rows..."
-// line and the per-cluster error articles.
+// list page's #resource-list-content container): per-table title row (count chip
+// + TSV/columns/search-this actions) + tools form + phase strip + the redesign
+// `.ro-table` (in `.ro-table-wrap`), then the footer meta line and the
+// all-cluster partial-failure banner.
+//
+// This is the canonical resource-list ENGINE: it renders Pods (rich cells),
+// Nodes/Deployments/Namespaces (rich cells arrive in later waves), and every
+// other kind via the generic reskinned k8s-Table cell. It is shared by ALL list
+// kinds, so it carries the redesign content marker `ro-rd` (added on the
+// #resource-list-content root in resource_list.templ and on the bare partial
+// wrapper in the handler), which routes the colliding class names
+// (.ro-phase-strip, .ro-phase-chip, .ro-breadcrumb) to the redesign CSS rules.
 //
 // Every request-derived value (sort hrefs, the TSV/search hrefs, per-row status
-// classes, per-cell render branch + class + href, the age cell class, the phase
-// tally) is resolved in the package-web assembly layer and carried in ListData;
-// the renderer touches no request and recomputes nothing. Trusted pre-rendered
-// chrome (inline SVG icons, the sort-direction icon) rides in as raw strings.
-// The Unit-4 fact net pins the column sort hrefs, the cell values + status dot,
-// the phase tally, the row name links, and (on the full page) the htmx wiring.
+// classes, per-cell render branch + class + tone + href, the age cell class +
+// tooltip, the phase tally) is resolved in the package-web assembly layer and
+// carried in ListData; the renderer touches no request and recomputes nothing.
+// Trusted pre-rendered chrome (inline SVG icons, the sort-direction icon) rides
+// in as raw strings.
 
 // ListData is the resolved resource-list input shared by the full page and the
 // `_table` partial. The all-* flags drive the leading Cluster/Namespace columns
@@ -34,6 +42,7 @@ type ListData struct {
 // Cluster column; Icons are pre-rendered inline SVG; Tools is the tools form.
 type TableData struct {
 	Kind            string
+	Count           int // visible row count -> the .ro-count title chip
 	DownloadTSVHref string
 	SearchHref      string
 	DownloadIcon    string
@@ -49,31 +58,35 @@ type TableData struct {
 
 	MultiCluster bool
 
-	Columns     []TableColumn
-	ColumnCount int // kube.Table column count (drives the empty-row colspan)
-	CreatedHref string
-	CreatedIcon string
+	Columns       []TableColumn
+	ColumnCount   int // kube.Table column count (drives the empty-row colspan)
+	CreatedHref   string
+	CreatedIcon   string
+	CreatedSorted bool // active sort is the synthetic Created column
 
 	Rows []TableRow
 
 	EmptyKind string // Resource.Kind for the empty-state sentence
 }
 
-// PhaseChip is one phase-tally chip (status dot class + label + count).
+// PhaseChip is one phase-tally chip (status dot tone + label + count). Tone is
+// the redesign dot tone (ok/warn/err/info/mute).
 type PhaseChip struct {
-	Class string
+	Tone  string
 	Label string
 	Count string
 }
 
 // TableColumn is one column header: its title/class + sort link + the
 // pre-rendered sort-direction icon (raw HTML, empty when not the sort column).
+// Sorted marks the active sort column (the redesign `th.sorted` highlight).
 type TableColumn struct {
 	Description string
 	Class       string
 	SortHref    string
 	Name        string
 	SortIcon    string
+	Sorted      bool
 }
 
 // TableTools is the per-table tools form (label columns / selector / filter).
@@ -105,17 +118,27 @@ type TableRow struct {
 	Cells        []TableCell
 	CreatedClass string
 	CreatedText  string
+	CreatedTitle string
 }
 
 // TableCell is one body cell. Kind selects the render branch; Class is the full
-// <td> class, Href the resolved link target where the branch needs one.
+// <td> class, Href the resolved link target where the branch needs one. The
+// redesign fields carry the rich-cell presentation resolved in assembly.
 type TableCell struct {
-	Kind       CellKind
-	Value      string
-	Class      string
-	ColClass   string
-	Href       string
-	ReadyClass string // for the Ready branch: the has-text-* class on the inner span
+	Kind     CellKind
+	Value    string
+	Class    string
+	ColClass string
+	Href     string
+
+	Tone     string // status-dot / cell-status tone (ok/warn/err/info/mute)
+	Ratio    string // ready ratio tone (full/partial/zero)
+	Pulse    bool   // transient status -> .ro-dot.pulse
+	NameHead string // bright workload prefix (sticky name cell)
+	NameTail string // muted hash suffix (NameHead+NameTail == Value)
+	Ago      string // optional "(… ago)" suffix on a restarts cell
+	Trunc    bool   // secondary free-text cell: truncate with Title tooltip
+	Title    string // full-value tooltip (truncated or age cell)
 }
 
 // CellKind selects a body-cell render branch (matches package-web cellKind).
@@ -130,14 +153,22 @@ const (
 	CellMemory
 	CellStatus
 	CellReady
+	CellRestarts
 )
 
 // ResourceTable renders the full table fragment (one block per table + the
-// footer + the error articles). This is what the `_table` partial returns and
-// what the full list page wraps in #resource-list-content.
+// footer + the partial-failure banner). This is what the `_table` partial
+// returns and what the full list page wraps in #resource-list-content.
 templ ResourceTable(d ListData) {
 	for _, table := range d.Tables {
-		<h1 class="title">{ table.Kind } <span class="links"><a href={ templ.SafeURL(table.DownloadTSVHref) } title="Download resource list as Tab-Separated-Values (TSV)" class="button ro-btn-quiet"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a> <a href="#" class="button ro-btn-quiet toggle-tools" data-target="tools-table-1"><span class="icon">@templ.Raw(table.ToolsIcon)</span></a> <a href={ templ.SafeURL(table.SearchHref) } class="button ro-btn-quiet"><span class="icon">@templ.Raw(table.SearchIcon)</span></a></span></h1>
+		<div class="ro-title-row">
+			<h1 class="title ro-title">{ table.Kind }</h1> <span class="ro-count">{ itoa(table.Count) }</span> <span style="flex:1"></span>
+			<div class="ro-title-actions">
+				<a href={ templ.SafeURL(table.DownloadTSVHref) } title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
+				<a href="#" class="ro-iconbtn toggle-tools" title="Columns &amp; filters" data-target="tools-table-1"><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
+				<a href={ templ.SafeURL(table.SearchHref) } class="ro-iconbtn" title="Search this type"><span class="icon">@templ.Raw(table.SearchIcon)</span></a>
+			</div>
+		</div>
 		@toolsForm(table.Tools)
 		if table.ShowMetricsHref != "" {
 			<div class="section"><a href={ templ.SafeURL(table.ShowMetricsHref) }>Show CPU/Memory Usage</a></div>
@@ -145,11 +176,11 @@ templ ResourceTable(d ListData) {
 		if len(table.Phase) > 0 {
 			<div class="ro-phase-strip"><div class="ro-phase-tally">
 				for _, chip := range table.Phase {
-					<span class="ro-phase-chip"><span class={ "ro-status-dot " + chip.Class } aria-hidden="true"></span><span class="ro-phase-label">{ chip.Label }</span> <span class="ro-phase-count">{ chip.Count }</span></span>{ " " }
+					<span class="ro-phase-chip"><span class={ dotClass(chip.Tone) } aria-hidden="true"></span><span class="ro-phase-label">{ chip.Label }</span> <span class="ro-phase-count">{ chip.Count }</span></span>{ " " }
 				}
 				</div><div class="ro-phase-total"><span class="ro-phase-count">{ itoa(table.PhaseRows) }</span>{ " object" }{ pluralSuffix(table.PhaseRows) }{ " · " }{ formatSeconds(d.DurationSeconds) }{ "s" }</div></div>
 		}
-		<table class="table ro-list-table"><thead><tr>
+		<div class="ro-table-wrap"><table class="ro-table"><thead><tr>
 			if table.MultiCluster {
 				<th>Cluster</th>
 			}
@@ -157,67 +188,76 @@ templ ResourceTable(d ListData) {
 				<th>Namespace</th>
 			}
 			for _, col := range table.Columns {
-				<th title={ col.Description } class={ col.Class }><a href={ templ.SafeURL(col.SortHref) }>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
+				<th title={ col.Description } class={ thClass(col.Class, col.Sorted) }><a href={ templ.SafeURL(col.SortHref) }>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
 			}
-			<th><a href={ templ.SafeURL(table.CreatedHref) }>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
+			<th class={ thClass("", table.CreatedSorted) }><a href={ templ.SafeURL(table.CreatedHref) }>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
 			</tr></thead><tbody>
 			for _, row := range table.Rows {
-				<tr class={ row.StatusClass }>
+				<tr class={ rowClass(row.StatusClass) }>
 					if table.MultiCluster {
-						<td><a href={ templ.SafeURL(row.ClusterHref) }>{ row.Cluster }</a></td>
+						<td class="cell-clu"><a href={ templ.SafeURL(row.ClusterHref) }>{ row.Cluster }</a></td>
 					}
 					if d.IsAllNamespaces {
-						<td><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></td>
+						<td class="cell-ns"><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></td>
 					}
 					for _, cell := range row.Cells {
 						@tableCell(cell)
 					}
-					<td class={ row.CreatedClass }>{ row.CreatedText }</td></tr>
+					<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</td></tr>
 			}
 			if len(table.Rows) == 0 {
-				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces)) }><div class="ro-empty"><p class="ro-empty-title">@templ.Raw(emptyTitle(table.EmptyKind, d.Namespace, d.IsAllNamespaces))</p><p class="ro-empty-hint">Nothing to show here yet.</p></div></td></tr>
+				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces)) }><div class="ro-empty-lg"><div class="ro-empty-glyph"><span class="ico">@templ.Raw(emptyTitle(table.EmptyKind, d.Namespace, d.IsAllNamespaces))</span></div><h3 class="ro-empty-title">@templ.Raw(emptyTitle(table.EmptyKind, d.Namespace, d.IsAllNamespaces))</h3><p class="ro-empty-hint">Nothing to show here yet.</p></div></td></tr>
 			}
-			</tbody></table>
+			</tbody></table></div>
 	}
-	<div class="content">
+	<div class="ro-table-meta">
 		if d.AllNamespacesHref != "" {
-			<p><a href={ templ.SafeURL(d.AllNamespacesHref) }>{ "Show " + d.Plural + " across all namespaces" }</a></p>
+			<a href={ templ.SafeURL(d.AllNamespacesHref) }>{ "Show " + d.Plural + " across all namespaces" }</a>
 		}
-		<p class="has-text-grey">{ foundLine(d.TotalRows, d.TableCount, d.ClusterCount, d.DurationSeconds) }</p>
-		if len(d.Errors) > 0 {
-			<p class="ro-partial-note">{ "Partial results: " + itoa(len(d.Errors)) + " failed (see below)." }</p>
-		}
+		<span class="ro-foundline">{ foundLine(d.TotalRows, d.TableCount, d.ClusterCount, d.DurationSeconds) }</span>
 		</div>
 	if len(d.Errors) > 0 {
-		<article class="ro-notice ro-notice-err" role="alert"><p class="ro-notice-title">Errors</p>
+		<div class="ro-banner warn" role="alert"><span class="bn-ico ico sm">@templ.Raw(warnIcon())</span><div class="bn-body"><p class="bn-title ro-partial-note">{ "Partial results: " + itoa(len(d.Errors)) + " failed" }</p>
 			for _, errMsg := range d.Errors {
-				<p>{ "Failed to search: " }<code>{ errMsg }</code></p>
+				<p class="bn-text"><span class="mono">{ errMsg }</span></p>
 			}
-			</article>
+			</div></div>
 	}
 }
 
-// tableCell renders one body cell, branching on Kind exactly as the former
-// renderTables per-cell ladder did. The Name branch is its own <td>; the rest
-// share the (cellClass + colClass) <td> wrapper.
+// tableCell renders one body cell, branching on Kind. The Name branch is its own
+// sticky `td.cell-name` (with the pn-head/pn-tail split); the rest share the
+// (cellClass + colClass) <td> wrapper and reskin into the redesign vocabulary.
 templ tableCell(cell TableCell) {
 	if cell.Kind == CellName {
-		<td class="ro-cell-name"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
+		<td class="cell-name"><a href={ templ.SafeURL(cell.Href) }>
+			if cell.NameTail != "" {
+				<span class="pn-head">{ cell.NameHead }</span><span class="pn-tail">{ cell.NameTail }</span>
+			} else {
+				{ cell.Value }
+			}
+			</a></td>
+	} else if cell.Kind == CellStatus {
+		<td class={ cell.ColClass }><span class={ cellStatusClass(cell.Tone) }><span class={ dotClass2(cell.Tone, cell.Pulse) } aria-hidden="true"></span>{ cell.Value }</span></td>
+	} else if cell.Kind == CellReady {
+		<td class={ numColClass(cell.ColClass) }><span class={ readyClassRD(cell.Ratio) }>{ cell.Value }</span></td>
+	} else if cell.Kind == CellRestarts {
+		<td class={ numColClass(cell.ColClass) }><span class={ restartsClassRD(cell.Tone) }>{ cell.Value }</span>
+			if cell.Ago != "" {
+				{ " " }<span class="ago">{ cell.Ago }</span>
+			}
+			</td>
+	} else if cell.Kind == CellNode {
+		<td class="cell-node"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
 	} else {
-		<td class={ cell.Class + " " + cell.ColClass }>
+		<td class={ cellTdClass(cell.Class, cell.ColClass, cell.Trunc) } title={ cell.Title }>
 			switch cell.Kind {
 				case CellLabel:
-					<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
-				case CellNode:
 					<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
 				case CellCPU:
 					{ cell.Value }
 				case CellMemory:
 					{ cell.Value + " MiB" }
-				case CellStatus:
-					<span class={ "ro-status-dot " + cell.Class } aria-hidden="true"></span>{ cell.Value }
-				case CellReady:
-					<span class={ cell.ReadyClass }>{ cell.Value }</span>
 				default:
 					{ cell.Value }
 			}

@@ -439,7 +439,13 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 }
 
 // buildCellView resolves one body cell: its render branch, value, classes, and
-// any request-derived href.
+// any request-derived href. The rich per-kind presentation (pod-name split,
+// status-dot tone + transient pulse, ready/restart tones, secondary-text
+// truncation tooltip) is resolved here too so the templ renderer reads plain data
+// and emits the redesign vocabulary directly. Recognized columns of the existing
+// k8s Table schema are ADAPTED in place -- a user-added label/custom column falls
+// through to the generic (plain/truncated) cell, so hidecols/labelcols/customcols/
+// sort/TSV are untouched.
 func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row, i int, cell any, ns, name string) cellView {
 	value := cellDisplayString(cell)
 	colName := table.Columns[i].Name
@@ -451,14 +457,18 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 	switch {
 	case colName == "Name":
 		cv.Kind = cellName
+		cv.NameHead, cv.NameTail = splitObjectName(table.Resource.Plural, value)
 		href := resourceHref(row.Cluster, &table.Resource, ns, name)
 		if table.Resource.Plural == "namespaces" {
 			href = fmt.Sprintf("/clusters/%s/namespaces/%s/pods", url.PathEscape(row.Cluster), url.PathEscape(name))
 		}
 		cv.Href = href
 	case table.Columns[i].Label != "" && table.Columns[i].Label != "*":
+		// A user-added single label column: still a selector link, but the label
+		// VALUE is secondary free-text, so it truncates with a tooltip.
 		cv.Kind = cellLabel
 		cv.Href = addQuery(r.URL, "selector", table.Columns[i].Label+"="+value)
+		cv.Trunc, cv.Title = true, value
 	case colName == "Node":
 		cv.Kind = cellNode
 		cv.Href = "/clusters/" + url.PathEscape(row.Cluster) + "/nodes/" + url.PathEscape(value)
@@ -470,12 +480,51 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cv.Value = memoryMiBFormat(cell)
 	case colName == "Status":
 		cv.Kind = cellStatus
+		cv.Tone = statusTone(cls)
+		if table.Resource.Plural == "pods" {
+			cv.Pulse = transientPodPhase(value)
+		}
 	case colName == "Ready" && strings.Contains(value, "/"):
 		cv.Kind = cellReady
+		cv.Ratio = readyRatioClass(value)
+	case colName == "Restarts":
+		cv.Kind = cellRestarts
+		cv.Value, cv.Ago = splitRestarts(value)
+		cv.Tone = restartsTone(cv.Value)
 	default:
 		cv.Kind = cellPlain
+		if isSecondaryTextColumn(colName) {
+			cv.Trunc, cv.Title = true, value
+		}
+	}
+	if colName == "Age" || colName == "First Seen" {
+		// The age cell carries the short bucketed value; the full timestamp moves
+		// into the tooltip (no redundant full-timestamp column).
+		if ts := formatTimestamp(nestedString(row.Object, "metadata", "creationTimestamp")); ts != "" {
+			cv.Title = "created " + ts
+		}
 	}
 	return cv
+}
+
+// secondaryTextColumns are the recognized k8s Table columns whose value is
+// free-text rather than an identifier -- they truncate with a tooltip. Identifier
+// columns (Name, Node, IP, Namespace, Ports, container names, counts) are never
+// listed here, so they fall through to a plain never-truncated cell.
+var secondaryTextColumns = map[string]bool{
+	"Image":     true,
+	"Images":    true,
+	"Selector":  true,
+	"Labels":    true,
+	"Message":   true,
+	"Reason":    true,
+	"Data":      true,
+	"Provider":  true,
+	"Resources": true,
+}
+
+func isSecondaryTextColumn(colName string) bool {
+	return secondaryTextColumns[colName]
 }
 
 // buildToolsView resolves the resource-list tools form state from the request.

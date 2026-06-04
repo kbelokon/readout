@@ -99,13 +99,35 @@ type rowView struct {
 
 // cellView precomputes a single body cell. Kind selects the render branch; the
 // resolved href (when the branch needs one) is carried so render never calls
-// addQuery live.
+// addQuery live. The redesign fields (Tone/Ratio/Pulse/NameHead/NameTail/Ago/
+// Trunc/Title) carry the resolved rich-cell presentation (status dot tone, ready
+// ratio tone, pod-name split, restart "ago" suffix, secondary-text truncation
+// tooltip) so the templ renderer emits the new vocabulary without recomputing.
 type cellView struct {
 	Kind     cellKind
 	Value    string
 	Class    string // augmented cellClass (incl. age) for the <td>
 	ColClass string // table.Columns[i].Class
 	Href     string // resolved link target for name/label/node branches
+
+	// Tone is the redesign status-dot/cell-status tone (ok/warn/err/info/mute),
+	// mapped from the Bulma cellClass; "" means no tone colour (generic fallback).
+	Tone string
+	// Ratio is the ready/replica ratio tone (full/partial/zero) for cellReady.
+	Ratio string
+	// Pulse marks a transient status whose dot animates (.pulse).
+	Pulse bool
+	// NameHead/NameTail split an identifier into a bright workload prefix + a
+	// muted hash suffix for the sticky name cell. NameHead+NameTail == Value.
+	NameHead string
+	NameTail string
+	// Ago is the optional "(… ago)" suffix on a restarts cell (muted).
+	Ago string
+	// Trunc marks a secondary free-text cell (image/label/selector/message) that
+	// truncates with a Title tooltip; identifiers never set it.
+	Trunc bool
+	// Title is the full-value tooltip carried on a truncated or age cell.
+	Title string
 }
 
 type cellKind int
@@ -119,6 +141,7 @@ const (
 	cellMemory
 	cellStatus
 	cellReady
+	cellRestarts
 )
 
 // detailView is the view model for the resource-view (object detail) page. The
