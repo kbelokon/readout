@@ -144,12 +144,24 @@ type TableCell struct {
 	CapPct    int    // node capacity bar fill width %; 0 -> empty bar
 	Roles     []string // node role chips (control-plane earns .cp)
 	Conds     []Cond   // node abnormal condition pills (empty -> muted "—")
+
+	RepSegments  []RepSegment // deployment replica-track segments (capped; empty beyond cap)
+	RepNum       string       // deployment ready/desired ratio text (.rep-num truth)
+	RolloutState string       // deployment rollout state (done/prog/paused)
+	RolloutIcon  string       // pre-rendered rollout glyph (raw SVG, themed by state colour)
 }
 
 // Cond is one abnormal node condition pill (name + redesign tone warn/err/ok).
 type Cond struct {
 	Name string
 	Tone string
+}
+
+// RepSegment is one deployment replica-track segment: State is "" (filled/ready),
+// "updating" (amber pulse), or "pending" (hollow), mapped straight onto the
+// `<i class="<State>">` segment class.
+type RepSegment struct {
+	State string
 }
 
 // CellKind selects a body-cell render branch (matches package-web cellKind).
@@ -168,6 +180,8 @@ const (
 	CellCapacity
 	CellRoles
 	CellConditions
+	CellReplicas
+	CellRollout
 )
 
 // ResourceTable renders the full table fragment (one block per table + the
@@ -289,6 +303,14 @@ templ tableCell(cell TableCell) {
 				</span>
 			}
 			</td>
+	} else if cell.Kind == CellReplicas {
+		<td><span class="rep"><span class="rep-track">
+			for _, seg := range cell.RepSegments {
+				<i class={ seg.State }></i>
+			}
+			</span><span class={ repNumClass(cell.Ratio) }>{ cell.RepNum }</span></span></td>
+	} else if cell.Kind == CellRollout {
+		<td><span class={ rolloutClass(cell.RolloutState) }><span class="ico sm">@templ.Raw(cell.RolloutIcon)</span>{ cell.Value }</span></td>
 	} else {
 		<td class={ cellTdClass(cell.Class, cell.ColClass, cell.Trunc) } title={ cell.Title }>
 			switch cell.Kind {

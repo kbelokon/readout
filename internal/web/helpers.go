@@ -18,6 +18,7 @@ import (
 
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -331,6 +332,158 @@ func nodeCapacityKey(colName string) string {
 		return "memory"
 	}
 	return "cpu"
+}
+
+// replicaTrackCap is the fixed maximum number of `<i>` segments a deployment
+// replica track renders, regardless of desired replica count. A deployment with
+// hundreds of replicas must not emit hundreds of DOM elements per row, so the
+// track caps here and the `.rep-num` ratio text carries the truth beyond the cap.
+// With desired <= cap each desired replica gets its own segment; above the cap the
+// segment counts are scaled proportionally so the bar still reflects the
+// ready/updating/pending split.
+const replicaTrackCap = 12
+
+// deploymentReplicas reads a deployment's desired/ready/updated replica counts off
+// the row object (spec.replicas + status.{readyReplicas,updatedReplicas}). The
+// object is decoded once into a typed appsv1.Deployment so the counts come off the
+// typed spec/status, never a hand-rolled map walk. desired defaults to 1 when
+// spec.replicas is absent (the kube default); ready/updated default to 0.
+func deploymentReplicas(obj map[string]any) (desired, ready, updated int) {
+	var dep appsv1.Deployment
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &dep); err != nil {
+		return 0, 0, 0
+	}
+	desired = 1
+	if dep.Spec.Replicas != nil {
+		desired = int(*dep.Spec.Replicas)
+	}
+	return desired, int(dep.Status.ReadyReplicas), int(dep.Status.UpdatedReplicas)
+}
+
+// replicaTrack builds the deployment replica-track segments + the `ready/desired`
+// ratio text for the cellReplicas view. Each of the `ready` filled segments is "",
+// the segments in [ready, updated) pulse amber ("updating"), and [updated, desired)
+// are hollow ("pending") -- mirroring the design repCell, generalised from its
+// single-updating-slot form to the full updated-beyond-ready window. The rendered
+// segment count is capped at replicaTrackCap: with desired <= cap one segment per
+// desired replica; above the cap the three buckets are scaled proportionally so the
+// bar keeps the same ready/updating/pending proportions without a DOM explosion. The
+// `repNum` ratio text is ALWAYS the real `ready/desired` (the truth beyond the cap).
+func replicaTrack(desired, ready, updated int) (segments []repSegment, repNum string) {
+	if desired < 0 {
+		desired = 0
+	}
+	ready = clampInt(ready, 0, desired)
+	updated = clampInt(updated, 0, desired)
+	if updated < ready {
+		updated = ready
+	}
+	repNum = strconv.Itoa(ready) + "/" + strconv.Itoa(desired)
+
+	filled, updatingSlots, total := ready, updated-ready, desired
+	if desired > replicaTrackCap {
+		// Scale the three buckets into the cap, preserving their proportions. Filled
+		// rounds to nearest; updating takes its proportional share next; pending fills
+		// the remainder so the rendered total is exactly the cap.
+		total = replicaTrackCap
+		filled = scaleToCap(ready, desired)
+		updatingSlots = scaleToCap(updated, desired) - filled
+		if updatingSlots < 0 {
+			updatingSlots = 0
+		}
+		if filled+updatingSlots > total {
+			updatingSlots = total - filled
+		}
+	}
+	for k := 0; k < total; k++ {
+		switch {
+		case k < filled:
+			segments = append(segments, repSegment{State: ""})
+		case k < filled+updatingSlots:
+			segments = append(segments, repSegment{State: "updating"})
+		default:
+			segments = append(segments, repSegment{State: "pending"})
+		}
+	}
+	return segments, repNum
+}
+
+// scaleToCap maps a count out of `desired` onto the [0, replicaTrackCap] range,
+// rounding to the nearest segment. Used only on the over-cap path so the segment
+// buckets stay proportional to the real replica counts.
+func scaleToCap(count, desired int) int {
+	if desired <= 0 {
+		return 0
+	}
+	scaled := int(float64(count)/float64(desired)*float64(replicaTrackCap) + 0.5)
+	return clampInt(scaled, 0, replicaTrackCap)
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// rolloutState derives a deployment's rollout state (done/prog/paused) + its label
+// from the row object's spec/status. A paused deployment (spec.paused) is "paused";
+// a deployment whose Progressing condition reports the new ReplicaSet is available
+// AND whose ready/updated/available all meet the desired count is "done" (up to
+// date); anything mid-flight is "prog" (rolling out). The object is decoded once
+// into a typed appsv1.Deployment so the condition reasons + replica counts come off
+// the typed status, not a map walk.
+func rolloutState(obj map[string]any) (state, label string) {
+	var dep appsv1.Deployment
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &dep); err != nil {
+		return "prog", "rolling out"
+	}
+	if dep.Spec.Paused {
+		return "paused", "paused"
+	}
+	desired := int32(1)
+	if dep.Spec.Replicas != nil {
+		desired = *dep.Spec.Replicas
+	}
+	st := dep.Status
+	complete := st.UpdatedReplicas == desired &&
+		st.ReadyReplicas == desired &&
+		st.AvailableReplicas == desired &&
+		st.Replicas == desired
+	if complete && progressingComplete(&dep) {
+		return "done", "up to date"
+	}
+	return "prog", "rolling out"
+}
+
+// progressingComplete reports whether the deployment's Progressing condition (when
+// present) signals a finished rollout (reason "NewReplicaSetAvailable"). When the
+// deployment carries NO Progressing condition the replica-count check in
+// rolloutState already decided completeness, so the absence is treated as
+// non-blocking (true).
+func progressingComplete(dep *appsv1.Deployment) bool {
+	for _, cond := range dep.Status.Conditions {
+		if cond.Type == appsv1.DeploymentProgressing {
+			return cond.Reason == "NewReplicaSetAvailable"
+		}
+	}
+	return true
+}
+
+// rolloutIconName maps a rollout state onto its icon glyph name (done -> check
+// mark, paused -> sliders, rolling -> rotate-cw), matching the design rolloutCell.
+func rolloutIconName(state string) string {
+	switch state {
+	case "done":
+		return "check"
+	case "paused":
+		return "sliders"
+	default:
+		return "rotate-cw"
+	}
 }
 
 func humanTitle(value string) string {

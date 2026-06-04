@@ -184,25 +184,33 @@ func toTableData(t *tableView) templates.TableData {
 		for ci := range row.Cells {
 			cell := &row.Cells[ci]
 			tc := templates.TableCell{
-				Kind:      templates.CellKind(cell.Kind),
-				Value:     cell.Value,
-				Class:     cell.Class,
-				ColClass:  cell.ColClass,
-				Href:      cell.Href,
-				Tone:      cell.Tone,
-				Ratio:     cell.Ratio,
-				Pulse:     cell.Pulse,
-				NameHead:  cell.NameHead,
-				NameTail:  cell.NameTail,
-				Ago:       cell.Ago,
-				Trunc:     cell.Trunc,
-				Title:     cell.Title,
-				CapBucket: cell.CapBucket,
-				CapPct:    cell.CapPct,
-				Roles:     cell.Roles,
+				Kind:         templates.CellKind(cell.Kind),
+				Value:        cell.Value,
+				Class:        cell.Class,
+				ColClass:     cell.ColClass,
+				Href:         cell.Href,
+				Tone:         cell.Tone,
+				Ratio:        cell.Ratio,
+				Pulse:        cell.Pulse,
+				NameHead:     cell.NameHead,
+				NameTail:     cell.NameTail,
+				Ago:          cell.Ago,
+				Trunc:        cell.Trunc,
+				Title:        cell.Title,
+				CapBucket:    cell.CapBucket,
+				CapPct:       cell.CapPct,
+				Roles:        cell.Roles,
+				RepNum:       cell.RepNum,
+				RolloutState: cell.RolloutState,
 			}
 			for _, cond := range cell.Conds {
 				tc.Conds = append(tc.Conds, templates.Cond{Name: cond.Name, Tone: cond.Tone})
+			}
+			for _, seg := range cell.RepSegments {
+				tc.RepSegments = append(tc.RepSegments, templates.RepSegment{State: seg.State})
+			}
+			if cell.Kind == cellRollout {
+				tc.RolloutIcon = icon(rolloutIconName(cell.RolloutState))
 			}
 			tr.Cells = append(tr.Cells, tc)
 		}

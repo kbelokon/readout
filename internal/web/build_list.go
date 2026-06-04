@@ -194,6 +194,12 @@ func (s *Server) applyTableOptions(r *http.Request, cluster *kube.Cluster, table
 		// either way, never both).
 		decorateNodeColumns(table, q.Get("join") == "metrics")
 	}
+	if table.Resource.Plural == "deployments" {
+		// Deployments get a synthetic Rollout column derived from each row's
+		// status/spec (the server-side Table has no rollout column). The Ready column
+		// the Table already provides becomes the rich replica track in buildCellView.
+		decorateDeploymentColumns(table)
+	}
 	if q.Get("join") == "metrics" && (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") {
 		s.joinMetrics(r.Context(), s.kubeClient(r, cluster), table, namespace, allNamespaces, q.Get("selector"))
 	}
@@ -288,6 +294,24 @@ func decorateNodeColumns(table *kube.Table, metricsJoined bool) {
 		for i := range table.Rows {
 			table.Rows[i].Cells = append(table.Rows[i].Cells, col.cell(table.Rows[i].Object))
 		}
+	}
+}
+
+// decorateDeploymentColumns appends the synthetic Rollout column and fills each
+// row's cell with the plain rollout DISPLAY label (derived from the row's
+// status/spec) so sort, TSV, and the generic fallback see a sensible value; the
+// rich cellRollout renderer re-reads the row object for the `.rollout.<state>`
+// class + icon. The cell is appended for EVERY row in lockstep with the column, so
+// the table never goes ragged. A Rollout column the server-side Table already
+// provided (it does not today) is never duplicated.
+func decorateDeploymentColumns(table *kube.Table) {
+	if columnIndex(table.Columns, "Rollout") >= 0 {
+		return
+	}
+	table.Columns = append(table.Columns, kube.Column{Name: "Rollout"})
+	for i := range table.Rows {
+		_, label := rolloutState(table.Rows[i].Object)
+		table.Rows[i].Cells = append(table.Rows[i].Cells, label)
 	}
 }
 
@@ -573,6 +597,21 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 	case table.Resource.Plural == "nodes" && colName == "Conditions":
 		cv.Kind = cellConditions
 		cv.Conds = nodeAbnormalConditions(row.Object)
+	case table.Resource.Plural == "deployments" && colName == "Ready":
+		// Deployments reskin the Ready column as the replica track: the segment
+		// states + the ready/desired ratio come from the deployment status/spec
+		// (readyReplicas / updatedReplicas / spec.replicas), capped at
+		// replicaTrackCap so a high-replica deployment never explodes the DOM.
+		cv.Kind = cellReplicas
+		desired, ready, updated := deploymentReplicas(row.Object)
+		cv.RepSegments, cv.RepNum = replicaTrack(desired, ready, updated)
+		cv.Ratio = readyRatioClass(cv.RepNum)
+	case table.Resource.Plural == "deployments" && colName == "Rollout":
+		// The synthetic Rollout column (added by decorateDeploymentColumns) renders
+		// the rollout status pill; the state + label come from the deployment
+		// status/conditions/spec.paused.
+		cv.Kind = cellRollout
+		cv.RolloutState, cv.Value = rolloutState(row.Object)
 	case colName == "CPU Usage":
 		cv.Kind = cellCPU
 		cv.Value = cpuFormat(cell)

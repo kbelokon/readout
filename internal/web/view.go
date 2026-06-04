@@ -142,6 +142,27 @@ type cellView struct {
 	// Conds are the abnormal node condition pills for cellConditions. Empty means a
 	// clean node, rendered as a muted "—". Each pill carries its tone + name.
 	Conds []condPill
+
+	// RepSegments are the deployment replica-track segments for cellReplicas: one
+	// per rendered slot (capped at replicaTrackCap), each carrying its state
+	// (filled/updating/pending). Beyond the cap NO segments render -- RepNum is the
+	// source of truth. Ratio (full/partial/zero) tones the .rep-num.
+	RepSegments []repSegment
+	// RepNum is the `ready/desired` ratio text shown in the .rep-num span; it is the
+	// truth beyond the segment cap. Empty for a non-replica cell.
+	RepNum string
+	// RolloutState is the deployment rollout state for cellRollout
+	// (done/prog/paused); the renderer maps it to the .rollout.<state> class + icon.
+	// Value carries the rollout label ("up to date"/"rolling out"/"paused").
+	RolloutState string
+}
+
+// repSegment is one deployment replica-track segment. State is "" for a filled
+// (ready) segment, "updating" for an amber pulsing segment (updated beyond
+// ready), "pending" for a hollow not-yet-updated segment. The renderer maps the
+// state straight onto the `<i class="<state>">` segment class.
+type repSegment struct {
+	State string
 }
 
 // condPill is one abnormal node condition pill: Name is the condition type (e.g.
@@ -167,6 +188,8 @@ const (
 	cellCapacity
 	cellRoles
 	cellConditions
+	cellReplicas
+	cellRollout
 )
 
 // detailView is the view model for the resource-view (object detail) page. The

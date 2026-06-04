@@ -223,6 +223,25 @@ func condPillClass(tone string) string {
 	return "ro-cond-pill " + tone
 }
 
+// repNumClass is the deployment replica-count class (`rep-num ready` + the ratio
+// tone full|partial|zero). It mirrors readyClassRD's tone vocabulary but carries
+// the `rep-num` track-number class the design pins on the replica ratio span.
+func repNumClass(ratio string) string {
+	if ratio == "" {
+		return "rep-num ready"
+	}
+	return "rep-num ready " + ratio
+}
+
+// rolloutClass is the deployment rollout-status class (`rollout` + the state
+// done|prog|paused). An empty state yields a bare `rollout`.
+func rolloutClass(state string) string {
+	if state == "" {
+		return "rollout"
+	}
+	return "rollout " + state
+}
+
 // warnIcon is the redesign partial-failure banner glyph (lucide triangle-alert),
 // wrapped in the same <svg> shell as the icons package glyphs so it themes via
 // `.ico svg`. A static constant: no runtime-derived data crosses it.
