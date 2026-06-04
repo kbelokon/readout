@@ -66,12 +66,10 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 		IsAllNamespaces:   isAllNamespaces,
 		SelectedTypeCount: len(types),
 		SelectedTypes:     types,
-		ClusterErrors:     map[string][]searchClusterError{},
 	}
 	for _, cluster := range clusters {
 		view.ScopeClusters = append(view.ScopeClusters, searchScopeCluster{Name: cluster.Name})
 	}
-	view.SearchedClusterCount = len(clusters)
 
 	// searchable: plural -> Kind, accumulated as types resolve against the
 	// clusters. It seeds the checkbox set.
@@ -83,8 +81,9 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 	// (searchErrorRecord), never errgroup errors -- a failing cluster still renders
 	// partial results. After Wait the slots are merged in fixed cluster order
 	// (clusters is name-sorted by manager.Select) regardless of completion order
-	// so Results, ClusterErrors/ErrorClusterOrder, and the searchable first-wins
-	// set are all deterministic; the final sortResults gives Results total order.
+	// so Results, the per-cluster ScopeClusters status, and the searchable
+	// first-wins set are all deterministic; the final sortResults gives Results
+	// total order.
 	slots := make([]clusterSearchResult, len(clusters))
 	g, _ := errgroup.WithContext(r.Context())
 	g.SetLimit(s.searchConcurrency())
@@ -104,9 +103,6 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 			if _, ok := searchable[sc.plural]; !ok {
 				searchable[sc.plural] = sc.kind
 			}
-		}
-		for _, e := range slot.errs {
-			view.addClusterError(e.cluster, e.resourceType, e.err)
 		}
 		// Per-cluster scope-chip status (D11): the chip is `.err` when the cluster
 		// produced any error record (it failed to fully answer) and `.ok`
@@ -164,7 +160,6 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 
 	view.OfferedTypes = buildTypeOptions(searchable, types)
 	sortResults(view.Results, q)
-	view.AllNamespacesHref = searchRepeatAllNamespacesHref(r, isAllNamespaces)
 	view.Duration = s.clock().Sub(start)
 	return view, nil
 }
@@ -172,7 +167,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 // clusterSearchResult is one cluster's fan-out slot: its ordered result cards,
 // its searchable plural->Kind contributions in first-seen-within-cluster order,
 // and its per-type error records. The caller merges slots across clusters in
-// fixed cluster order so Results/searchable/ClusterErrors stay deterministic.
+// fixed cluster order so Results/searchable/scope status stay deterministic.
 type clusterSearchResult struct {
 	results    []searchResult
 	searchable []searchableType
@@ -250,7 +245,6 @@ func (s *Server) clusterSearch(r *http.Request, cluster *kube.Cluster, types []s
 				Labels:    labels,
 				Created:   formatTimestamp(created),
 				AgeClass:  "num " + s.ageClass(created),
-				Matches:   matchSnippets(row, filterQuery),
 			})
 		}
 	}
@@ -270,19 +264,6 @@ func findSearchResource(r *http.Request, client *kube.Client, typ string) (kube.
 		return kube.ResourceType{}, false, err
 	}
 	return rt, false, nil
-}
-
-// addClusterError records a per-cluster search failure. The first failure for a
-// cluster registers its render order so the danger articles are emitted
-// deterministically.
-func (v *searchView) addClusterError(cluster, resourceType string, err error) {
-	if _, seen := v.ClusterErrors[cluster]; !seen {
-		v.ErrorClusterOrder = append(v.ErrorClusterOrder, cluster)
-	}
-	v.ClusterErrors[cluster] = append(v.ClusterErrors[cluster], searchClusterError{
-		ResourceType: resourceType,
-		Message:      err.Error(),
-	})
 }
 
 // searchScopeReason condenses a failed cluster's error records into the short
@@ -345,16 +326,6 @@ func buildTypeOptions(searchable map[string]string, selected []string) []searchT
 		})
 	}
 	return options
-}
-
-// searchRepeatAllNamespacesHref is the "Repeat search across all namespaces"
-// target: the current URL with namespace=” set. Empty when already
-// all-namespaces.
-func searchRepeatAllNamespacesHref(r *http.Request, isAllNamespaces bool) string {
-	if isAllNamespaces {
-		return ""
-	}
-	return addQuery(r.URL, "namespace", "")
 }
 
 func splitSearchQuery(q string) (selector string, filter string) {

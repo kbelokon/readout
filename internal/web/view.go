@@ -457,11 +457,13 @@ type eventView struct {
 }
 
 // searchView is the view model for the search page. Every value the
-// rich search render needs -- the form round-trip, the offered resource-type
-// checkboxes (with checked state), the scope chips, the result cards (with
-// snippet tuples + label chips + meta), the count footer, and the per-cluster
-// error records -- is resolved in buildSearchView and carried here as plain
-// data. No *http.Request and no kube.Client cross this boundary.
+// redesign search render needs -- the form round-trip, the offered resource-type
+// checkboxes (with checked state), the per-cluster scope chips, the result cards,
+// and the count footer -- is resolved in buildSearchView and carried here as
+// plain data. The renderer (toSearchData) derives the partial-failure banner +
+// footer entirely from ScopeClusters (each chip carries its own Failed/Reason/
+// RetryHref), so no separate error-record map is needed. No *http.Request and no
+// kube.Client cross this boundary.
 type searchView struct {
 	Query     string
 	Cluster   string
@@ -483,29 +485,18 @@ type searchView struct {
 
 	// ScopeClusters are the chips in the scope strip (search_clusters). When
 	// IsAllClusters and ScopeClusters is empty, the strip shows "all clusters".
+	// Each chip carries its own Failed/Reason/RetryHref, so the partial-failure
+	// banner + foundline are derived from this slice (no separate error map).
 	ScopeClusters []searchScopeCluster
 
 	Results  []searchResult
 	Duration time.Duration
-
-	// ClusterErrors are the per-cluster error records (partial-failure):
-	// failures are collected as records and surfaced as `message is-danger`
-	// articles, not raised as hard errors. ErrorClusterOrder fixes the render
-	// order (first-seen) so output is deterministic.
-	ClusterErrors     map[string][]searchClusterError
-	ErrorClusterOrder []string
-
-	// AllNamespacesHref is the precomputed "Repeat search across all namespaces"
-	// target (rel_url with namespace=''). Empty when already all-namespaces.
-	AllNamespacesHref string
 
 	// RetryFailedHref is the read-only GET the partial-failure banner's "Retry
 	// failed" action points at: the SAME search re-scoped to the comma-joined set
 	// of clusters that failed to answer (cluster=<f1>,<f2>). Empty when no cluster
 	// failed (the banner is then hidden).
 	RetryFailedHref string
-
-	SearchedClusterCount int // len(search_clusters) -- footer
 }
 
 // searchTypeOption is one resource-type checkbox: the plural is the input value,
@@ -531,19 +522,12 @@ type searchScopeCluster struct {
 	RetryHref   string
 }
 
-// searchClusterError is one per-cluster error record: ResourceType is the plural
-// that failed and Message is the error text shown in the danger article.
-type searchClusterError struct {
-	ResourceType string
-	Message      string
-}
-
 // searchResult is one search hit row in the redesign results table
 // (Cluster/Namespace/Kind/Name/Age). Cluster + Namespace populate their own
 // cells; Kind + Group + IsCRD drive the kind-icon resolver (icons.KindIcon) in
-// the Kind cell; Created feeds the Age cell's bucket class. Labels still feeds
-// the sort score. Matches/LabelChips are retained for the score/relevance ranking
-// (the redesign table drops the per-card snippet + label-chip UI).
+// the Kind cell; Created feeds the Age cell's bucket class. Labels feeds the
+// sort score (searchScore ranks on Title + Labels). The redesign table drops the
+// per-card snippet UI, so no match snippets are retained on the result row.
 type searchResult struct {
 	Title     string
 	Kind      string
@@ -555,7 +539,6 @@ type searchResult struct {
 	Created   string // formatTimestamp(creationTimestamp); "" => no age cell text
 	AgeClass  string // the num + age-* bucket class for the Age cell
 	Labels    map[string]string
-	Matches   []snippet
 }
 
 // snippet is one match context window: the text before the match, the matched
