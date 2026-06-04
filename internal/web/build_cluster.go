@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/kbelokon/readout/internal/kube"
+	"github.com/kbelokon/readout/internal/web/icons"
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
@@ -139,6 +140,7 @@ func buildResourceTypesData(cluster, namespace string, types []kube.ResourceType
 		data.Rows = append(data.Rows, templates.ResourceTypeRow{
 			Href:       href,
 			Kind:       rt.Kind,
+			Icon:       string(icons.KindIcon(rt.Kind, apiGroup(rt.APIVersion), isCRD(rt.APIVersion), "")),
 			IsCRD:      isCRD(rt.APIVersion),
 			Group:      first(apiGroup(rt.APIVersion), "core"),
 			Version:    apiVersionVersion(rt.APIVersion),

@@ -44,18 +44,6 @@ type ExternalClusterRow struct {
 	URL  string
 }
 
-// Chip is one label key=value pill carrying a resolved selector href + class
-// (the anchor-style chip). The redesign clusters/cluster pages render non-link
-// `LabelChip`s instead; this type is retained for the search-result label chips
-// (search.templ's SearchResultCard.Chips, mapped in templ_bridge.go), which keep
-// their anchor + inner `.tag` markup until Search migrates (Unit 12).
-type Chip struct {
-	Href  string
-	Class string
-	Key   string
-	Val   string
-}
-
 templ Clusters(d ClustersData) {
 	<div class="ro-rd">
 		<div class="ro-title-row"><h1 class="ro-title">Clusters</h1><span class="ro-count">{ itoa(d.Count) }</span></div>

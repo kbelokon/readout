@@ -65,6 +65,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 		IsAllClusters:     allClusters,
 		IsAllNamespaces:   isAllNamespaces,
 		SelectedTypeCount: len(types),
+		SelectedTypes:     types,
 		ClusterErrors:     map[string][]searchClusterError{},
 	}
 	for _, cluster := range clusters {
@@ -96,7 +97,8 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 	}
 	_ = g.Wait()
 
-	for _, slot := range slots {
+	var failedClusters []string
+	for i, slot := range slots {
 		view.Results = append(view.Results, slot.results...)
 		for _, sc := range slot.searchable {
 			if _, ok := searchable[sc.plural]; !ok {
@@ -106,6 +108,26 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 		for _, e := range slot.errs {
 			view.addClusterError(e.cluster, e.resourceType, e.err)
 		}
+		// Per-cluster scope-chip status (D11): the chip is `.err` when the cluster
+		// produced any error record (it failed to fully answer) and `.ok`
+		// otherwise; the result count rides on the `.ok` chip. The RetryHref re-runs
+		// the SAME search scoped to just this cluster -- a read-only GET, never a
+		// write path -- so a failed cluster can be retried in place. ScopeClusters
+		// is index-aligned with slots (both follow the name-sorted clusters slice).
+		view.ScopeClusters[i].ResultCount = len(slot.results)
+		if len(slot.errs) > 0 {
+			view.ScopeClusters[i].Failed = true
+			view.ScopeClusters[i].Reason = searchScopeReason(slot.errs)
+			view.ScopeClusters[i].RetryHref = addQuery(r.URL, "cluster", clusters[i].Name)
+			failedClusters = append(failedClusters, clusters[i].Name)
+		}
+	}
+	// RetryFailedHref re-runs the SAME search scoped to the comma-joined set of
+	// failed clusters (a read-only GET; manager.Select parses the CSV). The
+	// partial-failure banner's "Retry failed" action uses it; empty when nothing
+	// failed so the banner is hidden.
+	if len(failedClusters) > 0 {
+		view.RetryFailedHref = addQuery(r.URL, "cluster", strings.Join(failedClusters, ","))
 	}
 
 	// Cluster hits: when searching all clusters, a cluster whose name or any
@@ -115,11 +137,11 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 		for _, cluster := range s.manager.Clusters() {
 			if clusterMatches(cluster, needle) {
 				view.Results = append(view.Results, searchResult{
-					Title:      cluster.Name,
-					Kind:       "Cluster",
-					Link:       "/clusters/" + url.PathEscape(cluster.Name),
-					Labels:     cluster.Labels,
-					LabelChips: searchLabelChips(r, cluster.Labels),
+					Title:   cluster.Name,
+					Kind:    "Cluster",
+					Link:    "/clusters/" + url.PathEscape(cluster.Name),
+					Cluster: cluster.Name,
+					Labels:  cluster.Labels,
 				})
 			}
 		}
@@ -216,14 +238,19 @@ func (s *Server) clusterSearch(r *http.Request, cluster *kube.Cluster, types []s
 			ns := nestedString(row.Object, "metadata", "namespace")
 			link := resourceHref(cluster.Name, &rt, ns, name)
 			labels, _, _ := unstructured.NestedStringMap(row.Object, "metadata", "labels")
+			created := nestedString(row.Object, "metadata", "creationTimestamp")
 			out.results = append(out.results, searchResult{
-				Title:      name,
-				Kind:       rt.Kind,
-				Link:       link,
-				Labels:     labels,
-				LabelChips: searchLabelChips(r, labels),
-				Created:    nestedString(row.Object, "metadata", "creationTimestamp"),
-				Matches:    matchSnippets(row, filterQuery),
+				Title:     name,
+				Kind:      rt.Kind,
+				Group:     apiGroup(rt.APIVersion),
+				IsCRD:     isCRD(rt.APIVersion),
+				Link:      link,
+				Cluster:   cluster.Name,
+				Namespace: ns,
+				Labels:    labels,
+				Created:   formatTimestamp(created),
+				AgeClass:  "num " + s.ageClass(created),
+				Matches:   matchSnippets(row, filterQuery),
 			})
 		}
 	}
@@ -256,6 +283,30 @@ func (v *searchView) addClusterError(cluster, resourceType string, err error) {
 		ResourceType: resourceType,
 		Message:      err.Error(),
 	})
+}
+
+// searchScopeReason condenses a failed cluster's error records into the short
+// label shown on the `.ro-scope-chip.err` chip (the full per-error detail rides
+// in the `.ro-banner.warn` summary). It classifies the FIRST error: a deadline/
+// timeout reads as "timeout", a connection/no-route/refused error as
+// "unreachable", a 403 as "forbidden", else a generic "failed". The classifier is
+// substring-based over the error string (the apiserver/transport error text),
+// kept deliberately small.
+func searchScopeReason(errs []searchErrorRecord) string {
+	if len(errs) == 0 {
+		return "failed"
+	}
+	msg := strings.ToLower(errs[0].err.Error())
+	switch {
+	case strings.Contains(msg, "deadline") || strings.Contains(msg, "timeout"):
+		return "timeout"
+	case strings.Contains(msg, "connection refused") || strings.Contains(msg, "no such host") || strings.Contains(msg, "no route"):
+		return "unreachable"
+	case strings.Contains(msg, "forbidden"):
+		return "forbidden"
+	default:
+		return "failed"
+	}
 }
 
 // clusterMatches reports whether a cluster's name or any label value contains
@@ -304,32 +355,6 @@ func searchRepeatAllNamespacesHref(r *http.Request, isAllNamespaces bool) string
 		return ""
 	}
 	return addQuery(r.URL, "namespace", "")
-}
-
-// searchLabelChips resolves a result's labels into sorted chip view models, each
-// carrying its selector href (the current URL with q=key=val) and the full chip
-// class (incl. the app.kubernetes.io accent). Computed in assembly so the templ
-// chip render touches no request.
-func searchLabelChips(r *http.Request, labels map[string]string) []labelChipView {
-	if len(labels) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(labels))
-	for key := range labels {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	chips := make([]labelChipView, 0, len(keys))
-	for _, key := range keys {
-		val := labels[key]
-		chips = append(chips, labelChipView{
-			Href:  addQuery(r.URL, "q", key+"="+val),
-			Class: "ro-chip" + appLabelClass(key),
-			Key:   key,
-			Val:   val,
-		})
-	}
-	return chips
 }
 
 func splitSearchQuery(q string) (selector string, filter string) {

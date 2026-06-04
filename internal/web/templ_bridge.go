@@ -12,6 +12,7 @@ import (
 	"github.com/a-h/templ"
 
 	"github.com/kbelokon/readout/internal/kube"
+	"github.com/kbelokon/readout/internal/web/icons"
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
@@ -383,65 +384,118 @@ func toSubtable(v *subtableView) *templates.Subtable {
 	return st
 }
 
-// toSearchData maps the package-web searchView onto the templ SearchData: a
-// field copy plus the breadcrumb branches, the kind-abbrev tag, the formatted
-// created meta, the snippet tuples, the label chips, the "type all" flag, the
-// count-footer sentence, and the per-cluster error articles. Every value was
-// resolved in buildSearchView; the icons are pre-rendered to raw strings.
+// toSearchData maps the package-web searchView onto the redesign templ
+// SearchData: the breadcrumb branches, the form round-trip (query + hidden
+// cluster/namespace/type inputs), the scope-opts labels, the partial-failure
+// banner, the per-cluster `.ro-scope-chip.ok|err` chips (with the read-only retry
+// hrefs), the results-table rows (with the resolved kind icon + the age-bucket
+// cell), and the foundline. Every value was resolved in buildSearchView; the
+// search + kind icons are pre-rendered to raw strings.
 func toSearchData(v *searchView) templates.SearchData {
 	hasQuery := v.Query != ""
 	offeredCount := len(v.OfferedTypes)
+	allTypes := offeredCount > 0 && v.SelectedTypeCount >= offeredCount
 	d := templates.SearchData{
 		Breadcrumb:        toSearchBreadcrumb(v),
 		Query:             v.Query,
 		Cluster:           v.Cluster,
 		Namespace:         v.Namespace,
-		IsAllNamespaces:   v.IsAllNamespaces,
 		SearchIcon:        icon("search"),
-		UnselectIcon:      icon("times"),
-		IsAllClusters:     v.IsAllClusters,
-		SelectedTypeCount: v.SelectedTypeCount,
-		AllTypes:          offeredCount > 0 && v.SelectedTypeCount >= offeredCount,
 		HasQuery:          hasQuery,
-		AllNamespacesHref: v.AllNamespacesHref,
-	}
-	for _, opt := range v.OfferedTypes {
-		d.OfferedTypes = append(d.OfferedTypes, templates.SearchTypeOption{Plural: opt.Plural, Kind: opt.Kind, Checked: opt.Checked})
+		HiddenTypes:       v.SelectedTypes,
+		ScopeClusterLabel: searchScopeClusterLabel(v),
+		NamespaceLabel:    searchNamespaceLabel(v),
+		TypeLabel:         searchTypeLabel(allTypes, v.SelectedTypeCount),
+		Banner:            searchBanner(v),
 	}
 	for _, c := range v.ScopeClusters {
-		d.ScopeClusters = append(d.ScopeClusters, templates.SearchScopeChip{Name: c.Name})
+		d.ScopeClusters = append(d.ScopeClusters, templates.SearchScopeChip{
+			Name:      c.Name,
+			Failed:    c.Failed,
+			Count:     c.ResultCount,
+			Reason:    c.Reason,
+			RetryHref: c.RetryHref,
+		})
 	}
-	for _, res := range v.Results {
-		card := templates.SearchResultCard{
-			Kind:    res.Kind,
-			KindTag: templates.KindAbbrev(res.Kind),
-			KindLow: strings.ToLower(res.Kind),
-			Title:   res.Title,
-			Link:    res.Link,
-		}
-		if res.Created != "" {
-			card.Created = formatTimestamp(res.Created)
-		}
-		for _, snip := range res.Matches {
-			card.Snippets = append(card.Snippets, templates.SearchSnippet{Pre: snip.Pre, Match: snip.Match, Post: snip.Post})
-		}
-		for _, chip := range res.LabelChips {
-			card.Chips = append(card.Chips, templates.Chip{Href: chip.Href, Class: chip.Class, Key: chip.Key, Val: chip.Val})
-		}
-		d.Results = append(d.Results, card)
+	for i := range v.Results {
+		res := &v.Results[i]
+		d.Results = append(d.Results, templates.SearchResultRow{
+			Cluster:     res.Cluster,
+			ClusterHref: "/clusters/" + url.PathEscape(res.Cluster),
+			Namespace:   res.Namespace,
+			NsHref:      "/clusters/" + url.PathEscape(res.Cluster) + "/namespaces/" + url.PathEscape(res.Namespace),
+			HasNs:       res.Namespace != "",
+			Kind:        res.Kind,
+			KindIcon:    string(icons.KindIcon(res.Kind, res.Group, res.IsCRD, "")),
+			Name:        res.Title,
+			Link:        res.Link,
+			Age:         res.Created,
+			AgeClass:    res.AgeClass,
+		})
 	}
 	if hasQuery {
-		d.ResultSummary = searchSummary(len(v.Results), v.SelectedTypeCount, v.SearchedClusterCount, v.Duration.Seconds())
-	}
-	for _, cluster := range v.ErrorClusterOrder {
-		errs := v.ClusterErrors[cluster]
-		ce := templates.SearchClusterErrors{Cluster: cluster, Header: searchErrorHeader(cluster, len(errs))}
-		for _, e := range errs {
-			ce.Lines = append(ce.Lines, "Failed to search "+e.ResourceType+": "+e.Message)
-		}
-		d.ClusterErrors = append(d.ClusterErrors, ce)
+		d.ResultSummary = searchFoundLine(v)
 	}
 	return d
+}
+
+// searchScopeClusterLabel is the scope-opts cluster fragment: "all clusters" for
+// an all-clusters search with no resolved scope chips, the single cluster name
+// when exactly one was searched, else "N clusters".
+func searchScopeClusterLabel(v *searchView) string {
+	switch {
+	case v.IsAllClusters && len(v.ScopeClusters) == 0:
+		return "all clusters"
+	case len(v.ScopeClusters) == 1:
+		return v.ScopeClusters[0].Name
+	default:
+		return fmt.Sprintf("%d clusters", len(v.ScopeClusters))
+	}
+}
+
+// searchNamespaceLabel is the scope-opts namespace fragment ("all namespaces" or
+// the single namespace name).
+func searchNamespaceLabel(v *searchView) string {
+	if v.IsAllNamespaces || v.Namespace == "" {
+		return "all namespaces"
+	}
+	return v.Namespace
+}
+
+// searchTypeLabel is the scope-opts resource-type fragment ("all resource types"
+// when the selection covers every offered type, else "N resource types").
+func searchTypeLabel(allTypes bool, count int) string {
+	if allTypes {
+		return "all resource types"
+	}
+	return fmt.Sprintf("%d resource types", count)
+}
+
+// searchBanner builds the multi-cluster partial-failure banner (D11), shown only
+// when at least one cluster failed to answer: the "Searched N of M clusters — K
+// didn't respond" title, a detail line naming the failed clusters + their
+// reason, and the read-only "Retry failed" GET href. The all-cluster LIST banner
+// (Unit 5) is a DIFFERENT screen; this is the search flavour.
+func searchBanner(v *searchView) templates.SearchBanner {
+	failed := 0
+	var detail []string
+	for _, c := range v.ScopeClusters {
+		if c.Failed {
+			failed++
+			detail = append(detail, c.Name+" ("+c.Reason+")")
+		}
+	}
+	if failed == 0 {
+		return templates.SearchBanner{}
+	}
+	total := len(v.ScopeClusters)
+	answered := total - failed
+	return templates.SearchBanner{
+		Show:      true,
+		Title:     fmt.Sprintf("Searched %d of %d clusters — %d didn't respond", answered, total, failed),
+		Detail:    strings.Join(detail, ", ") + " — results below are from the clusters that answered.",
+		RetryHref: v.RetryFailedHref,
+	}
 }
 
 // toSearchBreadcrumb resolves the search-page breadcrumb branches (all / cluster
@@ -465,30 +519,25 @@ func toSearchBreadcrumb(v *searchView) templates.SearchBreadcrumb {
 	return b
 }
 
-// searchSummary is the count-footer sentence ("N result(s) found. Searched M
-// resource types in K cluster(s) in T seconds."), with the pluralization
-// (results: !=1 -> "s"; clusters: >1 -> "s") and %.3f timing.
-func searchSummary(resultCount, typeCount, clusterCount int, seconds float64) string {
-	results := "results"
-	if resultCount == 1 {
-		results = "result"
+// searchFoundLine is the redesign `.ro-foundline` footer sentence ("Found N
+// objects matching "<q>" across A of M clusters in T seconds[ · K cluster(s)
+// failed].") with object/cluster pluralization, %.3f timing, and the trailing
+// failed-cluster clause appended only when a cluster did not answer.
+func searchFoundLine(v *searchView) string {
+	total := len(v.ScopeClusters)
+	failed := 0
+	for _, c := range v.ScopeClusters {
+		if c.Failed {
+			failed++
+		}
 	}
-	clusters := "cluster"
-	if clusterCount > 1 {
-		clusters = "clusters"
+	answered := total - failed
+	line := fmt.Sprintf("Found %d object%s matching %q across %d of %d cluster%s in %.3f seconds",
+		len(v.Results), pluralS(len(v.Results)), v.Query, answered, total, pluralS(total), v.Duration.Seconds())
+	if failed > 0 {
+		line += fmt.Sprintf(" · %d cluster%s failed", failed, pluralS(failed))
 	}
-	return fmt.Sprintf("%d %s found. Searched %d resource types in %d %s in %.3f seconds.",
-		resultCount, results, typeCount, clusterCount, clusters, seconds)
-}
-
-// searchErrorHeader is the danger-article heading ("Error(s) for cluster
-// <name>"), singular for one error and "Errors" for more than one.
-func searchErrorHeader(cluster string, count int) string {
-	label := "Error"
-	if count > 1 {
-		label = "Errors"
-	}
-	return label + " for cluster " + cluster
+	return line + "."
 }
 
 func toTableTools(t *toolsView) templates.TableTools {

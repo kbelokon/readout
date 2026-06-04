@@ -1,46 +1,61 @@
 package templates
 
-import "strings"
-
-// search.templ is the search page body. It renders the breadcrumb, the title,
-// the tools-form (Search Text + the Resource Types checkbox list with the
-// .unselect control), the ro-scope chip strip, the .search-result cards (kind
-// tag + title + meta + snippet <em> highlights + label chips), the "no results"
-// block, the count/duration footer with the "repeat across all namespaces"
-// link, and the per-cluster `message is-danger` error articles (partial
-// failures).
+// search.templ is the redesign multi-cluster search page body (D4/D11/D13). It
+// renders the breadcrumb, the `.search-hero` (title + the big `.search-big`
+// query input + the `.search-opts` scope line), the multi-cluster
+// partial-failure `.ro-banner.warn` summary ("Searched N of M clusters"), the
+// per-cluster `.ro-scope-chip.ok|err` strip (the `.err` chip carries an inline
+// read-only `.retry` GET link), and the results `.ro-table`
+// (Cluster / Namespace / Kind icon+name / Name / Age) plus the `.ro-foundline`
+// footer.
 //
-// Every value is resolved in the package-web assembly layer (buildSearchView)
-// and carried in SearchData; the renderer touches no request and no kube client.
-// Inline-SVG icons ride in as raw strings via @templ.Raw. The behavior-fact net
-// pins the result cards, the snippet highlight, the type checkboxes + .unselect,
-// the scope chips, the count footer, and a per-cluster error article.
+// The OUTERMOST content element carries the `ro-rd` content marker (D13): the
+// colliding redesign classes here -- .ro-breadcrumb, .ro-scope / .ro-scope-chip,
+// .ro-table -- are scoped under .ro-rd in readout.css, so they resolve only when
+// this content root carries the marker. The net-new `.search-hero`/`.search-big`/
+// `.search-opts`/`td.cell-clu`/`td.cell-ns`/`.res-kind` classes are bare (not
+// .ro-rd-scoped).
+//
+// The page is server-driven and READ-ONLY: the search is a GET to /search (the
+// `.search-big` input + hidden cluster/namespace/type inputs round-trip the
+// scope), and every retry (the banner "Retry failed" + each `.ro-scope-chip.err`
+// `.retry`) is a read-only GET that re-runs the SAME search scoped to the failed
+// cluster(s) -- never a write path. Every value is resolved in the package-web
+// assembly layer (buildSearchView -> toSearchData); the renderer touches no
+// request and no kube client. Inline-SVG + kind icons ride in as raw strings via
+// @templ.Raw (icons.KindIcon escapes every runtime-derived part).
 
 // SearchData is the resolved search-page input.
 type SearchData struct {
 	Breadcrumb SearchBreadcrumb
 
-	Query           string
-	Cluster         string // hidden form input (cluster=...)
-	Namespace       string // hidden form input (namespace=...)
-	IsAllNamespaces bool
+	Query     string
+	Cluster   string // hidden form input (cluster=...) -- round-trips the scope
+	Namespace string // hidden form input (namespace=...)
 
-	SearchIcon   string // inline-SVG for the search field
-	UnselectIcon string // inline-SVG for the unselect-all button
+	SearchIcon string // inline-SVG for the `.search-big` field
 
-	OfferedTypes  []SearchTypeOption
-	IsAllClusters bool
+	HasQuery bool
+
+	// HiddenTypes are the ?type= plurals preserved as hidden form inputs so
+	// re-submitting the query box keeps the same resource-type scope (the
+	// redesign moves type selection out of the body into the scope summary).
+	HiddenTypes []string
+
+	// Scope-opts line ("in <cluster> · <namespace> · <types>").
+	ScopeClusterLabel string // "all clusters" / "N clusters" / the single cluster name
+	NamespaceLabel    string // "all namespaces" / the single namespace name
+	TypeLabel         string // "all resource types" / "N resource types"
+
+	// Banner is the multi-cluster partial-failure summary; Show gates it so it
+	// appears ONLY when at least one cluster failed to answer.
+	Banner SearchBanner
+
+	// ScopeClusters are the per-cluster chips in the `.ro-scope` strip.
 	ScopeClusters []SearchScopeChip
-	AllTypes      bool // resource_types covers every offered type ("type all")
-	SelectedTypeCount int
 
-	Results       []SearchResultCard
-	HasQuery      bool
-	ResultSummary string // the "N results found. Searched ..." sentence
-
-	AllNamespacesHref string // "Repeat search across all namespaces" ("" => hidden)
-
-	ClusterErrors []SearchClusterErrors
+	Results       []SearchResultRow
+	ResultSummary string // the `.ro-foundline` count sentence
 }
 
 // SearchBreadcrumb is the search-page breadcrumb (all / cluster / namespace /
@@ -59,122 +74,108 @@ type SearchBreadcrumb struct {
 	ShowAllNamespace bool // the "all" namespaces crumb should render
 }
 
-// SearchTypeOption is one resource-type checkbox: Plural is the input value,
-// Kind is the label text, Checked marks a type in the current selection.
-type SearchTypeOption struct {
-	Plural  string
-	Kind    string
-	Checked bool
+// SearchBanner is the multi-cluster partial-failure banner: Title is the
+// "Searched N of M clusters — K didn't respond" line, Detail names the failed
+// cluster(s) + reason, and RetryHref is the read-only GET that re-runs the search
+// scoped to the failed cluster(s). The triangle + retry glyphs are emitted by the
+// templ directly (warnIcon / iconC), matching the all-cluster-list banner.
+type SearchBanner struct {
+	Show      bool
+	Title     string
+	Detail    string
+	RetryHref string
 }
 
-// SearchScopeChip is one scope chip in the ro-scope strip.
+// SearchScopeChip is one per-cluster chip in the `.ro-scope` strip: an `.ok`
+// chip shows the cluster name + its result count; a `.err` chip (Failed) shows
+// the name + the short Reason + an inline `.retry` GET link (RetryHref).
 type SearchScopeChip struct {
-	Name string
+	Name      string
+	Failed    bool
+	Count     int
+	Reason    string
+	RetryHref string
 }
 
-// SearchResultCard is one .search-result card: the kind tag, the title link, the
-// kind/path/created meta, the snippet highlights, and the label chips.
-type SearchResultCard struct {
-	Kind     string
-	KindTag  string // kind_abbrev (PO/SV/...) or first 2 chars uppercased
-	KindLow  string // kind|lower for the meta line
-	Title    string
-	Link     string
-	Created  string // formatted (T->space, trailing Z stripped); "" => no meta
-	Snippets []SearchSnippet
-	Chips    []Chip
-}
-
-// SearchSnippet is one (pre, match, post) snippet for the <em> highlight.
-type SearchSnippet struct {
-	Pre   string
-	Match string
-	Post  string
-}
-
-// SearchClusterErrors is one cluster's danger article: the heading label and the
-// per-resource-type failure lines.
-type SearchClusterErrors struct {
-	Cluster string
-	Header  string // "Error(s) for cluster <name>"
-	Lines   []string
+// SearchResultRow is one row in the results `.ro-table`: the Cluster + Namespace
+// cells (their own links), the Kind cell (the resolved kind icon + the kind
+// name), the Name cell (the object link), and the Age cell (the formatted
+// created timestamp coloured by its age bucket).
+type SearchResultRow struct {
+	Cluster     string
+	ClusterHref string
+	Namespace   string
+	NsHref      string
+	HasNs       bool
+	Kind        string
+	KindIcon    string // resolved icons.KindIcon markup (raw)
+	Name        string
+	Link        string
+	Age         string // formatTimestamp(created)
+	AgeClass    string // num + age-* bucket
 }
 
 templ Search(d SearchData) {
-	@searchBreadcrumb(d.Breadcrumb)
-	<h1 class="title">Search</h1>
-	<form action="/search" method="get" class="tools-form is-active"><input type="hidden" name="cluster" value={ d.Cluster }><input type="hidden" name="namespace" value={ d.Namespace }><div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Search Text</label></div><div class="field-body"><div class="field has-addons"><p class="control is-expanded has-icons-left"><input class="input" type="text" placeholder="Search query text" name="q" value={ d.Query }><span class="icon is-small is-left">@templ.Raw(d.SearchIcon)</span></p><div class="control"><button class="button is-primary" type="submit">Search!</button></div></div></div></div><div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Resource Types</label></div><div class="field-body"><div class="field"><p class="control checkboxes" id="type-checkboxes">
-		for _, opt := range d.OfferedTypes {
-			@searchTypeCheckbox(opt)
-		}
-		<a class="button is-light unselect" title="unselect all types" data-target="type-checkboxes"><span class="icon">@templ.Raw(d.UnselectIcon)</span><span>unselect all</span></a></p></div></div></div></form>
-	if d.HasQuery {
-		<div class="ro-scope"><span class="ro-scope-label">scope:</span>
-			if d.IsAllClusters && len(d.ScopeClusters) == 0 {
-				<span class="ro-scope-chip">all clusters</span>
-			} else {
-				for _, chip := range d.ScopeClusters {
-					<span class="ro-scope-chip">{ chip.Name }</span>
-				}
+	<div class="ro-rd">
+		@searchBreadcrumb(d.Breadcrumb)
+		<div class="search-hero"><h1 class="ro-title">Search</h1><form action="/search" method="get"><input type="hidden" name="cluster" value={ d.Cluster }><input type="hidden" name="namespace" value={ d.Namespace }>
+			for _, typ := range d.HiddenTypes {
+				<input type="hidden" name="type" value={ typ }>
 			}
-			if d.AllTypes {
-				<span class="ro-scope-chip is-muted">type all</span>
-			} else {
-				<span class="ro-scope-chip is-muted">{ "type " + itoa(d.SelectedTypeCount) }</span>
+			<div class="search-big"><span class="ico">@templ.Raw(d.SearchIcon)</span><input type="text" name="q" value={ d.Query } placeholder="Search query text" spellcheck="false"></div></form>
+			if d.HasQuery {
+				<div class="search-opts"><span>in</span> <span class="ro-scope-chip ok"><span class="ro-dot ok" aria-hidden="true"></span>{ d.ScopeClusterLabel }</span> <span>·</span> <span>{ d.NamespaceLabel }</span> <span>·</span> <span>{ d.TypeLabel }</span></div>
 			}
 			</div>
-	}
-	if len(d.Results) > 0 {
-		for _, card := range d.Results {
-			@searchResultCard(card)
+		if d.Banner.Show {
+			<div class="ro-banner warn" role="alert"><span class="bn-ico ico sm">@templ.Raw(warnIcon())</span><div class="bn-body"><p class="bn-title">{ d.Banner.Title }</p><p class="bn-text">{ d.Banner.Detail }</p></div><div class="bn-actions"><a class="ro-btn quiet" href={ templ.SafeURL(d.Banner.RetryHref) }><span class="ico sm" aria-hidden="true">@iconC("rotate-cw")</span>Retry failed</a></div></div>
 		}
-	} else if d.HasQuery {
-		<div class="ro-noresults"><p>@templ.Raw(noResultsText(d.Query))</p></div>
-	}
-	if d.HasQuery {
-		<div class="ro-search-count">
-			if d.AllNamespacesHref != "" {
-				<p><a href={ templ.SafeURL(d.AllNamespacesHref) }>Repeat search across all namespaces</a></p>
-			}
-			<p>{ d.ResultSummary }</p></div>
-	}
-	for _, ce := range d.ClusterErrors {
-		<article class="message is-danger"><div class="message-header"><p>{ ce.Header }</p></div><div class="message-body">
-			for _, line := range ce.Lines {
-				<p>{ line }</p>
-			}
-			</div></article>
-	}
-}
-
-// searchTypeCheckbox renders one resource-type checkbox; the checked variant
-// carries the boolean `checked` attribute.
-templ searchTypeCheckbox(opt SearchTypeOption) {
-	if opt.Checked {
-		<label class="checkbox"><input type="checkbox" name="type" value={ opt.Plural } checked> { opt.Kind }</label>
-	} else {
-		<label class="checkbox"><input type="checkbox" name="type" value={ opt.Plural }> { opt.Kind }</label>
-	}
-}
-
-// searchResultCard renders one .search-result card.
-templ searchResultCard(card SearchResultCard) {
-	<div class="search-result"><span class="ro-ktag" title={ card.Kind }>{ card.KindTag }</span><div class="r-main"><a class="r-title" href={ templ.SafeURL(card.Link) }>{ card.Title }</a><div class="r-meta"><span class="r-kind">{ card.KindLow }</span><a class="r-path" href={ templ.SafeURL(card.Link) }>{ card.Link }</a>
-		if card.Created != "" {
-			<span class="sep">·</span>{ card.Created }
-		}
-		</div>
-		for _, snip := range card.Snippets {
-			<div class="r-snip match">@templ.Raw(snippetHTML(snip))</div>
-		}
-		if len(card.Chips) > 0 {
-			<div class="ro-chips r-labels">
-				for _, chip := range card.Chips {
-					<a href={ templ.SafeURL(chip.Href) } class={ chip.Class }><span class="tag is-link">{ chip.Key + ": " + chip.Val }</span></a>
+		if d.HasQuery {
+			<div class="ro-scope"><span class="lbl">scope</span>
+				for _, chip := range d.ScopeClusters {
+					@searchScopeChip(chip)
 				}
 				</div>
 		}
-		</div></div>
+		if len(d.Results) > 0 {
+			<div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Cluster</th><th>Namespace</th><th>Kind</th><th>Name</th><th class="num">Age</th></tr></thead><tbody>
+				for _, row := range d.Results {
+					@searchResultRow(row)
+				}
+				</tbody></table></div>
+		} else if d.HasQuery {
+			<div class="ro-noresults"><p>@templ.Raw(noResultsText(d.Query))</p></div>
+		}
+		if d.HasQuery {
+			<div class="ro-table-meta"><span class="ro-foundline">{ d.ResultSummary }</span></div>
+		}
+	</div>
+}
+
+// searchScopeChip renders one per-cluster scope chip. The `.err` variant carries
+// the short failure reason + an inline `.retry` anchor (a read-only GET re-running
+// the search scoped to the failed cluster); the `.ok` variant shows the result
+// count in a faint trailing fragment.
+templ searchScopeChip(chip SearchScopeChip) {
+	if chip.Failed {
+		<span class="ro-scope-chip err"><span class="ro-dot err" aria-hidden="true"></span>{ chip.Name + " — " + chip.Reason }{ " " }<a class="retry" href={ templ.SafeURL(chip.RetryHref) }>retry</a></span>
+	} else {
+		<span class="ro-scope-chip ok"><span class="ro-dot ok" aria-hidden="true"></span>{ chip.Name }{ " " }<span class="sc-count">{ "· " + itoa(chip.Count) }</span></span>
+	}
+}
+
+// searchResultRow renders one results-table row. The Kind cell pairs the resolved
+// kind icon (raw) with the kind name in a `.res-kind` flex; the Cluster/Namespace
+// cells are muted links; the Name cell is the sticky object link; the Age cell
+// carries the age-bucket colour.
+templ searchResultRow(row SearchResultRow) {
+	<tr><td class="cell-clu"><a href={ templ.SafeURL(row.ClusterHref) }>{ row.Cluster }</a></td><td class="cell-ns">
+		if row.HasNs {
+			<a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a>
+		} else {
+			<span class="faint">—</span>
+		}
+		</td><td><span class="res-kind"><span class="rk-ico" aria-hidden="true">@templ.Raw(row.KindIcon)</span>{ row.Kind }</span></td><td class="cell-name"><a href={ templ.SafeURL(row.Link) }>{ row.Name }</a></td><td class={ row.AgeClass } title={ row.Age }>{ row.Age }</td></tr>
 }
 
 // searchBreadcrumb renders the search-page breadcrumb (all / cluster /
@@ -199,49 +200,4 @@ templ searchBreadcrumb(b SearchBreadcrumb) {
 // @templ.Raw would be parsed as that call's dropped children).
 func noResultsText(query string) string {
 	return `No results found for "` + escapeHTML(query) + `".`
-}
-
-// snippetHTML is one snippet's trusted HTML: pre + <em>match</em> + post, each
-// segment html-escaped, assembled as one string so the <em> highlight emits via
-// a single @templ.Raw without a stray text node after the raw call.
-func snippetHTML(s SearchSnippet) string {
-	return escapeHTML(s.Pre) + "<em>" + escapeHTML(s.Match) + "</em>" + escapeHTML(s.Post)
-}
-
-// KindAbbrev is the two-letter kind tag for the well-known kinds, falling back
-// to the first two characters of the Kind uppercased. Exported so the
-// package-web assembly (toSearchData) resolves the same tag the template would.
-func KindAbbrev(kind string) string {
-	switch kind {
-	case "Pod":
-		return "PO"
-	case "Service":
-		return "SV"
-	case "ConfigMap":
-		return "CM"
-	case "Secret":
-		return "SE"
-	case "Deployment":
-		return "DE"
-	case "ReplicaSet":
-		return "RS"
-	case "StatefulSet":
-		return "ST"
-	case "DaemonSet":
-		return "DS"
-	case "Namespace":
-		return "NS"
-	case "Node":
-		return "ND"
-	case "Ingress":
-		return "IN"
-	case "CronJob":
-		return "CJ"
-	case "Cluster":
-		return "CL"
-	}
-	if len(kind) >= 2 {
-		return strings.ToUpper(kind[:2])
-	}
-	return strings.ToUpper(kind)
 }

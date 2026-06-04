@@ -379,6 +379,12 @@ type searchView struct {
 	OfferedTypes      []searchTypeOption
 	SelectedTypeCount int // len(resource_types) -- drives the "type N" chip
 
+	// SelectedTypes is the raw ?type= plural set the search ran with (or the
+	// configured default when the request carried none). The redesign search
+	// drops the in-body checkbox UI, so these round-trip as hidden form inputs to
+	// preserve the type scope when the query box is re-submitted.
+	SelectedTypes []string
+
 	// ScopeClusters are the chips in the scope strip (search_clusters). When
 	// IsAllClusters and ScopeClusters is empty, the strip shows "all clusters".
 	ScopeClusters []searchScopeCluster
@@ -397,6 +403,12 @@ type searchView struct {
 	// target (rel_url with namespace=''). Empty when already all-namespaces.
 	AllNamespacesHref string
 
+	// RetryFailedHref is the read-only GET the partial-failure banner's "Retry
+	// failed" action points at: the SAME search re-scoped to the comma-joined set
+	// of clusters that failed to answer (cluster=<f1>,<f2>). Empty when no cluster
+	// failed (the banner is then hidden).
+	RetryFailedHref string
+
 	SearchedClusterCount int // len(search_clusters) -- footer
 }
 
@@ -408,9 +420,19 @@ type searchTypeOption struct {
 	Checked bool
 }
 
-// searchScopeCluster is one scope chip (a cluster in search_clusters).
+// searchScopeCluster is one per-cluster scope chip in the redesign search
+// `.ro-scope` strip (D11): the cluster Name, whether it Failed to answer (any
+// per-cluster error record), the number of result cards it contributed
+// (ResultCount, shown on an `.ok` chip), the short failure Reason (shown on an
+// `.err` chip), and the read-only RetryHref that re-runs the SAME search scoped
+// to just this cluster (cluster=<name>) so a failed cluster can be retried
+// without leaving the GET surface.
 type searchScopeCluster struct {
-	Name string
+	Name        string
+	Failed      bool
+	ResultCount int
+	Reason      string
+	RetryHref   string
 }
 
 // searchClusterError is one per-cluster error record: ResourceType is the plural
@@ -420,18 +442,24 @@ type searchClusterError struct {
 	Message      string
 }
 
-// searchResult is one search hit card. Matches carries the (pre, match, post)
-// snippet tuples for the <em> highlight; Labels feeds the sort score while
-// LabelChips carries the resolved chip strip (href/class/key/val); Created is
-// the creationTimestamp shown in the meta line.
+// searchResult is one search hit row in the redesign results table
+// (Cluster/Namespace/Kind/Name/Age). Cluster + Namespace populate their own
+// cells; Kind + Group + IsCRD drive the kind-icon resolver (icons.KindIcon) in
+// the Kind cell; Created feeds the Age cell's bucket class. Labels still feeds
+// the sort score. Matches/LabelChips are retained for the score/relevance ranking
+// (the redesign table drops the per-card snippet + label-chip UI).
 type searchResult struct {
-	Title      string
-	Kind       string
-	Link       string
-	Created    string
-	Labels     map[string]string
-	LabelChips []labelChipView
-	Matches    []snippet
+	Title     string
+	Kind      string
+	Group     string
+	IsCRD     bool
+	Link      string
+	Cluster   string
+	Namespace string
+	Created   string // formatTimestamp(creationTimestamp); "" => no age cell text
+	AgeClass  string // the num + age-* bucket class for the Age cell
+	Labels    map[string]string
+	Matches   []snippet
 }
 
 // snippet is one match context window: the text before the match, the matched

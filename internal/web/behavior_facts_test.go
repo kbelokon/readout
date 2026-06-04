@@ -359,9 +359,54 @@ func TestBehaviorResourceTypesMatrix(t *testing.T) {
 	if csiBool.Find(".ro-bool-no").Length() != 1 || csiBool.Find(".ro-bool-yes").Length() != 0 {
 		t.Fatalf("CSINode (cluster-scoped) row should carry ro-bool-no, not ro-bool-yes")
 	}
-	// Cluster tab vs Namespaced tab active state.
-	pc.wantText(".ro-rt-tabs li.is-active a", "Cluster")
-	p.wantText(".ro-rt-tabs li.is-active a", "Namespaced")
+	// Cluster tab vs Namespaced tab active state. Resource-types borrows the
+	// detail-page `.ro-tabs` chrome (anchor-based, the active tab carries
+	// is-active on the <a> itself) while keeping the KEEP-AS-IS `ro-rt-tabs`
+	// marker class on the tab container (D11/D13).
+	pc.wantText(".ro-rt-tabs a.is-active", "Cluster")
+	p.wantText(".ro-rt-tabs a.is-active", "Namespaced")
+}
+
+// TestResourceTypesRender pins the redesign borrow-rule application on the
+// resource-types page (D11/D13): the `.ro-rd` content marker, the borrowed
+// detail-tab `.ro-tabs` chrome (carrying the KEEP-AS-IS `ro-rt-tabs` marker) with
+// the active tab on the <a>, a PLAIN `.ro-table` (in `.ro-table-wrap`, not the
+// legacy `.ro-list-table`) for the kind matrix, the KEEP-AS-IS cell classes
+// (`.ro-cell-kind` kind link + sibling `.ro-crd-badge`, `.ro-rt-group`,
+// `.ro-rt-version`, `.ro-bool-yes`/`.ro-bool-no`), and the kind-icon resolver in
+// the Kind cell (`.res-kind .ico`).
+func TestResourceTypesRender(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	p := get(t, app, "/clusters/test/namespaces/default/_resource-types", http.StatusOK)
+
+	// Redesign content marker + borrowed chrome.
+	p.wantHas(".ro-rd")
+	p.wantHas(".ro-rd .ro-tabs.ro-rt-tabs")
+	p.wantText(".ro-tabs.ro-rt-tabs a.is-active", "Namespaced")
+	// PLAIN `.ro-table` in a `.ro-table-wrap` -- not the legacy `.ro-list-table`.
+	p.wantHas(".ro-table-wrap table.ro-table")
+	p.wantAbsent(".ro-list-table")
+
+	// KEEP-AS-IS cell classes survive: the Deployment row carries the kind link in
+	// `.ro-cell-kind`, the mono group/version cells, and the namespaced `true` pill.
+	deployRow := p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/default/deployments"])`)
+	if deployRow.Length() == 0 {
+		t.Fatalf("Deployment row missing from resource-types table")
+	}
+	if got := normSpace(deployRow.Find("td.ro-cell-kind a").Text()); got != "Deployment" {
+		t.Fatalf("Deployment `.ro-cell-kind a` text = %q, want Deployment", got)
+	}
+	if deployRow.Find("td.ro-rt-group").Length() != 1 || deployRow.Find("td.ro-rt-version").Length() != 1 {
+		t.Fatalf("Deployment row missing the KEEP-AS-IS group/version cells")
+	}
+	if deployRow.Find(".ro-bool-yes").Length() != 1 {
+		t.Fatalf("Deployment (namespaced) row should carry ro-bool-yes")
+	}
+	// The Kind cell pairs the resolved kind icon with the link (borrow rule:
+	// icons.KindIcon).
+	if deployRow.Find("td.ro-cell-kind .res-kind .ico, td.ro-cell-kind .res-kind .kind-tile, td.ro-cell-kind .res-kind svg").Length() == 0 {
+		t.Fatalf("Deployment Kind cell missing the resolved kind icon")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -856,77 +901,78 @@ func TestBehaviorLogsPage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Search: the rich /search body -- the GET form with resource-type checkboxes,
-// the scope chips, the result cards, the count footer, and the per-cluster
-// error articles.
+// Search: the redesign multi-cluster /search body -- the `.search-hero` (big
+// query input + scope-opts line), the per-cluster `.ro-scope-chip` strip, the
+// results `.ro-table` (Cluster/Namespace/Kind icon+name/Name/Age), and the
+// `.ro-foundline` footer. The multi-cluster partial-failure banner + `.err` chip
+// + inline retry are pinned by TestSearchPartialFailure (a multi-cluster vehicle).
 // ---------------------------------------------------------------------------
 
-// TestBehaviorSearchRichRender pins the rich search structure: the resource-type
-// checkboxes + the .unselect control, the scope chips, the result CARDS (kind
-// tag + title + meta + snippet <em> highlight + label chips), the count footer
-// with "repeat across all namespaces", and a per-cluster `message is-danger`
-// error article.
-//
-// The request asks for two types: `pods` (a resolvable namespaced type with the
-// nginx fixture row) and `deployments` (advertised in apps/v1 discovery but with
-// NO list handler in the fake API, so its Table request 404s) -- so a single GET
-// drives BOTH a result card AND a per-cluster error record (partial failure).
-func TestBehaviorSearchRichRender(t *testing.T) {
+// TestSearchRender pins the redesign search structure on a clean single-cluster
+// success: the `.search-hero` with the big `.search-big` query input (the GET
+// form round-trips q + hidden cluster/namespace/type), the `.search-opts` scope
+// line, the all-ok per-cluster `.ro-scope-chip.ok` (no failure banner), and the
+// results `.ro-table` row -- the Cluster + Namespace cells, the Kind cell pairing
+// the resolved kind icon (`.res-kind .ico`) with the kind name, the sticky Name
+// link, and the Age cell. The nginx pod is the lone `default`-namespace hit.
+func TestSearchRender(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
-	p := get(t, app, "/search?q=nginx&cluster=test&namespace=default&type=pods&type=deployments", http.StatusOK)
+	p := get(t, app, "/search?q=nginx&cluster=test&namespace=default&type=pods", http.StatusOK)
 
 	p.wantText("title", "Search - readout")
-	p.wantText("h1.title", "Search")
+	// The redesign content root carries the `ro-rd` marker; the title is the
+	// `.ro-title` (not the legacy `h1.title`).
+	p.wantHas(".ro-rd")
+	p.wantText(".search-hero .ro-title", "Search")
 
-	// Tools-form: the q box round-trips the query; the resource-type checkbox
-	// list + the .unselect control render.
-	p.wantAttr(`form.tools-form[action="/search"] input[name="q"]`, "value", "nginx")
-	p.wantHas("#type-checkboxes")
-	p.wantHas(`.unselect[data-target="type-checkboxes"]`)
-	if n := p.count(`#type-checkboxes input[type="checkbox"]`); n < 2 {
-		t.Fatalf("expected the offered resource-type checkboxes, found %d", n)
-	}
-	// pods is the requested type, so its checkbox is checked.
-	p.wantHas(`#type-checkboxes input[type="checkbox"][value="pods"][checked]`)
+	// The `.search-big` GET form round-trips the query + the scope (cluster /
+	// namespace / type) as hidden inputs so re-submitting keeps the scope. The
+	// search is a read-only GET to /search.
+	p.wantAttr(`.search-hero form[action="/search"]`, "method", "get")
+	p.wantAttr(`.search-big input[name="q"]`, "value", "nginx")
+	p.wantAttr(`.search-hero form input[type="hidden"][name="cluster"]`, "value", "test")
+	p.wantAttr(`.search-hero form input[type="hidden"][name="namespace"]`, "value", "default")
+	p.wantHas(`.search-hero form input[type="hidden"][name="type"][value="pods"]`)
 
-	// Scope chips: the cluster chip + the "type N" muted chip.
-	scope := p.texts(".ro-scope-chip")
-	if !contains(scope, "test") {
-		t.Fatalf("scope chips missing cluster chip: %v", scope)
-	}
-	if !contains(scope, "type 2") {
-		t.Fatalf("scope chips missing type count chip: %v", scope)
+	// Scope-opts line: a `.ok` cluster chip naming the single cluster + the
+	// namespace + the type summary.
+	p.wantText(".search-opts .ro-scope-chip.ok", "test")
+	if opts := normSpace(p.text(".search-opts")); !strings.Contains(opts, "default") {
+		t.Fatalf("search-opts line = %q, want it to name the namespace", opts)
 	}
 
-	// Result card: the kind tag (PO), the title link, the kind/path meta, and at
-	// least one snippet with the <em> highlight on the matched text.
-	p.wantText(".search-result .ro-ktag", "PO")
-	p.wantAttr(".search-result .ro-ktag", "title", "Pod")
-	p.wantAttr(".search-result .r-title", "href", "/clusters/test/namespaces/default/pods/nginx")
-	p.wantText(".search-result .r-title", "nginx")
-	p.wantText(".search-result .r-meta .r-kind", "pod")
-	p.wantAttr(".search-result .r-meta .r-path", "href", "/clusters/test/namespaces/default/pods/nginx")
-	p.wantHas(".search-result .r-snip.match em")
-	if got := p.text(".search-result .r-snip.match em"); got != "nginx" {
-		t.Fatalf("snippet <em> highlight = %q, want nginx", got)
+	// Per-cluster scope strip: with one healthy cluster the chip is `.ok` (no
+	// `.err`, no partial-failure banner). The `.ok` chip names the cluster.
+	p.wantAbsent(".ro-scope .ro-scope-chip.err")
+	p.wantAbsent(".ro-banner.warn")
+	if got := p.text(".ro-scope .ro-scope-chip.ok"); !strings.HasPrefix(got, "test") {
+		t.Fatalf("scope `.ok` chip = %q, want it to start with the cluster name", got)
 	}
-	// Label chip from the pod's app=nginx label.
-	p.wantHas(".search-result .ro-chips.r-labels .ro-chip")
-	p.wantText(".search-result .ro-chips.r-labels .tag.is-link", "app: nginx")
 
-	// Count footer: the "repeat across all namespaces" link + the count sentence.
-	p.wantHas(`.ro-search-count a[href*="namespace="]`)
-	if got := p.text(`.ro-search-count a`); got != "Repeat search across all namespaces" {
-		t.Fatalf("repeat-all-namespaces link text = %q", got)
+	// Results table: the nginx row carries its Cluster + Namespace links, the Kind
+	// cell pairs an icon with the kind name, the Name cell is the sticky object
+	// link, and the Age column header is present.
+	row := p.doc.Find(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/default/pods/nginx"])`)
+	if row.Length() != 1 {
+		t.Fatalf("expected exactly one nginx result row, found %d", row.Length())
 	}
-	p.wantBodyContains("Searched 2 resource types in 1 cluster")
+	if got := normSpace(row.Find("td.cell-clu a").Text()); got != "test" {
+		t.Fatalf("result Cluster cell = %q, want test", got)
+	}
+	if got := normSpace(row.Find("td.cell-ns a").Text()); got != "default" {
+		t.Fatalf("result Namespace cell = %q, want default", got)
+	}
+	if got := normSpace(row.Find("td .res-kind").Text()); got != "Pod" {
+		t.Fatalf("result Kind cell text = %q, want Pod", got)
+	}
+	if row.Find("td .res-kind .ico, td .res-kind .kind-tile, td .res-kind svg").Length() == 0 {
+		t.Fatalf("result Kind cell missing the resolved kind icon")
+	}
+	p.wantText(".ro-table thead th.num", "Age")
 
-	// Per-cluster error article: the failing `deployments` Table surfaces as a
-	// `message is-danger` article naming the cluster + the failed resource type.
-	p.wantHas("article.message.is-danger")
-	p.wantText("article.message.is-danger .message-header p", "Error for cluster test")
-	if got := p.text("article.message.is-danger .message-body p"); !strings.HasPrefix(got, "Failed to search deployments:") {
-		t.Fatalf("per-cluster error line = %q, want a 'Failed to search deployments:' message", got)
+	// Foundline footer: the redesign `.ro-foundline` count sentence.
+	if got := p.text(".ro-table-meta .ro-foundline"); !strings.Contains(got, `Found 1 object matching "nginx"`) {
+		t.Fatalf("foundline = %q, want a 'Found 1 object matching \"nginx\"' sentence", got)
 	}
 
 	// Shell sidebar + navbar context render from the ?cluster=/?namespace= QUERY
@@ -945,6 +991,61 @@ func TestBehaviorSearchRichRender(t *testing.T) {
 	}
 }
 
+// TestSearchPartialFailure pins the SEARCH flavour of partial failure (D11): a
+// multi-cluster search where one cluster's backend fails must still render the
+// answering cluster's results, surface a `.ro-banner.warn` "Searched N of M
+// clusters" summary, and mark the failed cluster with a `.ro-scope-chip.err`
+// carrying an inline read-only `.retry` GET. The healthy cluster gets a `.ro-scope-chip.ok`.
+// This is distinct from the all-cluster LIST banner (Unit 5); both are legitimate.
+func TestSearchPartialFailure(t *testing.T) {
+	good := newClusterFakeAPI(t, clusterFakeOptions{})
+	bad := newClusterFakeAPI(t, clusterFakeOptions{failList: true})
+	app := newMultiClusterServer(t, map[string]string{"good": good.URL, "zbad": bad.URL})
+
+	p := get(t, app, "/search?q=nginx&cluster=_all&namespace=default&type=pods", http.StatusOK)
+
+	// The answering cluster's results render (the failure is a partial, not a
+	// whole-request failure).
+	p.wantHas(`.ro-table tbody tr td.cell-name a[href="/clusters/good/namespaces/default/pods/nginx"]`)
+	// The failed cluster contributed no result rows.
+	p.wantAbsent(`.ro-table td.cell-name a[href^="/clusters/zbad/"]`)
+
+	// Partial-failure banner: "Searched 1 of 2 clusters — 1 didn't respond".
+	p.wantHas(".ro-banner.warn")
+	if got := p.text(".ro-banner.warn .bn-title"); got != "Searched 1 of 2 clusters — 1 didn't respond" {
+		t.Fatalf("partial banner title = %q", got)
+	}
+	// The banner's "Retry failed" action is a read-only GET re-running the search
+	// scoped to the failed cluster(s) -- an <a> href, never a write form/button.
+	retry := p.attr(".ro-banner.warn .bn-actions a", "href")
+	if !strings.HasPrefix(retry, "/search?") || !strings.Contains(retry, "zbad") {
+		t.Fatalf("banner retry href = %q, want a read-only /search GET scoped to zbad", retry)
+	}
+
+	// Per-cluster chips: the healthy cluster is `.ok`, the failed cluster is
+	// `.err` and carries an inline `.retry` GET (also a /search re-run, not a write).
+	okChips := p.texts(".ro-scope .ro-scope-chip.ok")
+	if !containsPrefix(okChips, "good") {
+		t.Fatalf("scope `.ok` chips = %v, want one naming the healthy cluster", okChips)
+	}
+	errChip := p.doc.Find(".ro-scope .ro-scope-chip.err")
+	if errChip.Length() != 1 {
+		t.Fatalf("expected exactly one `.err` scope chip, found %d", errChip.Length())
+	}
+	if got := normSpace(errChip.Text()); !strings.HasPrefix(got, "zbad") {
+		t.Fatalf("`.err` scope chip = %q, want it to name the failed cluster zbad", got)
+	}
+	chipRetry, ok := errChip.Find("a.retry").Attr("href")
+	if !ok || !strings.HasPrefix(chipRetry, "/search?") || !strings.Contains(chipRetry, "cluster=zbad") {
+		t.Fatalf("`.err` chip retry href = %q (ok=%v), want a read-only /search GET scoped to cluster=zbad", chipRetry, ok)
+	}
+
+	// Foundline names the failed-cluster clause.
+	if got := p.text(".ro-foundline"); !strings.Contains(got, "1 cluster failed") {
+		t.Fatalf("foundline = %q, want it to note the failed cluster", got)
+	}
+}
+
 // TestBehaviorSearchAllClustersNoSidebar pins the all-clusters search shell: a
 // /search with NO ?cluster= (or ?cluster=_all) renders the rich body but NO
 // cluster sidebar and NO navbar context pill -- the sidebar is built only when
@@ -955,25 +1056,29 @@ func TestBehaviorSearchAllClustersNoSidebar(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/search?q=nginx", http.StatusOK)
 
-	// The body still renders (scope chip strip is present for a query).
-	p.wantText("h1.title", "Search")
-	p.wantHas("#type-checkboxes")
+	// The redesign body still renders (the search-hero + scope strip are present
+	// for a query).
+	p.wantText(".search-hero .ro-title", "Search")
+	p.wantHas(".search-big input[name=\"q\"]")
+	p.wantHas(".ro-scope")
 	// No sidebar groups, no Meta links, no context pill.
 	p.wantAbsent(".menu-label")
 	p.wantAbsent(".menu-item")
 	p.wantAbsent(".context-name")
 }
 
-// TestBehaviorSearchNoResults pins the "no results" block + the count footer for a
-// query that matches nothing, and confirms the type checkboxes still render.
+// TestBehaviorSearchNoResults pins the redesign "no results" block + the
+// foundline footer for a query that matches nothing: no results table, the
+// `.ro-noresults` sentence, and a "Found 0 objects" foundline.
 func TestBehaviorSearchNoResults(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/search?q=zzzznomatch&cluster=test&namespace=default&type=pods", http.StatusOK)
 
-	p.wantAbsent(".search-result")
+	p.wantAbsent(".ro-table tbody tr")
 	p.wantText(".ro-noresults p", `No results found for "zzzznomatch".`)
-	p.wantHas("#type-checkboxes")
-	p.wantBodyContains("0 results found.")
+	if got := p.text(".ro-foundline"); !strings.Contains(got, `Found 0 objects matching "zzzznomatch"`) {
+		t.Fatalf("foundline = %q, want a 'Found 0 objects matching \"zzzznomatch\"' sentence", got)
+	}
 }
 
 // TestBehaviorSearchRespectsExcludeNamespaces pins that search applies
@@ -981,15 +1086,15 @@ func TestBehaviorSearchNoResults(t *testing.T) {
 // namespace never appears. The fake API's pods all live in `default`; excluding
 // `default` removes the nginx hit that the same query surfaces under the default
 // config, proving the filter is wired into buildSearchView (not just present in
-// kube). Without the exclude the card is present (asserted by
-// TestBehaviorSearchRichRender); with it, none.
+// kube). Without the exclude the row is present (asserted by TestSearchRender);
+// with it, none.
 func TestBehaviorSearchRespectsExcludeNamespaces(t *testing.T) {
 	cfg := baseConfig(t)
 	cfg.ExcludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`default`)}
 	app := newServer(t, cfg, time.Now())
 	p := get(t, app, "/search?q=nginx&cluster=test&namespace=_all&type=pods", http.StatusOK)
 
-	p.wantAbsent(".search-result")
+	p.wantAbsent(".ro-table tbody tr")
 	p.wantBodyExcludes("/clusters/test/namespaces/default/pods/nginx")
 	p.wantText(".ro-noresults p", `No results found for "nginx".`)
 }
@@ -1054,13 +1159,13 @@ func TestBehaviorSecretBarrierDefaultOff(t *testing.T) {
 	list.wantBodyExcludes("my-secret")
 	list.wantBodyExcludes(rawPassword)
 
-	// Search for secrets yields no secret result card (type not discoverable);
-	// the rich search surfaces the unresolved type as a per-cluster error
-	// article instead, and never leaks a result card with the secret name.
+	// Search for secrets yields no secret result row (type not discoverable); the
+	// search surfaces the unresolved type as a per-cluster failure instead, and
+	// never leaks a result row with the secret name.
 	srch := get(t, app, "/search?q=my-secret&cluster=test&namespace=default&type=secrets", http.StatusOK)
 	srch.wantBodyExcludes(rawPassword)
-	srch.wantAbsent(".search-result")
-	if contains(srch.texts(".search-result .r-title"), "my-secret") {
+	srch.wantAbsent(".ro-table tbody tr")
+	if contains(srch.texts(".ro-table td.cell-name a"), "my-secret") {
 		t.Fatalf("secret leaked into search results under default config")
 	}
 }
@@ -1300,6 +1405,18 @@ func TestBehaviorAPIVersionParamSnakeCase(t *testing.T) {
 func contains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// containsPrefix reports whether any element of haystack starts with prefix.
+// Used for the search scope chips, whose text is "<cluster> · <count>" (so an
+// exact match would have to spell out the count).
+func containsPrefix(haystack []string, prefix string) bool {
+	for _, s := range haystack {
+		if strings.HasPrefix(s, prefix) {
 			return true
 		}
 	}

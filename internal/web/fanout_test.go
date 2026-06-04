@@ -201,14 +201,14 @@ func TestMultiClusterListPartialFailureRendersOthers(t *testing.T) {
 
 // TestMultiClusterSearchFanInIsDeterministicAndPartialSafe forces out-of-order
 // search completion across healthy AND failing clusters: it asserts (a) the
-// healthy result-card order is identical across repeats, (b) the per-cluster
-// error articles render in fixed cluster-name order (ybad before zbad) even
-// though zbad completes first, and (c) the whole request still succeeds -- the
-// search analog of partial-failure + fan-in determinism.
+// healthy result-row order is identical across repeats, (b) the per-cluster
+// `.ro-scope-chip.err` chips render in fixed cluster-name order (ybad before
+// zbad) even though zbad completes first, and (c) the whole request still
+// succeeds -- the search analog of partial-failure + fan-in determinism.
 func TestMultiClusterSearchFanInIsDeterministicAndPartialSafe(t *testing.T) {
 	// aaa/bbb are healthy (aaa slowest). ybad/zbad both fail; zbad is delayed so
 	// it COMPLETES before ybad, yet the cluster-order merge must still place the
-	// ybad error article first.
+	// ybad `.err` chip first.
 	aaa := newClusterFakeAPI(t, clusterFakeOptions{delay: 50 * time.Millisecond})
 	bbb := newClusterFakeAPI(t, clusterFakeOptions{delay: 0})
 	ybad := newClusterFakeAPI(t, clusterFakeOptions{failList: true, delay: 40 * time.Millisecond})
@@ -229,17 +229,21 @@ func TestMultiClusterSearchFanInIsDeterministicAndPartialSafe(t *testing.T) {
 			t.Fatalf("run %d: status = %d (partial failure must NOT fail the whole search) body=%s", run, rec.Code, rec.Body.String())
 		}
 		body := rec.Body.String()
-		// Both failing clusters surface per-cluster error articles, in fixed
+		// Both failing clusters surface a `.ro-scope-chip.err` chip, in fixed
 		// cluster-name order (ybad before zbad) regardless of completion order.
-		yi := strings.Index(body, "Error for cluster ybad")
-		zi := strings.Index(body, "Error for cluster zbad")
-		if yi < 0 || zi < 0 {
-			t.Fatalf("run %d: missing per-cluster error articles (ybad=%d zbad=%d): %s", run, yi, zi, body)
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("run %d: parse search body: %v", run, err)
 		}
-		if yi > zi {
-			t.Fatalf("run %d: error articles out of order (ybad at %d, zbad at %d) -- merge is not cluster-name ordered", run, yi, zi)
+		var errClusters []string
+		doc.Find(".ro-scope .ro-scope-chip.err").Each(func(_ int, s *goquery.Selection) {
+			// The chip text begins with the cluster name ("<name> — <reason> retry").
+			errClusters = append(errClusters, strings.Fields(normSpace(s.Text()))[0])
+		})
+		if len(errClusters) != 2 || errClusters[0] != "ybad" || errClusters[1] != "zbad" {
+			t.Fatalf("run %d: `.err` scope chips = %v, want [ybad zbad] in cluster-name order", run, errClusters)
 		}
-		// The healthy result-card link order must be stable across repeats.
+		// The healthy result-row link order must be stable across repeats.
 		links := resultLinkOrder(body)
 		if len(links) == 0 {
 			t.Fatalf("run %d: no result links rendered: %s", run, body)
