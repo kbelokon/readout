@@ -1,0 +1,18 @@
+# Build / release output
+/dist/
+/out/
+/tmp/
+readout
+*.out
+coverage.*
+
+# Local tooling / editor / scratch
+.DS_Store
+.idea/
+.vscode/
+kind
+kubectl
+
+# Never publish: forge notes and parity artifacts
+docs/
+test-artifacts/

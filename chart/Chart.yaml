@@ -1,0 +1,9 @@
+apiVersion: v2
+name: readout
+description: Strictly read-only Kubernetes web viewer in Go
+type: application
+version: 0.1.0
+appVersion: 0.1.0
+home: https://github.com/kbelokon/readout
+sources:
+  - https://github.com/kbelokon/readout

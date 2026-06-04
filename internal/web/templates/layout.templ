@@ -1,0 +1,147 @@
+package templates
+
+// layout.templ is the single page shell: the full HTML document, the navbar,
+// the sidebar, the footer (default or the trusted TemplatesPath override), and
+// the command palette. The behavior-fact net pins the navbar/sidebar/palette/
+// theme surfaces.
+//
+// The component takes a resolved LayoutData (no *http.Request; the handler seam
+// precomputed every request-derived value) plus a `body` templ.Component for
+// the page content. Leaf pages pass a real templ body; heavy pages pass
+// templ.Raw(<built string>) so there is exactly ONE shell.
+
+// LayoutData is the resolved page-shell input. It restates the package-web
+// layoutView; the fields are re-declared here because templ components live in
+// their own package. The handler maps layoutView -> LayoutData.
+type LayoutData struct {
+	Title         string
+	ThemeName     string
+	ThemeExplicit bool
+
+	Scripts []string
+	CSSHref string
+	IconURL string
+
+	ExtraHead string
+	Footer    string
+
+	Navbar  Navbar
+	Sidebar Sidebar
+}
+
+type Navbar struct {
+	ShowContext    bool
+	ContextName    string
+	NamespaceLinks []NavItem
+
+	SearchCluster   string
+	SearchNamespace string
+
+	NextTheme     string
+	ToggleNextURL string
+	ThemeExplicit bool
+}
+
+type Sidebar struct {
+	ShowMenu bool
+	Groups   []SidebarGroup
+	Meta     []NavItem
+}
+
+type SidebarGroup struct {
+	Label string
+	Links []NavItem
+}
+
+type NavItem struct {
+	Href   string
+	Text   string
+	Active bool
+}
+
+// Layout renders the full HTML document around body. The <html> data-theme
+// attribute is emitted ONLY for an explicit theme choice (cookie/?theme=),
+// matching the hand-written shell: a cookieless render carries no data-theme so
+// readout.js derives the effective palette from prefers-color-scheme.
+templ Layout(d LayoutData, body templ.Component) {
+	<!DOCTYPE html>
+	if d.ThemeExplicit {
+		<html lang="en" data-theme={ d.ThemeName }>
+			@layoutHead(d)
+			@layoutBody(d, body)
+		</html>
+	} else {
+		<html lang="en">
+			@layoutHead(d)
+			@layoutBody(d, body)
+		</html>
+	}
+}
+
+templ layoutHead(d LayoutData) {
+	<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{ d.Title } - readout</title><meta name="htmx-config" content={ htmxConfig }>
+		for _, src := range d.Scripts {
+			<script src={ src }></script>
+		}
+		if d.CSSHref != "" {
+			<link rel="stylesheet" href={ d.CSSHref }>
+		}
+		if d.IconURL != "" {
+			<link rel="shortcut icon" href={ d.IconURL }><link rel="icon" type="image/png" href={ d.IconURL }>
+		}
+		@templ.Raw(d.ExtraHead)
+	</head>
+}
+
+templ layoutBody(d LayoutData, body templ.Component) {
+	<body class="has-navbar-fixed-top" hx-boost="true" hx-ext="preload" preload="mouseover">
+		@navbarC(d.Navbar)
+		<div class="container is-fluid is-flex-desktop">
+			@sidebarC(d.Sidebar)
+			<main>
+				@body
+			</main>
+		</div>
+		@footerC(d.Footer)
+		@CommandPalette()
+	</body>
+}
+
+templ navbarC(n Navbar) {
+	<nav class="navbar is-fixed-top ro-topbar" aria-label="main navigation"><div class="navbar-brand"><a class="navbar-item brand-item" href="/clusters" aria-label="readout home"><span class="brand-logo" aria-hidden="true"></span><span class="brand-name">readout</span></a><a role="button" class="navbar-burger" data-target="nav-menu" aria-label="menu" aria-expanded="false"><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span></a></div><div class="navbar-menu" id="nav-menu"><div class="navbar-start"><a class="navbar-item toplink" href="/clusters">Clusters</a>
+		if n.ShowContext {
+			<div id="namespace-dropdown" class="navbar-item has-dropdown context-dd"><a class="navbar-link is-arrowless context-trigger" role="button" aria-haspopup="true"><span class="status-dot" aria-hidden="true"></span><span class="context-name">{ n.ContextName }</span><span class="context-caret icon">@iconC("chevron-down")</span></a><div class="navbar-dropdown"><div class="control"><input id="namespace-searchbox" type="text" placeholder="type to filter" class="input is-transparent"></div>
+				for _, ns := range n.NamespaceLinks {
+					<a class="navbar-item namespace-item" href={ templ.SafeURL(ns.Href) }>{ ns.Text }</a>
+				}
+				</div></div>
+		}
+		</div><div class="navbar-end"><div class="navbar-item search-item"><form method="get" action="/search"><div class="field"><p class="control has-icons-left has-icons-right"><input type="hidden" name="cluster" value={ n.SearchCluster }><input type="hidden" name="namespace" value={ n.SearchNamespace }><span class="icon is-small is-left">@iconC("search")</span><input class="input" type="text" placeholder="Search Kubernetes objects.." name="q" aria-label="Search Kubernetes objects"><span class="icon is-small is-right search-kbd-hint" aria-hidden="true"><kbd class="ro-kbd">&#8984;K</kbd></span></p></div></form></div><div class="navbar-item has-dropdown is-hoverable" id="refresh-dropdown"><a class="navbar-link is-arrowless refresh-trigger" role="button" title="Auto-refresh interval" aria-label="Auto-refresh interval"><span class="icon refresh-icon">@iconC("rotate-cw")</span><span id="refresh-label" class="refresh-label">Off</span></a><div class="navbar-dropdown is-right"><a class="navbar-item refresh-option" role="button" data-interval="0">Off</a><a class="navbar-item refresh-option" role="button" data-interval="5">Every 5s</a><a class="navbar-item refresh-option" role="button" data-interval="15">Every 15s</a><a class="navbar-item refresh-option" role="button" data-interval="30">Every 30s</a><a class="navbar-item refresh-option" role="button" data-interval="60">Every 60s</a></div></div><div class="navbar-item"><form method="post" action="/preferences" hx-boost="false"><input type="hidden" name="theme" value={ n.NextTheme }><input type="hidden" name="next" value={ n.ToggleNextURL }><button type="submit" class="button navbar-icon" title="Toggle light/dark theme" aria-label="Toggle light/dark theme" id="btn-theme-toggle" data-theme-explicit={ boolStr(n.ThemeExplicit) }><span class="icon theme-icon-dark" aria-hidden="true">@iconC("moon")</span><span class="icon theme-icon-light" aria-hidden="true">@iconC("sun")</span></button></form></div></div></div></nav>
+}
+
+templ sidebarC(s Sidebar) {
+	<aside class="menu"><div class="is-hidden-desktop"><a role="button" class="aside-burger" data-target="aside-menu"><span aria-hidden="true"></span><span aria-hidden="true"></span></a></div><div id="aside-menu">
+		for _, group := range s.Groups {
+			<p class="menu-label">{ group.Label }</p><ul class="menu-list">
+				for _, link := range group.Links {
+					<li><a class={ menuItemClass(link.Active) } href={ templ.SafeURL(link.Href) }>{ link.Text }</a></li>
+				}
+				</ul>
+		}
+		if len(s.Meta) > 0 {
+			<p class="menu-label">Meta</p><ul class="menu-list">
+				for _, link := range s.Meta {
+					<li><a class={ menuItemClass(link.Active) } href={ templ.SafeURL(link.Href) }>{ link.Text }</a></li>
+				}
+				</ul>
+		}
+		</div></aside>
+}
+
+templ footerC(custom string) {
+	if custom != "" {
+		@templ.Raw(custom)
+	} else {
+		@defaultFooter()
+	}
+}

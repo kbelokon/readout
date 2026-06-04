@@ -1,0 +1,14 @@
+{
+  "kind": "APIResourceList",
+  "apiVersion": "v1",
+  "groupVersion": "storage.k8s.io/v1",
+  "resources": [
+    {
+      "name": "csinodes",
+      "singularName": "csinode",
+      "namespaced": false,
+      "kind": "CSINode",
+      "verbs": ["get", "list", "watch"]
+    }
+  ]
+}

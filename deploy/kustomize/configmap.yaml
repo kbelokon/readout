@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: readout
+  labels:
+    application: readout
+data:
+  # Mounted at /etc/readout/readout.yaml; the container runs with
+  # --config /etc/readout/readout.yaml. Schema matches readout.yaml.
+  # Secrets are NOT placed here -- supply them via READOUT_* env from a
+  # Secret instead.
+  readout.yaml: |
+    port: 8080
+    excludeNamespaces:
+      - kube-.*
+    showContainerLogs: false
+    includeSecrets: false
+    auth:
+      mode: none   # safe default: no identity trusted. Set behind a real auth layer.
+      # mode: headers
+      # DANGER: header-trust auth is ONLY safe behind a reverse proxy that strips and
+      # re-sets X-Forwarded-User/Email/Groups. Without such a proxy any client can
+      # impersonate any user. Enable only when such a proxy is in front.
+      # trustedHeaders:
+      #   user: X-Forwarded-User
+      #   email: X-Forwarded-Email
+      #   groups: X-Forwarded-Groups

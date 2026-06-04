@@ -1,0 +1,238 @@
+package templates
+
+// resource_table.templ is the resource-list TABLE fragment (the body of the
+// `.../{plural}/_table` GET partial route AND the inner content of the full
+// list page's #resource-list-content container): per-table title + tools form +
+// phase strip + the ro-list-table itself, then the footer "Found N rows..."
+// line and the per-cluster error articles.
+//
+// Every request-derived value (sort hrefs, the TSV/search hrefs, per-row status
+// classes, per-cell render branch + class + href, the age cell class, the phase
+// tally) is resolved in the package-web assembly layer and carried in ListData;
+// the renderer touches no request and recomputes nothing. Trusted pre-rendered
+// chrome (inline SVG icons, the sort-direction icon) rides in as raw strings.
+// The Unit-4 fact net pins the column sort hrefs, the cell values + status dot,
+// the phase tally, the row name links, and (on the full page) the htmx wiring.
+
+// ListData is the resolved resource-list input shared by the full page and the
+// `_table` partial. The all-* flags drive the leading Cluster/Namespace columns
+// and the footer text; Tables carries the per-table render data.
+type ListData struct {
+	IsAllNamespaces bool
+	Namespace       string
+	Plural          string
+	ClusterCount    int
+	TableCount      int
+	TotalRows       int
+	DurationSeconds float64
+	AllNamespacesHref string
+	Errors          []string
+	Tables          []TableData
+}
+
+// TableData is one rendered resource table. MultiCluster gates the leading
+// Cluster column; Icons are pre-rendered inline SVG; Tools is the tools form.
+type TableData struct {
+	Kind            string
+	DownloadTSVHref string
+	SearchHref      string
+	DownloadIcon    string
+	ToolsIcon       string
+	SearchIcon      string
+
+	Tools TableTools
+
+	ShowMetricsHref string
+
+	Phase     []PhaseChip
+	PhaseRows int
+
+	MultiCluster bool
+
+	Columns     []TableColumn
+	ColumnCount int // kube.Table column count (drives the empty-row colspan)
+	CreatedHref string
+	CreatedIcon string
+
+	Rows []TableRow
+
+	EmptyKind string // Resource.Kind for the empty-state sentence
+}
+
+// PhaseChip is one phase-tally chip (status dot class + label + count).
+type PhaseChip struct {
+	Class string
+	Label string
+	Count string
+}
+
+// TableColumn is one column header: its title/class + sort link + the
+// pre-rendered sort-direction icon (raw HTML, empty when not the sort column).
+type TableColumn struct {
+	Description string
+	Class       string
+	SortHref    string
+	Name        string
+	SortIcon    string
+}
+
+// TableTools is the per-table tools form (label columns / selector / filter).
+type TableTools struct {
+	Active       bool
+	HiddenInputs []HiddenInput
+	LabelColsVal string
+	SelectorVal  string
+	FilterVal    string
+	TableIcon    string
+	TagsIcon     string
+	FilterIcon   string
+}
+
+// HiddenInput is one hidden form input round-tripping a query param.
+type HiddenInput struct {
+	Name  string
+	Value string
+}
+
+// TableRow is one body row: its status class, the optional Cluster/Namespace
+// cells, the per-column cells, and the Created cell.
+type TableRow struct {
+	StatusClass  string
+	ClusterHref  string
+	Cluster      string
+	NsHref       string
+	Namespace    string
+	Cells        []TableCell
+	CreatedClass string
+	CreatedText  string
+}
+
+// TableCell is one body cell. Kind selects the render branch; Class is the full
+// <td> class, Href the resolved link target where the branch needs one.
+type TableCell struct {
+	Kind       CellKind
+	Value      string
+	Class      string
+	ColClass   string
+	Href       string
+	ReadyClass string // for the Ready branch: the has-text-* class on the inner span
+}
+
+// CellKind selects a body-cell render branch (matches package-web cellKind).
+type CellKind int
+
+const (
+	CellPlain CellKind = iota
+	CellName
+	CellLabel
+	CellNode
+	CellCPU
+	CellMemory
+	CellStatus
+	CellReady
+)
+
+// ResourceTable renders the full table fragment (one block per table + the
+// footer + the error articles). This is what the `_table` partial returns and
+// what the full list page wraps in #resource-list-content.
+templ ResourceTable(d ListData) {
+	for _, table := range d.Tables {
+		<h1 class="title">{ table.Kind } <span class="links"><a href={ templ.SafeURL(table.DownloadTSVHref) } title="Download resource list as Tab-Separated-Values (TSV)" class="button ro-btn-quiet"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a> <a href="#" class="button ro-btn-quiet toggle-tools" data-target="tools-table-1"><span class="icon">@templ.Raw(table.ToolsIcon)</span></a> <a href={ templ.SafeURL(table.SearchHref) } class="button ro-btn-quiet"><span class="icon">@templ.Raw(table.SearchIcon)</span></a></span></h1>
+		@toolsForm(table.Tools)
+		if table.ShowMetricsHref != "" {
+			<div class="section"><a href={ templ.SafeURL(table.ShowMetricsHref) }>Show CPU/Memory Usage</a></div>
+		}
+		if len(table.Phase) > 0 {
+			<div class="ro-phase-strip"><div class="ro-phase-tally">
+				for _, chip := range table.Phase {
+					<span class="ro-phase-chip"><span class={ "ro-status-dot " + chip.Class } aria-hidden="true"></span><span class="ro-phase-label">{ chip.Label }</span> <span class="ro-phase-count">{ chip.Count }</span></span>{ " " }
+				}
+				</div><div class="ro-phase-total"><span class="ro-phase-count">{ itoa(table.PhaseRows) }</span>{ " object" }{ pluralSuffix(table.PhaseRows) }{ " · " }{ formatSeconds(d.DurationSeconds) }{ "s" }</div></div>
+		}
+		<table class="table ro-list-table"><thead><tr>
+			if table.MultiCluster {
+				<th>Cluster</th>
+			}
+			if d.IsAllNamespaces {
+				<th>Namespace</th>
+			}
+			for _, col := range table.Columns {
+				<th title={ col.Description } class={ col.Class }><a href={ templ.SafeURL(col.SortHref) }>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
+			}
+			<th><a href={ templ.SafeURL(table.CreatedHref) }>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
+			</tr></thead><tbody>
+			for _, row := range table.Rows {
+				<tr class={ row.StatusClass }>
+					if table.MultiCluster {
+						<td><a href={ templ.SafeURL(row.ClusterHref) }>{ row.Cluster }</a></td>
+					}
+					if d.IsAllNamespaces {
+						<td><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></td>
+					}
+					for _, cell := range row.Cells {
+						@tableCell(cell)
+					}
+					<td class={ row.CreatedClass }>{ row.CreatedText }</td></tr>
+			}
+			if len(table.Rows) == 0 {
+				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces)) }><div class="ro-empty"><p class="ro-empty-title">@templ.Raw(emptyTitle(table.EmptyKind, d.Namespace, d.IsAllNamespaces))</p><p class="ro-empty-hint">Nothing to show here yet.</p></div></td></tr>
+			}
+			</tbody></table>
+	}
+	<div class="content">
+		if d.AllNamespacesHref != "" {
+			<p><a href={ templ.SafeURL(d.AllNamespacesHref) }>{ "Show " + d.Plural + " across all namespaces" }</a></p>
+		}
+		<p class="has-text-grey">{ foundLine(d.TotalRows, d.TableCount, d.ClusterCount, d.DurationSeconds) }</p>
+		if len(d.Errors) > 0 {
+			<p class="ro-partial-note">{ "Partial results: " + itoa(len(d.Errors)) + " failed (see below)." }</p>
+		}
+		</div>
+	if len(d.Errors) > 0 {
+		<article class="ro-notice ro-notice-err" role="alert"><p class="ro-notice-title">Errors</p>
+			for _, errMsg := range d.Errors {
+				<p>{ "Failed to search: " }<code>{ errMsg }</code></p>
+			}
+			</article>
+	}
+}
+
+// tableCell renders one body cell, branching on Kind exactly as the former
+// renderTables per-cell ladder did. The Name branch is its own <td>; the rest
+// share the (cellClass + colClass) <td> wrapper.
+templ tableCell(cell TableCell) {
+	if cell.Kind == CellName {
+		<td class="ro-cell-name"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
+	} else {
+		<td class={ cell.Class + " " + cell.ColClass }>
+			switch cell.Kind {
+				case CellLabel:
+					<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
+				case CellNode:
+					<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
+				case CellCPU:
+					{ cell.Value }
+				case CellMemory:
+					{ cell.Value + " MiB" }
+				case CellStatus:
+					<span class={ "ro-status-dot " + cell.Class } aria-hidden="true"></span>{ cell.Value }
+				case CellReady:
+					<span class={ cell.ReadyClass }>{ cell.Value }</span>
+				default:
+					{ cell.Value }
+			}
+			</td>
+	}
+}
+
+// toolsForm renders the per-table label-columns / selector / filter tools form.
+templ toolsForm(t TableTools) {
+	<form action="#" method="get" id="tools-table-1" class={ "tools-form" + activeSuffix(t.Active) }>
+		for _, in := range t.HiddenInputs {
+			<input type="hidden" name={ in.Name } value={ in.Value }>
+		}
+		<div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Label Columns</label></div><div class="field-body"><div class="field has-addons"><p class="control is-expanded has-icons-left"><input class="input" type="text" placeholder="Labels to show as columns (comma separated) or '*' to show all labels" name="labelcols" value={ t.LabelColsVal }><span class="icon is-small is-left">@templ.Raw(t.TableIcon)</span></p></div></div></div>
+		<div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Label Selector</label></div><div class="field-body"><div class="field"><p class="control is-expanded has-icons-left"><input class="input" type="text" placeholder="Label selector (label=value)" name="selector" value={ t.SelectorVal }><span class="icon is-small is-left">@templ.Raw(t.TagsIcon)</span></p></div></div></div>
+		<div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Filter</label></div><div class="field-body"><div class="field"><p class="control is-expanded has-icons-left"><input class="input" type="text" placeholder="Filter by any column (Column=value) or text" name="filter" value={ t.FilterVal }><span class="icon is-small is-left">@templ.Raw(t.FilterIcon)</span></p></div></div></div>
+		<div class="field is-horizontal"><div class="field-label is-normal"></div><div class="field-body"><div class="control"><button class="button ro-btn-quiet" type="submit">Submit</button></div></div></div></form>
+}

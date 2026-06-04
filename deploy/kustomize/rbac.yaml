@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: readout
+  labels:
+    application: readout
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: readout
+  labels:
+    application: readout
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "endpoints", "events", "limitranges", "namespaces", "nodes", "persistentvolumeclaims", "persistentvolumes", "pods", "pods/log", "replicationcontrollers", "resourcequotas", "services"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps", "batch", "autoscaling", "networking.k8s.io", "policy", "rbac.authorization.k8s.io", "storage.k8s.io", "apiextensions.k8s.io", "gateway.networking.k8s.io", "cert-manager.io", "metrics.k8s.io"]
+    resources: ["*"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: readout
+  labels:
+    application: readout
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: readout
+subjects:
+  - kind: ServiceAccount
+    name: readout
+    namespace: default

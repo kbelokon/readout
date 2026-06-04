@@ -1,0 +1,52 @@
+{
+  "kind": "APIResourceList",
+  "groupVersion": "v1",
+  "resources": [
+    {
+      "name": "pods",
+      "singularName": "pod",
+      "namespaced": true,
+      "kind": "Pod",
+      "verbs": ["get", "list", "watch"],
+      "shortNames": ["po"]
+    },
+    {
+      "name": "pods/log",
+      "singularName": "",
+      "namespaced": true,
+      "kind": "Pod",
+      "verbs": ["get"]
+    },
+    {
+      "name": "services",
+      "singularName": "service",
+      "namespaced": true,
+      "kind": "Service",
+      "verbs": ["get", "list", "watch"],
+      "shortNames": ["svc"]
+    },
+    {
+      "name": "secrets",
+      "singularName": "secret",
+      "namespaced": true,
+      "kind": "Secret",
+      "verbs": ["get", "list", "watch"]
+    },
+    {
+      "name": "nodes",
+      "singularName": "node",
+      "namespaced": false,
+      "kind": "Node",
+      "verbs": ["get", "list", "watch"],
+      "shortNames": ["no"]
+    },
+    {
+      "name": "namespaces",
+      "singularName": "namespace",
+      "namespaced": false,
+      "kind": "Namespace",
+      "verbs": ["get", "list", "watch"],
+      "shortNames": ["ns"]
+    }
+  ]
+}

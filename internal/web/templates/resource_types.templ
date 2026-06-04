@@ -1,0 +1,75 @@
+package templates
+
+// resource_types.templ is the resource-types page body (cluster + namespaced):
+// the breadcrumb, the count heading, the Cluster/Namespaced tabs (one active),
+// and the kind matrix table (Kind + CRD badge, API Group, Version, Namespaced
+// boolean pill). The behavior-fact net pins the kind links, the CRD badge riding
+// only on custom resources, the per-row boolean pill, and the active tab.
+
+// ResourceTypesData is the resolved resource-types input. NamespaceCrumb is the
+// breadcrumb namespace ("" => cluster-scoped page). NamespacedTabHref is the
+// precomputed Namespaced-tab href (uses "default" when no namespace).
+type ResourceTypesData struct {
+	Cluster       string
+	NamespaceShow bool   // true => render the namespace breadcrumb crumb
+	Namespace     string // breadcrumb namespace label
+	Count         int
+	ClusterActive bool   // Cluster tab active (no namespace)
+	ClusterTab    string // /clusters/<c>/_resource-types
+	NamespacedTab string // /clusters/<c>/namespaces/<ns-or-default>/_resource-types
+	Rows          []ResourceTypeRow
+}
+
+// ResourceTypeRow is one kind row: the link to the type's list, the CRD flag,
+// the API group + version cells, and the namespaced boolean.
+type ResourceTypeRow struct {
+	Href       string
+	Kind       string
+	IsCRD      bool
+	Group      string
+	Version    string
+	Namespaced bool
+}
+
+templ ResourceTypes(d ResourceTypesData) {
+	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul><li><a href={ templ.SafeURL(clusterHref(d.Cluster)) }>{ d.Cluster }</a></li>
+		if d.NamespaceShow {
+			<li><a href={ templ.SafeURL(namespaceHref(d.Cluster, d.Namespace)) }>{ d.Namespace }</a></li><li class="is-active"><a href="#">resource types</a></li>
+		} else {
+			<li class="is-active"><a href="#">cluster resource types</a></li>
+		}
+		</ul></nav>
+	<h1 class="title">Resource Types <span class="ro-count">{ itoa(d.Count) }</span></h1>
+	<div class="tabs is-small ro-rt-tabs"><ul>
+		@rtTab(d.ClusterActive, d.ClusterTab, "Cluster")
+		@rtTab(!d.ClusterActive, d.NamespacedTab, "Namespaced")
+		</ul></div>
+	<table class="table ro-list-table"><thead><tr><th>Kind</th><th>API Group</th><th>Version</th><th>Namespaced</th></tr></thead><tbody>
+		for _, row := range d.Rows {
+			<tr><td class="ro-cell-kind"><a href={ templ.SafeURL(row.Href) }>{ row.Kind }</a>
+				if row.IsCRD {
+					{ " " }<span class="ro-crd-badge" title="Custom Resource Definition">CRD</span>
+				}
+				</td><td class="ro-rt-group">{ row.Group }</td><td class="ro-rt-version">{ row.Version }</td><td>
+				if row.Namespaced {
+					<span class="ro-bool-yes">true</span>
+				} else {
+					<span class="ro-bool-no">false</span>
+				}
+				</td></tr>
+		}
+		if len(d.Rows) == 0 {
+			<tr><td colspan="4">No resource types found.</td></tr>
+		}
+		</tbody></table>
+}
+
+// rtTab renders one resource-types tab <li>; the active tab carries class
+// is-active, matching the activeAttr branch in the hand-written render.
+templ rtTab(active bool, href, label string) {
+	if active {
+		<li class="is-active"><a href={ templ.SafeURL(href) }>{ label }</a></li>
+	} else {
+		<li><a href={ templ.SafeURL(href) }>{ label }</a></li>
+	}
+}

@@ -1,0 +1,19 @@
+name: release-chart
+on:
+  push:
+    tags: ["chart-v*"]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: Package and push chart
+        run: |
+          VERSION="${GITHUB_REF_NAME#chart-v}"
+          helm package chart --version "$VERSION"
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "readout-${VERSION}.tgz" oci://ghcr.io/kbelokon/charts

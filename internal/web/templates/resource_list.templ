@@ -1,0 +1,60 @@
+package templates
+
+// resource_list.templ is the FULL resource-list page body: the breadcrumb, the
+// in-flight progress bar, and the persistent #resource-list-content htmx
+// container wrapping the ResourceTable fragment.
+//
+// The #resource-list-content attributes are a hard JS contract: the live
+// morph-refresh (readout.js fires ro:refresh) re-fetches PartialURL and
+// morph-swaps the fragment in place. They are pinned by the behavior-fact net
+// (hx-get/hx-trigger/hx-target/hx-ext/hx-swap/hx-indicator on
+// #resource-list-content). The container's PartialURL must round-trip the
+// page's query string (the `_table` URL) -- it is resolved in the handler and
+// carried in ListPageData.
+
+// ListPageData is the full resource-list page input: the breadcrumb crumbs, the
+// `_table` partial URL for the htmx container, and the table fragment data.
+type ListPageData struct {
+	Breadcrumb ListBreadcrumb
+	PartialURL string
+	List       ListData
+}
+
+// ListBreadcrumb is the resource-list breadcrumb. The cluster/namespace crumbs
+// collapse to "all" links in the all-clusters / all-namespaces variants; the
+// active crumb is the plural.
+type ListBreadcrumb struct {
+	IsAllClusters   bool
+	Cluster         string
+	ClusterHref     string
+	Namespace       string
+	NamespaceHref   string
+	IsAllNamespaces bool
+	AllNamespaces   string // /clusters/<c>/namespaces link for the all-namespaces crumb
+	Plural          string
+}
+
+templ ResourceList(d ListPageData) {
+	@listBreadcrumb(d.Breadcrumb)
+	<div class="ro-progress htmx-indicator" aria-hidden="true"><span class="ro-progress-bar"></span></div>
+	<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="previous .ro-progress" aria-live="polite">
+		@ResourceTable(d.List)
+	</div>
+}
+
+templ listBreadcrumb(b ListBreadcrumb) {
+	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul>
+		if b.IsAllClusters {
+			<li><a href="/clusters">all</a></li>
+		} else {
+			<li><a href={ templ.SafeURL(b.ClusterHref) }>{ b.Cluster }</a></li>
+		}
+		if b.Namespace != "" {
+			if b.IsAllNamespaces {
+				<li><a href={ templ.SafeURL(b.AllNamespaces) }>all</a></li>
+			} else {
+				<li><a href={ templ.SafeURL(b.NamespaceHref) }>{ b.Namespace }</a></li>
+			}
+		}
+		<li class="is-active"><a href="#">{ b.Plural }</a></li></ul></nav>
+}

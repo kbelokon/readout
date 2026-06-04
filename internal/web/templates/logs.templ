@@ -1,0 +1,62 @@
+package templates
+
+// logs.templ is the resource-logs page body: the breadcrumb, the title + the
+// Default/YAML/Logs tabs (Logs active), and -- when container logs are enabled
+// -- the tail/filter form, the optional per-container tabs, and the <pre> log
+// block.
+//
+// The <pre class="ro-logpre"> content has significant whitespace (a leading
+// newline, one line per log entry) and per-line semantic spans; it is built as
+// a trusted raw string in the handler and injected via templ.Raw -- templ
+// element trees would normalize the whitespace. The breadcrumb reuses the
+// detail breadcrumb. The behavior-fact net pins the active Logs tab, the
+// ro-logpre block, and a rendered log line; the disabled-state notice is pinned
+// too.
+
+// LogsData is the resolved resource-logs input.
+type LogsData struct {
+	Breadcrumb DetailBreadcrumb
+
+	Name        string
+	DefaultHref string
+	YAMLHref    string
+
+	ShowContainerLogs bool
+
+	TailLines int64
+	PodCount  int
+	FilterVal string
+
+	Containers []LogContainerTab // rendered only when len > 2 (handler enforces)
+
+	LogPre string // trusted <pre>...</pre> block (raw, significant whitespace)
+}
+
+// LogContainerTab is one per-container log tab. Active gets is-active + no link.
+type LogContainerTab struct {
+	Active bool
+	Href   string
+	Label  string
+}
+
+templ Logs(d LogsData) {
+	@detailBreadcrumb(d.Breadcrumb)
+	<h2 class="title">{ d.Name }</h2><div class="tabs is-small"><ul><li><a href={ templ.SafeURL(d.DefaultHref) }>Default</a></li><li><a href={ templ.SafeURL(d.YAMLHref) }>YAML</a></li><li class="is-active"><a>Logs</a></li></ul></div>
+	if !d.ShowContainerLogs {
+		<article class="ro-notice" role="note"><p class="ro-notice-title">Container Logs Disabled</p><p>Container logs are not shown as they were disabled in readout. Enable them via the <code>--show-container-logs</code> readout command line option.</p></article>
+	} else {
+		<form method="get" action="#" class="ro-logs-form">{ "Get last " }<input class="input logs-tail-input" type="number" min="1" name="tail_lines" value={ itoa64(d.TailLines) }>{ " log lines per container for " }{ itoa(d.PodCount) }{ " pods and filter by " }<input class="input logs-filter-input" name="filter" value={ d.FilterVal } placeholder="filter text"><button type="submit" class="button is-primary">Refresh</button></form>
+		if len(d.Containers) > 0 {
+			<div class="tabs is-small ro-log-tabs"><ul>
+				for _, ct := range d.Containers {
+					if ct.Active {
+						<li class="is-active"><a>{ ct.Label }</a></li>
+					} else {
+						<li><a href={ templ.SafeURL(ct.Href) }>{ ct.Label }</a></li>
+					}
+				}
+				</ul></div>
+		}
+		@templ.Raw(d.LogPre)
+	}
+}
