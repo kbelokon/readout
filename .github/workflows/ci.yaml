@@ -21,7 +21,7 @@ jobs:
       - name: Gate - go vet
         run: go vet ./...
       - name: Gate - golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.2
           args: --timeout=5m
