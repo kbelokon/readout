@@ -3,12 +3,14 @@ package web
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/a-h/templ"
 
+	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/web/icons"
 	"github.com/kbelokon/readout/internal/web/templates"
@@ -45,13 +47,28 @@ func effectiveNamespace(r *http.Request, namespaceOverride *string) string {
 	return r.PathValue("namespace")
 }
 
-func (s *Server) sidebarResourceLink(r *http.Request, cluster, namespace, plural string) (string, string, bool) {
+// sidebarLink is one resolved sidebar resource-type entry: the list href, the
+// display text, and -- when a kube.ResourceType was resolved (HasKind) -- the
+// {Kind, Group, Plural, IsCRD} the icon resolver needs. When discovery is absent
+// (s.manager == nil) or the cluster is unknown, HasKind stays false and only the
+// plural is known, so the renderer uses the no-discovery monogram fallback.
+type sidebarLink struct {
+	Href    string
+	Text    string
+	Kind    string
+	Group   string
+	Plural  string
+	IsCRD   bool
+	HasKind bool
+}
+
+func (s *Server) sidebarResourceLink(r *http.Request, cluster, namespace, plural string) (sidebarLink, bool) {
 	if s.manager == nil {
-		return sidebarResourceHref(cluster, namespace, plural), sidebarResourceText(plural), true
+		return sidebarLink{Href: sidebarResourceHref(cluster, namespace, plural), Text: sidebarResourceText(plural), Plural: plural}, true
 	}
 	clusterObj, ok := s.manager.Get(cluster)
 	if !ok {
-		return sidebarResourceHref(cluster, namespace, plural), sidebarResourceText(plural), true
+		return sidebarLink{Href: sidebarResourceHref(cluster, namespace, plural), Text: sidebarResourceText(plural), Plural: plural}, true
 	}
 	client := s.kubeClient(r, clusterObj)
 	var rt kube.ResourceType
@@ -59,14 +76,43 @@ func (s *Server) sidebarResourceLink(r *http.Request, cluster, namespace, plural
 	if namespace != "" {
 		rt, err = client.FindResource(r.Context(), plural, true, "")
 		if err == nil {
-			return fmt.Sprintf("/clusters/%s/namespaces/%s/%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(rt.Plural)), pluralizeKind(rt.Kind), true
+			return sidebarLinkFromResource(
+				fmt.Sprintf("/clusters/%s/namespaces/%s/%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(rt.Plural)), &rt), true
 		}
 	}
 	rt, err = client.FindResource(r.Context(), plural, false, "")
 	if err != nil {
-		return "", "", false
+		return sidebarLink{}, false
 	}
-	return sidebarResourceHref(cluster, "", rt.Plural), pluralizeKind(rt.Kind), true
+	return sidebarLinkFromResource(sidebarResourceHref(cluster, "", rt.Plural), &rt), true
+}
+
+// sidebarLinkFromResource builds a sidebarLink carrying the resolved
+// {Kind, Group, Plural, IsCRD} (HasKind=true) so the icon resolver runs against
+// the same kube.ResourceType the link already resolved.
+func sidebarLinkFromResource(href string, rt *kube.ResourceType) sidebarLink {
+	return sidebarLink{
+		Href:    href,
+		Text:    pluralizeKind(rt.Kind),
+		Kind:    rt.Kind,
+		Group:   rt.Group,
+		Plural:  rt.Plural,
+		IsCRD:   isCRD(rt.APIVersion),
+		HasKind: true,
+	}
+}
+
+// sidebarNavIcon resolves a sidebar nav entry's icon markup: the Unit-1
+// icons.KindIcon when the kube.ResourceType is known (with the Tier-3
+// cfg.ResourceIcons override looked up by kind+group), else the no-discovery
+// icons.PluralMonogram fallback. Shared by the templ sidebar and the palette
+// feed so both emit the same glyph.
+func sidebarNavIcon(s *Server, item *navItem) template.HTML {
+	if !item.HasKind {
+		return icons.PluralMonogram(item.Plural)
+	}
+	override := s.cfg.ResourceIcons[config.ResourceIconKey{Kind: item.Kind, Group: item.Group}]
+	return icons.KindIcon(item.Kind, item.Group, item.IsCRD, override)
 }
 
 func sidebarResourceHref(cluster, namespace, plural string) string {

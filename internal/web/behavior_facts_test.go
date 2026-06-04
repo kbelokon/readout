@@ -65,16 +65,23 @@ func TestBehaviorAppChromeAndJSContract(t *testing.T) {
 	// Strict CSP head wiring: htmx-config opts out of eval/script tags.
 	p.wantAttr(`meta[name="htmx-config"]`, "content", `{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false}`)
 
-	// hx-boost body shell + preload ext.
+	// hx-boost body shell + preload ext. The redesign shell offsets content under
+	// the sticky topbar via body.has-ro-topbar (D13 chrome migration).
 	p.wantAttr("body", "hx-boost", "true")
 	p.wantAttr("body", "hx-ext", "preload")
+	p.wantHas("body.has-ro-topbar")
 
-	// navbar-burger / aside-burger toggles name their target via data-target;
-	// readout.js toggles is-active on #<data-target>.
-	p.wantAttr("a.navbar-burger", "data-target", "nav-menu")
-	p.wantHas("#nav-menu")
-	p.wantAttr("a.aside-burger", "data-target", "aside-menu")
-	p.wantHas("#aside-menu")
+	// Redesign chrome scoping (D13): the topbar is a <header class="ro-topbar">
+	// (NOT a <nav>) so the header.ro-topbar CSS applies, and the sidebar + main
+	// ride inside the .ro-shell grid. The #aside-menu hook is kept (readout.js
+	// mobile reveal). The mobile hamburger BUTTON is a tracked gap owned by Unit 15
+	// (inert until then), so the old navbar-burger/aside-burger toggles are gone.
+	p.wantHas("header.ro-topbar")
+	p.wantAbsent("nav.navbar")
+	p.wantHas(".ro-shell aside.ro-sidebar #aside-menu")
+	p.wantHas(".ro-shell main.ro-main")
+	// The tools-table toggle is CONTENT (the resource-list tools form), unchanged
+	// by the shell migration; it still names its target via data-target.
 	p.wantAttr("a.toggle-tools", "data-target", "tools-table-1")
 	p.wantHas("#tools-table-1")
 

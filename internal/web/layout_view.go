@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/url"
 
@@ -48,6 +49,7 @@ type layoutView struct {
 
 	Navbar  navbarView
 	Sidebar sidebarView
+	Palette paletteFeedView
 }
 
 // navbarView is the resolved navbar contract: the cluster/namespace context
@@ -81,11 +83,71 @@ type sidebarGroup struct {
 }
 
 // navItem is one resolved navigation link: a target href, its text, and whether
-// it is the active (current-path) item.
+// it is the active (current-path) item. Sidebar resource-type entries also carry
+// the resolved {Kind, Group, Plural, IsCRD} so the renderer can ask the Unit-1
+// icon resolver for a per-entry glyph (icons.KindIcon) without a second
+// discovery call; non-resource nav items (namespaces, Meta) leave them zero and
+// fall back to the no-discovery monogram.
 type navItem struct {
 	Href   string
 	Text   string
 	Active bool
+
+	// Kind/Group/Plural/IsCRD describe the resource type behind a sidebar entry,
+	// already resolved by sidebarResourceLink from the kube.ResourceType. They are
+	// empty for non-resource nav items.
+	Kind    string
+	Group   string
+	Plural  string
+	IsCRD   bool
+	HasKind bool // true once a kube.ResourceType was resolved (vs the no-discovery fallback)
+
+	// Icon is the pre-rendered per-entry glyph from the Unit-1 resolver
+	// (icons.KindIcon when HasKind, else icons.PluralMonogram), resolved in the
+	// handler seam so the templ sidebar and the palette feed share one markup
+	// string and the renderer stays request-free. Empty for non-resource items.
+	Icon template.HTML
+}
+
+// paletteFeedView is the resolved data the ⌘K palette consumes (D10): the
+// current scope plus the cluster / namespace / kind / action lists, all drawn
+// from the SAME server context the layout already built (the cluster registry,
+// the navbar namespace links, the sidebar resource types) -- no new discovery or
+// API call. It is serialized verbatim into the #ro-palette-data JSON blob by the
+// templ shell; Unit 4's JS reads it. The JSON tags ARE the pinned wire contract.
+type paletteFeedView struct {
+	CurrentCluster   *string             `json:"currentCluster"`
+	CurrentNamespace *string             `json:"currentNamespace"`
+	Clusters         []paletteLinkFeed   `json:"clusters"`
+	Namespaces       []paletteLinkFeed   `json:"namespaces"`
+	Kinds            []paletteKindFeed   `json:"kinds"`
+	Actions          []paletteActionFeed `json:"actions"`
+}
+
+// paletteLinkFeed is a {name, href} jump target (a cluster or a namespace).
+type paletteLinkFeed struct {
+	Name string `json:"name"`
+	Href string `json:"href"`
+}
+
+// paletteKindFeed is a resource-type jump target: the kind label + plural +
+// API group + the list href + the pre-rendered (HTML-escaped via JSON encoding)
+// icon markup from the Unit-1 resolver.
+type paletteKindFeed struct {
+	Kind   string `json:"kind"`
+	Plural string `json:"plural"`
+	Group  string `json:"group"`
+	Href   string `json:"href"`
+	Icon   string `json:"icon"`
+}
+
+// paletteActionFeed is a labelled action: an href (navigate) or a named client
+// action the palette JS interprets (Unit 4). Both keys are emitted so the JS can
+// branch; only one is populated per entry.
+type paletteActionFeed struct {
+	Label  string `json:"label"`
+	Href   string `json:"href,omitempty"`
+	Action string `json:"action,omitempty"`
 }
 
 // buildLayoutView resolves every request-derived input the page shell needs.
@@ -114,6 +176,8 @@ func (s *Server) buildLayoutViewScoped(r *http.Request, title, cluster, namespac
 		}
 	}
 
+	navbar := s.buildNavbarView(r, cluster, namespace, themeName, explicit)
+	sidebar := s.buildSidebarView(r, cluster, namespace)
 	return layoutView{
 		Title:         title,
 		ThemeName:     themeName,
@@ -123,9 +187,67 @@ func (s *Server) buildLayoutViewScoped(r *http.Request, title, cluster, namespac
 		IconURL:       s.assetURL("favicon.png"),
 		ExtraHead:     s.partials["partials/extrahead.html"],
 		Footer:        s.partials["partials/footer.html"],
-		Navbar:        s.buildNavbarView(r, cluster, namespace, themeName, explicit),
-		Sidebar:       s.buildSidebarView(r, cluster, namespace),
+		Navbar:        navbar,
+		Sidebar:       sidebar,
+		Palette:       s.buildPaletteFeed(cluster, namespace, &navbar, &sidebar),
 	}
+}
+
+// buildPaletteFeed assembles the ⌘K palette data (D10) from the data the layout
+// already resolved -- the cluster registry (manager.Clusters), the navbar
+// namespace links, and the sidebar resource-type entries -- so it issues NO new
+// discovery/API call. When no cluster is in scope the cluster list still
+// populates (the registry is request-independent) while namespaces/kinds are
+// empty, so the palette opens everywhere. The icon markup is the Unit-1
+// resolver's already-escaped string carried verbatim (JSON encoding re-escapes
+// it, so it is safe inside the <script> blob).
+func (s *Server) buildPaletteFeed(cluster, namespace string, navbar *navbarView, sidebar *sidebarView) paletteFeedView {
+	feed := paletteFeedView{
+		Clusters:   []paletteLinkFeed{},
+		Namespaces: []paletteLinkFeed{},
+		Kinds:      []paletteKindFeed{},
+		Actions:    []paletteActionFeed{},
+	}
+	if cluster != "" && cluster != kube.AllClusters {
+		c := cluster
+		feed.CurrentCluster = &c
+	}
+	if namespace != "" && namespace != kube.AllNamespaces {
+		n := namespace
+		feed.CurrentNamespace = &n
+	}
+
+	if s.manager != nil {
+		for _, c := range s.manager.Clusters() {
+			feed.Clusters = append(feed.Clusters, paletteLinkFeed{
+				Name: c.Name,
+				Href: "/clusters/" + url.PathEscape(c.Name),
+			})
+		}
+	}
+
+	for _, ns := range navbar.NamespaceLinks {
+		feed.Namespaces = append(feed.Namespaces, paletteLinkFeed{Name: ns.Text, Href: ns.Href})
+	}
+
+	for _, group := range sidebar.Groups {
+		for _, link := range group.Links {
+			feed.Kinds = append(feed.Kinds, paletteKindFeed{
+				Kind:   link.Text,
+				Plural: link.Plural,
+				Group:  link.Group,
+				Href:   link.Href,
+				Icon:   string(link.Icon),
+			})
+		}
+	}
+
+	for _, meta := range sidebar.Meta {
+		feed.Actions = append(feed.Actions, paletteActionFeed{Label: meta.Text, Href: meta.Href})
+	}
+	feed.Actions = append(feed.Actions, paletteActionFeed{Label: "All clusters", Href: "/clusters"})
+
+	return feed
 }
 
 func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName string, explicit bool) navbarView {
@@ -174,11 +296,22 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string) si
 		}
 		var links []navItem
 		for _, typ := range group.Resources {
-			href, text, ok := s.sidebarResourceLink(r, cluster, namespace, typ)
+			link, ok := s.sidebarResourceLink(r, cluster, namespace, typ)
 			if !ok {
 				continue
 			}
-			links = append(links, navItem{Href: href, Text: text, Active: r.URL.Path == href})
+			item := navItem{
+				Href:    link.Href,
+				Text:    link.Text,
+				Active:  r.URL.Path == link.Href,
+				Kind:    link.Kind,
+				Group:   link.Group,
+				Plural:  link.Plural,
+				IsCRD:   link.IsCRD,
+				HasKind: link.HasKind,
+			}
+			item.Icon = sidebarNavIcon(s, &item)
+			links = append(links, item)
 		}
 		if len(links) == 0 {
 			continue

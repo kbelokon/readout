@@ -49,6 +49,10 @@ func toLayoutData(v *layoutView) templates.LayoutData {
 		Footer:        v.Footer,
 		Navbar:        toNavbar(&v.Navbar),
 		Sidebar:       toSidebar(v.Sidebar),
+		// PaletteData is handed to templ.JSONScript verbatim; the package-web
+		// paletteFeedView's json tags ARE the pinned wire contract, so the templ
+		// component never re-declares the shape -- it just JSON-encodes this value.
+		PaletteData: v.Palette,
 	}
 }
 
@@ -68,7 +72,7 @@ func toNavbar(n *navbarView) templates.Navbar {
 func toSidebar(s sidebarView) templates.Sidebar {
 	out := templates.Sidebar{ShowMenu: s.ShowMenu, Meta: toNavItems(s.Meta)}
 	for _, g := range s.Groups {
-		out.Groups = append(out.Groups, templates.SidebarGroup{Label: g.Label, Links: toNavItems(g.Links)})
+		out.Groups = append(out.Groups, templates.SidebarGroup{Label: g.Label, Links: toSidebarItems(g.Links)})
 	}
 	return out
 }
@@ -80,6 +84,22 @@ func toNavItems(items []navItem) []templates.NavItem {
 	out := make([]templates.NavItem, len(items))
 	for i, it := range items {
 		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active}
+	}
+	return out
+}
+
+// toSidebarItems maps the sidebar resource-type nav items, carrying the
+// pre-rendered per-entry icon markup (resolved in the handler seam via the
+// Unit-1 resolver) so the templ sidebar emits it raw -- the icon string is
+// trusted-shape (icons.KindIcon / icons.PluralMonogram escape every
+// runtime-derived part).
+func toSidebarItems(items []navItem) []templates.NavItem {
+	if items == nil {
+		return nil
+	}
+	out := make([]templates.NavItem, len(items))
+	for i, it := range items {
+		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active, Icon: string(it.Icon)}
 	}
 	return out
 }

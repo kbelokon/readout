@@ -5,6 +5,8 @@ import (
 	"html"
 	"net/url"
 	"strconv"
+
+	"github.com/kbelokon/readout/internal/web/icons"
 )
 
 // helpers.go holds the small pure-Go helpers the templ components call for class
@@ -57,6 +59,15 @@ func menuItemClass(active bool) string {
 		return "menu-item is-active"
 	}
 	return "menu-item"
+}
+
+// metaIcon returns the sidebar icon-slot markup for a non-resource Meta entry
+// (Resource Types / Events), so it matches the icon + label row shape the
+// resource entries get from the Unit-1 resolver. The label -> glyph mapping lives
+// in the icons package (icons.MetaGlyph); the returned markup is trusted-shape
+// (a constant glyph wrapped in `.ico sm`).
+func metaIcon(label string) string {
+	return string(icons.MetaGlyph(label))
 }
 
 // pluralSuffix returns "" for a count of 1, else "s", for the "N object(s)" /

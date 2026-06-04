@@ -213,6 +213,25 @@ func MonogramTile(kind, group string) template.HTML {
 		`" data-group="` + dataGroup + `">` + label + `</span>`)
 }
 
+// MetaGlyph returns the sidebar icon-slot markup for a non-resource Meta nav
+// entry (the Resource Types / Events links the layout adds under the "Meta"
+// group). It maps the known Meta labels to a curated chrome glyph and falls
+// through to a neutral glyph for anything else, wrapped in the same `.ico sm`
+// span the curated kind glyphs use so the sidebar row shape is uniform. The
+// label is a build-time-constant layout string (not user data) and the glyph
+// name is looked up in icons.SVG (a constant switch), so the markup is
+// trusted-shape and may be emitted raw.
+func MetaGlyph(label string) template.HTML {
+	switch label {
+	case "Resource Types":
+		return glyphSpan("ico sm", "table")
+	case "Events":
+		return glyphSpan("ico sm", "event")
+	default:
+		return glyphSpan("ico sm", "")
+	}
+}
+
 // PluralMonogram renders a deterministic monogram keyed on a resource-type
 // plural, for the no-discovery sidebar fallback: when the cluster manager is
 // absent or the cluster is unknown, sidebarResourceLink returns only a plural
