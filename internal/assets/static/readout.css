@@ -2397,7 +2397,10 @@
         background: var(--st-err-bg); }
     .ro-rd .ro-scope-chip.err .retry { color: var(--st-err); text-decoration: underline; cursor: pointer; }
 
-    /* skeleton table */
+    /* skeleton table. A separate `.ro-sk-table` (NOT `.ro-table`) so the loading
+       skeleton never collides with the live data table's selectors -- it is a
+       distinct decorative block shown only via the htmx indicator. */
+    .ro-sk-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     .sk-row td { padding: var(--row-py) var(--cell-px); border-bottom: 1px solid var(--border-soft); }
     .sk-bar { display: block; height: 10px; border-radius: 4px;
         background: linear-gradient(90deg, var(--surface-2) 25%, var(--row-hover) 37%, var(--surface-2) 63%);
@@ -2416,8 +2419,31 @@
     .ro-empty-lg p { font-size: 13px; color: var(--text-muted); margin: 0 0 4px; max-width: 420px; }
     .ro-empty-lg .hint { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
     .ro-empty-lg .ro-btn { margin-top: 18px; }
+    /* State action row (Retry / Back to clusters / Clear filters): a centred row
+       of buttons under the empty-state copy. Margin lives here (not per-button) so
+       multiple buttons share one top gap. */
+    .ro-empty-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+    .ro-empty-actions .ro-btn { margin-top: 0; }
     .ro-empty-inline { padding: 36px 20px; text-align: center; color: var(--text-faint);
         font-size: 13px; font-family: var(--font-ui); }
+
+    /* Stale (client-side, D11). readout.js reveals the pre-rendered hidden
+       `.ro-stale-banner` and adds `.ro-stale` to #resource-list-content on an
+       auto-refresh error -- it never blanks the rows. `.ro-banner` sets
+       display:flex, which overrides the UA [hidden]{display:none}, so the hidden
+       banner needs an explicit display:none until JS clears the attribute. The dim
+       keeps the last-good data visible-but-muted (~.72) so the user reads it as
+       stale, not gone; the morph that lands fresh rows clears the class. */
+    .ro-banner.ro-stale-banner[hidden] { display: none; }
+    #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
+
+    /* Loading skeleton wrapper. The `.ro-skeleton` is an `.htmx-indicator`, so it
+       is invisible at rest and fades in only while the #resource-list-content
+       refresh is in flight (htmx points hx-indicator at it + adds .htmx-request).
+       It overlays nothing -- it is a separate sibling block above the live table,
+       so the live rows stay put and the skeleton simply appears beneath the
+       progress rail during the fetch. */
+    .ro-skeleton { margin-bottom: 0.5rem; }
 
     /* ================================================================ MOBILE CARDS (redesign) */
     .ro-cardlist { display: none; flex-direction: column; gap: 8px; }

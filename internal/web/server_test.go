@@ -408,6 +408,10 @@ func newRecordingServerFakeAPI(t *testing.T, lastAuth *authRecorder) *httptest.S
 	// resource-list path always requests the server-side Table, so the Table
 	// fixture is served directly.
 	mux.HandleFunc("/api/v1/namespaces/states/pods", fixture("data/pods_states_table.json"))
+	// Pods in the "empty" namespace return a zero-row Table, exercising the
+	// genuinely-EMPTY list state (the plain "No Pod objects ... found." sentence +
+	// the broad next action) through the real assembly with NO filter active.
+	mux.HandleFunc("/api/v1/namespaces/empty/pods", fixture("data/table_empty_rows.json"))
 	// Services in "default" exercise the GENERIC fallback through the real
 	// assembly: a kind with NO Status column and no per-kind rich cells renders
 	// its rows from the Table API with no status dot.

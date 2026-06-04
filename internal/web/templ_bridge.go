@@ -129,7 +129,37 @@ func toListData(v *listView) templates.ListData {
 		d.Tables = append(d.Tables, toTableData(&v.Tables[i]))
 	}
 	d.TotalRows = totalRows
+	d.ShowStaleBanner = v.StaleBanner
+	if v.State != nil {
+		d.State = toListState(v.State)
+	}
 	return d
+}
+
+// toListState maps the package-web whole-list failure state onto the templ
+// ListState, pre-rendering the state glyph (lock for forbidden, unplug for
+// unreachable) to a raw SVG string.
+func toListState(s *listStateView) templates.ListState {
+	kind, glyph := stateKindAndGlyph(s.Kind)
+	return templates.ListState{
+		Kind:      kind,
+		Verb:      s.Verb,
+		Resource:  s.Resource,
+		Namespace: s.Namespace,
+		Detail:    s.Detail,
+		GlyphIcon: glyph,
+		RetryHref: s.RetryHref,
+		BackHref:  s.BackHref,
+	}
+}
+
+// stateKindAndGlyph maps the package-web listStateKind to the templ kind string
+// + its pre-rendered glyph (shared by the list + detail state mappers).
+func stateKindAndGlyph(kind listStateKind) (string, string) {
+	if kind == stateForbidden {
+		return "forbidden", icon("lock")
+	}
+	return "unreachable", icon("unplug")
 }
 
 func toTableData(t *tableView) templates.TableData {
@@ -150,6 +180,15 @@ func toTableData(t *tableView) templates.TableData {
 		CreatedIcon:     t.CreatedIcon,
 		CreatedSorted:   t.CreatedIcon != "",
 		EmptyKind:       t.Table.Resource.Kind,
+		EmptyGlyph:      icon("inbox"),
+		ClearHref:       t.ClearHref,
+	}
+	if t.EmptyAction != nil {
+		td.EmptyActionHref = t.EmptyAction.Href
+		td.EmptyActionLabel = t.EmptyAction.Label
+	}
+	for _, chip := range t.EmptyFilters {
+		td.EmptyFilters = append(td.EmptyFilters, templates.FilterChip{Label: chip.Label, RemoveHref: chip.RemoveHref})
 	}
 	for _, item := range t.Phase {
 		td.Phase = append(td.Phase, templates.PhaseChip{
@@ -248,6 +287,27 @@ func toListPageData(v *listView, partialURL string) templates.ListPageData {
 // breadcrumb/links/owners/node/secret/cards/subtable/events translation and the
 // pre-rendering of inline-SVG icons into raw strings.
 func toDetailData(v *detailView) templates.DetailData {
+	if v.State != nil {
+		// State path: the fetch failed, so there is no object -- the breadcrumb is
+		// built from the request path the state carries and the body renders the
+		// forbidden/unreachable card. No object field is dereferenced.
+		kind, glyph := stateKindAndGlyph(v.State.Kind)
+		return templates.DetailData{
+			Breadcrumb: detailStateBreadcrumb(v),
+			Name:       v.State.Name,
+			State: templates.DetailState{
+				Kind:      kind,
+				Verb:      v.State.Verb,
+				Resource:  v.State.Resource,
+				Name:      v.State.Name,
+				Namespace: v.State.Namespace,
+				Detail:    v.State.Detail,
+				GlyphIcon: glyph,
+				RetryHref: v.State.RetryHref,
+				BackHref:  v.State.BackHref,
+			},
+		}
+	}
 	object := v.Object
 	d := templates.DetailData{
 		Breadcrumb:         toDetailBreadcrumb(v),
@@ -306,6 +366,29 @@ func toDetailData(v *detailView) templates.DetailData {
 
 func toDetailBreadcrumb(v *detailView) templates.DetailBreadcrumb {
 	return objectBreadcrumb(v.Cluster, v.Namespace, &v.Object)
+}
+
+// detailStateBreadcrumb builds the resource-view breadcrumb for a failure state
+// from the request-path fields the state carries (no fetched object exists -- the
+// fetch is what failed). It mirrors objectBreadcrumb's cluster/namespace/plural/
+// name crumbs.
+func detailStateBreadcrumb(v *detailView) templates.DetailBreadcrumb {
+	s := v.State
+	b := templates.DetailBreadcrumb{
+		ClusterHref: "/clusters/" + url.PathEscape(v.Cluster),
+		Cluster:     v.Cluster,
+		Name:        s.Name,
+	}
+	if s.Namespace != "" && s.Resource != "namespaces" {
+		b.ShowNamespace = true
+		b.NamespaceHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(s.Namespace)
+		b.Namespace = s.Namespace
+		b.PluralHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(s.Namespace) + "/" + url.PathEscape(s.Resource)
+	} else {
+		b.PluralHref = "/clusters/" + url.PathEscape(v.Cluster) + "/" + url.PathEscape(s.Resource)
+	}
+	b.Plural = s.Resource
+	return b
 }
 
 // objectBreadcrumb builds the object breadcrumb (cluster [+ namespace + plural]

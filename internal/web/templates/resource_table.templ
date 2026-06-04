@@ -36,6 +36,30 @@ type ListData struct {
 	AllNamespacesHref string
 	Errors          []string
 	Tables          []TableData
+
+	// State is the whole-list forbidden/unreachable state (replaces the tables for
+	// a single-cluster list that wholly failed). Empty Kind ("") means no state.
+	State ListState
+
+	// Stale (client-side, D11): a hidden `.ro-banner.warn` readout.js reveals on
+	// an auto-refresh error (it never blanks the rows). ShowStaleBanner emits the
+	// hidden hook; it lives on the FULL page only (the partial fragment is what
+	// gets dimmed, it does not re-emit the banner).
+	ShowStaleBanner bool
+}
+
+// ListState is the resolved whole-list failure state. Kind is "" (no state),
+// "forbidden", or "unreachable". Forbidden names the verb/resource/namespace +
+// 403 in Detail; unreachable carries the REAL transport error string in Detail.
+type ListState struct {
+	Kind      string
+	Verb      string
+	Resource  string
+	Namespace string
+	Detail    string
+	GlyphIcon string // pre-rendered state glyph (raw SVG)
+	RetryHref string
+	BackHref  string
 }
 
 // TableData is one rendered resource table. MultiCluster gates the leading
@@ -66,7 +90,23 @@ type TableData struct {
 
 	Rows []TableRow
 
-	EmptyKind string // Resource.Kind for the empty-state sentence
+	EmptyKind  string // Resource.Kind for the empty-state sentence
+	EmptyGlyph string // pre-rendered empty-state glyph (raw SVG, the inbox icon)
+
+	// Empty-state enrichment (rendered only when Rows is empty). EmptyActionHref/
+	// Label is the broad next step on a plainly-empty list; EmptyFilters +
+	// ClearHref are the removable filter chips + Clear on the empty-FILTERED state
+	// (non-empty EmptyFilters => the emptiness is filter-caused).
+	EmptyActionHref  string
+	EmptyActionLabel string
+	EmptyFilters     []FilterChip
+	ClearHref        string
+}
+
+// FilterChip is one removable active-filter chip on the empty-filtered state.
+type FilterChip struct {
+	Label      string
+	RemoveHref string
 }
 
 // PhaseChip is one phase-tally chip (status dot tone + label + count). Tone is
@@ -199,6 +239,17 @@ const (
 // footer + the partial-failure banner). This is what the `_table` partial
 // returns and what the full list page wraps in #resource-list-content.
 templ ResourceTable(d ListData) {
+	if d.State.Kind != "" {
+		@listStateBlock(d.State)
+	} else {
+		@resourceTables(d)
+	}
+}
+
+// resourceTables renders the per-table blocks + footer + the all-cluster
+// partial-failure banner (the happy/partial path; the whole-list forbidden/
+// unreachable STATE short-circuits this in ResourceTable above).
+templ resourceTables(d ListData) {
 	for _, table := range d.Tables {
 		<div class="ro-title-row">
 			<h1 class="title ro-title">{ table.Kind }</h1> <span class="ro-count">{ itoa(table.Count) }</span> <span style="flex:1"></span>
@@ -245,7 +296,13 @@ templ ResourceTable(d ListData) {
 					<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</td></tr>
 			}
 			if len(table.Rows) == 0 {
-				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces)) }><div class="ro-empty-lg"><div class="ro-empty-glyph"><span class="ico">@templ.Raw(emptyTitle(table.EmptyKind, d.Namespace, d.IsAllNamespaces))</span></div><h3 class="ro-empty-title">@templ.Raw(emptyTitle(table.EmptyKind, d.Namespace, d.IsAllNamespaces))</h3><p class="ro-empty-hint">Nothing to show here yet.</p></div></td></tr>
+				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces)) }>
+					if len(table.EmptyFilters) > 0 {
+						@emptyFiltered(d, table)
+					} else {
+						@emptyPlain(d, table)
+					}
+					</td></tr>
 			}
 			</tbody></table></div>
 	}

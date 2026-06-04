@@ -187,7 +187,7 @@ func TestMultiClusterListPartialFailureRendersOthers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse partial-failure body: %v", err)
 	}
-	banner := doc.Find(".ro-banner.warn")
+	banner := doc.Find(".ro-banner.warn:not(.ro-stale-banner)")
 	if banner.Length() == 0 {
 		t.Fatalf("all-cluster partial-failure banner missing: %s", body)
 	}

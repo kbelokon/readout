@@ -827,6 +827,20 @@ func addQuery(u *url.URL, key, value string) string {
 	return clone.String()
 }
 
+// delQuery returns u with the named query params removed (a read-only GET),
+// used by the empty-filtered state: the per-chip ✕ drops one filter param and
+// "Clear filters" drops the whole set. Removing params never changes the verb
+// (still a GET to the same list path), so it stays inside the read-only floor.
+func delQuery(u *url.URL, keys ...string) string {
+	clone := *u
+	q := clone.Query()
+	for _, key := range keys {
+		q.Del(key)
+	}
+	clone.RawQuery = queryEncodeKeepParens(q)
+	return clone.String()
+}
+
 // queryEncodeKeepParens URL-encodes the query values but leaves parentheses
 // literal, so selector links like `?selector=app(in)(a,b)` stay readable in the
 // address bar instead of showing %28/%29.

@@ -35,6 +35,48 @@ type listView struct {
 	// link target (carries the current query string). Empty when the link should
 	// not render.
 	AllNamespacesHref string
+
+	// State is the resolved whole-list failure state for a SINGLE-cluster list
+	// that produced no tables at all (forbidden / unreachable). nil for the happy
+	// path, for an all-cluster list (which uses the partial-failure banner, D11),
+	// and for a single-cluster list that still produced at least one table (D11:
+	// a single-cluster list never reports some-clusters-failed; a partial
+	// multi-type list keeps its tables and the per-type errors are dropped here).
+	State *listStateView
+
+	// StaleBanner / StaleDimTarget feed the CLIENT-SIDE stale path (D11): a
+	// hidden `.ro-banner.warn` that readout.js reveals (and a dim class it adds to
+	// StaleDimTarget) when an auto-refresh request errors. Pre-rendered so the
+	// markup hooks exist in the first server response; the server never decides
+	// "stale" (there is no last-good cache) -- only the client does, on a refresh
+	// error that keeps the existing rows.
+	StaleBanner    bool
+	StaleDimTarget string
+}
+
+// listKind enumerates the whole-list failure/empty states. emptyState /
+// emptyFilterState are per-TABLE (rendered inside a table with zero rows) and
+// not carried here; this set is the LIST-level states that replace the tables.
+type listStateKind int
+
+const (
+	stateForbidden listStateKind = iota
+	stateUnreachable
+)
+
+// listStateView is the resolved whole-list failure state shown in place of the
+// tables when a single-cluster list wholly failed. Forbidden names the
+// verb/resource/namespace + 403; unreachable shows the REAL transport error
+// string (never a cute message, Principles §11) + a read-only retry GET + a
+// "Back to clusters" escape.
+type listStateView struct {
+	Kind      listStateKind
+	Verb      string // "list" (the read-only verb that was denied/attempted)
+	Resource  string // the resource plural the request targeted
+	Namespace string // the namespace scope ("" / "_all" rendered as a clause)
+	Detail    string // forbidden: "403 Forbidden · <reason>"; unreachable: the real error
+	RetryHref string // a read-only GET back to this same list URL
+	BackHref  string // "/clusters"
 }
 
 func (v *listView) Title() string {
@@ -61,6 +103,30 @@ type tableView struct {
 	Tools toolsView
 
 	Rows []rowView
+
+	// Empty-state enrichment for a table with zero rows. EmptyAction is the broad
+	// next step (e.g. "Show <plural> across all namespaces") offered on a genuinely
+	// empty list; EmptyFilters are the removable active-filter chips + ClearHref
+	// offered when the emptiness is caused by an active filter/selector (the
+	// empty-FILTERED state). When EmptyFilters is non-empty the table is
+	// empty-because-filtered; otherwise it is plainly empty.
+	EmptyAction  *emptyActionView
+	EmptyFilters []filterChipView
+	ClearHref    string
+}
+
+// emptyActionView is the broad next-step button on a plainly-empty list.
+type emptyActionView struct {
+	Href  string
+	Label string
+}
+
+// filterChipView is one removable active-filter chip on the empty-filtered
+// state: Label is the human "key = value" text, RemoveHref drops just that one
+// filter (a read-only GET) so the ✕ removes it.
+type filterChipView struct {
+	Label      string
+	RemoveHref string
 }
 
 // columnView precomputes a column header's sort link and indicator.
@@ -251,6 +317,28 @@ type detailView struct {
 
 	Secret    *secretDataView // non-nil only for masked Secret with data
 	YAMLCards []yamlCardView
+
+	// State is the resolved detail-page failure state (forbidden / unreachable).
+	// When non-nil the detail body renders the `.ro-empty-lg` state instead of the
+	// object detail; the handler still returns 200 (the page chrome is intact and
+	// the user gets an actionable state, not a bare error panel). NotFound stays a
+	// real 404 via s.error (a missing object is not a cluster failure).
+	State *detailStateView
+}
+
+// detailStateView is the resolved detail-page failure state, mirroring
+// listStateView: forbidden names the verb/resource/namespace + 403; unreachable
+// shows the REAL transport error string + a read-only retry GET + Back to
+// clusters.
+type detailStateView struct {
+	Kind      listStateKind
+	Verb      string
+	Resource  string
+	Name      string
+	Namespace string
+	Detail    string
+	RetryHref string
+	BackHref  string
 }
 
 // labelChipView is one resolved label chip: the selector href, the full chip

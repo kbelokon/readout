@@ -54,6 +54,25 @@ type DetailData struct {
 
 	RelatedPods *Subtable
 	Events      []EventRow
+
+	// State is the detail-page forbidden/unreachable state (replaces the object
+	// detail body). Empty Kind ("") means no state -> the normal detail renders.
+	State DetailState
+}
+
+// DetailState is the resolved detail-page failure state, mirroring ListState:
+// Kind is "" / "forbidden" / "unreachable"; Detail names the 403 reason or the
+// REAL transport error string.
+type DetailState struct {
+	Kind      string
+	Verb      string
+	Resource  string
+	Name      string
+	Namespace string
+	Detail    string
+	GlyphIcon string
+	RetryHref string
+	BackHref  string
 }
 
 // DetailBreadcrumb is the resource-view breadcrumb (cluster [+ namespace +
@@ -214,21 +233,25 @@ type SubtableCell struct {
 templ ResourceView(d DetailData) {
 	<div class="ro-rd">
 		@detailBreadcrumb(d.Breadcrumb)
-		<div class="ro-detail-title"><h1 class="ro-title">{ d.Name }</h1> <span class="ro-kind-badge">{ d.Kind }</span><div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } title="Download resource object as YAML" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
-			for _, link := range d.Links {
-				<a href={ templ.SafeURL(link.Href) } class="ro-iconbtn ro-link-out" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
-			}</div><span class="ro-detail-meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></div>
-		<div class="ro-tabs">@detailTab(d.DefaultTabActive, "?", "Default")@detailTab(d.YAMLTabActive, "?view=yaml", "YAML")@detailTab(d.EventsTabActive, "?view=events", "Events")
-			if d.LogsHref != "" {
-				<a href={ templ.SafeURL(d.LogsHref) }>Logs</a>
-			}
-			</div>
-		if d.IsYAMLView {
-			<div class="ro-yaml-view">@templ.Raw(d.HighlightedYAML)</div>
-		} else if d.IsEventsView {
-			@eventsSection(d.Events)
+		if d.State.Kind != "" {
+			@detailStateBlock(d.State)
 		} else {
-			@detailBody(d)
+			<div class="ro-detail-title"><h1 class="ro-title">{ d.Name }</h1> <span class="ro-kind-badge">{ d.Kind }</span><div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } title="Download resource object as YAML" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
+				for _, link := range d.Links {
+					<a href={ templ.SafeURL(link.Href) } class="ro-iconbtn ro-link-out" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
+				}</div><span class="ro-detail-meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></div>
+			<div class="ro-tabs">@detailTab(d.DefaultTabActive, "?", "Default")@detailTab(d.YAMLTabActive, "?view=yaml", "YAML")@detailTab(d.EventsTabActive, "?view=events", "Events")
+				if d.LogsHref != "" {
+					<a href={ templ.SafeURL(d.LogsHref) }>Logs</a>
+				}
+				</div>
+			if d.IsYAMLView {
+				<div class="ro-yaml-view">@templ.Raw(d.HighlightedYAML)</div>
+			} else if d.IsEventsView {
+				@eventsSection(d.Events)
+			} else {
+				@detailBody(d)
+			}
 		}
 	</div>
 }

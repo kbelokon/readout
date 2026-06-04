@@ -109,6 +109,21 @@ document.addEventListener('click', (event) => {
         closePalette();
         return;
     }
+    // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
+    // #resource-list-content. On success the morph swaps fresh rows and the
+    // afterSwap handler clears the stale dim + re-hides the banner; on another
+    // failure the responseError handler keeps it stale. Pure DOM, GET-only -- the
+    // read-only floor is untouched (it triggers the element's existing ro:refresh,
+    // never a write).
+    const staleRetry = target.closest('.ro-stale-retry');
+    if (staleRetry) {
+        event.preventDefault();
+        const content = document.getElementById('resource-list-content');
+        if (content && typeof htmx !== 'undefined') {
+            htmx.trigger(content, 'ro:refresh');
+        }
+        return;
+    }
     // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
     // sidebar by toggling `.is-active` on `.ro-sidebar` (the <760px reveal CSS +
     // the button itself are owned by Unit 15; this is the JS half of D11). No-op
@@ -1040,6 +1055,74 @@ function syncRefreshUI() {
 document.addEventListener('visibilitychange', () => {
     if (!document.hidden && refreshInterval() > 0) {
         fireRefresh();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Stale data (auto-refresh failure) -- CLIENT-SIDE, never blanks the rows (D11)
+// ---------------------------------------------------------------------------
+// There is no server-side last-good cache. "Stale" is purely the AUTO-REFRESH
+// failure case: when the #resource-list-content morph-refresh request errors
+// (htmx:responseError = a non-2xx reply, htmx:sendError = a transport failure),
+// htmx does NOT swap on error, so the existing rows stay exactly as they were.
+// We mark the content stale (a dim class) and reveal the pre-rendered hidden
+// `.ro-banner.warn` so the user knows the data is last-known, not current. A
+// FIRST load that fails never reaches here (that is a full page/server response
+// rendering forbidden/unreachable/empty, not a ro:refresh on existing rows). On
+// the next successful refresh the morph swaps fresh rows and afterSwap clears the
+// stale state. Pure DOM writes -> CSP-clean.
+const STALE_DIM_CLASS = 'ro-stale';
+
+// True when the htmx event belongs to the live resource-list refresh (the
+// request element is #resource-list-content). Guards so an unrelated boosted
+// navigation error never dims the table.
+function isListRefreshEvent(event) {
+    const elt = event && event.detail && event.detail.elt;
+    return !!elt && elt.id === 'resource-list-content';
+}
+
+function markListStale() {
+    const content = document.getElementById('resource-list-content');
+    if (content) {
+        content.classList.add(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector('.ro-stale-banner');
+    if (banner) {
+        banner.hidden = false;
+    }
+}
+
+function clearListStale() {
+    const content = document.getElementById('resource-list-content');
+    if (content) {
+        content.classList.remove(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector('.ro-stale-banner');
+    if (banner) {
+        banner.hidden = true;
+    }
+}
+
+// A non-2xx reply to the refresh GET: keep the rows (htmx does not swap on
+// error), dim them, reveal the stale banner.
+document.addEventListener('htmx:responseError', (event) => {
+    if (isListRefreshEvent(event)) {
+        markListStale();
+    }
+});
+// A transport failure (the cluster could not be reached at all) on the refresh
+// GET: same stale treatment -- the last-good rows stay, dimmed, with the banner.
+document.addEventListener('htmx:sendError', (event) => {
+    if (isListRefreshEvent(event)) {
+        markListStale();
+    }
+});
+// A successful refresh swap on #resource-list-content lands fresh rows -> clear
+// any prior stale dim + hide the banner. htmx:afterSwap fires only on a 2xx that
+// actually swapped, so a recovered refresh self-heals the stale state.
+document.addEventListener('htmx:afterSwap', (event) => {
+    if (isListRefreshEvent(event)) {
+        clearListStale();
     }
 });
 

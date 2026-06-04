@@ -506,8 +506,10 @@ func TestAllClusterPartialFailureBanner(t *testing.T) {
 	// Healthy cluster rows rendered into the canonical table.
 	p.wantHas(`table.ro-table td.cell-name a[href="/clusters/good/namespaces/default/pods/nginx"]`)
 
-	// The redesign partial-failure banner.
-	banner := p.doc.Find(".ro-banner.warn")
+	// The redesign partial-failure banner. Scoped to exclude the hidden
+	// client-side stale banner (also a `.ro-banner.warn`, Unit 14) so this pins
+	// the partial-failure banner specifically.
+	banner := p.doc.Find(".ro-banner.warn:not(.ro-stale-banner)")
 	if banner.Length() == 0 {
 		t.Fatalf("all-cluster partial-failure banner missing")
 	}
@@ -522,9 +524,12 @@ func TestAllClusterPartialFailureBanner(t *testing.T) {
 // TestListSingleClusterNeverShowsPartialFailure pins the D11 invariant boundary:
 // a SINGLE-cluster list (even on a healthy fixture) NEVER renders the all-cluster
 // partial-failure banner. "Some clusters failed" is an all-cluster story only.
+// The hidden client-side stale banner (Unit 14) is a `.ro-banner.warn` too, so
+// the partial-failure absence is asserted via the partial-only marker
+// (.ro-partial-note) and a visible (non-stale) warn banner.
 func TestListSingleClusterNeverShowsPartialFailure(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
-	p.wantAbsent(".ro-banner.warn")
+	p.wantAbsent(".ro-banner.warn:not(.ro-stale-banner)")
 	p.wantAbsent(".ro-partial-note")
 }

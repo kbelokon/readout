@@ -279,7 +279,7 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 		return Table{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return Table{}, fmt.Errorf("kubernetes table request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return Table{}, tableResponseError(resp.StatusCode, resp.Status, body)
 	}
 	var raw struct {
 		ColumnDefinitions []metav1.TableColumnDefinition `json:"columnDefinitions"`
@@ -311,6 +311,26 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 		table.Rows = append(table.Rows, Row{Cells: row.Cells, Object: obj})
 	}
 	return table, nil
+}
+
+// tableResponseError turns a >=400 Table response into a typed error. The Table
+// path is a hand-rolled HTTP request (not the dynamic client), so without this it
+// returned a plain string error that IsForbidden/IsNotFound/IsAPIStatusError
+// could not classify -- which left a 403 on a list looking "unreachable". When
+// the body is a parseable apiserver Status (the normal case) we return the
+// matching *StatusError, so the error classifies exactly like a dynamic-client
+// error and its message names the verb/resource/namespace; a non-Status body (an
+// HTML/text error page, a proxy 502) falls back to the descriptive string so
+// odd responses stay readable.
+func tableResponseError(statusCode int, status string, body []byte) error {
+	var s metav1.Status
+	if err := json.Unmarshal(body, &s); err == nil && s.Kind == "Status" && s.Status == metav1.StatusFailure {
+		if s.Code == 0 {
+			s.Code = int32(statusCode)
+		}
+		return &kerrors.StatusError{ErrStatus: s}
+	}
+	return fmt.Errorf("kubernetes table request failed: %s: %s", status, strings.TrimSpace(string(body)))
 }
 
 func (c *Client) Logs(ctx context.Context, opts LogOptions) (string, error) {
@@ -410,4 +430,24 @@ func sortResourceTypes(types []ResourceType, preferred map[string]string) {
 
 func IsNotFound(err error) bool {
 	return kerrors.IsNotFound(err) || errors.Is(err, ErrResourceTypeNotFound)
+}
+
+// IsForbidden reports whether err is an apiserver 403 (RBAC denial). It mirrors
+// IsNotFound so the web layer can split a single-cluster list/detail failure
+// into the "not allowed" state (a 403 naming the verb/resource/namespace) versus
+// the "unreachable" state (any other transport/discovery error), without the web
+// package importing k8s.io/apimachinery error helpers directly.
+func IsForbidden(err error) bool {
+	return kerrors.IsForbidden(err) || kerrors.IsUnauthorized(err)
+}
+
+// IsAPIStatusError reports whether err carries a structured apiserver Status
+// response -- i.e. the request reached the API server and got a typed error
+// back (any HTTP status). A transport-level failure (dial/timeout/no-such-host)
+// is NOT an API status error, so the web layer treats `!IsAPIStatusError` as
+// "unreachable" (the cluster could not be reached at all) and shows the real
+// transport error, while a 5xx WITH a Status stays on the redacted error page.
+func IsAPIStatusError(err error) bool {
+	var status kerrors.APIStatus
+	return errors.As(err, &status)
 }

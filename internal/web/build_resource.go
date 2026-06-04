@@ -37,6 +37,9 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster
 	resourceNamespaced := namespace != "" && !legacyNamespaceObjectPath
 	rt, err := s.kubeClient(r, cluster).FindResource(r.Context(), plural, resourceNamespaced, apiVersionParam(r))
 	if err != nil {
+		if state := s.detailState(r, cluster, plural, name, namespace, "get", err); state != nil {
+			return state, true
+		}
 		s.error(w, r, err)
 		return nil, false
 	}
@@ -46,6 +49,9 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster
 	}
 	obj, err := s.kubeClient(r, cluster).Get(r.Context(), &rt, getNamespace, name)
 	if err != nil {
+		if state := s.detailState(r, cluster, plural, name, namespace, "get", err); state != nil {
+			return state, true
+		}
 		s.error(w, r, err)
 		return nil, false
 	}
@@ -133,6 +139,39 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster
 		v.YAMLCards = s.buildYAMLCards(cluster.Name, renderNamespace, &object)
 	}
 	return v, true
+}
+
+// detailState classifies a detail-page fetch failure into the forbidden state
+// (a 403 naming the verb/resource/namespace) or the unreachable state (a
+// transport/dial failure shown with its REAL error string), returning a
+// state-only detailView the handler renders at 200. It returns nil for any other
+// failure (a NotFound object -> a real 404, a 5xx with a Status, the policy 403),
+// so the caller falls through to s.error and the existing status-code page. The
+// breadcrumb is built from the request path (cluster/namespace/plural/name) so no
+// fetched object is needed -- the fetch is exactly what failed.
+func (s *Server) detailState(r *http.Request, cluster *kube.Cluster, plural, name, namespace, verb string, err error) *detailView {
+	forbidden := kube.IsForbidden(err)
+	unreachable := !forbidden && !kube.IsNotFound(err) && !kube.IsAPIStatusError(err)
+	if !forbidden && !unreachable {
+		return nil
+	}
+	state := &detailStateView{
+		Verb:      verb,
+		Resource:  plural,
+		Name:      name,
+		Namespace: namespace,
+		RetryHref: r.URL.String(),
+		BackHref:  "/clusters",
+	}
+	if forbidden {
+		state.Kind = stateForbidden
+		state.Detail = "403 Forbidden · " + err.Error()
+	} else {
+		state.Kind = stateUnreachable
+		state.Detail = err.Error()
+	}
+	title := name + " (" + plural + ")"
+	return &detailView{Cluster: cluster.Name, Namespace: namespace, Title: title, State: state}
 }
 
 // buildLabelChips resolves the object's label chips: sorted keys, the

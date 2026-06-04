@@ -282,6 +282,32 @@ func emptyTitle(kind, namespace string, allNamespaces bool) string {
 	return "No " + html.EscapeString(kind) + " objects " + emptyNamespaceText(namespace, allNamespaces) + "found."
 }
 
+// hintClass is the reason-line class on a state card: `hint` always, plus `mono`
+// when the line carries a real (transport) error string so it renders in the
+// mono face (matching the mockup's `.hint.mono` for the verbatim error).
+func hintClass(mono bool) string {
+	if mono {
+		return "hint mono"
+	}
+	return "hint"
+}
+
+// stateNamespaceClause is the " in namespace "<ns>"" suffix on a forbidden-state
+// title, naming the namespace scope the verb was denied in. Empty for a
+// cluster-scoped or all-namespaces request (no single namespace to name).
+func stateNamespaceClause(namespace string) string {
+	if namespace == "" || namespace == "_all" {
+		return ""
+	}
+	return ` in namespace "` + namespace + `"`
+}
+
+// skeletonRows is the fixed-length slice the loading skeleton ranges over to
+// emit N `.sk-row` rows (the count is presentational; the value is unused).
+func skeletonRows() []struct{} {
+	return make([]struct{}, 8)
+}
+
 // ownerLabel is "Owner" for a single owner, "Owners" for more.
 func ownerLabel(count int) string {
 	if count > 1 {

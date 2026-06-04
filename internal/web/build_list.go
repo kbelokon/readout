@@ -522,6 +522,22 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	if lc.Namespace != "" && lc.Plural != "namespaces" && !lc.IsAllNamespaces {
 		v.AllNamespacesHref = fmt.Sprintf("/clusters/%s/namespaces/_all/%s?%s", url.PathEscape(lc.Cluster), url.PathEscape(lc.Plural), r.URL.RawQuery)
 	}
+	// The client-side stale path (D11) needs its markup hooks in the first server
+	// response: a hidden `.ro-banner.warn` readout.js reveals on an auto-refresh
+	// error, dimming the rows in #resource-list-content (the morph target) instead
+	// of blanking them. The server never decides "stale" -- there is no last-good
+	// cache; the client does, on a refresh error that keeps the rows.
+	v.StaleBanner = true
+	v.StaleDimTarget = "resource-list-content"
+
+	// Active filters drive the empty-FILTERED state (removable chips + Clear) vs
+	// the plainly-empty state (broad action). Resolved once for the page (the
+	// filter/selector params are page-wide, not per-table).
+	filterChips := buildFilterChips(r)
+	clearHref := ""
+	if len(filterChips) > 0 {
+		clearHref = delQuery(r.URL, "filter", "selector", "labelcols", "label-columns")
+	}
 
 	for ti := range lc.Tables {
 		table := &lc.Tables[ti]
@@ -571,9 +587,86 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 			}
 			tv.Rows = append(tv.Rows, rv)
 		}
+		// Empty-state enrichment: a zero-row table either offers a broad next
+		// action (plainly empty) or, when an active filter is what hid the rows,
+		// the removable filter chips + Clear (empty-filtered). Both are wired only
+		// when the table is actually empty so a populated table is untouched.
+		if len(tv.Rows) == 0 {
+			if len(filterChips) > 0 {
+				tv.EmptyFilters = filterChips
+				tv.ClearHref = clearHref
+			} else if v.AllNamespacesHref != "" {
+				tv.EmptyAction = &emptyActionView{Href: v.AllNamespacesHref, Label: "Show " + lc.Plural + " across all namespaces"}
+			}
+		}
 		v.Tables = append(v.Tables, tv)
 	}
+	// Whole-list failure state (D11): a SINGLE-cluster list that produced no
+	// tables at all but did collect a FORBIDDEN or UNREACHABLE error renders that
+	// state in place of the table -- and its per-cluster error is NOT surfaced as
+	// the all-cluster partial-failure banner (the invariant: a single-cluster list
+	// never says some-clusters-failed). An all-cluster list, a single-cluster list
+	// that still produced a table (a partial multi-type list), or a single-cluster
+	// failure that is neither forbidden nor unreachable (e.g. a missing resource
+	// type -- the secret-barrier path, which must keep surfacing "resource type
+	// not found") keeps the existing behaviour.
+	if !lc.IsAllClusters && lc.ClusterCount == 1 && len(v.Tables) == 0 && len(lc.Errors) > 0 {
+		if state := s.buildListState(r, lc); state != nil {
+			v.State = state
+			v.Errors = nil
+		}
+	}
 	return v
+}
+
+// buildFilterChips resolves the removable active-filter chips for the
+// empty-filtered state from the request: the free-text filter, the label
+// selector, and the labelcols column spec. Each chip's ✕ drops just that one
+// param (a read-only GET) so the user can peel filters off one at a time.
+func buildFilterChips(r *http.Request) []filterChipView {
+	q := r.URL.Query()
+	var chips []filterChipView
+	if filter := q.Get("filter"); filter != "" {
+		chips = append(chips, filterChipView{Label: "filter: " + filter, RemoveHref: delQuery(r.URL, "filter")})
+	}
+	if selector := q.Get("selector"); selector != "" {
+		chips = append(chips, filterChipView{Label: "selector: " + selector, RemoveHref: delQuery(r.URL, "selector")})
+	}
+	if labelCols := first(q.Get("labelcols"), q.Get("label-columns")); labelCols != "" {
+		chips = append(chips, filterChipView{Label: "labels: " + labelCols, RemoveHref: delQuery(r.URL, "labelcols", "label-columns")})
+	}
+	return chips
+}
+
+// buildListState classifies a single-cluster whole-list failure into the
+// forbidden state (an apiserver 403 naming the verb/resource/namespace) or the
+// unreachable state (a transport/dial failure that never reached the apiserver
+// -- shown with its REAL error string, never a cute message, Principles §11). It
+// returns nil for any other failure (a missing resource type, a 5xx with a
+// Status), so those keep the existing partial-error banner. The retry is the
+// same list URL (a read-only GET); Back to clusters is /clusters.
+func (s *Server) buildListState(r *http.Request, lc *listContext) *listStateView {
+	err := lc.Errors[0]
+	forbidden := kube.IsForbidden(err)
+	unreachable := !forbidden && !kube.IsNotFound(err) && !kube.IsAPIStatusError(err)
+	if !forbidden && !unreachable {
+		return nil
+	}
+	state := &listStateView{
+		Verb:      "list",
+		Resource:  lc.Plural,
+		Namespace: lc.Namespace,
+		RetryHref: r.URL.String(),
+		BackHref:  "/clusters",
+	}
+	if forbidden {
+		state.Kind = stateForbidden
+		state.Detail = "403 Forbidden · " + err.Error()
+	} else {
+		state.Kind = stateUnreachable
+		state.Detail = err.Error()
+	}
+	return state
 }
 
 // buildCellView resolves one body cell: its render branch, value, classes, and
