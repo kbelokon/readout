@@ -1420,7 +1420,7 @@
 
     /* Logs screen. The filter form, the container tabs
        and the <pre> stream consume the redesign tokens. The per-pod identity
-       colour stays on the pod-name prefix via .log-line.log-cN (declared in
+       colour stays on the pod-name prefix via .log-line .log-cN (declared in
        @layer theme -- a per-pod identity colour, NOT severity); these rules only
        skin the surrounding chrome + the muted body + a presentation-only
        WARN/ERROR emphasis that lands on the MESSAGE span, never the pod prefix. */
@@ -2768,14 +2768,14 @@
     tr.row-status-err  > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-err); }
 
     /* Per-pod log line colours -- light (on the <pre> light background) */
-    .log-line.log-c0 { color: #c0392b; }
-    .log-line.log-c1 { color: #b9530a; }
-    .log-line.log-c2 { color: #897a00; }
-    .log-line.log-c3 { color: #1f8b4c; }
-    .log-line.log-c4 { color: #0e7c86; }
-    .log-line.log-c5 { color: #2362c0; }
-    .log-line.log-c6 { color: #7d3cc0; }
-    .log-line.log-c7 { color: #b03088; }
+    .log-line .log-c0 { color: #c0392b; }
+    .log-line .log-c1 { color: #b9530a; }
+    .log-line .log-c2 { color: #897a00; }
+    .log-line .log-c3 { color: #1f8b4c; }
+    .log-line .log-c4 { color: #0e7c86; }
+    .log-line .log-c5 { color: #2362c0; }
+    .log-line .log-c6 { color: #7d3cc0; }
+    .log-line .log-c7 { color: #b03088; }
 
     /* Pygments syntax highlight -- LIGHT / default (style='friendly').
      * highlight() emits a bare class="highlight" with no inline fallback, so these
@@ -2859,14 +2859,14 @@
        so the dark palette wins when the user pinned dark. */
     /* (age dark override removed: td.age-* now consume the --age-* token, which
        already carries the dark value under [data-theme="dark"].) */
-    [data-theme="dark"] .log-line.log-c0 { color: #ff6b6b; }
-    [data-theme="dark"] .log-line.log-c1 { color: #ffa94d; }
-    [data-theme="dark"] .log-line.log-c2 { color: #ffd43b; }
-    [data-theme="dark"] .log-line.log-c3 { color: #69db7c; }
-    [data-theme="dark"] .log-line.log-c4 { color: #3bc9db; }
-    [data-theme="dark"] .log-line.log-c5 { color: #74a9ff; }
-    [data-theme="dark"] .log-line.log-c6 { color: #b197fc; }
-    [data-theme="dark"] .log-line.log-c7 { color: #f783ac; }
+    [data-theme="dark"] .log-line .log-c0 { color: #ff6b6b; }
+    [data-theme="dark"] .log-line .log-c1 { color: #ffa94d; }
+    [data-theme="dark"] .log-line .log-c2 { color: #ffd43b; }
+    [data-theme="dark"] .log-line .log-c3 { color: #69db7c; }
+    [data-theme="dark"] .log-line .log-c4 { color: #3bc9db; }
+    [data-theme="dark"] .log-line .log-c5 { color: #74a9ff; }
+    [data-theme="dark"] .log-line .log-c6 { color: #b197fc; }
+    [data-theme="dark"] .log-line .log-c7 { color: #f783ac; }
 
     /* Pygments dark override (style='native'), scoped to an explicit dark choice.
      * Regenerate with HtmlFormatter(style='native').get_style_defs('.highlight'). */
@@ -2957,14 +2957,14 @@
     @media (prefers-color-scheme: dark) {
         /* (age handled by the --age-* token under :root:not([data-theme=light]);
            no per-bucket age rule needed here.) */
-        .log-line.log-c0 { color: #ff6b6b; }
-        .log-line.log-c1 { color: #ffa94d; }
-        .log-line.log-c2 { color: #ffd43b; }
-        .log-line.log-c3 { color: #69db7c; }
-        .log-line.log-c4 { color: #3bc9db; }
-        .log-line.log-c5 { color: #74a9ff; }
-        .log-line.log-c6 { color: #b197fc; }
-        .log-line.log-c7 { color: #f783ac; }
+        .log-line .log-c0 { color: #ff6b6b; }
+        .log-line .log-c1 { color: #ffa94d; }
+        .log-line .log-c2 { color: #ffd43b; }
+        .log-line .log-c3 { color: #69db7c; }
+        .log-line .log-c4 { color: #3bc9db; }
+        .log-line .log-c5 { color: #74a9ff; }
+        .log-line .log-c6 { color: #b197fc; }
+        .log-line .log-c7 { color: #f783ac; }
 
         .highlight .hll { background-color: #404040 }
         .highlight  { background: #202020; color: #d0d0d0 }
@@ -3049,14 +3049,14 @@
            cookie wins on a dark OS. (Age omitted: the --age-* token is NOT
            overridden to dark under [data-theme="light"] -- the media token block
            is gated :not([data-theme="light"]) -- so age stays light here too.) */
-        [data-theme="light"] .log-line.log-c0 { color: #c0392b; }
-        [data-theme="light"] .log-line.log-c1 { color: #b9530a; }
-        [data-theme="light"] .log-line.log-c2 { color: #897a00; }
-        [data-theme="light"] .log-line.log-c3 { color: #1f8b4c; }
-        [data-theme="light"] .log-line.log-c4 { color: #0e7c86; }
-        [data-theme="light"] .log-line.log-c5 { color: #2362c0; }
-        [data-theme="light"] .log-line.log-c6 { color: #7d3cc0; }
-        [data-theme="light"] .log-line.log-c7 { color: #b03088; }
+        [data-theme="light"] .log-line .log-c0 { color: #c0392b; }
+        [data-theme="light"] .log-line .log-c1 { color: #b9530a; }
+        [data-theme="light"] .log-line .log-c2 { color: #897a00; }
+        [data-theme="light"] .log-line .log-c3 { color: #1f8b4c; }
+        [data-theme="light"] .log-line .log-c4 { color: #0e7c86; }
+        [data-theme="light"] .log-line .log-c5 { color: #2362c0; }
+        [data-theme="light"] .log-line .log-c6 { color: #7d3cc0; }
+        [data-theme="light"] .log-line .log-c7 { color: #b03088; }
 
         [data-theme="light"] .highlight .hll { background-color: #ffffcc }
         [data-theme="light"] .highlight  { background: #f0f0f0; }
