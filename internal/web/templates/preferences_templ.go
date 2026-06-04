@@ -13,6 +13,16 @@ import templruntime "github.com/a-h/templ/runtime"
 // method=post + a select[name=theme]. The form opts out of hx-boost (it is the
 // allowed POST write). All values (the theme options, the current selection, the
 // next redirect target) are resolved in the handler and carried in PreferencesData.
+//
+// Redesign (D4/D11: recolor only, keep the Bulma .box/.field form): the form
+// carries the `ro-prefs` recolor MARKER. readout.css scopes the redesign-token
+// recolor of the .label, the <select> control, the Bulma dropdown arrow
+// (.select::after) and the leading icon under `.ro-prefs`, so without this marker
+// the control would render in Bulma's own chrome (the teal arrow + blue focus ring
+// — "stuck on old Bulma blue"). The accent Save button is recoloured globally by
+// the `.button.is-primary` token rule, so it needs no per-form marker. No `.ro-rd`
+// content marker is needed (D13): the page emits no redesign class that collides
+// and is scoped under `.ro-rd`; it is a Bulma form recoloured in place.
 
 // PreferencesData is the resolved preferences input.
 type PreferencesData struct {
@@ -47,7 +57,7 @@ func Preferences(d PreferencesData) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<h1 class=\"title\">Preferences</h1><form class=\"box\" method=\"post\" action=\"/preferences\" hx-boost=\"false\"><div class=\"field\"><label class=\"label\">Theme</label><div class=\"control\"><div class=\"select\"><select name=\"theme\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<h1 class=\"title\">Preferences</h1><form class=\"box ro-prefs\" method=\"post\" action=\"/preferences\" hx-boost=\"false\"><div class=\"field\"><label class=\"label\">Theme</label><div class=\"control\"><div class=\"select\"><select name=\"theme\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -60,7 +70,7 @@ func Preferences(d PreferencesData) templ.Component {
 				var templ_7745c5c3_Var2 string
 				templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(opt.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 26, Col: 28}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 36, Col: 28}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 				if templ_7745c5c3_Err != nil {
@@ -73,7 +83,7 @@ func Preferences(d PreferencesData) templ.Component {
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(opt.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 26, Col: 50}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 36, Col: 50}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -91,7 +101,7 @@ func Preferences(d PreferencesData) templ.Component {
 				var templ_7745c5c3_Var4 string
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(opt.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 28, Col: 28}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 38, Col: 28}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
 				if templ_7745c5c3_Err != nil {
@@ -104,7 +114,7 @@ func Preferences(d PreferencesData) templ.Component {
 				var templ_7745c5c3_Var5 string
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(opt.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 28, Col: 41}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 38, Col: 41}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {
@@ -123,7 +133,7 @@ func Preferences(d PreferencesData) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.ResolveAttributeValue(d.Next)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 31, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/preferences.templ`, Line: 41, Col: 76}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var6)
 		if templ_7745c5c3_Err != nil {
