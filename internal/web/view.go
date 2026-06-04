@@ -540,11 +540,3 @@ type searchResult struct {
 	AgeClass  string // the num + age-* bucket class for the Age cell
 	Labels    map[string]string
 }
-
-// snippet is one match context window: the text before the match, the matched
-// text (wrapped in <em>), and the text after.
-type snippet struct {
-	Pre   string
-	Match string
-	Post  string
-}

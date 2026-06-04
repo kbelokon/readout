@@ -124,17 +124,13 @@ func TestObjectRenderingLinksAndSearchHelpers(t *testing.T) {
 	// TestBehaviorPodDetailFacts / TestBehaviorPodYAMLViewIDScheme, the masked-Secret
 	// block in TestBehaviorSecretBarrierMaskedOn, and the timestamp-link YAML
 	// decoration in TestTimestampLinksDecorateYAML. What stays HERE is the
-	// behavioral helper coverage (objectLinks/matchSnippets/splitSearchQuery/
+	// behavioral helper coverage (objectLinks/splitSearchQuery/
 	// sortResults/matchLabels/selectorString), which is not render markup.
 	links := s.objectLinks("test", "default", &obj)
 	if len(links) != 2 || !strings.Contains(links[0].Href, "/test/default/nginx") || !strings.Contains(links[1].Href, "app/web") {
 		t.Fatalf("object links = %#v", links)
 	}
 
-	row := kube.Row{Cells: []any{"prefix nginx suffix", "nginx again", "third nginx", "fourth nginx"}, Object: map[string]any{"metadata": map[string]any{"labels": map[string]any{"app": "web"}}}}
-	if got := matchSnippets(row, "nginx"); len(got) != 3 {
-		t.Fatalf("matchSnippets len = %d %#v", len(got), got)
-	}
 	selector, filter := splitSearchQuery("app=web nginx tier=api")
 	if selector != "app=web,tier=api" || filter != "nginx" {
 		t.Fatalf("splitSearchQuery selector=%q filter=%q", selector, filter)

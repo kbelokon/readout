@@ -6,10 +6,10 @@ import (
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
-// search renders the search page: the rich search body -- the tools-form with
-// the resource-type checkboxes, the scope chips, the result cards with snippet
-// highlights + label chips, the count footer, and the per-cluster error articles
-// -- assembled in buildSearchView and rendered by templates.Search.
+// search renders the redesign search page: the search hero + scope-opts line, the
+// per-cluster scope chips (.ro-scope-chip.ok|err), the partial-failure banner, and
+// the results table (.ro-table) -- assembled in buildSearchView and rendered by
+// templates.Search.
 //
 // The /search route is param-less, so the shell scope is taken from the QUERY
 // (?cluster= / ?namespace=) via pageComponentWithScope: with a concrete

@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/kbelokon/readout/internal/kube"
 	"golang.org/x/sync/errgroup"
@@ -15,17 +14,12 @@ import (
 )
 
 // build_search.go is the data-assembly layer for the search page: it turns the
-// kube client + parsed request inputs into the rich searchView the search.templ
+// kube client + parsed request inputs into the searchView the search.templ
 // component consumes -- the offered resource-type checkbox set, the per-(type,
-// cluster) search with (pre, match, post) snippet tuples, the scope clusters,
-// the result count, and the per-cluster error records (partial failures are
-// collected as records, not raised). The per-cluster search fans out
-// concurrently (errgroup + SearchMaxConcurrency); the slots are merged in fixed
-// cluster order so output is deterministic regardless of completion order.
-
-// searchMatchContextLength is the number of characters of context kept on each
-// side of a snippet match.
-const searchMatchContextLength = 20
+// cluster) search results, the per-cluster scope chips (each carrying its own
+// failure status/reason/retry href), and the result count. The per-cluster search
+// fans out concurrently (errgroup + SearchMaxConcurrency); the slots are merged in
+// fixed cluster order so output is deterministic regardless of completion order.
 
 // searchDefaultResourceTypes are the resource types searched when the request
 // carries no explicit ?type=. ReplicaSet/DaemonSet/Pod/Node are intentionally
@@ -338,73 +332,6 @@ func splitSearchQuery(q string) (selector string, filter string) {
 		}
 	}
 	return strings.Join(selectors, ","), strings.Join(filters, " ")
-}
-
-// matchSnippets returns up to three (pre, match, post) snippet tuples for the
-// <em> highlight: for each cell whose text contains the (case-insensitive)
-// query, it slices searchMatchContextLength characters of context on each side
-// of the match.
-//
-// All slicing is done in CODEPOINT (rune) space: the match is located by a
-// rune-level case-insensitive scan of the ORIGINAL value, and the context window
-// counts runes, so Pre/Match/Post never split a multi-byte rune and never emit
-// invalid UTF-8. A byte-offset implementation regresses on non-ASCII content --
-// both because lowercasing can change byte length (the match index would slip) and
-// because a byte-counted window can cut through a multi-byte rune.
-func matchSnippets(row kube.Row, query string) []snippet {
-	if query == "" {
-		return nil
-	}
-	queryRunes := []rune(strings.ToLower(query))
-	var matches []snippet
-	for _, cell := range row.Cells {
-		valueRunes := []rune(cellDisplayString(cell))
-		start := caseInsensitiveRuneIndex(valueRunes, queryRunes)
-		if start < 0 {
-			continue
-		}
-		end := start + len(queryRunes)
-		preStart := start - searchMatchContextLength
-		if preStart < 0 {
-			preStart = 0
-		}
-		postEnd := end + searchMatchContextLength
-		if postEnd > len(valueRunes) {
-			postEnd = len(valueRunes)
-		}
-		matches = append(matches, snippet{
-			Pre:   string(valueRunes[preStart:start]),
-			Match: string(valueRunes[start:end]),
-			Post:  string(valueRunes[end:postEnd]),
-		})
-		if len(matches) >= 3 {
-			break
-		}
-	}
-	return matches
-}
-
-// caseInsensitiveRuneIndex returns the rune index in value of the first
-// case-insensitive occurrence of needle (both compared via unicode.ToLower),
-// or -1. needle is already lower-cased; value is the ORIGINAL (mixed-case)
-// rune slice so the returned index slices value without slipping.
-func caseInsensitiveRuneIndex(value, needle []rune) int {
-	if len(needle) == 0 {
-		return 0
-	}
-	for i := 0; i+len(needle) <= len(value); i++ {
-		matched := true
-		for j, nr := range needle {
-			if unicode.ToLower(value[i+j]) != nr {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return i
-		}
-	}
-	return -1
 }
 
 // sortResults orders search results by score DESC, then Title ASC, then Kind

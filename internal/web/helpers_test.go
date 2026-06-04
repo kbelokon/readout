@@ -147,11 +147,6 @@ func TestSecretSearchAndSelectorHelpers(t *testing.T) {
 	if selector != "app=api" || filter != "prod text" {
 		t.Fatalf("splitSearchQuery = %q %q", selector, filter)
 	}
-	row := kube.Row{Cells: []any{"prefix searchable suffix", "second searchable"}}
-	got := matchSnippets(row, "searchable")
-	if len(got) != 2 || got[0].Match != "searchable" || got[0].Pre != "prefix " || got[0].Post != " suffix" {
-		t.Fatalf("matchSnippets = %#v", got)
-	}
 	results := []searchResult{
 		{Title: "beta", Link: "/b", Labels: map[string]string{"app": "api"}},
 		{Title: "api", Link: "/a"},
@@ -164,57 +159,6 @@ func TestSecretSearchAndSelectorHelpers(t *testing.T) {
 	deploy := map[string]any{"spec": map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"app": "api"}}}}
 	if matchLabels(deploy)["app"] != "api" || selectorString(map[string]string{"b": "2", "a": "1"}) != "a=1,b=2" {
 		t.Fatalf("selector helpers mismatch")
-	}
-}
-
-// TestMatchSnippetsRuneSafety pins the rune-safe snippet slicing: matchSnippets
-// must locate the match on the ORIGINAL (mixed-case) value and count the context
-// window in codepoints, so Pre/Match/Post are always valid UTF-8 and Match is
-// exactly the matched substring -- never a byte slice that slips (lowercasing
-// can change byte length) or cuts a multi-byte rune. The fixture mixes a
-// case-folding rune (İ U+0130), a CJK run, and an emoji around an ASCII match.
-func TestMatchSnippetsRuneSafety(t *testing.T) {
-	// Bug (b): ASCII query, multi-byte runes in the surrounding context. The
-	// 20-codepoint window on each side must land on rune boundaries -- a
-	// byte-counted window would cut a 3-byte CJK / 4-byte emoji rune.
-	value := "前置文字位置標識符號测试占位текст🙂abcNEEDLExyzテスト文字列終端標識補足占位符🚀tail"
-	row := kube.Row{Cells: []any{value}}
-	got := matchSnippets(row, "needle") // case-insensitive against "NEEDLE"
-	if len(got) != 1 {
-		t.Fatalf("matchSnippets returned %d snippets, want 1: %#v", len(got), got)
-	}
-	s := got[0]
-	if s.Match != "NEEDLE" {
-		t.Fatalf("snippet Match = %q, want the original-case NEEDLE", s.Match)
-	}
-	for name, part := range map[string]string{"Pre": s.Pre, "Match": s.Match, "Post": s.Post} {
-		if !utf8.ValidString(part) {
-			t.Fatalf("snippet %s is not valid UTF-8: %q", name, part)
-		}
-	}
-	// The window is at most 20 runes each side, and the reconstructed
-	// pre+match+post is a contiguous substring of the original value.
-	if n := utf8.RuneCountInString(s.Pre); n > searchMatchContextLength {
-		t.Fatalf("Pre window = %d runes, want <= %d", n, searchMatchContextLength)
-	}
-	if n := utf8.RuneCountInString(s.Post); n > searchMatchContextLength {
-		t.Fatalf("Post window = %d runes, want <= %d", n, searchMatchContextLength)
-	}
-	if !strings.Contains(value, s.Pre+s.Match+s.Post) {
-		t.Fatalf("reconstructed snippet %q is not a substring of the original", s.Pre+s.Match+s.Post)
-	}
-
-	// Bug (a): a case-folding rune adjacent to the match. Match must come from
-	// the ORIGINAL value (İ preserved), and every part stays valid UTF-8.
-	row2 := kube.Row{Cells: []any{"İSTANBUL-region"}}
-	got2 := matchSnippets(row2, "istanbul")
-	if len(got2) != 1 || got2[0].Match != "İSTANBUL" {
-		t.Fatalf("case-folding match = %#v, want Match=İSTANBUL", got2)
-	}
-	for _, part := range []string{got2[0].Pre, got2[0].Match, got2[0].Post} {
-		if !utf8.ValidString(part) {
-			t.Fatalf("case-folding snippet part not valid UTF-8: %q", part)
-		}
 	}
 }
 
