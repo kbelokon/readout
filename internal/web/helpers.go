@@ -19,6 +19,7 @@ import (
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -131,6 +132,205 @@ func restartsTone(count string) string {
 		return "zero"
 	}
 	return "some"
+}
+
+// capacityBucket classifies a usage percentage into the node capacity-bar bucket
+// lifted verbatim from the mockup capCell: pct > 80 -> "hi" (red), pct > 55 ->
+// "mid" (amber), else "lo" (green). The bucket (and its coloured fill) is meant
+// to apply ONLY when a real usage % exists; the no-metrics path never calls this.
+func capacityBucket(pct float64) string {
+	switch {
+	case pct > 80:
+		return "hi"
+	case pct > 55:
+		return "mid"
+	default:
+		return "lo"
+	}
+}
+
+// nodeRoles reads a node's role labels (`node-role.kubernetes.io/<role>`) off the
+// row object's metadata.labels and returns the role names sorted, with
+// "control-plane" first so it leads the chip strip (and earns the .cp accent in
+// the renderer). A node with no role label yields nil (the renderer shows nothing
+// rather than inventing a "worker" chip the labels did not assert).
+func nodeRoles(obj map[string]any) []string {
+	labels, _, _ := unstructured.NestedStringMap(obj, "metadata", "labels")
+	var roles []string
+	for key := range labels {
+		if role, ok := strings.CutPrefix(key, "node-role.kubernetes.io/"); ok && role != "" {
+			roles = append(roles, role)
+		}
+	}
+	sort.Slice(roles, func(i, j int) bool {
+		// control-plane / master lead; the rest stay alphabetical.
+		li, lj := roleRank(roles[i]), roleRank(roles[j])
+		if li != lj {
+			return li < lj
+		}
+		return roles[i] < roles[j]
+	})
+	return roles
+}
+
+// roleRank ranks a node role for the chip order: control-plane/master lead, then
+// everything else alphabetically. Keeps the control-plane chip first regardless of
+// label-map iteration order.
+func roleRank(role string) int {
+	switch role {
+	case "control-plane":
+		return 0
+	case "master":
+		return 1
+	default:
+		return 2
+	}
+}
+
+// nodeAbnormalConditions returns the node's ABNORMAL condition pills (only the
+// conditions not in their healthy state), each with its redesign pill tone. Node
+// is a fixed kind, so the object is decoded once into a corev1.Node and the
+// conditions are read off the typed Status.Conditions. A clean node yields nil, so
+// the renderer shows the muted "—". The abnormality + tone reuse the same semantic
+// rule as the detail-page nodeConditionTone (Ready healthy when True; pressure /
+// NetworkUnavailable healthy when False), mapped to the list pill tone vocabulary.
+func nodeAbnormalConditions(obj map[string]any) []condPill {
+	var node corev1.Node
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &node); err != nil {
+		return nil
+	}
+	var pills []condPill
+	for _, cond := range node.Status.Conditions {
+		typ, value := string(cond.Type), string(cond.Status)
+		tone, abnormal := nodeConditionListTone(typ, value)
+		if abnormal {
+			pills = append(pills, condPill{Name: typ, Tone: tone})
+		}
+	}
+	return pills
+}
+
+// nodeConditionListTone maps a node condition (type + status) to the LIST pill
+// tone (ok/warn/err) and reports whether the condition is ABNORMAL (worth a pill).
+// The healthy polarity matches the detail-page nodeConditionTone: Ready is healthy
+// True; MemoryPressure/DiskPressure/PIDPressure are healthy False (warn when set);
+// NetworkUnavailable is healthy False (err when set). A condition in its healthy
+// state is not abnormal (abnormal=false), so only the off-normal ones surface.
+func nodeConditionListTone(typ, status string) (tone string, abnormal bool) {
+	switch typ {
+	case "Ready":
+		if status == "True" {
+			return "ok", false
+		}
+		return "err", true
+	case "NetworkUnavailable":
+		if status == "True" {
+			return "err", true
+		}
+		return "ok", false
+	case "MemoryPressure", "DiskPressure", "PIDPressure":
+		if status == "True" {
+			return "warn", true
+		}
+		return "ok", false
+	default:
+		// An unknown condition type is surfaced only when it is explicitly not True
+		// (a True unknown condition is treated as informational/healthy).
+		if status == "True" {
+			return "warn", false
+		}
+		return "warn", true
+	}
+}
+
+// nodeCapacityQuantity reads a node capacity quantity (cpu/memory/pods) off the row
+// object's status.capacity and returns it as a resource.Quantity plus whether it
+// was present and parseable. Capacity values are canonical k8s quantities
+// ("4", "16Gi", "8047476Ki", "110"); resource.Quantity is readout's existing
+// quantity handling (the same type the metrics seam parses), so the magnitude math
+// is never hand-rolled.
+func nodeCapacityQuantity(obj map[string]any, key string) (resource.Quantity, bool) {
+	raw := nestedString(obj, "status", "capacity", key)
+	if raw == "" {
+		return resource.Quantity{}, false
+	}
+	q, err := resource.ParseQuantity(raw)
+	if err != nil {
+		return resource.Quantity{}, false
+	}
+	return q, true
+}
+
+// capacityCellView resolves a node CPU/Memory capacity cell. `key` is the capacity
+// map key ("cpu" or "memory"); `usage` is the joined metrics usage (CPU cores /
+// memory bytes) and `haveUsage` reports whether a real usage value exists (metrics
+// joined). With a real usage % it sets the bucket + fill width + a "usage/capacity"
+// label; without metrics it falls back to the bare capacity value text and leaves
+// the bar empty/uncoloured (CapBucket "", CapPct 0).
+func capacityCellView(obj map[string]any, key string, usage float64, haveUsage bool) cellView {
+	cap, haveCap := nodeCapacityQuantity(obj, key)
+	capText := ""
+	if haveCap {
+		capText = cap.String()
+	}
+	cv := cellView{Kind: cellCapacity}
+	if !haveUsage || !haveCap {
+		// No-metrics (or missing capacity) default: capacity value text only, no
+		// coloured bar.
+		cv.Value = capText
+		return cv
+	}
+	capFloat := cap.AsApproximateFloat64()
+	if capFloat <= 0 {
+		cv.Value = capText
+		return cv
+	}
+	pct := usage / capFloat * 100
+	if pct < 0 {
+		pct = 0
+	}
+	clamped := pct
+	if clamped > 100 {
+		clamped = 100
+	}
+	cv.CapBucket = capacityBucket(pct)
+	cv.CapPct = int(clamped + 0.5)
+	cv.Value = capacityUsageLabel(key, usage, cap)
+	return cv
+}
+
+// capacityUsageLabel formats the "usage/capacity" text shown next to a node
+// capacity bar (e.g. "2.5/4" for CPU cores, "6/8Gi" for memory). CPU usage is in
+// cores; memory usage is in bytes and is rendered as a binary-suffixed quantity so
+// it reads in the same unit family as the capacity.
+func capacityUsageLabel(key string, usage float64, cap resource.Quantity) string {
+	switch key {
+	case "cpu":
+		return trimFloat(usage) + "/" + cap.String()
+	case "memory":
+		used := resource.NewQuantity(int64(usage), resource.BinarySI)
+		return used.String() + "/" + cap.String()
+	default:
+		return trimFloat(usage) + "/" + cap.String()
+	}
+}
+
+// trimFloat renders a CPU-core float with up to one decimal place and no trailing
+// zero (1 -> "1", 2.5 -> "2.5", 0.25 -> "0.2"), keeping the capacity label compact.
+func trimFloat(f float64) string {
+	s := strconv.FormatFloat(f, 'f', 1, 64)
+	s = strings.TrimSuffix(s, ".0")
+	return s
+}
+
+// nodeCapacityKey maps a node capacity COLUMN name onto its status.capacity map
+// key: the CPU columns ("CPU", "CPU Usage") read status.capacity.cpu; the memory
+// columns read status.capacity.memory.
+func nodeCapacityKey(colName string) string {
+	if strings.HasPrefix(colName, "Memory") {
+		return "memory"
+	}
+	return "cpu"
 }
 
 func humanTitle(value string) string {

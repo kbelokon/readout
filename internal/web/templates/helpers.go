@@ -180,6 +180,49 @@ func cellTdClass(cellClass, colClass string, trunc bool) string {
 	return cls
 }
 
+// capClass is the node capacity-bar wrapper class (`cap` + the lo/mid/hi bucket
+// modifier when present). An empty bucket (the no-metrics state) yields a bare
+// `cap` with no colour, matching the value-text-only fallback.
+func capClass(bucket string) string {
+	if bucket == "" {
+		return "cap"
+	}
+	return "cap " + bucket
+}
+
+// capWidth is the inline width declaration for the capacity-bar fill `<i>`, as
+// `width:N%`. The width is 0 in the no-metrics state (an empty/0-width bar). The
+// design contract pins the bar fill to `i[style=width]` (an inline width is the
+// only way to express an arbitrary per-row percentage); templ sanitizes the
+// returned declaration.
+func capWidth(pct int) string {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return "width:" + strconv.Itoa(pct) + "%"
+}
+
+// roleClass is the node role-chip class (`ro-role-chip` + `.cp` for the
+// control-plane / master roles, which earn the green accent).
+func roleClass(role string) string {
+	if role == "control-plane" || role == "master" {
+		return "ro-role-chip cp"
+	}
+	return "ro-role-chip"
+}
+
+// condPillClass is the node abnormal-condition pill class (`ro-cond-pill` + the
+// tone warn/err/ok). An empty tone yields a bare `ro-cond-pill`.
+func condPillClass(tone string) string {
+	if tone == "" {
+		return "ro-cond-pill"
+	}
+	return "ro-cond-pill " + tone
+}
+
 // warnIcon is the redesign partial-failure banner glyph (lucide triangle-alert),
 // wrapped in the same <svg> shell as the icons package glyphs so it themes via
 // `.ico svg`. A static constant: no runtime-derived data crosses it.

@@ -183,21 +183,28 @@ func toTableData(t *tableView) templates.TableData {
 		}
 		for ci := range row.Cells {
 			cell := &row.Cells[ci]
-			tr.Cells = append(tr.Cells, templates.TableCell{
-				Kind:     templates.CellKind(cell.Kind),
-				Value:    cell.Value,
-				Class:    cell.Class,
-				ColClass: cell.ColClass,
-				Href:     cell.Href,
-				Tone:     cell.Tone,
-				Ratio:    cell.Ratio,
-				Pulse:    cell.Pulse,
-				NameHead: cell.NameHead,
-				NameTail: cell.NameTail,
-				Ago:      cell.Ago,
-				Trunc:    cell.Trunc,
-				Title:    cell.Title,
-			})
+			tc := templates.TableCell{
+				Kind:      templates.CellKind(cell.Kind),
+				Value:     cell.Value,
+				Class:     cell.Class,
+				ColClass:  cell.ColClass,
+				Href:      cell.Href,
+				Tone:      cell.Tone,
+				Ratio:     cell.Ratio,
+				Pulse:     cell.Pulse,
+				NameHead:  cell.NameHead,
+				NameTail:  cell.NameTail,
+				Ago:       cell.Ago,
+				Trunc:     cell.Trunc,
+				Title:     cell.Title,
+				CapBucket: cell.CapBucket,
+				CapPct:    cell.CapPct,
+				Roles:     cell.Roles,
+			}
+			for _, cond := range cell.Conds {
+				tc.Conds = append(tc.Conds, templates.Cond{Name: cond.Name, Tone: cond.Tone})
+			}
+			tr.Cells = append(tr.Cells, tc)
 		}
 		td.Rows = append(td.Rows, tr)
 	}

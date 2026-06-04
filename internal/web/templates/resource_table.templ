@@ -139,6 +139,17 @@ type TableCell struct {
 	Ago      string // optional "(… ago)" suffix on a restarts cell
 	Trunc    bool   // secondary free-text cell: truncate with Title tooltip
 	Title    string // full-value tooltip (truncated or age cell)
+
+	CapBucket string // node capacity bar bucket (lo/mid/hi); "" -> no colour fill
+	CapPct    int    // node capacity bar fill width %; 0 -> empty bar
+	Roles     []string // node role chips (control-plane earns .cp)
+	Conds     []Cond   // node abnormal condition pills (empty -> muted "—")
+}
+
+// Cond is one abnormal node condition pill (name + redesign tone warn/err/ok).
+type Cond struct {
+	Name string
+	Tone string
 }
 
 // CellKind selects a body-cell render branch (matches package-web cellKind).
@@ -154,6 +165,9 @@ const (
 	CellStatus
 	CellReady
 	CellRestarts
+	CellCapacity
+	CellRoles
+	CellConditions
 )
 
 // ResourceTable renders the full table fragment (one block per table + the
@@ -249,6 +263,32 @@ templ tableCell(cell TableCell) {
 			</td>
 	} else if cell.Kind == CellNode {
 		<td class="cell-node"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
+	} else if cell.Kind == CellCapacity {
+		<td><span class={ capClass(cell.CapBucket) }><span class="cap-bar"><i style={ capWidth(cell.CapPct) }></i></span><span class="cap-val">{ cell.Value }</span></span></td>
+	} else if cell.Kind == CellRoles {
+		<td>
+			if len(cell.Roles) == 0 {
+				<span class="faint">—</span>
+			} else {
+				<span class="ro-roles">
+					for _, role := range cell.Roles {
+						<span class={ roleClass(role) }>{ role }</span>{ " " }
+					}
+				</span>
+			}
+			</td>
+	} else if cell.Kind == CellConditions {
+		<td>
+			if len(cell.Conds) == 0 {
+				<span class="faint">—</span>
+			} else {
+				<span class="ro-cond-pills">
+					for _, cond := range cell.Conds {
+						<span class={ condPillClass(cond.Tone) }><span class="ro-dot" aria-hidden="true"></span><span class="ro-cond-name">{ cond.Name }</span></span>{ " " }
+					}
+				</span>
+			}
+			</td>
 	} else {
 		<td class={ cellTdClass(cell.Class, cell.ColClass, cell.Trunc) } title={ cell.Title }>
 			switch cell.Kind {

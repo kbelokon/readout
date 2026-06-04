@@ -186,6 +186,14 @@ func (s *Server) applyTableOptions(r *http.Request, cluster *kube.Cluster, table
 	kube.RemoveColumns(table, hide)
 	labels := first(q.Get("labelcols"), q.Get("label-columns"), s.cfg.DefaultLabelColumns[table.Resource.Plural])
 	kube.AddLabelColumns(table, labels)
+	if table.Resource.Plural == "nodes" {
+		// Nodes get rich capacity/pods/conditions columns (read from each row's
+		// status). The CPU/Memory capacity columns are added here ONLY when metrics
+		// are not joined; with ?join=metrics the joinMetrics CPU/Memory Usage columns
+		// below carry the usage overlay instead (one CPU and one Memory column
+		// either way, never both).
+		decorateNodeColumns(table, q.Get("join") == "metrics")
+	}
 	if q.Get("join") == "metrics" && (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") {
 		s.joinMetrics(r.Context(), s.kubeClient(r, cluster), table, namespace, allNamespaces, q.Get("selector"))
 	}
@@ -224,6 +232,14 @@ func (s *Server) joinMetrics(ctx context.Context, client *kube.Client, table *ku
 	}
 	list, err := client.List(ctx, &rt, kube.ListOptions{Namespace: listNS, LabelSelector: labelSelector})
 	if err != nil {
+		// The CPU/Memory columns were appended up front; if the metrics LIST call
+		// fails AFTER discovery succeeded, every row must still get its two
+		// placeholder cells, or the rows are short two cells and the table renders
+		// ragged (column count > row cell count). Append the "metrics unknown" zero
+		// placeholders so column/row cell counts always match. Never blank or crash.
+		for i := range table.Rows {
+			table.Rows[i].Cells = append(table.Rows[i].Cells, 0, 0)
+		}
 		return
 	}
 	usage := map[string][2]float64{}
@@ -239,6 +255,76 @@ func (s *Server) joinMetrics(ctx context.Context, client *kube.Client, table *ku
 		value := usage[key]
 		table.Rows[i].Cells = append(table.Rows[i].Cells, value[0], value[1])
 	}
+}
+
+// decorateNodeColumns appends the rich node columns (Pods + Conditions always; the
+// CPU/Memory capacity columns only when metrics are NOT joined) and fills each
+// row's matching cells from the node's status. The capacity/conditions cells carry
+// a plain DISPLAY value (capacity quantity / abnormal-condition names / "—") so
+// sort, TSV, and the generic fallback stay sensible; the rich renderers re-read the
+// row object for the bar fill + pills. Cells are appended for EVERY row in lockstep
+// with the columns, so the table never goes ragged.
+func decorateNodeColumns(table *kube.Table, metricsJoined bool) {
+	type nodeCol struct {
+		name string
+		cell func(obj map[string]any) any
+	}
+	var cols []nodeCol
+	if !metricsJoined {
+		cols = append(cols,
+			nodeCol{"CPU", func(obj map[string]any) any { return nodeCapacityText(obj, "cpu") }},
+			nodeCol{"Memory", func(obj map[string]any) any { return nodeCapacityText(obj, "memory") }},
+		)
+	}
+	cols = append(cols,
+		nodeCol{"Pods", func(obj map[string]any) any { return nestedString(obj, "status", "capacity", "pods") }},
+		nodeCol{"Conditions", func(obj map[string]any) any { return nodeConditionsText(obj) }},
+	)
+	for _, col := range cols {
+		if columnIndex(table.Columns, col.name) >= 0 {
+			continue // never duplicate a column the server-side Table already had
+		}
+		table.Columns = append(table.Columns, kube.Column{Name: col.name})
+		for i := range table.Rows {
+			table.Rows[i].Cells = append(table.Rows[i].Cells, col.cell(table.Rows[i].Object))
+		}
+	}
+}
+
+// columnIndex reports the index of a named column, or -1. A small local mirror of
+// kube.columnIndex (unexported) used by decorateNodeColumns to skip a column the
+// server-side Table already provided.
+func columnIndex(cols []kube.Column, name string) int {
+	for i, col := range cols {
+		if col.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// nodeCapacityText is the plain capacity DISPLAY value for the synthetic CPU/Memory
+// columns (the canonical quantity, e.g. "4" / "16Gi"); empty when absent.
+func nodeCapacityText(obj map[string]any, key string) string {
+	if q, ok := nodeCapacityQuantity(obj, key); ok {
+		return q.String()
+	}
+	return ""
+}
+
+// nodeConditionsText is the plain DISPLAY value for the synthetic Conditions column:
+// the comma-joined abnormal-condition names, or "—" when the node is clean (so the
+// generic fallback / TSV / sort sees the same "—" the rich pill renderer shows).
+func nodeConditionsText(obj map[string]any) string {
+	pills := nodeAbnormalConditions(obj)
+	if len(pills) == 0 {
+		return "—"
+	}
+	names := make([]string, len(pills))
+	for i, p := range pills {
+		names[i] = p.Name
+	}
+	return strings.Join(names, ", ")
 }
 
 func (s *Server) joinCustomColumns(ctx context.Context, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, spec string, query url.Values) {
@@ -472,6 +558,21 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 	case colName == "Node":
 		cv.Kind = cellNode
 		cv.Href = "/clusters/" + url.PathEscape(row.Cluster) + "/nodes/" + url.PathEscape(value)
+	case table.Resource.Plural == "nodes" && (colName == "CPU Usage" || colName == "Memory Usage"):
+		// Nodes reskin the joined metrics usage column as a capacity bar: the cell
+		// carries the usage (cores/bytes from joinMetrics), the node's capacity
+		// comes from status.capacity, and the bucket + fill come from usage/capacity.
+		usage, haveUsage := numericCell(cell)
+		cv = capacityCellView(row.Object, nodeCapacityKey(colName), usage, haveUsage)
+	case table.Resource.Plural == "nodes" && (colName == "CPU" || colName == "Memory"):
+		// No-metrics node capacity column: capacity value text, no usage overlay.
+		cv = capacityCellView(row.Object, nodeCapacityKey(colName), 0, false)
+	case table.Resource.Plural == "nodes" && colName == "Roles":
+		cv.Kind = cellRoles
+		cv.Roles = nodeRoles(row.Object)
+	case table.Resource.Plural == "nodes" && colName == "Conditions":
+		cv.Kind = cellConditions
+		cv.Conds = nodeAbnormalConditions(row.Object)
 	case colName == "CPU Usage":
 		cv.Kind = cellCPU
 		cv.Value = cpuFormat(cell)

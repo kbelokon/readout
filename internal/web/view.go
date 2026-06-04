@@ -128,6 +128,28 @@ type cellView struct {
 	Trunc bool
 	// Title is the full-value tooltip carried on a truncated or age cell.
 	Title string
+
+	// CapBucket is the node capacity-bar bucket (lo/mid/hi -> green/amber/red) for
+	// cellCapacity. It is set ONLY when a real usage % exists (metrics joined); the
+	// no-metrics state leaves it "" so the bar renders empty and uncoloured.
+	CapBucket string
+	// CapPct is the capacity-bar fill width as a percentage (0..100), set ONLY with
+	// a real usage %. The no-metrics state leaves it 0 (empty/0-width bar).
+	CapPct int
+	// Roles are the node role chips for cellRoles (e.g. "control-plane", "worker");
+	// the control-plane role earns the `.cp` accent in the renderer.
+	Roles []string
+	// Conds are the abnormal node condition pills for cellConditions. Empty means a
+	// clean node, rendered as a muted "—". Each pill carries its tone + name.
+	Conds []condPill
+}
+
+// condPill is one abnormal node condition pill: Name is the condition type (e.g.
+// "MemoryPressure"), Tone is the redesign pill tone (warn/err/ok). Only abnormal
+// conditions are surfaced, so a clean node has no pills.
+type condPill struct {
+	Name string
+	Tone string
 }
 
 type cellKind int
@@ -142,6 +164,9 @@ const (
 	cellStatus
 	cellReady
 	cellRestarts
+	cellCapacity
+	cellRoles
+	cellConditions
 )
 
 // detailView is the view model for the resource-view (object detail) page. The
