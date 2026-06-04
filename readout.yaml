@@ -90,6 +90,29 @@ customColumns:
 preferredApiVersions:
   ingresses: networking.k8s.io/v1
 
+# Per-resource icon overrides (Tier 3 of the icon system). Every navigable
+# resource already gets an icon automatically -- built-in kinds use a curated
+# glyph, known CRD families a tinted family glyph, and any other CRD a
+# deterministic 2-letter monogram tile coloured by its API group. Use this
+# block ONLY to pin a specific icon for a {kind, group} pair. Each entry is a
+# typed object keyed by kind+group (NOT by plural):
+#
+#   icon forms:
+#     lucide:<name> or a bare name   -> a bundled glyph (see the icon set)
+#     emoji:🐙                        -> an emoji
+#     /icons/foo.svg  (or foo.png)    -> a LOCAL asset served by readout
+#
+#   Remote http(s):// image URLs are DROPPED: the Content-Security-Policy
+#   restricts images to 'self' (a remote <img> would silently fail to load),
+#   so such an override falls back to the automatically-resolved glyph.
+resources: []
+  # - kind: Cluster
+  #   group: postgresql.cnpg.io
+  #   icon: /icons/postgres.svg
+  # - kind: Rollout
+  #   group: argoproj.io
+  #   icon: "emoji:🐙"
+
 # Theme: the default and the operator-allowed options.
 defaultTheme: dark
 themeOptions:

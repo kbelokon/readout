@@ -195,6 +195,64 @@ func TestResolveReadsOAuthSecretFilesAndValidatesErrors(t *testing.T) {
 	}
 }
 
+// TestIconOverride pins the Tier-3 per-resource icon schema (LOCKED): a
+// top-level `resources:` list of typed {kind, group, icon} objects resolves
+// into Config.ResourceIcons keyed by kind+group (NOT a plural-keyed map, and
+// NOT the flat sidebar.resources []string). It also pins that the override
+// surface inherits the existing reject-unknown-keys contract: a typo inside a
+// resources entry (or a stray top-level key) fails fast at parse.
+func TestIconOverride(t *testing.T) {
+	const overrideConfig = `
+resources:
+  - kind: Cluster
+    group: postgresql.cnpg.io
+    icon: /icons/pg.svg
+  - kind: Rollout
+    group: argoproj.io
+    icon: "emoji:🐙"
+`
+	cfg, err := Parse([]string{"--config", writeConfig(t, overrideConfig)})
+	if err != nil {
+		t.Fatalf("Parse override config: %v", err)
+	}
+
+	// Round-trips into a kind+group keyed map (the locked schema).
+	pg := cfg.ResourceIcons[ResourceIconKey{Kind: "Cluster", Group: "postgresql.cnpg.io"}]
+	if pg != "/icons/pg.svg" {
+		t.Fatalf("Cluster/postgresql.cnpg.io override = %q, want /icons/pg.svg (map: %#v)", pg, cfg.ResourceIcons)
+	}
+	rollout := cfg.ResourceIcons[ResourceIconKey{Kind: "Rollout", Group: "argoproj.io"}]
+	if rollout != "emoji:🐙" {
+		t.Fatalf("Rollout/argoproj.io override = %q, want emoji:🐙", rollout)
+	}
+
+	// Keyed on kind+GROUP, not kind alone: the same kind in a different group
+	// must NOT resolve to this override (proves the key is the pair).
+	if got := cfg.ResourceIcons[ResourceIconKey{Kind: "Cluster", Group: "other.example"}]; got != "" {
+		t.Fatalf("Cluster in a different group leaked the override: %q", got)
+	}
+
+	// An empty config yields a non-nil, empty map (no override) -- callers can
+	// index it without a nil check.
+	empty, err := Parse([]string{"--debug"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.ResourceIcons == nil {
+		t.Fatal("ResourceIcons should be a non-nil empty map when unset")
+	}
+	if len(empty.ResourceIcons) != 0 {
+		t.Fatalf("ResourceIcons should be empty when unset: %#v", empty.ResourceIcons)
+	}
+
+	// Reject-unknown-keys still holds for the override surface: a typo'd field
+	// inside a resources entry fails fast (strict parse), not silently ignored.
+	bad := "resources:\n  - kind: Pod\n    grpup: x\n    icon: pod\n"
+	if _, err := Parse([]string{"--config", writeConfig(t, bad)}); err == nil {
+		t.Fatal("unknown field inside a resources entry should be rejected")
+	}
+}
+
 func TestAddress(t *testing.T) {
 	if got := Address(9090); got != ":9090" {
 		t.Fatalf("Address = %q", got)

@@ -1864,6 +1864,711 @@
     @media (prefers-reduced-motion: reduce) {
         .ro-palette-panel { animation: none; }
     }
+
+    /* ===========================================================================
+       REDESIGN COMPONENT PORT (Unit 2, additive). The component classes below are
+       lifted EXACT from the redesign source of truth -- design/assets/base.css plus
+       the per-screen inline <style> blocks (Clusters / Search / Pods Mobile) that
+       are NOT in base.css. They are NEW class names (e.g. bare `.ro-topbar`, not the
+       old `nav.navbar.ro-topbar`), so they sit ALONGSIDE the existing app rules --
+       nothing above is removed (old-class removal is a later unit). They consume the
+       same token layer just rethemed to the green/dark "Terminal" palette, so they
+       follow light/dark for free. base.css's two `body.theme-light` rules (on the
+       monogram tile) are mapped onto readout's data-theme mechanism (NOT a body
+       class) per D5. App wins over bulma by layer order -- no !important.
+       =========================================================================== */
+
+    .mono { font-family: var(--font-mono); }
+    ::selection { background: var(--accent-weak); color: var(--text); }
+
+    /* focus ring -- green, the redesign's signature (bare-element variant) */
+    .ro-focus-ring:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
+    }
+
+    /* ---------------------------------------------------------------- TOP BAR
+       Scoped to `header.ro-topbar` (the redesign element) so it never touches the
+       still-live `nav.navbar.ro-topbar` -- keeping this ADDITIVE: the new bar is
+       opted in by switching the element from <nav> to <header> in a later unit. */
+    header.ro-topbar {
+        position: sticky; top: 0; z-index: 50;
+        height: var(--topbar-h);
+        display: flex; align-items: center; gap: 18px;
+        padding: 0 16px;
+        background: var(--header-bg);
+        backdrop-filter: saturate(140%) blur(12px);
+        border-bottom: 1px solid var(--border);
+    }
+    header.ro-topbar .brand-item { display: flex; align-items: center; gap: 9px; padding-right: 4px; }
+    header.ro-topbar .brand-logo {
+        width: 22px; height: 26px; display: block;
+        background: var(--brand);
+        -webkit-mask: url(/assets/readout-logo.svg) center / contain no-repeat;
+        mask: url(/assets/readout-logo.svg) center / contain no-repeat;
+    }
+    header.ro-topbar .brand-name { font-weight: 650; letter-spacing: -.01em; font-size: 14px; }
+    .topnav { display: flex; align-items: center; gap: 4px; }
+    .topnav a {
+        padding: 5px 9px; border-radius: var(--radius-sm);
+        color: var(--text-muted); font-weight: 500; font-size: 13px;
+    }
+    .topnav a:hover { background: var(--surface-2); color: var(--text); }
+    .topnav a.is-active { color: var(--text); }
+
+    /* context dropdown trigger (namespace) */
+    .ctx-dd {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 4px 9px 4px 8px; border-radius: var(--radius-sm);
+        border: 1px solid var(--border); background: var(--surface);
+        font-family: var(--font-mono); font-size: 12px; color: var(--text);
+        cursor: pointer;
+    }
+    .ctx-dd:hover { border-color: var(--border-strong); }
+    .ctx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand);
+        box-shadow: 0 0 0 3px var(--accent-weak); }
+    .ctx-caret { color: var(--text-faint); display: inline-flex; }
+
+    .topbar-spacer { flex: 1; }
+
+    /* search box */
+    .ro-search { position: relative; width: min(560px, 42vw); }
+    .ro-search input {
+        width: 100%; height: 34px;
+        padding: 0 40px 0 34px;
+        background: var(--surface); color: var(--text);
+        border: 1px solid var(--border); border-radius: var(--radius);
+        font-family: var(--font-ui); font-size: 13px;
+    }
+    .ro-search input::placeholder { color: var(--text-faint); }
+    .ro-search input:focus { border-color: var(--accent); background: var(--surface-2); }
+    .ro-search .s-ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+        color: var(--text-faint); display: inline-flex; pointer-events: none; }
+    .ro-search .kbd-hint { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
+
+    /* topbar icon buttons */
+    .tb-group { display: flex; align-items: center; gap: 2px; }
+    .tb-btn {
+        display: inline-flex; align-items: center; gap: 7px;
+        height: 32px; padding: 0 8px; border-radius: var(--radius-sm);
+        background: transparent; border: 1px solid transparent;
+        color: var(--text-muted); font-size: 12px; cursor: pointer;
+    }
+    .tb-btn:hover { background: var(--surface-2); color: var(--text); }
+    .tb-btn .ico { display: inline-flex; }
+    /* (the live `.refresh-label` size is owned by the existing app rule above; the
+       redesign bar reuses it -- no duplicate here to keep this additive.) */
+    .refresh-live .ro-livedot { width: 6px; height: 6px; border-radius: 50%;
+        background: var(--brand); box-shadow: 0 0 0 0 var(--brand);
+        animation: ro-pulse 1.8s ease-out infinite; }
+    @keyframes ro-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(86,224,188,.5); }
+        70% { box-shadow: 0 0 0 6px rgba(86,224,188,0); }
+        100% { box-shadow: 0 0 0 0 rgba(86,224,188,0); }
+    }
+
+    /* icons (lucide-ish via stroke) */
+    .ico svg { width: 15px; height: 15px; display: block; stroke: currentColor;
+        stroke-width: 1.75; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .ico.sm svg { width: 13px; height: 13px; }
+
+    /* ---------------------------------------------------------------- LAYOUT */
+    .ro-shell { display: flex; min-height: calc(100vh - var(--topbar-h)); }
+    .ro-sidebar {
+        width: var(--sidebar-w); flex: none;
+        background: var(--sidebar-bg);
+        border-right: 1px solid var(--border);
+        padding: 16px 10px 24px;
+        position: sticky; top: var(--topbar-h);
+        height: calc(100vh - var(--topbar-h));
+        overflow-y: auto;
+    }
+    .ro-sidebar .menu-label {
+        font-family: var(--font-mono);
+        font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+        color: var(--text-faint); font-weight: 500;
+        padding: 0 8px; margin: 18px 0 6px;
+    }
+    .ro-sidebar .menu-label:first-child { margin-top: 0; }
+    .ro-sidebar .menu-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+    .ro-sidebar .menu-list a {
+        position: relative;
+        display: flex; align-items: center; gap: 9px;
+        padding: 6px 9px; border-radius: var(--radius-sm);
+        color: var(--text-muted); font-size: 13px; font-weight: 450;
+    }
+    .ro-sidebar .menu-list a .ico { color: var(--text-faint); }
+    .ro-sidebar .menu-list a:hover { background: var(--surface-2); color: var(--text); }
+    .ro-sidebar .menu-list a:hover .ico { color: var(--text-muted); }
+    .ro-sidebar .menu-list a.is-active {
+        background: var(--accent-weak); color: var(--text); font-weight: 550;
+    }
+    .ro-sidebar .menu-list a.is-active .ico { color: var(--accent); }
+    .ro-sidebar .menu-list a.is-active::before {
+        content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px;
+        width: 2.5px; border-radius: 2px; background: var(--accent);
+    }
+
+    .ro-main { flex: 1; min-width: 0; padding: 22px 26px 80px; }
+    .ro-main.wide { max-width: 100%; }
+
+    /* breadcrumb (redesign). The redesign breadcrumb is `<nav class="ro-breadcrumb">`
+       -- the SAME selector the live Bulma breadcrumb uses -- so these rules are
+       scoped under the redesign CONTENT marker `.ro-rd` (D13), added only by a
+       migrated content template. This keeps the port ADDITIVE: the new breadcrumb
+       look applies only on migrated screens, the live breadcrumb keeps its existing
+       `nav.breadcrumb.ro-breadcrumb` styling. (Not `.ro-shell`: that grid wrapper is
+       present on every screen and cannot distinguish migrated content.) */
+    .ro-rd .ro-breadcrumb { font-family: var(--font-mono); font-size: 12px; margin-bottom: 14px; }
+    .ro-rd .ro-breadcrumb ul { list-style: none; display: flex; flex-wrap: wrap; align-items: center;
+        gap: 6px; margin: 0; padding: 0; }
+    .ro-rd .ro-breadcrumb li { display: flex; align-items: center; gap: 6px; color: var(--text-faint); }
+    .ro-rd .ro-breadcrumb li:not(:first-child)::before { content: "/"; color: var(--text-faint); opacity: .5; }
+    .ro-rd .ro-breadcrumb a { color: var(--text-muted); }
+    .ro-rd .ro-breadcrumb a:hover { color: var(--accent); }
+    .ro-rd .ro-breadcrumb .is-active a { color: var(--text); }
+
+    /* page title */
+    .ro-title-row { display: flex; align-items: center; gap: 12px; margin: 2px 0 16px; }
+    .ro-title { font-size: 25px; font-weight: 680; letter-spacing: -.02em; margin: 0; }
+    .ro-title-actions { display: flex; gap: 4px; }
+    /* redesign count badge -- scoped to the redesign title row so it does not
+       restyle the live `h1.title .ro-count` (additive). */
+    .ro-title-row .ro-count {
+        font-family: var(--font-mono); font-size: 12px; font-weight: 500;
+        color: var(--text-muted); background: var(--surface-2);
+        border: 1px solid var(--border); border-radius: 6px;
+        padding: 2px 8px; transform: translateY(-2px);
+    }
+    .ro-iconbtn {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 30px; height: 30px; border-radius: var(--radius-sm);
+        border: 1px solid var(--border); background: var(--surface);
+        color: var(--text-muted); cursor: pointer;
+    }
+    .ro-iconbtn:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-2); }
+
+    /* ---------------------------------------------------------------- PHASE STRIP (redesign)
+       The redesign phase strip is `<div class="ro-phase-strip">` -- the SAME selector
+       the live phase strip uses. Scoped under the redesign CONTENT marker `.ro-rd`
+       (D13), NOT `.ro-shell`: `.ro-shell` is the layout grid present on EVERY screen
+       and cannot distinguish migrated content, whereas `.ro-rd` is added only by a
+       migrated content template -- so the live phase strip keeps its existing
+       `.ro-phase-strip` app rule until that screen migrates. */
+    .ro-rd .ro-phase-strip {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 16px; margin: 0 0 12px; flex-wrap: wrap;
+        padding: 8px 12px; border: 1px solid var(--border);
+        border-radius: var(--radius); background: var(--surface);
+    }
+    .ro-rd .ro-phase-tally { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+    .ro-rd .ro-phase-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-muted); }
+
+    /* ---------------------------------------------------------------- STATUS DOTS */
+    .ro-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; }
+    .ro-dot.ok { background: var(--st-ok); box-shadow: 0 0 0 3px var(--st-ok-bg); }
+    .ro-dot.warn { background: var(--st-warn); box-shadow: 0 0 0 3px var(--st-warn-bg); }
+    .ro-dot.err { background: var(--st-err); box-shadow: 0 0 0 3px var(--st-err-bg); }
+    .ro-dot.info { background: var(--st-info); box-shadow: 0 0 0 3px var(--st-info-bg); }
+    .ro-dot.mute { background: var(--st-mute); box-shadow: 0 0 0 3px var(--st-mute-bg); }
+    .ro-dot.pulse { animation: ro-dot-pulse 1.6s ease-in-out infinite; }
+    @keyframes ro-dot-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+    /* ---------------------------------------------------------------- TABLE (redesign) */
+    .ro-table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; background: var(--surface); }
+    table.ro-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .ro-table thead th {
+        background: var(--thead-bg);
+        text-align: left; font-family: var(--font-mono);
+        font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+        font-weight: 500; color: var(--text-faint);
+        padding: 9px var(--cell-px); white-space: nowrap;
+        border-bottom: 1px solid var(--border);
+        user-select: none;
+    }
+    .ro-table thead th a { color: inherit; display: inline-flex; align-items: center; gap: 4px; }
+    .ro-table thead th a:hover { color: var(--text-muted); }
+    .ro-table thead th.sorted a { color: var(--text); }
+    .ro-table thead th .sort-ico { opacity: .9; }
+    .ro-table thead th.num, .ro-table td.num { text-align: right; }
+    .ro-table tbody td {
+        padding: var(--row-py) var(--cell-px);
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: middle; white-space: nowrap;
+        font-family: var(--font-mono); font-size: 12.5px; color: var(--text-muted);
+    }
+    .ro-table tbody tr:last-child td { border-bottom: 0; }
+    .ro-table tbody tr { transition: background .08s ease; }
+    .ro-table tbody tr:hover { background: var(--row-hover); }
+    .ro-table tbody tr.is-selected { background: var(--row-sel); }
+
+    /* sticky NAME column. Opaque tint-over-surface composite (no green smear on
+       horizontal scroll). */
+    .ro-table th:first-child,
+    .ro-table td.cell-name {
+        position: sticky; left: 0; z-index: 1;
+        background: var(--surface);
+        border-right: 1px solid var(--border-soft);
+    }
+    .ro-table thead th:first-child { background: var(--thead-bg); z-index: 3; }
+    .ro-table tbody tr:hover td.cell-name { background: var(--row-hover); }
+    .ro-table tbody tr.is-selected td.cell-name {
+        background-color: var(--surface);
+        background-image: linear-gradient(var(--row-sel), var(--row-sel));
+    }
+    .ro-table tbody tr.is-selected:hover td.cell-name {
+        background-color: var(--row-hover);
+        background-image: linear-gradient(var(--row-sel), var(--row-sel));
+    }
+    /* green selected marker pinned on the sticky cell */
+    .ro-table tbody tr.is-selected td:first-child { box-shadow: inset 2.5px 0 0 var(--accent); }
+
+    /* name cell -- the loud identifier. NEVER truncated. */
+    td.cell-name { color: var(--id-color); }
+    td.cell-name a { color: var(--id-color); font-weight: 500; }
+    td.cell-name a:hover .pn-head { color: var(--accent); }
+    .pn-head { color: var(--id-color); }
+    .pn-tail { color: var(--text-faint); }
+
+    td.cell-node a { color: var(--text-muted); }
+    td.cell-node a:hover { color: var(--accent); }
+    .ro-table td.faint { color: var(--text-faint); }
+
+    /* truncation reserved for long secondary free-text ONLY -- never identifiers. */
+    .ro-table .trunc { display: inline-block; max-width: 360px; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+    .ro-table .trunc.w-img { max-width: 420px; }
+    .ro-table .trunc.w-label { max-width: 280px; }
+
+    /* status cell */
+    .cell-status { display: inline-flex; align-items: center; gap: 7px; }
+    .cell-status.ok { color: var(--st-ok); }
+    .cell-status.warn { color: var(--st-warn); }
+    .cell-status.err { color: var(--st-err); }
+    .cell-status.info { color: var(--st-info); }
+    .cell-status.mute { color: var(--st-mute); }
+
+    /* ready fraction */
+    .ready { font-variant-numeric: tabular-nums; }
+    .ready.full { color: var(--st-ok); }
+    .ready.partial { color: var(--st-warn); }
+    .ready.zero { color: var(--text-faint); }
+
+    /* restarts */
+    .restarts.zero { color: var(--text-faint); }
+    .restarts.some { color: var(--st-warn); }
+    .restarts .ago { color: var(--text-faint); }
+
+    /* age buckets (redesign bare variant; same --age-* tokens, recoloured) */
+    .age-fresh { color: var(--age-fresh); }
+    .age-recent { color: var(--age-recent); }
+    .age-day { color: var(--age-day); }
+    .age-week { color: var(--age-week); }
+    .age-old { color: var(--age-old); }
+
+    /* checkbox */
+    .ro-check { appearance: none; width: 15px; height: 15px; border-radius: 4px;
+        border: 1.5px solid var(--border-strong); background: var(--surface);
+        cursor: pointer; position: relative; flex: none; }
+    .ro-check:hover { border-color: var(--accent); }
+    .ro-check:checked { background: var(--accent); border-color: var(--accent); }
+    .ro-check:checked::after { content: ""; position: absolute; left: 4px; top: 1px;
+        width: 4px; height: 8px; border: solid var(--accent-on); border-width: 0 2px 2px 0;
+        transform: rotate(45deg); }
+
+    /* footer meta under table */
+    .ro-table-meta { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .ro-table-meta a { color: var(--link); }
+    .ro-foundline { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+
+    /* chips (labels) -- redesign, canonical names under the .ro-rd content marker */
+    .ro-rd .ro-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .ro-rd .ro-chip {
+        font-family: var(--font-mono); font-size: 11px;
+        padding: 2px 7px; border-radius: var(--pill-radius);
+        background: var(--surface-2); border: 1px solid var(--border);
+        color: var(--text-muted); white-space: nowrap;
+    }
+    .ro-rd .ro-chip.app { background: var(--label-app-bg); border-color: transparent; color: var(--label-app-fg); }
+    .ro-rd .ro-chip.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+    .ro-rd .ro-chip.anno { max-width: 320px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+
+    /* skeleton inline (redesign) */
+    .sk { display: inline-block; height: 11px; border-radius: 4px;
+        background: linear-gradient(90deg, var(--surface-2) 25%, var(--row-hover) 37%, var(--surface-2) 63%);
+        background-size: 400% 100%; animation: sk 1.3s ease infinite; }
+    @keyframes sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+
+    /* ---------------------------------------------------------------- ICON SYSTEM
+       .ico=curated lucide glyph; .kind-tile=monogram (hue from API group);
+       .kind-img / .kind-emoji=operator override. ~16px sidebar slot. */
+    .kind-tile {
+        --kc: .052; --kl: .80;
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; flex: none;
+        border-radius: 4px;
+        font-family: var(--font-mono); font-size: 8px; font-weight: 600;
+        letter-spacing: .02em;
+        background: oklch(0.62 0.10 var(--kh) / .20);
+        color: oklch(var(--kl) var(--kc) var(--kh));
+        box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .28);
+    }
+    .kind-tile.lg { width: 30px; height: 30px; border-radius: 7px; font-size: 13px; }
+    .kind-curated svg { color: oklch(var(--kl, .80) var(--kc, .052) var(--kh)); stroke: currentColor; }
+    .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.80 0.07 var(--kh)); }
+    .ro-sidebar .menu-list a.is-active .kind-tile { box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .5); }
+    .kind-img { width: 16px; height: 16px; flex: none; object-fit: contain; border-radius: 3px; }
+    .kind-emoji { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center;
+        justify-content: center; font-size: 13px; line-height: 1; }
+    /* base.css scoped the lighter tile to `body.theme-light`; mapped onto readout's
+       data-theme mechanism (NOT a body class) per D5 -- light default :root + explicit
+       [data-theme=light]; dark is the un-prefixed tile rule above + the prefers-dark
+       :not([data-theme=light]) re-assertion below. */
+    :root .kind-tile, [data-theme="light"] .kind-tile {
+        --kl: .42; --kc: .09;
+        background: oklch(0.72 0.11 var(--kh) / .16);
+        box-shadow: inset 0 0 0 1px oklch(0.55 0.10 var(--kh) / .25);
+    }
+    :root .kind-curated svg, :root .ro-sidebar .menu-list a .kind-curated svg,
+    [data-theme="light"] .kind-curated svg,
+    [data-theme="light"] .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.50 0.10 var(--kh)); }
+    [data-theme="dark"] .kind-tile {
+        --kc: .052; --kl: .80;
+        background: oklch(0.62 0.10 var(--kh) / .20);
+        box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .28);
+    }
+    [data-theme="dark"] .kind-curated svg { color: oklch(var(--kl, .80) var(--kc, .052) var(--kh)); }
+    [data-theme="dark"] .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.80 0.07 var(--kh)); }
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .kind-tile {
+            --kc: .052; --kl: .80;
+            background: oklch(0.62 0.10 var(--kh) / .20);
+            box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .28);
+        }
+        :root:not([data-theme="light"]) .kind-curated svg { color: oklch(var(--kl, .80) var(--kc, .052) var(--kh)); }
+        :root:not([data-theme="light"]) .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.80 0.07 var(--kh)); }
+    }
+
+    /* ================================================================ DETAIL VIEW (redesign)
+       Colliding canonical names (ro-kind-badge, ro-section, ro-section-label, ro-kv*,
+       ro-cond-pill, ro-owner, ro-yaml-card, ro-card-head, ro-copy-btn, ro-event-msg)
+       are scoped under the redesign CONTENT marker `.ro-rd` (D13): a migrated content
+       template adds `ro-rd` to its outermost content element, so the redesign look
+       applies only to migrated screens while the live (unmarked) markup keeps its
+       existing app rule. Non-colliding net-new names stay bare. */
+    .ro-detail-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 2px 0 14px; }
+    .ro-detail-title .ro-title { font-size: 23px; }
+    .ro-rd .ro-kind-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
+        text-transform: uppercase; padding: 3px 8px; border-radius: 5px;
+        background: var(--accent-weak); color: var(--accent); }
+    .ro-detail-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); margin-left: auto; }
+    .ro-detail-actions { display: flex; gap: 4px; }
+
+    /* tabs (Default / YAML / Logs) -- redesign bare variant */
+    .ro-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 0 20px; }
+    .ro-tabs a { padding: 8px 14px; font-size: 13px; color: var(--text-muted); position: relative; font-weight: 500; }
+    .ro-tabs a:hover { color: var(--text); }
+    .ro-tabs a.is-active { color: var(--text); }
+    .ro-tabs a.is-active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
+        height: 2px; background: var(--accent); border-radius: 2px; }
+
+    /* sections (redesign) -- canonical names under the .ro-rd content marker */
+    .ro-rd .ro-section { margin: 0 0 22px; }
+    .ro-rd .ro-section-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--text-faint); margin: 0 0 9px; }
+
+    /* key/value lists (node capacity, system info) -- redesign */
+    .ro-rd .ro-kv-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; }
+    .ro-rd .ro-kv { margin: 0; display: flex; flex-direction: column; gap: 1px; }
+    .ro-rd .ro-kv-row { display: flex; justify-content: space-between; gap: 16px; padding: 5px 0;
+        border-bottom: 1px solid var(--border-soft); }
+    .ro-rd .ro-kv-row dt { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); margin: 0; }
+    .ro-rd .ro-kv-row dd { font-family: var(--font-mono); font-size: 12px; color: var(--text); margin: 0; text-align: right; }
+
+    /* node condition pills (redesign) */
+    .ro-rd .ro-cond-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
+        border-radius: 999px; font-family: var(--font-mono); font-size: 11.5px; border: 1px solid var(--border); }
+    .ro-rd .ro-cond-pill .ro-cond-name { color: var(--text-muted); } .ro-rd .ro-cond-pill .ro-cond-val { color: var(--text); }
+    .ro-rd .ro-cond-pill.ok { background: var(--st-ok-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill.ok .ro-dot { background: var(--st-ok); }
+    .ro-rd .ro-cond-pill.warn { background: var(--st-warn-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill.warn .ro-dot { background: var(--st-warn); }
+    .ro-rd .ro-cond-pill .ro-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: none; }
+
+    /* owners line (redesign) */
+    .ro-rd .ro-owner { font-size: 13px; color: var(--text-muted); }
+    .ro-rd .ro-owner a { font-family: var(--font-mono); }
+    .ro-rd .ro-owner .kind { color: var(--text-faint); }
+
+    /* YAML cards (collapsible per-section) -- redesign */
+    .ro-rd .ro-yaml-card { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin: 0 0 12px; background: var(--surface); }
+    .ro-rd .ro-card-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+        background: var(--card-head-bg); border-bottom: 1px solid var(--border); cursor: pointer; }
+    .ro-rd .ro-card-head .fold { color: var(--text-faint); display: inline-flex; transition: transform .12s; }
+    .ro-rd .ro-yaml-card.collapsed .fold { transform: rotate(-90deg); }
+    .ro-rd .ro-yaml-card.collapsed .ro-card-body { display: none; }
+    .ro-rd .ro-card-head h4 { font-size: 13px; font-weight: 600; margin: 0; }
+    .ro-rd .ro-card-head .key-count { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+    .ro-rd .ro-copy-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+        font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+        background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px; cursor: pointer; }
+    .ro-rd .ro-copy-btn:hover { color: var(--text); border-color: var(--border-strong); }
+    .ro-card-body { padding: 4px 0; }
+
+    /* YAML / code block (redesign bare variant) */
+    .ro-yaml { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
+        background: var(--code-bg); color: var(--text); overflow-x: auto; }
+    .ro-rd .ro-yaml-card .ro-yaml { background: transparent; }
+    .ro-yaml .ln { display: flex; }
+    .ro-yaml .gutter { flex: none; width: 44px; text-align: right; padding-right: 14px; color: var(--text-faint);
+        user-select: none; opacity: .6; }
+    .ro-yaml .code { white-space: pre; padding-right: 16px; }
+    .ro-yaml.full { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 0; }
+    .yk { color: var(--tok-key); } .ys { color: var(--tok-str); } .yn { color: var(--tok-num); }
+    .yb { color: var(--tok-bool); } .yc { color: var(--text-faint); font-style: italic; } .yd { color: var(--text-faint); }
+
+    /* events table message truncates with tooltip (redesign) */
+    .ro-rd td.ro-event-msg { white-space: normal; max-width: 520px; color: var(--text-muted); }
+
+    /* ================================================================ LOGS (redesign) */
+    .ro-rd .ro-logs-form { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+        font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
+    .ro-rd .ro-logs-form input { height: 32px; background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 0 10px; }
+    .ro-rd .ro-logs-form input:focus { border-color: var(--accent); }
+    .ro-rd .ro-logs-form .tail { width: 74px; }
+    .ro-rd .ro-logs-form .flt { width: 200px; }
+
+    /* buttons (redesign) */
+    .ro-btn { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 14px;
+        border-radius: var(--radius-sm); border: 1px solid transparent; font-size: 12.5px; font-weight: 550;
+        cursor: pointer; background: var(--accent); color: var(--accent-on); }
+    .ro-btn:hover { filter: brightness(1.06); }
+    .ro-btn.quiet { background: var(--surface); color: var(--text-muted); border-color: var(--border); }
+    .ro-btn.quiet:hover { color: var(--text); border-color: var(--border-strong); }
+    .ro-btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+
+    .ro-logtabs { display: flex; gap: 2px; margin: 0 0 12px; }
+    .ro-logtabs a { font-family: var(--font-mono); font-size: 12px; padding: 4px 11px; border-radius: 999px;
+        color: var(--text-muted); }
+    .ro-logtabs a:hover { background: var(--surface-2); color: var(--text); }
+    .ro-logtabs a.is-active { background: var(--accent-weak); color: var(--accent); }
+
+    .ro-rd .ro-logpre { margin: 0; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
+        font-family: var(--font-mono); font-size: 12px; line-height: 1.7; padding: 12px 0; overflow-x: auto; }
+    .ro-rd .ro-logpre .log-line { display: block; white-space: pre; padding: 0 16px; }
+    .ro-rd .ro-logpre .log-line:hover { background: var(--row-hover); }
+    .log-src { color: var(--text-faint); }
+    .log-ts { color: var(--text-faint); }
+
+    /* ================================================================ SELECT TABLE (redesign) */
+    .ro-rd .ro-select-table td:first-child, .ro-rd .ro-select-table th:first-child { width: 40px; text-align: center; }
+    .ro-bottom-controls { margin-top: 14px; }
+    .ro-rd .ro-cell-url { color: var(--text-faint); }
+    .ro-rd .ro-ext-link { display: inline-flex; align-items: center; gap: 6px; }
+
+    /* ================================================================ STATES (redesign) */
+
+    /* banners (info / warn / error / success) */
+    .ro-banner { display: flex; align-items: flex-start; gap: 11px; padding: 11px 14px;
+        border: 1px solid var(--border); border-radius: var(--radius); margin: 0 0 16px;
+        background: var(--surface); font-size: 13px; }
+    .ro-banner .bn-ico { flex: none; margin-top: 1px; }
+    .ro-banner .bn-body { flex: 1; min-width: 0; }
+    .ro-banner .bn-title { font-weight: 600; color: var(--text); margin: 0 0 2px; }
+    .ro-banner .bn-text { color: var(--text-muted); margin: 0; }
+    .ro-banner .bn-text .mono { color: var(--text); }
+    .ro-banner .bn-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+    .ro-banner.warn { border-color: color-mix(in oklab, var(--st-warn) 40%, var(--border));
+        background: color-mix(in oklab, var(--st-warn-bg) 60%, var(--surface)); }
+    .ro-banner.warn .bn-ico { color: var(--st-warn); }
+    .ro-banner.err { border-color: color-mix(in oklab, var(--st-err) 40%, var(--border));
+        background: color-mix(in oklab, var(--st-err-bg) 60%, var(--surface)); }
+    .ro-banner.err .bn-ico { color: var(--st-err); }
+    .ro-banner.info .bn-ico { color: var(--st-info); }
+    .ro-banner.ok .bn-ico { color: var(--st-ok); }
+    .ro-banner .ro-btn { height: 28px; }
+
+    /* cluster scope chips (which clusters answered / failed) -- redesign variant.
+       The live Search markup still uses bare `<span class="ro-scope-chip">` (inside a
+       `<div class="ro-scope">`) styled by the existing app rules, so the redesign
+       scope + chip rules use the canonical names scoped under the redesign CONTENT
+       marker `.ro-rd` (D13) -- the migrated Search content carries `ro-rd`, so the
+       redesign chip look applies only there while live Search keeps its app rule. */
+    .ro-rd .ro-scope { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 16px; font-size: 12px; }
+    .ro-rd .ro-scope .lbl { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
+    .ro-rd .ro-scope-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+        border: 1px solid var(--border); font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); }
+    .ro-rd .ro-scope-chip .ro-dot { box-shadow: none; width: 6px; height: 6px; }
+    .ro-rd .ro-scope-chip.ok { color: var(--text); }
+    .ro-rd .ro-scope-chip.err { color: var(--st-err); border-color: color-mix(in oklab, var(--st-err) 35%, var(--border));
+        background: var(--st-err-bg); }
+    .ro-rd .ro-scope-chip.err .retry { color: var(--st-err); text-decoration: underline; cursor: pointer; }
+
+    /* skeleton table */
+    .sk-row td { padding: var(--row-py) var(--cell-px); border-bottom: 1px solid var(--border-soft); }
+    .sk-bar { display: block; height: 10px; border-radius: 4px;
+        background: linear-gradient(90deg, var(--surface-2) 25%, var(--row-hover) 37%, var(--surface-2) 63%);
+        background-size: 400% 100%; animation: sk 1.25s ease infinite; }
+    .sk-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+        background: var(--surface-2); animation: sk-pulse 1.25s ease infinite; }
+    @keyframes sk-pulse { 0%,100%{opacity:.4} 50%{opacity:.9} }
+
+    /* big empty state */
+    .ro-empty-lg { display: flex; flex-direction: column; align-items: center; justify-content: center;
+        text-align: center; padding: 72px 24px; }
+    .ro-empty-glyph { width: 52px; height: 52px; border-radius: 13px; display: flex; align-items: center;
+        justify-content: center; background: var(--surface-2); border: 1px solid var(--border); margin-bottom: 18px; }
+    .ro-empty-glyph .ico svg { width: 24px; height: 24px; color: var(--text-faint); }
+    .ro-empty-lg h3 { font-size: 16px; font-weight: 600; margin: 0 0 6px; color: var(--text); }
+    .ro-empty-lg p { font-size: 13px; color: var(--text-muted); margin: 0 0 4px; max-width: 420px; }
+    .ro-empty-lg .hint { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+    .ro-empty-lg .ro-btn { margin-top: 18px; }
+    .ro-empty-inline { padding: 36px 20px; text-align: center; color: var(--text-faint);
+        font-size: 13px; font-family: var(--font-ui); }
+
+    /* ================================================================ MOBILE CARDS (redesign) */
+    .ro-cardlist { display: none; flex-direction: column; gap: 8px; }
+    .ro-pcard { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+        padding: 11px 13px; display: flex; flex-direction: column; gap: 8px; }
+    .ro-pcard .pc-top { display: flex; align-items: flex-start; gap: 9px; }
+    .ro-pcard .pc-name { font-family: var(--font-mono); font-size: 13px; color: var(--id-color);
+        font-weight: 500; word-break: break-all; line-height: 1.4; flex: 1; }
+    .ro-pcard .pc-name .pn-tail { color: var(--text-faint); }
+    .ro-pcard .pc-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; font-family: var(--font-mono);
+        font-size: 11.5px; color: var(--text-muted); }
+    .ro-pcard .pc-meta .m { display: inline-flex; gap: 5px; }
+    .ro-pcard .pc-meta .m .k { color: var(--text-faint); }
+    .ro-pcard .pc-status { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono);
+        font-size: 11.5px; flex: none; }
+
+    /* ================================================================ ⌘K PALETTE (redesign canonical .ro-pal-*)
+       The redesign palette is an OVERLAY appended to <body>, OUTSIDE the `.ro-rd`
+       content subtree -- so its container rules cannot be gated by an ancestor marker.
+       Instead the redesign palette ROOT (the backdrop) carries `ro-rd` itself (Unit 4
+       adds it): the canonical `.ro-palette-backdrop` / `.ro-palette` container names
+       are gated by `.ro-rd` ON / UNDER that root, which differentiates the redesign
+       palette from the OLD `.ro-palette` / `.ro-palette-panel` / `-row` overlay (left
+       untouched here; Unit 4 retires it). The inner `.ro-pal-*` vocabulary is net-new
+       (no old conflict) and stays bare below. */
+    .ro-rd.ro-palette-backdrop { position: fixed; inset: 0; z-index: 200; background: var(--overlay-bg);
+        backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center;
+        padding-top: 12vh; opacity: 0; pointer-events: none; transition: opacity .12s; }
+    .ro-rd.ro-palette-backdrop.open { opacity: 1; pointer-events: auto; }
+    .ro-rd .ro-palette { width: min(640px, 92vw); max-height: 64vh; display: flex; flex-direction: column;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: 13px;
+        box-shadow: var(--shadow-pop); overflow: hidden; transform: translateY(-6px); transition: transform .12s; }
+    .ro-rd.ro-palette-backdrop.open .ro-palette { transform: translateY(0); }
+    .ro-pal-search { display: flex; align-items: center; gap: 11px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .ro-pal-search .ico { color: var(--text-faint); }
+    .ro-pal-search input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text);
+        font-family: var(--font-ui); font-size: 15px; }
+    .ro-pal-search input::placeholder { color: var(--text-faint); }
+    .ro-pal-scope { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+        border: 1px solid var(--border); border-radius: 5px; padding: 2px 7px; }
+    .ro-pal-list { overflow-y: auto; padding: 6px; }
+    .ro-pal-group { padding: 9px 10px 4px; font-family: var(--font-mono); font-size: 9.5px;
+        letter-spacing: .12em; text-transform: uppercase; color: var(--text-faint); }
+    .ro-pal-item { display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 8px;
+        cursor: pointer; color: var(--text); }
+    .ro-pal-item .ico, .ro-pal-item .ico svg { width: 16px; height: 16px; color: var(--text-muted); }
+    .ro-pal-item .pal-label { font-size: 13.5px; flex: 1; }
+    .ro-pal-item .pal-label .pal-ctx { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; margin-left: 8px; }
+    .ro-pal-item .pal-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+    .ro-pal-item .ro-kbd { margin-left: 4px; }
+    .ro-pal-item.active { background: var(--accent-weak); }
+    .ro-pal-item.active .ico, .ro-pal-item.active .ico svg { color: var(--accent); }
+    .ro-pal-item.active .pal-meta { color: var(--text-muted); }
+    .ro-pal-foot { display: flex; align-items: center; gap: 16px; padding: 9px 14px; border-top: 1px solid var(--border);
+        font-size: 11px; color: var(--text-faint); }
+    .ro-pal-foot .hint { display: inline-flex; align-items: center; gap: 5px; }
+    .ro-pal-foot .spacer { flex: 1; }
+
+    /* ================================================================ LIST-SPECIFIC CELLS (redesign) */
+    /* roles (nodes) -- redesign, canonical name under the .ro-rd content marker */
+    .ro-rd .ro-role-chip { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+        background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted); }
+    .ro-rd .ro-role-chip.cp { background: var(--accent-weak); border-color: transparent; color: var(--accent); }
+
+    /* capacity bars (nodes) */
+    .cap { display: inline-flex; align-items: center; gap: 8px; }
+    .cap .cap-bar { width: 58px; height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; flex: none; }
+    .cap .cap-bar > i { display: block; height: 100%; border-radius: 3px; }
+    .cap.lo .cap-bar > i { background: var(--st-ok); } .cap.mid .cap-bar > i { background: var(--st-warn); }
+    .cap.hi .cap-bar > i { background: var(--st-err); }
+    .cap .cap-val { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); min-width: 64px; }
+
+    /* replicas bar (deployments) */
+    .rep { display: inline-flex; align-items: center; gap: 9px; }
+    .rep .rep-track { display: inline-flex; gap: 2px; }
+    .rep .rep-track i { width: 7px; height: 14px; border-radius: 2px; background: var(--st-ok); display: block; }
+    .rep .rep-track i.pending { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
+    .rep .rep-track i.updating { background: var(--st-warn); animation: ro-dot-pulse 1.4s ease-in-out infinite; }
+    .rep .rep-num { font-family: var(--font-mono); font-size: 12px; }
+    .rollout { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 12px; }
+    .rollout.done { color: var(--st-ok); } .rollout.prog { color: var(--st-warn); } .rollout.paused { color: var(--text-faint); }
+
+    /* ----------------------------------------------------------------------------
+       PER-SCREEN classes that live in the mockups' inline <style> blocks (NOT in
+       base.css). Lifted EXACT from each screen so Clusters / Search / Pods Mobile
+       render styled. Source: design/screens/{Clusters,Search,Pods Mobile}.html.
+       ---------------------------------------------------------------------------- */
+
+    /* Clusters.html inline <style> */
+    .ro-page { max-width: 1180px; margin: 0 auto; padding: 30px 26px 80px; }
+    .tools-row { display: flex; gap: 8px; margin: 0 0 18px; }
+    .tools-row .field { position: relative; flex: 1; }
+    .tools-row .field .ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
+    .tools-row input { width: 100%; height: 36px; padding: 0 12px 0 34px; background: var(--surface);
+        border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; }
+    .tools-row input:focus { border-color: var(--accent); }
+    .cl-name a { font-family: var(--font-mono); color: var(--id-color); font-weight: 500; }
+    .cl-name a:hover { color: var(--accent); }
+
+    /* Search.html inline <style> */
+    .search-hero { max-width: 760px; }
+    .search-big { position: relative; margin: 4px 0 14px; }
+    .search-big input { width: 100%; height: 44px; padding: 0 16px 0 44px; font-size: 15px;
+        background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--text);
+        font-family: var(--font-mono); }
+    .search-big input:focus { border-color: var(--accent); }
+    .search-big .ico { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
+    .search-opts { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-bottom: 4px; font-size: 12px; color: var(--text-muted); }
+    td.cell-clu a, td.cell-ns a { color: var(--text-muted); }
+    td.cell-clu a:hover { color: var(--accent); }
+    .res-kind { display: inline-flex; align-items: center; gap: 8px; }
+
+    /* "Pods Mobile.html" inline <style> -- the mobile-only chrome (the menu toggle).
+       The artboard's forced-mobile layout overrides (sidebar/search hidden, cardlist
+       shown) are produced by base.css's @media (max-width:760px) -- ALSO ported below
+       in this layer -- so only the menu-toggle chrome (no media query) is lifted here. */
+    .menu-toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px;
+        height: 32px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); }
+
+    /* responsive switch (from base.css @media max-width:760px) -- drives the mobile
+       card layout the Pods Mobile artboard shows. */
+    @media (max-width: 760px) {
+        .ro-sidebar { display: none; }
+        .ro-main { padding: 16px 13px 60px; }
+        header.ro-topbar { gap: 10px; padding: 0 11px; }
+        .ro-search { display: none; }
+        .ro-title { font-size: 21px; }
+        .ro-mobile-hide { display: none !important; }
+        .ro-table-wrap.has-cards { display: none; }
+        .ro-cardlist { display: flex; }
+    }
+
+    /* Respect prefers-reduced-motion for the ported pulse / skeleton / morph
+       animations (D-reduced-motion). The static look is kept; only the looping /
+       sweeping / pulsing motion is dropped. */
+    @media (prefers-reduced-motion: reduce) {
+        .refresh-live .ro-livedot { animation: none; }
+        .ro-dot.pulse { animation: none; }
+        .rep .rep-track i.updating { animation: none; }
+        .sk, .sk-bar, .sk-dot { animation: none; }
+        .ro-rd .ro-palette { transition: none; }
+    }
 }
 
 @layer theme {
@@ -1885,108 +2590,131 @@
        --------------------------------------------------------------------------- */
 
     :root {
-        /* geometry + density -- SHARED by both themes. Roomy end (was 6px/10px
-           compact, which read as too cramped; bumped to the comfortable 9px/13px). */
+        /* geometry + density -- SHARED by both themes. Lifted EXACT from base.css
+           (the redesign source of truth): row-py 9px / cell-px 14px, radius 7px
+           (sm 5px / pill 5px), topbar 52px, sidebar 224px. */
         --row-py: 9px;
-        --cell-px: 13px;
-        --radius: 6px;
+        --cell-px: 14px;
+        --radius: 7px;
         --radius-sm: 5px;
-        --pill-radius: 4px;
+        --pill-radius: 5px;
+        --topbar-h: 52px;
+        --sidebar-w: 224px;
 
-        /* LIGHT palette (Contrast) -- default */
+        /* brand -- promoted from logo-only into accents (shared by both themes) */
+        --brand: #56E0BC;
+        --brand-ink: #04140f;
+
+        /* LIGHT palette "Contrast" -- default. Mapped from base.css body.theme-light. */
         --bg: #ffffff;
         --surface: #ffffff;
-        --surface-2: #f3f3f3;
-        --header-bg: #ffffff;
-        --sidebar-bg: #fbfbfb;
+        --surface-2: #f4f5f6;
+        --header-bg: #ffffffcc;
+        --sidebar-bg: #fbfbfc;
         --thead-bg: #fafafa;
         --card-head-bg: #fafafa;
         --code-bg: #fafafa;
-        --row-hover: #f6f6f6;
-        --overlay-bg: rgba(0,0,0,.26);
+        --row-hover: #f6f8f7;
+        --row-sel: rgba(20,150,120,.07);
+        --overlay-bg: rgba(15,20,25,.26);
 
-        --text: #0a0a0a;
-        --text-muted: #45474c;
-        --text-faint: #8a8d93;
-        --border: #e6e6e8;
-        --border-strong: #0a0a0a;
+        --text: #0b0c0e;
+        --text-muted: #51555c;
+        --text-faint: #898d94;
+        --border: #e7e8ea;
+        --border-soft: #f0f0f2;
+        --border-strong: #d3d5d8;
 
-        --accent: #0a0a0a;            /* primary fills + active markers = near-black */
+        --accent: #0c8f6e;            /* darkened green -- reads as the one saturated action */
         --accent-on: #ffffff;
-        --accent-weak: #f0f0f0;
-        --accent-text: #111111;
-        --id-color: #1a46c2;          /* the one blue: identifiers + links */
+        --accent-weak: rgba(12,143,110,.1);
+        --accent-text: #0c8f6e;       /* accent used as TEXT (readout-specific token) */
+        --id-color: #14181d;          /* identifiers + name links */
+        --link: #146a52;
 
-        --label-app-bg: #e7eefe;      /* app.kubernetes.io/* label chips */
-        --label-app-fg: #1b46c2;
+        --label-app-bg: #e3f6ef;      /* app.kubernetes.io/* label chips */
+        --label-app-fg: #0c8f6e;
 
-        --st-ok:   #117a3d; --st-ok-bg:   #e9f6ee;
-        --st-warn: #8a5a06; --st-warn-bg: #f8f0e0;
-        --st-err:  #c22424; --st-err-bg:  #fbeaea;
+        --st-ok:   #11824a; --st-ok-bg:   #e7f6ee;
+        --st-warn: #9a5d04; --st-warn-bg: #f8f0e0;
+        --st-err:  #c42b2b; --st-err-bg:  #fbeaea;
         --st-info: #1a52c8; --st-info-bg: #ebf1fe;
+        --st-mute: #6a7078; --st-mute-bg: #eef0f2;
 
-        /* age scale -- the freshest-to-oldest age cell colours */
-        --age-fresh: #047a3c; --age-recent: #3a7a52; --age-day: #5f6f64; --age-week: #707070; --age-old: #a0a0a0;
+        /* age scale -- the freshest-to-oldest age cell colours (fresh = darkened
+           brand -> old grey). Token VALUES recoloured per D6; the 5 buckets stay. */
+        --age-fresh: #0c8f6e; --age-recent: #3f7a64; --age-day: #5f6f66; --age-week: #777777; --age-old: #a3a6ab;
 
-        /* YAML / Pygments-ish syntax */
+        /* YAML / Pygments syntax. nt->key num->m bool->kc string->s2/.l comment->c. */
         --tok-key: #1a46c2; --tok-str: #117a3d; --tok-num: #8a5a06; --tok-bool: #7a3fd1;
+
+        --shadow-pop: 0 16px 40px -12px rgba(15,20,25,.22), 0 0 0 1px var(--border);
     }
 
-    /* DARK palette (Terminal) -- the chosen default look */
+    /* DARK palette "Terminal" -- the configured default look. Mapped EXACT from
+       base.css :root (its dark default is the source of truth). */
     [data-theme="dark"] {
-        --bg: #0d0f13;
-        --surface: #14171d;
-        --surface-2: #1c2027;
-        --header-bg: #0f1216;
-        --sidebar-bg: #0f1216;
-        --thead-bg: #11141a;
+        --bg: #0c0e12;
+        --surface: #0f1217;
+        --surface-2: #161a21;
+        --header-bg: #0c0e12cc;
+        --sidebar-bg: #0b0d11;
+        --thead-bg: #0f1217;
         --card-head-bg: #161a21;
-        --code-bg: #0a0c10;
-        --row-hover: #181c23;
-        --overlay-bg: rgba(0,0,0,.58);
+        --code-bg: #090b0e;
+        --row-hover: #14181f;
+        --row-sel: rgba(86,224,188,.07);
+        --overlay-bg: rgba(0,0,0,.62);
 
-        --text: #d7dce3;
+        --text: #dbe1e8;
         --text-muted: #98a1ae;
         --text-faint: #5d6675;
-        --border: #232831;
-        --border-strong: #363d49;
+        --border: #1d222b;
+        --border-soft: #161b22;
+        --border-strong: #2c333f;
 
-        --accent: #5b8cff;
-        --accent-on: #07090d;
-        --accent-weak: rgba(91,140,255,.14);
-        --accent-text: #88aaff;
-        --id-color: #cfd6df;          /* off-white (final). Teal alt: #7ed3c1 */
+        --accent: #56E0BC;            /* brand green promoted into active/focus/selected */
+        --accent-on: #04140f;
+        --accent-weak: rgba(86,224,188,.12);
+        --accent-text: #56E0BC;       /* accent used as TEXT (readout-specific token) */
+        --id-color: #d2d8df;          /* identifiers / row name links -- off-white */
+        --link: #cfd6df;
 
-        --label-app-bg: rgba(91,140,255,.16);
-        --label-app-fg: #9ab8ff;
+        --label-app-bg: rgba(86,224,188,.13);
+        --label-app-fg: #7fe9cd;
 
         --st-ok:   #3ddc97; --st-ok-bg:   rgba(61,220,151,.13);
         --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);
         --st-err:  #ff6b6b; --st-err-bg:  rgba(255,107,107,.13);
         --st-info: #74a9ff; --st-info-bg: rgba(116,169,255,.13);
+        --st-mute: #6b7686; --st-mute-bg: rgba(120,130,148,.13);
 
-        --age-fresh: #2ecc71; --age-recent: #52c98a; --age-day: #7fae90; --age-week: #9aa0a6; --age-old: #6b7177;
+        --age-fresh: #56E0BC; --age-recent: #6fcfae; --age-day: #8aa39a; --age-week: #8b94a0; --age-old: #5d6675;
 
         --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
+
+        --shadow-pop: 0 12px 40px -8px rgba(0,0,0,.6), 0 0 0 1px var(--border);
     }
 
     /* Cookieless users on a dark OS get the dark palette; an explicit light
        choice still wins (same rule the app already uses for age/log/Pygments). */
     @media (prefers-color-scheme: dark) {
         :root:not([data-theme="light"]) {
-            --bg: #0d0f13; --surface: #14171d; --surface-2: #1c2027;
-            --header-bg: #0f1216; --sidebar-bg: #0f1216; --thead-bg: #11141a;
-            --card-head-bg: #161a21; --code-bg: #0a0c10; --row-hover: #181c23; --overlay-bg: rgba(0,0,0,.58);
-            --text: #d7dce3; --text-muted: #98a1ae; --text-faint: #5d6675;
-            --border: #232831; --border-strong: #363d49;
-            --accent: #5b8cff; --accent-on: #07090d; --accent-weak: rgba(91,140,255,.14); --accent-text: #88aaff; --id-color: #cfd6df;
-            --label-app-bg: rgba(91,140,255,.16); --label-app-fg: #9ab8ff;
+            --bg: #0c0e12; --surface: #0f1217; --surface-2: #161a21;
+            --header-bg: #0c0e12cc; --sidebar-bg: #0b0d11; --thead-bg: #0f1217;
+            --card-head-bg: #161a21; --code-bg: #090b0e; --row-hover: #14181f; --row-sel: rgba(86,224,188,.07); --overlay-bg: rgba(0,0,0,.62);
+            --text: #dbe1e8; --text-muted: #98a1ae; --text-faint: #5d6675;
+            --border: #1d222b; --border-soft: #161b22; --border-strong: #2c333f;
+            --accent: #56E0BC; --accent-on: #04140f; --accent-weak: rgba(86,224,188,.12); --accent-text: #56E0BC; --id-color: #d2d8df; --link: #cfd6df;
+            --label-app-bg: rgba(86,224,188,.13); --label-app-fg: #7fe9cd;
             --st-ok: #3ddc97; --st-ok-bg: rgba(61,220,151,.13);
             --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);
             --st-err: #ff6b6b; --st-err-bg: rgba(255,107,107,.13);
             --st-info: #74a9ff; --st-info-bg: rgba(116,169,255,.13);
-            --age-fresh: #2ecc71; --age-recent: #52c98a; --age-day: #7fae90; --age-week: #9aa0a6; --age-old: #6b7177;
+            --st-mute: #6b7686; --st-mute-bg: rgba(120,130,148,.13);
+            --age-fresh: #56E0BC; --age-recent: #6fcfae; --age-day: #8aa39a; --age-week: #8b94a0; --age-old: #5d6675;
             --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
+            --shadow-pop: 0 12px 40px -8px rgba(0,0,0,.6), 0 0 0 1px var(--border);
         }
     }
 
@@ -2409,4 +3137,58 @@
         [data-theme="light"] .highlight .vm { color: #bb60d5 }
         [data-theme="light"] .highlight .il { color: #40a070 }
     }
+
+    /* ===========================================================================
+       YAML recolor onto the redesign --tok-* palette (D7). chroma/Pygments stays
+       SERVER-SIDE; only the token COLOURS move here. The base Pygments blocks above
+       (light default + the [data-theme=dark] + prefers-dark overrides) are kept; THIS
+       block lands LAST in @layer theme and repoints just the classes that matter for
+       a k8s manifest at the --tok-* tokens (which already carry the right value per
+       theme, so one token recolor is correct in light / dark / cookieless-either):
+
+         keys   -> nt (Name.Tag)                 -> --tok-key
+         strings-> s2 + the .s* string family    -> --tok-str
+         scalars-> .l (UNQUOTED Literal!)         -> --tok-str   (CRITICAL: most k8s
+                   values -- nginx:1.25, apps/v1, Deployment -- tokenize as Literal->.l;
+                   without this they render uncoloured)
+         numbers-> m + the .m* number family      -> --tok-num
+         bools  -> kc (Keyword.Constant: true/false/null) -> --tok-bool
+         comment-> c + the .c* comment family     -> faint, italic
+
+       Specificity: the dark Pygments rules are prefixed [data-theme="dark"] (0,3,0),
+       so a bare `.highlight .nt` (0,2,0) here would LOSE under an explicit dark
+       choice. We therefore mirror this recolor across the SAME three theme contexts
+       the Pygments blocks use -- a top-level pass (wins for the light default + the
+       prefers-dark cookieless path, both bare-specificity) and a [data-theme="dark"]
+       pass at matching (0,3,0) for the explicit dark choice -- so the token colours
+       win in every theme path. Static manifests are read-only; no inline style. */
+    .highlight .nt { color: var(--tok-key); font-weight: 600; }
+    .highlight .l,
+    .highlight .s, .highlight .s1, .highlight .s2, .highlight .sa, .highlight .sb,
+    .highlight .sc, .highlight .dl, .highlight .sd, .highlight .se, .highlight .sh,
+    .highlight .si, .highlight .sx, .highlight .sr, .highlight .ss { color: var(--tok-str); }
+    .highlight .m, .highlight .mb, .highlight .mf, .highlight .mh, .highlight .mi,
+    .highlight .mo, .highlight .il { color: var(--tok-num); }
+    .highlight .kc { color: var(--tok-bool); font-weight: 600; }
+    .highlight .c, .highlight .ch, .highlight .cm, .highlight .cp, .highlight .cpf,
+    .highlight .c1, .highlight .cs { color: var(--text-faint); font-style: italic; }
+
+    [data-theme="dark"] .highlight .nt { color: var(--tok-key); font-weight: 600; }
+    [data-theme="dark"] .highlight .l,
+    [data-theme="dark"] .highlight .s, [data-theme="dark"] .highlight .s1,
+    [data-theme="dark"] .highlight .s2, [data-theme="dark"] .highlight .sa,
+    [data-theme="dark"] .highlight .sb, [data-theme="dark"] .highlight .sc,
+    [data-theme="dark"] .highlight .dl, [data-theme="dark"] .highlight .sd,
+    [data-theme="dark"] .highlight .se, [data-theme="dark"] .highlight .sh,
+    [data-theme="dark"] .highlight .si, [data-theme="dark"] .highlight .sx,
+    [data-theme="dark"] .highlight .sr, [data-theme="dark"] .highlight .ss { color: var(--tok-str); }
+    [data-theme="dark"] .highlight .m, [data-theme="dark"] .highlight .mb,
+    [data-theme="dark"] .highlight .mf, [data-theme="dark"] .highlight .mh,
+    [data-theme="dark"] .highlight .mi, [data-theme="dark"] .highlight .mo,
+    [data-theme="dark"] .highlight .il { color: var(--tok-num); }
+    [data-theme="dark"] .highlight .kc { color: var(--tok-bool); font-weight: 600; }
+    [data-theme="dark"] .highlight .c, [data-theme="dark"] .highlight .ch,
+    [data-theme="dark"] .highlight .cm, [data-theme="dark"] .highlight .cp,
+    [data-theme="dark"] .highlight .cpf, [data-theme="dark"] .highlight .c1,
+    [data-theme="dark"] .highlight .cs { color: var(--text-faint); font-style: italic; }
 }
