@@ -274,7 +274,7 @@ func toDetailData(v *detailView) templates.DetailData {
 		d.Labels = append(d.Labels, templates.DetailLabelChip{Href: chip.Href, Class: chip.Class, Key: chip.Key, Val: chip.Val})
 	}
 	for _, chip := range v.Annotations {
-		d.Annotations = append(d.Annotations, templates.AnnotationChip{Key: chip.Key, Val: chip.Val})
+		d.Annotations = append(d.Annotations, templates.AnnotationChip{Key: chip.Key, Val: chip.Val, Full: chip.Full})
 	}
 	if v.Node != nil {
 		d.Node = toNodeSummary(*v.Node)

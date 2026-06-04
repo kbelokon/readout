@@ -86,10 +86,13 @@ type DetailLabelChip struct {
 	Val   string
 }
 
-// AnnotationChip is a non-link annotation pill (key + truncated value).
+// AnnotationChip is a non-link annotation pill. Val is the truncated value shown
+// in the (clipped) chip body; Full is the complete "key: value" string carried
+// in the title= tooltip so the full value stays readable.
 type AnnotationChip struct {
-	Key string
-	Val string
+	Key  string
+	Val  string
+	Full string
 }
 
 // OwnerLink is one owner reference: either a kind/name split (rendered with the
@@ -246,7 +249,7 @@ templ detailBody(d DetailData) {
 	if len(d.Annotations) > 0 {
 		<div class="ro-section"><div class="ro-section-label">Annotations</div><div class="ro-chips">
 			for _, chip := range d.Annotations {
-				<span class="ro-chip anno" title={ chip.Key + ": " + chip.Val }>{ chip.Key + ": " + chip.Val }</span>
+				<span class="ro-chip anno" title={ chip.Full }>{ chip.Key + ": " + chip.Val }</span>
 			}
 			</div></div>
 	}

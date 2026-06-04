@@ -172,6 +172,62 @@ func TestDetailLabelAppChip(t *testing.T) {
 	}
 }
 
+// TestDetailAnnotationChipTruncation pins the annotation tooltip contract: a
+// long annotation VALUE (> 45 runes, past the truncate(...,40) threshold) must
+// render with the chip BODY clipped (ends with the "..." ellipsis the truncate
+// helper appends, and is shorter than the full value) while the title= carries
+// the FULL untruncated "key: value". The body and the title therefore DIVERGE --
+// the whole point of the tooltip. A short annotation (below threshold) keeps body
+// == title, which is also asserted so both branches are exercised. Driven through
+// the real assembly + render pipeline (buildAnnotationChips -> the templ).
+func TestDetailAnnotationChipTruncation(t *testing.T) {
+	const fullVal = "this-is-a-very-long-annotation-value-that-must-be-clipped-in-the-chip-body"
+	const shortVal = "generic-annotation"
+	obj := detailObject("deployments", "Deployment", true, nil, map[string]any{
+		"example.com/note":  fullVal,  // > 45 runes -> truncates
+		"example.com/short": shortVal, // < 45 runes -> stays whole
+	})
+	doc := renderDetailView(t, buildDefaultDetailView(t, obj))
+
+	// The long-value chip: addressed by the FULL value in its title= (the title is
+	// what should carry the untruncated string).
+	fullTitle := "example.com/note: " + fullVal
+	longChip := doc.Find(`span.ro-chip.anno[title="` + fullTitle + `"]`)
+	if longChip.Length() != 1 {
+		t.Fatalf("expected one annotation chip whose title= holds the FULL value %q; titles=%v",
+			fullTitle, attrsOf(doc, "span.ro-chip.anno", "title"))
+	}
+
+	// The visible BODY is the clipped form: ends with the "..." ellipsis and is
+	// strictly shorter than the full "key: value" string.
+	body := normSpace(longChip.Text())
+	if !strings.HasSuffix(body, "...") {
+		t.Fatalf("annotation chip body = %q, want it clipped with a trailing %q ellipsis", body, "...")
+	}
+	if len([]rune(body)) >= len([]rune(fullTitle)) {
+		t.Fatalf("annotation chip body (%d runes) must be SHORTER than the full value (%d runes): body=%q", len([]rune(body)), len([]rune(fullTitle)), body)
+	}
+	// The body is the exact truncate(value,40) output, prefixed by the key.
+	if body != "example.com/note: this-is-a-very-long-annotation-value-..." {
+		t.Fatalf("annotation chip body = %q, want the truncate(...,40) clipped form", body)
+	}
+	// Body and title DIVERGE: the title must NOT equal the clipped body.
+	if title, _ := longChip.Attr("title"); title == body {
+		t.Fatalf("annotation tooltip is useless: title equals the clipped body %q (full value lost)", body)
+	}
+
+	// The short-value chip keeps body == title (below the truncate threshold), so
+	// the non-truncating branch is exercised too.
+	shortTitle := "example.com/short: " + shortVal
+	shortChip := doc.Find(`span.ro-chip.anno[title="` + shortTitle + `"]`)
+	if shortChip.Length() != 1 {
+		t.Fatalf("expected the short annotation chip with title=%q", shortTitle)
+	}
+	if got := normSpace(shortChip.Text()); got != shortTitle {
+		t.Fatalf("short annotation chip body = %q, want it whole (== %q)", got, shortTitle)
+	}
+}
+
 // TestYAMLCardCollapsibleCopyable pins the per-section YAML card contract that
 // readout.js keys off: a collapsible[data-name] card whose head holds the
 // h4.title fold target + the .ro-copy-btn, with the highlighted body in .content.
@@ -281,6 +337,18 @@ func docTexts(doc *goquery.Document, selector string) []string {
 	var out []string
 	doc.Find(selector).Each(func(_ int, s *goquery.Selection) {
 		out = append(out, normSpace(s.Text()))
+	})
+	return out
+}
+
+// attrsOf returns the named attribute of every match of selector (for readable
+// failure messages); mirrors page.attrs for a raw *goquery.Document.
+func attrsOf(doc *goquery.Document, selector, name string) []string {
+	var out []string
+	doc.Find(selector).Each(func(_ int, s *goquery.Selection) {
+		if v, ok := s.Attr(name); ok {
+			out = append(out, v)
+		}
 	})
 	return out
 }

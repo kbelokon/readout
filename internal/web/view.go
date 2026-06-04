@@ -262,10 +262,14 @@ type labelChipView struct {
 	Val   string
 }
 
-// annotationChipView is one resolved annotation chip (key + truncated value).
+// annotationChipView is one resolved annotation chip. Val is the truncated
+// display value (clipped in the chip body); Full is the complete "key: value"
+// string the chip carries in its title= tooltip, so the full value stays
+// readable even though the body is clipped.
 type annotationChipView struct {
-	Key string
-	Val string
+	Key  string
+	Val  string
+	Full string
 }
 
 // nodeSummaryView holds the resolved Node-kind summary blocks.

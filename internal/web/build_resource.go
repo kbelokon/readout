@@ -171,8 +171,10 @@ func buildLabelChips(cluster, namespace string, object *kube.Object) []labelChip
 	return out
 }
 
-// buildAnnotationChips resolves the annotation chips (sorted keys, value
-// truncated to 40).
+// buildAnnotationChips resolves the annotation chips (sorted keys). Val is the
+// value truncated to 40 for the clipped chip body; Full is the complete
+// "key: value" string for the title= tooltip, so the chip can clip its body
+// while the tooltip still shows the full untruncated value.
 func buildAnnotationChips(object *kube.Object) []annotationChipView {
 	annotations := object.Annotations()
 	if len(annotations) == 0 {
@@ -185,7 +187,11 @@ func buildAnnotationChips(object *kube.Object) []annotationChipView {
 	sort.Strings(keys)
 	out := make([]annotationChipView, 0, len(keys))
 	for _, key := range keys {
-		out = append(out, annotationChipView{Key: key, Val: truncate(annotations[key], 40)})
+		out = append(out, annotationChipView{
+			Key:  key,
+			Val:  truncate(annotations[key], 40),
+			Full: key + ": " + annotations[key],
+		})
 	}
 	return out
 }
