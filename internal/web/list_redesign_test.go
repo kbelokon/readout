@@ -288,11 +288,13 @@ func TestPodsListTransientStatusPulsesThroughRender(t *testing.T) {
 		t.Fatalf("steady Running dot must NOT pulse")
 	}
 
-	// Whole-render sanity: exactly the two transient pods pulse (creating +
+	// Whole-table sanity: exactly the two transient pods pulse (creating +
 	// terminating), so a broadened-pulse regression that animated steady states
-	// would also trip here.
-	if got := p.doc.Find(".ro-dot.pulse").Length(); got != 2 {
-		t.Fatalf("transient pulse dots in render = %d, want 2 (creating + terminating)", got)
+	// would also trip here. Scoped to the .ro-table: the engine now ALSO emits the
+	// mobile `.ro-cardlist` projection of the same rows (Unit 15), whose status
+	// pills pulse identically -- TestMobileCards pins that the card pulse matches.
+	if got := p.doc.Find("table.ro-table .ro-dot.pulse").Length(); got != 2 {
+		t.Fatalf("transient pulse dots in table = %d, want 2 (creating + terminating)", got)
 	}
 }
 

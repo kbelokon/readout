@@ -251,14 +251,17 @@ func TestRolesControlPlaneAccent(t *testing.T) {
 		t.Fatalf("multi-role cell = %#v, want cellRoles [control-plane worker]", cv)
 	}
 	// Render the roles cell and assert the control-plane chip earns .cp while the
-	// worker chip stays plain (the render-side roleClass mapping).
+	// worker chip stays plain (the render-side roleClass mapping). Scoped to the
+	// .ro-table: the engine now ALSO emits the mobile `.ro-cardlist` projection of
+	// the same row (Unit 15), repeating the roles as a card meta row;
+	// TestMobileCards pins the card projection.
 	doc := renderRolesCell(t, cv.Roles)
-	cpChip := doc.Find(".ro-role-chip.cp")
+	cpChip := doc.Find("table.ro-table .ro-role-chip.cp")
 	if cpChip.Length() != 1 || normSpace(cpChip.Text()) != "control-plane" {
 		t.Fatalf("control-plane chip not rendered with .cp: %s", normSpace(doc.Text()))
 	}
 	// The worker chip is a plain .ro-role-chip without .cp.
-	plainChips := doc.Find(".ro-role-chip:not(.cp)")
+	plainChips := doc.Find("table.ro-table .ro-role-chip:not(.cp)")
 	if plainChips.Length() != 1 || normSpace(plainChips.Text()) != "worker" {
 		t.Fatalf("worker chip should be a plain .ro-role-chip (no .cp): %s", normSpace(doc.Text()))
 	}
@@ -270,7 +273,11 @@ func TestRolesControlPlaneAccent(t *testing.T) {
 		t.Fatalf("no-role cell = %#v, want cellRoles with no chips", cv)
 	}
 	emptyDoc := renderRolesCell(t, cv.Roles)
-	if emptyDoc.Find(".ro-role-chip").Length() != 0 || normSpace(emptyDoc.Find(".faint").Text()) != "—" {
+	// Scoped to the .ro-table cell: the engine now ALSO emits the mobile
+	// `.ro-cardlist` projection of the same row (Unit 15), which renders its own
+	// muted "—" for the empty roles meta, so an unscoped `.faint` text would
+	// concatenate both; TestMobileCards pins the card projection.
+	if emptyDoc.Find("table.ro-table .ro-role-chip").Length() != 0 || normSpace(emptyDoc.Find("table.ro-table .faint").Text()) != "—" {
 		t.Fatalf("no-role cell should render the muted —, got %q", normSpace(emptyDoc.Text()))
 	}
 }
@@ -403,22 +410,24 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 		t.Fatalf("down-1 worker role chip must not carry .cp")
 	}
 
-	// Whole-render counts. Only cp-1 is control-plane, so exactly one .cp chip. Two
+	// Whole-table counts. Only cp-1 is control-plane, so exactly one .cp chip. Two
 	// abnormal condition pills now reach the DOM (cp-1 MemoryPressure=warn, down-1
 	// Ready=err), so the total pill count is 2 -- and asserting exactly one warn +
 	// one err keeps a broadened-tone regression (e.g. condPillClass mapping the
-	// wrong token) trippable.
-	if doc.Find(".ro-role-chip.cp").Length() != 1 {
-		t.Fatalf(".cp chip count = %d, want 1", doc.Find(".ro-role-chip.cp").Length())
+	// wrong token) trippable. Scoped to the .ro-table: the engine now ALSO emits the
+	// mobile `.ro-cardlist` projection of the same rows (Unit 15), which repeats the
+	// roles + condition pills as card meta rows; TestMobileCards pins the projection.
+	if doc.Find("table.ro-table .ro-role-chip.cp").Length() != 1 {
+		t.Fatalf(".cp chip count = %d, want 1", doc.Find("table.ro-table .ro-role-chip.cp").Length())
 	}
-	if doc.Find(".ro-cond-pill").Length() != 2 {
-		t.Fatalf("condition pill count = %d, want 2 (cp-1 warn + down-1 err)", doc.Find(".ro-cond-pill").Length())
+	if doc.Find("table.ro-table .ro-cond-pill").Length() != 2 {
+		t.Fatalf("condition pill count = %d, want 2 (cp-1 warn + down-1 err)", doc.Find("table.ro-table .ro-cond-pill").Length())
 	}
-	if doc.Find(".ro-cond-pill.warn").Length() != 1 {
-		t.Fatalf("warn condition pill count = %d, want 1 (cp-1 MemoryPressure)", doc.Find(".ro-cond-pill.warn").Length())
+	if doc.Find("table.ro-table .ro-cond-pill.warn").Length() != 1 {
+		t.Fatalf("warn condition pill count = %d, want 1 (cp-1 MemoryPressure)", doc.Find("table.ro-table .ro-cond-pill.warn").Length())
 	}
-	if doc.Find(".ro-cond-pill.err").Length() != 1 {
-		t.Fatalf("err condition pill count = %d, want 1 (down-1 Ready)", doc.Find(".ro-cond-pill.err").Length())
+	if doc.Find("table.ro-table .ro-cond-pill.err").Length() != 1 {
+		t.Fatalf("err condition pill count = %d, want 1 (down-1 Ready)", doc.Find("table.ro-table .ro-cond-pill.err").Length())
 	}
 	// All three capacity buckets reach the DOM in this single render (lo/mid/hi), so
 	// a templ regression that broke capClass for any one bucket token trips here.

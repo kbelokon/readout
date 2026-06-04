@@ -123,6 +123,69 @@ func cellStatusClass(tone string) string {
 	return "cell-status " + tone
 }
 
+// pcStatusClass is the mobile card status-pill wrapper class (`pc-status` + the
+// tone modifier when present) -- the card-layout twin of cellStatusClass, so the
+// card status pill carries the same tone vocabulary the table status cell does.
+func pcStatusClass(tone string) string {
+	if tone == "" {
+		return "pc-status"
+	}
+	return "pc-status " + tone
+}
+
+// nameCell finds the row's loud-identifier cell (the CellName branch) for the
+// mobile card's `.pc-name`. ok is false when the kind's Table API exposes no name
+// column (the generic engine still lists such a kind; the card then falls back to
+// the first cell's value). row is taken by pointer (the TableRow/TableCell structs
+// are heavy -- gocritic hugeParam/rangeValCopy).
+func nameCell(row *TableRow) (TableCell, bool) {
+	for i := range row.Cells {
+		if row.Cells[i].Kind == CellName {
+			return row.Cells[i], true
+		}
+	}
+	return TableCell{}, false
+}
+
+// statusCell finds the row's status cell (the CellStatus branch) for the mobile
+// card's `.pc-status`. ok is false when the kind has no status column (a generic
+// kind), in which case the card renders no status pill.
+func statusCell(row *TableRow) (TableCell, bool) {
+	for i := range row.Cells {
+		if row.Cells[i].Kind == CellStatus {
+			return row.Cells[i], true
+		}
+	}
+	return TableCell{}, false
+}
+
+// metaKey is the lowercased column header for a card `.pc-meta` row's `.k` label
+// (the mockup shows `ready` / `restarts` / `age`, lowercase). row.Cells align 1:1
+// with table.Columns, so the cell index selects its column name; an out-of-range
+// index (defensive) yields "".
+func metaKey(table *TableData, cellIndex int) string {
+	if cellIndex < 0 || cellIndex >= len(table.Columns) {
+		return ""
+	}
+	return strings.ToLower(table.Columns[cellIndex].Name)
+}
+
+// pcardValueClass is the semantic colour class a plain card meta value should keep
+// from its table cell: the age bucket (`age-*`) and any Bulma tone (`has-text-*`)
+// carry meaning the card preserves (the mockup wraps the age value in its
+// `bucketClass`), while the table's `num` right-alignment class is layout-only and
+// meaningless inside the flex card, so it is dropped. Returns "" when nothing
+// colour-bearing remains -> the card renders the bare value with no wrapper span.
+func pcardValueClass(cell *TableCell) string {
+	var keep []string
+	for _, c := range strings.Fields(cell.ColClass + " " + cell.Class) {
+		if strings.HasPrefix(c, "age-") || strings.HasPrefix(c, "has-text-") {
+			keep = append(keep, c)
+		}
+	}
+	return strings.Join(keep, " ")
+}
+
 // readyClassRD is the redesign ready-ratio span class (`ready` + full|partial|
 // zero). An empty ratio (not an n/d value) yields a bare `ready`.
 func readyClassRD(ratio string) string {

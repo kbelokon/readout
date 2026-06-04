@@ -254,7 +254,11 @@ func assertRolloutRenders(t *testing.T, state, label string) {
 		}}},
 	}}}
 	doc := renderResourceTable(t, &d)
-	sel := doc.Find(".rollout." + state)
+	// Scope to the .ro-table: the engine now ALSO emits the mobile `.ro-cardlist`
+	// projection of the same row (Unit 15), so the Rollout column appears a second
+	// time as a card meta row. This test pins the TABLE cell; the card projection
+	// is covered by TestMobileCards.
+	sel := doc.Find("table.ro-table .rollout." + state)
 	if sel.Length() != 1 {
 		t.Fatalf("state %q: want one .rollout.%s, got %d", state, state, sel.Length())
 	}
@@ -359,8 +363,11 @@ func TestDeploymentListThroughHandlerPreservesGenerics(t *testing.T) {
 	v := app.buildListView(req, lc)
 	doc := renderListView(t, &v)
 
-	// A replica track renders for every row (one per deployment).
-	if got := doc.Find(".rep .rep-track").Length(); got != 4 {
+	// A replica track renders for every row (one per deployment). Scoped to the
+	// .ro-table: the engine now ALSO emits the mobile `.ro-cardlist` projection of
+	// the same rows (Unit 15), so the replica track appears again per card; this
+	// asserts the table body, the card projection is covered by TestMobileCards.
+	if got := doc.Find("table.ro-table .rep .rep-track").Length(); got != 4 {
 		t.Fatalf("replica tracks = %d, want 4 (one per deployment row)", got)
 	}
 
@@ -383,16 +390,18 @@ func TestDeploymentListThroughHandlerPreservesGenerics(t *testing.T) {
 	if got := normSpace(coldRow.Find(".rep-num.zero").Text()); got != "0/3" {
 		t.Fatalf("cold row rep-num.zero = %q, want 0/3 (none ready -> zero)", got)
 	}
-	// Whole-render tone counts: exactly one full + one partial + one zero (the paused
+	// Whole-table tone counts: exactly one full + one partial + one zero (the paused
 	// 'held' row is also 2/2 -> full, so full is two). A regression that broadened a
-	// tone would trip these counts.
-	if got := doc.Find(".rep-num.full").Length(); got != 2 {
+	// tone would trip these counts. Scoped to the .ro-table: the engine now ALSO
+	// emits the mobile `.ro-cardlist` projection of the same rows (Unit 15), which
+	// repeats each replica ratio as a card meta row; TestMobileCards pins it.
+	if got := doc.Find("table.ro-table .rep-num.full").Length(); got != 2 {
 		t.Fatalf(".rep-num.full count = %d, want 2 (web 2/2 + held 2/2)", got)
 	}
-	if got := doc.Find(".rep-num.partial").Length(); got != 1 {
+	if got := doc.Find("table.ro-table .rep-num.partial").Length(); got != 1 {
 		t.Fatalf(".rep-num.partial count = %d, want 1 (worker 1/3)", got)
 	}
-	if got := doc.Find(".rep-num.zero").Length(); got != 1 {
+	if got := doc.Find("table.ro-table .rep-num.zero").Length(); got != 1 {
 		t.Fatalf(".rep-num.zero count = %d, want 1 (cold 0/3)", got)
 	}
 
@@ -407,10 +416,13 @@ func TestDeploymentListThroughHandlerPreservesGenerics(t *testing.T) {
 	if workerRow.Find(".rollout.prog").Length() != 1 {
 		t.Fatalf("worker row should carry .rollout.prog (the rolling deployment)")
 	}
-	if doc.Find(".rollout.done").Length() != 1 {
-		t.Fatalf(".rollout.done count = %d, want 1 (only web is complete)", doc.Find(".rollout.done").Length())
+	// Whole-table rollout counts, scoped to the .ro-table: the engine now ALSO emits
+	// the mobile `.ro-cardlist` projection of the same rows (Unit 15), which repeats
+	// each rollout pill as a card meta row; TestMobileCards pins the projection.
+	if doc.Find("table.ro-table .rollout.done").Length() != 1 {
+		t.Fatalf(".rollout.done count = %d, want 1 (only web is complete)", doc.Find("table.ro-table .rollout.done").Length())
 	}
-	if doc.Find(".rollout.paused").Length() != 1 {
+	if doc.Find("table.ro-table .rollout.paused").Length() != 1 {
 		t.Fatalf("want one .rollout.paused (the paused deployment) through the real bridge")
 	}
 	// The paused pill lands on the 'held' row and carries its label + icon.

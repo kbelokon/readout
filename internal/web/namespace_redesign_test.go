@@ -213,10 +213,12 @@ func TestNamespaceLabelChipsThroughRender(t *testing.T) {
 		t.Fatalf("no-label namespace should render the muted —, got %q", got)
 	}
 
-	// Across the whole namespace render: exactly one .app accent chip (only the
+	// Across the namespace TABLE: exactly one .app accent chip (only the
 	// app.kubernetes.io/* label earns it) -- a regression broadening the accent gate
-	// would trip this count.
-	if got := doc.Find(".ro-chip.app").Length(); got != 1 {
+	// would trip this count. Scoped to the .ro-table: the engine now ALSO emits the
+	// mobile `.ro-cardlist` projection of the same rows (Unit 15), whose chips meta
+	// repeats the chip; TestMobileCards pins the card projection.
+	if got := doc.Find("table.ro-table .ro-chip.app").Length(); got != 1 {
 		t.Fatalf(".app chip count = %d, want 1 (only app.kubernetes.io/*)", got)
 	}
 
@@ -269,8 +271,11 @@ func TestNamespaceListPreservesGenerics(t *testing.T) {
 	v := app.buildListView(req, lc)
 	doc := renderListView(t, &v)
 
-	// The synthetic chips column rendered (one .ro-chips block in the row).
-	if doc.Find(".ro-chips").Length() != 1 {
+	// The synthetic chips column rendered (one .ro-chips block in the table row).
+	// Scoped to the .ro-table: the engine now ALSO emits the mobile `.ro-cardlist`
+	// projection of the same row (Unit 15), which repeats the chips block as a card
+	// meta row; TestMobileCards pins the card projection.
+	if doc.Find("table.ro-table .ro-chips").Length() != 1 {
 		t.Fatalf("synthetic Labels chips column missing")
 	}
 	// The user's labelcols column is still a generic single-label selector link

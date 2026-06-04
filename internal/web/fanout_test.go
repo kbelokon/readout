@@ -89,26 +89,18 @@ func newMultiClusterServer(t *testing.T, clusters map[string]string) *Server {
 // `<a href="/clusters/NAME">NAME</a>` per row's Cluster cell, so the sequence of
 // hrefs is the merged row order.
 func clusterCellOrder(body string) []string {
-	const marker = `href="/clusters/`
-	var order []string
-	for i := 0; ; {
-		idx := strings.Index(body[i:], marker)
-		if idx < 0 {
-			break
-		}
-		start := i + idx + len(marker)
-		end := strings.IndexByte(body[start:], '"')
-		if end < 0 {
-			break
-		}
-		name := body[start : start+end]
-		// The Cluster cells are bare names; skip hrefs that carry a path suffix
-		// (e.g. namespaces/ or pod detail links) so only the Cluster column counts.
-		if !strings.Contains(name, "/") {
-			order = append(order, name)
-		}
-		i = start + end
+	// Scope to the .ro-table Cluster column (td.cell-clu): the engine now ALSO emits
+	// the mobile `.ro-cardlist` projection of the same rows (Unit 15), which carries
+	// its own `cluster` meta link, so a raw href scan would double-count. Parsing the
+	// table's cluster cells pins the merge order on the table body alone.
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+	if err != nil {
+		return nil
 	}
+	var order []string
+	doc.Find("table.ro-table td.cell-clu a").Each(func(_ int, s *goquery.Selection) {
+		order = append(order, strings.TrimSpace(s.Text()))
+	})
 	return order
 }
 

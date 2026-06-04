@@ -2564,9 +2564,20 @@
         height: 32px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); }
 
     /* responsive switch (from base.css @media max-width:760px) -- drives the mobile
-       card layout the Pods Mobile artboard shows. */
+       card layout the Pods Mobile artboard shows. Below 760px the sidebar is hidden
+       and the `.menu-toggle` hamburger (Unit 15, topbar) reveals it: the delegated
+       readout.js click handler toggles `.is-active` on `.ro-sidebar`, and the
+       `.is-active` rule below floats it as a fixed overlay panel under the sticky
+       topbar (so it does not shove the card list). The inline ⌘K search box is
+       hidden too (the palette still opens via ⌘K / Ctrl+K). */
     @media (max-width: 760px) {
         .ro-sidebar { display: none; }
+        .ro-sidebar.is-active {
+            display: block;
+            position: fixed; top: var(--topbar-h); left: 0; bottom: 0; z-index: 60;
+            width: min(var(--sidebar-w), 82vw);
+            box-shadow: var(--shadow-pop);
+        }
         .ro-main { padding: 16px 13px 60px; }
         header.ro-topbar { gap: 10px; padding: 0 11px; }
         .ro-search { display: none; }
@@ -2575,6 +2586,11 @@
         .ro-table-wrap.has-cards { display: none; }
         .ro-cardlist { display: flex; }
     }
+    /* The hamburger is mobile-only chrome: hidden at the desktop width where the
+       sidebar is always present, shown by the media query default below 760px (its
+       base .menu-toggle box styling is lifted from the Pods Mobile artboard above). */
+    .menu-toggle { display: none; }
+    @media (max-width: 760px) { .menu-toggle { display: inline-flex; } }
 
     /* Respect prefers-reduced-motion for the ported pulse / skeleton / morph
        animations (D-reduced-motion). The static look is kept; only the looping /

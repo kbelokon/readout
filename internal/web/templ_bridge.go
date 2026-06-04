@@ -39,6 +39,13 @@ func (s *Server) renderLayout(w http.ResponseWriter, v *layoutView, body templ.C
 // its nested navbar/sidebar view models). It is a flat field copy: every value
 // was already resolved in buildLayoutView.
 func toLayoutData(v *layoutView) templates.LayoutData {
+	navbar := toNavbar(&v.Navbar)
+	// The mobile hamburger lives in the topbar but reveals the sidebar, so it must
+	// render exactly when a sidebar does. ShowMenu is the sidebar-present signal
+	// (set for any in-scope cluster, including the all-clusters list where
+	// ShowContext is false); carry it onto the navbar so topbarC can gate the
+	// .menu-toggle on it.
+	navbar.ShowSidebar = v.Sidebar.ShowMenu
 	return templates.LayoutData{
 		Title:         v.Title,
 		ThemeName:     v.ThemeName,
@@ -48,7 +55,7 @@ func toLayoutData(v *layoutView) templates.LayoutData {
 		IconURL:       v.IconURL,
 		ExtraHead:     v.ExtraHead,
 		Footer:        v.Footer,
-		Navbar:        toNavbar(&v.Navbar),
+		Navbar:        navbar,
 		Sidebar:       toSidebar(v.Sidebar),
 		// PaletteData is handed to templ.JSONScript verbatim; the package-web
 		// paletteFeedView's json tags ARE the pinned wire contract, so the templ

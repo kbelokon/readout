@@ -42,6 +42,13 @@ type Navbar struct {
 	ContextName    string
 	NamespaceLinks []NavItem
 
+	// ShowSidebar mirrors Sidebar.ShowMenu: it is true on every page that renders a
+	// sidebar (any in-scope cluster, including the all-clusters list). It gates the
+	// mobile `.menu-toggle` hamburger so the button exists exactly when there is a
+	// sidebar for it to reveal -- NOT ShowContext, which is false on the
+	// all-clusters list even though that page still has a sidebar.
+	ShowSidebar bool
+
 	SearchCluster   string
 	SearchNamespace string
 
@@ -142,8 +149,19 @@ templ layoutBody(d LayoutData, body templ.Component) {
 // existing #refresh-dropdown / .refresh-option[data-interval] interval hooks; and
 // the theme toggle, which stays a server POST /preferences that opts OUT of
 // hx-boost (D5) -- NOT a client-JS toggle (#btn-theme-toggle + .theme-icon-*).
+//
+// The leading `.menu-toggle` hamburger (D11) is mobile chrome: hidden by the
+// readout.css media query above 760px, it reveals below 760px where the sidebar
+// is hidden, toggling `.ro-sidebar.is-active` via the delegated readout.js click
+// handler (Unit 4). It is a real <button> so the app-layer button:focus-visible
+// ring applies, and renders only when ShowSidebar (there must be a sidebar for
+// it to reveal -- the Clusters entry page has none).
 templ topbarC(n Navbar) {
-	<header class="ro-topbar" aria-label="main navigation"><a class="brand-item" href="/clusters" aria-label="readout home"><span class="brand-logo" aria-hidden="true"></span><span class="brand-name">readout</span></a><nav class="topnav"><a class="is-active" href="/clusters">Clusters</a></nav>
+	<header class="ro-topbar" aria-label="main navigation">
+		if n.ShowSidebar {
+			<button type="button" class="menu-toggle" aria-label="Toggle navigation menu" aria-controls="aside-menu"><span class="ico sm" aria-hidden="true">@iconC("sliders")</span></button>
+		}
+		<a class="brand-item" href="/clusters" aria-label="readout home"><span class="brand-logo" aria-hidden="true"></span><span class="brand-name">readout</span></a><nav class="topnav"><a class="is-active" href="/clusters">Clusters</a></nav>
 		if n.ShowContext {
 			<div id="namespace-dropdown"><button type="button" class="ctx-dd context-trigger" aria-haspopup="true" aria-label="Switch namespace"><span class="ctx-dot" aria-hidden="true"></span><span class="context-name">{ n.ContextName }</span><span class="ctx-caret ico sm" aria-hidden="true">@iconC("chevron-down")</span></button><div class="ctx-menu"><div class="ctx-search"><input id="namespace-searchbox" type="text" placeholder="type to filter" autocomplete="off"></div>
 				for _, ns := range n.NamespaceLinks {
