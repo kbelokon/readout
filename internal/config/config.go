@@ -24,6 +24,15 @@ type Link struct {
 	Title string
 }
 
+// ResourceIconKey identifies a Tier-3 icon override by the resource's Kind and
+// API group (NOT its plural). Keying on kind+group lets one override target a
+// specific CRD family member (e.g. {Cluster, postgresql.cnpg.io}) without
+// colliding with a same-named kind in another group.
+type ResourceIconKey struct {
+	Kind  string
+	Group string
+}
+
 // SidebarGroup is one ordered sidebar category: a heading label and the
 // resource-type plurals listed under it. The sidebar is a slice (not a map) so
 // the operator's declared group order is preserved through to the rendered
@@ -60,6 +69,7 @@ type Config struct {
 	ObjectLinks                          map[string][]Link
 	LabelLinks                           map[string][]Link
 	TimestampLinks                       map[string][]Link
+	ResourceIcons                        map[ResourceIconKey]string
 	Sidebar                              []SidebarGroup
 	SearchDefaultResourceTypes           []string
 	SearchOfferedResourceTypes           []string
@@ -96,6 +106,17 @@ type fileLink struct {
 	Href  string `json:"href"`
 	Icon  string `json:"icon"`
 	Title string `json:"title"`
+}
+
+// fileIconOverride is one Tier-3 per-resource icon override as written in the
+// file: a typed {kind, group, icon} object (the ICON_SYSTEM.md shape), keyed by
+// kind+group. It deliberately borrows only the typed-struct-with-Icon-field
+// pattern from fileLink -- NOT a plural-keyed map -- so an override targets a
+// CRD family member precisely. The top-level list is `resources:`.
+type fileIconOverride struct {
+	Kind  string `json:"kind"`
+	Group string `json:"group"`
+	Icon  string `json:"icon"`
 }
 
 // fileSidebarGroup is one sidebar category as written in the file: an ordered
@@ -141,6 +162,11 @@ type fileConfig struct {
 	TimestampLinks map[string][]fileLink `json:"timestampLinks"`
 
 	Sidebar []fileSidebarGroup `json:"sidebar"`
+
+	// ResourceIcons are Tier-3 per-resource icon overrides, keyed by kind+group.
+	// The top-level YAML key is `resources:` (a typed list, distinct from the
+	// plural strings under sidebar.resources).
+	ResourceIcons []fileIconOverride `json:"resources"`
 
 	Search struct {
 		DefaultResourceTypes []string `json:"defaultResourceTypes"`
@@ -260,6 +286,7 @@ func resolve(file *fileConfig) (Config, error) {
 		ObjectLinks:                          resolveLinks(file.ObjectLinks),
 		LabelLinks:                           resolveLinks(file.LabelLinks),
 		TimestampLinks:                       resolveLinks(file.TimestampLinks),
+		ResourceIcons:                        resolveResourceIcons(file.ResourceIcons),
 		Sidebar:                              resolveSidebar(file.Sidebar),
 		AuthMode:                             firstNonEmpty(file.Auth.Mode, AuthModeNone),
 		TrustedHeaderUser:                    firstNonEmpty(file.Auth.TrustedHeaders.User, "X-Forwarded-User"),
@@ -373,6 +400,22 @@ func resolveLinks(links map[string][]fileLink) map[string][]Link {
 			}
 			result[key] = append(result[key], link)
 		}
+	}
+	return result
+}
+
+// resolveResourceIcons folds the typed `resources:` override list into a
+// kind+group keyed map. Entries with an empty icon (or no kind) are skipped so a
+// stray list element cannot blank an otherwise-resolved icon. The icon string is
+// interpreted later by the icon resolver (lucide:/emoji:/local-image/bare-name);
+// remote image URLs are dropped there, not here.
+func resolveResourceIcons(overrides []fileIconOverride) map[ResourceIconKey]string {
+	result := map[ResourceIconKey]string{}
+	for _, o := range overrides {
+		if o.Kind == "" || o.Icon == "" {
+			continue
+		}
+		result[ResourceIconKey{Kind: o.Kind, Group: o.Group}] = o.Icon
 	}
 	return result
 }

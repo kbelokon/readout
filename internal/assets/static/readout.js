@@ -83,31 +83,65 @@ if (typeof Idiomorph !== 'undefined'
 document.addEventListener('click', (event) => {
     const target = event.target;
 
-    // ⌘K palette: a click on a result row navigates to that target's href (a
-    // plain GET to an existing permalink -- the anchor's default href click,
-    // which we DO NOT preventDefault, carries the navigation). We just close the
-    // overlay so it does not linger over the new page (under hx-boost the click
-    // is an AJAX nav, not a teardown). Matched before everything else so a click
-    // inside the open palette never falls through to a page handler.
-    const paletteRow = target.closest('.ro-palette-row');
-    if (paletteRow) {
-        closePalette();
-        return; // let the anchor's native GET navigation proceed
-    }
-    // A click on the palette backdrop (the dimmed area outside the panel) closes
-    // it, like Esc. The panel itself carries no close-marker, so an in-panel
-    // click (e.g. into the input) does nothing here.
-    const paletteClose = target.closest('[data-palette-close]');
-    if (paletteClose) {
+    // ⌘K palette: a click on a result row activates that row (navigates to its
+    // server-built href or runs its named action, then closes). Matched before
+    // everything else so a click inside the open palette never falls through to a
+    // page handler. The row carries no <a> -- navigation goes through the dataset
+    // href in choosePaletteRow (defends against a javascript: scheme).
+    const paletteItem = target.closest('.ro-pal-item');
+    if (paletteItem) {
         event.preventDefault();
+        choosePaletteRow(paletteItem);
+        return;
+    }
+    // The read-only topbar search box (data-palette-open) opens the palette on
+    // click, instead of typing inline. (Keyboard focus is handled in focusin.)
+    const paletteOpener = target.closest('[data-palette-open]');
+    if (paletteOpener) {
+        event.preventDefault();
+        openPalette();
+        return;
+    }
+    // A click on the palette backdrop ITSELF (the dimmed area outside the panel)
+    // closes it, like Esc. A click inside the panel does not match (the panel is a
+    // descendant, so target.closest stops at the panel, not the backdrop root).
+    if (target.id === PALETTE_ID) {
         closePalette();
+        return;
+    }
+    // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
+    // #resource-list-content. On success the morph swaps fresh rows and the
+    // afterSwap handler clears the stale dim + re-hides the banner; on another
+    // failure the responseError handler keeps it stale. Pure DOM, GET-only -- the
+    // read-only floor is untouched (it triggers the element's existing ro:refresh,
+    // never a write).
+    const staleRetry = target.closest('.ro-stale-retry');
+    if (staleRetry) {
+        event.preventDefault();
+        const content = document.getElementById('resource-list-content');
+        if (content && typeof htmx !== 'undefined') {
+            htmx.trigger(content, 'ro:refresh');
+        }
+        return;
+    }
+    // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
+    // sidebar by toggling `.is-active` on `.ro-sidebar` (the <760px reveal CSS +
+    // the button itself are owned by Unit 15; this is the JS half of D11). No-op
+    // when no sidebar is present (e.g. the Clusters entry page).
+    const menuToggle = target.closest('.menu-toggle');
+    if (menuToggle) {
+        event.preventDefault();
+        const sidebar = document.querySelector('.ro-sidebar');
+        if (sidebar) {
+            sidebar.classList.toggle('is-active');
+        }
         return;
     }
 
     // Auto-refresh interval option (navbar #refresh-dropdown): store the chosen
     // interval client-side, re-arm the poll, and reflect it in the control. The
-    // dropdown opens on hover (Bulma is-hoverable), so there is no open/close
-    // handler -- only the selection.
+    // dropdown opens through CSS hover/focus, so there is no open/close handler
+    // here -- only the selection.
     const refreshOption = target.closest('.refresh-option');
     if (refreshOption) {
         try {
@@ -270,11 +304,11 @@ document.addEventListener('change', (event) => {
 // Delegated INPUT handlers
 // ---------------------------------------------------------------------------
 document.addEventListener('input', (event) => {
-    // ⌘K palette query box: filter the harvested target rows by substring of
-    // their label+path (case-insensitive) and keep the active row valid.
+    // ⌘K palette query box: re-render the grouped rows filtered by a
+    // case-insensitive substring of the label, re-seating the active row.
     const paletteInput = event.target.closest('#ro-palette-input');
     if (paletteInput) {
-        filterPalette(paletteInput.value);
+        renderPalette(paletteInput.value);
         return;
     }
 
@@ -330,9 +364,11 @@ document.addEventListener('keydown', (event) => {
         openPalette();
         return;
     }
-    // Everything else here only matters while the palette is open.
+    // Everything else here only matters while the palette is open. The redesign
+    // overlay reveals via the `open` class on the backdrop root (opacity +
+    // pointer-events), not the old is-active/is-hidden pair.
     const palette = document.getElementById(PALETTE_ID);
-    if (!palette || !palette.classList.contains('is-active')) {
+    if (!palette || !palette.classList.contains('open')) {
         return;
     }
     if (event.key === 'Escape') {
@@ -351,19 +387,35 @@ document.addEventListener('keydown', (event) => {
         return;
     }
     if (event.key === 'Enter') {
-        // Navigate to the currently-highlighted target (GET via its href).
+        // Activate the currently-highlighted target (GET via its dataset href, or
+        // its named client action). No-op when no row is active.
         event.preventDefault();
         activatePaletteSelection();
         return;
     }
     if (event.key === 'Tab') {
-        // Trap focus inside the panel: with one text input + the row anchors, we
-        // simply keep focus on the query box and steer Tab/Shift-Tab through the
-        // visible rows via the same active-row model the arrows use, so focus can
-        // never escape to the page behind the modal.
+        // Trap focus inside the panel: with one text input + the (non-focusable)
+        // rows, steer Tab/Shift-Tab through the visible rows via the same
+        // active-row model the arrows use, so focus can never escape to the page
+        // behind the modal.
         event.preventDefault();
         movePaletteActive(event.shiftKey ? -1 : 1);
         return;
+    }
+});
+
+// The read-only topbar search box also opens the palette on keyboard FOCUS
+// (Tab-into / programmatic focus): focusin bubbles to document, so one delegated
+// listener covers it without a per-element handler that an hx-boost swap would
+// drop. We immediately blur the box so the caret never lands in the inert input
+// and hand focus to the palette's own query box via openPalette().
+document.addEventListener('focusin', (event) => {
+    const opener = event.target.closest('[data-palette-open]');
+    if (opener) {
+        if (typeof event.target.blur === 'function') {
+            event.target.blur();
+        }
+        openPalette();
     }
 });
 
@@ -621,226 +673,349 @@ function injectFoldControls(lineSpan, bodyCount, itemCount) {
 }
 
 // ---------------------------------------------------------------------------
-// ⌘K jump-to command palette -- additive, CSP-clean, GET-only.
+// ⌘K jump-to command palette -- data-driven, grouped, CSP-clean, GET-only (D10).
 // ---------------------------------------------------------------------------
-// A keyboard launcher that JUMPS to navigation targets ALREADY rendered on the
-// page. It owns NO data and hits NO backend: openPalette() harvests the existing
-// <a> links (the sidebar `.menu-item`s, the navbar `.namespace-item`s, the
-// Clusters `.toplink`, and the breadcrumb path), reads each one's href + text,
-// and lists them. Selecting a row navigates via that anchor's existing GET
-// permalink (the row IS an <a>, so Enter/click is a plain GET) -- never the POST
-// theme form, so the read-only floor is untouched. Everything is DOM-only
-// (createElement/cloneNode/classList/textContent) -> no dynamic-code execution
-// and no inline handler -> CSP-clean. The overlay markup ships hidden in
-// partials/command-palette.html; we toggle the `is-active` class to show it.
+// A keyboard launcher that JUMPS to navigation targets. It owns NO live DOM
+// harvest: it reads the server-built JSON blob in #ro-palette-data (emitted by
+// the layout from the same context the sidebar/navbar already have) and builds
+// grouped rows -- Clusters / Namespaces / Resource types / Actions. Selecting a
+// row navigates to its server-built absolute href (a plain GET permalink, never
+// the POST theme form, so the read-only floor is untouched) or runs a named
+// client action (e.g. theme). The blob is parsed with JSON.parse (NEVER eval);
+// names are written via textContent (defence in depth against a hostile
+// cluster/namespace/CRD name) and the ONLY field set via innerHTML is the
+// server-escaped kind `icon` markup. The overlay reveals via the `open` class on
+// the backdrop root (opacity + pointer-events). Pure DOM -> no dynamic-code
+// execution, no inline handler -> CSP-clean.
 const PALETTE_ID = 'ro-palette';
 
-// Derive a short mono kind-tag (2 letters, matching .ro-ktag) for a target,
-// generalising to ANY kind/CRD. We key off the resource PLURAL in the href when
-// present (…/<plural>) else fall back to the label. A tiny abbreviation map
-// covers the common kinds with a nicer tag than the first two letters; anything
-// unmapped takes the first two alphanumerics uppercased (so a CRD still gets a
-// sensible tag). Namespace dropdown items and the Clusters link get explicit tags.
-const PALETTE_TAGS = {
-    namespaces: 'NS', nodes: 'ND', persistentvolumes: 'PV',
-    persistentvolumeclaims: 'PC', deployments: 'DE', cronjobs: 'CJ',
-    jobs: 'JO', daemonsets: 'DS', statefulsets: 'SS', replicasets: 'RS',
-    ingresses: 'IN', services: 'SV', pods: 'PO', configmaps: 'CM',
-    secrets: 'SE', events: 'EV',
-};
+// The render order + display titles of the four palette groups, keyed to the
+// blob fields. Empty groups are skipped at render time.
+const PALETTE_GROUPS = [
+    { title: 'Clusters', key: 'clusters' },
+    { title: 'Namespaces', key: 'namespaces' },
+    { title: 'Resource types', key: 'kinds' },
+    { title: 'Actions', key: 'actions' },
+];
 
-function paletteTagFor(plural, label) {
-    if (plural && PALETTE_TAGS[plural]) {
-        return PALETTE_TAGS[plural];
+// Parse the #ro-palette-data JSON blob into the grouped feed. Guarded end to
+// end: a missing/empty/malformed blob yields an all-empty feed (the palette still
+// opens with a "no targets" state) and NEVER throws. We re-read on every open so
+// an hx-boost navigation that swapped the blob is picked up. JSON.parse only --
+// never eval -- so the blob can carry arbitrary cluster/namespace/CRD names
+// safely.
+function readPaletteData() {
+    const empty = { currentCluster: null, currentNamespace: null,
+        clusters: [], namespaces: [], kinds: [], actions: [] };
+    const el = document.getElementById('ro-palette-data');
+    if (!el) {
+        return empty;
     }
-    const basis = (plural || label || '').replace(/[^a-z0-9]/gi, '');
-    if (basis.length >= 2) {
-        return basis.slice(0, 2).toUpperCase();
+    const raw = (el.textContent || '').trim();
+    if (!raw) {
+        return empty;
     }
-    return (basis.toUpperCase() + '··').slice(0, 2);
+    try {
+        const data = JSON.parse(raw);
+        if (!data || typeof data !== 'object') {
+            return empty;
+        }
+        // Normalise: every group is an array even if the blob omitted/nulled it.
+        ['clusters', 'namespaces', 'kinds', 'actions'].forEach((k) => {
+            if (!Array.isArray(data[k])) {
+                data[k] = [];
+            }
+        });
+        return data;
+    } catch (e) {
+        return empty; // malformed blob -> empty palette, no throw
+    }
 }
 
-// The plural resource segment of a readout permalink, if any. Paths look like
-// /clusters/<c>/namespaces/<ns>/<plural>[/<name>] or /clusters/<c>/<plural>;
-// the meta links end in `_resource-types` / `events`. We return the trailing
-// path segment that is the resource plural for tag derivation (best-effort).
-function palettePluralFromHref(href) {
-    try {
-        const path = new URL(href, window.location.origin).pathname;
-        const parts = path.split('/').filter((p) => p.length > 0);
-        if (parts.length === 0) {
-            return '';
-        }
-        const last = parts[parts.length - 1];
-        if (last === '_resource-types') {
-            return '';
-        }
-        // /clusters/<c>/namespaces/<ns>/<plural>  -> plural at index 4
-        // /clusters/<c>/<plural>                  -> plural at index 2
-        const nsIdx = parts.indexOf('namespaces');
-        if (nsIdx !== -1 && parts.length > nsIdx + 2) {
-            return parts[nsIdx + 2];
-        }
-        return last;
-    } catch (e) {
+// A jump target's destination href is ONLY ever read from the server-built blob
+// (never user-typed), but as defence in depth we still refuse anything that is
+// not a same-origin path / http(s) URL before navigating -- a javascript:,
+// data:, or vbscript: scheme is never navigated.
+function paletteHrefSafe(href) {
+    if (!href || typeof href !== 'string') {
         return '';
     }
-}
-
-// Harvest the jump targets from the LIVE page. Each source is an existing <a>
-// already rendered (no fetch). We read href + trimmed text, group + tag them,
-// and DEDUPE by href (the same target can appear in more than one place). Order:
-// Clusters, namespaces, then sidebar sections, then breadcrumb -- a stable,
-// scannable order. Returns an array of {href, label, group, tag}.
-function collectPaletteTargets() {
-    const targets = [];
-    const seen = Object.create(null);
-    const push = (anchor, group) => {
-        if (!anchor) {
-            return;
-        }
-        const href = anchor.getAttribute('href');
-        const label = (anchor.textContent || '').replace(/\s+/g, ' ').trim();
-        // Only real same-document GET permalinks: skip empty / hash-only / the
-        // decorative placeholder and any javascript:/external scheme.
-        if (!href || href === '#' || href.charAt(0) === '#'
-            || /^[a-z]+:/i.test(href) && !/^https?:/i.test(href)) {
-            return;
-        }
-        if (!label || seen[href]) {
-            return;
-        }
-        seen[href] = true;
-        const plural = palettePluralFromHref(href);
-        targets.push({ href: href, label: label, group: group, tag: paletteTagFor(plural, label) });
-    };
-    // Clusters top link (the navbar .toplink to /clusters).
-    document.querySelectorAll('.navbar .toplink').forEach((a) => push(a, 'Jump to'));
-    // Namespace dropdown items (navbar).
-    document.querySelectorAll('.namespace-item').forEach((a) => push(a, 'Namespaces'));
-    // Sidebar groups (resource types + the Meta links).
-    document.querySelectorAll('.menu .menu-item').forEach((a) => push(a, 'Sidebar'));
-    // Breadcrumb path (ancestor links; the current segment is pointer-events:none
-    // and usually has no href, so it is naturally skipped).
-    document.querySelectorAll('nav.breadcrumb a[href]').forEach((a) => push(a, 'Jump to'));
-    return targets;
-}
-
-// Render the harvested targets into #ro-palette-list by cloning the <template>
-// row per target. Pure DOM writes (textContent + setAttribute) -- the labels are
-// assigned via textContent so even a hostile resource name can never inject
-// markup. Returns the list of created row anchors (for the active-row model).
-function renderPaletteTargets(targets) {
-    const list = document.getElementById('ro-palette-list');
-    const tmpl = document.getElementById('ro-palette-row-tmpl');
-    if (!list || !tmpl || !('content' in tmpl)) {
-        return [];
+    const trimmed = href.trim();
+    // A scheme-relative or absolute URL with a non-http(s) scheme is rejected;
+    // a path (starting "/") or an http(s) URL is allowed.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
+        return '';
     }
-    list.textContent = '';
-    targets.forEach((t) => {
-        const frag = tmpl.content.cloneNode(true);
-        const row = frag.querySelector('.ro-palette-row');
-        if (!row) {
-            return;
-        }
-        row.setAttribute('href', t.href);
-        const tag = row.querySelector('.ro-palette-tag');
-        const label = row.querySelector('.ro-palette-label');
-        const path = row.querySelector('.ro-palette-path');
-        if (tag) { tag.textContent = t.tag; }
-        if (label) { label.textContent = t.label; }
-        if (path) { path.textContent = t.group; }
-        list.appendChild(frag);
-    });
-    return Array.prototype.slice.call(list.querySelectorAll('.ro-palette-row'));
+    return trimmed;
 }
 
-// The currently-highlighted row index among the VISIBLE rows. We track it on the
-// list element so it survives across filter passes within one open session.
-function paletteVisibleRows() {
+// The flat list of currently-rendered rows ({ el, item }) in visual order, and
+// the index of the active one -- the model the arrows + Enter drive.
+let paletteRows = [];
+let paletteActive = 0;
+
+// Build one row element for a blob entry in group `key`. Names go in via
+// textContent; the kind `icon` (server-escaped markup) is the ONLY innerHTML.
+// The destination (href) and optional client action are stashed in the dataset,
+// read back by choosePaletteRow -- navigation never touches innerHTML.
+function buildPaletteRow(entry, key) {
+    const row = document.createElement('div');
+    row.className = 'ro-pal-item';
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', 'false');
+
+    // Resource types carry a server-rendered icon (already a `<span class="ico
+    // sm">…</span>` string, HTML-escaped by the server). This is the SOLE field
+    // assigned via innerHTML; all other groups lead with the label (no icon). We
+    // parse the markup in a throwaway container and move its nodes in, so the
+    // `.ico` span becomes a DIRECT child of the row (the `.ro-pal-item .ico` flex
+    // sizing applies) rather than nesting under an extra wrapper.
+    if (key === 'kinds' && entry.icon) {
+        const holder = document.createElement('template');
+        holder.innerHTML = entry.icon; // server-escaped markup -- the only innerHTML
+        row.appendChild(holder.content);
+    }
+
+    // The visible label: kinds use `kind`, every other group uses `name`/`label`.
+    const labelText = key === 'kinds'
+        ? (entry.kind || entry.plural || '')
+        : (entry.name || entry.label || '');
+    const label = document.createElement('span');
+    label.className = 'pal-label';
+    label.textContent = labelText; // textContent -> a hostile name cannot inject
+
+    // The "current" scope marker (the cluster/namespace in scope) rides as a
+    // .pal-ctx chip after the label, also via textContent.
+    const isCurrent = (key === 'clusters' && entry.name && entry.name === paletteScope.cluster)
+        || (key === 'namespaces' && entry.name && entry.name === paletteScope.namespace);
+    if (isCurrent) {
+        const ctx = document.createElement('span');
+        ctx.className = 'pal-ctx';
+        ctx.textContent = 'current';
+        label.appendChild(ctx);
+    }
+    row.appendChild(label);
+
+    // Resource-type rows show the api group (faint) + a compact namespaced/cluster
+    // scope badge, so a kind reads as e.g. "Certificates  cert-manager.io  NS".
+    if (key === 'kinds') {
+        const meta = document.createElement('span');
+        meta.className = 'pal-meta';
+        meta.textContent = entry.group || 'core'; // textContent -> hostile group cannot inject
+        row.appendChild(meta);
+        const scope = document.createElement('span');
+        scope.className = 'pal-scope ' + (entry.namespaced ? 'ns' : 'cluster');
+        scope.textContent = entry.namespaced ? 'NS' : 'CL';
+        scope.title = entry.namespaced ? 'namespaced' : 'cluster-scoped';
+        row.appendChild(scope);
+    }
+
+    // Destination: a navigable href (server-built absolute path) and/or a named
+    // client action. Stored in the dataset; the click/Enter path reads it back.
+    const href = paletteHrefSafe(entry.href);
+    if (href) {
+        row.dataset.href = href;
+    }
+    if (entry.action) {
+        row.dataset.action = entry.action;
+    }
+    return row;
+}
+
+// The current scope (cluster/namespace) of the page, set by readPaletteData via
+// renderPalette so buildPaletteRow can flag the in-scope rows.
+const paletteScope = { cluster: null, namespace: null };
+
+// harvestPageObjects reads the rows of the rendered list table (desktop
+// `.ro-table`, not the mobile card projection) into {name, href, status, tone}
+// so the palette can filter the objects ALREADY on the page -- no server call.
+// The status (+ tone) comes from the row's `.cell-status` when the kind has one
+// (pods, namespaces, ...); kinds with no status cell just yield an empty status.
+function harvestPageObjects() {
+    const out = [];
+    const rows = document.querySelectorAll('#resource-list-content table.ro-table tbody tr');
+    rows.forEach((tr) => {
+        const a = tr.querySelector('td.cell-name a');
+        if (!a) {
+            return;
+        }
+        const href = a.getAttribute('href');
+        const name = (a.textContent || '').trim();
+        if (!href || !name) {
+            return;
+        }
+        let status = '';
+        let tone = '';
+        const st = tr.querySelector('.cell-status');
+        if (st) {
+            status = (st.textContent || '').trim();
+            ['ok', 'warn', 'err', 'info', 'mute'].forEach((t) => {
+                if (!tone && st.classList.contains(t)) {
+                    tone = t;
+                }
+            });
+        }
+        out.push({ name: name, href: href, status: status, tone: tone });
+    });
+    return out;
+}
+
+// buildObjectRow renders one harvested page object: its name (textContent, never
+// innerHTML) + a tone-coloured short status. The detail href rides in the dataset
+// like every other palette row, so choosePaletteRow navigates it identically.
+function buildObjectRow(o) {
+    const row = document.createElement('div');
+    row.className = 'ro-pal-item';
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', 'false');
+    const label = document.createElement('span');
+    label.className = 'pal-label';
+    label.textContent = o.name;
+    row.appendChild(label);
+    if (o.status) {
+        const st = document.createElement('span');
+        st.className = 'pal-status' + (o.tone ? ' ' + o.tone : '');
+        st.textContent = o.status;
+        row.appendChild(st);
+    }
+    row.dataset.href = o.href;
+    return row;
+}
+
+// (Re)render the grouped rows into #ro-palette-list, filtered by a
+// case-insensitive substring of the label. Empty groups (and groups with no
+// match) are skipped; when nothing matches at all we show a "no targets" line so
+// the palette never looks broken. Rebuilds paletteRows + seats the active row.
+function renderPalette(query) {
     const list = document.getElementById('ro-palette-list');
     if (!list) {
-        return [];
+        return;
     }
-    return Array.prototype.filter.call(
-        list.querySelectorAll('.ro-palette-row'),
-        (row) => !row.closest('.ro-palette-item').classList.contains('is-hidden')
-    );
+    const data = readPaletteData();
+    paletteScope.cluster = data.currentCluster || null;
+    paletteScope.namespace = data.currentNamespace || null;
+
+    // Reflect the scope chip in the search row (textContent -- never innerHTML).
+    const scope = document.getElementById('ro-palette-scope');
+    if (scope) {
+        const scopeText = paletteScope.namespace || paletteScope.cluster || '';
+        scope.textContent = scopeText;
+        scope.hidden = scopeText === '';
+    }
+
+    const q = (query || '').toLowerCase().trim();
+    list.textContent = '';
+    paletteRows = [];
+
+    const appendGroup = (title, rows) => {
+        if (rows.length === 0) {
+            return;
+        }
+        const heading = document.createElement('div');
+        heading.className = 'ro-pal-group';
+        heading.textContent = title;
+        list.appendChild(heading);
+        rows.forEach((entry) => {
+            const row = entry.el;
+            const idx = paletteRows.length;
+            row.addEventListener('mousemove', () => setPaletteActive(idx));
+            list.appendChild(row);
+            paletteRows.push({ el: row, item: entry.item, key: entry.key });
+        });
+    };
+
+    // Objects on THIS list page, harvested from the rendered table so ⌘K filters
+    // the very rows you are looking at (with a short status), no server round-trip.
+    // First group -- the most relevant target on a list page.
+    const pageObjects = harvestPageObjects().filter((o) => !q || o.name.toLowerCase().indexOf(q) !== -1);
+    appendGroup('On this page', pageObjects.map((o) => ({ el: buildObjectRow(o), item: o, key: 'objects' })));
+
+    PALETTE_GROUPS.forEach((group) => {
+        const entries = (data[group.key] || []).filter((entry) => {
+            if (!q) {
+                return true;
+            }
+            const label = group.key === 'kinds'
+                ? (entry.kind || entry.plural || '')
+                : (entry.name || entry.label || '');
+            return label.toLowerCase().indexOf(q) !== -1;
+        });
+        appendGroup(group.title, entries.map((entry) => ({ el: buildPaletteRow(entry, group.key), item: entry, key: group.key })));
+    });
+
+    if (paletteRows.length === 0) {
+        const none = document.createElement('div');
+        none.className = 'ro-pal-empty';
+        none.textContent = 'No matching targets.';
+        list.appendChild(none);
+    }
+    paletteActive = 0;
+    paintPaletteActive();
 }
 
-// Mark exactly one visible row active (highlight + aria-selected + scroll into
-// view); clamp the index into range. Index -1 clears the highlight.
-function setPaletteActive(index) {
-    const rows = paletteVisibleRows();
-    rows.forEach((row) => {
-        row.classList.remove('is-active');
-        row.setAttribute('aria-selected', 'false');
+// Paint exactly the active row with `.active` (+ aria-selected) and scroll it
+// into view; a no-op when the list is empty.
+function paintPaletteActive() {
+    paletteRows.forEach((r, i) => {
+        const on = i === paletteActive;
+        r.el.classList.toggle('active', on);
+        r.el.setAttribute('aria-selected', on ? 'true' : 'false');
     });
-    if (rows.length === 0) {
+    if (paletteRows[paletteActive]) {
+        paletteRows[paletteActive].el.scrollIntoView({ block: 'nearest' });
+    }
+}
+
+// Seat the active row at a clamped index (guards empty + out-of-range).
+function setPaletteActive(index) {
+    if (paletteRows.length === 0) {
         return;
     }
     let i = index;
     if (i < 0) { i = 0; }
-    if (i > rows.length - 1) { i = rows.length - 1; }
-    const active = rows[i];
-    active.classList.add('is-active');
-    active.setAttribute('aria-selected', 'true');
-    active.scrollIntoView({ block: 'nearest' });
+    if (i > paletteRows.length - 1) { i = paletteRows.length - 1; }
+    paletteActive = i;
+    paintPaletteActive();
 }
 
-// Move the active row by delta among the visible rows, wrapping at the ends so
-// ArrowDown past the last lands on the first (and ArrowUp past the first lands
-// on the last) -- a small, predictable cycle.
+// Move the active row by delta, wrapping at the ends (ArrowDown past the last
+// lands on the first, ArrowUp past the first lands on the last). Guards empty.
 function movePaletteActive(delta) {
-    const rows = paletteVisibleRows();
-    if (rows.length === 0) {
+    if (paletteRows.length === 0) {
         return;
     }
-    let current = rows.findIndex((row) => row.classList.contains('is-active'));
-    if (current === -1) {
-        current = delta > 0 ? -1 : 0;
-    }
-    let next = current + delta;
-    if (next < 0) { next = rows.length - 1; }
-    if (next > rows.length - 1) { next = 0; }
-    setPaletteActive(next);
+    paletteActive = (paletteActive + delta + paletteRows.length) % paletteRows.length;
+    paintPaletteActive();
 }
 
-// Filter the rows by a case-insensitive substring of label/group/tag/href. This
-// href matters because namespace jump rows point to the default Pods view while
-// their visible label is only the namespace name. Hides non-matches via the
-// is-hidden CLASS (no inline style), toggles the empty-state line, and re-seats
-// the active row on the first match so Enter always targets something sensible.
-function filterPalette(query) {
-    const list = document.getElementById('ro-palette-list');
-    const empty = document.getElementById('ro-palette-empty');
-    if (!list) {
+// Act on a chosen row: run its named client action (only `theme` is wired today,
+// clicking the server-POST theme toggle) and/or navigate to its server-built
+// href, then close. Navigation reads ONLY dataset.href (a vetted same-origin
+// path) -- never innerHTML, never a javascript: scheme.
+function choosePaletteRow(rowEl) {
+    if (!rowEl) {
         return;
     }
-    const q = (query || '').toLowerCase().trim();
-    let visible = 0;
-    Array.prototype.forEach.call(list.querySelectorAll('.ro-palette-item'), (item) => {
-        const row = item.querySelector('.ro-palette-row');
-        const hay = row ? `${row.textContent || ''} ${row.getAttribute('href') || ''}`.toLowerCase() : '';
-        const match = q === '' || hay.indexOf(q) !== -1;
-        item.classList.toggle('is-hidden', !match);
-        if (match) { visible++; }
-    });
-    if (empty) {
-        empty.classList.toggle('is-hidden', visible !== 0);
+    const action = rowEl.dataset.action;
+    const href = rowEl.dataset.href;
+    closePalette();
+    if (action === 'theme') {
+        const toggle = document.getElementById('btn-theme-toggle');
+        if (toggle) {
+            toggle.click(); // the server POST /preferences toggle (read-only-safe)
+        }
+        return;
     }
-    setPaletteActive(visible > 0 ? 0 : -1);
+    if (href) {
+        window.location.assign(href); // plain GET to a server permalink
+    }
 }
 
-// Navigate to the active row's target. The row is an <a>, so .click() performs a
-// plain GET to its existing permalink (honoured by hx-boost as an AJAX nav with
-// real history) -- no POST, no fetch, no eval. Closing happens via the click
-// handler (which sees the .ro-palette-row and lets the navigation proceed).
+// Activate the currently-highlighted row (Enter). No-op when no row is active.
 function activatePaletteSelection() {
-    const rows = paletteVisibleRows();
-    const active = rows.find((row) => row.classList.contains('is-active')) || rows[0];
+    const active = paletteRows[paletteActive];
     if (active) {
-        active.click();
+        choosePaletteRow(active.el);
     }
 }
 
@@ -848,46 +1023,32 @@ function activatePaletteSelection() {
 // (keyboard users land back where they were instead of on <body>).
 let palettePriorFocus = null;
 
-// Open the palette: (re)harvest the live targets, render them, reveal the overlay
-// (is-active class -- never inline style), clear + focus the query box, and seat
-// the first row active. Idempotent: re-opening just refreshes the target list
-// (which may have changed after an hx-boost navigation to another page).
+// Open the palette: reveal the overlay (the `open` class -- never inline style),
+// build the grouped rows from the blob, clear + focus the query box, and seat the
+// first row active. Idempotent: re-opening just rebuilds from the (possibly
+// hx-boost-swapped) blob.
 function openPalette() {
     const palette = document.getElementById(PALETTE_ID);
     const input = document.getElementById('ro-palette-input');
     if (!palette || !input) {
-        return; // partial not present (defensive) -> no-op
+        return; // overlay not present (defensive) -> no-op
     }
     palettePriorFocus = document.activeElement;
-    renderPaletteTargets(collectPaletteTargets());
-    input.value = '';
-    filterPalette('');
-    // Reveal by dropping the Bulma `is-hidden` utility (display:none) -- it
-    // carries !important, so the visibility MUST be toggled on that class, not
-    // shadowed by an app-layer rule. `is-active` is the state hook the keydown
-    // guard + the styling key off; both flip together.
-    // Reveal by dropping the Bulma `is-hidden` utility (display:none) -- it
-    // carries !important, so the visibility MUST be toggled on that class, not
-    // shadowed by an app-layer rule. `is-active` is the state hook the keydown
-    // guard + the styling key off; both flip together.
-    palette.classList.remove('is-hidden');
-    palette.classList.add('is-active');
+    palette.classList.add('open');
     palette.setAttribute('aria-hidden', 'false');
-    // Focus after it is shown so the caret lands in the box.
-    input.focus();
+    input.value = '';
+    renderPalette('');
+    input.focus(); // focus after it is shown so the caret lands in the box
 }
 
-// Close the palette: hide the overlay (drop is-active) and restore focus to
-// wherever it was before opening (if that element is still in the document).
+// Close the palette: drop the `open` class and restore focus to wherever it was
+// before opening (if that element is still in the document).
 function closePalette() {
     const palette = document.getElementById(PALETTE_ID);
     if (!palette) {
         return;
     }
-    // Hide by re-adding the Bulma `is-hidden` utility (its !important display:none
-    // is what actually removes it from the layout); drop the state hook too.
-    palette.classList.add('is-hidden');
-    palette.classList.remove('is-active');
+    palette.classList.remove('open');
     palette.setAttribute('aria-hidden', 'true');
     if (palettePriorFocus && document.contains(palettePriorFocus)
         && typeof palettePriorFocus.focus === 'function') {
@@ -970,6 +1131,74 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Stale data (auto-refresh failure) -- CLIENT-SIDE, never blanks the rows (D11)
+// ---------------------------------------------------------------------------
+// There is no server-side last-good cache. "Stale" is purely the AUTO-REFRESH
+// failure case: when the #resource-list-content morph-refresh request errors
+// (htmx:responseError = a non-2xx reply, htmx:sendError = a transport failure),
+// htmx does NOT swap on error, so the existing rows stay exactly as they were.
+// We mark the content stale (a dim class) and reveal the pre-rendered hidden
+// `.ro-banner.warn` so the user knows the data is last-known, not current. A
+// FIRST load that fails never reaches here (that is a full page/server response
+// rendering forbidden/unreachable/empty, not a ro:refresh on existing rows). On
+// the next successful refresh the morph swaps fresh rows and afterSwap clears the
+// stale state. Pure DOM writes -> CSP-clean.
+const STALE_DIM_CLASS = 'ro-stale';
+
+// True when the htmx event belongs to the live resource-list refresh (the
+// request element is #resource-list-content). Guards so an unrelated boosted
+// navigation error never dims the table.
+function isListRefreshEvent(event) {
+    const elt = event && event.detail && event.detail.elt;
+    return !!elt && elt.id === 'resource-list-content';
+}
+
+function markListStale() {
+    const content = document.getElementById('resource-list-content');
+    if (content) {
+        content.classList.add(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector('.ro-stale-banner');
+    if (banner) {
+        banner.hidden = false;
+    }
+}
+
+function clearListStale() {
+    const content = document.getElementById('resource-list-content');
+    if (content) {
+        content.classList.remove(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector('.ro-stale-banner');
+    if (banner) {
+        banner.hidden = true;
+    }
+}
+
+// A non-2xx reply to the refresh GET: keep the rows (htmx does not swap on
+// error), dim them, reveal the stale banner.
+document.addEventListener('htmx:responseError', (event) => {
+    if (isListRefreshEvent(event)) {
+        markListStale();
+    }
+});
+// A transport failure (the cluster could not be reached at all) on the refresh
+// GET: same stale treatment -- the last-good rows stay, dimmed, with the banner.
+document.addEventListener('htmx:sendError', (event) => {
+    if (isListRefreshEvent(event)) {
+        markListStale();
+    }
+});
+// A successful refresh swap on #resource-list-content lands fresh rows -> clear
+// any prior stale dim + hide the banner. htmx:afterSwap fires only on a 2xx that
+// actually swapped, so a recovered refresh self-heals the stale state.
+document.addEventListener('htmx:afterSwap', (event) => {
+    if (isListRefreshEvent(event)) {
+        clearListStale();
+    }
+});
+
+// ---------------------------------------------------------------------------
 // Theme-toggle POST target (prefers-aware, cookieless-safe)
 // ---------------------------------------------------------------------------
 // The navbar theme toggle POSTs /preferences with a hidden `theme` value that
@@ -1012,6 +1241,25 @@ function syncThemeTogglePostTarget() {
 // (addListener is deprecated); the listener body is idempotent.
 PREFERS_DARK.addEventListener('change', syncThemeTogglePostTarget);
 
+// _all-view sticky offset. CSS pins the FIRST column at left:0; in the _all view
+// the first column is the namespace, so the NAME column (2nd) must pin right after
+// it -- but its offset is the namespace column's content-driven width, which CSS
+// can't know. Measure it, hand it to CSS as --ns-col-w, and mark the table with
+// .ro-sticky2. A single-namespace list (name IS the first column) needs neither.
+// Idempotent; re-run on swap and resize since the column width can change.
+function setupStickyNamespace() {
+    document.querySelectorAll('.ro-table-wrap table.ro-table').forEach((table) => {
+        const firstCell = table.querySelector('tbody tr td:first-child');
+        if (firstCell && firstCell.classList.contains('cell-ns')) {
+            table.style.setProperty('--ns-col-w', firstCell.getBoundingClientRect().width + 'px');
+            table.classList.add('ro-sticky2');
+        } else {
+            table.classList.remove('ro-sticky2');
+            table.style.removeProperty('--ns-col-w');
+        }
+    });
+}
+
 // Run all init-time steps. Called on DOMContentLoaded and on htmx:load so the
 // steps re-apply after an hx-boost body swap (which does not refire
 // DOMContentLoaded). Each step is idempotent.
@@ -1022,6 +1270,7 @@ function runInit() {
     collapseSectionsFromHash();
     highlightYamlLine();
     syncThemeTogglePostTarget();
+    setupStickyNamespace();
 }
 
 document.addEventListener('DOMContentLoaded', runInit);
@@ -1030,3 +1279,7 @@ document.addEventListener('DOMContentLoaded', runInit);
 // HTMX events bubble, so we listen on `document` (this script runs in <head>
 // before <body> exists, so document.body would be null at this point anyway).
 document.addEventListener('htmx:load', runInit);
+// The list table morphs in place on ro:refresh; re-measure after the swap settles
+// and on resize (auto-layout column widths shift with the viewport).
+document.addEventListener('htmx:afterSettle', setupStickyNamespace);
+window.addEventListener('resize', setupStickyNamespace);

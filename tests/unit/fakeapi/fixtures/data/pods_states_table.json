@@ -1,0 +1,76 @@
+{
+  "kind": "Table",
+  "apiVersion": "meta.k8s.io/v1",
+  "metadata": {
+    "resourceVersion": "22345"
+  },
+  "columnDefinitions": [
+    {"name": "Name", "type": "string", "format": "name", "priority": 0},
+    {"name": "Ready", "type": "string", "format": "", "priority": 0},
+    {"name": "Status", "type": "string", "format": "", "priority": 0},
+    {"name": "Restarts", "type": "string", "format": "", "priority": 0},
+    {"name": "Age", "type": "string", "format": "", "priority": 0}
+  ],
+  "rows": [
+    {
+      "cells": ["web-creating-7c9f7cd495-6fff6", "0/1", "ContainerCreating", "0", "3s"],
+      "object": {
+        "kind": "PartialObjectMetadata",
+        "apiVersion": "meta.k8s.io/v1",
+        "metadata": {
+          "name": "web-creating-7c9f7cd495-6fff6",
+          "namespace": "states",
+          "uid": "00000000-0000-0000-0000-000000000101",
+          "resourceVersion": "22340",
+          "creationTimestamp": "2026-06-04T11:59:57Z",
+          "labels": {"app": "web"}
+        }
+      }
+    },
+    {
+      "cells": ["web-terminating-7c9f7cd495-aaaaa", "1/1", "Terminating", "0", "2d"],
+      "object": {
+        "kind": "PartialObjectMetadata",
+        "apiVersion": "meta.k8s.io/v1",
+        "metadata": {
+          "name": "web-terminating-7c9f7cd495-aaaaa",
+          "namespace": "states",
+          "uid": "00000000-0000-0000-0000-000000000102",
+          "resourceVersion": "22341",
+          "creationTimestamp": "2026-06-02T12:00:00Z",
+          "labels": {"app": "web"}
+        }
+      }
+    },
+    {
+      "cells": ["web-degraded-7c9f7cd495-bbbbb", "2/3", "Running", "5 (2m ago)", "9h"],
+      "object": {
+        "kind": "PartialObjectMetadata",
+        "apiVersion": "meta.k8s.io/v1",
+        "metadata": {
+          "name": "web-degraded-7c9f7cd495-bbbbb",
+          "namespace": "states",
+          "uid": "00000000-0000-0000-0000-000000000103",
+          "resourceVersion": "22342",
+          "creationTimestamp": "2026-06-04T03:00:00Z",
+          "labels": {"app": "web"}
+        }
+      }
+    },
+    {
+      "cells": ["web-steady-7c9f7cd495-ccccc", "1/1", "Running", "0", "5h"],
+      "object": {
+        "kind": "PartialObjectMetadata",
+        "apiVersion": "meta.k8s.io/v1",
+        "metadata": {
+          "name": "web-steady-7c9f7cd495-ccccc",
+          "namespace": "states",
+          "uid": "00000000-0000-0000-0000-000000000104",
+          "resourceVersion": "22343",
+          "creationTimestamp": "2026-06-04T07:00:00Z",
+          "labels": {"app": "web"}
+        }
+      }
+    }
+  ]
+}

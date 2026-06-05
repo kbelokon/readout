@@ -37,6 +37,15 @@ func TestCSPAndClusterPageRender(t *testing.T) {
 	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "script-src 'self'") {
 		t.Fatalf("missing strict CSP: %q", got)
 	}
+	// script-src stays strict (no inline/eval); style-src allows 'unsafe-inline'
+	// because the design pins per-row values as inline style attributes
+	// (capacity-bar width, kind-tile --kh) the cascade cannot express as classes.
+	if got := rec.Header().Get("Content-Security-Policy"); strings.Contains(got, "script-src 'self' 'unsafe-inline'") {
+		t.Fatalf("script-src must NOT allow unsafe-inline (code-exec protection): %q", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "style-src 'self' 'unsafe-inline'") {
+		t.Fatalf("style-src must allow 'unsafe-inline' for inline width/hue styles: %q", got)
+	}
 	if !strings.Contains(rec.Body.String(), `<span class="brand-name">readout</span>`) || !strings.Contains(rec.Body.String(), "readout.css") {
 		t.Fatalf("page did not render expected app chrome: %s", rec.Body.String())
 	}
@@ -402,6 +411,20 @@ func newRecordingServerFakeAPI(t *testing.T, lastAuth *authRecorder) *httptest.S
 		_, _ = w.Write(readFixture(t, "data/pod_log.txt"))
 	})
 	mux.HandleFunc("/api/v1/pods", tableOrList("data/pods_table.json", "data/pods_with_node_list.json"))
+	// Pods in the "states" namespace exercise the redesign status/ready/restart
+	// tones END TO END: a transient pod (ContainerCreating/Terminating) pulses, a
+	// degraded pod is 2/3 partial with restarts, a steady pod does not pulse. The
+	// resource-list path always requests the server-side Table, so the Table
+	// fixture is served directly.
+	mux.HandleFunc("/api/v1/namespaces/states/pods", fixture("data/pods_states_table.json"))
+	// Pods in the "empty" namespace return a zero-row Table, exercising the
+	// genuinely-EMPTY list state (the plain "No Pod objects ... found." sentence +
+	// the broad next action) through the real assembly with NO filter active.
+	mux.HandleFunc("/api/v1/namespaces/empty/pods", fixture("data/table_empty_rows.json"))
+	// Services in "default" exercise the GENERIC fallback through the real
+	// assembly: a kind with NO Status column and no per-kind rich cells renders
+	// its rows from the Table API with no status dot.
+	mux.HandleFunc("/api/v1/namespaces/default/services", fixture("data/services_table.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/events", fixture("data/render_events_nginx.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/secrets", tableOrList("data/render_secrets_table.json", "data/secrets_list.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/secrets/my-secret", fixture("data/render_secret.json"))

@@ -51,6 +51,48 @@ func TestSortTableByColumnCreatedAndAge(t *testing.T) {
 	}
 }
 
+func TestSortTableNumericColumnSortsByValue(t *testing.T) {
+	// Memory/CPU usage cells are raw float bytes/cores. fmt.Sprint renders them in
+	// scientific notation, so a lexicographic compare mis-ordered them (95 MiB
+	// landing after 942 MiB). They must sort by numeric value.
+	table := Table{
+		Columns: []Column{{Name: "Name"}, {Name: "Memory Usage"}},
+		Rows: []Row{
+			{Cells: []any{"a", float64(95 * 1024 * 1024)}},
+			{Cells: []any{"b", float64(1 * 1024 * 1024)}},
+			{Cells: []any{"c", float64(942 * 1024 * 1024)}},
+		},
+	}
+	SortTable(&table, "Memory Usage:desc")
+	got := []any{table.Rows[0].Cells[0], table.Rows[1].Cells[0], table.Rows[2].Cells[0]}
+	if !reflect.DeepEqual(got, []any{"c", "a", "b"}) {
+		t.Fatalf("numeric desc sort = %#v, want [c a b] (942 > 95 > 1 MiB)", got)
+	}
+	SortTable(&table, "Memory Usage:asc")
+	if got := table.Rows[0].Cells[0]; got != "b" {
+		t.Fatalf("numeric asc sort first = %v, want b (1 MiB)", got)
+	}
+}
+
+func TestSortTableQuantityColumnSortsByValue(t *testing.T) {
+	// Node capacity cells are k8s quantity strings ("8138032Ki", "16Gi"). A
+	// lexicographic compare mis-ordered them ("8138032Ki" < "16Gi" as text); they
+	// must sort by the parsed byte value.
+	table := Table{
+		Columns: []Column{{Name: "Name"}, {Name: "Memory"}},
+		Rows: []Row{
+			{Cells: []any{"a", "16Gi"}},
+			{Cells: []any{"b", "8138032Ki"}},
+			{Cells: []any{"c", "32Gi"}},
+		},
+	}
+	SortTable(&table, "Memory:desc")
+	got := []any{table.Rows[0].Cells[0], table.Rows[1].Cells[0], table.Rows[2].Cells[0]}
+	if !reflect.DeepEqual(got, []any{"c", "a", "b"}) {
+		t.Fatalf("quantity desc sort = %#v, want [c a b] (32Gi > 16Gi > ~7.8GiB)", got)
+	}
+}
+
 func TestLabelHideFilterAndNamespaceTransforms(t *testing.T) {
 	table := sampleTable()
 	AddLabelColumns(&table, "app,*")

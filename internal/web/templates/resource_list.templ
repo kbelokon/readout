@@ -34,11 +34,24 @@ type ListBreadcrumb struct {
 	Plural          string
 }
 
+// ResourceList wraps the breadcrumb, the in-flight progress bar, and the
+// persistent #resource-list-content htmx container in a single `ro-rd` content
+// root. `ro-rd` is the redesign CONTENT MARKER (D13): it routes the colliding
+// class names (.ro-breadcrumb, .ro-phase-strip, .ro-phase-chip) emitted below to
+// the redesign CSS rules. It sits on the outermost element this engine puts
+// inside the layout's `.ro-main`, so every descendant (breadcrumb + the morphed
+// table fragment) picks up the redesign vocabulary. The live morph-refresh swaps
+// the INNER HTML of #resource-list-content, which itself stays under this `ro-rd`
+// ancestor, so a refreshed fragment keeps the marker without re-emitting it.
 templ ResourceList(d ListPageData) {
-	@listBreadcrumb(d.Breadcrumb)
-	<div class="ro-progress htmx-indicator" aria-hidden="true"><span class="ro-progress-bar"></span></div>
-	<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="previous .ro-progress" aria-live="polite">
-		@ResourceTable(d.List)
+	<div class="ro-rd">
+		@listBreadcrumb(d.Breadcrumb)
+		if d.List.ShowStaleBanner {
+			@staleBanner()
+		}
+		<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
+			@ResourceTable(d.List)
+		</div>
 	</div>
 }
 

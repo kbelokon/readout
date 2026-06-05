@@ -3,12 +3,14 @@ package web
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/a-h/templ"
 
+	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/web/icons"
 	"github.com/kbelokon/readout/internal/web/templates"
@@ -45,32 +47,94 @@ func effectiveNamespace(r *http.Request, namespaceOverride *string) string {
 	return r.PathValue("namespace")
 }
 
-func (s *Server) sidebarResourceLink(r *http.Request, cluster, namespace, plural string) (string, string, bool) {
+// sidebarLink is one resolved sidebar resource-type entry: the list href, the
+// display text, and -- when a kube.ResourceType was resolved (HasKind) -- the
+// {Kind, Group, Plural, IsCRD} the icon resolver needs. When discovery is absent
+// (s.manager == nil) or the cluster is unknown, HasKind stays false and only the
+// plural is known, so the renderer uses the no-discovery monogram fallback.
+type sidebarLink struct {
+	Href    string
+	Text    string
+	Kind    string
+	Group   string
+	Plural  string
+	IsCRD   bool
+	HasKind bool
+}
+
+func (s *Server) sidebarResourceLink(r *http.Request, cluster, namespace, plural string) (sidebarLink, bool) {
 	if s.manager == nil {
-		return sidebarResourceHref(cluster, namespace, plural), sidebarResourceText(plural), true
+		return sidebarLink{Href: sidebarResourceHref(cluster, namespace, plural), Text: sidebarResourceText(plural), Plural: plural}, true
 	}
 	clusterObj, ok := s.manager.Get(cluster)
 	if !ok {
-		return sidebarResourceHref(cluster, namespace, plural), sidebarResourceText(plural), true
+		return sidebarLink{Href: sidebarResourceHref(cluster, namespace, plural), Text: sidebarResourceText(plural), Plural: plural}, true
 	}
 	client := s.kubeClient(r, clusterObj)
 	var rt kube.ResourceType
 	var err error
-	if namespace != "" {
+	// A built-in cluster-scoped plural (nodes/namespaces/persistentvolumes) must
+	// resolve to its CLUSTER resource even when a namespace is in scope -- skipping
+	// the namespaced lookup stops a namespaced CRD that shares the plural (e.g.
+	// nodes.management.cattle.io) from hijacking the curated cluster entry.
+	if namespace != "" && !builtinClusterScopedPlural(plural) {
 		rt, err = client.FindResource(r.Context(), plural, true, "")
 		if err == nil {
-			return fmt.Sprintf("/clusters/%s/namespaces/%s/%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(rt.Plural)), pluralizeKind(rt.Kind), true
+			return sidebarLinkFromResource(
+				fmt.Sprintf("/clusters/%s/namespaces/%s/%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(rt.Plural)), &rt), true
 		}
 	}
 	rt, err = client.FindResource(r.Context(), plural, false, "")
 	if err != nil {
-		return "", "", false
+		return sidebarLink{}, false
 	}
-	return sidebarResourceHref(cluster, "", rt.Plural), pluralizeKind(rt.Kind), true
+	return sidebarLinkFromResource(sidebarResourceHref(cluster, "", rt.Plural), &rt), true
+}
+
+// sidebarLinkFromResource builds a sidebarLink carrying the resolved
+// {Kind, Group, Plural, IsCRD} (HasKind=true) so the icon resolver runs against
+// the same kube.ResourceType the link already resolved.
+func sidebarLinkFromResource(href string, rt *kube.ResourceType) sidebarLink {
+	return sidebarLink{
+		Href:    href,
+		Text:    pluralizeKind(rt.Kind),
+		Kind:    rt.Kind,
+		Group:   rt.Group,
+		Plural:  rt.Plural,
+		IsCRD:   isCRD(rt.APIVersion),
+		HasKind: true,
+	}
+}
+
+// sidebarNavIcon resolves a sidebar nav entry's icon markup: the Unit-1
+// icons.KindIcon when the kube.ResourceType is known (with the Tier-3
+// cfg.ResourceIcons override looked up by kind+group), else the no-discovery
+// icons.PluralMonogram fallback. Shared by the templ sidebar and the palette
+// feed so both emit the same glyph.
+func sidebarNavIcon(s *Server, item *navItem) template.HTML {
+	if !item.HasKind {
+		return icons.PluralMonogram(item.Plural)
+	}
+	override := s.cfg.ResourceIcons[config.ResourceIconKey{Kind: item.Kind, Group: item.Group}]
+	return icons.KindIcon(item.Kind, item.Group, item.IsCRD, override)
+}
+
+// builtinClusterScopedPlural reports whether a curated sidebar plural names a
+// built-in CLUSTER-scoped resource. Such a plural must resolve to the built-in
+// cluster resource even when a namespace is in scope -- otherwise a namespaced
+// CRD that happens to share the plural (e.g. nodes.management.cattle.io) hijacks
+// the curated entry and the sidebar "Nodes" link opens the CRD instead of the
+// real cluster nodes.
+func builtinClusterScopedPlural(plural string) bool {
+	switch plural {
+	case "namespaces", "nodes", "persistentvolumes":
+		return true
+	}
+	return false
 }
 
 func sidebarResourceHref(cluster, namespace, plural string) string {
-	if namespace == "" || plural == "namespaces" || plural == "nodes" || plural == "persistentvolumes" {
+	if namespace == "" || builtinClusterScopedPlural(plural) {
 		return fmt.Sprintf("/clusters/%s/%s", url.PathEscape(cluster), url.PathEscape(plural))
 	}
 	return fmt.Sprintf("/clusters/%s/namespaces/%s/%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(plural))
@@ -107,29 +171,31 @@ func sidebarResourceText(plural string) string {
 	}
 }
 
-// nodeConditionTone maps a Node condition (type + status) to the semantic pill
-// tone class. It is the one detail-summary helper still used after the templ
-// migration -- buildNodeSummaryView (build_resource.go) consumes it to resolve
-// the Node condition pills; the string render funcs that also used it are gone.
+// nodeConditionTone maps a Node condition (type + status) to the redesign pill
+// tone token (ok/warn/err/mute). buildNodeSummaryView (build_resource.go)
+// consumes it to resolve the detail-page Node condition pills, which render under
+// the .ro-rd marker as `.ro-cond-pill.<tone>` with a `.ro-dot` -- matching the
+// redesign detail CSS. (The list-cell node conditions use nodeConditionListTone,
+// which shares this healthy/abnormal polarity.)
 func nodeConditionTone(typ, status string) string {
 	switch typ {
 	case "Ready":
 		if status == "True" {
-			return "ro-st-ok"
+			return "ok"
 		}
-		return "ro-st-err"
+		return "err"
 	case "NetworkUnavailable":
 		if status == "True" {
-			return "ro-st-err"
+			return "err"
 		}
-		return "ro-st-ok"
+		return "ok"
 	case "MemoryPressure", "DiskPressure", "PIDPressure":
 		if status == "True" {
-			return "ro-st-warn"
+			return "warn"
 		}
-		return "ro-st-ok"
+		return "ok"
 	default:
-		return "ro-st-neutral"
+		return "mute"
 	}
 }
 

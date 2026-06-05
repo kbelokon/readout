@@ -26,12 +26,6 @@ This software embeds the following third-party components. Their full license
 texts are in internal/assets/static/LICENSES/ (where present) or in the header
 of the bundled file. Each remains under its own license.
 
-  Bulma
-  Copyright (c) Jeremy Thomas
-  MIT License.
-  https://github.com/jgthms/bulma
-  (bundled: internal/assets/static/bulma.min.css; MIT notice in the file header)
-
   Geist and Geist Mono fonts
   Copyright (c) 2023 Vercel, in collaboration with basement.studio
   SIL Open Font License, Version 1.1.

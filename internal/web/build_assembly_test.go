@@ -67,13 +67,17 @@ func TestBuildEventViewsNormalizesBothEventShapes(t *testing.T) {
 		t.Fatalf("old-style event view = %#v", views[0])
 	}
 	// New-style row: eventTime -> age, note -> message, reportingController ->
-	// from. The Warning type is classed has-text-warning (the SAME CellClass the
-	// list path uses), proving normalization feeds the existing cell classer.
+	// from. The Warning type maps to the redesign "warn" tone (via the SAME
+	// CellClass the list path uses, then statusTone), proving normalization still
+	// feeds the cell classer; a Normal event with no class defaults to "mute".
 	if views[1].Age != "2024-03-02 11:00:00" || views[1].Message != "new-style back-off" || views[1].From != "kubelet" {
 		t.Fatalf("new-style event view = %#v, want eventTime/note/reportingController normalized", views[1])
 	}
-	if views[1].TypeClass != "has-text-warning" || views[1].ReasonClass != "has-text-danger" {
-		t.Fatalf("new-style event classes = type %q reason %q", views[1].TypeClass, views[1].ReasonClass)
+	if views[1].Tone != "warn" {
+		t.Fatalf("new-style Warning event tone = %q, want warn", views[1].Tone)
+	}
+	if views[0].Tone != "mute" {
+		t.Fatalf("Normal event tone = %q, want mute (no kube class -> mute default)", views[0].Tone)
 	}
 	// Series-fallback row: series.lastObservedTime -> age.
 	if views[2].Age != "2024-03-03 12:00:00" || views[2].Message != "from series" {
@@ -322,8 +326,10 @@ func TestHasLogTimestamp(t *testing.T) {
 // TestToTableDataPhaseChipCarry pins the bridge: kube.PhaseCount -> templates
 // .PhaseChip. The kube-side typed output and the rendered Label/Count are pinned
 // elsewhere, but the field-for-field carry here (incl. the int->string Count via
-// strconv.Itoa) had no isolated guard, so a Class/Label swap or a wrong Count
-// conversion could slip. Assert all three fields together.
+// strconv.Itoa AND the Bulma-tone -> redesign-tone mapping) had no isolated
+// guard, so a Tone/Label swap or a wrong Count conversion could slip. The Tone is
+// asserted against the DOCUMENTED mapping (has-text-danger->err,
+// has-text-success->ok), not by echoing the emitted class.
 func TestToTableDataPhaseChipCarry(t *testing.T) {
 	td := toTableData(&tableView{
 		Phase: []kube.PhaseCount{
@@ -332,8 +338,8 @@ func TestToTableDataPhaseChipCarry(t *testing.T) {
 		},
 	})
 	want := []templates.PhaseChip{
-		{Class: "has-text-danger", Label: "Error", Count: "3"},
-		{Class: "has-text-success", Label: "OK", Count: "0"},
+		{Tone: "err", Label: "Error", Count: "3"},
+		{Tone: "ok", Label: "OK", Count: "0"},
 	}
 	if !reflect.DeepEqual(td.Phase, want) {
 		t.Fatalf("PhaseChip carry = %#v, want %#v", td.Phase, want)

@@ -44,8 +44,22 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	if sortIcon("Name", "Name") == "" || sortIcon("Name:desc", "Name") == "" || sortIcon("Other", "Name") != "" {
 		t.Fatal("sortIcon mismatch")
 	}
+	// ascending and descending must render DIFFERENT arrows: ascending carries the
+	// sort-asc rotate class, descending does not.
+	if !strings.Contains(sortIcon("Name", "Name"), "sort-asc") || strings.Contains(sortIcon("Name:desc", "Name"), "sort-asc") {
+		t.Fatal("sortIcon direction: ascending must carry sort-asc, descending must not")
+	}
 	if createdSortParam("Created") != "Created:desc" || createdSortParam("") != "Created" || pluralS(1) != "" || pluralS(2) != "s" {
 		t.Fatal("sort/plural helper mismatch")
+	}
+	// Built-in cluster-scoped plurals must resolve as cluster resources even under a
+	// namespace, so a namespaced CRD sharing the plural (nodes.management.cattle.io)
+	// cannot hijack the curated sidebar entry.
+	if !builtinClusterScopedPlural("nodes") || !builtinClusterScopedPlural("namespaces") || !builtinClusterScopedPlural("persistentvolumes") {
+		t.Fatal("builtinClusterScopedPlural must be true for nodes/namespaces/persistentvolumes")
+	}
+	if builtinClusterScopedPlural("pods") || builtinClusterScopedPlural("deployments") || builtinClusterScopedPlural("") {
+		t.Fatal("builtinClusterScopedPlural must be false for namespaced/other plurals")
 	}
 	if namespaceEmptyText("default", false) == "" || namespaceEmptyText("default", true) != "" {
 		t.Fatal("namespaceEmptyText mismatch")
@@ -56,8 +70,8 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	if cpuFormat(0.25) != "250m" || memoryMiBFormat(float64(2*1024*1024)) != "2" || cpuFormat("bad") != "bad" {
 		t.Fatal("resource format mismatch")
 	}
-	if readyClass("0/2") != "has-text-danger" || readyClass("2/2") != "has-text-success" || readyClass("1/2") != "has-text-warning" || readyClass("x") != "" {
-		t.Fatal("readyClass mismatch")
+	if readyRatioClass("0/2") != "zero" || readyRatioClass("2/2") != "full" || readyRatioClass("1/2") != "partial" || readyRatioClass("x") != "" {
+		t.Fatal("readyRatioClass mismatch")
 	}
 	if _, ok := numericCell(json.Number("3.5")); !ok {
 		t.Fatal("json.Number should be numeric")
@@ -124,17 +138,13 @@ func TestObjectRenderingLinksAndSearchHelpers(t *testing.T) {
 	// TestBehaviorPodDetailFacts / TestBehaviorPodYAMLViewIDScheme, the masked-Secret
 	// block in TestBehaviorSecretBarrierMaskedOn, and the timestamp-link YAML
 	// decoration in TestTimestampLinksDecorateYAML. What stays HERE is the
-	// behavioral helper coverage (objectLinks/matchSnippets/splitSearchQuery/
+	// behavioral helper coverage (objectLinks/splitSearchQuery/
 	// sortResults/matchLabels/selectorString), which is not render markup.
 	links := s.objectLinks("test", "default", &obj)
 	if len(links) != 2 || !strings.Contains(links[0].Href, "/test/default/nginx") || !strings.Contains(links[1].Href, "app/web") {
 		t.Fatalf("object links = %#v", links)
 	}
 
-	row := kube.Row{Cells: []any{"prefix nginx suffix", "nginx again", "third nginx", "fourth nginx"}, Object: map[string]any{"metadata": map[string]any{"labels": map[string]any{"app": "web"}}}}
-	if got := matchSnippets(row, "nginx"); len(got) != 3 {
-		t.Fatalf("matchSnippets len = %d %#v", len(got), got)
-	}
 	selector, filter := splitSearchQuery("app=web nginx tier=api")
 	if selector != "app=web,tier=api" || filter != "nginx" {
 		t.Fatalf("splitSearchQuery selector=%q filter=%q", selector, filter)

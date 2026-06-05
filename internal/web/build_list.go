@@ -186,6 +186,27 @@ func (s *Server) applyTableOptions(r *http.Request, cluster *kube.Cluster, table
 	kube.RemoveColumns(table, hide)
 	labels := first(q.Get("labelcols"), q.Get("label-columns"), s.cfg.DefaultLabelColumns[table.Resource.Plural])
 	kube.AddLabelColumns(table, labels)
+	if table.Resource.Plural == "nodes" {
+		// Nodes get rich capacity/pods/conditions columns (read from each row's
+		// status). The CPU/Memory capacity columns are added here ONLY when metrics
+		// are not joined; with ?join=metrics the joinMetrics CPU/Memory Usage columns
+		// below carry the usage overlay instead (one CPU and one Memory column
+		// either way, never both).
+		decorateNodeColumns(table, q.Get("join") == "metrics")
+	}
+	if table.Resource.Plural == "deployments" {
+		// Deployments get a synthetic Rollout column derived from each row's
+		// status/spec (the server-side Table has no rollout column). The Ready column
+		// the Table already provides becomes the rich replica track in buildCellView.
+		decorateDeploymentColumns(table)
+	}
+	if table.Resource.Plural == "namespaces" {
+		// Namespaces get a synthetic Labels column (chips read from metadata.labels);
+		// the Status column the Table already provides reuses the status-dot cell. No
+		// pods-count column is added -- a Namespace object has no pod count and readout
+		// has no per-namespace pod-count seam.
+		decorateNamespaceColumns(table)
+	}
 	if q.Get("join") == "metrics" && (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") {
 		s.joinMetrics(r.Context(), s.kubeClient(r, cluster), table, namespace, allNamespaces, q.Get("selector"))
 	}
@@ -196,6 +217,17 @@ func (s *Server) applyTableOptions(r *http.Request, cluster *kube.Cluster, table
 	kube.FilterRowsByNamespace(table, s.cfg.IncludeNamespaces, s.cfg.ExcludeNamespaces)
 	kube.FilterTable(table, q.Get("filter"), false)
 	kube.GuessColumnClasses(table)
+	// Node CPU/Memory + usage columns render as rich LEFT-aligned bar cells, so
+	// drop the numeric right-alignment GuessColumnClasses infers from their float
+	// sort-cells -- otherwise the header sits right while the bar+value sit left.
+	if table.Resource.Plural == "nodes" {
+		for i := range table.Columns {
+			switch table.Columns[i].Name {
+			case "CPU", "Memory", "CPU Usage", "Memory Usage":
+				table.Columns[i].Class = ""
+			}
+		}
+	}
 	kube.SortTable(table, q.Get("sort"))
 	if limit := q.Get("limit"); limit != "" {
 		n, _ := strconv.Atoi(limit)
@@ -224,6 +256,14 @@ func (s *Server) joinMetrics(ctx context.Context, client *kube.Client, table *ku
 	}
 	list, err := client.List(ctx, &rt, kube.ListOptions{Namespace: listNS, LabelSelector: labelSelector})
 	if err != nil {
+		// The CPU/Memory columns were appended up front; if the metrics LIST call
+		// fails AFTER discovery succeeded, every row must still get its two
+		// placeholder cells, or the rows are short two cells and the table renders
+		// ragged (column count > row cell count). Append the "metrics unknown" zero
+		// placeholders so column/row cell counts always match. Never blank or crash.
+		for i := range table.Rows {
+			table.Rows[i].Cells = append(table.Rows[i].Cells, 0, 0)
+		}
 		return
 	}
 	usage := map[string][2]float64{}
@@ -239,6 +279,115 @@ func (s *Server) joinMetrics(ctx context.Context, client *kube.Client, table *ku
 		value := usage[key]
 		table.Rows[i].Cells = append(table.Rows[i].Cells, value[0], value[1])
 	}
+}
+
+// decorateNodeColumns appends the rich node columns (Pods + Conditions always; the
+// CPU/Memory capacity columns only when metrics are NOT joined) and fills each
+// row's matching cells from the node's status. The capacity/conditions cells carry
+// a plain DISPLAY value (capacity quantity / abnormal-condition names / "—") so
+// sort, TSV, and the generic fallback stay sensible; the rich renderers re-read the
+// row object for the bar fill + pills. Cells are appended for EVERY row in lockstep
+// with the columns, so the table never goes ragged.
+func decorateNodeColumns(table *kube.Table, metricsJoined bool) {
+	type nodeCol struct {
+		name string
+		cell func(obj map[string]any) any
+	}
+	var cols []nodeCol
+	if !metricsJoined {
+		cols = append(cols,
+			nodeCol{"CPU", func(obj map[string]any) any { return nodeCapacityText(obj, "cpu") }},
+			nodeCol{"Memory", func(obj map[string]any) any { return nodeCapacityText(obj, "memory") }},
+		)
+	}
+	cols = append(cols,
+		nodeCol{"Pods", func(obj map[string]any) any { return nestedString(obj, "status", "capacity", "pods") }},
+		nodeCol{"Conditions", func(obj map[string]any) any { return nodeConditionsText(obj) }},
+	)
+	for _, col := range cols {
+		if columnIndex(table.Columns, col.name) >= 0 {
+			continue // never duplicate a column the server-side Table already had
+		}
+		table.Columns = append(table.Columns, kube.Column{Name: col.name})
+		for i := range table.Rows {
+			table.Rows[i].Cells = append(table.Rows[i].Cells, col.cell(table.Rows[i].Object))
+		}
+	}
+}
+
+// decorateDeploymentColumns appends the synthetic Rollout column and fills each
+// row's cell with the plain rollout DISPLAY label (derived from the row's
+// status/spec) so sort, TSV, and the generic fallback see a sensible value; the
+// rich cellRollout renderer re-reads the row object for the `.rollout.<state>`
+// class + icon. The cell is appended for EVERY row in lockstep with the column, so
+// the table never goes ragged. A Rollout column the server-side Table already
+// provided (it does not today) is never duplicated.
+func decorateDeploymentColumns(table *kube.Table) {
+	if columnIndex(table.Columns, "Rollout") >= 0 {
+		return
+	}
+	table.Columns = append(table.Columns, kube.Column{Name: "Rollout"})
+	for i := range table.Rows {
+		_, label := rolloutState(table.Rows[i].Object)
+		table.Rows[i].Cells = append(table.Rows[i].Cells, label)
+	}
+}
+
+// decorateNamespaceColumns appends the synthetic Labels column and fills each
+// row's cell with the plain label DISPLAY value (the sorted comma-joined labels,
+// or "—" when unlabeled) so sort, TSV, and the generic fallback see a sensible
+// value; the rich cellChips renderer re-reads the row object for the per-label
+// chips (the .app accent for app.kubernetes.io/*). A Namespace object carries NO
+// pod count and readout has no per-namespace pod-count seam, so NO pods-count
+// column is fabricated -- only status (already from the Table), labels, and age.
+// The cell is appended for EVERY row in lockstep with the column, so the table
+// never goes ragged. A "Labels" column that already exists (e.g. a user's
+// labelcols=* produced one) is never duplicated -- the decoration is a no-op then,
+// and that user column keeps falling through to the generic cell.
+func decorateNamespaceColumns(table *kube.Table) {
+	if columnIndex(table.Columns, "Labels") >= 0 {
+		return
+	}
+	table.Columns = append(table.Columns, kube.Column{Name: "Labels"})
+	for i := range table.Rows {
+		table.Rows[i].Cells = append(table.Rows[i].Cells, namespaceLabelsText(table.Rows[i].Object))
+	}
+}
+
+// columnIndex reports the index of a named column, or -1. A small local mirror of
+// kube.columnIndex (unexported) used by decorateNodeColumns to skip a column the
+// server-side Table already provided.
+func columnIndex(cols []kube.Column, name string) int {
+	for i, col := range cols {
+		if col.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// nodeCapacityText is the plain capacity DISPLAY value for the synthetic CPU/Memory
+// columns (the canonical quantity, e.g. "4" / "16Gi"); empty when absent.
+func nodeCapacityText(obj map[string]any, key string) string {
+	if q, ok := nodeCapacityQuantity(obj, key); ok {
+		return q.String()
+	}
+	return ""
+}
+
+// nodeConditionsText is the plain DISPLAY value for the synthetic Conditions column:
+// the comma-joined abnormal-condition names, or "—" when the node is clean (so the
+// generic fallback / TSV / sort sees the same "—" the rich pill renderer shows).
+func nodeConditionsText(obj map[string]any) string {
+	pills := nodeAbnormalConditions(obj)
+	if len(pills) == 0 {
+		return "—"
+	}
+	names := make([]string, len(pills))
+	for i, p := range pills {
+		names[i] = p.Name
+	}
+	return strings.Join(names, ", ")
 }
 
 func (s *Server) joinCustomColumns(ctx context.Context, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, spec string, query url.Values) {
@@ -384,6 +533,22 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	if lc.Namespace != "" && lc.Plural != "namespaces" && !lc.IsAllNamespaces {
 		v.AllNamespacesHref = fmt.Sprintf("/clusters/%s/namespaces/_all/%s?%s", url.PathEscape(lc.Cluster), url.PathEscape(lc.Plural), r.URL.RawQuery)
 	}
+	// The client-side stale path (D11) needs its markup hooks in the first server
+	// response: a hidden `.ro-banner.warn` readout.js reveals on an auto-refresh
+	// error, dimming the rows in #resource-list-content (the morph target) instead
+	// of blanking them. The server never decides "stale" -- there is no last-good
+	// cache; the client does, on a refresh error that keeps the rows. The dim
+	// target id is owned by readout.js (hardcoded), so it is not threaded here.
+	v.StaleBanner = true
+
+	// Active filters drive the empty-FILTERED state (removable chips + Clear) vs
+	// the plainly-empty state (broad action). Resolved once for the page (the
+	// filter/selector params are page-wide, not per-table).
+	filterChips := buildFilterChips(r)
+	clearHref := ""
+	if len(filterChips) > 0 {
+		clearHref = delQuery(r.URL, "filter", "selector", "labelcols", "label-columns")
+	}
 
 	for ti := range lc.Tables {
 		table := &lc.Tables[ti]
@@ -433,13 +598,97 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 			}
 			tv.Rows = append(tv.Rows, rv)
 		}
+		// Empty-state enrichment: a zero-row table either offers a broad next
+		// action (plainly empty) or, when an active filter is what hid the rows,
+		// the removable filter chips + Clear (empty-filtered). Both are wired only
+		// when the table is actually empty so a populated table is untouched.
+		if len(tv.Rows) == 0 {
+			if len(filterChips) > 0 {
+				tv.EmptyFilters = filterChips
+				tv.ClearHref = clearHref
+			} else if v.AllNamespacesHref != "" {
+				tv.EmptyAction = &emptyActionView{Href: v.AllNamespacesHref, Label: "Show " + lc.Plural + " across all namespaces"}
+			}
+		}
 		v.Tables = append(v.Tables, tv)
+	}
+	// Whole-list failure state (D11): a SINGLE-cluster list that produced no
+	// tables at all but did collect a FORBIDDEN or UNREACHABLE error renders that
+	// state in place of the table -- and its per-cluster error is NOT surfaced as
+	// the all-cluster partial-failure banner (the invariant: a single-cluster list
+	// never says some-clusters-failed). An all-cluster list, a single-cluster list
+	// that still produced a table (a partial multi-type list), or a single-cluster
+	// failure that is neither forbidden nor unreachable (e.g. a missing resource
+	// type -- the secret-barrier path, which must keep surfacing "resource type
+	// not found") keeps the existing behaviour.
+	if !lc.IsAllClusters && lc.ClusterCount == 1 && len(v.Tables) == 0 && len(lc.Errors) > 0 {
+		if state := s.buildListState(r, lc); state != nil {
+			v.State = state
+			v.Errors = nil
+		}
 	}
 	return v
 }
 
+// buildFilterChips resolves the removable active-filter chips for the
+// empty-filtered state from the request: the free-text filter, the label
+// selector, and the labelcols column spec. Each chip's ✕ drops just that one
+// param (a read-only GET) so the user can peel filters off one at a time.
+func buildFilterChips(r *http.Request) []filterChipView {
+	q := r.URL.Query()
+	var chips []filterChipView
+	if filter := q.Get("filter"); filter != "" {
+		chips = append(chips, filterChipView{Label: "filter: " + filter, RemoveHref: delQuery(r.URL, "filter")})
+	}
+	if selector := q.Get("selector"); selector != "" {
+		chips = append(chips, filterChipView{Label: "selector: " + selector, RemoveHref: delQuery(r.URL, "selector")})
+	}
+	if labelCols := first(q.Get("labelcols"), q.Get("label-columns")); labelCols != "" {
+		chips = append(chips, filterChipView{Label: "labels: " + labelCols, RemoveHref: delQuery(r.URL, "labelcols", "label-columns")})
+	}
+	return chips
+}
+
+// buildListState classifies a single-cluster whole-list failure into the
+// forbidden state (an apiserver 403 naming the verb/resource/namespace) or the
+// unreachable state (a transport/dial failure that never reached the apiserver
+// -- shown with its REAL error string, never a cute message, Principles §11). It
+// returns nil for any other failure (a missing resource type, a 5xx with a
+// Status), so those keep the existing partial-error banner. The retry is the
+// same list URL (a read-only GET); Back to clusters is /clusters.
+func (s *Server) buildListState(r *http.Request, lc *listContext) *listStateView {
+	err := lc.Errors[0]
+	forbidden := kube.IsForbidden(err)
+	unreachable := !forbidden && !kube.IsNotFound(err) && !kube.IsAPIStatusError(err)
+	if !forbidden && !unreachable {
+		return nil
+	}
+	state := &listStateView{
+		Verb:      "list",
+		Resource:  lc.Plural,
+		Namespace: lc.Namespace,
+		RetryHref: r.URL.String(),
+		BackHref:  "/clusters",
+		SourceErr: err,
+	}
+	if forbidden {
+		state.Kind = stateForbidden
+		state.Detail = "403 Forbidden · " + err.Error()
+	} else {
+		state.Kind = stateUnreachable
+		state.Detail = err.Error()
+	}
+	return state
+}
+
 // buildCellView resolves one body cell: its render branch, value, classes, and
-// any request-derived href.
+// any request-derived href. The rich per-kind presentation (pod-name split,
+// status-dot tone + transient pulse, ready/restart tones, secondary-text
+// truncation tooltip) is resolved here too so the templ renderer reads plain data
+// and emits the redesign vocabulary directly. Recognized columns of the existing
+// k8s Table schema are ADAPTED in place -- a user-added label/custom column falls
+// through to the generic (plain/truncated) cell, so hidecols/labelcols/customcols/
+// sort/TSV are untouched.
 func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row, i int, cell any, ns, name string) cellView {
 	value := cellDisplayString(cell)
 	colName := table.Columns[i].Name
@@ -451,17 +700,58 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 	switch {
 	case colName == "Name":
 		cv.Kind = cellName
+		cv.NameHead, cv.NameTail = splitObjectName(table.Resource.Plural, value)
 		href := resourceHref(row.Cluster, &table.Resource, ns, name)
 		if table.Resource.Plural == "namespaces" {
 			href = fmt.Sprintf("/clusters/%s/namespaces/%s/pods", url.PathEscape(row.Cluster), url.PathEscape(name))
 		}
 		cv.Href = href
 	case table.Columns[i].Label != "" && table.Columns[i].Label != "*":
+		// A user-added single label column: still a selector link, but the label
+		// VALUE is secondary free-text, so it truncates with a tooltip.
 		cv.Kind = cellLabel
 		cv.Href = addQuery(r.URL, "selector", table.Columns[i].Label+"="+value)
+		cv.Trunc, cv.Title = true, value
 	case colName == "Node":
 		cv.Kind = cellNode
 		cv.Href = "/clusters/" + url.PathEscape(row.Cluster) + "/nodes/" + url.PathEscape(value)
+	case table.Resource.Plural == "nodes" && (colName == "CPU Usage" || colName == "Memory Usage"):
+		// Nodes reskin the joined metrics usage column as a capacity bar: the cell
+		// carries the usage (cores/bytes from joinMetrics), the node's capacity
+		// comes from status.capacity, and the bucket + fill come from usage/capacity.
+		usage, haveUsage := numericCell(cell)
+		cv = capacityCellView(row.Object, nodeCapacityKey(colName), usage, haveUsage)
+	case table.Resource.Plural == "nodes" && (colName == "CPU" || colName == "Memory"):
+		// No-metrics node capacity column: capacity value text, no usage overlay.
+		cv = capacityCellView(row.Object, nodeCapacityKey(colName), 0, false)
+	case table.Resource.Plural == "nodes" && colName == "Roles":
+		cv.Kind = cellRoles
+		cv.Roles = nodeRoles(row.Object)
+	case table.Resource.Plural == "nodes" && colName == "Conditions":
+		cv.Kind = cellConditions
+		cv.Conds = nodeAbnormalConditions(row.Object)
+	case table.Resource.Plural == "deployments" && colName == "Ready":
+		// Deployments reskin the Ready column as the replica track: the segment
+		// states + the ready/desired ratio come from the deployment status/spec
+		// (readyReplicas / updatedReplicas / spec.replicas), capped at
+		// replicaTrackCap so a high-replica deployment never explodes the DOM.
+		cv.Kind = cellReplicas
+		desired, ready, updated := deploymentReplicas(row.Object)
+		cv.RepSegments, cv.RepNum = replicaTrack(desired, ready, updated)
+		cv.Ratio = readyRatioClass(cv.RepNum)
+	case table.Resource.Plural == "deployments" && colName == "Rollout":
+		// The synthetic Rollout column (added by decorateDeploymentColumns) renders
+		// the rollout status pill; the state + label come from the deployment
+		// status/conditions/spec.paused.
+		cv.Kind = cellRollout
+		cv.RolloutState, cv.Value = rolloutState(row.Object)
+	case table.Resource.Plural == "namespaces" && colName == "Labels" && table.Columns[i].Label == "":
+		// The synthetic Labels column (added by decorateNamespaceColumns) renders the
+		// namespace label chips read from metadata.labels (the .app accent for
+		// app.kubernetes.io/*). The Label=="" guard keeps a user-added labelcols
+		// "Labels" column (which carries a Label tag) on the generic path instead.
+		cv.Kind = cellChips
+		cv.Chips = namespaceLabelChips(row.Object)
 	case colName == "CPU Usage":
 		cv.Kind = cellCPU
 		cv.Value = cpuFormat(cell)
@@ -470,12 +760,58 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cv.Value = memoryMiBFormat(cell)
 	case colName == "Status":
 		cv.Kind = cellStatus
+		cv.Tone = statusTone(cls)
+		if table.Resource.Plural == "pods" {
+			cv.Pulse = transientPodPhase(value)
+		}
 	case colName == "Ready" && strings.Contains(value, "/"):
 		cv.Kind = cellReady
+		cv.Ratio = readyRatioClass(value)
+	case colName == "Restarts":
+		cv.Kind = cellRestarts
+		cv.Value, cv.Ago = splitRestarts(value)
+		cv.Tone = restartsTone(cv.Value)
 	default:
 		cv.Kind = cellPlain
+		if isSecondaryTextColumn(colName) {
+			cv.Trunc, cv.Title = true, value
+		}
+	}
+	if colName == "Age" || colName == "First Seen" {
+		// The age cell carries the short bucketed value; the full timestamp moves
+		// into the tooltip (no redundant full-timestamp column).
+		if ts := formatTimestamp(nestedString(row.Object, "metadata", "creationTimestamp")); ts != "" {
+			cv.Title = "created " + ts
+		}
 	}
 	return cv
+}
+
+// secondaryTextColumns are the recognized k8s Table columns whose value is long
+// free-text rather than an identifier -- they truncate with a `title=` tooltip
+// (Principles §3: "secondary free-text — truncate WITH a tooltip", e.g. images,
+// labels, selectors, node selectors, messages). The design keeps an ALLOW-LIST
+// here, not the inverse, because identifiers are sacred: an unlisted column stays
+// FULL and the table wrapper scrolls horizontally under the pinned name column
+// (the design's escape valve), which is always safe -- whereas truncating by
+// default would clip a short identifier/enum (Type, Cluster-IP, Port(s)) that must
+// stay readable. Identifier columns (Name, Node, IP, Namespace, Ports, container
+// names, counts) are deliberately never listed here.
+var secondaryTextColumns = map[string]bool{
+	"Image":         true,
+	"Images":        true,
+	"Selector":      true,
+	"Node Selector": true,
+	"Labels":        true,
+	"Message":       true,
+	"Reason":        true,
+	"Data":          true,
+	"Provider":      true,
+	"Resources":     true,
+}
+
+func isSecondaryTextColumn(colName string) bool {
+	return secondaryTextColumns[colName]
 }
 
 // buildToolsView resolves the resource-list tools form state from the request.

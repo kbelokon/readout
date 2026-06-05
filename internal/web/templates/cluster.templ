@@ -1,37 +1,48 @@
 package templates
 
-// cluster.templ is the cluster-overview page body: the breadcrumb + title, the
-// cluster meta line + label chips, the Namespaces search-select table (with the
-// data-toggle-button="search-namespaces-button" hook and per-row age cell
-// class), and the Cluster Resource Types table. The behavior-fact net pins the
-// namespace rows, the search-select hook, the per-bucket age cell class, and the
-// cluster-scoped kind links.
+// cluster.templ is the single-cluster-overview page body (D4/D11/D13). It has no
+// handoff mockup, so it is rebuilt by the BORROW RULE (D11): the Namespaces table
+// borrows the clusters.templ `.ro-select-table` treatment (checkbox column +
+// `.cl-name` mono link + label chips), and the Cluster Resource Types table is a
+// plain `.ro-table` -- staying CONSISTENT with the migrated list/detail
+// vocabulary.
+//
+// The OUTERMOST content element carries the `ro-rd` content marker (D13): the
+// colliding redesign classes below -- .ro-breadcrumb, .ro-select-table,
+// .ro-chips, .ro-chip, .ro-section -- are scoped under .ro-rd in readout.css, so
+// they only resolve when this content root carries the marker. The KEEP-AS-IS
+// resource-type cell classes (.ro-cell-kind, .ro-crd-badge, .ro-rt-group,
+// .ro-rt-version) are preserved verbatim -- the resource-types/secret-barrier
+// behavior tests assert them.
+//
+// The behavior-fact net pins the namespace rows, the search-select hook
+// (data-toggle-button="search-namespaces-button"), the per-bucket age cell
+// class (the row's LAST <td>), and the cluster-scoped kind links.
 
 // ClusterData is the resolved cluster-overview input. ClusterChips are the
-// /clusters?selector= label pills on the meta line (anchor style); each
-// NamespaceRow carries its own non-link label chips, the pods link, and the
-// precomputed age cell class + created text. ResourceTypes are the cluster
-// resource-type rows.
+// non-link label pills on the meta line; each NamespaceRow carries its own label
+// chips, the pods link, and the precomputed age cell class + created text.
+// ResourceTypes are the cluster resource-type rows.
 type ClusterData struct {
 	Name          string
 	URL           string
-	ClusterChips  []Chip
+	ClusterChips  []LabelChip
 	Namespaces    []NamespaceRow
 	ResourceTypes []ClusterResourceTypeRow
 }
 
 // NamespaceRow is one namespace in the Namespaces table.
 type NamespaceRow struct {
-	Name       string
-	PodsHref   string
-	Chips      []LabelChip
-	AgeClass   string
-	Created    string
+	Name     string
+	PodsHref string
+	Chips    []LabelChip
+	AgeClass string
+	Created  string
 }
 
-// LabelChip is a non-link label pill (the namespace-row chips render as a
-// <span> with an inner <span class="tag">, distinct from the anchor chips on
-// the meta line). Class is the FULL ro-chip class incl. the app accent.
+// LabelChip is a non-link label pill rendered as `<span class={Class}>key:
+// val</span>` (the redesign `.ro-chip` vocabulary, with the ` app` accent token
+// for app.kubernetes.io/* labels). Class is the FULL redesign chip class.
 type LabelChip struct {
 	Class string
 	Key   string
@@ -49,43 +60,45 @@ type ClusterResourceTypeRow struct {
 }
 
 templ Cluster(d ClusterData) {
-	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul><li class="is-active"><a href={ templ.SafeURL(clusterHref(d.Name)) }>{ d.Name }</a></li></ul></nav>
-	<h1 class="title">{ d.Name }</h1>
-	<div class="ro-cluster-meta">
-		if len(d.ClusterChips) > 0 {
-			<div class="ro-chips">
-				for _, chip := range d.ClusterChips {
-					<a href={ templ.SafeURL(chip.Href) } class={ chip.Class }><span class="tag is-link">{ chip.Key }: { chip.Val }</span></a>
-				}
-				</div>
-		}
-		<div class="ro-meta-line"><span class="ro-meta-key">API URL</span> { d.URL }</div></div>
-	<div class="section"><h4 class="title is-5">Namespaces</h4><form action="/search" method="get"><input type="hidden" name="cluster" value={ d.Name }><table class="table ro-list-table ro-select-table has-bottom-controls"><thead><tr><th></th><th>Name</th><th>Labels</th><th>Created</th></tr></thead><tbody>
-		for _, ns := range d.Namespaces {
-			<tr><td><input type="checkbox" name="namespace" value={ ns.Name } data-toggle-button="search-namespaces-button"></td><td class="ro-cell-name"><a href={ templ.SafeURL(ns.PodsHref) }>{ ns.Name }</a></td><td>
-				if len(ns.Chips) > 0 {
-					<div class="ro-chips">
-						for _, chip := range ns.Chips {
-							<span class={ chip.Class }><span class="tag">{ chip.Key }: { chip.Val }</span></span>
-						}
-						</div>
-				}
-				</td><td class={ ns.AgeClass }>{ ns.Created }</td></tr>
-		}
-		if len(d.Namespaces) == 0 {
-			<tr><td colspan="4">No namespaces found.</td></tr>
-		}
-		</tbody></table><div class="control bottom-controls"><button class="button is-primary" type="submit" id="search-namespaces-button" disabled><span class="icon">@iconC("search")</span><span>Search in selected namespaces</span></button></div></form></div>
-	<div class="section"><h4 class="title is-5">Cluster Resource Types</h4><table class="table ro-list-table"><thead><tr><th>Kind</th><th>API Group</th><th>Version</th></tr></thead><tbody>
-		if len(d.ResourceTypes) == 0 {
-			<tr><td colspan="3">No resource types found.</td></tr>
-		}
-		for _, rt := range d.ResourceTypes {
-			<tr><td class="ro-cell-kind"><a href={ templ.SafeURL(rt.Href) }>{ rt.Kind }</a>
-				if rt.IsCRD {
-					{ " " }<span class="ro-crd-badge" title="Custom Resource Definition">CRD</span>
-				}
-				</td><td class="ro-rt-group">{ rt.Group }</td><td class="ro-rt-version">{ rt.Version }</td></tr>
-		}
-		</tbody></table></div>
+	<div class="ro-rd">
+		<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul><li class="is-active"><a href={ templ.SafeURL(clusterHref(d.Name)) }>{ d.Name }</a></li></ul></nav>
+		<div class="ro-title-row"><h1 class="ro-title">{ d.Name }</h1></div>
+		<div class="ro-cluster-meta">
+			if len(d.ClusterChips) > 0 {
+				<div class="ro-chips">
+					for _, chip := range d.ClusterChips {
+						<span class={ chip.Class }>{ chip.Key + ": " + chip.Val }</span>
+					}
+					</div>
+			}
+			<div class="ro-meta-line"><span class="ro-meta-key">API URL</span> { d.URL }</div></div>
+		<div class="ro-section"><div class="ro-section-label">Namespaces</div><form action="/search" method="get"><input type="hidden" name="cluster" value={ d.Name }><div class="ro-table-wrap"><table class="ro-table ro-select-table"><thead><tr><th></th><th>Name</th><th>Labels</th><th>Created</th></tr></thead><tbody>
+			for _, ns := range d.Namespaces {
+				<tr><td><input class="ro-check" type="checkbox" name="namespace" value={ ns.Name } data-toggle-button="search-namespaces-button"></td><td class="cl-name"><a href={ templ.SafeURL(ns.PodsHref) }>{ ns.Name }</a></td><td>
+					if len(ns.Chips) > 0 {
+						<div class="ro-chips">
+							for _, chip := range ns.Chips {
+								<span class={ chip.Class }>{ chip.Key + ": " + chip.Val }</span>
+							}
+							</div>
+					}
+					</td><td class={ ns.AgeClass }>{ ns.Created }</td></tr>
+			}
+			if len(d.Namespaces) == 0 {
+				<tr><td colspan="4">No namespaces found.</td></tr>
+			}
+			</tbody></table></div><div class="ro-bottom-controls"><button class="ro-btn" type="submit" id="search-namespaces-button" disabled><span class="ico sm" aria-hidden="true">@iconC("search")</span><span>Search in selected namespaces</span></button></div></form></div>
+		<div class="ro-section"><div class="ro-section-label">Cluster Resource Types</div><div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Kind</th><th>API Group</th><th>Version</th></tr></thead><tbody>
+			if len(d.ResourceTypes) == 0 {
+				<tr><td colspan="3">No resource types found.</td></tr>
+			}
+			for _, rt := range d.ResourceTypes {
+				<tr><td class="ro-cell-kind"><a href={ templ.SafeURL(rt.Href) }>{ rt.Kind }</a>
+					if rt.IsCRD {
+						{ " " }<span class="ro-crd-badge" title="Custom Resource Definition">CRD</span>
+					}
+					</td><td class="ro-rt-group">{ rt.Group }</td><td class="ro-rt-version">{ rt.Version }</td></tr>
+			}
+			</tbody></table></div></div>
+	</div>
 }

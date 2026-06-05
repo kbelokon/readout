@@ -27,12 +27,28 @@ type LayoutData struct {
 
 	Navbar  Navbar
 	Sidebar Sidebar
+
+	// PaletteJSON is the ⌘K palette feed (D10) as a JSON string, emitted into the
+	// #ro-palette-data hidden <div> (NOT a <script> -- htmx allowScriptTags:false
+	// strips every <script> from swapped content, which would empty the palette
+	// after an hx-boost nav). templ HTML-escapes it into the div text; the palette
+	// JS reads el.textContent (the browser un-escapes) and JSON.parses it. The
+	// shape is owned by package-web's paletteFeedView (its json tags are the wire
+	// contract).
+	PaletteJSON string
 }
 
 type Navbar struct {
 	ShowContext    bool
 	ContextName    string
 	NamespaceLinks []NavItem
+
+	// ShowSidebar mirrors Sidebar.ShowMenu: it is true on every page that renders a
+	// sidebar (any in-scope cluster, including the all-clusters list). It gates the
+	// mobile `.menu-toggle` hamburger so the button exists exactly when there is a
+	// sidebar for it to reveal -- NOT ShowContext, which is false on the
+	// all-clusters list even though that page still has a sidebar.
+	ShowSidebar bool
 
 	SearchCluster   string
 	SearchNamespace string
@@ -57,6 +73,11 @@ type NavItem struct {
 	Href   string
 	Text   string
 	Active bool
+
+	// Icon is the pre-rendered sidebar entry glyph from the Unit-1 resolver
+	// (icons.KindIcon / icons.PluralMonogram), emitted raw. Empty for nav items
+	// that carry no icon slot (namespaces, Meta links).
+	Icon string
 }
 
 // Layout renders the full HTML document around body. The <html> data-theme
@@ -93,49 +114,105 @@ templ layoutHead(d LayoutData) {
 	</head>
 }
 
+// layoutBody renders the redesign chrome (D13): the sticky blurred topbar as a
+// <header class="ro-topbar"> (NOT a <nav>, so the header.ro-topbar CSS applies),
+// then the .ro-shell grid wrapping the sticky .ro-sidebar + the .ro-main content
+// region. The Clusters entry page (no cluster scope) omits the sidebar +
+// namespace context (D11): the sidebar renders only when Sidebar.ShowMenu and the
+// .ctx-dd only when Navbar.ShowContext, so the .ro-shell collapses to just main.
+// The #ro-palette-data JSON blob (D10) and the palette overlay (Unit 4) ride on
+// every page. Do NOT add the `ro-rd` content marker here -- content templates add
+// it when THEY migrate (D13).
 templ layoutBody(d LayoutData, body templ.Component) {
-	<body class="has-navbar-fixed-top" hx-boost="true" hx-ext="preload" preload="mouseover">
-		@navbarC(d.Navbar)
-		<div class="container is-fluid is-flex-desktop">
+	<body class="has-ro-topbar" hx-boost="true" hx-indicator="#ro-progress" hx-ext="preload" preload="mouseover">
+		<div id="ro-progress" class="ro-progress htmx-indicator" aria-hidden="true"><span class="ro-progress-bar"></span></div>
+		@topbarC(d.Navbar)
+		<div class="ro-shell">
 			@sidebarC(d.Sidebar)
-			<main>
+			<main class="ro-main" id="main">
 				@body
 			</main>
 		</div>
+		<div id="ro-palette-data" hidden>{ d.PaletteJSON }</div>
 		@footerC(d.Footer)
 		@CommandPalette()
 	</body>
 }
 
-templ navbarC(n Navbar) {
-	<nav class="navbar is-fixed-top ro-topbar" aria-label="main navigation"><div class="navbar-brand"><a class="navbar-item brand-item" href="/clusters" aria-label="readout home"><span class="brand-logo" aria-hidden="true"></span><span class="brand-name">readout</span></a><a role="button" class="navbar-burger" data-target="nav-menu" aria-label="menu" aria-expanded="false"><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span></a></div><div class="navbar-menu" id="nav-menu"><div class="navbar-start"><a class="navbar-item toplink" href="/clusters">Clusters</a>
+// topbarC is the redesign sticky blurred topbar. It MUST be a <header
+// class="ro-topbar"> (D13) so the header.ro-topbar CSS applies. It carries: the
+// brand mask (.brand-logo over readout-logo.svg, inheriting --brand) + name; the
+// Clusters .topnav link; the namespace context dropdown (.ctx-dd, only with a
+// cluster in scope) keeping the readout.js hooks (#namespace-dropdown /
+// #namespace-searchbox / .namespace-item / .context-name); a flexible spacer; the
+// read-only .ro-search box that OPENS ⌘K on click (data-palette-open, consumed by
+// Unit 4) -- it is a plain box, NOT a submitting form; the live-refresh control
+// (.tb-btn.refresh-live with the pulsing .ro-livedot + #refresh-label) keeping the
+// existing #refresh-dropdown / .refresh-option[data-interval] interval hooks; and
+// the theme toggle, which stays a server POST /preferences that opts OUT of
+// hx-boost (D5) -- NOT a client-JS toggle (#btn-theme-toggle + .theme-icon-*).
+//
+// The leading `.menu-toggle` hamburger (D11) is mobile chrome: hidden by the
+// readout.css media query above 760px, it reveals below 760px where the sidebar
+// is hidden, toggling `.ro-sidebar.is-active` via the delegated readout.js click
+// handler (Unit 4). It is a real <button> so the app-layer button:focus-visible
+// ring applies, and renders only when ShowSidebar (there must be a sidebar for
+// it to reveal -- the Clusters entry page has none).
+templ topbarC(n Navbar) {
+	<header class="ro-topbar" aria-label="main navigation">
+		if n.ShowSidebar {
+			<button type="button" class="menu-toggle" aria-label="Toggle navigation menu" aria-controls="aside-menu"><span class="ico sm" aria-hidden="true">@iconC("sliders")</span></button>
+		}
+		<a class="brand-item" href="/clusters" aria-label="readout home"><span class="brand-logo" aria-hidden="true"></span><span class="brand-name">readout</span></a><nav class="topnav"><a class="is-active" href="/clusters">Clusters</a></nav>
 		if n.ShowContext {
-			<div id="namespace-dropdown" class="navbar-item has-dropdown context-dd"><a class="navbar-link is-arrowless context-trigger" role="button" aria-haspopup="true"><span class="status-dot" aria-hidden="true"></span><span class="context-name">{ n.ContextName }</span><span class="context-caret icon">@iconC("chevron-down")</span></a><div class="navbar-dropdown"><div class="control"><input id="namespace-searchbox" type="text" placeholder="type to filter" class="input is-transparent"></div>
+			<div id="namespace-dropdown"><button type="button" class="ctx-dd context-trigger" aria-haspopup="true" aria-label="Switch namespace"><span class="ctx-dot" aria-hidden="true"></span><span class="context-name">{ n.ContextName }</span><span class="ctx-caret ico sm" aria-hidden="true">@iconC("chevron-down")</span></button><div class="ctx-menu"><div class="ctx-search"><input id="namespace-searchbox" type="text" placeholder="type to filter" autocomplete="off"></div>
 				for _, ns := range n.NamespaceLinks {
-					<a class="navbar-item namespace-item" href={ templ.SafeURL(ns.Href) }>{ ns.Text }</a>
+					<a class="namespace-item" href={ templ.SafeURL(ns.Href) }>{ ns.Text }</a>
 				}
 				</div></div>
 		}
-		</div><div class="navbar-end"><div class="navbar-item search-item"><form method="get" action="/search"><div class="field"><p class="control has-icons-left has-icons-right"><input type="hidden" name="cluster" value={ n.SearchCluster }><input type="hidden" name="namespace" value={ n.SearchNamespace }><span class="icon is-small is-left">@iconC("search")</span><input class="input" type="text" placeholder="Search Kubernetes objects.." name="q" aria-label="Search Kubernetes objects"><span class="icon is-small is-right search-kbd-hint" aria-hidden="true"><kbd class="ro-kbd">&#8984;K</kbd></span></p></div></form></div><div class="navbar-item has-dropdown is-hoverable" id="refresh-dropdown"><a class="navbar-link is-arrowless refresh-trigger" role="button" title="Auto-refresh interval" aria-label="Auto-refresh interval"><span class="icon refresh-icon">@iconC("rotate-cw")</span><span id="refresh-label" class="refresh-label">Off</span></a><div class="navbar-dropdown is-right"><a class="navbar-item refresh-option" role="button" data-interval="0">Off</a><a class="navbar-item refresh-option" role="button" data-interval="5">Every 5s</a><a class="navbar-item refresh-option" role="button" data-interval="15">Every 15s</a><a class="navbar-item refresh-option" role="button" data-interval="30">Every 30s</a><a class="navbar-item refresh-option" role="button" data-interval="60">Every 60s</a></div></div><div class="navbar-item"><form method="post" action="/preferences" hx-boost="false"><input type="hidden" name="theme" value={ n.NextTheme }><input type="hidden" name="next" value={ n.ToggleNextURL }><button type="submit" class="button navbar-icon" title="Toggle light/dark theme" aria-label="Toggle light/dark theme" id="btn-theme-toggle" data-theme-explicit={ boolStr(n.ThemeExplicit) }><span class="icon theme-icon-dark" aria-hidden="true">@iconC("moon")</span><span class="icon theme-icon-light" aria-hidden="true">@iconC("sun")</span></button></form></div></div></div></nav>
+		<span class="topbar-spacer"></span><div class="ro-search" data-palette-open="true" role="button" tabindex="0" aria-label="Search Kubernetes objects (opens command palette)"><span class="s-ico ico sm" aria-hidden="true">@iconC("search")</span><input type="text" placeholder="Search Kubernetes objects.." aria-hidden="true" tabindex="-1" readonly><span class="kbd-hint" aria-hidden="true"><kbd class="ro-kbd">&#8984;K</kbd></span></div><div class="tb-group"><div id="refresh-dropdown" class="refresh-dropdown"><button type="button" class="tb-btn refresh-live refresh-trigger" title="Auto-refresh interval" aria-label="Auto-refresh interval"><span class="ro-livedot" aria-hidden="true"></span><span class="ico refresh-icon" aria-hidden="true">@iconC("rotate-cw")</span><span id="refresh-label" class="refresh-label">Off</span></button><div class="refresh-menu"><button type="button" class="refresh-option" data-interval="0">Off</button><button type="button" class="refresh-option" data-interval="5">Every 5s</button><button type="button" class="refresh-option" data-interval="15">Every 15s</button><button type="button" class="refresh-option" data-interval="30">Every 30s</button><button type="button" class="refresh-option" data-interval="60">Every 60s</button></div></div><form method="post" action="/preferences" hx-boost="false"><input type="hidden" name="theme" value={ n.NextTheme }><input type="hidden" name="next" value={ n.ToggleNextURL }><button type="submit" class="tb-btn" title="Toggle light/dark theme" aria-label="Toggle light/dark theme" id="btn-theme-toggle" data-theme-explicit={ boolStr(n.ThemeExplicit) }><span class="ico theme-icon-dark" aria-hidden="true">@iconC("moon")</span><span class="ico theme-icon-light" aria-hidden="true">@iconC("sun")</span></button></form></div></header>
 }
 
+// sidebarC is the redesign sticky sidebar: an <aside class="ro-sidebar"> (so the
+// .ro-shell grid + .ro-sidebar CSS apply) whose grouped entries each carry a
+// resolved kind icon (the Unit-1 resolver, pre-rendered onto NavItem.Icon) and
+// the .is-active marker on the current path. It renders only when ShowMenu (the
+// Clusters entry page omits it, D11). The #aside-menu id + the .menu-item class
+// are kept (readout.js mobile reveal + the existing nav-harvest contract). Meta
+// entries (Resource Types / Events) get a chrome glyph via icons.MetaIcon so they
+// match the icon-slot + label row shape.
 templ sidebarC(s Sidebar) {
-	<aside class="menu"><div class="is-hidden-desktop"><a role="button" class="aside-burger" data-target="aside-menu"><span aria-hidden="true"></span><span aria-hidden="true"></span></a></div><div id="aside-menu">
-		for _, group := range s.Groups {
-			<p class="menu-label">{ group.Label }</p><ul class="menu-list">
-				for _, link := range group.Links {
-					<li><a class={ menuItemClass(link.Active) } href={ templ.SafeURL(link.Href) }>{ link.Text }</a></li>
-				}
-				</ul>
+	if s.ShowMenu {
+		<aside class="ro-sidebar"><div id="aside-menu">
+			for _, group := range s.Groups {
+				<p class="menu-label">{ group.Label }</p><ul class="menu-list">
+					for _, link := range group.Links {
+						<li>@sidebarLinkC(link, link.Icon)</li>
+					}
+					</ul>
+			}
+			if len(s.Meta) > 0 {
+				<p class="menu-label">Meta</p><ul class="menu-list">
+					for _, link := range s.Meta {
+						<li>@sidebarLinkC(link, metaIcon(link.Text))</li>
+					}
+					</ul>
+			}
+			</div></aside>
+	}
+}
+
+// sidebarLinkC renders one sidebar entry: the icon slot (emitted raw -- the
+// resolver markup is trusted-shape) + the label, with the .menu-item class and
+// the .is-active accent on the current path. iconMarkup may be empty (no slot).
+templ sidebarLinkC(link NavItem, iconMarkup string) {
+	<a class={ menuItemClass(link.Active) } href={ templ.SafeURL(link.Href) }>
+		if iconMarkup != "" {
+			@templ.Raw(iconMarkup)
 		}
-		if len(s.Meta) > 0 {
-			<p class="menu-label">Meta</p><ul class="menu-list">
-				for _, link := range s.Meta {
-					<li><a class={ menuItemClass(link.Active) } href={ templ.SafeURL(link.Href) }>{ link.Text }</a></li>
-				}
-				</ul>
-		}
-		</div></aside>
+		<span class="nav-label">{ link.Text }</span>
+	</a>
 }
 
 templ footerC(custom string) {

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/a-h/templ"
 
 	"github.com/kbelokon/readout/internal/kube"
+	"github.com/kbelokon/readout/internal/web/icons"
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
@@ -38,6 +40,13 @@ func (s *Server) renderLayout(w http.ResponseWriter, v *layoutView, body templ.C
 // its nested navbar/sidebar view models). It is a flat field copy: every value
 // was already resolved in buildLayoutView.
 func toLayoutData(v *layoutView) templates.LayoutData {
+	navbar := toNavbar(&v.Navbar)
+	// The mobile hamburger lives in the topbar but reveals the sidebar, so it must
+	// render exactly when a sidebar does. ShowMenu is the sidebar-present signal
+	// (set for any in-scope cluster, including the all-clusters list where
+	// ShowContext is false); carry it onto the navbar so topbarC can gate the
+	// .menu-toggle on it.
+	navbar.ShowSidebar = v.Sidebar.ShowMenu
 	return templates.LayoutData{
 		Title:         v.Title,
 		ThemeName:     v.ThemeName,
@@ -47,9 +56,26 @@ func toLayoutData(v *layoutView) templates.LayoutData {
 		IconURL:       v.IconURL,
 		ExtraHead:     v.ExtraHead,
 		Footer:        v.Footer,
-		Navbar:        toNavbar(&v.Navbar),
+		Navbar:        navbar,
 		Sidebar:       toSidebar(v.Sidebar),
+		// PaletteJSON is the palette feed pre-encoded to a JSON string; the layout
+		// emits it into a hidden <div> (NOT a <script>, which htmx would strip on
+		// swap). The package-web paletteFeedView's json tags ARE the pinned wire
+		// contract.
+		PaletteJSON: paletteFeedJSONString(&v.Palette),
 	}
+}
+
+// paletteFeedJSONString encodes the ⌘K palette feed to a compact JSON string for
+// the #ro-palette-data hidden <div>. A marshal error (not expected for this
+// plain struct) degrades to an empty object so the palette opens empty rather
+// than the layout failing to render.
+func paletteFeedJSONString(feed *paletteFeedView) string {
+	b, err := json.Marshal(feed)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 func toNavbar(n *navbarView) templates.Navbar {
@@ -68,7 +94,7 @@ func toNavbar(n *navbarView) templates.Navbar {
 func toSidebar(s sidebarView) templates.Sidebar {
 	out := templates.Sidebar{ShowMenu: s.ShowMenu, Meta: toNavItems(s.Meta)}
 	for _, g := range s.Groups {
-		out.Groups = append(out.Groups, templates.SidebarGroup{Label: g.Label, Links: toNavItems(g.Links)})
+		out.Groups = append(out.Groups, templates.SidebarGroup{Label: g.Label, Links: toSidebarItems(g.Links)})
 	}
 	return out
 }
@@ -80,6 +106,22 @@ func toNavItems(items []navItem) []templates.NavItem {
 	out := make([]templates.NavItem, len(items))
 	for i, it := range items {
 		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active}
+	}
+	return out
+}
+
+// toSidebarItems maps the sidebar resource-type nav items, carrying the
+// pre-rendered per-entry icon markup (resolved in the handler seam via the
+// Unit-1 resolver) so the templ sidebar emits it raw -- the icon string is
+// trusted-shape (icons.KindIcon / icons.PluralMonogram escape every
+// runtime-derived part).
+func toSidebarItems(items []navItem) []templates.NavItem {
+	if items == nil {
+		return nil
+	}
+	out := make([]templates.NavItem, len(items))
+	for i, it := range items {
+		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active, Icon: string(it.Icon)}
 	}
 	return out
 }
@@ -108,12 +150,43 @@ func toListData(v *listView) templates.ListData {
 		d.Tables = append(d.Tables, toTableData(&v.Tables[i]))
 	}
 	d.TotalRows = totalRows
+	d.ShowStaleBanner = v.StaleBanner
+	if v.State != nil {
+		d.State = toListState(v.State)
+	}
 	return d
+}
+
+// toListState maps the package-web whole-list failure state onto the templ
+// ListState, pre-rendering the state glyph (lock for forbidden, unplug for
+// unreachable) to a raw SVG string.
+func toListState(s *listStateView) templates.ListState {
+	kind, glyph := stateKindAndGlyph(s.Kind)
+	return templates.ListState{
+		Kind:      kind,
+		Verb:      s.Verb,
+		Resource:  s.Resource,
+		Namespace: s.Namespace,
+		Detail:    s.Detail,
+		GlyphIcon: glyph,
+		RetryHref: s.RetryHref,
+		BackHref:  s.BackHref,
+	}
+}
+
+// stateKindAndGlyph maps the package-web listStateKind to the templ kind string
+// + its pre-rendered glyph (shared by the list + detail state mappers).
+func stateKindAndGlyph(kind listStateKind) (string, string) {
+	if kind == stateForbidden {
+		return "forbidden", icon("lock")
+	}
+	return "unreachable", icon("unplug")
 }
 
 func toTableData(t *tableView) templates.TableData {
 	td := templates.TableData{
 		Kind:            t.Kind,
+		Count:           len(t.Table.Rows),
 		DownloadTSVHref: t.DownloadTSVHref,
 		SearchHref:      t.SearchHref,
 		DownloadIcon:    icon("download"),
@@ -126,11 +199,21 @@ func toTableData(t *tableView) templates.TableData {
 		ColumnCount:     len(t.Table.Columns),
 		CreatedHref:     t.CreatedHref,
 		CreatedIcon:     t.CreatedIcon,
+		CreatedSorted:   t.CreatedIcon != "",
 		EmptyKind:       t.Table.Resource.Kind,
+		EmptyGlyph:      icon("inbox"),
+		ClearHref:       t.ClearHref,
+	}
+	if t.EmptyAction != nil {
+		td.EmptyActionHref = t.EmptyAction.Href
+		td.EmptyActionLabel = t.EmptyAction.Label
+	}
+	for _, chip := range t.EmptyFilters {
+		td.EmptyFilters = append(td.EmptyFilters, templates.FilterChip{Label: chip.Label, RemoveHref: chip.RemoveHref})
 	}
 	for _, item := range t.Phase {
 		td.Phase = append(td.Phase, templates.PhaseChip{
-			Class: item.Class,
+			Tone:  statusTone(item.Class),
 			Label: item.Label,
 			Count: strconv.Itoa(item.Count),
 		})
@@ -142,6 +225,7 @@ func toTableData(t *tableView) templates.TableData {
 			SortHref:    t.Columns[i].SortHref,
 			Name:        col.Name,
 			SortIcon:    t.Columns[i].SortIcon,
+			Sorted:      t.Columns[i].SortIcon != "",
 		})
 	}
 	for i := range t.Rows {
@@ -155,16 +239,43 @@ func toTableData(t *tableView) templates.TableData {
 			CreatedClass: row.CreatedClass,
 			CreatedText:  row.CreatedText,
 		}
-		for _, cell := range row.Cells {
+		if row.CreatedText != "" {
+			tr.CreatedTitle = "created " + row.CreatedText
+		}
+		for ci := range row.Cells {
+			cell := &row.Cells[ci]
 			tc := templates.TableCell{
-				Kind:     templates.CellKind(cell.Kind),
-				Value:    cell.Value,
-				Class:    cell.Class,
-				ColClass: cell.ColClass,
-				Href:     cell.Href,
+				Kind:         templates.CellKind(cell.Kind),
+				Value:        cell.Value,
+				Class:        cell.Class,
+				ColClass:     cell.ColClass,
+				Href:         cell.Href,
+				Tone:         cell.Tone,
+				Ratio:        cell.Ratio,
+				Pulse:        cell.Pulse,
+				NameHead:     cell.NameHead,
+				NameTail:     cell.NameTail,
+				Ago:          cell.Ago,
+				Trunc:        cell.Trunc,
+				Title:        cell.Title,
+				CapBucket:    cell.CapBucket,
+				CapPct:       cell.CapPct,
+				CapBar:       cell.CapBar,
+				Roles:        cell.Roles,
+				RepNum:       cell.RepNum,
+				RolloutState: cell.RolloutState,
 			}
-			if cell.Kind == cellReady {
-				tc.ReadyClass = readyClass(cell.Value)
+			for _, cond := range cell.Conds {
+				tc.Conds = append(tc.Conds, templates.Cond{Name: cond.Name, Tone: cond.Tone})
+			}
+			for _, seg := range cell.RepSegments {
+				tc.RepSegments = append(tc.RepSegments, templates.RepSegment{State: seg.State})
+			}
+			for _, chip := range cell.Chips {
+				tc.Chips = append(tc.Chips, templates.RowChip{Class: chip.Class, Text: chip.Text})
+			}
+			if cell.Kind == cellRollout {
+				tc.RolloutIcon = icon(rolloutIconName(cell.RolloutState))
 			}
 			tr.Cells = append(tr.Cells, tc)
 		}
@@ -198,6 +309,27 @@ func toListPageData(v *listView, partialURL string) templates.ListPageData {
 // breadcrumb/links/owners/node/secret/cards/subtable/events translation and the
 // pre-rendering of inline-SVG icons into raw strings.
 func toDetailData(v *detailView) templates.DetailData {
+	if v.State != nil {
+		// State path: the fetch failed, so there is no object -- the breadcrumb is
+		// built from the request path the state carries and the body renders the
+		// forbidden/unreachable card. No object field is dereferenced.
+		kind, glyph := stateKindAndGlyph(v.State.Kind)
+		return templates.DetailData{
+			Breadcrumb: detailStateBreadcrumb(v),
+			Name:       v.State.Name,
+			State: templates.DetailState{
+				Kind:      kind,
+				Verb:      v.State.Verb,
+				Resource:  v.State.Resource,
+				Name:      v.State.Name,
+				Namespace: v.State.Namespace,
+				Detail:    v.State.Detail,
+				GlyphIcon: glyph,
+				RetryHref: v.State.RetryHref,
+				BackHref:  v.State.BackHref,
+			},
+		}
+	}
 	object := v.Object
 	d := templates.DetailData{
 		Breadcrumb:         toDetailBreadcrumb(v),
@@ -209,8 +341,10 @@ func toDetailData(v *detailView) templates.DetailData {
 		Version:            v.Version,
 		DefaultTabActive:   v.DefaultTab,
 		YAMLTabActive:      v.YAMLTab,
+		EventsTabActive:    v.EventsTab,
 		LogsHref:           v.LogsHref,
 		IsYAMLView:         v.IsYAMLView,
+		IsEventsView:       v.IsEventsView,
 		HighlightedYAML:    v.HighlightedYAML,
 		ShowNamespaceLinks: v.ShowNamespaceLinks,
 		AllObjectsHref:     v.AllObjectsHref,
@@ -223,7 +357,7 @@ func toDetailData(v *detailView) templates.DetailData {
 		d.Labels = append(d.Labels, templates.DetailLabelChip{Href: chip.Href, Class: chip.Class, Key: chip.Key, Val: chip.Val})
 	}
 	for _, chip := range v.Annotations {
-		d.Annotations = append(d.Annotations, templates.AnnotationChip{Key: chip.Key, Val: chip.Val})
+		d.Annotations = append(d.Annotations, templates.AnnotationChip{Key: chip.Key, Val: chip.Val, Full: chip.Full})
 	}
 	if v.Node != nil {
 		d.Node = toNodeSummary(*v.Node)
@@ -247,13 +381,36 @@ func toDetailData(v *detailView) templates.DetailData {
 	}
 	for i := range v.Events {
 		ev := &v.Events[i]
-		d.Events = append(d.Events, templates.EventRow{Type: ev.Type, TypeClass: ev.TypeClass, Reason: ev.Reason, ReasonClass: ev.ReasonClass, Age: ev.Age, AgeClass: ev.AgeClass, From: ev.From, Message: ev.Message})
+		d.Events = append(d.Events, templates.EventRow{Type: ev.Type, Tone: ev.Tone, Reason: ev.Reason, Age: ev.Age, AgeClass: ev.AgeClass, From: ev.From, Message: ev.Message})
 	}
 	return d
 }
 
 func toDetailBreadcrumb(v *detailView) templates.DetailBreadcrumb {
 	return objectBreadcrumb(v.Cluster, v.Namespace, &v.Object)
+}
+
+// detailStateBreadcrumb builds the resource-view breadcrumb for a failure state
+// from the request-path fields the state carries (no fetched object exists -- the
+// fetch is what failed). It mirrors objectBreadcrumb's cluster/namespace/plural/
+// name crumbs.
+func detailStateBreadcrumb(v *detailView) templates.DetailBreadcrumb {
+	s := v.State
+	b := templates.DetailBreadcrumb{
+		ClusterHref: "/clusters/" + url.PathEscape(v.Cluster),
+		Cluster:     v.Cluster,
+		Name:        s.Name,
+	}
+	if s.Namespace != "" && s.Resource != "namespaces" {
+		b.ShowNamespace = true
+		b.NamespaceHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(s.Namespace)
+		b.Namespace = s.Namespace
+		b.PluralHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(s.Namespace) + "/" + url.PathEscape(s.Resource)
+	} else {
+		b.PluralHref = "/clusters/" + url.PathEscape(v.Cluster) + "/" + url.PathEscape(s.Resource)
+	}
+	b.Plural = s.Resource
+	return b
 }
 
 // objectBreadcrumb builds the object breadcrumb (cluster [+ namespace + plural]
@@ -332,65 +489,118 @@ func toSubtable(v *subtableView) *templates.Subtable {
 	return st
 }
 
-// toSearchData maps the package-web searchView onto the templ SearchData: a
-// field copy plus the breadcrumb branches, the kind-abbrev tag, the formatted
-// created meta, the snippet tuples, the label chips, the "type all" flag, the
-// count-footer sentence, and the per-cluster error articles. Every value was
-// resolved in buildSearchView; the icons are pre-rendered to raw strings.
+// toSearchData maps the package-web searchView onto the redesign templ
+// SearchData: the breadcrumb branches, the form round-trip (query + hidden
+// cluster/namespace/type inputs), the scope-opts labels, the partial-failure
+// banner, the per-cluster `.ro-scope-chip.ok|err` chips (with the read-only retry
+// hrefs), the results-table rows (with the resolved kind icon + the age-bucket
+// cell), and the foundline. Every value was resolved in buildSearchView; the
+// search + kind icons are pre-rendered to raw strings.
 func toSearchData(v *searchView) templates.SearchData {
 	hasQuery := v.Query != ""
 	offeredCount := len(v.OfferedTypes)
+	allTypes := offeredCount > 0 && v.SelectedTypeCount >= offeredCount
 	d := templates.SearchData{
 		Breadcrumb:        toSearchBreadcrumb(v),
 		Query:             v.Query,
 		Cluster:           v.Cluster,
 		Namespace:         v.Namespace,
-		IsAllNamespaces:   v.IsAllNamespaces,
 		SearchIcon:        icon("search"),
-		UnselectIcon:      icon("times"),
-		IsAllClusters:     v.IsAllClusters,
-		SelectedTypeCount: v.SelectedTypeCount,
-		AllTypes:          offeredCount > 0 && v.SelectedTypeCount >= offeredCount,
 		HasQuery:          hasQuery,
-		AllNamespacesHref: v.AllNamespacesHref,
-	}
-	for _, opt := range v.OfferedTypes {
-		d.OfferedTypes = append(d.OfferedTypes, templates.SearchTypeOption{Plural: opt.Plural, Kind: opt.Kind, Checked: opt.Checked})
+		HiddenTypes:       v.SelectedTypes,
+		ScopeClusterLabel: searchScopeClusterLabel(v),
+		NamespaceLabel:    searchNamespaceLabel(v),
+		TypeLabel:         searchTypeLabel(allTypes, v.SelectedTypeCount),
+		Banner:            searchBanner(v),
 	}
 	for _, c := range v.ScopeClusters {
-		d.ScopeClusters = append(d.ScopeClusters, templates.SearchScopeChip{Name: c.Name})
+		d.ScopeClusters = append(d.ScopeClusters, templates.SearchScopeChip{
+			Name:      c.Name,
+			Failed:    c.Failed,
+			Count:     c.ResultCount,
+			Reason:    c.Reason,
+			RetryHref: c.RetryHref,
+		})
 	}
-	for _, res := range v.Results {
-		card := templates.SearchResultCard{
-			Kind:    res.Kind,
-			KindTag: templates.KindAbbrev(res.Kind),
-			KindLow: strings.ToLower(res.Kind),
-			Title:   res.Title,
-			Link:    res.Link,
-		}
-		if res.Created != "" {
-			card.Created = formatTimestamp(res.Created)
-		}
-		for _, snip := range res.Matches {
-			card.Snippets = append(card.Snippets, templates.SearchSnippet{Pre: snip.Pre, Match: snip.Match, Post: snip.Post})
-		}
-		for _, chip := range res.LabelChips {
-			card.Chips = append(card.Chips, templates.Chip{Href: chip.Href, Class: chip.Class, Key: chip.Key, Val: chip.Val})
-		}
-		d.Results = append(d.Results, card)
+	for i := range v.Results {
+		res := &v.Results[i]
+		d.Results = append(d.Results, templates.SearchResultRow{
+			Cluster:     res.Cluster,
+			ClusterHref: "/clusters/" + url.PathEscape(res.Cluster),
+			Namespace:   res.Namespace,
+			NsHref:      "/clusters/" + url.PathEscape(res.Cluster) + "/namespaces/" + url.PathEscape(res.Namespace),
+			HasNs:       res.Namespace != "",
+			Kind:        res.Kind,
+			KindIcon:    string(icons.KindIcon(res.Kind, res.Group, res.IsCRD, "")),
+			Name:        res.Title,
+			Link:        res.Link,
+			Age:         res.Created,
+			AgeClass:    res.AgeClass,
+		})
 	}
 	if hasQuery {
-		d.ResultSummary = searchSummary(len(v.Results), v.SelectedTypeCount, v.SearchedClusterCount, v.Duration.Seconds())
-	}
-	for _, cluster := range v.ErrorClusterOrder {
-		errs := v.ClusterErrors[cluster]
-		ce := templates.SearchClusterErrors{Cluster: cluster, Header: searchErrorHeader(cluster, len(errs))}
-		for _, e := range errs {
-			ce.Lines = append(ce.Lines, "Failed to search "+e.ResourceType+": "+e.Message)
-		}
-		d.ClusterErrors = append(d.ClusterErrors, ce)
+		d.ResultSummary = searchFoundLine(v)
 	}
 	return d
+}
+
+// searchScopeClusterLabel is the scope-opts cluster fragment: "all clusters" for
+// an all-clusters search with no resolved scope chips, the single cluster name
+// when exactly one was searched, else "N clusters".
+func searchScopeClusterLabel(v *searchView) string {
+	switch {
+	case v.IsAllClusters && len(v.ScopeClusters) == 0:
+		return "all clusters"
+	case len(v.ScopeClusters) == 1:
+		return v.ScopeClusters[0].Name
+	default:
+		return fmt.Sprintf("%d clusters", len(v.ScopeClusters))
+	}
+}
+
+// searchNamespaceLabel is the scope-opts namespace fragment ("all namespaces" or
+// the single namespace name).
+func searchNamespaceLabel(v *searchView) string {
+	if v.IsAllNamespaces || v.Namespace == "" {
+		return "all namespaces"
+	}
+	return v.Namespace
+}
+
+// searchTypeLabel is the scope-opts resource-type fragment ("all resource types"
+// when the selection covers every offered type, else "N resource types").
+func searchTypeLabel(allTypes bool, count int) string {
+	if allTypes {
+		return "all resource types"
+	}
+	return fmt.Sprintf("%d resource types", count)
+}
+
+// searchBanner builds the multi-cluster partial-failure banner (D11), shown only
+// when at least one cluster failed to answer: the "Searched N of M clusters — K
+// didn't respond" title, a detail line naming the failed clusters + their
+// reason, and the read-only "Retry failed" GET href. The all-cluster LIST banner
+// (Unit 5) is a DIFFERENT screen; this is the search flavour.
+func searchBanner(v *searchView) templates.SearchBanner {
+	failed := 0
+	var detail []string
+	for _, c := range v.ScopeClusters {
+		if c.Failed {
+			failed++
+			detail = append(detail, c.Name+" ("+c.Reason+")")
+		}
+	}
+	if failed == 0 {
+		return templates.SearchBanner{}
+	}
+	total := len(v.ScopeClusters)
+	answered := total - failed
+	return templates.SearchBanner{
+		Show:      true,
+		Title:     fmt.Sprintf("Searched %d of %d clusters — %d didn't respond", answered, total, failed),
+		Detail:    strings.Join(detail, ", ") + " — results below are from the clusters that answered.",
+		RetryHref: v.RetryFailedHref,
+	}
 }
 
 // toSearchBreadcrumb resolves the search-page breadcrumb branches (all / cluster
@@ -414,30 +624,25 @@ func toSearchBreadcrumb(v *searchView) templates.SearchBreadcrumb {
 	return b
 }
 
-// searchSummary is the count-footer sentence ("N result(s) found. Searched M
-// resource types in K cluster(s) in T seconds."), with the pluralization
-// (results: !=1 -> "s"; clusters: >1 -> "s") and %.3f timing.
-func searchSummary(resultCount, typeCount, clusterCount int, seconds float64) string {
-	results := "results"
-	if resultCount == 1 {
-		results = "result"
+// searchFoundLine is the redesign `.ro-foundline` footer sentence ("Found N
+// objects matching "<q>" across A of M clusters in T seconds[ · K cluster(s)
+// failed].") with object/cluster pluralization, %.3f timing, and the trailing
+// failed-cluster clause appended only when a cluster did not answer.
+func searchFoundLine(v *searchView) string {
+	total := len(v.ScopeClusters)
+	failed := 0
+	for _, c := range v.ScopeClusters {
+		if c.Failed {
+			failed++
+		}
 	}
-	clusters := "cluster"
-	if clusterCount > 1 {
-		clusters = "clusters"
+	answered := total - failed
+	line := fmt.Sprintf("Found %d object%s matching %q across %d of %d cluster%s in %.3f seconds",
+		len(v.Results), pluralS(len(v.Results)), v.Query, answered, total, pluralS(total), v.Duration.Seconds())
+	if failed > 0 {
+		line += fmt.Sprintf(" · %d cluster%s failed", failed, pluralS(failed))
 	}
-	return fmt.Sprintf("%d %s found. Searched %d resource types in %d %s in %.3f seconds.",
-		resultCount, results, typeCount, clusterCount, clusters, seconds)
-}
-
-// searchErrorHeader is the danger-article heading ("Error(s) for cluster
-// <name>"), singular for one error and "Errors" for more than one.
-func searchErrorHeader(cluster string, count int) string {
-	label := "Error"
-	if count > 1 {
-		label = "Errors"
-	}
-	return label + " for cluster " + cluster
+	return line + "."
 }
 
 func toTableTools(t *toolsView) templates.TableTools {

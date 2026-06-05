@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/kbelokon/readout/internal/config"
 )
 
@@ -88,26 +89,18 @@ func newMultiClusterServer(t *testing.T, clusters map[string]string) *Server {
 // `<a href="/clusters/NAME">NAME</a>` per row's Cluster cell, so the sequence of
 // hrefs is the merged row order.
 func clusterCellOrder(body string) []string {
-	const marker = `href="/clusters/`
-	var order []string
-	for i := 0; ; {
-		idx := strings.Index(body[i:], marker)
-		if idx < 0 {
-			break
-		}
-		start := i + idx + len(marker)
-		end := strings.IndexByte(body[start:], '"')
-		if end < 0 {
-			break
-		}
-		name := body[start : start+end]
-		// The Cluster cells are bare names; skip hrefs that carry a path suffix
-		// (e.g. namespaces/ or pod detail links) so only the Cluster column counts.
-		if !strings.Contains(name, "/") {
-			order = append(order, name)
-		}
-		i = start + end
+	// Scope to the .ro-table Cluster column (td.cell-clu): the engine now ALSO emits
+	// the mobile `.ro-cardlist` projection of the same rows (Unit 15), which carries
+	// its own `cluster` meta link, so a raw href scan would double-count. Parsing the
+	// table's cluster cells pins the merge order on the table body alone.
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+	if err != nil {
+		return nil
 	}
+	var order []string
+	doc.Find("table.ro-table td.cell-clu a").Each(func(_ int, s *goquery.Selection) {
+		order = append(order, strings.TrimSpace(s.Text()))
+	})
 	return order
 }
 
@@ -179,25 +172,35 @@ func TestMultiClusterListPartialFailureRendersOthers(t *testing.T) {
 	if strings.Contains(body, "/clusters/zbad/namespaces/default/pods/") {
 		t.Fatalf("failing cluster zbad should contribute no rows: %s", body)
 	}
-	// The partial notice and the failing cluster's error record are present.
-	if !strings.Contains(body, "ro-partial-note") || !strings.Contains(body, "Partial results:") {
-		t.Fatalf("partial notice missing on partial failure: %s", body)
+	// The all-cluster partial-failure banner (redesign `.ro-banner.warn`) and the
+	// failing cluster's per-cluster error line are present. Parse the DOM so this
+	// asserts the banner structure, not an incidental substring.
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse partial-failure body: %v", err)
 	}
-	if !strings.Contains(body, "zbad/pods") {
-		t.Fatalf("failing cluster error record missing (want zbad/pods): %s", body)
+	banner := doc.Find(".ro-banner.warn:not(.ro-stale-banner)")
+	if banner.Length() == 0 {
+		t.Fatalf("all-cluster partial-failure banner missing: %s", body)
+	}
+	if got := normSpace(banner.Find(".bn-title").Text()); got != "Partial results: 1 failed" {
+		t.Fatalf("partial banner title = %q, want 'Partial results: 1 failed'", got)
+	}
+	if !strings.Contains(banner.Text(), "zbad/pods") {
+		t.Fatalf("failing cluster error line missing (want zbad/pods): %s", banner.Text())
 	}
 }
 
 // TestMultiClusterSearchFanInIsDeterministicAndPartialSafe forces out-of-order
 // search completion across healthy AND failing clusters: it asserts (a) the
-// healthy result-card order is identical across repeats, (b) the per-cluster
-// error articles render in fixed cluster-name order (ybad before zbad) even
-// though zbad completes first, and (c) the whole request still succeeds -- the
-// search analog of partial-failure + fan-in determinism.
+// healthy result-row order is identical across repeats, (b) the per-cluster
+// `.ro-scope-chip.err` chips render in fixed cluster-name order (ybad before
+// zbad) even though zbad completes first, and (c) the whole request still
+// succeeds -- the search analog of partial-failure + fan-in determinism.
 func TestMultiClusterSearchFanInIsDeterministicAndPartialSafe(t *testing.T) {
 	// aaa/bbb are healthy (aaa slowest). ybad/zbad both fail; zbad is delayed so
 	// it COMPLETES before ybad, yet the cluster-order merge must still place the
-	// ybad error article first.
+	// ybad `.err` chip first.
 	aaa := newClusterFakeAPI(t, clusterFakeOptions{delay: 50 * time.Millisecond})
 	bbb := newClusterFakeAPI(t, clusterFakeOptions{delay: 0})
 	ybad := newClusterFakeAPI(t, clusterFakeOptions{failList: true, delay: 40 * time.Millisecond})
@@ -218,17 +221,21 @@ func TestMultiClusterSearchFanInIsDeterministicAndPartialSafe(t *testing.T) {
 			t.Fatalf("run %d: status = %d (partial failure must NOT fail the whole search) body=%s", run, rec.Code, rec.Body.String())
 		}
 		body := rec.Body.String()
-		// Both failing clusters surface per-cluster error articles, in fixed
+		// Both failing clusters surface a `.ro-scope-chip.err` chip, in fixed
 		// cluster-name order (ybad before zbad) regardless of completion order.
-		yi := strings.Index(body, "Error for cluster ybad")
-		zi := strings.Index(body, "Error for cluster zbad")
-		if yi < 0 || zi < 0 {
-			t.Fatalf("run %d: missing per-cluster error articles (ybad=%d zbad=%d): %s", run, yi, zi, body)
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("run %d: parse search body: %v", run, err)
 		}
-		if yi > zi {
-			t.Fatalf("run %d: error articles out of order (ybad at %d, zbad at %d) -- merge is not cluster-name ordered", run, yi, zi)
+		var errClusters []string
+		doc.Find(".ro-scope .ro-scope-chip.err").Each(func(_ int, s *goquery.Selection) {
+			// The chip text begins with the cluster name ("<name> — <reason> retry").
+			errClusters = append(errClusters, strings.Fields(normSpace(s.Text()))[0])
+		})
+		if len(errClusters) != 2 || errClusters[0] != "ybad" || errClusters[1] != "zbad" {
+			t.Fatalf("run %d: `.err` scope chips = %v, want [ybad zbad] in cluster-name order", run, errClusters)
 		}
-		// The healthy result-card link order must be stable across repeats.
+		// The healthy result-row link order must be stable across repeats.
 		links := resultLinkOrder(body)
 		if len(links) == 0 {
 			t.Fatalf("run %d: no result links rendered: %s", run, body)

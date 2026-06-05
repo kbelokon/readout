@@ -4,11 +4,27 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+// numericSortKey parses a cell's string form as a sortable number: a plain float
+// (CPU/Memory usage cells are raw float cores/bytes) or a k8s resource.Quantity
+// (node capacity reads "8138032Ki" / "16Gi"). Returns false for text values so
+// those columns keep lexicographic order.
+func numericSortKey(s string) (float64, bool) {
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f, true
+	}
+	if q, err := resource.ParseQuantity(s); err == nil {
+		return q.AsApproximateFloat64(), true
+	}
+	return 0, false
+}
 
 // nestedString reads a string at the given path from a generic object map via
 // the apimachinery accessor (empty when absent or non-string). A thin wrapper so
@@ -46,6 +62,19 @@ func SortTable(table *Table, sortParam string) {
 			}
 			if idx < len(b.Cells) {
 				bv = fmt.Sprint(b.Cells[idx])
+			}
+			// Numeric columns must sort by VALUE: CPU/Memory usage cells are raw
+			// float cores/bytes (fmt.Sprint renders large floats in scientific
+			// notation, so a lexicographic compare puts "95e6" after "9.4e8"), and
+			// node capacity cells are k8s quantities ("8138032Ki"). numericSortKey
+			// handles both; text columns and "1/1"-style cells fall back to strings.
+			if af, aok := numericSortKey(av); aok {
+				if bf, bok := numericSortKey(bv); bok {
+					if af != bf {
+						return af < bf
+					}
+					return firstCell(a) < firstCell(b)
+				}
 			}
 			if av == bv {
 				return firstCell(a) < firstCell(b)
@@ -616,8 +645,16 @@ func CellClass(plural, col string, cell any) string {
 			return "has-text-success"
 		}
 	case "namespaces":
-		if col == "Status" && value == "Active" {
-			return "has-text-success"
+		if col == "Status" {
+			switch value {
+			case "Active":
+				return "has-text-success"
+			case "Terminating":
+				// A stuck-Terminating namespace is operationally a warning; map it to
+				// the warn tone so the redesign status dot reads `.ro-dot.warn`
+				// (statusTone "has-text-warning" -> "warn").
+				return "has-text-warning"
+			}
 		}
 	case "deployments":
 		if col == "Available" && value == "0" {

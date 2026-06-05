@@ -18,7 +18,13 @@ import (
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
-const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+// style-src carries 'unsafe-inline' because the design pins per-row values as
+// inline style attributes the cascade can't express as classes: capacity-bar
+// `width:N%`, replica tracks, and kind-tile `--kh:<hue>` (an arbitrary 0-359 hue
+// per CRD group). script-src stays strict ('self', no unsafe-inline/eval) -- the
+// primary CSP protection (code execution) is unchanged; only inline styling is
+// permitted.
+const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
 
 type Server struct {
 	cfg      config.Config

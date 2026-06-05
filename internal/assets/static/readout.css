@@ -3,21 +3,14 @@
  * Cascade layers. The order below is the cascade order: later-named layers
  * WIN over earlier ones regardless of selector specificity. So:
  *
- *     bulma   -- the vendored framework (imported INTO the layer below, not via
- *                a bare <link>: an unlayered <link> would outrank every layered
- *                rule and defeat the point);
  *     theme   -- theme-scoped colours + the Pygments syntax-highlight palette
  *                (light default, dark under [data-theme=dark] / prefers dark);
- *     app     -- our own component rules. App beats bulma by layer order, so app
- *                rules win WITHOUT any forced-priority override.
+ *     app     -- the owned reset, native controls, and component rules.
  *
- * The @layer statement and the @import MUST come before any style rule (only
- * comments may precede them) or the @import is dropped by the parser.
- * bulma.min.css sits next to this file in /assets/, so the relative URL resolves
- * same-origin (no CDN, no build step).
+ * The @layer statement MUST come before any style rule (only comments may
+ * precede it). There is no frontend build step and no external stylesheet.
  */
-@layer bulma, theme, app;
-@import url('bulma.min.css') layer(bulma);
+@layer theme, app;
 
 /* Self-hosted fonts. Geist (UI) + Geist Mono (data), vendored as local
    variable woff2 next to this file in /assets/fonts/, so the relative URL below
@@ -56,7 +49,153 @@
 }
 
 @layer app {
-    html { overflow: scroll; }
+    html {
+        box-sizing: border-box;
+        overflow: scroll;
+        line-height: 1.5;
+        -webkit-text-size-adjust: 100%;
+    }
+    *,
+    *::before,
+    *::after { box-sizing: inherit; }
+
+    body,
+    h1, h2, h3, h4, h5, h6,
+    p, blockquote, figure,
+    ul, ol, li,
+    dl, dd,
+    pre { margin: 0; padding: 0; }
+    ul, ol { list-style: none; }
+    img, video { max-width: 100%; height: auto; }
+    table { border-collapse: collapse; border-spacing: 0; }
+    th, td { padding: 0; text-align: left; }
+    button,
+    input,
+    select,
+    textarea {
+        margin: 0;
+        font: inherit;
+        color: inherit;
+    }
+    button,
+    select { text-transform: none; }
+    button { cursor: pointer; }
+    button:disabled,
+    input:disabled,
+    select:disabled,
+    textarea:disabled {
+        cursor: not-allowed;
+    }
+    .is-hidden { display: none !important; }
+
+    .title {
+        color: var(--text);
+        font-weight: 600;
+        line-height: 1.125;
+        margin: 0 0 1rem;
+    }
+    h1.title:not(.ro-title) { font-size: 2rem; }
+    h2.title:not(.ro-title) { font-size: 1.5rem; }
+    h3.title:not(.ro-title) { font-size: 1.25rem; }
+    h4.title:not(.ro-card-title):not(.ro-section-title) { font-size: 1rem; }
+    /* Related-subtable heading (e.g. the "Pods" section on a Deployment/RS/STS/DS/Job
+       detail page): preserves the old Bulma `.title.is-5` size (1.25rem) after the Bulma
+       drop -- the markup moved from `title is-5` to `title ro-section-title` but the size
+       was orphaned by the :not() exclusion above. */
+    h4.title.ro-section-title { font-size: 1.25rem; }
+    .section { padding: 3rem 1.5rem; }
+    .container { width: 100%; margin: 0 auto; }
+    .footer { padding: 1.5rem; }
+    .box {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+        padding: 1.25rem;
+    }
+    .label {
+        display: block;
+        margin-bottom: 0.5rem;
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        font-weight: 600;
+    }
+    .content p:not(:last-child),
+    .content ul:not(:last-child),
+    .content ol:not(:last-child),
+    .content pre:not(:last-child) { margin-bottom: 1em; }
+    .content ul { list-style: disc outside; margin-left: 1.5em; }
+    .content ol { list-style: decimal outside; margin-left: 1.5em; }
+    .icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.5em;
+        height: 1.5em;
+        color: inherit;
+        vertical-align: middle;
+    }
+    .icon.is-small {
+        width: 1em;
+        height: 1em;
+        font-size: 0.75rem;
+    }
+    .button,
+    .input {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        color: var(--text);
+        box-shadow: none;
+        line-height: 1.5;
+    }
+    .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.375rem;
+        min-height: 2.5em;
+        padding: calc(0.5em - 1px) 0.75em;
+        white-space: nowrap;
+    }
+    .button:hover,
+    .button:focus {
+        border-color: var(--border-strong);
+        background: var(--surface-2);
+        color: var(--text);
+    }
+    .button[disabled],
+    .button:disabled {
+        opacity: 0.55;
+        filter: none;
+    }
+    .input {
+        width: 100%;
+        height: 2.5em;
+        padding: calc(0.5em - 1px) 0.75em;
+    }
+    .input::placeholder { color: var(--text-faint); }
+    .input:hover { border-color: var(--border-strong); }
+    .input:focus { border-color: var(--accent); background: var(--surface); }
+    .breadcrumb ul {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+    .breadcrumb li {
+        display: flex;
+        align-items: center;
+    }
+    .breadcrumb li.is-active a,
+    .ro-rd .ro-breadcrumb li.is-active a {
+        pointer-events: none;
+        cursor: default;
+    }
+    .menu-list { list-style: none; margin: 0; padding: 0; }
+    .menu-label { display: block; }
 
     /* Accessibility: a VISIBLE keyboard focus ring on every interactive element
        (acceptance: "keyboard focus is visible"). Several controls only carry a
@@ -92,8 +231,6 @@
        elements get aligned numerals for free). Both vars carry a fallback stack
        (declared on :root) so text stays readable while the woff2 loads.
 
-       Beats Bulma's font-family by layer order alone (the app layer wins).
-
        <body> is the page shell: it carries the grotesk UI face AND the theme
        foundation (page surface + base text colour) from tokens, so the whole
        app picks up the right palette per theme. The one blue / off-white
@@ -105,8 +242,9 @@
         font-family: var(--font-ui);
         background: var(--bg);
         color: var(--text);
+        min-height: 100vh;
     }
-    a { color: var(--id-color); }
+    a { color: var(--id-color); text-decoration: none; }
 
     /* DATA -> mono. Code/pre/highlight (YAML + resource blocks), the breadcrumb
        path, kind/label tags, and table cells (identifiers + numerics + ages).
@@ -124,12 +262,9 @@
        Breadcrumb -> quiet mono path. The real cluster / namespace /
        endpoint links are KEPT (the template still renders them as <a>); this only
        restyles them into a calm technical path: small mono type, muted links that
-       warm to the accent on hover, faint "/" separators (Bulma draws the slash via
-       li+li::before -- we just recolour + dim it), and the trailing current
-       segment in plain body text. Bulma marks the last <li> .is-active with
-       pointer-events:none, so the current page reads as static text while every
-       ancestor segment stays a working link. App layer wins over bulma by order --
-       no forced-priority override. */
+       warm to the accent on hover, faint "/" separators from li+li::before, and
+       the trailing current segment in plain body text. The current crumb is inert,
+       while every ancestor segment stays a working link. */
     nav.breadcrumb.ro-breadcrumb {
         font-size: 0.78rem;
         margin-bottom: 0.85rem;
@@ -159,7 +294,7 @@
     aside.menu { view-transition-name: ro-sidebar; }
 
     /* Inline-SVG icons (Lucide) emitted by the partials/icons.html `icon()` macro.
-       The SVGs carry no width/height of their own, so they size to the Bulma
+       The SVGs carry no width/height of their own, so they size to the owned
        `.icon` span here; stroke="currentColor" makes them follow the surrounding
        (theme-aware) text colour. Replaces the FontAwesome-JS runtime. */
     .icon svg.lucide-icon {
@@ -169,12 +304,11 @@
     }
 
     /* ---------------------------------------------------------------------------
-       Slim quiet topbar. The colored Bulma navbar is re-skinned into a
-       calm technical bar driven by the token system: surface fill + a hairline
-       bottom border, muted text, near-black/blue accent only on focus + the
-       cluster status dot. App beats the bulma layer by cascade order, so these
-       win without any forced-priority override. Structure (burger, has-dropdown,
-       the pinned control ids/forms) is unchanged -- only appearance.
+       Slim quiet topbar. The legacy navbar is re-skinned into a calm technical bar
+       driven by the token system: surface fill + a hairline bottom border, muted
+       text, near-black/blue accent only on focus + the cluster status dot. Structure
+       (burger, has-dropdown, the pinned control ids/forms) is unchanged -- only
+       appearance.
        --------------------------------------------------------------------------- */
     nav.navbar.ro-topbar {
         min-height: 3.125rem;            /* slim 50px bar */
@@ -311,14 +445,10 @@
     }
 
     /* Quiet token-driven action button (object-links / detail-header download /
-       TSV / per-table tools + search). Replaces the old server button-class Bulma
-       colour coupling, which mapped to a blue is-link button in dark and a
-       near-white is-light button in light -- under the dark default a cookieless
-       light-OS user got the wrong (blue) fill since theme.name was "dark" while the
-       real palette was light. This reads correctly in BOTH palettes off tokens: a
-       hairline-bordered surface chip with muted icon text that firms on hover.
-       (Units 7/9 refine the exact object-link / detail-header look; this removes the
-       wrong-colour coupling and leaves a both-theme-correct quiet button.) */
+       TSV / per-table tools + search). Replaces the old server button-class colour
+       coupling, which mapped to theme-name-driven variants instead of the effective
+       palette. This reads correctly in BOTH palettes off tokens: a hairline-bordered
+       surface chip with muted icon text that firms on hover. */
     .button.ro-btn-quiet {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -333,9 +463,9 @@
         background: var(--surface-2);
     }
 
-    /* Accent-filled action button (the error-page Retry): the one saturated
-       call-to-action against the quiet Back. Uses the accent token pair so it
-       reads correctly in both themes; app beats bulma by layer order. */
+    /* Accent-filled legacy button variant: the one saturated call-to-action
+       against quiet secondary actions. Uses the accent token pair so it reads
+       correctly in both themes. */
     .button.ro-btn-primary {
         border: 1px solid var(--accent);
         background: var(--accent);
@@ -362,9 +492,8 @@
     @keyframes refresh-spin { to { transform: rotate(360deg); } }
 
     /* Dropdown panels (namespace context list + refresh-interval menu) are themed
-       surfaces, not Bulma's default white -- so they read correctly in dark. Items
-       are muted text that firm up on hover; the namespace filter input matches the
-       topbar search chip. */
+       surfaces, so they read correctly in dark. Items are muted text that firm up
+       on hover; the namespace filter input matches the topbar search chip. */
     nav.navbar.ro-topbar .navbar-dropdown {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -413,9 +542,8 @@
     aside.menu { padding: 1.5rem; margin-top: -1.5rem; }
 
     /* ---------------------------------------------------------------------------
-       Sidebar -> grouped TEXT navigation. The Bulma menu structure
-       is kept (menu / menu-label / menu-list); only appearance changes, driven by
-       tokens, so app wins over bulma by layer order (no forced-priority override).
+       Sidebar -> grouped TEXT navigation. The legacy menu structure is kept
+       (menu / menu-label / menu-list); appearance is driven by tokens.
 
        - Group label (menu-label): a quiet uppercase mono caption -- the only role
          of "Custom Resources" is to be one more such label; it is NOT special-cased
@@ -425,8 +553,7 @@
          default, warms to full text + a faint surface wash on hover.
        - Active item: the link whose target path == the current request path gets
          .is-active (set in sidebar.html) -> a subtle accent tint PLUS an accent
-         left-bar drawn with ::before (no extra markup, no inline style). This
-         overrides Bulma's own .menu-list a.is-active blue fill via layer order. */
+         left-bar drawn with ::before (no extra markup, no inline style). */
     aside.menu .menu-label {
         font-family: var(--font-mono);
         font-size: 0.75rem;
@@ -526,6 +653,18 @@
     table th.num:not([align]),
     table td.num:not([align]) { text-align: right; }
 
+    /* NOTE (Unit 16): the pre-redesign `.ro-list-table` table system (the bare
+       `table.table.ro-list-table` density/header/cell/name rules + its
+       `.ro-cell-name`/`.ro-cell-url`/`.ro-cell-kind`/`.ro-ext-link`/`.ro-link-out`/
+       `.ro-empty-row`/`.ro-cell-changed` descendants) was REMOVED here: every
+       migrated screen now renders the redesign `.ro-table` (in `.ro-table-wrap`),
+       and `.ro-list-table` is emitted by no template / generated Go / readout.js
+       (verified by grep), so those rules matched nothing. The redesign `.ro-table`
+       system + the `.ro-rd .ro-cell-url`/`.ro-rd .ro-ext-link`/`.res-kind` rules
+       below own these screens now. The `.ro-status-dot` (old list status dot) and
+       `.log-msg`/`.log-ctr`/`.log-lvl-*` (old per-severity log spans) classes were
+       likewise removed -- nothing emits them. */
+
     /* ---------------------------------------------------------------------------
        Phase strip: a thin semantic tally band ABOVE the list table.
        A PURE INDICATOR -- the chips carry no links (no click-to-filter). Each chip
@@ -574,138 +713,6 @@
     }
     .ro-phase-total .ro-phase-count { margin-left: 0; }
 
-    /* ---------------------------------------------------------------------------
-       Resource-list table restyle. The list page table is the heart
-       of the app; this turns Bulma's default zebra table into the redesign's calm
-       technical grid: compact density off the shared --row-py/--cell-px tokens,
-       mono sticky headers with quiet sort carets, hover (NOT zebra) row feedback,
-       and mono ellipsized identifiers. App beats the bulma layer by cascade order
-       (no forced-priority override).
-
-       LAYOUT (revised post-delivery on user feedback -- originally pinned
-       table-layout:fixed + ellipsized identifiers, but that clipped the TAIL of a
-       pod name -- exactly the hash/suffix that distinguishes two replicas -- so the
-       names read as duplicates and identification broke). We now use auto layout
-       with width:100%: the table still fills <main> and never horizontally
-       overflows, the short columns size to content, and the Name column takes the
-       remaining width and shows the identifier IN FULL (it wraps only if a name
-       genuinely cannot fit the available width -- see the .ro-cell-name rule).
-
-       The per-row LEFT STATUS STRIPE, the status dot, the has-text-* status
-       colours and the td.age-* scale all live in @layer theme already and
-       are intentionally NOT redefined here -- this rule only owns density,
-       headers, hover and the identifier column. The stripe is an INSET box-shadow
-       on the row's first cell; the extra left padding on the first column keeps
-       text clear of that stripe. */
-    table.table.ro-list-table {
-        table-layout: auto;
-        width: 100%;
-        border-collapse: collapse;
-        background: transparent;
-        font-size: 0.9375rem;
-    }
-
-    /* Select-tables (the clusters list + the cluster's namespace table) lead with
-       a narrow checkbox column. Under table-layout:fixed an unsized column claims
-       an EQUAL share -- a quarter of a 4-column clusters table -- leaving a wide
-       empty gap before the Name. Pin that leading column narrow so the data
-       columns take the width; the checkbox sits centred in it. */
-    table.table.ro-list-table.ro-select-table thead th:first-child,
-    table.table.ro-list-table.ro-select-table tbody td:first-child {
-        width: 2.5rem;
-        text-align: center;
-        padding-left: 0;
-        padding-right: 0;
-    }
-
-    /* Sticky mono header row: a quiet uppercase caption band that stays pinned
-       while the body scrolls. The header cell's <a> IS the sort link (kept in the
-       template); it is muted and warms to full text on hover. */
-    table.table.ro-list-table thead th {
-        position: sticky;
-        top: 0;
-        z-index: 1;
-        text-align: left;
-        background: var(--thead-bg);
-        border-bottom: 1px solid var(--border);
-        border-top: 0;
-        padding: 0.5rem var(--cell-px);
-        font-family: var(--font-mono);
-        font-size: 0.71875rem;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        color: var(--text-faint);
-        white-space: nowrap;
-        user-select: none;
-    }
-    table.table.ro-list-table thead th a {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.25rem;
-        color: inherit;
-    }
-    table.table.ro-list-table thead th a:hover { color: var(--text); }
-    /* the sort caret is a quiet small glyph; the column it marks reads firmer
-       (the active sort), since only the sorted header renders a caret at all */
-    table.table.ro-list-table thead th a .icon { color: var(--text-faint); }
-    table.table.ro-list-table thead th a:has(.icon) { color: var(--text); }
-    table.table.ro-list-table thead th a .icon svg.lucide-icon {
-        width: 0.875rem;
-        height: 0.875rem;
-    }
-
-    /* Compact body cells: token density, hairline row rule, single-line ellipsis
-       (fixed layout clips overflow instead of widening the column). Hover -- not
-       zebra -- gives the row feedback. */
-    table.table.ro-list-table tbody td {
-        padding: var(--row-py) var(--cell-px);
-        border-bottom: 1px solid var(--border);
-        border-top: 0;
-        vertical-align: middle;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    table.table.ro-list-table tbody tr { transition: background .08s; }
-    table.table.ro-list-table tbody tr:hover { background: var(--row-hover); }
-    /* keep body text clear of the inset left status stripe on the leading cell */
-    table.table.ro-list-table tbody td:first-child,
-    table.table.ro-list-table thead th:first-child { padding-left: 0.875rem; }
-
-    /* Mono identifier shown IN FULL: the Name cell's link is the one saturated id
-       colour. Under the auto layout above the Name column takes the leftover width
-       and the identifier shows whole on one line; if a name truly cannot fit the
-       available width it WRAPS (breaking the long hash) rather than clipping its
-       tail -- the tail is what distinguishes two replicas, so it must never be
-       hidden. The anchor markup is unchanged (a pinned e2e selector matches it). */
-    table.table.ro-list-table td.ro-cell-name {
-        white-space: normal;
-        overflow: visible;
-    }
-    table.table.ro-list-table td.ro-cell-name a {
-        display: block;
-        overflow-wrap: anywhere;
-    }
-
-    /* Trailing object-links cell -> a QUIET token icon link: saturation is
-       reserved for status/age, so the old saturated is-primary button becomes a
-       borderless muted icon that warms to full text on hover. It carries
-       ro-btn-quiet too, so this just strips the chip chrome down to an icon. */
-    table.table.ro-list-table .button.ro-link-out {
-        background: transparent;
-        border-color: transparent;
-        color: var(--text-faint);
-        padding-left: 0.5rem;
-        padding-right: 0.5rem;
-    }
-    table.table.ro-list-table .button.ro-link-out:hover,
-    table.table.ro-list-table .button.ro-link-out:focus {
-        background: var(--surface-2);
-        border-color: transparent;
-        color: var(--text);
-    }
-
     table.table.has-bottom-controls { margin-bottom: 0.5rem; }
     .bottom-controls { margin-bottom: 1.5rem; }
 
@@ -733,94 +740,64 @@
         color: var(--text-faint);
     }
 
-    /* The single accent action button (Search in selected / Filter / Save /
-       Refresh): Bulma's .is-primary teal is re-skinned to the design accent token
-       (near-black in light, blue in dark) so it reads as the one saturated action.
-       App beats the bulma layer by cascade order -- no forced priority. The
-       disabled state quiets to a surface chip until a checkbox arms it. */
-    .button.is-primary {
-        background: var(--accent);
-        border: 1px solid var(--accent);
-        color: var(--accent-on);
-        box-shadow: none;
-        border-radius: var(--radius-sm);
-    }
-    .button.is-primary:hover,
-    .button.is-primary:focus {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: var(--accent-on);
-        filter: brightness(1.08);
-    }
-    .button.is-primary[disabled],
-    .button.is-primary:disabled {
-        background: var(--surface-2);
-        border-color: var(--border);
-        color: var(--text-faint);
-        opacity: 1;
-    }
-
     /* ---------------------------------------------------------------------------
        Preferences page. The page is `preferences.html`: a single
        POST /preferences form (the one allowed write, hx-boost="false") with a
-       theme <select> + the accent Save button. Without these rules the form is
-       un-themed Bulma -- under the dark DEFAULT the <select> renders a white
-       control with Bulma's teal arrow and the .label/icon take Bulma's dark-grey
-       chrome, all of which read wrong on the dark surface. Scoped to `.ro-prefs`
-       (a class on that one form) so it restyles ONLY this page and never reaches
-       the shared .label/.select/.field used by search/tools forms. The Save
-       button already inherits the token .button.is-primary skin above, so it is
-       not restyled here. App wins over the bulma layer by cascade order -- no
-       forced-priority override needed. ------------------------------------- */
-    .ro-prefs .label { color: var(--text-muted); }
-
-    /* The native <select> inside Bulma's `.select` wrapper: tokenise the control
-       (surface fill, token border + text, mono so the theme name reads as data)
-       so it matches the navbar inputs. Bulma draws the dropdown arrow with
-       `.select::after` (a border-triangle in its own link colour); recolour it to
-       a quiet faint token and firm/accent the border on hover/focus like the
-       other token-driven inputs in this app. */
-    .ro-prefs .select select {
-        font-family: var(--font-mono);
-        color: var(--text);
+       theme <select> + the accent Save button. The form owns its native controls
+       and card shell directly, using only `.ro-*` classes. ------------------ */
+    .ro-prefs {
+        max-width: 28rem;
+        padding: 1rem;
         background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+    }
+    .ro-form-row { margin-bottom: 1rem; }
+    .ro-label {
+        display: block;
+        margin-bottom: 0.5rem;
+        color: var(--text-muted);
+        font-size: 0.8125rem;
+        font-weight: 600;
+    }
+    .ro-select {
+        width: min(18rem, 100%);
+        height: 2.25rem;
+        appearance: none;
+        padding: 0 2.25rem 0 0.75rem;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text);
+        background-color: var(--surface);
+        background-image:
+            linear-gradient(45deg, transparent 50%, var(--text-faint) 50%),
+            linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
+        background-position:
+            calc(100% - 0.95rem) 50%,
+            calc(100% - 0.65rem) 50%;
+        background-repeat: no-repeat;
+        background-size: 0.3125rem 0.3125rem, 0.3125rem 0.3125rem;
         border: 1px solid var(--border);
         border-radius: var(--radius-sm);
         box-shadow: none;
     }
-    .ro-prefs .select:not(.is-multiple):not(.is-loading)::after {
-        border-color: var(--text-faint);
-    }
-    .ro-prefs .select select:hover { border-color: var(--border-strong); }
-    .ro-prefs .select select:focus {
+    .ro-select:hover { border-color: var(--border-strong); }
+    .ro-select:focus {
         border-color: var(--accent);
-        background: var(--surface);
+        background-color: var(--surface);
     }
-    /* the leading palette icon in `.control.has-icons-left` reads as a quiet
-       affordance, like the navbar search/field icons. */
-    .ro-prefs .control.has-icons-left .icon { color: var(--text-faint); }
+    .ro-select:disabled {
+        background-color: var(--surface-2);
+        color: var(--text-faint);
+        opacity: 1;
+    }
 
-    /* Clusters table: API-URL cell stays a quiet mono string (the value the
-       offline guard asserts is non-empty); a long URL ellipsizes rather than
-       widening the fixed-layout column. */
-    table.table.ro-list-table td.ro-cell-url {
-        font-family: var(--font-mono);
-        color: var(--text-muted);
-    }
-    /* external_url clusters render as a link-out row: the id-colour name + a
-       trailing quiet icon (kept from the template), in the id colour like any
-       identifier link. */
-    table.table.ro-list-table td.ro-cell-name a.ro-ext-link {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.375rem;
-    }
-    table.table.ro-list-table td.ro-cell-name a.ro-ext-link .icon { color: var(--text-faint); }
-    table.table.ro-list-table td.ro-cell-name a.ro-ext-link:hover .icon { color: var(--accent-text); }
-    table.table.ro-list-table td.ro-cell-name a.ro-ext-link .icon svg.lucide-icon {
-        width: 0.8125rem;
-        height: 0.8125rem;
-    }
+    /* (Unit 16) the pre-redesign `.ro-list-table td.ro-cell-url` + the
+       `.ro-list-table td.ro-cell-name a.ro-ext-link` link-out rules were removed:
+       the redesign Clusters table is `.ro-table.ro-select-table` (under `.ro-rd`),
+       styled by the canonical `.ro-rd .ro-cell-url` + `.ro-rd .ro-ext-link` rules
+       below. */
 
     /* Single-cluster overview header: the label chips + a quiet mono API-URL line
        sit in a compact meta block under the title. */
@@ -836,18 +813,11 @@
         margin-right: 0.375rem;
     }
 
-    /* Resource Types tabs (Cluster / Namespaced): quiet mono caption tabs; the
-       active tab carries the accent text + underline, the rest are muted. The
-       template keeps the real <a> hrefs. */
-    .tabs.ro-rt-tabs { font-family: var(--font-mono); font-size: 0.75rem; margin-bottom: 0.75rem; }
-    .tabs.ro-rt-tabs ul { border-bottom-color: var(--border); }
-    .tabs.ro-rt-tabs li a {
-        color: var(--text-muted);
-        border-bottom-color: transparent;
-        padding: 0.4rem 0.75rem;
-    }
-    .tabs.ro-rt-tabs li a:hover { color: var(--text); border-bottom-color: var(--border-strong); }
-    .tabs.ro-rt-tabs li.is-active a { color: var(--accent-text); border-bottom-color: var(--accent); }
+    /* (Unit 16) the pre-redesign `.tabs.ro-rt-tabs li ...` rules were removed:
+       resource_types now emits `<div class="ro-tabs ro-rt-tabs">` with bare `<a>`
+       anchors (no `.tabs`, no `<li>`), styled by the redesign `.ro-rd .ro-tabs`
+       chrome; the `.ro-rt-tabs` marker is KEEP-AS-IS but its old `.tabs`/`<li>`
+       rules matched nothing. */
 
     /* Resource-type row cells: the API GROUP + VERSION read as quiet mono
        metadata; Namespaced renders true (ok colour) / false (faint). */
@@ -859,16 +829,6 @@
     }
     .ro-bool-yes { font-family: var(--font-mono); font-size: 0.71875rem; color: var(--st-ok); }
     .ro-bool-no  { font-family: var(--font-mono); font-size: 0.71875rem; color: var(--text-faint); }
-
-    /* Kind cell (resource-types + cluster overview): a short mono identifier link
-       in the id colour, kept INLINE (not the ellipsized block .ro-cell-name uses)
-       so the CRD badge sits on the same line beside it. */
-    table.table.ro-list-table td.ro-cell-kind {
-        white-space: nowrap;
-    }
-    table.table.ro-list-table td.ro-cell-kind a {
-        color: var(--id-color);
-    }
 
     /* CRD badge (F-crdbadge): a small accent-tinted mono tag after a CUSTOM
        resource's Kind. The CRD check uses a built-in group ALLOWLIST, NOT a
@@ -909,6 +869,7 @@
     div.section.is-collapsed h4.title { color: var(--text-muted); }
     div.section.is-collapsed h4.title::after { content: " \25be"; }
     div.section.is-collapsed .content,
+    div.section.is-collapsed .ro-card-content,
     div.section.is-collapsed table { display: none; }
 
     /* ---------------------------------------------------------------------------
@@ -995,9 +956,12 @@
 
     /* YAML body inside the card: flush on the card surface (kill the Pygments
        block fill), comfortable padding, small mono type. */
-    .ro-yaml-card .content { margin: 0; }
-    .ro-yaml-card .content .highlight { background: transparent; margin: 0; }
-    .ro-yaml-card .highlighttable {
+    .ro-yaml-card .ro-card-content { margin: 0; }
+    .ro-yaml-card .ro-card-content .highlight { background: transparent; margin: 0; }
+    /* Full-manifest YAML tab: the same carded shell as a YAML card, so the gutter
+       rules below (shared via :is) sit inside a bordered surface instead of bare. */
+    .ro-yaml-view { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable {
         width: 100%;
         margin: 0;
         border: 0;
@@ -1006,13 +970,13 @@
         font-size: 0.875rem;
         line-height: 1.55;
     }
-    .ro-yaml-card .highlighttable td { border: 0; padding: 0; }
-    .ro-yaml-card .highlighttable td.linenos,
-    .ro-yaml-card .highlighttable td.code { vertical-align: top; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td { border: 0; padding: 0; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos,
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.code { vertical-align: top; }
     /* line-number gutter: faint, right-aligned, hairline-separated, NOT selectable
        (so a drag-select / the copy reads code only). The anchors stay clickable
        (the .linenos a handler + yaml-line-N highlight are unchanged). */
-    .ro-yaml-card .highlighttable td.linenos {
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos {
         width: 1px;
         white-space: nowrap;
         padding: 0.625rem 0.625rem 0.625rem 0.875rem;
@@ -1021,13 +985,13 @@
         user-select: none;
         text-align: right;
     }
-    .ro-yaml-card .highlighttable td.linenos .linenodiv pre { margin: 0; background: transparent; }
-    .ro-yaml-card .highlighttable td.linenos a { color: var(--text-faint); }
-    .ro-yaml-card .highlighttable td.linenos a:hover { color: var(--text); }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos .linenodiv pre { margin: 0; background: transparent; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos a { color: var(--text-faint); }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos a:hover { color: var(--text); }
     /* code column: padded, and WRAPS long values so a wide CRD line never forces a
        horizontal scrollbar / breaks the card layout. */
-    .ro-yaml-card .highlighttable td.code { width: 100%; padding: 0.625rem 0.875rem; }
-    .ro-yaml-card .highlighttable td.code pre {
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.code { width: 100%; padding: 0.625rem 0.875rem; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.code pre {
         margin: 0;
         background: transparent;
         white-space: pre-wrap;
@@ -1082,21 +1046,18 @@
     .ro-line-folded { display: none; }
 
     /* ---------------------------------------------------------------------------
-       Resource-DETAIL header + body. The read-only detail page is
-       raw light Bulma under the dark default otherwise; this skins the parts no
-       other unit owns -- the header (kind badge · mono name · meta · Download-YAML
-       + configured link-outs), the labels/annotations chips, the owner line, the
-       Default/YAML/Logs tabs, and the body tables (controller Pods subtable +
-       Events) + the global footer -- all driven off the token system, so app wins
-       over bulma by layer order (no forced-priority override). The header stays
-       READ-ONLY: the only actions are Download-YAML and the operator-configured
-       object/label link-outs (the `{% for link in links %}` loop), restyled as
-       quiet token icon links via .ro-link-out (shared with the list page).
+       Resource-DETAIL header + body. These rules skin the parts no other unit owns:
+       the header (kind badge · mono name · meta · Download-YAML + configured
+       link-outs), labels/annotations chips, owner line, Default/YAML/Logs tabs,
+       body tables (controller Pods subtable + Events) and the global footer. The
+       header stays READ-ONLY: the only actions are Download-YAML and the operator-
+       configured object/label link-outs (the link loop), rendered as quiet
+       `.ro-iconbtn` icon buttons (the single authoritative icon-button skin).
 
-       The detail page <h1> keeps Bulma's bare `class="title"` (a pinned offline
-       guard matches `<h1 class="title">name` verbatim), so the mono-name treatment
-       is scoped to a title that CONTAINS a kind badge -- i.e. only the detail
-       header, never the list page's plain "Pods" title. */
+       The legacy detail page <h1> keeps bare `class="title"` (a pinned offline guard
+       matches `<h1 class="title">name` verbatim), so the mono-name treatment is
+       scoped to a title that CONTAINS a kind badge -- i.e. only the detail header,
+       never the list page's plain "Pods" title. */
     h1.title:has(.ro-kind-badge) {
         align-items: baseline;
         flex-wrap: wrap;
@@ -1126,34 +1087,21 @@
         order: -1;            /* badge reads LEFT of the name (markup keeps name first
                                  so the offline `<h1 class="title">name` pin holds) */
     }
-    /* Detail-header link-outs (Download-YAML + configured object/label links) are
-       quiet icon buttons; the shared .ro-link-out below collapses the chip chrome
-       to a borderless muted icon. The header .links keeps the existing margin. */
+    /* Detail-header meta line. (Unit 16: the header link-outs are now plain
+       `.ro-iconbtn` anchors in `.ro-detail-actions` -- the same icon-button skin as
+       the Download button beside them -- so the dead `h1 .links .button.ro-link-out`
+       rules (which required a `.button` inside `h1 .links`, never emitted) and the
+       `ro-link-out` token on the markup were removed. `.ro-iconbtn` is the single
+       authoritative skin.) */
     h1.title:has(.ro-kind-badge) .meta {
         font-family: var(--font-ui);
         color: var(--text-faint);
         font-size: 0.8125rem;
     }
 
-    /* The detail link-out icon button (shared name with the list-table trailing
-       link cell): borderless, muted, warms on hover. Scoped to the header
-       .links here so it does not depend on table context. */
-    h1 .links .button.ro-link-out {
-        background: transparent;
-        border-color: transparent;
-        color: var(--text-faint);
-    }
-    h1 .links .button.ro-link-out:hover,
-    h1 .links .button.ro-link-out:focus {
-        background: var(--surface-2);
-        border-color: transparent;
-        color: var(--text);
-    }
-
     /* Tabs (Default / YAML / Logs) -> a quiet underline tab strip: a hairline
        baseline, muted labels, the active tab marked by an accent underline + accent
-       text. Bulma's .tabs draws its own bottom border + active colours; app
-       wins by layer order. The <a>s are real navigation links (kept verbatim). */
+       text. The <a>s are real navigation links (kept verbatim). */
     .tabs.ro-detail-tabs {
         margin-bottom: 1rem;
         font-size: 0.8125rem;
@@ -1196,9 +1144,8 @@
 
     /* Chips. The LABEL chip keeps its selector <a> + the pinned `.tag.is-link`
        inner span working (the click-to-filter link is load-bearing); we re-skin
-       the tag from Bulma's blue fill to a neutral bordered surface token. The
-       ANNOTATION chip is the same skin on a bare `.tag`. App wins by layer order,
-       so the is-link blue is overridden by cascade order alone (no forced priority). */
+       the tag to a neutral bordered surface token. The ANNOTATION chip is the same
+       skin on a bare `.tag`. */
     .ro-chip {
         display: inline-flex;
         max-width: 21.25rem;
@@ -1242,13 +1189,14 @@
     .ro-owner a { color: var(--accent-text); }
     .ro-owner .kind { color: var(--text-faint); }
 
-    /* Detail body subtables (controller Pods subtable + Events). They reuse the
-       list-table look (mono sticky headers, hover rows, fixed layout,
-       ellipsized identifiers) via the shared .ro-list-table rules, plus the
-       per-row status stripe + status dot (get_row_status_class is in the detail
-       context). .ro-subtable wraps them in a bordered rounded card so they read as
-       a contained block inside the detail flow (the list page table is full-bleed;
-       a detail subtable wants an explicit frame). */
+    /* Detail body subtables (controller Pods subtable + Events) -- the
+       pre-redesign `.ro-subtable` skin. NOTE (Unit 16): the migrated detail page
+       (resource_view.templ `subtableC` / `eventsSection`) renders the subtable as a
+       `.ro-table-wrap > .ro-table` (the same redesign table the list uses), NOT
+       `table.table.ro-subtable`, so these `.ro-subtable` rules no longer match the
+       emitted markup. They are LEFT IN PLACE here (out of this unit's teardown
+       scope -- `.ro-subtable` is not in the colliding-family list and is not a
+       net-new retired class), but they are effectively inert. */
     table.table.ro-subtable {
         border: 1px solid var(--border);
         border-radius: var(--radius);
@@ -1260,8 +1208,8 @@
     /* the Events message column takes the remaining width and ellipsizes */
     table.table.ro-subtable td.ro-event-msg { width: 100%; color: var(--text-muted); }
 
-    /* Global footer -> a quiet hairline-topped strip on the page surface (it is raw
-       light Bulma .footer otherwise). The codeberg link keeps the id-colour. */
+    /* Global footer -> a quiet hairline-topped strip on the page surface. The
+       codeberg link keeps the id-colour. */
     footer.footer.ro-footer {
         background: var(--bg);
         border-top: 1px solid var(--border);
@@ -1270,13 +1218,79 @@
         font-size: 0.8125rem;
     }
     footer.footer.ro-footer a { color: var(--id-color); }
+    .ro-footer-copy { text-align: center; }
 
     a.toggle-tools.is-active span {
         transform: rotate(180deg);
     }
-    form.tools-form { display: none; margin-bottom: 1rem; }
+    form.tools-form {
+        display: none;
+        margin-bottom: 1rem;
+        padding: 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+    }
     form.tools-form.is-active { display: block; }
     form .checkboxes label { margin-right: 0.5rem; padding-top: 0.375em; }
+    .ro-tools-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 0.625rem;
+    }
+    .ro-tools-field {
+        display: grid;
+        grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
+        gap: 0.75rem;
+        align-items: center;
+    }
+    .ro-tools-label {
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+    }
+    .ro-input-wrap {
+        position: relative;
+        display: block;
+        min-width: 0;
+    }
+    .ro-field-icon {
+        position: absolute;
+        left: 0.625rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-faint);
+        pointer-events: none;
+    }
+    .ro-input {
+        width: 100%;
+        height: 2.125rem;
+        padding: 0 0.625rem 0 2rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        color: var(--text);
+        font-family: var(--font-mono);
+        font-size: 0.78125rem;
+        box-shadow: none;
+    }
+    .ro-input::placeholder { color: var(--text-faint); }
+    .ro-input:hover { border-color: var(--border-strong); }
+    .ro-input:focus { border-color: var(--accent); background: var(--surface); }
+    .ro-tools-actions {
+        display: flex;
+        justify-content: flex-end;
+    }
+    @media (max-width: 760px) {
+        .ro-tools-field {
+            grid-template-columns: 1fr;
+            gap: 0.375rem;
+        }
+        .ro-tools-actions { justify-content: stretch; }
+        .ro-tools-actions .ro-btn { width: 100%; justify-content: center; }
+    }
 
     /* ---------------------------------------------------------------------------
        Search results. The live API list+filter, the GET form
@@ -1420,7 +1434,7 @@
 
     /* Logs screen. The filter form, the container tabs
        and the <pre> stream consume the redesign tokens. The per-pod identity
-       colour stays on the pod-name prefix via .log-line.log-cN (declared in
+       colour stays on the pod-name prefix via .log-line .log-cN (declared in
        @layer theme -- a per-pod identity colour, NOT severity); these rules only
        skin the surrounding chrome + the muted body + a presentation-only
        WARN/ERROR emphasis that lands on the MESSAGE span, never the pod prefix. */
@@ -1447,17 +1461,14 @@
         padding: 0.75rem 0.875rem;
         white-space: pre-wrap; word-break: break-word; overflow: hidden;
     }
-    pre.ro-logpre .log-ctr { color: var(--text-faint); }
-    pre.ro-logpre .log-msg { color: var(--text-muted); }
-    /* WARN/ERROR: presentation-only emphasis derived in-template from the line
-       text (a static class -- CSP-clean: no inline style/handler). Identity colour
-       remains on the pod prefix; severity is a colour + weight on the message. */
-    pre.ro-logpre .log-msg.log-lvl-warn { color: var(--st-warn); font-weight: 600; }
-    pre.ro-logpre .log-msg.log-lvl-err  { color: var(--st-err);  font-weight: 600; }
+    /* (Unit 16) the dead per-severity log rules (`.log-ctr`, `.log-msg`,
+       `.log-msg.log-lvl-warn|err`) were removed: the redesign log stream renders
+       bare messages (`.log-line > .log-src/.log-cN/.log-ts` + plain text), so none
+       of those classes is emitted. The per-pod identity colour lives on `.log-cN`
+       (@layer theme) and `.log-src`/`.log-ts` are styled in the redesign block. */
     pre.ro-logpre em { color: var(--text-faint); font-style: normal; }
 
-    /* "Container logs disabled" warning state, re-skinned as a token notice
-       (replaces the Bulma message is-warning article). */
+    /* "Container logs disabled" warning state, re-skinned as a token notice. */
     .ro-notice {
         border: 1px solid var(--border);
         border-left: 0.1875rem solid var(--st-warn);
@@ -1555,7 +1566,6 @@
     }
     .ro-cond-pill .ro-cond-name { color: var(--text-muted); }
     .ro-cond-pill .ro-cond-val { font-weight: 600; color: currentColor; }
-    .ro-cond-pill .ro-status-dot { align-self: center; }
     .ro-cond-pill.ro-st-ok      { color: var(--st-ok);   border-color: var(--st-ok);   background: var(--st-ok-bg); }
     .ro-cond-pill.ro-st-warn    { color: var(--st-warn); border-color: var(--st-warn); background: var(--st-warn-bg); }
     .ro-cond-pill.ro-st-err     { color: var(--st-err);  border-color: var(--st-err);  background: var(--st-err-bg); }
@@ -1664,13 +1674,38 @@
         gap: 0.625rem;
         justify-content: center;
     }
+    .ro-error-card {
+        max-width: 42rem;
+        margin: 3.5rem auto 0;
+        padding: 1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 0.1875rem solid var(--st-err);
+        border-radius: var(--radius);
+        color: var(--text);
+    }
+    .ro-error-card h2 {
+        margin: 0 0 0.5rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text);
+    }
+    .ro-error-card p {
+        margin: 0;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
 
     /* Empty state (resource-list-content.html). Not an error -- a calm, expected
        state: the literal "No <Kind> ... found." title plus a quiet nudge. The cell
        spans the table; the inner block is centered with breathing room so an empty
-       table reads as intentional, not broken. */
-    table.table.ro-list-table tbody tr.ro-empty-row:hover { background: transparent; }
-    table.table.ro-list-table tbody tr.ro-empty-row td { border-bottom: 0; }
+       table reads as intentional, not broken. (Unit 16: the dead
+       `.ro-list-table tr.ro-empty-row` hover/border rules were removed -- the
+       redesign empty row rides in a `.ro-table`, and the `.ro-empty-lg` card owns
+       the empty state.) */
     .ro-empty {
         text-align: center;
         padding: 2.5rem 1rem;
@@ -1687,20 +1722,26 @@
         color: var(--text-faint);
     }
 
-    /* In-flight progress bar (resource-list.html). A thin top rail that fades in
-       (via the .htmx-indicator opacity rule above) while the morph-refresh request
-       is in flight; inside it a bar sweeps left-to-right on a loop. Reuses
-       .htmx-indicator for the show/hide -- htmx adds .htmx-request to the container
-       during its request and points hx-indicator at THIS sibling, so no skeleton or
-       table-blanking spinner is needed. The sweep animation is dropped under
-       reduced-motion (see the media block below); the bar still fades in/out. */
+    /* Global in-flight progress bar. A thin rail fixed across the very top of the
+       viewport (over the sticky topbar) that fades in while ANY request is in
+       flight and sweeps a bar left-to-right. It lives in the layout (one per page)
+       and is the indicator for BOTH every hx-boost navigation (the body sets
+       hx-indicator="#ro-progress") AND the in-place list auto-refresh
+       (#resource-list-content points its hx-indicator here too) -- so it is
+       consistent on every page change, not just when leaving a list. Reuses
+       .htmx-indicator for show/hide (opacity:0 at rest -> 1 on .htmx-request). The
+       sweep is dropped under reduced-motion (media block below); the bar still
+       fades. */
     .ro-progress {
-        position: relative;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
         height: 2px;
-        margin-bottom: 0.5rem;
+        z-index: 200;
         background: var(--surface-2);
-        border-radius: 1px;
         overflow: hidden;
+        pointer-events: none;
     }
     .ro-progress .ro-progress-bar {
         position: absolute;
@@ -1723,8 +1764,11 @@
        brief tint fade so the eye is drawn to the delta. The page never jumps (the
        morph diffs in place); the class is added only off-reduced-motion (the JS
        hook is not registered under prefers-reduced-motion), and the animation is
-       additionally disabled in the media block below as defence-in-depth. */
-    table.table.ro-list-table tbody td.ro-cell-changed {
+       additionally disabled in the media block below as defence-in-depth.
+       (Unit 16: retargeted from the retired `.ro-list-table` to the redesign
+       `.ro-table` so the JS-driven flash actually lands on the live table cells --
+       readout.js adds `.ro-cell-changed` to `.ro-table` `<td>`s on morph.) */
+    .ro-table tbody td.ro-cell-changed {
         animation: ro-cell-flash 1s ease-out;
     }
     @keyframes ro-cell-flash {
@@ -1745,124 +1789,939 @@
             width: 100%;
             opacity: 0.6;
         }
-        table.table.ro-list-table tbody td.ro-cell-changed { animation: none; }
+        .ro-table tbody td.ro-cell-changed { animation: none; }
     }
 
     /* ---------------------------------------------------------------------------
-       ⌘K jump-to palette -- additive, token-driven overlay.
+       ⌘K jump-to palette -- RETIRED here (Unit 4).
 
-       It SHIPS hidden via the Bulma `is-hidden` utility (display:none -- a class,
-       never inline style); readout.js adds `is-active` to reveal it. All colours
-       are tokens so it follows light/dark for free; no forced-priority override
-       (the app layer already wins by order). Mono kind-tags reuse .ro-ktag
-       . It owns no data -- the JS fills the list from links already on
-       the page and each row is a real <a> navigating via its existing GET href. */
-    .ro-palette {
-        position: fixed;
-        inset: 0;
-        z-index: 60;            /* above the fixed navbar (Bulma navbar is 30) */
-        display: flex;
-        align-items: flex-start;
-        justify-content: center;
-        padding: 12vh 1rem 1rem;
+       The pre-redesign overlay (`.ro-palette` / `.ro-palette-panel` / `-head` /
+       `-input` / `-list` / `-row` / `-tag` / `-label` / `-path` / `-empty` + the
+       `ro-palette-in` keyframe) is gone. Its markup was deleted in
+       components.templ and its bare `.ro-palette` selector collided with the
+       redesign inner panel (`.ro-rd .ro-palette`, defined further below). Unit 2
+       lifted the redesign palette under the `.ro-rd.ro-palette-backdrop` marker
+       and noted "Unit 4 retires it" -- this is that retirement. The redesign
+       palette + its reduced-motion guard live in the REDESIGN COMPONENT PORT
+       block below (search the `⌘K PALETTE (redesign canonical .ro-pal-*)`
+       banner). */
+
+    /* ===========================================================================
+       REDESIGN COMPONENT PORT (Unit 2, additive). The component classes below are
+       lifted EXACT from the redesign source of truth -- design/assets/base.css plus
+       the per-screen inline <style> blocks (Clusters / Search / Pods Mobile) that
+       are NOT in base.css. They are NEW class names (e.g. bare `.ro-topbar`, not the
+       old `nav.navbar.ro-topbar`), so they sit ALONGSIDE the existing app rules --
+       nothing above is removed (old-class removal is a later unit). They consume the
+       same token layer just rethemed to the green/dark "Terminal" palette, so they
+       follow light/dark for free. base.css's two `body.theme-light` rules (on the
+       monogram tile) are mapped onto readout's data-theme mechanism (NOT a body
+       class) per D5.
+       =========================================================================== */
+
+    .mono { font-family: var(--font-mono); }
+    ::selection { background: var(--accent-weak); color: var(--text); }
+
+    /* focus ring -- green, the redesign's signature (bare-element variant) */
+    .ro-focus-ring:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
     }
-    .ro-palette-backdrop {
-        position: absolute;
-        inset: 0;
-        background: var(--overlay-bg);
-    }
-    .ro-palette-panel {
-        position: relative;     /* above the backdrop */
-        width: 100%;
-        max-width: 40rem;
-        max-height: 70vh;
-        display: flex;
-        flex-direction: column;
-        background: var(--surface);
-        border: 1px solid var(--border-strong);
-        border-radius: var(--radius);
-        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
-        overflow: hidden;
-        animation: ro-palette-in 0.12s ease-out;
-    }
-    @keyframes ro-palette-in {
-        from { opacity: 0; transform: translateY(-6px); }
-        to   { opacity: 1; transform: translateY(0); }
-    }
-    .ro-palette-head {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.625rem 0.75rem;
+
+    /* ---------------------------------------------------------------- TOP BAR
+       Scoped to `header.ro-topbar` (the redesign element) so it never touches the
+       still-live `nav.navbar.ro-topbar` -- keeping this ADDITIVE: the new bar is
+       opted in by switching the element from <nav> to <header> in a later unit. */
+    header.ro-topbar {
+        position: sticky; top: 0; z-index: 50;
+        height: var(--topbar-h);
+        display: flex; align-items: center; gap: 18px;
+        padding: 0 16px;
+        background: var(--header-bg);
+        backdrop-filter: saturate(140%) blur(12px);
         border-bottom: 1px solid var(--border);
     }
-    .ro-palette-search-icon { color: var(--text-faint); }
-    .ro-palette-input {
-        flex: 1 1 auto;
+    header.ro-topbar .brand-item { display: flex; align-items: center; gap: 9px; padding-right: 4px; }
+    header.ro-topbar .brand-logo {
+        width: 22px; height: 26px; display: block;
+        background: var(--brand);
+        -webkit-mask: url(/assets/readout-logo.svg) center / contain no-repeat;
+        mask: url(/assets/readout-logo.svg) center / contain no-repeat;
+    }
+    header.ro-topbar .brand-name { font-weight: 650; letter-spacing: -.01em; font-size: 14px; }
+    .topnav { display: flex; align-items: center; gap: 4px; }
+    .topnav a {
+        padding: 5px 9px; border-radius: var(--radius-sm);
+        color: var(--text-muted); font-weight: 500; font-size: 13px;
+    }
+    .topnav a:hover { background: var(--surface-2); color: var(--text); }
+    .topnav a.is-active { color: var(--text); }
+
+    /* context dropdown trigger (namespace) */
+    .ctx-dd {
+        display: inline-flex; align-items: center; gap: 7px;
+        max-width: min(22rem, 100vw);
+        padding: 4px 9px 4px 8px; border-radius: var(--radius-sm);
+        border: 1px solid var(--border); background: var(--surface);
+        font-family: var(--font-mono); font-size: 12px; color: var(--text);
+        cursor: pointer;
+    }
+    .ctx-dd .context-name {
         min-width: 0;
-        border: 0;
-        background: transparent;
-        color: var(--text);
-        font-family: var(--font-ui);
-        font-size: 0.9375rem;
-        line-height: 1.4;
-        padding: 0.125rem 0;
-    }
-    .ro-palette-input:focus { outline: none; }
-    .ro-palette-input::placeholder { color: var(--text-faint); }
-    .ro-palette-esc { flex: 0 0 auto; }
-    .ro-palette-list {
-        list-style: none;
-        margin: 0;
-        padding: 0.375rem;
-        overflow-y: auto;
-    }
-    .ro-palette-item { margin: 0; }
-    .ro-palette-row {
-        display: flex;
-        align-items: center;
-        gap: 0.625rem;
-        padding: 0.4375rem 0.5rem;
-        border-radius: var(--radius-sm);
-        color: var(--text);
-        text-decoration: none;
-    }
-    /* Hover + keyboard-active highlight share one look (the JS marks the active
-       row .is-active as arrows/typing move it; the mouse hover matches it). */
-    .ro-palette-row:hover,
-    .ro-palette-row.is-active {
-        background: var(--accent-weak);
-        color: var(--accent-text);
-    }
-    .ro-palette-tag { margin-top: 0; }
-    .ro-palette-label {
-        flex: 1 1 auto;
-        min-width: 0;
-        font-family: var(--font-mono);
-        font-size: 0.8125rem;
-        color: var(--id-color);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
-    .ro-palette-row:hover .ro-palette-label,
-    .ro-palette-row.is-active .ro-palette-label { color: var(--accent-text); }
-    .ro-palette-path {
-        flex: 0 0 auto;
-        font-family: var(--font-mono);
-        font-size: 0.6875rem;
-        color: var(--text-faint);
+    .ctx-dd:hover { border-color: var(--border-strong); }
+    .ctx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand);
+        box-shadow: 0 0 0 3px var(--accent-weak); }
+    .ctx-caret { color: var(--text-faint); display: inline-flex; }
+
+    .topbar-spacer { flex: 1; }
+
+    /* search box */
+    .ro-search { position: relative; width: min(560px, 42vw); }
+    .ro-search input {
+        width: 100%; height: 34px;
+        padding: 0 40px 0 34px;
+        background: var(--surface); color: var(--text);
+        border: 1px solid var(--border); border-radius: var(--radius);
+        font-family: var(--font-ui); font-size: 13px;
     }
-    .ro-palette-empty {
-        margin: 0;
-        padding: 0.75rem 0.875rem 1rem;
-        color: var(--text-faint);
-        font-size: 0.8125rem;
+    .ro-search input::placeholder { color: var(--text-faint); }
+    .ro-search input:focus { border-color: var(--accent); background: var(--surface-2); }
+    .ro-search .s-ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+        color: var(--text-faint); display: inline-flex; pointer-events: none; }
+    .ro-search .kbd-hint { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
+
+    /* topbar icon buttons */
+    .tb-group { display: flex; align-items: center; gap: 2px; }
+    .tb-btn {
+        display: inline-flex; align-items: center; gap: 7px;
+        height: 32px; padding: 0 8px; border-radius: var(--radius-sm);
+        background: transparent; border: 1px solid transparent;
+        color: var(--text-muted); font-size: 12px; cursor: pointer;
+    }
+    .tb-btn:hover { background: var(--surface-2); color: var(--text); }
+    .tb-btn .ico { display: inline-flex; }
+    /* (the live `.refresh-label` size is owned by the existing app rule above; the
+       redesign bar reuses it -- no duplicate here to keep this additive.) */
+    .refresh-live .ro-livedot { width: 6px; height: 6px; border-radius: 50%;
+        background: var(--brand); box-shadow: 0 0 0 0 var(--brand);
+        animation: ro-pulse 1.8s ease-out infinite; }
+    @keyframes ro-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(86,224,188,.5); }
+        70% { box-shadow: 0 0 0 6px rgba(86,224,188,0); }
+        100% { box-shadow: 0 0 0 0 rgba(86,224,188,0); }
     }
 
-    /* Reduced-motion: the palette appears with no slide/fade (it just shows). */
+    /* ---- topbar dropdown panels (namespace context + refresh interval) --------
+       The redesign header.ro-topbar chrome renamed the old dropdown panels to
+       NET-NEW class names: `.ctx-menu` (namespace list) and
+       `.refresh-menu` (interval picker). The old styling was scoped to
+       `nav.navbar.ro-topbar .navbar-dropdown`, which no longer matches under
+       <header>, so without these rules the panels render permanently expanded,
+       unpositioned and unstyled inline in the bar. These are additive (no old rule,
+       no .ro-rd collision): an elevated themed popover anchored under its trigger,
+       CLOSED by default, revealed only on the open state.
+
+       Two different open contracts, matching the JS that already drives the
+       triggers (readout.js):
+         - namespace: CLICK-toggled. The delegated click handler toggles `is-active`
+           on the #namespace-dropdown container, so the panel reveals on
+           `#namespace-dropdown.is-active`.
+         - refresh: HOVER/FOCUS-revealed. There is NO JS open/close handler for it --
+           `refresh-on` means "an interval is active", not "menu open" -- so the
+           panel reveals on container :hover / :focus-within. */
+    #namespace-dropdown { position: relative; min-width: 0; }
+    #refresh-dropdown { position: relative; }
+
+    .ctx-menu,
+    .refresh-menu {
+        display: none;
+        position: absolute;
+        top: calc(100% + 6px);
+        min-width: 200px;
+        z-index: 60;
+        padding: 5px;
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-pop);
+    }
+    /* refresh menu is right-aligned (it sits at the end of the bar) */
+    .refresh-menu { right: 0; min-width: 150px; }
+    .ctx-menu { left: 0; max-height: 60vh; overflow-y: auto; }
+
+    /* OPEN contracts: closed by default above, shown only on the open state. */
+    #namespace-dropdown.is-active .ctx-menu { display: block; }
+    #refresh-dropdown:hover .refresh-menu,
+    #refresh-dropdown:focus-within .refresh-menu { display: block; }
+
+    /* panel items: muted mono rows that firm up on hover/focus (palette language). */
+    .namespace-item,
+    .refresh-option {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 6px 9px;
+        border: 0;
+        border-radius: var(--radius-sm);
+        background: transparent;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+    }
+    .namespace-item:hover,
+    .namespace-item:focus,
+    .refresh-option:hover,
+    .refresh-option:focus {
+        background: var(--surface-2);
+        color: var(--text);
+    }
+    /* the active (stored) interval reads as selected via the accent wash. */
+    .refresh-option.is-active {
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        font-weight: 600;
+    }
+
+    /* namespace filter input inside the panel: matches the topbar search chip. */
+    .ctx-search { padding: 3px 3px 6px; }
+    #namespace-searchbox {
+        width: 100%;
+        height: 30px;
+        padding: 0 10px;
+        background: var(--surface-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        font-family: var(--font-mono);
+        font-size: 12px;
+    }
+    #namespace-searchbox::placeholder { color: var(--text-faint); }
+    #namespace-searchbox:focus { border-color: var(--accent); background: var(--surface); }
+
+    /* icons (lucide-ish via stroke) */
+    .ico svg { width: 15px; height: 15px; display: block; stroke: currentColor;
+        stroke-width: 1.75; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .ico.sm svg { width: 13px; height: 13px; }
+
+    /* ---------------------------------------------------------------- LAYOUT */
+    .ro-shell { display: flex; min-height: calc(100vh - var(--topbar-h)); }
+    .ro-sidebar {
+        width: var(--sidebar-w); flex: none;
+        background: var(--sidebar-bg);
+        border-right: 1px solid var(--border);
+        padding: 16px 10px 24px;
+        position: sticky; top: var(--topbar-h);
+        height: calc(100vh - var(--topbar-h));
+        overflow-y: auto;
+    }
+    .ro-sidebar .menu-label {
+        font-family: var(--font-mono);
+        font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+        color: var(--text-faint); font-weight: 500;
+        padding: 0 8px; margin: 18px 0 6px;
+    }
+    .ro-sidebar .menu-label:first-child { margin-top: 0; }
+    .ro-sidebar .menu-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+    .ro-sidebar .menu-list a {
+        position: relative;
+        display: flex; align-items: center; gap: 9px;
+        padding: 6px 9px; border-radius: var(--radius-sm);
+        color: var(--text-muted); font-size: 13px; font-weight: 450;
+    }
+    .ro-sidebar .menu-list a .ico { color: var(--text-faint); }
+    .ro-sidebar .menu-list a:hover { background: var(--surface-2); color: var(--text); }
+    .ro-sidebar .menu-list a:hover .ico { color: var(--text-muted); }
+    .ro-sidebar .menu-list a.is-active {
+        background: var(--accent-weak); color: var(--text); font-weight: 550;
+    }
+    .ro-sidebar .menu-list a.is-active .ico { color: var(--accent); }
+    .ro-sidebar .menu-list a.is-active::before {
+        content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px;
+        width: 2.5px; border-radius: 2px; background: var(--accent);
+    }
+
+    .ro-main { flex: 1; min-width: 0; padding: 22px 26px 80px; }
+    .ro-main.wide { max-width: 100%; }
+
+    /* breadcrumb (redesign). The redesign breadcrumb is `<nav class="ro-breadcrumb">`,
+       the same selector the legacy breadcrumb used, so these rules are scoped under
+       the redesign CONTENT marker `.ro-rd` (D13), added only by a migrated content
+       template. This keeps the port additive: the new breadcrumb look applies only
+       on migrated screens, the legacy breadcrumb keeps its existing
+       `nav.breadcrumb.ro-breadcrumb` styling. (Not `.ro-shell`: that grid wrapper is
+       present on every screen and cannot distinguish migrated content.) */
+    .ro-rd .ro-breadcrumb { font-family: var(--font-mono); font-size: 12px; margin-bottom: 14px; }
+    .ro-rd .ro-breadcrumb ul { list-style: none; display: flex; flex-wrap: wrap; align-items: center;
+        gap: 6px; margin: 0; padding: 0; }
+    .ro-rd .ro-breadcrumb li { display: flex; align-items: center; gap: 6px; color: var(--text-faint); }
+    .ro-rd .ro-breadcrumb li:not(:first-child)::before { content: "/"; color: var(--text-faint); opacity: .5; }
+    .ro-rd .ro-breadcrumb a { color: var(--text-muted); }
+    .ro-rd .ro-breadcrumb a:hover { color: var(--accent); }
+    .ro-rd .ro-breadcrumb .is-active a { color: var(--text); }
+
+    /* page title */
+    .ro-title-row { display: flex; align-items: center; gap: 12px; margin: 2px 0 16px; }
+    .ro-title { font-size: 25px; font-weight: 680; letter-spacing: -.02em; margin: 0; }
+    .ro-title-actions { display: flex; gap: 4px; }
+    /* redesign count badge -- scoped to the redesign title row so it does not
+       restyle the live `h1.title .ro-count` (additive). */
+    .ro-title-row .ro-count {
+        font-family: var(--font-mono); font-size: 12px; font-weight: 500;
+        color: var(--text-muted); background: var(--surface-2);
+        border: 1px solid var(--border); border-radius: 6px;
+        padding: 2px 8px; transform: translateY(-2px);
+    }
+    .ro-iconbtn {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 30px; height: 30px; border-radius: var(--radius-sm);
+        border: 1px solid var(--border); background: var(--surface);
+        color: var(--text-muted); cursor: pointer;
+    }
+    .ro-iconbtn:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-2); }
+
+    /* ---------------------------------------------------------------- PHASE STRIP (redesign)
+       The redesign phase strip is `<div class="ro-phase-strip">` -- the SAME selector
+       the live phase strip uses. Scoped under the redesign CONTENT marker `.ro-rd`
+       (D13), NOT `.ro-shell`: `.ro-shell` is the layout grid present on EVERY screen
+       and cannot distinguish migrated content, whereas `.ro-rd` is added only by a
+       migrated content template -- so the live phase strip keeps its existing
+       `.ro-phase-strip` app rule until that screen migrates. */
+    .ro-rd .ro-phase-strip {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 16px; margin: 0 0 12px; flex-wrap: wrap;
+        padding: 8px 12px; border: 1px solid var(--border);
+        border-radius: var(--radius); background: var(--surface);
+    }
+    .ro-rd .ro-phase-tally { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+    .ro-rd .ro-phase-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-muted); }
+    /* `margin-left: 0` OVERRIDES the leaking old bare `.ro-phase-count
+       { margin-left: 0.375rem }`: base.css gives the count no margin -- the
+       label->count spacing is the chip's `gap: 7px`, so the leak doubled it to ~13px.
+       `font-weight: 550` matches base.css (old bare leaked 600 -- a hair heavier). */
+    .ro-rd .ro-phase-count { margin-left: 0; font-weight: 550; }
+
+    /* ---------------------------------------------------------------- STATUS DOTS */
+    .ro-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; }
+    .ro-dot.ok { background: var(--st-ok); box-shadow: 0 0 0 3px var(--st-ok-bg); }
+    .ro-dot.warn { background: var(--st-warn); box-shadow: 0 0 0 3px var(--st-warn-bg); }
+    .ro-dot.err { background: var(--st-err); box-shadow: 0 0 0 3px var(--st-err-bg); }
+    .ro-dot.info { background: var(--st-info); box-shadow: 0 0 0 3px var(--st-info-bg); }
+    .ro-dot.mute { background: var(--st-mute); box-shadow: 0 0 0 3px var(--st-mute-bg); }
+    .ro-dot.pulse { animation: ro-dot-pulse 1.6s ease-in-out infinite; }
+    @keyframes ro-dot-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+    /* ---------------------------------------------------------------- TABLE (redesign) */
+    .ro-table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; background: var(--surface); }
+    table.ro-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .ro-table thead th {
+        background: var(--thead-bg);
+        text-align: left; font-family: var(--font-mono);
+        font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+        font-weight: 500; color: var(--text-faint);
+        padding: 9px var(--cell-px); white-space: nowrap;
+        border-bottom: 1px solid var(--border);
+        user-select: none;
+    }
+    .ro-table thead th a { color: inherit; display: inline-flex; align-items: center; gap: 4px; }
+    .ro-table thead th a:hover { color: var(--text-muted); }
+    .ro-table thead th.sorted a { color: var(--text); }
+    .ro-table thead th .sort-ico { opacity: .9; }
+    /* ascending reuses the down chevron rotated 180° (no separate up glyph) */
+    .ro-table thead th .sort-ico.sort-asc { display: inline-flex; transform: rotate(180deg); }
+    .ro-table thead th.num, .ro-table td.num { text-align: right; }
+    .ro-table tbody td {
+        padding: var(--row-py) var(--cell-px);
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: middle; white-space: nowrap;
+        font-family: var(--font-mono); font-size: 12.5px; color: var(--text-muted);
+    }
+    .ro-table tbody tr:last-child td { border-bottom: 0; }
+    .ro-table tbody tr { transition: background .08s ease; }
+    .ro-table tbody tr:hover { background: var(--row-hover); }
+    .ro-table tbody tr.is-selected { background: var(--row-sel); }
+
+    /* Sticky identifier column(s). The FIRST column is always sticky so the header
+       and body pin the SAME column -- the name in a single-namespace list, the
+       namespace in the _all view. Opaque tint-over-surface (no smear on scroll). */
+    .ro-table th:first-child,
+    .ro-table td:first-child {
+        position: sticky; left: 0; z-index: 1;
+        background: var(--surface);
+        border-right: 1px solid var(--border-soft);
+    }
+    .ro-table thead th:first-child { background: var(--thead-bg); z-index: 3; }
+    /* _all view (first column = namespace): the NAME column is sticky too, offset
+       by the namespace column's width. readout.js adds `.ro-sticky2` and sets
+       --ns-col-w (the width is content-driven, so CSS cannot know it). Without JS,
+       the class is absent and only the first column pins -- no header/body skew. */
+    .ro-table.ro-sticky2 thead th:nth-child(2),
+    .ro-table.ro-sticky2 tbody td.cell-name {
+        position: sticky; left: var(--ns-col-w, 0); z-index: 1;
+        background: var(--surface);
+        border-right: 1px solid var(--border-soft);
+    }
+    .ro-table.ro-sticky2 thead th:nth-child(2) { background: var(--thead-bg); z-index: 3; }
+    .ro-table tbody tr:hover td:first-child,
+    .ro-table.ro-sticky2 tbody tr:hover td.cell-name { background: var(--row-hover); }
+    .ro-table tbody tr.is-selected td:first-child,
+    .ro-table.ro-sticky2 tbody tr.is-selected td.cell-name {
+        background-color: var(--surface);
+        background-image: linear-gradient(var(--row-sel), var(--row-sel));
+    }
+    .ro-table tbody tr.is-selected:hover td:first-child,
+    .ro-table.ro-sticky2 tbody tr.is-selected:hover td.cell-name {
+        background-color: var(--row-hover);
+        background-image: linear-gradient(var(--row-sel), var(--row-sel));
+    }
+    /* green selected marker pinned on the sticky cell */
+    .ro-table tbody tr.is-selected td:first-child { box-shadow: inset 2.5px 0 0 var(--accent); }
+
+    /* name cell -- the loud identifier. NEVER truncated. */
+    td.cell-name { color: var(--id-color); }
+    td.cell-name a { color: var(--id-color); font-weight: 500; }
+    td.cell-name a:hover .pn-head { color: var(--accent); }
+    .pn-head { color: var(--id-color); }
+    .pn-tail { color: var(--text-faint); }
+
+    td.cell-node a { color: var(--text-muted); }
+    td.cell-node a:hover { color: var(--accent); }
+    .ro-table td.faint { color: var(--text-faint); }
+    /* (Unit 16) `.faint` utility for the empty-placeholder em-dash. Migrated
+       content emits a bare `<span class="faint">—</span>` for empty node
+       roles/conditions + namespace label chips + the Search "no namespace" cell;
+       only `.ro-table td.faint` existed, so a bare span read at full text colour.
+       Scoped under the `.ro-rd` content marker (every emitter is inside it). */
+    .ro-rd .faint { color: var(--text-faint); }
+
+    /* truncation reserved for long secondary free-text ONLY -- never identifiers. */
+    .ro-table .trunc { display: inline-block; max-width: 360px; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+    .ro-table .trunc.w-img { max-width: 420px; }
+    .ro-table .trunc.w-label { max-width: 280px; }
+
+    /* status cell */
+    .cell-status { display: inline-flex; align-items: center; gap: 7px; }
+    .cell-status.ok { color: var(--st-ok); }
+    .cell-status.warn { color: var(--st-warn); }
+    .cell-status.err { color: var(--st-err); }
+    .cell-status.info { color: var(--st-info); }
+    .cell-status.mute { color: var(--st-mute); }
+
+    /* ready fraction */
+    .ready { font-variant-numeric: tabular-nums; }
+    .ready.full { color: var(--st-ok); }
+    .ready.partial { color: var(--st-warn); }
+    .ready.zero { color: var(--text-faint); }
+
+    /* restarts */
+    .restarts.zero { color: var(--text-faint); }
+    .restarts.some { color: var(--st-warn); }
+    /* The "(… ago)" suffix is an ADJACENT SIBLING of .restarts in the cell
+       (restartsCell emits `<span class="restarts some">N</span> <span
+       class="ago">(…)</span>`), so the muting must match the sibling, not a
+       descendant -- the old `.restarts .ago` descendant selector never applied. */
+    .restarts + .ago { color: var(--text-faint); }
+
+    /* age buckets (redesign bare variant; same --age-* tokens, recoloured) */
+    .age-fresh { color: var(--age-fresh); }
+    .age-recent { color: var(--age-recent); }
+    .age-day { color: var(--age-day); }
+    .age-week { color: var(--age-week); }
+    .age-old { color: var(--age-old); }
+
+    /* checkbox */
+    .ro-check { appearance: none; width: 15px; height: 15px; border-radius: 4px;
+        border: 1.5px solid var(--border-strong); background: var(--surface);
+        cursor: pointer; position: relative; flex: none; }
+    .ro-check:hover { border-color: var(--accent); }
+    .ro-check:checked { background: var(--accent); border-color: var(--accent); }
+    .ro-check:checked::after { content: ""; position: absolute; left: 4px; top: 1px;
+        width: 4px; height: 8px; border: solid var(--accent-on); border-width: 0 2px 2px 0;
+        transform: rotate(45deg); }
+
+    /* footer meta under table */
+    .ro-table-meta { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .ro-table-meta a { color: var(--link); }
+    .ro-foundline { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+
+    /* chips (labels) -- redesign, canonical names under the .ro-rd content marker */
+    .ro-rd .ro-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .ro-rd .ro-chip {
+        font-family: var(--font-mono); font-size: 11px;
+        padding: 2px 7px; border-radius: var(--pill-radius);
+        background: var(--surface-2); border: 1px solid var(--border);
+        color: var(--text-muted); white-space: nowrap;
+        /* `max-width: none` OVERRIDES the leaking old bare `.ro-chip
+           { max-width: 21.25rem }`: with nowrap and no overflow, a label longer
+           than 340px spilled OUT of the chip onto its neighbour. base.css leaves a
+           base label chip uncapped so it grows to its text; .trunc/.anno cap. */
+        max-width: none;
+    }
+    .ro-rd .ro-chip.app { background: var(--label-app-bg); border-color: transparent; color: var(--label-app-fg); }
+    .ro-rd .ro-chip.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+    .ro-rd .ro-chip.anno { max-width: 320px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+    /* In a list TABLE the label chips must WRAP inside a bounded column instead
+       of blowing it out to max-content (which widened the table past the viewport
+       and clipped the last chip at the scroll edge). Bounding the chip CONTAINER
+       is what makes flex-wrap actually wrap in an auto-layout cell; the chips stay
+       full and stack on multiple lines, and only a single chip wider than the
+       column ellipsises. Detail-page chips (outside .ro-table-wrap) are unbounded. */
+    .ro-rd .ro-table-wrap .ro-chips { max-width: 34rem; }
+    .ro-rd .ro-table-wrap .ro-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+    /* ---------------------------------------------------------------- ICON SYSTEM
+       .ico=curated lucide glyph; .kind-tile=monogram (hue from API group);
+       .kind-img / .kind-emoji=operator override. ~16px sidebar slot. */
+    .kind-tile {
+        --kc: .052; --kl: .80;
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; flex: none;
+        border-radius: 4px;
+        font-family: var(--font-mono); font-size: 8px; font-weight: 600;
+        letter-spacing: .02em;
+        background: oklch(0.62 0.10 var(--kh) / .20);
+        color: oklch(var(--kl) var(--kc) var(--kh));
+        box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .28);
+    }
+    .kind-tile.lg { width: 30px; height: 30px; border-radius: 7px; font-size: 13px; }
+    .kind-curated svg { color: oklch(var(--kl, .80) var(--kc, .052) var(--kh)); stroke: currentColor; }
+    .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.80 0.07 var(--kh)); }
+    .ro-sidebar .menu-list a.is-active .kind-tile { box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .5); }
+    .kind-img { width: 16px; height: 16px; flex: none; object-fit: contain; border-radius: 3px; }
+    .kind-emoji { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center;
+        justify-content: center; font-size: 13px; line-height: 1; }
+    /* base.css scoped the lighter tile to `body.theme-light`; mapped onto readout's
+       data-theme mechanism (NOT a body class) per D5 -- light default :root + explicit
+       [data-theme=light]; dark is the un-prefixed tile rule above + the prefers-dark
+       :not([data-theme=light]) re-assertion below. */
+    :root .kind-tile, [data-theme="light"] .kind-tile {
+        --kl: .42; --kc: .09;
+        background: oklch(0.72 0.11 var(--kh) / .16);
+        box-shadow: inset 0 0 0 1px oklch(0.55 0.10 var(--kh) / .25);
+    }
+    :root .kind-curated svg, :root .ro-sidebar .menu-list a .kind-curated svg,
+    [data-theme="light"] .kind-curated svg,
+    [data-theme="light"] .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.50 0.10 var(--kh)); }
+    [data-theme="dark"] .kind-tile {
+        --kc: .052; --kl: .80;
+        background: oklch(0.62 0.10 var(--kh) / .20);
+        box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .28);
+    }
+    [data-theme="dark"] .kind-curated svg { color: oklch(var(--kl, .80) var(--kc, .052) var(--kh)); }
+    [data-theme="dark"] .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.80 0.07 var(--kh)); }
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .kind-tile {
+            --kc: .052; --kl: .80;
+            background: oklch(0.62 0.10 var(--kh) / .20);
+            box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .28);
+        }
+        :root:not([data-theme="light"]) .kind-curated svg { color: oklch(var(--kl, .80) var(--kc, .052) var(--kh)); }
+        :root:not([data-theme="light"]) .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.80 0.07 var(--kh)); }
+    }
+
+    /* ================================================================ DETAIL VIEW (redesign)
+       Colliding canonical names (ro-kind-badge, ro-section, ro-section-label, ro-kv*,
+       ro-cond-pill, ro-owner, ro-yaml-card, ro-card-head, ro-copy-btn, ro-event-msg)
+       are scoped under the redesign CONTENT marker `.ro-rd` (D13): a migrated content
+       template adds `ro-rd` to its outermost content element, so the redesign look
+       applies only to migrated screens while the live (unmarked) markup keeps its
+       existing app rule. Non-colliding net-new names stay bare. */
+    .ro-detail-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 2px 0 14px; }
+    .ro-detail-title .ro-title { font-size: 23px; }
+    /* `order: 0` OVERRIDES the leaking old bare `.ro-kind-badge { order: -1 }` (the
+       only `order:` in the stylesheet): base.css sets no order, so the badge follows
+       DOM order -- `name [BADGE]`, not `[BADGE] name`. */
+    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-kind-badge
+       { font-weight: 600 }`: base.css sets no weight on the badge (10px uppercase
+       mono caption stays normal weight), so the badge is not bold. */
+    .ro-rd .ro-kind-badge { order: 0; font-weight: 400; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
+        text-transform: uppercase; padding: 3px 8px; border-radius: 5px;
+        background: var(--accent-weak); color: var(--accent); }
+    .ro-detail-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); margin-left: auto; }
+    .ro-detail-actions { display: flex; gap: 4px; }
+
+    /* tabs (Default / YAML / Logs) -- redesign bare variant */
+    .ro-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 0 20px; }
+    .ro-tabs a { padding: 8px 14px; font-size: 13px; color: var(--text-muted); position: relative; font-weight: 500; }
+    .ro-tabs a:hover { color: var(--text); }
+    .ro-tabs a.is-active { color: var(--text); }
+    .ro-tabs a.is-active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
+        height: 2px; background: var(--accent); border-radius: 2px; }
+
+    /* sections (redesign) -- canonical names under the .ro-rd content marker */
+    .ro-rd .ro-section { margin: 0 0 22px; }
+    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-section-label
+       { font-weight: 600 }`: base.css keeps the 10px uppercase mono caption at
+       normal weight. */
+    .ro-rd .ro-section-label { font-weight: 400; font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--text-faint); margin: 0 0 9px; }
+
+    /* key/value lists (node capacity, system info) -- redesign */
+    .ro-rd .ro-kv-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; }
+    .ro-rd .ro-kv { margin: 0; display: flex; flex-direction: column; gap: 1px; }
+    .ro-rd .ro-kv-row { display: flex; justify-content: space-between; gap: 16px; padding: 5px 0;
+        border-bottom: 1px solid var(--border-soft); }
+    .ro-rd .ro-kv-row dt { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); margin: 0; }
+    .ro-rd .ro-kv-row dd { font-family: var(--font-mono); font-size: 12px; color: var(--text); margin: 0; text-align: right; }
+
+    /* node condition pills (redesign). Tone-complete: the pill BODY is tinted per
+       tone (ok/warn/err/info/mute) and the DOT carries its own tone class
+       (`<span class="ro-dot <tone>">`), so the global `.ro-dot.<tone>` background
+       rules paint it -- previously the dot was bare and the overlay only tinted
+       ok/warn, so an `err`/`mute` condition (e.g. a NotReady node) rendered with an
+       invisible dot + untinted pill (the most severe state was the least marked). */
+    .ro-rd .ro-cond-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
+        border-radius: 999px; font-family: var(--font-mono); font-size: 11.5px; border: 1px solid var(--border); }
+    .ro-rd .ro-cond-pill .ro-cond-name { color: var(--text-muted); }
+    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-cond-pill .ro-cond-val
+       { font-weight: 600 }`: base.css sets no weight on the value, so the condition
+       value reads at normal weight, not bold. */
+    .ro-rd .ro-cond-pill .ro-cond-val { color: var(--text); font-weight: 400; }
+    .ro-rd .ro-cond-pill.ok   { background: var(--st-ok-bg);   border-color: transparent; }
+    .ro-rd .ro-cond-pill.warn { background: var(--st-warn-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill.err  { background: var(--st-err-bg);  border-color: transparent; }
+    .ro-rd .ro-cond-pill.info { background: var(--st-info-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill.mute { background: var(--st-mute-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill .ro-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: none; }
+
+    /* owners line (redesign) */
+    /* `font-family: inherit` OVERRIDES the leaking old bare `.ro-owner
+       { font-family: var(--font-mono) }`: base.css puts mono only on the owner
+       LINKS (`.ro-owner a`), so the "Owner …" prefix text reads in the body UI
+       font, not mono. */
+    .ro-rd .ro-owner { font-family: inherit; font-size: 13px; color: var(--text-muted); }
+    /* `color: var(--text-muted)` OVERRIDES the leaking old bare `.ro-owner a
+       { color: var(--accent-text) }`: base.css leaves owner links on the neutral
+       link colour (not accent green), matching the other secondary resource links
+       (`td.cell-node a` / `td.cell-ns a` are already `--text-muted`). */
+    .ro-rd .ro-owner a { font-family: var(--font-mono); color: var(--text-muted); }
+    .ro-rd .ro-owner .kind { color: var(--text-faint); }
+
+    /* YAML cards (collapsible per-section) -- redesign. NOTE (Unit 16): the COLLAPSE
+       is driven by `is-collapsed` on the `.collapsible` card (readout.js) + the live
+       `div.section.is-collapsed .ro-card-content { display:none }` rule above; the markup is
+       `.ro-card-head > h4.title` + `.ro-card-content` (the highlighted YAML), with no `.fold`
+       / `.ro-card-body` / `.key-count` / `.collapsed` elements. The dead overlay
+       lines that keyed on `.collapsed`/`.ro-card-body`/`.fold`/`.key-count` were
+       removed -- they claimed to own a collapse they never drove. */
+    .ro-rd .ro-yaml-card { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin: 0 0 12px; background: var(--surface); }
+    .ro-rd .ro-card-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+        background: var(--card-head-bg); border-bottom: 1px solid var(--border); cursor: pointer; }
+    .ro-rd .ro-card-head h4 { font-size: 13px; font-weight: 600; margin: 0; }
+    .ro-rd .ro-copy-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+        font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+        background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px; cursor: pointer; }
+    /* `background: transparent` OVERRIDES the leaking old bare `.ro-copy-btn:hover
+       { background: var(--surface-2) }`: base.css keeps the copy button's hover
+       transparent (it changes only color + border-color). */
+    .ro-rd .ro-copy-btn:hover { background: transparent; color: var(--text); border-color: var(--border-strong); }
+
+    /* YAML / code block (redesign bare variant) */
+    .ro-yaml { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
+        background: var(--code-bg); color: var(--text); overflow-x: auto; }
+    .ro-rd .ro-yaml-card .ro-yaml { background: transparent; }
+    .ro-yaml .ln { display: flex; }
+    .ro-yaml .gutter { flex: none; width: 44px; text-align: right; padding-right: 14px; color: var(--text-faint);
+        user-select: none; opacity: .6; }
+    .ro-yaml .code { white-space: pre; padding-right: 16px; }
+    .ro-yaml.full { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 0; }
+    .yk { color: var(--tok-key); } .ys { color: var(--tok-str); } .yn { color: var(--tok-num); }
+    .yb { color: var(--tok-bool); } .yc { color: var(--text-faint); font-style: italic; } .yd { color: var(--text-faint); }
+
+    /* events table message truncates with tooltip (redesign) */
+    .ro-rd td.ro-event-msg { white-space: normal; max-width: 520px; color: var(--text-muted); }
+
+    /* ================================================================ LOGS (redesign) */
+    .ro-rd .ro-logs-form { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+        font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
+    .ro-rd .ro-logs-form input { height: 32px; background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 0 10px; }
+    .ro-rd .ro-logs-form input:focus { border-color: var(--accent); }
+    .ro-rd .ro-logs-form .tail { width: 74px; }
+    .ro-rd .ro-logs-form .flt { width: 200px; }
+
+    /* buttons (redesign) */
+    .ro-btn { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 14px;
+        border-radius: var(--radius-sm); border: 1px solid transparent; font-size: 12.5px; font-weight: 550;
+        cursor: pointer; background: var(--accent); color: var(--accent-on); }
+    .ro-btn:hover { filter: brightness(1.06); }
+    .ro-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+    .ro-btn-primary:hover { color: var(--accent-on); }
+    .ro-btn.quiet { background: var(--surface); color: var(--text-muted); border-color: var(--border); }
+    .ro-btn.quiet:hover { color: var(--text); border-color: var(--border-strong); }
+    .ro-btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+
+    .ro-logtabs { display: flex; gap: 2px; margin: 0 0 12px; }
+    .ro-logtabs a { font-family: var(--font-mono); font-size: 12px; padding: 4px 11px; border-radius: 999px;
+        color: var(--text-muted); }
+    .ro-logtabs a:hover { background: var(--surface-2); color: var(--text); }
+    .ro-logtabs a.is-active { background: var(--accent-weak); color: var(--accent); }
+
+    .ro-rd .ro-logpre { margin: 0; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
+        font-family: var(--font-mono); font-size: 12px; line-height: 1.7; padding: 12px 0; overflow-x: auto; }
+    .ro-rd .ro-logpre .log-line { display: block; white-space: pre; padding: 0 16px; }
+    .ro-rd .ro-logpre .log-line:hover { background: var(--row-hover); }
+    .log-src { color: var(--text-faint); }
+    .log-ts { color: var(--text-faint); }
+
+    /* ================================================================ SELECT TABLE (redesign) */
+    .ro-rd .ro-select-table td:first-child, .ro-rd .ro-select-table th:first-child { width: 40px; text-align: center; }
+    .ro-bottom-controls { margin-top: 14px; }
+    .ro-rd .ro-cell-url { color: var(--text-faint); }
+    .ro-rd .ro-ext-link { display: inline-flex; align-items: center; gap: 6px; }
+
+    /* ================================================================ STATES (redesign) */
+
+    /* banners (info / warn / error / success) */
+    .ro-banner { display: flex; align-items: flex-start; gap: 11px; padding: 11px 14px;
+        border: 1px solid var(--border); border-radius: var(--radius); margin: 0 0 16px;
+        background: var(--surface); font-size: 13px; }
+    .ro-banner .bn-ico { flex: none; margin-top: 1px; }
+    .ro-banner .bn-body { flex: 1; min-width: 0; }
+    .ro-banner .bn-title { font-weight: 600; color: var(--text); margin: 0 0 2px; }
+    .ro-banner .bn-text { color: var(--text-muted); margin: 0; }
+    .ro-banner .bn-text .mono { color: var(--text); }
+    .ro-banner .bn-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+    .ro-banner.warn { border-color: color-mix(in oklab, var(--st-warn) 40%, var(--border));
+        background: color-mix(in oklab, var(--st-warn-bg) 60%, var(--surface)); }
+    .ro-banner.warn .bn-ico { color: var(--st-warn); }
+    .ro-banner.err { border-color: color-mix(in oklab, var(--st-err) 40%, var(--border));
+        background: color-mix(in oklab, var(--st-err-bg) 60%, var(--surface)); }
+    .ro-banner.err .bn-ico { color: var(--st-err); }
+    .ro-banner.info .bn-ico { color: var(--st-info); }
+    .ro-banner.ok .bn-ico { color: var(--st-ok); }
+    .ro-banner .ro-btn { height: 28px; }
+
+    /* cluster scope chips (which clusters answered / failed) -- redesign variant.
+       The live Search markup still uses bare `<span class="ro-scope-chip">` (inside a
+       `<div class="ro-scope">`) styled by the existing app rules, so the redesign
+       scope + chip rules use the canonical names scoped under the redesign CONTENT
+       marker `.ro-rd` (D13) -- the migrated Search content carries `ro-rd`, so the
+       redesign chip look applies only there while live Search keeps its app rule. */
+    .ro-rd .ro-scope { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 16px; font-size: 12px; }
+    .ro-rd .ro-scope .lbl { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
+    /* `background: transparent` OVERRIDES the leaking old bare `.ro-scope-chip
+       { background: var(--accent-weak) }`: base.css wants a transparent bordered
+       pill (only `.err` carries its own bg, re-asserted by `.ro-rd .ro-scope-chip.err`
+       below). Fixes the unwanted faint-green fill on the Search `.ok` chips + the
+       empty-filtered filter chips. */
+    .ro-rd .ro-scope-chip { background: transparent; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+        border: 1px solid var(--border); font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); }
+    .ro-rd .ro-scope-chip .ro-dot { box-shadow: none; width: 6px; height: 6px; }
+    .ro-rd .ro-scope-chip.ok { color: var(--text); }
+    .ro-rd .ro-scope-chip.err { color: var(--st-err); border-color: color-mix(in oklab, var(--st-err) 35%, var(--border));
+        background: var(--st-err-bg); }
+    .ro-rd .ro-scope-chip.err .retry { color: var(--st-err); text-decoration: underline; cursor: pointer; }
+
+    /* big empty state */
+    .ro-empty-lg { display: flex; flex-direction: column; align-items: center; justify-content: center;
+        text-align: center; padding: 72px 24px; }
+    .ro-empty-glyph { width: 52px; height: 52px; border-radius: 13px; display: flex; align-items: center;
+        justify-content: center; background: var(--surface-2); border: 1px solid var(--border); margin-bottom: 18px; }
+    .ro-empty-glyph .ico svg { width: 24px; height: 24px; color: var(--text-faint); }
+    .ro-empty-lg h3 { font-size: 16px; font-weight: 600; margin: 0 0 6px; color: var(--text); }
+    .ro-empty-lg p { font-size: 13px; color: var(--text-muted); margin: 0 0 4px; max-width: 420px; }
+    .ro-empty-lg .hint { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+    .ro-empty-lg .ro-btn { margin-top: 18px; }
+    /* State action row (Retry / Back to clusters / Clear filters): a centred row
+       of buttons under the empty-state copy. Margin lives here (not per-button) so
+       multiple buttons share one top gap. */
+    .ro-empty-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+    .ro-empty-actions .ro-btn { margin-top: 0; }
+    .ro-empty-inline { padding: 36px 20px; text-align: center; color: var(--text-faint);
+        font-size: 13px; font-family: var(--font-ui); }
+
+    /* Stale (client-side, D11). readout.js reveals the pre-rendered hidden
+       `.ro-stale-banner` and adds `.ro-stale` to #resource-list-content on an
+       auto-refresh error -- it never blanks the rows. `.ro-banner` sets
+       display:flex, which overrides the UA [hidden]{display:none}, so the hidden
+       banner needs an explicit display:none until JS clears the attribute. The dim
+       keeps the last-good data visible-but-muted (~.72) so the user reads it as
+       stale, not gone; the morph that lands fresh rows clears the class. */
+    .ro-banner.ro-stale-banner[hidden] { display: none; }
+    #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
+
+    /* ================================================================ MOBILE CARDS (redesign) */
+    .ro-cardlist { display: none; flex-direction: column; gap: 8px; }
+    .ro-pcard { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+        padding: 11px 13px; display: flex; flex-direction: column; gap: 8px; }
+    .ro-pcard .pc-top { display: flex; align-items: flex-start; gap: 9px; }
+    .ro-pcard .pc-name { font-family: var(--font-mono); font-size: 13px; color: var(--id-color);
+        font-weight: 500; word-break: break-all; line-height: 1.4; flex: 1; }
+    .ro-pcard .pc-name .pn-tail { color: var(--text-faint); }
+    .ro-pcard .pc-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; font-family: var(--font-mono);
+        font-size: 11.5px; color: var(--text-muted); }
+    .ro-pcard .pc-meta .m { display: inline-flex; gap: 5px; }
+    .ro-pcard .pc-meta .m .k { color: var(--text-faint); }
+    .ro-pcard .pc-status { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono);
+        font-size: 11.5px; flex: none; }
+
+    /* ================================================================ ⌘K PALETTE (redesign canonical .ro-pal-*)
+       The redesign palette is an OVERLAY appended to <body>, OUTSIDE the `.ro-rd`
+       content subtree -- so its container rules cannot be gated by an ancestor marker.
+       Instead the redesign palette ROOT (the backdrop) carries `ro-rd` itself (Unit 4
+       adds it): the canonical `.ro-palette-backdrop` / `.ro-palette` container names
+       are gated by `.ro-rd` ON / UNDER that root, which differentiates the redesign
+       palette from the OLD `.ro-palette` / `.ro-palette-panel` / `-row` overlay (left
+       untouched here; Unit 4 retires it). The inner `.ro-pal-*` vocabulary is net-new
+       (no old conflict) and stays bare below. */
+    .ro-rd.ro-palette-backdrop { position: fixed; inset: 0; z-index: 200; background: var(--overlay-bg);
+        backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center;
+        padding-top: 12vh; opacity: 0; pointer-events: none; transition: opacity .12s; }
+    .ro-rd.ro-palette-backdrop.open { opacity: 1; pointer-events: auto; }
+    .ro-rd .ro-palette { width: min(640px, 92vw); max-height: 64vh; display: flex; flex-direction: column;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: 13px;
+        box-shadow: var(--shadow-pop); overflow: hidden; transform: translateY(-6px); transition: transform .12s; }
+    .ro-rd.ro-palette-backdrop.open .ro-palette { transform: translateY(0); }
+    .ro-pal-search { display: flex; align-items: center; gap: 11px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .ro-pal-search .ico { color: var(--text-faint); }
+    .ro-pal-search input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text);
+        font-family: var(--font-ui); font-size: 15px; }
+    .ro-pal-search input::placeholder { color: var(--text-faint); }
+    .ro-pal-scope { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+        border: 1px solid var(--border); border-radius: 5px; padding: 2px 7px; }
+    .ro-pal-list { overflow-y: auto; padding: 6px; }
+    .ro-pal-group { padding: 9px 10px 4px; font-family: var(--font-mono); font-size: 9.5px;
+        letter-spacing: .12em; text-transform: uppercase; color: var(--text-faint); }
+    .ro-pal-item { display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 8px;
+        cursor: pointer; color: var(--text); }
+    .ro-pal-item .ico, .ro-pal-item .ico svg { width: 16px; height: 16px; color: var(--text-muted); }
+    .ro-pal-item .pal-label { font-size: 13.5px; flex: 1; }
+    .ro-pal-item .pal-label .pal-ctx { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; margin-left: 8px; }
+    .ro-pal-item .pal-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+    /* compact namespaced/cluster scope badge on resource-type rows */
+    .ro-pal-item .pal-scope { font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em;
+        padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-faint); }
+    .ro-pal-item .pal-scope.ns { color: var(--st-info); border-color: color-mix(in oklab, var(--st-info) 35%, var(--border)); }
+    .ro-pal-item .pal-scope.cluster { color: var(--st-warn); border-color: color-mix(in oklab, var(--st-warn) 35%, var(--border)); }
+    /* short status on a harvested page-object row, tinted by tone */
+    .ro-pal-item .pal-status { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
+    .ro-pal-item .pal-status.ok { color: var(--st-ok); }
+    .ro-pal-item .pal-status.warn { color: var(--st-warn); }
+    .ro-pal-item .pal-status.err { color: var(--st-err); }
+    .ro-pal-item .pal-status.info { color: var(--st-info); }
+    .ro-pal-item .pal-status.mute { color: var(--text-faint); }
+    .ro-pal-item .ro-kbd { margin-left: 4px; }
+    .ro-pal-item.active { background: var(--accent-weak); }
+    .ro-pal-item.active .ico, .ro-pal-item.active .ico svg { color: var(--accent); }
+    .ro-pal-item.active .pal-meta { color: var(--text-muted); }
+    .ro-pal-foot { display: flex; align-items: center; gap: 16px; padding: 9px 14px; border-top: 1px solid var(--border);
+        font-size: 11px; color: var(--text-faint); }
+    .ro-pal-foot .hint { display: inline-flex; align-items: center; gap: 5px; }
+    .ro-pal-foot .spacer { flex: 1; }
+
+    /* ================================================================ LIST-SPECIFIC CELLS (redesign) */
+    /* roles (nodes) -- redesign, canonical name under the .ro-rd content marker */
+    .ro-rd .ro-role-chip { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+        background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted); }
+    .ro-rd .ro-role-chip.cp { background: var(--accent-weak); border-color: transparent; color: var(--accent); }
+
+    /* capacity bars (nodes) */
+    .cap { display: inline-flex; align-items: center; gap: 8px; }
+    .cap .cap-bar { width: 58px; height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; flex: none; }
+    .cap .cap-bar > i { display: block; height: 100%; border-radius: 3px; }
+    .cap.lo .cap-bar > i { background: var(--st-ok); } .cap.mid .cap-bar > i { background: var(--st-warn); }
+    .cap.hi .cap-bar > i { background: var(--st-err); }
+    .cap .cap-val { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); min-width: 64px; }
+
+    /* replicas bar (deployments) */
+    .rep { display: inline-flex; align-items: center; gap: 9px; }
+    .rep .rep-track { display: inline-flex; gap: 2px; }
+    .rep .rep-track i { width: 7px; height: 14px; border-radius: 2px; background: var(--st-ok); display: block; }
+    .rep .rep-track i.pending { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
+    .rep .rep-track i.updating { background: var(--st-warn); animation: ro-dot-pulse 1.4s ease-in-out infinite; }
+    .rep .rep-num { font-family: var(--font-mono); font-size: 12px; }
+    .rollout { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 12px; }
+    .rollout.done { color: var(--st-ok); } .rollout.prog { color: var(--st-warn); } .rollout.paused { color: var(--text-faint); }
+
+    /* ----------------------------------------------------------------------------
+       PER-SCREEN classes that live in the mockups' inline <style> blocks (NOT in
+       base.css). Lifted EXACT from each screen so Clusters / Search / Pods Mobile
+       render styled. Source: design/screens/{Clusters,Search,Pods Mobile}.html.
+       ---------------------------------------------------------------------------- */
+
+    /* Clusters.html inline <style> */
+    .ro-page { max-width: 1180px; margin: 0 auto; padding: 30px 26px 80px; }
+    .tools-row { display: flex; gap: 8px; margin: 0 0 18px; }
+    .tools-row .ro-tools-filter { position: relative; flex: 1; }
+    .tools-row .ro-tools-filter .ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
+    .tools-row input { width: 100%; height: 36px; padding: 0 12px 0 34px; background: var(--surface);
+        border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; }
+    .tools-row input:focus { border-color: var(--accent); }
+    .cl-name a { font-family: var(--font-mono); color: var(--id-color); font-weight: 500; }
+    .cl-name a:hover { color: var(--accent); }
+
+    /* Search.html inline <style> */
+    .search-hero { max-width: 760px; }
+    .search-big { position: relative; margin: 4px 0 14px; }
+    .search-big input { width: 100%; height: 44px; padding: 0 16px 0 44px; font-size: 15px;
+        background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--text);
+        font-family: var(--font-mono); }
+    .search-big input:focus { border-color: var(--accent); }
+    .search-big .ico { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
+    .search-opts { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-bottom: 4px; font-size: 12px; color: var(--text-muted); }
+    td.cell-clu a, td.cell-ns a { color: var(--text-muted); }
+    td.cell-clu a:hover { color: var(--accent); }
+    .res-kind { display: inline-flex; align-items: center; gap: 8px; }
+
+    /* "Pods Mobile.html" inline <style> -- the mobile-only chrome (the menu toggle).
+       The artboard's forced-mobile layout overrides (sidebar/search hidden, cardlist
+       shown) are produced by base.css's @media (max-width:760px) -- ALSO ported below
+       in this layer -- so only the menu-toggle chrome (no media query) is lifted here. */
+    .menu-toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px;
+        height: 32px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); }
+
+    /* responsive switch (from base.css @media max-width:760px) -- drives the mobile
+       card layout the Pods Mobile artboard shows. Below 760px the sidebar is hidden
+       and the `.menu-toggle` hamburger (Unit 15, topbar) reveals it: the delegated
+       readout.js click handler toggles `.is-active` on `.ro-sidebar`, and the
+       `.is-active` rule below floats it as a fixed overlay panel under the sticky
+       topbar (so it does not shove the card list). The inline ⌘K search box is
+       hidden too (the palette still opens via ⌘K / Ctrl+K). */
+    @media (max-width: 760px) {
+        .ro-sidebar { display: none; }
+        .ro-sidebar.is-active {
+            display: block;
+            position: fixed; top: var(--topbar-h); left: 0; bottom: 0; z-index: 60;
+            width: min(var(--sidebar-w), 82vw);
+            box-shadow: var(--shadow-pop);
+        }
+        .ro-main { padding: 16px 13px 60px; }
+        header.ro-topbar { gap: 10px; padding: 0 11px; }
+        .ctx-dd { max-width: 32vw; }
+        .topnav,
+        .refresh-label { display: none; }
+        .ro-search { display: none; }
+        .ro-title { font-size: 21px; }
+        .ro-mobile-hide { display: none !important; }
+        .ro-table-wrap.has-cards { display: none; }
+        .ro-cardlist { display: flex; }
+    }
+    @media (max-width: 420px) {
+        header.ro-topbar .brand-name { display: none; }
+        header.ro-topbar .brand-item { padding-right: 0; }
+    }
+    /* The hamburger is mobile-only chrome: hidden at the desktop width where the
+       sidebar is always present, shown by the media query default below 760px (its
+       base .menu-toggle box styling is lifted from the Pods Mobile artboard above). */
+    .menu-toggle { display: none; }
+    @media (max-width: 760px) { .menu-toggle { display: inline-flex; } }
+
+    /* Respect prefers-reduced-motion for the ported pulse / skeleton / morph
+       animations (D-reduced-motion). The static look is kept; only the looping /
+       sweeping / pulsing motion is dropped. */
     @media (prefers-reduced-motion: reduce) {
-        .ro-palette-panel { animation: none; }
+        .refresh-live .ro-livedot { animation: none; }
+        .ro-dot.pulse { animation: none; }
+        .rep .rep-track i.updating { animation: none; }
+        .ro-rd .ro-palette { transition: none; }
     }
 }
 
@@ -1885,108 +2744,131 @@
        --------------------------------------------------------------------------- */
 
     :root {
-        /* geometry + density -- SHARED by both themes. Roomy end (was 6px/10px
-           compact, which read as too cramped; bumped to the comfortable 9px/13px). */
+        /* geometry + density -- SHARED by both themes. Lifted EXACT from base.css
+           (the redesign source of truth): row-py 9px / cell-px 14px, radius 7px
+           (sm 5px / pill 5px), topbar 52px, sidebar 224px. */
         --row-py: 9px;
-        --cell-px: 13px;
-        --radius: 6px;
+        --cell-px: 14px;
+        --radius: 7px;
         --radius-sm: 5px;
-        --pill-radius: 4px;
+        --pill-radius: 5px;
+        --topbar-h: 52px;
+        --sidebar-w: 224px;
 
-        /* LIGHT palette (Contrast) -- default */
+        /* brand -- promoted from logo-only into accents (shared by both themes) */
+        --brand: #56E0BC;
+        --brand-ink: #04140f;
+
+        /* LIGHT palette "Contrast" -- default. Mapped from base.css body.theme-light. */
         --bg: #ffffff;
         --surface: #ffffff;
-        --surface-2: #f3f3f3;
-        --header-bg: #ffffff;
-        --sidebar-bg: #fbfbfb;
+        --surface-2: #f4f5f6;
+        --header-bg: #ffffffcc;
+        --sidebar-bg: #fbfbfc;
         --thead-bg: #fafafa;
         --card-head-bg: #fafafa;
         --code-bg: #fafafa;
-        --row-hover: #f6f6f6;
-        --overlay-bg: rgba(0,0,0,.26);
+        --row-hover: #f6f8f7;
+        --row-sel: rgba(20,150,120,.07);
+        --overlay-bg: rgba(15,20,25,.26);
 
-        --text: #0a0a0a;
-        --text-muted: #45474c;
-        --text-faint: #8a8d93;
-        --border: #e6e6e8;
-        --border-strong: #0a0a0a;
+        --text: #0b0c0e;
+        --text-muted: #51555c;
+        --text-faint: #898d94;
+        --border: #e7e8ea;
+        --border-soft: #f0f0f2;
+        --border-strong: #d3d5d8;
 
-        --accent: #0a0a0a;            /* primary fills + active markers = near-black */
+        --accent: #0c8f6e;            /* darkened green -- reads as the one saturated action */
         --accent-on: #ffffff;
-        --accent-weak: #f0f0f0;
-        --accent-text: #111111;
-        --id-color: #1a46c2;          /* the one blue: identifiers + links */
+        --accent-weak: rgba(12,143,110,.1);
+        --accent-text: #0c8f6e;       /* accent used as TEXT (readout-specific token) */
+        --id-color: #14181d;          /* identifiers + name links */
+        --link: #146a52;
 
-        --label-app-bg: #e7eefe;      /* app.kubernetes.io/* label chips */
-        --label-app-fg: #1b46c2;
+        --label-app-bg: #e3f6ef;      /* app.kubernetes.io/* label chips */
+        --label-app-fg: #0c8f6e;
 
-        --st-ok:   #117a3d; --st-ok-bg:   #e9f6ee;
-        --st-warn: #8a5a06; --st-warn-bg: #f8f0e0;
-        --st-err:  #c22424; --st-err-bg:  #fbeaea;
+        --st-ok:   #11824a; --st-ok-bg:   #e7f6ee;
+        --st-warn: #9a5d04; --st-warn-bg: #f8f0e0;
+        --st-err:  #c42b2b; --st-err-bg:  #fbeaea;
         --st-info: #1a52c8; --st-info-bg: #ebf1fe;
+        --st-mute: #6a7078; --st-mute-bg: #eef0f2;
 
-        /* age scale -- the freshest-to-oldest age cell colours */
-        --age-fresh: #047a3c; --age-recent: #3a7a52; --age-day: #5f6f64; --age-week: #707070; --age-old: #a0a0a0;
+        /* age scale -- the freshest-to-oldest age cell colours (fresh = darkened
+           brand -> old grey). Token VALUES recoloured per D6; the 5 buckets stay. */
+        --age-fresh: #0c8f6e; --age-recent: #3f7a64; --age-day: #5f6f66; --age-week: #777777; --age-old: #a3a6ab;
 
-        /* YAML / Pygments-ish syntax */
+        /* YAML / Pygments syntax. nt->key num->m bool->kc string->s2/.l comment->c. */
         --tok-key: #1a46c2; --tok-str: #117a3d; --tok-num: #8a5a06; --tok-bool: #7a3fd1;
+
+        --shadow-pop: 0 16px 40px -12px rgba(15,20,25,.22), 0 0 0 1px var(--border);
     }
 
-    /* DARK palette (Terminal) -- the chosen default look */
+    /* DARK palette "Terminal" -- the configured default look. Mapped EXACT from
+       base.css :root (its dark default is the source of truth). */
     [data-theme="dark"] {
-        --bg: #0d0f13;
-        --surface: #14171d;
-        --surface-2: #1c2027;
-        --header-bg: #0f1216;
-        --sidebar-bg: #0f1216;
-        --thead-bg: #11141a;
+        --bg: #0c0e12;
+        --surface: #0f1217;
+        --surface-2: #161a21;
+        --header-bg: #0c0e12cc;
+        --sidebar-bg: #0b0d11;
+        --thead-bg: #0f1217;
         --card-head-bg: #161a21;
-        --code-bg: #0a0c10;
-        --row-hover: #181c23;
-        --overlay-bg: rgba(0,0,0,.58);
+        --code-bg: #090b0e;
+        --row-hover: #14181f;
+        --row-sel: rgba(86,224,188,.07);
+        --overlay-bg: rgba(0,0,0,.62);
 
-        --text: #d7dce3;
+        --text: #dbe1e8;
         --text-muted: #98a1ae;
         --text-faint: #5d6675;
-        --border: #232831;
-        --border-strong: #363d49;
+        --border: #1d222b;
+        --border-soft: #161b22;
+        --border-strong: #2c333f;
 
-        --accent: #5b8cff;
-        --accent-on: #07090d;
-        --accent-weak: rgba(91,140,255,.14);
-        --accent-text: #88aaff;
-        --id-color: #cfd6df;          /* off-white (final). Teal alt: #7ed3c1 */
+        --accent: #56E0BC;            /* brand green promoted into active/focus/selected */
+        --accent-on: #04140f;
+        --accent-weak: rgba(86,224,188,.12);
+        --accent-text: #56E0BC;       /* accent used as TEXT (readout-specific token) */
+        --id-color: #d2d8df;          /* identifiers / row name links -- off-white */
+        --link: #cfd6df;
 
-        --label-app-bg: rgba(91,140,255,.16);
-        --label-app-fg: #9ab8ff;
+        --label-app-bg: rgba(86,224,188,.13);
+        --label-app-fg: #7fe9cd;
 
         --st-ok:   #3ddc97; --st-ok-bg:   rgba(61,220,151,.13);
         --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);
         --st-err:  #ff6b6b; --st-err-bg:  rgba(255,107,107,.13);
         --st-info: #74a9ff; --st-info-bg: rgba(116,169,255,.13);
+        --st-mute: #6b7686; --st-mute-bg: rgba(120,130,148,.13);
 
-        --age-fresh: #2ecc71; --age-recent: #52c98a; --age-day: #7fae90; --age-week: #9aa0a6; --age-old: #6b7177;
+        --age-fresh: #56E0BC; --age-recent: #6fcfae; --age-day: #8aa39a; --age-week: #8b94a0; --age-old: #5d6675;
 
         --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
+
+        --shadow-pop: 0 12px 40px -8px rgba(0,0,0,.6), 0 0 0 1px var(--border);
     }
 
     /* Cookieless users on a dark OS get the dark palette; an explicit light
        choice still wins (same rule the app already uses for age/log/Pygments). */
     @media (prefers-color-scheme: dark) {
         :root:not([data-theme="light"]) {
-            --bg: #0d0f13; --surface: #14171d; --surface-2: #1c2027;
-            --header-bg: #0f1216; --sidebar-bg: #0f1216; --thead-bg: #11141a;
-            --card-head-bg: #161a21; --code-bg: #0a0c10; --row-hover: #181c23; --overlay-bg: rgba(0,0,0,.58);
-            --text: #d7dce3; --text-muted: #98a1ae; --text-faint: #5d6675;
-            --border: #232831; --border-strong: #363d49;
-            --accent: #5b8cff; --accent-on: #07090d; --accent-weak: rgba(91,140,255,.14); --accent-text: #88aaff; --id-color: #cfd6df;
-            --label-app-bg: rgba(91,140,255,.16); --label-app-fg: #9ab8ff;
+            --bg: #0c0e12; --surface: #0f1217; --surface-2: #161a21;
+            --header-bg: #0c0e12cc; --sidebar-bg: #0b0d11; --thead-bg: #0f1217;
+            --card-head-bg: #161a21; --code-bg: #090b0e; --row-hover: #14181f; --row-sel: rgba(86,224,188,.07); --overlay-bg: rgba(0,0,0,.62);
+            --text: #dbe1e8; --text-muted: #98a1ae; --text-faint: #5d6675;
+            --border: #1d222b; --border-soft: #161b22; --border-strong: #2c333f;
+            --accent: #56E0BC; --accent-on: #04140f; --accent-weak: rgba(86,224,188,.12); --accent-text: #56E0BC; --id-color: #d2d8df; --link: #cfd6df;
+            --label-app-bg: rgba(86,224,188,.13); --label-app-fg: #7fe9cd;
             --st-ok: #3ddc97; --st-ok-bg: rgba(61,220,151,.13);
             --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);
             --st-err: #ff6b6b; --st-err-bg: rgba(255,107,107,.13);
             --st-info: #74a9ff; --st-info-bg: rgba(116,169,255,.13);
-            --age-fresh: #2ecc71; --age-recent: #52c98a; --age-day: #7fae90; --age-week: #9aa0a6; --age-old: #6b7177;
+            --st-mute: #6b7686; --st-mute-bg: rgba(120,130,148,.13);
+            --age-fresh: #56E0BC; --age-recent: #6fcfae; --age-day: #8aa39a; --age-week: #8b94a0; --age-old: #5d6675;
             --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
+            --shadow-pop: 0 12px 40px -8px rgba(0,0,0,.6), 0 0 0 1px var(--border);
         }
     }
 
@@ -2017,27 +2899,21 @@
     td.age-old    { color: var(--age-old); }
 
     /* Status colour, re-skinned to the redesign palette.
-       The cell class resolver still returns Bulma's has-text-* utility strings
-       (the render contract pins them); we only re-point those classes at
-       the five-status tokens so Status words, Restarts and the Ready fraction
-       read in the redesign palette. App beats the bulma layer by cascade order
-       alone (no forced-priority override). has-text-grey is the explicit "muted"
-       cell (Restarts==0, zero CPU/Mem) -> the faint token. */
+       The cell class resolver still returns legacy has-text-* tone strings (the
+       render contract pins them); we only re-point those classes at the five-status
+       tokens so Status words, Restarts and the Ready fraction read in the redesign
+       palette. has-text-grey is the explicit "muted" cell (Restarts==0, zero
+       CPU/Mem) -> the faint token. */
     .has-text-danger  { color: var(--st-err); }
     .has-text-warning { color: var(--st-warn); }
     .has-text-success { color: var(--st-ok); }
     .has-text-info    { color: var(--st-info); }
     .has-text-grey    { color: var(--text-faint); }
 
-    /* Status cell dot: a small inline dot before the colored mono Status word
-       (dot + word, NOT a pill). It inherits the cell's status colour from
-       the same has-text-* class on the <td>/dot, so dot and word match. A neutral
-       cell (no has-text-* match) leaves the dot at the muted faint colour. */
-    .ro-status-dot {
-        display: inline-block; width: 0.4375rem; height: 0.4375rem;
-        border-radius: 50%; margin-right: 0.4375rem; vertical-align: baseline;
-        background: currentColor; color: var(--text-faint);
-    }
+    /* (Unit 16) the old `.ro-status-dot` (pre-redesign list status dot) rule was
+       removed -- it is emitted by no template / generated Go / readout.js; the
+       redesign status dot is `.ro-dot.<ok|warn|err|info|mute>` (defined in
+       @layer app). */
 
     /* Per-row left status stripe: a thin inset bar down the row's leading
        edge in the matching status colour. Painted as an inset box-shadow on the
@@ -2049,14 +2925,14 @@
     tr.row-status-err  > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-err); }
 
     /* Per-pod log line colours -- light (on the <pre> light background) */
-    .log-line.log-c0 { color: #c0392b; }
-    .log-line.log-c1 { color: #b9530a; }
-    .log-line.log-c2 { color: #897a00; }
-    .log-line.log-c3 { color: #1f8b4c; }
-    .log-line.log-c4 { color: #0e7c86; }
-    .log-line.log-c5 { color: #2362c0; }
-    .log-line.log-c6 { color: #7d3cc0; }
-    .log-line.log-c7 { color: #b03088; }
+    .log-line .log-c0 { color: #c0392b; }
+    .log-line .log-c1 { color: #b9530a; }
+    .log-line .log-c2 { color: #897a00; }
+    .log-line .log-c3 { color: #1f8b4c; }
+    .log-line .log-c4 { color: #0e7c86; }
+    .log-line .log-c5 { color: #2362c0; }
+    .log-line .log-c6 { color: #7d3cc0; }
+    .log-line .log-c7 { color: #b03088; }
 
     /* Pygments syntax highlight -- LIGHT / default (style='friendly').
      * highlight() emits a bare class="highlight" with no inline fallback, so these
@@ -2140,14 +3016,14 @@
        so the dark palette wins when the user pinned dark. */
     /* (age dark override removed: td.age-* now consume the --age-* token, which
        already carries the dark value under [data-theme="dark"].) */
-    [data-theme="dark"] .log-line.log-c0 { color: #ff6b6b; }
-    [data-theme="dark"] .log-line.log-c1 { color: #ffa94d; }
-    [data-theme="dark"] .log-line.log-c2 { color: #ffd43b; }
-    [data-theme="dark"] .log-line.log-c3 { color: #69db7c; }
-    [data-theme="dark"] .log-line.log-c4 { color: #3bc9db; }
-    [data-theme="dark"] .log-line.log-c5 { color: #74a9ff; }
-    [data-theme="dark"] .log-line.log-c6 { color: #b197fc; }
-    [data-theme="dark"] .log-line.log-c7 { color: #f783ac; }
+    [data-theme="dark"] .log-line .log-c0 { color: #ff6b6b; }
+    [data-theme="dark"] .log-line .log-c1 { color: #ffa94d; }
+    [data-theme="dark"] .log-line .log-c2 { color: #ffd43b; }
+    [data-theme="dark"] .log-line .log-c3 { color: #69db7c; }
+    [data-theme="dark"] .log-line .log-c4 { color: #3bc9db; }
+    [data-theme="dark"] .log-line .log-c5 { color: #74a9ff; }
+    [data-theme="dark"] .log-line .log-c6 { color: #b197fc; }
+    [data-theme="dark"] .log-line .log-c7 { color: #f783ac; }
 
     /* Pygments dark override (style='native'), scoped to an explicit dark choice.
      * Regenerate with HtmlFormatter(style='native').get_style_defs('.highlight'). */
@@ -2238,14 +3114,14 @@
     @media (prefers-color-scheme: dark) {
         /* (age handled by the --age-* token under :root:not([data-theme=light]);
            no per-bucket age rule needed here.) */
-        .log-line.log-c0 { color: #ff6b6b; }
-        .log-line.log-c1 { color: #ffa94d; }
-        .log-line.log-c2 { color: #ffd43b; }
-        .log-line.log-c3 { color: #69db7c; }
-        .log-line.log-c4 { color: #3bc9db; }
-        .log-line.log-c5 { color: #74a9ff; }
-        .log-line.log-c6 { color: #b197fc; }
-        .log-line.log-c7 { color: #f783ac; }
+        .log-line .log-c0 { color: #ff6b6b; }
+        .log-line .log-c1 { color: #ffa94d; }
+        .log-line .log-c2 { color: #ffd43b; }
+        .log-line .log-c3 { color: #69db7c; }
+        .log-line .log-c4 { color: #3bc9db; }
+        .log-line .log-c5 { color: #74a9ff; }
+        .log-line .log-c6 { color: #b197fc; }
+        .log-line .log-c7 { color: #f783ac; }
 
         .highlight .hll { background-color: #404040 }
         .highlight  { background: #202020; color: #d0d0d0 }
@@ -2330,14 +3206,14 @@
            cookie wins on a dark OS. (Age omitted: the --age-* token is NOT
            overridden to dark under [data-theme="light"] -- the media token block
            is gated :not([data-theme="light"]) -- so age stays light here too.) */
-        [data-theme="light"] .log-line.log-c0 { color: #c0392b; }
-        [data-theme="light"] .log-line.log-c1 { color: #b9530a; }
-        [data-theme="light"] .log-line.log-c2 { color: #897a00; }
-        [data-theme="light"] .log-line.log-c3 { color: #1f8b4c; }
-        [data-theme="light"] .log-line.log-c4 { color: #0e7c86; }
-        [data-theme="light"] .log-line.log-c5 { color: #2362c0; }
-        [data-theme="light"] .log-line.log-c6 { color: #7d3cc0; }
-        [data-theme="light"] .log-line.log-c7 { color: #b03088; }
+        [data-theme="light"] .log-line .log-c0 { color: #c0392b; }
+        [data-theme="light"] .log-line .log-c1 { color: #b9530a; }
+        [data-theme="light"] .log-line .log-c2 { color: #897a00; }
+        [data-theme="light"] .log-line .log-c3 { color: #1f8b4c; }
+        [data-theme="light"] .log-line .log-c4 { color: #0e7c86; }
+        [data-theme="light"] .log-line .log-c5 { color: #2362c0; }
+        [data-theme="light"] .log-line .log-c6 { color: #7d3cc0; }
+        [data-theme="light"] .log-line .log-c7 { color: #b03088; }
 
         [data-theme="light"] .highlight .hll { background-color: #ffffcc }
         [data-theme="light"] .highlight  { background: #f0f0f0; }
@@ -2409,4 +3285,58 @@
         [data-theme="light"] .highlight .vm { color: #bb60d5 }
         [data-theme="light"] .highlight .il { color: #40a070 }
     }
+
+    /* ===========================================================================
+       YAML recolor onto the redesign --tok-* palette (D7). chroma/Pygments stays
+       SERVER-SIDE; only the token COLOURS move here. The base Pygments blocks above
+       (light default + the [data-theme=dark] + prefers-dark overrides) are kept; THIS
+       block lands LAST in @layer theme and repoints just the classes that matter for
+       a k8s manifest at the --tok-* tokens (which already carry the right value per
+       theme, so one token recolor is correct in light / dark / cookieless-either):
+
+         keys   -> nt (Name.Tag)                 -> --tok-key
+         strings-> s2 + the .s* string family    -> --tok-str
+         scalars-> .l (UNQUOTED Literal!)         -> --tok-str   (CRITICAL: most k8s
+                   values -- nginx:1.25, apps/v1, Deployment -- tokenize as Literal->.l;
+                   without this they render uncoloured)
+         numbers-> m + the .m* number family      -> --tok-num
+         bools  -> kc (Keyword.Constant: true/false/null) -> --tok-bool
+         comment-> c + the .c* comment family     -> faint, italic
+
+       Specificity: the dark Pygments rules are prefixed [data-theme="dark"] (0,3,0),
+       so a bare `.highlight .nt` (0,2,0) here would LOSE under an explicit dark
+       choice. We therefore mirror this recolor across the SAME three theme contexts
+       the Pygments blocks use -- a top-level pass (wins for the light default + the
+       prefers-dark cookieless path, both bare-specificity) and a [data-theme="dark"]
+       pass at matching (0,3,0) for the explicit dark choice -- so the token colours
+       win in every theme path. Static manifests are read-only; no inline style. */
+    .highlight .nt { color: var(--tok-key); font-weight: 600; }
+    .highlight .l,
+    .highlight .s, .highlight .s1, .highlight .s2, .highlight .sa, .highlight .sb,
+    .highlight .sc, .highlight .dl, .highlight .sd, .highlight .se, .highlight .sh,
+    .highlight .si, .highlight .sx, .highlight .sr, .highlight .ss { color: var(--tok-str); }
+    .highlight .m, .highlight .mb, .highlight .mf, .highlight .mh, .highlight .mi,
+    .highlight .mo, .highlight .il { color: var(--tok-num); }
+    .highlight .kc { color: var(--tok-bool); font-weight: 600; }
+    .highlight .c, .highlight .ch, .highlight .cm, .highlight .cp, .highlight .cpf,
+    .highlight .c1, .highlight .cs { color: var(--text-faint); font-style: italic; }
+
+    [data-theme="dark"] .highlight .nt { color: var(--tok-key); font-weight: 600; }
+    [data-theme="dark"] .highlight .l,
+    [data-theme="dark"] .highlight .s, [data-theme="dark"] .highlight .s1,
+    [data-theme="dark"] .highlight .s2, [data-theme="dark"] .highlight .sa,
+    [data-theme="dark"] .highlight .sb, [data-theme="dark"] .highlight .sc,
+    [data-theme="dark"] .highlight .dl, [data-theme="dark"] .highlight .sd,
+    [data-theme="dark"] .highlight .se, [data-theme="dark"] .highlight .sh,
+    [data-theme="dark"] .highlight .si, [data-theme="dark"] .highlight .sx,
+    [data-theme="dark"] .highlight .sr, [data-theme="dark"] .highlight .ss { color: var(--tok-str); }
+    [data-theme="dark"] .highlight .m, [data-theme="dark"] .highlight .mb,
+    [data-theme="dark"] .highlight .mf, [data-theme="dark"] .highlight .mh,
+    [data-theme="dark"] .highlight .mi, [data-theme="dark"] .highlight .mo,
+    [data-theme="dark"] .highlight .il { color: var(--tok-num); }
+    [data-theme="dark"] .highlight .kc { color: var(--tok-bool); font-weight: 600; }
+    [data-theme="dark"] .highlight .c, [data-theme="dark"] .highlight .ch,
+    [data-theme="dark"] .highlight .cm, [data-theme="dark"] .highlight .cp,
+    [data-theme="dark"] .highlight .cpf, [data-theme="dark"] .highlight .c1,
+    [data-theme="dark"] .highlight .cs { color: var(--text-faint); font-style: italic; }
 }

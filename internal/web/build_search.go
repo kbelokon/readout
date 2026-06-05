@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/kbelokon/readout/internal/kube"
 	"golang.org/x/sync/errgroup"
@@ -15,17 +14,12 @@ import (
 )
 
 // build_search.go is the data-assembly layer for the search page: it turns the
-// kube client + parsed request inputs into the rich searchView the search.templ
+// kube client + parsed request inputs into the searchView the search.templ
 // component consumes -- the offered resource-type checkbox set, the per-(type,
-// cluster) search with (pre, match, post) snippet tuples, the scope clusters,
-// the result count, and the per-cluster error records (partial failures are
-// collected as records, not raised). The per-cluster search fans out
-// concurrently (errgroup + SearchMaxConcurrency); the slots are merged in fixed
-// cluster order so output is deterministic regardless of completion order.
-
-// searchMatchContextLength is the number of characters of context kept on each
-// side of a snippet match.
-const searchMatchContextLength = 20
+// cluster) search results, the per-cluster scope chips (each carrying its own
+// failure status/reason/retry href), and the result count. The per-cluster search
+// fans out concurrently (errgroup + SearchMaxConcurrency); the slots are merged in
+// fixed cluster order so output is deterministic regardless of completion order.
 
 // searchDefaultResourceTypes are the resource types searched when the request
 // carries no explicit ?type=. ReplicaSet/DaemonSet/Pod/Node are intentionally
@@ -65,12 +59,11 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 		IsAllClusters:     allClusters,
 		IsAllNamespaces:   isAllNamespaces,
 		SelectedTypeCount: len(types),
-		ClusterErrors:     map[string][]searchClusterError{},
+		SelectedTypes:     types,
 	}
 	for _, cluster := range clusters {
 		view.ScopeClusters = append(view.ScopeClusters, searchScopeCluster{Name: cluster.Name})
 	}
-	view.SearchedClusterCount = len(clusters)
 
 	// searchable: plural -> Kind, accumulated as types resolve against the
 	// clusters. It seeds the checkbox set.
@@ -82,8 +75,9 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 	// (searchErrorRecord), never errgroup errors -- a failing cluster still renders
 	// partial results. After Wait the slots are merged in fixed cluster order
 	// (clusters is name-sorted by manager.Select) regardless of completion order
-	// so Results, ClusterErrors/ErrorClusterOrder, and the searchable first-wins
-	// set are all deterministic; the final sortResults gives Results total order.
+	// so Results, the per-cluster ScopeClusters status, and the searchable
+	// first-wins set are all deterministic; the final sortResults gives Results
+	// total order.
 	slots := make([]clusterSearchResult, len(clusters))
 	g, _ := errgroup.WithContext(r.Context())
 	g.SetLimit(s.searchConcurrency())
@@ -96,16 +90,34 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 	}
 	_ = g.Wait()
 
-	for _, slot := range slots {
+	var failedClusters []string
+	for i, slot := range slots {
 		view.Results = append(view.Results, slot.results...)
 		for _, sc := range slot.searchable {
 			if _, ok := searchable[sc.plural]; !ok {
 				searchable[sc.plural] = sc.kind
 			}
 		}
-		for _, e := range slot.errs {
-			view.addClusterError(e.cluster, e.resourceType, e.err)
+		// Per-cluster scope-chip status (D11): the chip is `.err` when the cluster
+		// produced any error record (it failed to fully answer) and `.ok`
+		// otherwise; the result count rides on the `.ok` chip. The RetryHref re-runs
+		// the SAME search scoped to just this cluster -- a read-only GET, never a
+		// write path -- so a failed cluster can be retried in place. ScopeClusters
+		// is index-aligned with slots (both follow the name-sorted clusters slice).
+		view.ScopeClusters[i].ResultCount = len(slot.results)
+		if len(slot.errs) > 0 {
+			view.ScopeClusters[i].Failed = true
+			view.ScopeClusters[i].Reason = searchScopeReason(slot.errs)
+			view.ScopeClusters[i].RetryHref = addQuery(r.URL, "cluster", clusters[i].Name)
+			failedClusters = append(failedClusters, clusters[i].Name)
 		}
+	}
+	// RetryFailedHref re-runs the SAME search scoped to the comma-joined set of
+	// failed clusters (a read-only GET; manager.Select parses the CSV). The
+	// partial-failure banner's "Retry failed" action uses it; empty when nothing
+	// failed so the banner is hidden.
+	if len(failedClusters) > 0 {
+		view.RetryFailedHref = addQuery(r.URL, "cluster", strings.Join(failedClusters, ","))
 	}
 
 	// Cluster hits: when searching all clusters, a cluster whose name or any
@@ -115,11 +127,11 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 		for _, cluster := range s.manager.Clusters() {
 			if clusterMatches(cluster, needle) {
 				view.Results = append(view.Results, searchResult{
-					Title:      cluster.Name,
-					Kind:       "Cluster",
-					Link:       "/clusters/" + url.PathEscape(cluster.Name),
-					Labels:     cluster.Labels,
-					LabelChips: searchLabelChips(r, cluster.Labels),
+					Title:   cluster.Name,
+					Kind:    "Cluster",
+					Link:    "/clusters/" + url.PathEscape(cluster.Name),
+					Cluster: cluster.Name,
+					Labels:  cluster.Labels,
 				})
 			}
 		}
@@ -142,7 +154,6 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 
 	view.OfferedTypes = buildTypeOptions(searchable, types)
 	sortResults(view.Results, q)
-	view.AllNamespacesHref = searchRepeatAllNamespacesHref(r, isAllNamespaces)
 	view.Duration = s.clock().Sub(start)
 	return view, nil
 }
@@ -150,7 +161,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 // clusterSearchResult is one cluster's fan-out slot: its ordered result cards,
 // its searchable plural->Kind contributions in first-seen-within-cluster order,
 // and its per-type error records. The caller merges slots across clusters in
-// fixed cluster order so Results/searchable/ClusterErrors stay deterministic.
+// fixed cluster order so Results/searchable/scope status stay deterministic.
 type clusterSearchResult struct {
 	results    []searchResult
 	searchable []searchableType
@@ -216,14 +227,18 @@ func (s *Server) clusterSearch(r *http.Request, cluster *kube.Cluster, types []s
 			ns := nestedString(row.Object, "metadata", "namespace")
 			link := resourceHref(cluster.Name, &rt, ns, name)
 			labels, _, _ := unstructured.NestedStringMap(row.Object, "metadata", "labels")
+			created := nestedString(row.Object, "metadata", "creationTimestamp")
 			out.results = append(out.results, searchResult{
-				Title:      name,
-				Kind:       rt.Kind,
-				Link:       link,
-				Labels:     labels,
-				LabelChips: searchLabelChips(r, labels),
-				Created:    nestedString(row.Object, "metadata", "creationTimestamp"),
-				Matches:    matchSnippets(row, filterQuery),
+				Title:     name,
+				Kind:      rt.Kind,
+				Group:     apiGroup(rt.APIVersion),
+				IsCRD:     isCRD(rt.APIVersion),
+				Link:      link,
+				Cluster:   cluster.Name,
+				Namespace: ns,
+				Labels:    labels,
+				Created:   formatTimestamp(created),
+				AgeClass:  "num " + s.ageClass(created),
 			})
 		}
 	}
@@ -245,17 +260,28 @@ func findSearchResource(r *http.Request, client *kube.Client, typ string) (kube.
 	return rt, false, nil
 }
 
-// addClusterError records a per-cluster search failure. The first failure for a
-// cluster registers its render order so the danger articles are emitted
-// deterministically.
-func (v *searchView) addClusterError(cluster, resourceType string, err error) {
-	if _, seen := v.ClusterErrors[cluster]; !seen {
-		v.ErrorClusterOrder = append(v.ErrorClusterOrder, cluster)
+// searchScopeReason condenses a failed cluster's error records into the short
+// label shown on the `.ro-scope-chip.err` chip (the full per-error detail rides
+// in the `.ro-banner.warn` summary). It classifies the FIRST error: a deadline/
+// timeout reads as "timeout", a connection/no-route/refused error as
+// "unreachable", a 403 as "forbidden", else a generic "failed". The classifier is
+// substring-based over the error string (the apiserver/transport error text),
+// kept deliberately small.
+func searchScopeReason(errs []searchErrorRecord) string {
+	if len(errs) == 0 {
+		return "failed"
 	}
-	v.ClusterErrors[cluster] = append(v.ClusterErrors[cluster], searchClusterError{
-		ResourceType: resourceType,
-		Message:      err.Error(),
-	})
+	msg := strings.ToLower(errs[0].err.Error())
+	switch {
+	case strings.Contains(msg, "deadline") || strings.Contains(msg, "timeout"):
+		return "timeout"
+	case strings.Contains(msg, "connection refused") || strings.Contains(msg, "no such host") || strings.Contains(msg, "no route"):
+		return "unreachable"
+	case strings.Contains(msg, "forbidden"):
+		return "forbidden"
+	default:
+		return "failed"
+	}
 }
 
 // clusterMatches reports whether a cluster's name or any label value contains
@@ -296,42 +322,6 @@ func buildTypeOptions(searchable map[string]string, selected []string) []searchT
 	return options
 }
 
-// searchRepeatAllNamespacesHref is the "Repeat search across all namespaces"
-// target: the current URL with namespace=” set. Empty when already
-// all-namespaces.
-func searchRepeatAllNamespacesHref(r *http.Request, isAllNamespaces bool) string {
-	if isAllNamespaces {
-		return ""
-	}
-	return addQuery(r.URL, "namespace", "")
-}
-
-// searchLabelChips resolves a result's labels into sorted chip view models, each
-// carrying its selector href (the current URL with q=key=val) and the full chip
-// class (incl. the app.kubernetes.io accent). Computed in assembly so the templ
-// chip render touches no request.
-func searchLabelChips(r *http.Request, labels map[string]string) []labelChipView {
-	if len(labels) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(labels))
-	for key := range labels {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	chips := make([]labelChipView, 0, len(keys))
-	for _, key := range keys {
-		val := labels[key]
-		chips = append(chips, labelChipView{
-			Href:  addQuery(r.URL, "q", key+"="+val),
-			Class: "ro-chip" + appLabelClass(key),
-			Key:   key,
-			Val:   val,
-		})
-	}
-	return chips
-}
-
 func splitSearchQuery(q string) (selector string, filter string) {
 	var selectors, filters []string
 	for _, word := range strings.Fields(q) {
@@ -342,73 +332,6 @@ func splitSearchQuery(q string) (selector string, filter string) {
 		}
 	}
 	return strings.Join(selectors, ","), strings.Join(filters, " ")
-}
-
-// matchSnippets returns up to three (pre, match, post) snippet tuples for the
-// <em> highlight: for each cell whose text contains the (case-insensitive)
-// query, it slices searchMatchContextLength characters of context on each side
-// of the match.
-//
-// All slicing is done in CODEPOINT (rune) space: the match is located by a
-// rune-level case-insensitive scan of the ORIGINAL value, and the context window
-// counts runes, so Pre/Match/Post never split a multi-byte rune and never emit
-// invalid UTF-8. A byte-offset implementation regresses on non-ASCII content --
-// both because lowercasing can change byte length (the match index would slip) and
-// because a byte-counted window can cut through a multi-byte rune.
-func matchSnippets(row kube.Row, query string) []snippet {
-	if query == "" {
-		return nil
-	}
-	queryRunes := []rune(strings.ToLower(query))
-	var matches []snippet
-	for _, cell := range row.Cells {
-		valueRunes := []rune(cellDisplayString(cell))
-		start := caseInsensitiveRuneIndex(valueRunes, queryRunes)
-		if start < 0 {
-			continue
-		}
-		end := start + len(queryRunes)
-		preStart := start - searchMatchContextLength
-		if preStart < 0 {
-			preStart = 0
-		}
-		postEnd := end + searchMatchContextLength
-		if postEnd > len(valueRunes) {
-			postEnd = len(valueRunes)
-		}
-		matches = append(matches, snippet{
-			Pre:   string(valueRunes[preStart:start]),
-			Match: string(valueRunes[start:end]),
-			Post:  string(valueRunes[end:postEnd]),
-		})
-		if len(matches) >= 3 {
-			break
-		}
-	}
-	return matches
-}
-
-// caseInsensitiveRuneIndex returns the rune index in value of the first
-// case-insensitive occurrence of needle (both compared via unicode.ToLower),
-// or -1. needle is already lower-cased; value is the ORIGINAL (mixed-case)
-// rune slice so the returned index slices value without slipping.
-func caseInsensitiveRuneIndex(value, needle []rune) int {
-	if len(needle) == 0 {
-		return 0
-	}
-	for i := 0; i+len(needle) <= len(value); i++ {
-		matched := true
-		for j, nr := range needle {
-			if unicode.ToLower(value[i+j]) != nr {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return i
-		}
-	}
-	return -1
 }
 
 // sortResults orders search results by score DESC, then Title ASC, then Kind
