@@ -8,8 +8,23 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+// numericSortKey parses a cell's string form as a sortable number: a plain float
+// (CPU/Memory usage cells are raw float cores/bytes) or a k8s resource.Quantity
+// (node capacity reads "8138032Ki" / "16Gi"). Returns false for text values so
+// those columns keep lexicographic order.
+func numericSortKey(s string) (float64, bool) {
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f, true
+	}
+	if q, err := resource.ParseQuantity(s); err == nil {
+		return q.AsApproximateFloat64(), true
+	}
+	return 0, false
+}
 
 // nestedString reads a string at the given path from a generic object map via
 // the apimachinery accessor (empty when absent or non-string). A thin wrapper so
@@ -48,14 +63,13 @@ func SortTable(table *Table, sortParam string) {
 			if idx < len(b.Cells) {
 				bv = fmt.Sprint(b.Cells[idx])
 			}
-			// Numeric columns (CPU/Memory usage cells are raw float cores/bytes;
-			// also restarts, counts) must sort by VALUE. fmt.Sprint renders a large
-			// float in scientific notation, so a lexicographic compare would put
-			// "9.8e+08" before "1.2e+09" only by luck and "95e6" after "9.4e8".
-			// Fall back to string compare when either side is not a plain number
-			// (text columns, quantity suffixes like "8138032Ki", "1/1" ready).
-			if af, aerr := strconv.ParseFloat(av, 64); aerr == nil {
-				if bf, berr := strconv.ParseFloat(bv, 64); berr == nil {
+			// Numeric columns must sort by VALUE: CPU/Memory usage cells are raw
+			// float cores/bytes (fmt.Sprint renders large floats in scientific
+			// notation, so a lexicographic compare puts "95e6" after "9.4e8"), and
+			// node capacity cells are k8s quantities ("8138032Ki"). numericSortKey
+			// handles both; text columns and "1/1"-style cells fall back to strings.
+			if af, aok := numericSortKey(av); aok {
+				if bf, bok := numericSortKey(bv); bok {
 					if af != bf {
 						return af < bf
 					}

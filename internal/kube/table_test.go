@@ -74,6 +74,25 @@ func TestSortTableNumericColumnSortsByValue(t *testing.T) {
 	}
 }
 
+func TestSortTableQuantityColumnSortsByValue(t *testing.T) {
+	// Node capacity cells are k8s quantity strings ("8138032Ki", "16Gi"). A
+	// lexicographic compare mis-ordered them ("8138032Ki" < "16Gi" as text); they
+	// must sort by the parsed byte value.
+	table := Table{
+		Columns: []Column{{Name: "Name"}, {Name: "Memory"}},
+		Rows: []Row{
+			{Cells: []any{"a", "16Gi"}},
+			{Cells: []any{"b", "8138032Ki"}},
+			{Cells: []any{"c", "32Gi"}},
+		},
+	}
+	SortTable(&table, "Memory:desc")
+	got := []any{table.Rows[0].Cells[0], table.Rows[1].Cells[0], table.Rows[2].Cells[0]}
+	if !reflect.DeepEqual(got, []any{"c", "a", "b"}) {
+		t.Fatalf("quantity desc sort = %#v, want [c a b] (32Gi > 16Gi > ~7.8GiB)", got)
+	}
+}
+
 func TestLabelHideFilterAndNamespaceTransforms(t *testing.T) {
 	table := sampleTable()
 	AddLabelColumns(&table, "app,*")
