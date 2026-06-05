@@ -210,6 +210,10 @@ type cellView struct {
 	// CapPct is the capacity-bar fill width as a percentage (0..100), set ONLY with
 	// a real usage %. The no-metrics state leaves it 0 (empty/0-width bar).
 	CapPct int
+	// CapBar is true only when metrics are joined (a real usage %); the no-metrics
+	// state leaves it false so the renderer shows the capacity value WITHOUT an
+	// empty bar.
+	CapBar bool
 	// Roles are the node role chips for cellRoles (e.g. "control-plane", "worker");
 	// the control-plane role earns the `.cp` accent in the renderer.
 	Roles []string

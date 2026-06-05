@@ -246,6 +246,7 @@ func toTableData(t *tableView) templates.TableData {
 				Title:        cell.Title,
 				CapBucket:    cell.CapBucket,
 				CapPct:       cell.CapPct,
+				CapBar:       cell.CapBar,
 				Roles:        cell.Roles,
 				RepNum:       cell.RepNum,
 				RolloutState: cell.RolloutState,

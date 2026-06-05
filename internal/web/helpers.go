@@ -296,6 +296,7 @@ func capacityCellView(obj map[string]any, key string, usage float64, haveUsage b
 	}
 	cv.CapBucket = capacityBucket(pct)
 	cv.CapPct = int(clamped + 0.5)
+	cv.CapBar = true
 	cv.Value = capacityUsageLabel(key, usage, cap)
 	return cv
 }

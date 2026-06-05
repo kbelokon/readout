@@ -182,6 +182,7 @@ type TableCell struct {
 
 	CapBucket string // node capacity bar bucket (lo/mid/hi); "" -> no colour fill
 	CapPct    int    // node capacity bar fill width %; 0 -> empty bar
+	CapBar    bool   // true only with metrics joined; false -> value text, no bar
 	Roles     []string // node role chips (control-plane earns .cp)
 	Conds     []Cond   // node abnormal condition pills (empty -> muted "—")
 
@@ -347,7 +348,11 @@ templ tableCell(cell TableCell) {
 	} else if cell.Kind == CellNode {
 		<td class="cell-node"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
 	} else if cell.Kind == CellCapacity {
-		<td><span class={ capClass(cell.CapBucket) }><span class="cap-bar"><i style={ capWidth(cell.CapPct) }></i></span><span class="cap-val">{ cell.Value }</span></span></td>
+		if cell.CapBar {
+			<td><span class={ capClass(cell.CapBucket) }><span class="cap-bar"><i style={ capWidth(cell.CapPct) }></i></span><span class="cap-val">{ cell.Value }</span></span></td>
+		} else {
+			<td><span class="cap-val">{ cell.Value }</span></td>
+		}
 	} else if cell.Kind == CellRoles {
 		<td>
 			if len(cell.Roles) == 0 {
@@ -509,7 +514,11 @@ templ pcardCell(cell TableCell) {
 		case CellLabel:
 			<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
 		case CellCapacity:
-			<span class={ capClass(cell.CapBucket) }><span class="cap-bar"><i style={ capWidth(cell.CapPct) }></i></span><span class="cap-val">{ cell.Value }</span></span>
+			if cell.CapBar {
+				<span class={ capClass(cell.CapBucket) }><span class="cap-bar"><i style={ capWidth(cell.CapPct) }></i></span><span class="cap-val">{ cell.Value }</span></span>
+			} else {
+				<span class="cap-val">{ cell.Value }</span>
+			}
 		case CellRoles:
 			if len(cell.Roles) == 0 {
 				<span class="faint">—</span>

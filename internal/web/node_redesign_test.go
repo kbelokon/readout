@@ -167,6 +167,9 @@ func TestCapacityBucketThresholds(t *testing.T) {
 		if cv.CapPct != c.wantPct {
 			t.Fatalf("usage=%v: fill pct = %d, want %d", c.usage, cv.CapPct, c.wantPct)
 		}
+		if !cv.CapBar {
+			t.Fatalf("usage=%v: CapBar = false, want true (metrics joined draws the bar)", c.usage)
+		}
 	}
 
 	// No-metrics default: with NO ?join=metrics the column is a bare capacity column
@@ -174,15 +177,15 @@ func TestCapacityBucketThresholds(t *testing.T) {
 	// bar, NO lo/mid/hi colour.
 	obj := nodeObject("n", map[string]any{"cpu": "4", "memory": "16Gi"}, nil)
 	cpuNoMetrics := nodesCellView(t, []string{"Name", "CPU"}, []any{"n", "4"}, obj, 1)
-	if cpuNoMetrics.Kind != cellCapacity || cpuNoMetrics.CapBucket != "" || cpuNoMetrics.CapPct != 0 {
-		t.Fatalf("no-metrics cpu cell = %#v, want cellCapacity no bucket no fill", cpuNoMetrics)
+	if cpuNoMetrics.Kind != cellCapacity || cpuNoMetrics.CapBucket != "" || cpuNoMetrics.CapPct != 0 || cpuNoMetrics.CapBar {
+		t.Fatalf("no-metrics cpu cell = %#v, want cellCapacity no bucket no fill no bar", cpuNoMetrics)
 	}
 	if cpuNoMetrics.Value != "4" {
 		t.Fatalf("no-metrics cpu value = %q, want capacity text 4", cpuNoMetrics.Value)
 	}
 	memNoMetrics := nodesCellView(t, []string{"Name", "Memory"}, []any{"n", "16Gi"}, obj, 1)
-	if memNoMetrics.CapBucket != "" || memNoMetrics.Value != "16 GiB" {
-		t.Fatalf("no-metrics memory cell = %#v, want value 16 GiB no bucket", memNoMetrics)
+	if memNoMetrics.CapBucket != "" || memNoMetrics.CapBar || memNoMetrics.Value != "16 GiB" {
+		t.Fatalf("no-metrics memory cell = %#v, want value 16 GiB no bucket no bar", memNoMetrics)
 	}
 
 	// A capacity cell with usage but MISSING capacity never panics and falls back to
