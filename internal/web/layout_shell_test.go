@@ -283,6 +283,41 @@ func TestPaletteFeedIncludesCustomResourceKinds(t *testing.T) {
 	}
 }
 
+// TestPaletteFeedDetailTabActions pins that on a detail page the palette adds
+// jump-to-tab actions for the object in scope -- Default / YAML / Events, plus
+// Logs for a workload -- each a full navigable href, so ⌘K can dive into a view
+// without clicking the tabs.
+func TestPaletteFeedDetailTabActions(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
+
+	var data paletteFeedJSON
+	if err := json.Unmarshal([]byte(p.doc.Find(`#ro-palette-data`).Text()), &data); err != nil {
+		t.Fatalf("parse palette feed: %v", err)
+	}
+	// Slice search, not a label->href map: the object's "Events" tab coexists with
+	// the namespace-level "Events" meta action (same label, different scope/href).
+	hasAction := func(label, href string) bool {
+		for _, a := range data.Actions {
+			if a.Label == label && a.Href == href {
+				return true
+			}
+		}
+		return false
+	}
+	want := map[string]string{
+		"Default view": "/clusters/test/namespaces/default/pods/nginx",
+		"YAML":         "/clusters/test/namespaces/default/pods/nginx?view=yaml",
+		"Events":       "/clusters/test/namespaces/default/pods/nginx?view=events",
+		"Logs":         "/clusters/test/namespaces/default/pods/nginx/logs",
+	}
+	for label, href := range want {
+		if !hasAction(label, href) {
+			t.Fatalf("palette missing detail tab action %q -> %q", label, href)
+		}
+	}
+}
+
 // paletteFeedJSON mirrors the pinned palette-feed wire shape so the test parses
 // the emitted blob structurally (the camelCase keys are the public contract Unit
 // 4's JS reads).

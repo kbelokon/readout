@@ -260,6 +260,22 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, na
 		}
 	}
 
+	// On a detail page (the route carries {name}) add jump-to-tab actions for the
+	// object in scope -- Default / YAML / Events, plus Logs for a workload -- so
+	// ⌘K dives into a view without clicking the tabs. r.URL.Path is the detail
+	// path; the tab variants append the same ?view / /logs the detail tabs use.
+	if name := r.PathValue("name"); name != "" {
+		path := r.URL.Path
+		feed.Actions = append(feed.Actions,
+			paletteActionFeed{Label: "Default view", Href: path},
+			paletteActionFeed{Label: "YAML", Href: path + "?view=yaml"},
+			paletteActionFeed{Label: "Events", Href: path + "?view=events"},
+		)
+		if r.PathValue("namespace") != "" && workloadPlural(r.PathValue("plural")) {
+			feed.Actions = append(feed.Actions, paletteActionFeed{Label: "Logs", Href: path + "/logs"})
+		}
+	}
+
 	for _, meta := range sidebar.Meta {
 		feed.Actions = append(feed.Actions, paletteActionFeed{Label: meta.Text, Href: meta.Href})
 	}
@@ -274,6 +290,17 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, na
 	)
 
 	return feed
+}
+
+// workloadPlural reports whether a plural names a pod-log-bearing workload -- the
+// kinds buildDetailView gives a LogsHref to -- so the palette only offers Logs
+// where the detail page itself does.
+func workloadPlural(plural string) bool {
+	switch plural {
+	case "pods", "deployments", "replicasets", "daemonsets", "statefulsets":
+		return true
+	}
+	return false
 }
 
 // paletteKindEntry builds a palette resource-type row for a discovered type: a
