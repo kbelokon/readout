@@ -146,21 +146,23 @@ func TestLayoutClustersPageOmitsSidebarAndContext(t *testing.T) {
 	p.wantAbsent(".ctx-dd")
 }
 
-// TestLayoutPaletteDataBlob pins the palette JSON contract (D10): the layout
-// emits a <script type="application/json" id="ro-palette-data"> whose parsed
-// shape carries the current scope plus the real cluster / namespace / kind /
-// action lists from the same server context the sidebar + navbar already have.
-// Unit 4 consumes this blob; this unit emits it.
+// TestLayoutPaletteDataBlob pins the palette feed contract (D10): the layout
+// emits the #ro-palette-data feed as a NON-<script> element. htmx runs with
+// allowScriptTags:false, which makes it strip EVERY <script> from swapped
+// content -- so a <script> feed disappears after the first hx-boost navigation
+// and the palette goes empty. The feed must ride on an element htmx preserves.
+// Its parsed shape carries the current scope plus the real cluster / namespace /
+// kind / action lists from the same server context the sidebar + navbar have.
 func TestLayoutPaletteDataBlob(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 
-	blob := p.doc.Find(`script#ro-palette-data`)
+	blob := p.doc.Find(`#ro-palette-data`)
 	if blob.Length() != 1 {
-		t.Fatalf("expected exactly one #ro-palette-data script, got %d", blob.Length())
+		t.Fatalf("expected exactly one #ro-palette-data element, got %d", blob.Length())
 	}
-	if typ, _ := blob.Attr("type"); typ != "application/json" {
-		t.Fatalf("#ro-palette-data type = %q, want application/json", typ)
+	if blob.Is("script") {
+		t.Fatalf("#ro-palette-data must NOT be a <script>: htmx allowScriptTags:false strips it on swap, emptying the palette after an hx-boost nav")
 	}
 
 	var data paletteFeedJSON

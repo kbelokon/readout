@@ -165,16 +165,17 @@ func TestPaletteRendersGroupedDataDriven(t *testing.T) {
 	p.wantAbsent("template#ro-palette-row-tmpl")
 	p.wantAbsent("[data-palette-close]")
 
-	// The #ro-palette-data blob the JS reads is present, application/json, and a
-	// GROUPED shape (clusters / namespaces / kinds / actions) -- the contract the
-	// palette builds its groups from. (TestLayoutPaletteDataBlob asserts the field
-	// values; here we certify the rendered overlay is wired to a valid grouped blob.)
-	blob := p.doc.Find(`script#ro-palette-data`)
+	// The #ro-palette-data blob the JS reads is present, a non-<script> element
+	// (htmx allowScriptTags:false strips <script> on swap), and a GROUPED shape
+	// (clusters / namespaces / kinds / actions) -- the contract the palette builds
+	// its groups from. (TestLayoutPaletteDataBlob asserts the field values; here we
+	// certify the rendered overlay is wired to a valid grouped blob.)
+	blob := p.doc.Find(`#ro-palette-data`)
 	if blob.Length() != 1 {
-		t.Fatalf("expected exactly one #ro-palette-data script, got %d", blob.Length())
+		t.Fatalf("expected exactly one #ro-palette-data element, got %d", blob.Length())
 	}
-	if typ, _ := blob.Attr("type"); typ != "application/json" {
-		t.Fatalf("#ro-palette-data type = %q, want application/json", typ)
+	if blob.Is("script") {
+		t.Fatalf("#ro-palette-data must NOT be a <script>: htmx strips it on swap, emptying the palette after an hx-boost nav")
 	}
 	var data paletteFeedJSON
 	if err := json.Unmarshal([]byte(blob.Text()), &data); err != nil {

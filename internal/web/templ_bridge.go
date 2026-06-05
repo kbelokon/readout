@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -57,11 +58,24 @@ func toLayoutData(v *layoutView) templates.LayoutData {
 		Footer:        v.Footer,
 		Navbar:        navbar,
 		Sidebar:       toSidebar(v.Sidebar),
-		// PaletteData is handed to templ.JSONScript verbatim; the package-web
-		// paletteFeedView's json tags ARE the pinned wire contract, so the templ
-		// component never re-declares the shape -- it just JSON-encodes this value.
-		PaletteData: v.Palette,
+		// PaletteJSON is the palette feed pre-encoded to a JSON string; the layout
+		// emits it into a hidden <div> (NOT a <script>, which htmx would strip on
+		// swap). The package-web paletteFeedView's json tags ARE the pinned wire
+		// contract.
+		PaletteJSON: paletteFeedJSONString(&v.Palette),
 	}
+}
+
+// paletteFeedJSONString encodes the ⌘K palette feed to a compact JSON string for
+// the #ro-palette-data hidden <div>. A marshal error (not expected for this
+// plain struct) degrades to an empty object so the palette opens empty rather
+// than the layout failing to render.
+func paletteFeedJSONString(feed *paletteFeedView) string {
+	b, err := json.Marshal(feed)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 func toNavbar(n *navbarView) templates.Navbar {

@@ -28,13 +28,14 @@ type LayoutData struct {
 	Navbar  Navbar
 	Sidebar Sidebar
 
-	// PaletteData is the ⌘K palette feed (D10), emitted verbatim into the
-	// #ro-palette-data <script type="application/json"> via templ.JSONScript (it
-	// HTML-escapes the payload and cannot break out of the </script>). The shape
-	// is owned by package-web's paletteFeedView (its json tags are the wire
-	// contract); the shell never re-declares it -- it just encodes whatever it is
-	// handed. Unit 4's palette JS reads the blob.
-	PaletteData any
+	// PaletteJSON is the ⌘K palette feed (D10) as a JSON string, emitted into the
+	// #ro-palette-data hidden <div> (NOT a <script> -- htmx allowScriptTags:false
+	// strips every <script> from swapped content, which would empty the palette
+	// after an hx-boost nav). templ HTML-escapes it into the div text; the palette
+	// JS reads el.textContent (the browser un-escapes) and JSON.parses it. The
+	// shape is owned by package-web's paletteFeedView (its json tags are the wire
+	// contract).
+	PaletteJSON string
 }
 
 type Navbar struct {
@@ -132,7 +133,7 @@ templ layoutBody(d LayoutData, body templ.Component) {
 				@body
 			</main>
 		</div>
-		@templ.JSONScript("ro-palette-data", d.PaletteData)
+		<div id="ro-palette-data" hidden>{ d.PaletteJSON }</div>
 		@footerC(d.Footer)
 		@CommandPalette()
 	</body>
