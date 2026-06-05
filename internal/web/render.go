@@ -73,7 +73,11 @@ func (s *Server) sidebarResourceLink(r *http.Request, cluster, namespace, plural
 	client := s.kubeClient(r, clusterObj)
 	var rt kube.ResourceType
 	var err error
-	if namespace != "" {
+	// A built-in cluster-scoped plural (nodes/namespaces/persistentvolumes) must
+	// resolve to its CLUSTER resource even when a namespace is in scope -- skipping
+	// the namespaced lookup stops a namespaced CRD that shares the plural (e.g.
+	// nodes.management.cattle.io) from hijacking the curated cluster entry.
+	if namespace != "" && !builtinClusterScopedPlural(plural) {
 		rt, err = client.FindResource(r.Context(), plural, true, "")
 		if err == nil {
 			return sidebarLinkFromResource(
@@ -115,8 +119,22 @@ func sidebarNavIcon(s *Server, item *navItem) template.HTML {
 	return icons.KindIcon(item.Kind, item.Group, item.IsCRD, override)
 }
 
+// builtinClusterScopedPlural reports whether a curated sidebar plural names a
+// built-in CLUSTER-scoped resource. Such a plural must resolve to the built-in
+// cluster resource even when a namespace is in scope -- otherwise a namespaced
+// CRD that happens to share the plural (e.g. nodes.management.cattle.io) hijacks
+// the curated entry and the sidebar "Nodes" link opens the CRD instead of the
+// real cluster nodes.
+func builtinClusterScopedPlural(plural string) bool {
+	switch plural {
+	case "namespaces", "nodes", "persistentvolumes":
+		return true
+	}
+	return false
+}
+
 func sidebarResourceHref(cluster, namespace, plural string) string {
-	if namespace == "" || plural == "namespaces" || plural == "nodes" || plural == "persistentvolumes" {
+	if namespace == "" || builtinClusterScopedPlural(plural) {
 		return fmt.Sprintf("/clusters/%s/%s", url.PathEscape(cluster), url.PathEscape(plural))
 	}
 	return fmt.Sprintf("/clusters/%s/namespaces/%s/%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(plural))
