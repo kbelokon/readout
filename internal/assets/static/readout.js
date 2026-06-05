@@ -826,6 +826,62 @@ function buildPaletteRow(entry, key) {
 // renderPalette so buildPaletteRow can flag the in-scope rows.
 const paletteScope = { cluster: null, namespace: null };
 
+// harvestPageObjects reads the rows of the rendered list table (desktop
+// `.ro-table`, not the mobile card projection) into {name, href, status, tone}
+// so the palette can filter the objects ALREADY on the page -- no server call.
+// The status (+ tone) comes from the row's `.cell-status` when the kind has one
+// (pods, namespaces, ...); kinds with no status cell just yield an empty status.
+function harvestPageObjects() {
+    const out = [];
+    const rows = document.querySelectorAll('#resource-list-content table.ro-table tbody tr');
+    rows.forEach((tr) => {
+        const a = tr.querySelector('td.cell-name a');
+        if (!a) {
+            return;
+        }
+        const href = a.getAttribute('href');
+        const name = (a.textContent || '').trim();
+        if (!href || !name) {
+            return;
+        }
+        let status = '';
+        let tone = '';
+        const st = tr.querySelector('.cell-status');
+        if (st) {
+            status = (st.textContent || '').trim();
+            ['ok', 'warn', 'err', 'info', 'mute'].forEach((t) => {
+                if (!tone && st.classList.contains(t)) {
+                    tone = t;
+                }
+            });
+        }
+        out.push({ name: name, href: href, status: status, tone: tone });
+    });
+    return out;
+}
+
+// buildObjectRow renders one harvested page object: its name (textContent, never
+// innerHTML) + a tone-coloured short status. The detail href rides in the dataset
+// like every other palette row, so choosePaletteRow navigates it identically.
+function buildObjectRow(o) {
+    const row = document.createElement('div');
+    row.className = 'ro-pal-item';
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', 'false');
+    const label = document.createElement('span');
+    label.className = 'pal-label';
+    label.textContent = o.name;
+    row.appendChild(label);
+    if (o.status) {
+        const st = document.createElement('span');
+        st.className = 'pal-status' + (o.tone ? ' ' + o.tone : '');
+        st.textContent = o.status;
+        row.appendChild(st);
+    }
+    row.dataset.href = o.href;
+    return row;
+}
+
 // (Re)render the grouped rows into #ro-palette-list, filtered by a
 // case-insensitive substring of the label. Empty groups (and groups with no
 // match) are skipped; when nothing matches at all we show a "no targets" line so
@@ -848,9 +904,31 @@ function renderPalette(query) {
     }
 
     const q = (query || '').toLowerCase().trim();
-    const raw = (query || '').trim();
     list.textContent = '';
     paletteRows = [];
+
+    const appendGroup = (title, rows) => {
+        if (rows.length === 0) {
+            return;
+        }
+        const heading = document.createElement('div');
+        heading.className = 'ro-pal-group';
+        heading.textContent = title;
+        list.appendChild(heading);
+        rows.forEach((entry) => {
+            const row = entry.el;
+            const idx = paletteRows.length;
+            row.addEventListener('mousemove', () => setPaletteActive(idx));
+            list.appendChild(row);
+            paletteRows.push({ el: row, item: entry.item, key: entry.key });
+        });
+    };
+
+    // Objects on THIS list page, harvested from the rendered table so ⌘K filters
+    // the very rows you are looking at (with a short status), no server round-trip.
+    // First group -- the most relevant target on a list page.
+    const pageObjects = harvestPageObjects().filter((o) => !q || o.name.toLowerCase().indexOf(q) !== -1);
+    appendGroup('On this page', pageObjects.map((o) => ({ el: buildObjectRow(o), item: o, key: 'objects' })));
 
     PALETTE_GROUPS.forEach((group) => {
         const entries = (data[group.key] || []).filter((entry) => {
@@ -862,54 +940,8 @@ function renderPalette(query) {
                 : (entry.name || entry.label || '');
             return label.toLowerCase().indexOf(q) !== -1;
         });
-        if (entries.length === 0) {
-            return;
-        }
-        const heading = document.createElement('div');
-        heading.className = 'ro-pal-group';
-        heading.textContent = group.title;
-        list.appendChild(heading);
-        entries.forEach((entry) => {
-            const row = buildPaletteRow(entry, group.key);
-            const idx = paletteRows.length;
-            row.addEventListener('mousemove', () => setPaletteActive(idx));
-            list.appendChild(row);
-            paletteRows.push({ el: row, item: entry, key: group.key });
-        });
+        appendGroup(group.title, entries.map((entry) => ({ el: buildPaletteRow(entry, group.key), item: entry, key: group.key })));
     });
-
-    // Server-side object search: when the user types, offer a row that runs the
-    // query through the full /search (object names across the in-scope cluster),
-    // so the palette reaches actual resources, not just the static groups. The
-    // href is built from the typed text + current cluster; navigation goes through
-    // the same dataset.href path as every other row.
-    if (raw) {
-        const heading = document.createElement('div');
-        heading.className = 'ro-pal-group';
-        heading.textContent = 'Search';
-        list.appendChild(heading);
-        let href = '/search?q=' + encodeURIComponent(raw);
-        if (paletteScope.cluster) {
-            href += '&cluster=' + encodeURIComponent(paletteScope.cluster);
-        }
-        const row = document.createElement('div');
-        row.className = 'ro-pal-item';
-        row.setAttribute('role', 'option');
-        row.setAttribute('aria-selected', 'false');
-        const label = document.createElement('span');
-        label.className = 'pal-label';
-        label.textContent = 'Search for "' + raw + '"'; // textContent -> no injection
-        row.appendChild(label);
-        const meta = document.createElement('span');
-        meta.className = 'pal-meta';
-        meta.textContent = paletteScope.cluster ? 'in ' + paletteScope.cluster : 'all clusters';
-        row.appendChild(meta);
-        row.dataset.href = href;
-        const idx = paletteRows.length;
-        row.addEventListener('mousemove', () => setPaletteActive(idx));
-        list.appendChild(row);
-        paletteRows.push({ el: row, item: { href: href }, key: 'search' });
-    }
 
     if (paletteRows.length === 0) {
         const none = document.createElement('div');

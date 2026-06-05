@@ -2372,6 +2372,13 @@
         padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-faint); }
     .ro-pal-item .pal-scope.ns { color: var(--st-info); border-color: color-mix(in oklab, var(--st-info) 35%, var(--border)); }
     .ro-pal-item .pal-scope.cluster { color: var(--st-warn); border-color: color-mix(in oklab, var(--st-warn) 35%, var(--border)); }
+    /* short status on a harvested page-object row, tinted by tone */
+    .ro-pal-item .pal-status { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
+    .ro-pal-item .pal-status.ok { color: var(--st-ok); }
+    .ro-pal-item .pal-status.warn { color: var(--st-warn); }
+    .ro-pal-item .pal-status.err { color: var(--st-err); }
+    .ro-pal-item .pal-status.info { color: var(--st-info); }
+    .ro-pal-item .pal-status.mute { color: var(--text-faint); }
     .ro-pal-item .ro-kbd { margin-left: 4px; }
     .ro-pal-item.active { background: var(--accent-weak); }
     .ro-pal-item.active .ico, .ro-pal-item.active .ico svg { color: var(--accent); }
