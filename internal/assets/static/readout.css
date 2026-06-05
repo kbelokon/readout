@@ -2317,15 +2317,14 @@
     .ro-banner.ro-stale-banner[hidden] { display: none; }
     #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
 
-    /* Loading skeleton. The `.ro-skeleton` is an `.htmx-indicator`; the default
-       htmx-indicator hides via `opacity: 0`, but opacity keeps the element's box
-       in layout, so at rest the multi-row skeleton reserved a tall blank gap above
-       every list. Hide it with `display: none` at rest instead (zero layout cost),
-       and reveal it only while the #resource-list-content refresh is in flight
-       (htmx adds .htmx-request to the hx-indicator target, i.e. the skeleton). */
-    .ro-skeleton { display: none; margin-bottom: 0.5rem; }
-    .ro-skeleton.htmx-request,
-    .htmx-request .ro-skeleton { display: block; }
+    /* Loading skeleton: kept dormant (`display: none`). It has no valid moment in
+       readout — the first paint is server-rendered WITH rows, and the morph
+       auto-refresh keeps the existing rows, so there is never a "no rows yet"
+       state in the browser. The thin `.ro-progress` rail is the refresh indicator.
+       (An earlier opacity:0 hide left a tall blank gap above every list; a
+       .htmx-request reveal then flashed the skeleton on every hx-boost navigation,
+       because boost puts .htmx-request on an ancestor. display:none avoids both.) */
+    .ro-skeleton { display: none; }
 
     /* ================================================================ MOBILE CARDS (redesign) */
     .ro-cardlist { display: none; flex-direction: column; gap: 8px; }
