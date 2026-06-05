@@ -1,7 +1,7 @@
 package templates
 
 // errors.templ is the error + STATE surface. It holds (1) the full-page error
-// body (the simple .panel block from the error() handler) and (2) the redesign
+// body (the simple `.ro-error-card` from the error() handler) and (2) the redesign
 // list/detail STATE partials (D11): the big empty-state card `.ro-empty-lg`
 // (forbidden / unreachable / a generic empty), the removable filter chips of the
 // empty-FILTERED state, and the hidden `.ro-banner.warn` the client-side stale
@@ -16,7 +16,7 @@ package templates
 // ErrorBody renders the full-page error content: the HTTP status text heading
 // and the verbatim error message.
 templ ErrorBody(statusText, message string) {
-	<div class="panel"><h2>{ statusText }</h2><p>{ message }</p></div>
+	<div class="ro-error-card"><h2>{ statusText }</h2><p>{ message }</p></div>
 }
 
 // roEmptyLg is the canonical big empty/failure state card: a glyph tile, a
@@ -106,4 +106,3 @@ templ emptyPlain(d ListData, table TableData) {
 templ staleBanner() {
 	<div class="ro-banner warn ro-stale-banner" role="alert" hidden><span class="bn-ico ico sm">@templ.Raw(warnIcon())</span><div class="bn-body"><p class="bn-title">Showing last known data — refresh failed</p><p class="bn-text">The cluster did not answer the last auto-refresh. The rows below are the last data that loaded.</p></div><div class="bn-actions"><button type="button" class="ro-btn quiet ro-stale-retry">retry</button></div></div>
 }
-

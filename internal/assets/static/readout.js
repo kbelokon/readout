@@ -140,8 +140,8 @@ document.addEventListener('click', (event) => {
 
     // Auto-refresh interval option (navbar #refresh-dropdown): store the chosen
     // interval client-side, re-arm the poll, and reflect it in the control. The
-    // dropdown opens on hover (Bulma is-hoverable), so there is no open/close
-    // handler -- only the selection.
+    // dropdown opens through CSS hover/focus, so there is no open/close handler
+    // here -- only the selection.
     const refreshOption = target.closest('.refresh-option');
     if (refreshOption) {
         try {

@@ -298,7 +298,7 @@ templ detailBody(d DetailData) {
 			</dl></div>
 	}
 	for _, card := range d.YAMLCards {
-		<div class="section collapsible ro-yaml-card" data-name={ card.Name }><div class="ro-card-head"><h4 class="title is-5">{ card.Title }</h4><button type="button" class="ro-copy-btn" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="content">@templ.Raw(card.Content)</div></div>
+		<div class="section collapsible ro-yaml-card" data-name={ card.Name }><div class="ro-card-head"><h4 class="title ro-card-title">{ card.Title }</h4><button type="button" class="ro-copy-btn" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="ro-card-content">@templ.Raw(card.Content)</div></div>
 	}
 	if d.ShowNamespaceLinks {
 		<div class="ro-section"><a href={ templ.SafeURL(d.AllObjectsHref) }>Show all objects in this namespace</a></div>
@@ -385,7 +385,7 @@ templ detailTab(active bool, href, label string) {
 // sharing the list cell vocabulary (sticky td.cell-name, td.cell-node, the
 // .cell-status/.ro-dot status pair) since the detail page now carries .ro-rd.
 templ subtableC(s Subtable) {
-	<div class="section collapsible" data-name="pods"><h4 class="title is-5">Pods</h4><div class="ro-table-wrap"><table class="ro-table"><thead><tr>
+	<div class="section collapsible" data-name="pods"><h4 class="title ro-section-title">Pods</h4><div class="ro-table-wrap"><table class="ro-table"><thead><tr>
 		if s.ShowNamespace {
 			<th>Namespace</th>
 		}

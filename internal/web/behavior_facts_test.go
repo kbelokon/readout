@@ -204,7 +204,7 @@ func TestBehaviorClustersPage(t *testing.T) {
 
 	p.wantText("title", "Clusters - readout")
 	// Redesign entry page (D4/D13): the content root carries the .ro-rd marker and
-	// the title is the .ro-title-row (.ro-title + .ro-count), not the Bulma h1.title.
+	// the title is the .ro-title-row (.ro-title + .ro-count), not the legacy h1.title.
 	p.wantHas(".ro-rd")
 	p.wantText(".ro-title-row .ro-title", "Clusters")
 	p.wantText(".ro-title-row .ro-count", "1")
@@ -481,11 +481,14 @@ func TestBehaviorPodListFacts(t *testing.T) {
 	// "Show CPU/Memory Usage" affordance (join=metrics not yet applied).
 	p.wantAttr(`a[href="/clusters/test/namespaces/default/pods?join=metrics"]`, "href", "/clusters/test/namespaces/default/pods?join=metrics")
 
-	// The tools form carries the labelcols / selector / filter inputs the
-	// delegated submit handler blanks-when-empty.
-	p.wantHas(`form.tools-form input[name="labelcols"]`)
-	p.wantHas(`form.tools-form input[name="selector"]`)
-	p.wantHas(`form.tools-form input[name="filter"]`)
+	// The tools form carries the owned .ro-* layout and the labelcols / selector /
+	// filter inputs the delegated submit handler blanks-when-empty.
+	p.wantHas(`form.tools-form .ro-tools-grid`)
+	p.wantHas(`form.tools-form .ro-tools-field .ro-input[name="labelcols"]`)
+	p.wantHas(`form.tools-form .ro-tools-field .ro-input[name="selector"]`)
+	p.wantHas(`form.tools-form .ro-tools-field .ro-input[name="filter"]`)
+	p.wantHas(`form.tools-form .ro-field-icon`)
+	p.wantHas(`form.tools-form button.ro-btn.quiet[type="submit"]`)
 }
 
 // TestBehaviorPodListSortToggle pins the descending-toggle behaviour: with
@@ -560,8 +563,9 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 
 	t.Run("labelcols adds an App column and activates the tools form", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?labelcols=app", http.StatusOK)
-		p.wantAttr(`form.tools-form input[name="labelcols"]`, "value", "app")
+		p.wantAttr(`form.tools-form .ro-input[name="labelcols"]`, "value", "app")
 		p.wantHas("form.tools-form.is-active")
+		p.wantHas("form.tools-form.is-active .ro-tools-grid")
 		if !contains(p.texts("thead th"), "App") {
 			t.Fatalf("labelcols=app did not add an App column: %v", p.texts("thead th"))
 		}
@@ -569,13 +573,13 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 
 	t.Run("selector round-trips into the selector input", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?selector=app%3Dnginx", http.StatusOK)
-		p.wantAttr(`form.tools-form input[name="selector"]`, "value", "app=nginx")
+		p.wantAttr(`form.tools-form .ro-input[name="selector"]`, "value", "app=nginx")
 		p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods/_table?selector=app%3Dnginx")
 	})
 
 	t.Run("filter narrows rows and round-trips into the filter input", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?filter=nginx", http.StatusOK)
-		p.wantAttr(`form.tools-form input[name="filter"]`, "value", "nginx")
+		p.wantAttr(`form.tools-form .ro-input[name="filter"]`, "value", "nginx")
 		if got := p.texts("td.cell-name"); strings.Join(got, "|") != "nginx" {
 			t.Fatalf("filter=nginx rows = %v, want [nginx]", got)
 		}
@@ -1129,21 +1133,21 @@ func TestBehaviorPreferencesPage(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/preferences", http.StatusOK)
 	p.wantText("h1.title", "Preferences")
-	p.wantAttr(`form.box[action="/preferences"]`, "method", "post")
-	p.wantHas(`select[name="theme"]`)
+	p.wantAttr(`form.ro-prefs[action="/preferences"]`, "method", "post")
+	p.wantHas(`select.ro-select[name="theme"]`)
 }
 
 func TestBehaviorErrorPages(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 
-	// Missing cluster -> 500 with a GENERIC panel body. Per D14 the raw error
+	// Missing cluster -> 500 with a GENERIC error-card body. Per D14 the raw error
 	// detail (here the cluster name) is logged server-side, not rendered into
 	// the client page, so the body must NOT leak "missing". Read the rendered
-	// (entity-decoded) panel text rather than the raw escaped body.
+	// (entity-decoded) card text rather than the raw escaped body.
 	miss := get(t, app, "/clusters/missing", http.StatusInternalServerError)
 	miss.wantText("h2", "Internal Server Error")
-	if got := miss.text("main .panel p"); !strings.Contains(got, "Internal server error") {
-		t.Fatalf("error panel text = %q, want generic internal-server-error body", got)
+	if got := miss.text("main .ro-error-card p"); !strings.Contains(got, "Internal server error") {
+		t.Fatalf("error card text = %q, want generic internal-server-error body", got)
 	}
 	// The raw apiserver/Go error string (the leak D14 closes) must not appear
 	// anywhere in the page. The bare cluster name still legitimately appears in

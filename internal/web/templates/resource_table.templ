@@ -574,8 +574,20 @@ templ toolsForm(t TableTools) {
 		for _, in := range t.HiddenInputs {
 			<input type="hidden" name={ in.Name } value={ in.Value }>
 		}
-		<div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Label Columns</label></div><div class="field-body"><div class="field has-addons"><p class="control is-expanded has-icons-left"><input class="input" type="text" placeholder="Labels to show as columns (comma separated) or '*' to show all labels" name="labelcols" value={ t.LabelColsVal }><span class="icon is-small is-left">@templ.Raw(t.TableIcon)</span></p></div></div></div>
-		<div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Label Selector</label></div><div class="field-body"><div class="field"><p class="control is-expanded has-icons-left"><input class="input" type="text" placeholder="Label selector (label=value)" name="selector" value={ t.SelectorVal }><span class="icon is-small is-left">@templ.Raw(t.TagsIcon)</span></p></div></div></div>
-		<div class="field is-horizontal"><div class="field-label is-normal"><label class="label">Filter</label></div><div class="field-body"><div class="field"><p class="control is-expanded has-icons-left"><input class="input" type="text" placeholder="Filter by any column (Column=value) or text" name="filter" value={ t.FilterVal }><span class="icon is-small is-left">@templ.Raw(t.FilterIcon)</span></p></div></div></div>
-		<div class="field is-horizontal"><div class="field-label is-normal"></div><div class="field-body"><div class="control"><button class="button ro-btn-quiet" type="submit">Submit</button></div></div></div></form>
+		<div class="ro-tools-grid">
+			<label class="ro-tools-field">
+				<span class="ro-tools-label">Label Columns</span>
+				<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(t.TableIcon)</span><input class="ro-input" type="text" placeholder="Labels to show as columns (comma separated) or '*' to show all labels" name="labelcols" value={ t.LabelColsVal }></span>
+			</label>
+			<label class="ro-tools-field">
+				<span class="ro-tools-label">Label Selector</span>
+				<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(t.TagsIcon)</span><input class="ro-input" type="text" placeholder="Label selector (label=value)" name="selector" value={ t.SelectorVal }></span>
+			</label>
+			<label class="ro-tools-field">
+				<span class="ro-tools-label">Filter</span>
+				<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(t.FilterIcon)</span><input class="ro-input" type="text" placeholder="Filter by any column (Column=value) or text" name="filter" value={ t.FilterVal }></span>
+			</label>
+			<div class="ro-tools-actions"><button class="ro-btn quiet" type="submit">Submit</button></div>
+		</div>
+	</form>
 }

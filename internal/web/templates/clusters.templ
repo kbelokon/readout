@@ -47,7 +47,7 @@ type ExternalClusterRow struct {
 templ Clusters(d ClustersData) {
 	<div class="ro-rd">
 		<div class="ro-title-row"><h1 class="ro-title">Clusters</h1><span class="ro-count">{ itoa(d.Count) }</span></div>
-		<form class="tools-row" action="#" method="get"><input type="hidden" name="selector" value={ d.SelectorValue }><div class="field"><span class="ico sm" aria-hidden="true">@iconC("filter")</span><input type="text" placeholder="Filter clusters" name="filter" value={ d.FilterValue }></div><button class="ro-btn quiet" type="submit">Filter</button></form>
+		<form class="tools-row" action="#" method="get"><input type="hidden" name="selector" value={ d.SelectorValue }><div class="ro-tools-filter"><span class="ico sm" aria-hidden="true">@iconC("filter")</span><input type="text" placeholder="Filter clusters" name="filter" value={ d.FilterValue }></div><button class="ro-btn quiet" type="submit">Filter</button></form>
 		<form action="/search" method="get"><div class="ro-table-wrap"><table class="ro-table ro-select-table"><thead><tr><th></th><th>Name</th><th>API URL</th><th>Labels</th></tr></thead><tbody>
 			for _, row := range d.Rows {
 				<tr><td><input class="ro-check" type="checkbox" name="cluster" value={ row.Name } data-toggle-button="search-clusters-button"></td><td class="cl-name"><a href={ templ.SafeURL(clusterHref(row.Name)) }>{ row.Name }</a></td><td class="ro-cell-url">{ row.URL }</td><td>

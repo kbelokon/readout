@@ -8,24 +8,12 @@ import (
 	"time"
 )
 
-// preferences_redesign_test.go pins the recolor-only redesign contract of the
-// preferences page (Unit 13). Preferences keeps its retained Bulma `.box`/`.field`
-// form (D4: Bulma stays vendored for residual form primitives; D11: borrow rule =
-// recolor only, no custom-component rebuild). The facts below are independent of
-// any single class the markup happens to emit beyond the two load-bearing ones:
-//   - the form must carry the `ro-prefs` recolor MARKER, because readout.css scopes
-//     the redesign-token recolor of the label / the <select> control / the dropdown
-//     arrow / the leading icon under `.ro-prefs`. Without the marker those rules
-//     never apply and the control renders in Bulma's own chrome (the teal arrow +
-//     blue focus ring D4 calls "stuck on old Bulma blue"), so the marker IS the
-//     "reads as redesign" assertion for a recolor-only screen.
-//   - the theme <select> + the Bulma `.box` form shell must still render and the
-//     POST /preferences write must still round-trip (behavior unchanged).
+// preferences_redesign_test.go pins the owned-control preferences contract. The
+// page keeps the POST /preferences behavior but renders native controls through
+// `.ro-*` classes instead of a framework form shell.
 
 // TestPreferencesFormReadsAsRedesign asserts the theme form still renders inside
-// the redesign shell and carries the `ro-prefs` recolor marker, so the readout.css
-// token recolor (label / select / arrow / icon) actually applies. This is the
-// recolor-only "reads as redesign" bar: same Bulma markup, redesign tokens.
+// the redesign shell using the owned preferences form vocabulary.
 func TestPreferencesFormReadsAsRedesign(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/preferences", http.StatusOK)
@@ -34,18 +22,14 @@ func TestPreferencesFormReadsAsRedesign(t *testing.T) {
 	p.wantHas("header.ro-topbar")
 	p.wantText("h1.title", "Preferences")
 
-	// The retained Bulma form shell is kept (D4/D11: recolor only, not rebuilt) and
-	// carries the redesign recolor marker that activates the token recolor.
 	p.wantAttr(`form.ro-prefs[action="/preferences"]`, "method", "post")
 	p.wantAttr(`form.ro-prefs[action="/preferences"]`, "hx-boost", "false")
-	p.wantHas(`form.box[action="/preferences"]`)
-	p.wantHas(`form.ro-prefs .field`)
-	p.wantHas(`form.ro-prefs label.label`)
+	p.wantHas(`form.ro-prefs .ro-form-row`)
+	p.wantHas(`form.ro-prefs label.ro-label[for="theme-select"]`)
 
-	// The theme <select> (inside Bulma's `.select` wrapper the recolor targets) and
-	// the accent Save button still render.
-	p.wantHas(`form.ro-prefs .select select[name="theme"]`)
-	p.wantHas(`form.ro-prefs button.is-primary`)
+	// The native theme <select> and the accent Save button still render.
+	p.wantHas(`form.ro-prefs select.ro-select#theme-select[name="theme"]`)
+	p.wantHas(`form.ro-prefs button.ro-btn.ro-btn-primary[type="submit"]`)
 
 	// The select is populated from the resolved options with exactly one selected
 	// (the current theme), proving the theme list still renders.

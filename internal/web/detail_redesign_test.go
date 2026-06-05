@@ -230,7 +230,8 @@ func TestDetailAnnotationChipTruncation(t *testing.T) {
 
 // TestYAMLCardCollapsibleCopyable pins the per-section YAML card contract that
 // readout.js keys off: a collapsible[data-name] card whose head holds the
-// h4.title fold target + the .ro-copy-btn, with the highlighted body in .content.
+// h4.title fold target + the .ro-copy-btn, with the highlighted body in
+// .ro-card-content.
 func TestYAMLCardCollapsibleCopyable(t *testing.T) {
 	obj := detailObject("deployments", "Deployment", true, nil, nil)
 	doc := renderDetailView(t, buildDefaultDetailView(t, obj))
@@ -246,8 +247,8 @@ func TestYAMLCardCollapsibleCopyable(t *testing.T) {
 	if specCard.Find(".ro-card-head .ro-copy-btn").Length() != 1 {
 		t.Fatalf("spec card missing its .ro-copy-btn")
 	}
-	if specCard.Find(".content .highlighttable").Length() != 1 {
-		t.Fatalf("spec card body missing the highlighted .content .highlighttable")
+	if specCard.Find(".ro-card-content .highlighttable").Length() != 1 {
+		t.Fatalf("spec card body missing the highlighted .ro-card-content .highlighttable")
 	}
 }
 

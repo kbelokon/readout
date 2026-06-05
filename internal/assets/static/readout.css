@@ -3,21 +3,14 @@
  * Cascade layers. The order below is the cascade order: later-named layers
  * WIN over earlier ones regardless of selector specificity. So:
  *
- *     bulma   -- the vendored framework (imported INTO the layer below, not via
- *                a bare <link>: an unlayered <link> would outrank every layered
- *                rule and defeat the point);
  *     theme   -- theme-scoped colours + the Pygments syntax-highlight palette
  *                (light default, dark under [data-theme=dark] / prefers dark);
- *     app     -- our own component rules. App beats bulma by layer order, so app
- *                rules win WITHOUT any forced-priority override.
+ *     app     -- the owned reset, native controls, and component rules.
  *
- * The @layer statement and the @import MUST come before any style rule (only
- * comments may precede them) or the @import is dropped by the parser.
- * bulma.min.css sits next to this file in /assets/, so the relative URL resolves
- * same-origin (no CDN, no build step).
+ * The @layer statement MUST come before any style rule (only comments may
+ * precede it). There is no frontend build step and no external stylesheet.
  */
-@layer bulma, theme, app;
-@import url('bulma.min.css') layer(bulma);
+@layer theme, app;
 
 /* Self-hosted fonts. Geist (UI) + Geist Mono (data), vendored as local
    variable woff2 next to this file in /assets/fonts/, so the relative URL below
@@ -56,7 +49,153 @@
 }
 
 @layer app {
-    html { overflow: scroll; }
+    html {
+        box-sizing: border-box;
+        overflow: scroll;
+        line-height: 1.5;
+        -webkit-text-size-adjust: 100%;
+    }
+    *,
+    *::before,
+    *::after { box-sizing: inherit; }
+
+    body,
+    h1, h2, h3, h4, h5, h6,
+    p, blockquote, figure,
+    ul, ol, li,
+    dl, dd,
+    pre { margin: 0; padding: 0; }
+    ul, ol { list-style: none; }
+    img, video { max-width: 100%; height: auto; }
+    table { border-collapse: collapse; border-spacing: 0; }
+    th, td { padding: 0; text-align: left; }
+    button,
+    input,
+    select,
+    textarea {
+        margin: 0;
+        font: inherit;
+        color: inherit;
+    }
+    button,
+    select { text-transform: none; }
+    button { cursor: pointer; }
+    button:disabled,
+    input:disabled,
+    select:disabled,
+    textarea:disabled {
+        cursor: not-allowed;
+    }
+    .is-hidden { display: none !important; }
+
+    .title {
+        color: var(--text);
+        font-weight: 600;
+        line-height: 1.125;
+        margin: 0 0 1rem;
+    }
+    h1.title:not(.ro-title) { font-size: 2rem; }
+    h2.title:not(.ro-title) { font-size: 1.5rem; }
+    h3.title:not(.ro-title) { font-size: 1.25rem; }
+    h4.title:not(.ro-card-title):not(.ro-section-title) { font-size: 1rem; }
+    /* Related-subtable heading (e.g. the "Pods" section on a Deployment/RS/STS/DS/Job
+       detail page): preserves the old Bulma `.title.is-5` size (1.25rem) after the Bulma
+       drop -- the markup moved from `title is-5` to `title ro-section-title` but the size
+       was orphaned by the :not() exclusion above. */
+    h4.title.ro-section-title { font-size: 1.25rem; }
+    .section { padding: 3rem 1.5rem; }
+    .container { width: 100%; margin: 0 auto; }
+    .footer { padding: 1.5rem; }
+    .box {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+        padding: 1.25rem;
+    }
+    .label {
+        display: block;
+        margin-bottom: 0.5rem;
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        font-weight: 600;
+    }
+    .content p:not(:last-child),
+    .content ul:not(:last-child),
+    .content ol:not(:last-child),
+    .content pre:not(:last-child) { margin-bottom: 1em; }
+    .content ul { list-style: disc outside; margin-left: 1.5em; }
+    .content ol { list-style: decimal outside; margin-left: 1.5em; }
+    .icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.5em;
+        height: 1.5em;
+        color: inherit;
+        vertical-align: middle;
+    }
+    .icon.is-small {
+        width: 1em;
+        height: 1em;
+        font-size: 0.75rem;
+    }
+    .button,
+    .input {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        color: var(--text);
+        box-shadow: none;
+        line-height: 1.5;
+    }
+    .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.375rem;
+        min-height: 2.5em;
+        padding: calc(0.5em - 1px) 0.75em;
+        white-space: nowrap;
+    }
+    .button:hover,
+    .button:focus {
+        border-color: var(--border-strong);
+        background: var(--surface-2);
+        color: var(--text);
+    }
+    .button[disabled],
+    .button:disabled {
+        opacity: 0.55;
+        filter: none;
+    }
+    .input {
+        width: 100%;
+        height: 2.5em;
+        padding: calc(0.5em - 1px) 0.75em;
+    }
+    .input::placeholder { color: var(--text-faint); }
+    .input:hover { border-color: var(--border-strong); }
+    .input:focus { border-color: var(--accent); background: var(--surface); }
+    .breadcrumb ul {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+    .breadcrumb li {
+        display: flex;
+        align-items: center;
+    }
+    .breadcrumb li.is-active a,
+    .ro-rd .ro-breadcrumb li.is-active a {
+        pointer-events: none;
+        cursor: default;
+    }
+    .menu-list { list-style: none; margin: 0; padding: 0; }
+    .menu-label { display: block; }
 
     /* Accessibility: a VISIBLE keyboard focus ring on every interactive element
        (acceptance: "keyboard focus is visible"). Several controls only carry a
@@ -92,8 +231,6 @@
        elements get aligned numerals for free). Both vars carry a fallback stack
        (declared on :root) so text stays readable while the woff2 loads.
 
-       Beats Bulma's font-family by layer order alone (the app layer wins).
-
        <body> is the page shell: it carries the grotesk UI face AND the theme
        foundation (page surface + base text colour) from tokens, so the whole
        app picks up the right palette per theme. The one blue / off-white
@@ -105,8 +242,9 @@
         font-family: var(--font-ui);
         background: var(--bg);
         color: var(--text);
+        min-height: 100vh;
     }
-    a { color: var(--id-color); }
+    a { color: var(--id-color); text-decoration: none; }
 
     /* DATA -> mono. Code/pre/highlight (YAML + resource blocks), the breadcrumb
        path, kind/label tags, and table cells (identifiers + numerics + ages).
@@ -124,12 +262,9 @@
        Breadcrumb -> quiet mono path. The real cluster / namespace /
        endpoint links are KEPT (the template still renders them as <a>); this only
        restyles them into a calm technical path: small mono type, muted links that
-       warm to the accent on hover, faint "/" separators (Bulma draws the slash via
-       li+li::before -- we just recolour + dim it), and the trailing current
-       segment in plain body text. Bulma marks the last <li> .is-active with
-       pointer-events:none, so the current page reads as static text while every
-       ancestor segment stays a working link. App layer wins over bulma by order --
-       no forced-priority override. */
+       warm to the accent on hover, faint "/" separators from li+li::before, and
+       the trailing current segment in plain body text. The current crumb is inert,
+       while every ancestor segment stays a working link. */
     nav.breadcrumb.ro-breadcrumb {
         font-size: 0.78rem;
         margin-bottom: 0.85rem;
@@ -159,7 +294,7 @@
     aside.menu { view-transition-name: ro-sidebar; }
 
     /* Inline-SVG icons (Lucide) emitted by the partials/icons.html `icon()` macro.
-       The SVGs carry no width/height of their own, so they size to the Bulma
+       The SVGs carry no width/height of their own, so they size to the owned
        `.icon` span here; stroke="currentColor" makes them follow the surrounding
        (theme-aware) text colour. Replaces the FontAwesome-JS runtime. */
     .icon svg.lucide-icon {
@@ -169,12 +304,11 @@
     }
 
     /* ---------------------------------------------------------------------------
-       Slim quiet topbar. The colored Bulma navbar is re-skinned into a
-       calm technical bar driven by the token system: surface fill + a hairline
-       bottom border, muted text, near-black/blue accent only on focus + the
-       cluster status dot. App beats the bulma layer by cascade order, so these
-       win without any forced-priority override. Structure (burger, has-dropdown,
-       the pinned control ids/forms) is unchanged -- only appearance.
+       Slim quiet topbar. The legacy navbar is re-skinned into a calm technical bar
+       driven by the token system: surface fill + a hairline bottom border, muted
+       text, near-black/blue accent only on focus + the cluster status dot. Structure
+       (burger, has-dropdown, the pinned control ids/forms) is unchanged -- only
+       appearance.
        --------------------------------------------------------------------------- */
     nav.navbar.ro-topbar {
         min-height: 3.125rem;            /* slim 50px bar */
@@ -311,14 +445,10 @@
     }
 
     /* Quiet token-driven action button (object-links / detail-header download /
-       TSV / per-table tools + search). Replaces the old server button-class Bulma
-       colour coupling, which mapped to a blue is-link button in dark and a
-       near-white is-light button in light -- under the dark default a cookieless
-       light-OS user got the wrong (blue) fill since theme.name was "dark" while the
-       real palette was light. This reads correctly in BOTH palettes off tokens: a
-       hairline-bordered surface chip with muted icon text that firms on hover.
-       (Units 7/9 refine the exact object-link / detail-header look; this removes the
-       wrong-colour coupling and leaves a both-theme-correct quiet button.) */
+       TSV / per-table tools + search). Replaces the old server button-class colour
+       coupling, which mapped to theme-name-driven variants instead of the effective
+       palette. This reads correctly in BOTH palettes off tokens: a hairline-bordered
+       surface chip with muted icon text that firms on hover. */
     .button.ro-btn-quiet {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -333,9 +463,9 @@
         background: var(--surface-2);
     }
 
-    /* Accent-filled action button (the error-page Retry): the one saturated
-       call-to-action against the quiet Back. Uses the accent token pair so it
-       reads correctly in both themes; app beats bulma by layer order. */
+    /* Accent-filled legacy button variant: the one saturated call-to-action
+       against quiet secondary actions. Uses the accent token pair so it reads
+       correctly in both themes. */
     .button.ro-btn-primary {
         border: 1px solid var(--accent);
         background: var(--accent);
@@ -362,9 +492,8 @@
     @keyframes refresh-spin { to { transform: rotate(360deg); } }
 
     /* Dropdown panels (namespace context list + refresh-interval menu) are themed
-       surfaces, not Bulma's default white -- so they read correctly in dark. Items
-       are muted text that firm up on hover; the namespace filter input matches the
-       topbar search chip. */
+       surfaces, so they read correctly in dark. Items are muted text that firm up
+       on hover; the namespace filter input matches the topbar search chip. */
     nav.navbar.ro-topbar .navbar-dropdown {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -413,9 +542,8 @@
     aside.menu { padding: 1.5rem; margin-top: -1.5rem; }
 
     /* ---------------------------------------------------------------------------
-       Sidebar -> grouped TEXT navigation. The Bulma menu structure
-       is kept (menu / menu-label / menu-list); only appearance changes, driven by
-       tokens, so app wins over bulma by layer order (no forced-priority override).
+       Sidebar -> grouped TEXT navigation. The legacy menu structure is kept
+       (menu / menu-label / menu-list); appearance is driven by tokens.
 
        - Group label (menu-label): a quiet uppercase mono caption -- the only role
          of "Custom Resources" is to be one more such label; it is NOT special-cased
@@ -425,8 +553,7 @@
          default, warms to full text + a faint surface wash on hover.
        - Active item: the link whose target path == the current request path gets
          .is-active (set in sidebar.html) -> a subtle accent tint PLUS an accent
-         left-bar drawn with ::before (no extra markup, no inline style). This
-         overrides Bulma's own .menu-list a.is-active blue fill via layer order. */
+         left-bar drawn with ::before (no extra markup, no inline style). */
     aside.menu .menu-label {
         font-family: var(--font-mono);
         font-size: 0.75rem;
@@ -613,80 +740,58 @@
         color: var(--text-faint);
     }
 
-    /* The single accent action button (Search in selected / Filter / Save /
-       Refresh): Bulma's .is-primary teal is re-skinned to the design accent token
-       (near-black in light, blue in dark) so it reads as the one saturated action.
-       App beats the bulma layer by cascade order -- no forced priority. The
-       disabled state quiets to a surface chip until a checkbox arms it. */
-    .button.is-primary {
-        background: var(--accent);
-        border: 1px solid var(--accent);
-        color: var(--accent-on);
-        box-shadow: none;
-        border-radius: var(--radius-sm);
-    }
-    .button.is-primary:hover,
-    .button.is-primary:focus {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: var(--accent-on);
-        filter: brightness(1.08);
-    }
-    .button.is-primary[disabled],
-    .button.is-primary:disabled {
-        background: var(--surface-2);
-        border-color: var(--border);
-        color: var(--text-faint);
-        opacity: 1;
-    }
-
     /* ---------------------------------------------------------------------------
        Preferences page. The page is `preferences.html`: a single
        POST /preferences form (the one allowed write, hx-boost="false") with a
-       theme <select> + the accent Save button. Without these rules the form is
-       un-themed Bulma -- under the dark DEFAULT the <select> renders a white
-       control with Bulma's teal arrow and the .label/icon take Bulma's dark-grey
-       chrome, all of which read wrong on the dark surface. Scoped to `.ro-prefs`
-       (a class on that one form) so it restyles ONLY this page and never reaches
-       the shared .label/.select/.field used by search/tools forms. The Save
-       button already inherits the token .button.is-primary skin above, so it is
-       not restyled here. App wins over the bulma layer by cascade order -- no
-       forced-priority override needed. ------------------------------------- */
-    /* (Unit 16) the Bulma `.box` shell still used Bulma's own dark grey; pin it to
-       the redesign surface so the preferences form card matches the rest of the
-       redesign (not Bulma's grey). */
-    .ro-prefs.box {
+       theme <select> + the accent Save button. The form owns its native controls
+       and card shell directly, using only `.ro-*` classes. ------------------ */
+    .ro-prefs {
+        max-width: 28rem;
+        padding: 1rem;
         background: var(--surface);
         border: 1px solid var(--border);
+        border-radius: var(--radius);
         color: var(--text);
     }
-    .ro-prefs .label { color: var(--text-muted); }
-
-    /* The native <select> inside Bulma's `.select` wrapper: tokenise the control
-       (surface fill, token border + text, mono so the theme name reads as data)
-       so it matches the navbar inputs. Bulma draws the dropdown arrow with
-       `.select::after` (a border-triangle in its own link colour); recolour it to
-       a quiet faint token and firm/accent the border on hover/focus like the
-       other token-driven inputs in this app. */
-    .ro-prefs .select select {
+    .ro-form-row { margin-bottom: 1rem; }
+    .ro-label {
+        display: block;
+        margin-bottom: 0.5rem;
+        color: var(--text-muted);
+        font-size: 0.8125rem;
+        font-weight: 600;
+    }
+    .ro-select {
+        width: min(18rem, 100%);
+        height: 2.25rem;
+        appearance: none;
+        padding: 0 2.25rem 0 0.75rem;
         font-family: var(--font-mono);
+        font-size: 0.8125rem;
         color: var(--text);
-        background: var(--surface);
+        background-color: var(--surface);
+        background-image:
+            linear-gradient(45deg, transparent 50%, var(--text-faint) 50%),
+            linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
+        background-position:
+            calc(100% - 0.95rem) 50%,
+            calc(100% - 0.65rem) 50%;
+        background-repeat: no-repeat;
+        background-size: 0.3125rem 0.3125rem, 0.3125rem 0.3125rem;
         border: 1px solid var(--border);
         border-radius: var(--radius-sm);
         box-shadow: none;
     }
-    .ro-prefs .select:not(.is-multiple):not(.is-loading)::after {
-        border-color: var(--text-faint);
-    }
-    .ro-prefs .select select:hover { border-color: var(--border-strong); }
-    .ro-prefs .select select:focus {
+    .ro-select:hover { border-color: var(--border-strong); }
+    .ro-select:focus {
         border-color: var(--accent);
-        background: var(--surface);
+        background-color: var(--surface);
     }
-    /* the leading palette icon in `.control.has-icons-left` reads as a quiet
-       affordance, like the navbar search/field icons. */
-    .ro-prefs .control.has-icons-left .icon { color: var(--text-faint); }
+    .ro-select:disabled {
+        background-color: var(--surface-2);
+        color: var(--text-faint);
+        opacity: 1;
+    }
 
     /* (Unit 16) the pre-redesign `.ro-list-table td.ro-cell-url` + the
        `.ro-list-table td.ro-cell-name a.ro-ext-link` link-out rules were removed:
@@ -708,7 +813,7 @@
         margin-right: 0.375rem;
     }
 
-    /* (Unit 16) the pre-redesign Bulma `.tabs.ro-rt-tabs li …` rules were removed:
+    /* (Unit 16) the pre-redesign `.tabs.ro-rt-tabs li ...` rules were removed:
        resource_types now emits `<div class="ro-tabs ro-rt-tabs">` with bare `<a>`
        anchors (no `.tabs`, no `<li>`), styled by the redesign `.ro-rd .ro-tabs`
        chrome; the `.ro-rt-tabs` marker is KEEP-AS-IS but its old `.tabs`/`<li>`
@@ -764,6 +869,7 @@
     div.section.is-collapsed h4.title { color: var(--text-muted); }
     div.section.is-collapsed h4.title::after { content: " \25be"; }
     div.section.is-collapsed .content,
+    div.section.is-collapsed .ro-card-content,
     div.section.is-collapsed table { display: none; }
 
     /* ---------------------------------------------------------------------------
@@ -850,8 +956,8 @@
 
     /* YAML body inside the card: flush on the card surface (kill the Pygments
        block fill), comfortable padding, small mono type. */
-    .ro-yaml-card .content { margin: 0; }
-    .ro-yaml-card .content .highlight { background: transparent; margin: 0; }
+    .ro-yaml-card .ro-card-content { margin: 0; }
+    .ro-yaml-card .ro-card-content .highlight { background: transparent; margin: 0; }
     /* Full-manifest YAML tab: the same carded shell as a YAML card, so the gutter
        rules below (shared via :is) sit inside a bordered surface instead of bare. */
     .ro-yaml-view { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
@@ -940,21 +1046,18 @@
     .ro-line-folded { display: none; }
 
     /* ---------------------------------------------------------------------------
-       Resource-DETAIL header + body. The read-only detail page is
-       raw light Bulma under the dark default otherwise; this skins the parts no
-       other unit owns -- the header (kind badge · mono name · meta · Download-YAML
-       + configured link-outs), the labels/annotations chips, the owner line, the
-       Default/YAML/Logs tabs, and the body tables (controller Pods subtable +
-       Events) + the global footer -- all driven off the token system, so app wins
-       over bulma by layer order (no forced-priority override). The header stays
-       READ-ONLY: the only actions are Download-YAML and the operator-configured
-       object/label link-outs (the link loop), rendered as quiet `.ro-iconbtn`
-       icon buttons (the single authoritative icon-button skin).
+       Resource-DETAIL header + body. These rules skin the parts no other unit owns:
+       the header (kind badge · mono name · meta · Download-YAML + configured
+       link-outs), labels/annotations chips, owner line, Default/YAML/Logs tabs,
+       body tables (controller Pods subtable + Events) and the global footer. The
+       header stays READ-ONLY: the only actions are Download-YAML and the operator-
+       configured object/label link-outs (the link loop), rendered as quiet
+       `.ro-iconbtn` icon buttons (the single authoritative icon-button skin).
 
-       The detail page <h1> keeps Bulma's bare `class="title"` (a pinned offline
-       guard matches `<h1 class="title">name` verbatim), so the mono-name treatment
-       is scoped to a title that CONTAINS a kind badge -- i.e. only the detail
-       header, never the list page's plain "Pods" title. */
+       The legacy detail page <h1> keeps bare `class="title"` (a pinned offline guard
+       matches `<h1 class="title">name` verbatim), so the mono-name treatment is
+       scoped to a title that CONTAINS a kind badge -- i.e. only the detail header,
+       never the list page's plain "Pods" title. */
     h1.title:has(.ro-kind-badge) {
         align-items: baseline;
         flex-wrap: wrap;
@@ -998,8 +1101,7 @@
 
     /* Tabs (Default / YAML / Logs) -> a quiet underline tab strip: a hairline
        baseline, muted labels, the active tab marked by an accent underline + accent
-       text. Bulma's .tabs draws its own bottom border + active colours; app
-       wins by layer order. The <a>s are real navigation links (kept verbatim). */
+       text. The <a>s are real navigation links (kept verbatim). */
     .tabs.ro-detail-tabs {
         margin-bottom: 1rem;
         font-size: 0.8125rem;
@@ -1042,9 +1144,8 @@
 
     /* Chips. The LABEL chip keeps its selector <a> + the pinned `.tag.is-link`
        inner span working (the click-to-filter link is load-bearing); we re-skin
-       the tag from Bulma's blue fill to a neutral bordered surface token. The
-       ANNOTATION chip is the same skin on a bare `.tag`. App wins by layer order,
-       so the is-link blue is overridden by cascade order alone (no forced priority). */
+       the tag to a neutral bordered surface token. The ANNOTATION chip is the same
+       skin on a bare `.tag`. */
     .ro-chip {
         display: inline-flex;
         max-width: 21.25rem;
@@ -1107,8 +1208,8 @@
     /* the Events message column takes the remaining width and ellipsizes */
     table.table.ro-subtable td.ro-event-msg { width: 100%; color: var(--text-muted); }
 
-    /* Global footer -> a quiet hairline-topped strip on the page surface (it is raw
-       light Bulma .footer otherwise). The codeberg link keeps the id-colour. */
+    /* Global footer -> a quiet hairline-topped strip on the page surface. The
+       codeberg link keeps the id-colour. */
     footer.footer.ro-footer {
         background: var(--bg);
         border-top: 1px solid var(--border);
@@ -1117,13 +1218,79 @@
         font-size: 0.8125rem;
     }
     footer.footer.ro-footer a { color: var(--id-color); }
+    .ro-footer-copy { text-align: center; }
 
     a.toggle-tools.is-active span {
         transform: rotate(180deg);
     }
-    form.tools-form { display: none; margin-bottom: 1rem; }
+    form.tools-form {
+        display: none;
+        margin-bottom: 1rem;
+        padding: 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+    }
     form.tools-form.is-active { display: block; }
     form .checkboxes label { margin-right: 0.5rem; padding-top: 0.375em; }
+    .ro-tools-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 0.625rem;
+    }
+    .ro-tools-field {
+        display: grid;
+        grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
+        gap: 0.75rem;
+        align-items: center;
+    }
+    .ro-tools-label {
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+    }
+    .ro-input-wrap {
+        position: relative;
+        display: block;
+        min-width: 0;
+    }
+    .ro-field-icon {
+        position: absolute;
+        left: 0.625rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-faint);
+        pointer-events: none;
+    }
+    .ro-input {
+        width: 100%;
+        height: 2.125rem;
+        padding: 0 0.625rem 0 2rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        color: var(--text);
+        font-family: var(--font-mono);
+        font-size: 0.78125rem;
+        box-shadow: none;
+    }
+    .ro-input::placeholder { color: var(--text-faint); }
+    .ro-input:hover { border-color: var(--border-strong); }
+    .ro-input:focus { border-color: var(--accent); background: var(--surface); }
+    .ro-tools-actions {
+        display: flex;
+        justify-content: flex-end;
+    }
+    @media (max-width: 760px) {
+        .ro-tools-field {
+            grid-template-columns: 1fr;
+            gap: 0.375rem;
+        }
+        .ro-tools-actions { justify-content: stretch; }
+        .ro-tools-actions .ro-btn { width: 100%; justify-content: center; }
+    }
 
     /* ---------------------------------------------------------------------------
        Search results. The live API list+filter, the GET form
@@ -1301,8 +1468,7 @@
        (@layer theme) and `.log-src`/`.log-ts` are styled in the redesign block. */
     pre.ro-logpre em { color: var(--text-faint); font-style: normal; }
 
-    /* "Container logs disabled" warning state, re-skinned as a token notice
-       (replaces the Bulma message is-warning article). */
+    /* "Container logs disabled" warning state, re-skinned as a token notice. */
     .ro-notice {
         border: 1px solid var(--border);
         border-left: 0.1875rem solid var(--st-warn);
@@ -1508,6 +1674,30 @@
         gap: 0.625rem;
         justify-content: center;
     }
+    .ro-error-card {
+        max-width: 42rem;
+        margin: 3.5rem auto 0;
+        padding: 1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 0.1875rem solid var(--st-err);
+        border-radius: var(--radius);
+        color: var(--text);
+    }
+    .ro-error-card h2 {
+        margin: 0 0 0.5rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text);
+    }
+    .ro-error-card p {
+        margin: 0;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
 
     /* Empty state (resource-list-content.html). Not an error -- a calm, expected
        state: the literal "No <Kind> ... found." title plus a quiet nudge. The cell
@@ -1626,7 +1816,7 @@
        same token layer just rethemed to the green/dark "Terminal" palette, so they
        follow light/dark for free. base.css's two `body.theme-light` rules (on the
        monogram tile) are mapped onto readout's data-theme mechanism (NOT a body
-       class) per D5. App wins over bulma by layer order -- no !important.
+       class) per D5.
        =========================================================================== */
 
     .mono { font-family: var(--font-mono); }
@@ -1671,10 +1861,17 @@
     /* context dropdown trigger (namespace) */
     .ctx-dd {
         display: inline-flex; align-items: center; gap: 7px;
+        max-width: min(22rem, 100vw);
         padding: 4px 9px 4px 8px; border-radius: var(--radius-sm);
         border: 1px solid var(--border); background: var(--surface);
         font-family: var(--font-mono); font-size: 12px; color: var(--text);
         cursor: pointer;
+    }
+    .ctx-dd .context-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .ctx-dd:hover { border-color: var(--border-strong); }
     .ctx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand);
@@ -1720,8 +1917,8 @@
     }
 
     /* ---- topbar dropdown panels (namespace context + refresh interval) --------
-       The redesign header.ro-topbar chrome renamed the old Bulma `.navbar-dropdown`
-       panels to NET-NEW class names: `.ctx-menu` (namespace list) and
+       The redesign header.ro-topbar chrome renamed the old dropdown panels to
+       NET-NEW class names: `.ctx-menu` (namespace list) and
        `.refresh-menu` (interval picker). The old styling was scoped to
        `nav.navbar.ro-topbar .navbar-dropdown`, which no longer matches under
        <header>, so without these rules the panels render permanently expanded,
@@ -1734,11 +1931,10 @@
          - namespace: CLICK-toggled. The delegated click handler toggles `is-active`
            on the #namespace-dropdown container, so the panel reveals on
            `#namespace-dropdown.is-active`.
-         - refresh: HOVER/FOCUS-revealed. The old control used Bulma `is-hoverable`
-           (CSS :hover) and there is NO JS open/close handler for it -- `refresh-on`
-           means "an interval is active", not "menu open" -- so the panel reveals on
-           container :hover / :focus-within (the faithful port of is-hoverable). */
-    #namespace-dropdown { position: relative; }
+         - refresh: HOVER/FOCUS-revealed. There is NO JS open/close handler for it --
+           `refresh-on` means "an interval is active", not "menu open" -- so the
+           panel reveals on container :hover / :focus-within. */
+    #namespace-dropdown { position: relative; min-width: 0; }
     #refresh-dropdown { position: relative; }
 
     .ctx-menu,
@@ -1854,11 +2050,11 @@
     .ro-main { flex: 1; min-width: 0; padding: 22px 26px 80px; }
     .ro-main.wide { max-width: 100%; }
 
-    /* breadcrumb (redesign). The redesign breadcrumb is `<nav class="ro-breadcrumb">`
-       -- the SAME selector the live Bulma breadcrumb uses -- so these rules are
-       scoped under the redesign CONTENT marker `.ro-rd` (D13), added only by a
-       migrated content template. This keeps the port ADDITIVE: the new breadcrumb
-       look applies only on migrated screens, the live breadcrumb keeps its existing
+    /* breadcrumb (redesign). The redesign breadcrumb is `<nav class="ro-breadcrumb">`,
+       the same selector the legacy breadcrumb used, so these rules are scoped under
+       the redesign CONTENT marker `.ro-rd` (D13), added only by a migrated content
+       template. This keeps the port additive: the new breadcrumb look applies only
+       on migrated screens, the legacy breadcrumb keeps its existing
        `nav.breadcrumb.ro-breadcrumb` styling. (Not `.ro-shell`: that grid wrapper is
        present on every screen and cannot distinguish migrated content.) */
     .ro-rd .ro-breadcrumb { font-family: var(--font-mono); font-size: 12px; margin-bottom: 14px; }
@@ -2210,8 +2406,8 @@
 
     /* YAML cards (collapsible per-section) -- redesign. NOTE (Unit 16): the COLLAPSE
        is driven by `is-collapsed` on the `.collapsible` card (readout.js) + the live
-       `div.section.is-collapsed .content { display:none }` rule above; the markup is
-       `.ro-card-head > h4.title` + `.content` (the highlighted YAML), with no `.fold`
+       `div.section.is-collapsed .ro-card-content { display:none }` rule above; the markup is
+       `.ro-card-head > h4.title` + `.ro-card-content` (the highlighted YAML), with no `.fold`
        / `.ro-card-body` / `.key-count` / `.collapsed` elements. The dead overlay
        lines that keyed on `.collapsed`/`.ro-card-body`/`.fold`/`.key-count` were
        removed -- they claimed to own a collapse they never drove. */
@@ -2256,6 +2452,8 @@
         border-radius: var(--radius-sm); border: 1px solid transparent; font-size: 12.5px; font-weight: 550;
         cursor: pointer; background: var(--accent); color: var(--accent-on); }
     .ro-btn:hover { filter: brightness(1.06); }
+    .ro-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+    .ro-btn-primary:hover { color: var(--accent-on); }
     .ro-btn.quiet { background: var(--surface); color: var(--text-muted); border-color: var(--border); }
     .ro-btn.quiet:hover { color: var(--text); border-color: var(--border-strong); }
     .ro-btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
@@ -2452,8 +2650,8 @@
     /* Clusters.html inline <style> */
     .ro-page { max-width: 1180px; margin: 0 auto; padding: 30px 26px 80px; }
     .tools-row { display: flex; gap: 8px; margin: 0 0 18px; }
-    .tools-row .field { position: relative; flex: 1; }
-    .tools-row .field .ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
+    .tools-row .ro-tools-filter { position: relative; flex: 1; }
+    .tools-row .ro-tools-filter .ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
     .tools-row input { width: 100%; height: 36px; padding: 0 12px 0 34px; background: var(--surface);
         border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; }
     .tools-row input:focus { border-color: var(--accent); }
@@ -2497,11 +2695,18 @@
         }
         .ro-main { padding: 16px 13px 60px; }
         header.ro-topbar { gap: 10px; padding: 0 11px; }
+        .ctx-dd { max-width: 32vw; }
+        .topnav,
+        .refresh-label { display: none; }
         .ro-search { display: none; }
         .ro-title { font-size: 21px; }
         .ro-mobile-hide { display: none !important; }
         .ro-table-wrap.has-cards { display: none; }
         .ro-cardlist { display: flex; }
+    }
+    @media (max-width: 420px) {
+        header.ro-topbar .brand-name { display: none; }
+        header.ro-topbar .brand-item { padding-right: 0; }
     }
     /* The hamburger is mobile-only chrome: hidden at the desktop width where the
        sidebar is always present, shown by the media query default below 760px (its
@@ -2694,12 +2899,11 @@
     td.age-old    { color: var(--age-old); }
 
     /* Status colour, re-skinned to the redesign palette.
-       The cell class resolver still returns Bulma's has-text-* utility strings
-       (the render contract pins them); we only re-point those classes at
-       the five-status tokens so Status words, Restarts and the Ready fraction
-       read in the redesign palette. App beats the bulma layer by cascade order
-       alone (no forced-priority override). has-text-grey is the explicit "muted"
-       cell (Restarts==0, zero CPU/Mem) -> the faint token. */
+       The cell class resolver still returns legacy has-text-* tone strings (the
+       render contract pins them); we only re-point those classes at the five-status
+       tokens so Status words, Restarts and the Ready fraction read in the redesign
+       palette. has-text-grey is the explicit "muted" cell (Restarts==0, zero
+       CPU/Mem) -> the faint token. */
     .has-text-danger  { color: var(--st-err); }
     .has-text-warning { color: var(--st-warn); }
     .has-text-success { color: var(--st-ok); }
