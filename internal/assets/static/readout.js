@@ -796,12 +796,18 @@ function buildPaletteRow(entry, key) {
     }
     row.appendChild(label);
 
-    // Resource-type rows get a faint "resource" meta tag (matches the mockup).
+    // Resource-type rows show the api group (faint) + a compact namespaced/cluster
+    // scope badge, so a kind reads as e.g. "Certificates  cert-manager.io  NS".
     if (key === 'kinds') {
         const meta = document.createElement('span');
         meta.className = 'pal-meta';
-        meta.textContent = 'resource';
+        meta.textContent = entry.group || 'core'; // textContent -> hostile group cannot inject
         row.appendChild(meta);
+        const scope = document.createElement('span');
+        scope.className = 'pal-scope ' + (entry.namespaced ? 'ns' : 'cluster');
+        scope.textContent = entry.namespaced ? 'NS' : 'CL';
+        scope.title = entry.namespaced ? 'namespaced' : 'cluster-scoped';
+        row.appendChild(scope);
     }
 
     // Destination: a navigable href (server-built absolute path) and/or a named

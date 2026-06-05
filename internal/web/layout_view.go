@@ -135,11 +135,12 @@ type paletteLinkFeed struct {
 // API group + the list href + the pre-rendered (HTML-escaped via JSON encoding)
 // icon markup from the Unit-1 resolver.
 type paletteKindFeed struct {
-	Kind   string `json:"kind"`
-	Plural string `json:"plural"`
-	Group  string `json:"group"`
-	Href   string `json:"href"`
-	Icon   string `json:"icon"`
+	Kind       string `json:"kind"`
+	Plural     string `json:"plural"`
+	Group      string `json:"group"`
+	Namespaced bool   `json:"namespaced"`
+	Href       string `json:"href"`
+	Icon       string `json:"icon"`
 }
 
 // paletteActionFeed is a labelled action: an href (navigate) or a named client
@@ -320,11 +321,12 @@ func (s *Server) paletteKindEntry(cluster, namespace string, rt *kube.ResourceTy
 	}
 	override := s.cfg.ResourceIcons[config.ResourceIconKey{Kind: rt.Kind, Group: rt.Group}]
 	return paletteKindFeed{
-		Kind:   pluralizeKind(rt.Kind),
-		Plural: rt.Plural,
-		Group:  rt.Group,
-		Href:   href,
-		Icon:   string(icons.KindIcon(rt.Kind, rt.Group, isCRD(rt.APIVersion), override)),
+		Kind:       pluralizeKind(rt.Kind),
+		Plural:     rt.Plural,
+		Group:      rt.Group,
+		Namespaced: rt.Namespaced,
+		Href:       href,
+		Icon:       string(icons.KindIcon(rt.Kind, rt.Group, isCRD(rt.APIVersion), override)),
 	}
 }
 

@@ -281,6 +281,38 @@ func TestPaletteFeedIncludesCustomResourceKinds(t *testing.T) {
 			t.Fatalf("kind feed entry missing a required field: %+v", k)
 		}
 	}
+
+	// Each kind carries its api group + scope so the palette can label it (group
+	// text + a namespaced/cluster badge). Certificate is a namespaced CRD; nodes
+	// is a cluster-scoped built-in.
+	var cert, node *struct {
+		group string
+		ns    bool
+		found bool
+	}
+	cert, node = &struct {
+		group string
+		ns    bool
+		found bool
+	}{}, &struct {
+		group string
+		ns    bool
+		found bool
+	}{}
+	for _, k := range data.Kinds {
+		if k.Plural == "certificates" {
+			cert.group, cert.ns, cert.found = k.Group, k.Namespaced, true
+		}
+		if k.Plural == "nodes" {
+			node.group, node.ns, node.found = k.Group, k.Namespaced, true
+		}
+	}
+	if !cert.found || cert.group != "cert-manager.io" || !cert.ns {
+		t.Fatalf("certificates kind = %+v, want group cert-manager.io + namespaced", cert)
+	}
+	if !node.found || node.group != "" || node.ns {
+		t.Fatalf("nodes kind = %+v, want core group + cluster-scoped (namespaced=false)", node)
+	}
 }
 
 // TestPaletteFeedDetailTabActions pins that on a detail page the palette adds
@@ -333,11 +365,12 @@ type paletteFeedJSON struct {
 		Href string `json:"href"`
 	} `json:"namespaces"`
 	Kinds []struct {
-		Kind   string `json:"kind"`
-		Plural string `json:"plural"`
-		Group  string `json:"group"`
-		Href   string `json:"href"`
-		Icon   string `json:"icon"`
+		Kind       string `json:"kind"`
+		Plural     string `json:"plural"`
+		Group      string `json:"group"`
+		Namespaced bool   `json:"namespaced"`
+		Href       string `json:"href"`
+		Icon       string `json:"icon"`
 	} `json:"kinds"`
 	Actions []struct {
 		Label  string `json:"label"`

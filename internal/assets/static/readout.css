@@ -2367,6 +2367,11 @@
     .ro-pal-item .pal-label { font-size: 13.5px; flex: 1; }
     .ro-pal-item .pal-label .pal-ctx { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; margin-left: 8px; }
     .ro-pal-item .pal-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+    /* compact namespaced/cluster scope badge on resource-type rows */
+    .ro-pal-item .pal-scope { font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em;
+        padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-faint); }
+    .ro-pal-item .pal-scope.ns { color: var(--st-info); border-color: color-mix(in oklab, var(--st-info) 35%, var(--border)); }
+    .ro-pal-item .pal-scope.cluster { color: var(--st-warn); border-color: color-mix(in oklab, var(--st-warn) 35%, var(--border)); }
     .ro-pal-item .ro-kbd { margin-left: 4px; }
     .ro-pal-item.active { background: var(--accent-weak); }
     .ro-pal-item.active .ico, .ro-pal-item.active .ico svg { color: var(--accent); }
