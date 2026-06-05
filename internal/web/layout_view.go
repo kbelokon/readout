@@ -8,6 +8,7 @@ import (
 
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
+	"github.com/kbelokon/readout/internal/web/icons"
 )
 
 // defaultSidebarGroups is the built-in sidebar layout used when the config file
@@ -189,19 +190,18 @@ func (s *Server) buildLayoutViewScoped(r *http.Request, title, cluster, namespac
 		Footer:        s.partials["partials/footer.html"],
 		Navbar:        navbar,
 		Sidebar:       sidebar,
-		Palette:       s.buildPaletteFeed(cluster, namespace, &navbar, &sidebar),
+		Palette:       s.buildPaletteFeed(r, cluster, namespace, &navbar, &sidebar),
 	}
 }
 
-// buildPaletteFeed assembles the ⌘K palette data (D10) from the data the layout
-// already resolved -- the cluster registry (manager.Clusters), the navbar
-// namespace links, and the sidebar resource-type entries -- so it issues NO new
-// discovery/API call. When no cluster is in scope the cluster list still
-// populates (the registry is request-independent) while namespaces/kinds are
-// empty, so the palette opens everywhere. The icon markup is the Unit-1
-// resolver's already-escaped string carried verbatim (JSON encoding re-escapes
-// it, so it is safe inside the <script> blob).
-func (s *Server) buildPaletteFeed(cluster, namespace string, navbar *navbarView, sidebar *sidebarView) paletteFeedView {
+// buildPaletteFeed assembles the ⌘K palette data (D10): the cluster registry,
+// the navbar namespace links, EVERY discovered resource type (built-ins + CRDs,
+// from the cached discovery the sidebar already warmed), and the sidebar meta
+// actions. When no cluster is in scope the cluster list still populates (the
+// registry is request-independent) while namespaces/kinds are empty, so the
+// palette opens everywhere. The icon markup is the Unit-1 resolver's
+// already-escaped string carried verbatim.
+func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, navbar *navbarView, sidebar *sidebarView) paletteFeedView {
 	feed := paletteFeedView{
 		Clusters:   []paletteLinkFeed{},
 		Namespaces: []paletteLinkFeed{},
@@ -230,15 +230,33 @@ func (s *Server) buildPaletteFeed(cluster, namespace string, navbar *navbarView,
 		feed.Namespaces = append(feed.Namespaces, paletteLinkFeed{Name: ns.Text, Href: ns.Href})
 	}
 
-	for _, group := range sidebar.Groups {
-		for _, link := range group.Links {
-			feed.Kinds = append(feed.Kinds, paletteKindFeed{
-				Kind:   link.Text,
-				Plural: link.Plural,
-				Group:  link.Group,
-				Href:   link.Href,
-				Icon:   string(link.Icon),
-			})
+	// Resource-type group: ALL discovered types (built-ins + CRDs) so ⌘K jumps to
+	// any kind, not only the curated sidebar. Discovery is cached (the sidebar
+	// already triggered it); a failure degrades to no kinds and the palette still
+	// opens with clusters/namespaces.
+	if cluster != "" && cluster != kube.AllClusters {
+		if clusterObj, ok := s.manager.Get(cluster); ok {
+			nsTypes, clusterTypes, _ := s.kubeClient(r, clusterObj).ResourceTypes(r.Context())
+			seen := map[string]bool{}
+			add := func(rt *kube.ResourceType, ns string) {
+				// metrics.k8s.io (PodMetrics/NodeMetrics) is a join source, not a
+				// navigable kind -- skip it (and its plural collides with pods/nodes).
+				if rt.Group == "metrics.k8s.io" {
+					return
+				}
+				entry := s.paletteKindEntry(cluster, ns, rt)
+				if seen[entry.Href] {
+					return
+				}
+				seen[entry.Href] = true
+				feed.Kinds = append(feed.Kinds, entry)
+			}
+			for i := range nsTypes {
+				add(&nsTypes[i], namespace)
+			}
+			for i := range clusterTypes {
+				add(&clusterTypes[i], "")
+			}
 		}
 	}
 
@@ -256,6 +274,31 @@ func (s *Server) buildPaletteFeed(cluster, namespace string, navbar *navbarView,
 	)
 
 	return feed
+}
+
+// paletteKindEntry builds a palette resource-type row for a discovered type: a
+// list href (the in-scope namespace for namespaced kinds, else _all; the cluster
+// path for cluster-scoped kinds) and the Unit-1 kind icon (with the Tier-3
+// per-resource override), matching how the sidebar resolves the same type.
+func (s *Server) paletteKindEntry(cluster, namespace string, rt *kube.ResourceType) paletteKindFeed {
+	var href string
+	if rt.Namespaced {
+		ns := namespace
+		if ns == "" {
+			ns = kube.AllNamespaces
+		}
+		href = fmt.Sprintf("/clusters/%s/namespaces/%s/%s", url.PathEscape(cluster), url.PathEscape(ns), url.PathEscape(rt.Plural))
+	} else {
+		href = fmt.Sprintf("/clusters/%s/%s", url.PathEscape(cluster), url.PathEscape(rt.Plural))
+	}
+	override := s.cfg.ResourceIcons[config.ResourceIconKey{Kind: rt.Kind, Group: rt.Group}]
+	return paletteKindFeed{
+		Kind:   pluralizeKind(rt.Kind),
+		Plural: rt.Plural,
+		Group:  rt.Group,
+		Href:   href,
+		Icon:   string(icons.KindIcon(rt.Kind, rt.Group, isCRD(rt.APIVersion), override)),
+	}
 }
 
 func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName string, explicit bool) navbarView {

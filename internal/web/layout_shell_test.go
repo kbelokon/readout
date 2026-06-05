@@ -246,6 +246,43 @@ func TestLayoutPaletteDataBlob(t *testing.T) {
 	}
 }
 
+// TestPaletteFeedIncludesCustomResourceKinds pins that the palette "resource
+// type" group lists ALL discovered types -- including CRDs (cert-manager
+// certificates), not only the curated sidebar built-ins -- so ⌘K can jump
+// straight to a custom resource. Every entry stays fully wired (href + icon).
+func TestPaletteFeedIncludesCustomResourceKinds(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
+
+	var data paletteFeedJSON
+	if err := json.Unmarshal([]byte(p.doc.Find(`#ro-palette-data`).Text()), &data); err != nil {
+		t.Fatalf("parse palette feed: %v", err)
+	}
+	has := func(plural string) bool {
+		for _, k := range data.Kinds {
+			if k.Plural == plural {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("certificates") {
+		var got []string
+		for _, k := range data.Kinds {
+			got = append(got, k.Plural)
+		}
+		t.Fatalf("palette kinds missing the certificates CRD (jump-to-custom-resource); got %v", got)
+	}
+	if !has("pods") {
+		t.Fatalf("palette kinds missing the built-in pods entry")
+	}
+	for _, k := range data.Kinds {
+		if k.Href == "" || k.Icon == "" || k.Kind == "" {
+			t.Fatalf("kind feed entry missing a required field: %+v", k)
+		}
+	}
+}
+
 // paletteFeedJSON mirrors the pinned palette-feed wire shape so the test parses
 // the emitted blob structurally (the camelCase keys are the public contract Unit
 // 4's JS reads).
