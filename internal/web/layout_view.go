@@ -263,21 +263,38 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, na
 
 	// On a detail page (the route carries {name}) add jump-to-tab actions for the
 	// object in scope -- Default / YAML / Events, plus Logs for a workload -- so
-	// ⌘K dives into a view without clicking the tabs. r.URL.Path is the detail
-	// path; the tab variants append the same ?view / /logs the detail tabs use.
+	// ⌘K dives into a view without clicking the tabs. The href base is the BASE
+	// detail path rebuilt from the route values, NOT r.URL.Path: on the /logs
+	// sub-page r.URL.Path carries the /logs suffix, which yielded broken
+	// .../logs?view=events tab links.
 	if name := r.PathValue("name"); name != "" {
-		path := r.URL.Path
+		ns := r.PathValue("namespace")
+		plural := r.PathValue("plural")
+		base := fmt.Sprintf("/clusters/%s/%s/%s", url.PathEscape(cluster), url.PathEscape(plural), url.PathEscape(name))
+		if ns != "" {
+			base = fmt.Sprintf("/clusters/%s/namespaces/%s/%s/%s", url.PathEscape(cluster), url.PathEscape(ns), url.PathEscape(plural), url.PathEscape(name))
+		}
 		feed.Actions = append(feed.Actions,
-			paletteActionFeed{Label: "Default view", Href: path},
-			paletteActionFeed{Label: "YAML", Href: path + "?view=yaml"},
-			paletteActionFeed{Label: "Events", Href: path + "?view=events"},
+			paletteActionFeed{Label: "Default view", Href: base},
+			paletteActionFeed{Label: "YAML", Href: base + "?view=yaml"},
+			paletteActionFeed{Label: "Events", Href: base + "?view=events"},
 		)
-		if r.PathValue("namespace") != "" && workloadPlural(r.PathValue("plural")) {
-			feed.Actions = append(feed.Actions, paletteActionFeed{Label: "Logs", Href: path + "/logs"})
+		if ns != "" && workloadPlural(plural) {
+			feed.Actions = append(feed.Actions, paletteActionFeed{Label: "Logs", Href: base + "/logs"})
 		}
 	}
 
+	// Sidebar meta actions (Resource Types / Events), deduped by label so the
+	// object's Events tab above is not doubled by the namespace-level Events meta.
+	metaSeen := map[string]bool{}
+	for _, a := range feed.Actions {
+		metaSeen[a.Label] = true
+	}
 	for _, meta := range sidebar.Meta {
+		if metaSeen[meta.Text] {
+			continue
+		}
+		metaSeen[meta.Text] = true
 		feed.Actions = append(feed.Actions, paletteActionFeed{Label: meta.Text, Href: meta.Href})
 	}
 	// "All clusters" navigates; "Toggle theme" carries NO href -- it is a named

@@ -321,33 +321,49 @@ func TestPaletteFeedIncludesCustomResourceKinds(t *testing.T) {
 // without clicking the tabs.
 func TestPaletteFeedDetailTabActions(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
-	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
+	base := "/clusters/test/namespaces/default/pods/nginx"
 
-	var data paletteFeedJSON
-	if err := json.Unmarshal([]byte(p.doc.Find(`#ro-palette-data`).Text()), &data); err != nil {
-		t.Fatalf("parse palette feed: %v", err)
-	}
-	// Slice search, not a label->href map: the object's "Events" tab coexists with
-	// the namespace-level "Events" meta action (same label, different scope/href).
-	hasAction := func(label, href string) bool {
-		for _, a := range data.Actions {
-			if a.Label == label && a.Href == href {
-				return true
+	// Both the detail page AND its /logs sub-page must produce tabs that point at
+	// the BASE detail path. On /logs, r.URL.Path is .../nginx/logs, so building tab
+	// hrefs from the request path produced broken .../logs?view=events. And the
+	// object's Events tab must not duplicate the namespace-level Events meta action.
+	check := func(path string) {
+		p := get(t, app, path, http.StatusOK)
+		var data paletteFeedJSON
+		if err := json.Unmarshal([]byte(p.doc.Find(`#ro-palette-data`).Text()), &data); err != nil {
+			t.Fatalf("parse palette feed (%s): %v", path, err)
+		}
+		has := func(label, href string) bool {
+			for _, a := range data.Actions {
+				if a.Label == label && a.Href == href {
+					return true
+				}
+			}
+			return false
+		}
+		want := map[string]string{
+			"Default view": base,
+			"YAML":         base + "?view=yaml",
+			"Events":       base + "?view=events",
+			"Logs":         base + "/logs",
+		}
+		for label, href := range want {
+			if !has(label, href) {
+				t.Fatalf("%s: palette missing detail tab %q -> %q (actions=%+v)", path, label, href, data.Actions)
 			}
 		}
-		return false
-	}
-	want := map[string]string{
-		"Default view": "/clusters/test/namespaces/default/pods/nginx",
-		"YAML":         "/clusters/test/namespaces/default/pods/nginx?view=yaml",
-		"Events":       "/clusters/test/namespaces/default/pods/nginx?view=events",
-		"Logs":         "/clusters/test/namespaces/default/pods/nginx/logs",
-	}
-	for label, href := range want {
-		if !hasAction(label, href) {
-			t.Fatalf("palette missing detail tab action %q -> %q", label, href)
+		events := 0
+		for _, a := range data.Actions {
+			if a.Label == "Events" {
+				events++
+			}
+		}
+		if events != 1 {
+			t.Fatalf("%s: %d \"Events\" actions, want exactly 1 (object tab dedups the namespace meta)", path, events)
 		}
 	}
+	check(base)
+	check(base + "/logs")
 }
 
 // paletteFeedJSON mirrors the pinned palette-feed wire shape so the test parses
