@@ -852,7 +852,10 @@
        block fill), comfortable padding, small mono type. */
     .ro-yaml-card .content { margin: 0; }
     .ro-yaml-card .content .highlight { background: transparent; margin: 0; }
-    .ro-yaml-card .highlighttable {
+    /* Full-manifest YAML tab: the same carded shell as a YAML card, so the gutter
+       rules below (shared via :is) sit inside a bordered surface instead of bare. */
+    .ro-yaml-view { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable {
         width: 100%;
         margin: 0;
         border: 0;
@@ -861,13 +864,13 @@
         font-size: 0.875rem;
         line-height: 1.55;
     }
-    .ro-yaml-card .highlighttable td { border: 0; padding: 0; }
-    .ro-yaml-card .highlighttable td.linenos,
-    .ro-yaml-card .highlighttable td.code { vertical-align: top; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td { border: 0; padding: 0; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos,
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.code { vertical-align: top; }
     /* line-number gutter: faint, right-aligned, hairline-separated, NOT selectable
        (so a drag-select / the copy reads code only). The anchors stay clickable
        (the .linenos a handler + yaml-line-N highlight are unchanged). */
-    .ro-yaml-card .highlighttable td.linenos {
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos {
         width: 1px;
         white-space: nowrap;
         padding: 0.625rem 0.625rem 0.625rem 0.875rem;
@@ -876,13 +879,13 @@
         user-select: none;
         text-align: right;
     }
-    .ro-yaml-card .highlighttable td.linenos .linenodiv pre { margin: 0; background: transparent; }
-    .ro-yaml-card .highlighttable td.linenos a { color: var(--text-faint); }
-    .ro-yaml-card .highlighttable td.linenos a:hover { color: var(--text); }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos .linenodiv pre { margin: 0; background: transparent; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos a { color: var(--text-faint); }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos a:hover { color: var(--text); }
     /* code column: padded, and WRAPS long values so a wide CRD line never forces a
        horizontal scrollbar / breaks the card layout. */
-    .ro-yaml-card .highlighttable td.code { width: 100%; padding: 0.625rem 0.875rem; }
-    .ro-yaml-card .highlighttable td.code pre {
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.code { width: 100%; padding: 0.625rem 0.875rem; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.code pre {
         margin: 0;
         background: transparent;
         white-space: pre-wrap;
