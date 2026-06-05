@@ -2317,13 +2317,15 @@
     .ro-banner.ro-stale-banner[hidden] { display: none; }
     #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
 
-    /* Loading skeleton wrapper. The `.ro-skeleton` is an `.htmx-indicator`, so it
-       is invisible at rest and fades in only while the #resource-list-content
-       refresh is in flight (htmx points hx-indicator at it + adds .htmx-request).
-       It overlays nothing -- it is a separate sibling block above the live table,
-       so the live rows stay put and the skeleton simply appears beneath the
-       progress rail during the fetch. */
-    .ro-skeleton { margin-bottom: 0.5rem; }
+    /* Loading skeleton. The `.ro-skeleton` is an `.htmx-indicator`; the default
+       htmx-indicator hides via `opacity: 0`, but opacity keeps the element's box
+       in layout, so at rest the multi-row skeleton reserved a tall blank gap above
+       every list. Hide it with `display: none` at rest instead (zero layout cost),
+       and reveal it only while the #resource-list-content refresh is in flight
+       (htmx adds .htmx-request to the hx-indicator target, i.e. the skeleton). */
+    .ro-skeleton { display: none; margin-bottom: 0.5rem; }
+    .ro-skeleton.htmx-request,
+    .htmx-request .ro-skeleton { display: block; }
 
     /* ================================================================ MOBILE CARDS (redesign) */
     .ro-cardlist { display: none; flex-direction: column; gap: 8px; }
