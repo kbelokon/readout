@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,20 @@ func SortTable(table *Table, sortParam string) {
 			}
 			if idx < len(b.Cells) {
 				bv = fmt.Sprint(b.Cells[idx])
+			}
+			// Numeric columns (CPU/Memory usage cells are raw float cores/bytes;
+			// also restarts, counts) must sort by VALUE. fmt.Sprint renders a large
+			// float in scientific notation, so a lexicographic compare would put
+			// "9.8e+08" before "1.2e+09" only by luck and "95e6" after "9.4e8".
+			// Fall back to string compare when either side is not a plain number
+			// (text columns, quantity suffixes like "8138032Ki", "1/1" ready).
+			if af, aerr := strconv.ParseFloat(av, 64); aerr == nil {
+				if bf, berr := strconv.ParseFloat(bv, 64); berr == nil {
+					if af != bf {
+						return af < bf
+					}
+					return firstCell(a) < firstCell(b)
+				}
 			}
 			if av == bv {
 				return firstCell(a) < firstCell(b)

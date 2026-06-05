@@ -51,6 +51,29 @@ func TestSortTableByColumnCreatedAndAge(t *testing.T) {
 	}
 }
 
+func TestSortTableNumericColumnSortsByValue(t *testing.T) {
+	// Memory/CPU usage cells are raw float bytes/cores. fmt.Sprint renders them in
+	// scientific notation, so a lexicographic compare mis-ordered them (95 MiB
+	// landing after 942 MiB). They must sort by numeric value.
+	table := Table{
+		Columns: []Column{{Name: "Name"}, {Name: "Memory Usage"}},
+		Rows: []Row{
+			{Cells: []any{"a", float64(95 * 1024 * 1024)}},
+			{Cells: []any{"b", float64(1 * 1024 * 1024)}},
+			{Cells: []any{"c", float64(942 * 1024 * 1024)}},
+		},
+	}
+	SortTable(&table, "Memory Usage:desc")
+	got := []any{table.Rows[0].Cells[0], table.Rows[1].Cells[0], table.Rows[2].Cells[0]}
+	if !reflect.DeepEqual(got, []any{"c", "a", "b"}) {
+		t.Fatalf("numeric desc sort = %#v, want [c a b] (942 > 95 > 1 MiB)", got)
+	}
+	SortTable(&table, "Memory Usage:asc")
+	if got := table.Rows[0].Cells[0]; got != "b" {
+		t.Fatalf("numeric asc sort first = %v, want b (1 MiB)", got)
+	}
+}
+
 func TestLabelHideFilterAndNamespaceTransforms(t *testing.T) {
 	table := sampleTable()
 	AddLabelColumns(&table, "app,*")
