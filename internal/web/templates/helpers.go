@@ -37,11 +37,12 @@ func namespaceHref(cluster, namespace string) string {
 	return "/clusters/" + url.PathEscape(cluster) + "/namespaces/" + url.PathEscape(namespace)
 }
 
-// htmxConfig is the strict-CSP htmx config object emitted into the head <meta>.
-// htmx reads it before processing the DOM (allowEval/allowScriptTags off so
-// script-src 'self' needs no unsafe-eval/inline; includeIndicatorStyles off so
-// no inline style is injected under style-src 'self'). templ escapes the quotes
-// in the attribute value; the rendered attribute decodes back to this JSON.
+// htmxConfig is the htmx config object emitted into the head <meta>. htmx reads
+// it before processing the DOM (allowEval/allowScriptTags off so script-src
+// 'self' needs no unsafe-eval/inline; includeIndicatorStyles off so htmx injects
+// no indicator <style> of its own -- the progress bar is styled by the app's
+// `.ro-progress` CSS). templ escapes the quotes in the attribute value; the
+// rendered attribute decodes back to this JSON.
 const htmxConfig = `{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false}`
 
 // boolStr renders a Go bool as the lowercase "true"/"false" the data-* attribute
