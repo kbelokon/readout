@@ -469,3 +469,31 @@ func containsString(xs []string, want string) bool {
 	}
 	return false
 }
+
+// TestTruncatingCellClampsInnerSpanNotTd pins the truncation mechanism: `.trunc`
+// is display:inline-block (base.css), so on a <td> it drops the cell out of the
+// table row and misaligns every column to its right. The clamp must live on an
+// INNER <span>, never on the cell.
+func TestTruncatingCellClampsInnerSpanNotTd(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	obj := deploymentObject("web", 2, depStatus(2, 2, 2, 2, "NewReplicaSetAvailable"), false)
+	table := &kube.Table{
+		Resource: kube.ResourceType{Group: "apps", Plural: "deployments", Kind: "Deployment", Namespaced: true, Version: "v1", APIVersion: "apps/v1"},
+		Clusters: []string{"test"},
+		Columns:  []kube.Column{{Name: "Name"}, {Name: "Images"}},
+		Rows: []kube.Row{
+			{Cluster: "test", Object: obj, Cells: []any{"web", "registry.example.com/team/really-long-image-name:1.2.3,another.example.com/sidecar:v2"}},
+		},
+	}
+	lc := &listContext{Cluster: "test", Plural: "deployments", ClusterCount: 1, Tables: []kube.Table{*table}}
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/deployments", nil)
+	v := app.buildListView(req, lc)
+	doc := renderListView(t, &v)
+
+	if got := doc.Find("table.ro-table td.trunc").Length(); got != 0 {
+		t.Fatalf("found %d <td class=\"trunc\"> -- trunc must clamp an inner span, not the cell (breaks column alignment)", got)
+	}
+	if got := doc.Find("table.ro-table td span.trunc").Length(); got == 0 {
+		t.Fatalf("expected the Images value wrapped in an inner span.trunc, found none")
+	}
+}

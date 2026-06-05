@@ -52,6 +52,15 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	if createdSortParam("Created") != "Created:desc" || createdSortParam("") != "Created" || pluralS(1) != "" || pluralS(2) != "s" {
 		t.Fatal("sort/plural helper mismatch")
 	}
+	// Built-in cluster-scoped plurals must resolve as cluster resources even under a
+	// namespace, so a namespaced CRD sharing the plural (nodes.management.cattle.io)
+	// cannot hijack the curated sidebar entry.
+	if !builtinClusterScopedPlural("nodes") || !builtinClusterScopedPlural("namespaces") || !builtinClusterScopedPlural("persistentvolumes") {
+		t.Fatal("builtinClusterScopedPlural must be true for nodes/namespaces/persistentvolumes")
+	}
+	if builtinClusterScopedPlural("pods") || builtinClusterScopedPlural("deployments") || builtinClusterScopedPlural("") {
+		t.Fatal("builtinClusterScopedPlural must be false for namespaced/other plurals")
+	}
 	if namespaceEmptyText("default", false) == "" || namespaceEmptyText("default", true) != "" {
 		t.Fatal("namespaceEmptyText mismatch")
 	}

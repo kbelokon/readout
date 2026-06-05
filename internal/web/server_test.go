@@ -37,6 +37,15 @@ func TestCSPAndClusterPageRender(t *testing.T) {
 	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "script-src 'self'") {
 		t.Fatalf("missing strict CSP: %q", got)
 	}
+	// script-src stays strict (no inline/eval); style-src allows 'unsafe-inline'
+	// because the design pins per-row values as inline style attributes
+	// (capacity-bar width, kind-tile --kh) the cascade cannot express as classes.
+	if got := rec.Header().Get("Content-Security-Policy"); strings.Contains(got, "script-src 'self' 'unsafe-inline'") {
+		t.Fatalf("script-src must NOT allow unsafe-inline (code-exec protection): %q", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "style-src 'self' 'unsafe-inline'") {
+		t.Fatalf("style-src must allow 'unsafe-inline' for inline width/hue styles: %q", got)
+	}
 	if !strings.Contains(rec.Body.String(), `<span class="brand-name">readout</span>`) || !strings.Contains(rec.Body.String(), "readout.css") {
 		t.Fatalf("page did not render expected app chrome: %s", rec.Body.String())
 	}
