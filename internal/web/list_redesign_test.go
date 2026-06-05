@@ -144,6 +144,65 @@ func podsCellView(t *testing.T, columns []string, cells []any, colIdx int) cellV
 	return app.buildCellView(req, table, row, colIdx, cells[colIdx], "default", cellString(row, 0))
 }
 
+// TestGenericCellTruncationFollowsIdentifierRule pins Principles §3 ("identifiers
+// are sacred — never truncate them"): in a generic list, secondary free-text
+// columns (selectors, node selectors, images, labels, messages) truncate with a
+// `title=` tooltip, while identifiers (IPs, container names) and numeric counts
+// stay FULL — the table wrapper scrolls horizontally under the pinned name column
+// to reveal them. A DaemonSet's long Node Selector previously overflowed the row
+// because it was missing from the secondary-text allow-list.
+func TestGenericCellTruncationFollowsIdentifierRule(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	cols := []kube.Column{
+		{Name: "Name"},
+		{Name: "IP"},
+		{Name: "Internal IP"},
+		{Name: "Node Selector"},
+		{Name: "Containers"},
+		{Name: "Selector"},
+		{Name: "Desired", Class: "num"},
+		{Name: "Age"},
+	}
+	cells := []any{
+		"do-node-agent", "10.1.2.3", "10.1.2.3",
+		"digitalocean.com/nvidia-dcgm-enabled=true,kubernetes.io/os=linux",
+		"nrr-status-patcher,nvidia-dcgm-container,do-node-agent",
+		"k8s-app=do-node-agent", "71", "286d",
+	}
+	table := &kube.Table{
+		Resource: kube.ResourceType{Plural: "daemonsets", Kind: "DaemonSet", Namespaced: true, Version: "v1", APIVersion: "apps/v1"},
+		Clusters: []string{"test"},
+		Columns:  cols,
+		Rows: []kube.Row{{Cells: cells, Cluster: "test", Object: map[string]any{
+			"metadata": map[string]any{"name": "do-node-agent", "namespace": "kube-system", "creationTimestamp": "2025-08-22T21:30:22Z"},
+		}}},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/_all/daemonsets", nil)
+
+	wantTrunc := map[int]bool{
+		1: false, // IP            — identifier, stays full
+		2: false, // Internal IP   — identifier, stays full
+		3: true,  // Node Selector — secondary free-text (a selector), truncates (the bug fix)
+		4: false, // Containers    — container names are identifiers, stay full (scroll)
+		5: true,  // Selector      — secondary free-text, truncates
+		6: false, // Desired       — numeric count
+		7: false, // Age           — short bucketed value
+	}
+	for idx, want := range wantTrunc {
+		cv := app.buildCellView(req, table, table.Rows[0], idx, cells[idx], "kube-system", "do-node-agent")
+		if cv.Trunc != want {
+			t.Errorf("col %q (idx %d): Trunc=%v, want %v", cols[idx].Name, idx, cv.Trunc, want)
+		}
+		if want && cv.Title == "" {
+			t.Errorf("col %q truncates but carries no tooltip Title", cols[idx].Name)
+		}
+	}
+	// Name is its own sticky, never-truncated cell kind.
+	if cv := app.buildCellView(req, table, table.Rows[0], 0, cells[0], "kube-system", "do-node-agent"); cv.Kind != cellName || cv.Trunc {
+		t.Errorf("Name cell: kind=%v trunc=%v, want cellName + no trunc", cv.Kind, cv.Trunc)
+	}
+}
+
 // TestPodsCellAssemblyMapsTones drives the real cell-assembly for the rich Pods
 // columns and asserts the resolved view-model: the name splits, a transient
 // status pulses while Running does not, a 0/1 ratio is zero, a restarted count is

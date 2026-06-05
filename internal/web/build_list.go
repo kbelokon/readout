@@ -776,20 +776,27 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 	return cv
 }
 
-// secondaryTextColumns are the recognized k8s Table columns whose value is
-// free-text rather than an identifier -- they truncate with a tooltip. Identifier
-// columns (Name, Node, IP, Namespace, Ports, container names, counts) are never
-// listed here, so they fall through to a plain never-truncated cell.
+// secondaryTextColumns are the recognized k8s Table columns whose value is long
+// free-text rather than an identifier -- they truncate with a `title=` tooltip
+// (Principles §3: "secondary free-text — truncate WITH a tooltip", e.g. images,
+// labels, selectors, node selectors, messages). The design keeps an ALLOW-LIST
+// here, not the inverse, because identifiers are sacred: an unlisted column stays
+// FULL and the table wrapper scrolls horizontally under the pinned name column
+// (the design's escape valve), which is always safe -- whereas truncating by
+// default would clip a short identifier/enum (Type, Cluster-IP, Port(s)) that must
+// stay readable. Identifier columns (Name, Node, IP, Namespace, Ports, container
+// names, counts) are deliberately never listed here.
 var secondaryTextColumns = map[string]bool{
-	"Image":     true,
-	"Images":    true,
-	"Selector":  true,
-	"Labels":    true,
-	"Message":   true,
-	"Reason":    true,
-	"Data":      true,
-	"Provider":  true,
-	"Resources": true,
+	"Image":         true,
+	"Images":        true,
+	"Selector":      true,
+	"Node Selector": true,
+	"Labels":        true,
+	"Message":       true,
+	"Reason":        true,
+	"Data":          true,
+	"Provider":      true,
+	"Resources":     true,
 }
 
 func isSecondaryTextColumn(colName string) bool {
