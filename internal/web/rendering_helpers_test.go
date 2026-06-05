@@ -44,6 +44,11 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	if sortIcon("Name", "Name") == "" || sortIcon("Name:desc", "Name") == "" || sortIcon("Other", "Name") != "" {
 		t.Fatal("sortIcon mismatch")
 	}
+	// ascending and descending must render DIFFERENT arrows: ascending carries the
+	// sort-asc rotate class, descending does not.
+	if !strings.Contains(sortIcon("Name", "Name"), "sort-asc") || strings.Contains(sortIcon("Name:desc", "Name"), "sort-asc") {
+		t.Fatal("sortIcon direction: ascending must carry sort-asc, descending must not")
+	}
 	if createdSortParam("Created") != "Created:desc" || createdSortParam("") != "Created" || pluralS(1) != "" || pluralS(2) != "s" {
 		t.Fatal("sort/plural helper mismatch")
 	}

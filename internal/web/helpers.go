@@ -554,9 +554,12 @@ func pluralizeKind(kind string) string {
 func sortIcon(sortValue, column string) string {
 	switch sortValue {
 	case column:
-		return ` <span class="icon">` + icon("chevron-down") + `</span>`
+		// Ascending: the down chevron rotated 180° (.sort-asc) so the arrow points
+		// UP -- there is no separate chevron-up glyph.
+		return ` <span class="icon sort-ico sort-asc">` + icon("chevron-down") + `</span>`
 	case column + ":desc":
-		return ` <span class="icon">` + icon("chevron-down") + `</span>`
+		// Descending: the plain down chevron.
+		return ` <span class="icon sort-ico">` + icon("chevron-down") + `</span>`
 	default:
 		return ""
 	}

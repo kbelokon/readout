@@ -1934,6 +1934,8 @@
     .ro-table thead th a:hover { color: var(--text-muted); }
     .ro-table thead th.sorted a { color: var(--text); }
     .ro-table thead th .sort-ico { opacity: .9; }
+    /* ascending reuses the down chevron rotated 180° (no separate up glyph) */
+    .ro-table thead th .sort-ico.sort-asc { display: inline-flex; transform: rotate(180deg); }
     .ro-table thead th.num, .ro-table td.num { text-align: right; }
     .ro-table tbody td {
         padding: var(--row-py) var(--cell-px);
