@@ -2053,11 +2053,14 @@
     .ro-rd .ro-chip.app { background: var(--label-app-bg); border-color: transparent; color: var(--label-app-fg); }
     .ro-rd .ro-chip.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
     .ro-rd .ro-chip.anno { max-width: 320px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
-    /* In a list TABLE cell the label chips must not blow the column out to
-       max-content (which pushes the table wider than the viewport and clips the
-       last chip at the scroll edge). Cap + ellipsis each chip inside the table;
-       detail-page chips (outside .ro-table-wrap) stay uncapped and grow. */
-    .ro-rd .ro-table-wrap .ro-chip { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; }
+    /* In a list TABLE the label chips must WRAP inside a bounded column instead
+       of blowing it out to max-content (which widened the table past the viewport
+       and clipped the last chip at the scroll edge). Bounding the chip CONTAINER
+       is what makes flex-wrap actually wrap in an auto-layout cell; the chips stay
+       full and stack on multiple lines, and only a single chip wider than the
+       column ellipsises. Detail-page chips (outside .ro-table-wrap) are unbounded. */
+    .ro-rd .ro-table-wrap .ro-chips { max-width: 34rem; }
+    .ro-rd .ro-table-wrap .ro-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 
     /* ---------------------------------------------------------------- ICON SYSTEM
        .ico=curated lucide glyph; .kind-tile=monogram (hue from API group);
