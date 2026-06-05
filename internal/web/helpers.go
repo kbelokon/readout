@@ -272,7 +272,7 @@ func capacityCellView(obj map[string]any, key string, usage float64, haveUsage b
 	cap, haveCap := nodeCapacityQuantity(obj, key)
 	capText := ""
 	if haveCap {
-		capText = cap.String()
+		capText = capacityText(key, cap)
 	}
 	cv := cellView{Kind: cellCapacity}
 	if !haveUsage || !haveCap {
@@ -309,11 +309,45 @@ func capacityUsageLabel(key string, usage float64, cap resource.Quantity) string
 	case "cpu":
 		return trimFloat(usage) + "/" + cap.String()
 	case "memory":
-		used := resource.NewQuantity(int64(usage), resource.BinarySI)
-		return used.String() + "/" + cap.String()
+		return humanBytes(int64(usage)) + "/" + humanMemory(cap)
 	default:
 		return trimFloat(usage) + "/" + cap.String()
 	}
+}
+
+// capacityText renders a node capacity quantity for display: CPU keeps the plain
+// quantity string ("4"); memory is humanised ("8138032Ki" -> "7.8 GiB") because
+// resource.Quantity.String() preserves the raw status.capacity binary suffix,
+// which is fine for cores but unreadable for memory.
+func capacityText(key string, q resource.Quantity) string {
+	if key == "memory" {
+		return humanMemory(q)
+	}
+	return q.String()
+}
+
+// humanMemory renders a memory quantity in a readable binary unit (the bytes
+// value of the quantity passed through humanBytes).
+func humanMemory(q resource.Quantity) string {
+	return humanBytes(q.Value())
+}
+
+// humanBytes formats a byte count with a binary unit suffix (KiB/MiB/GiB/TiB/...),
+// one decimal place with a trailing ".0" trimmed, so node memory reads "7.8 GiB"
+// instead of the raw "8138032Ki".
+func humanBytes(b int64) string {
+	if b < 1024 {
+		return strconv.FormatInt(b, 10) + " B"
+	}
+	f := float64(b)
+	const units = "KMGTPE"
+	i := 0
+	for f >= 1024 && i < len(units)-1 {
+		f /= 1024
+		i++
+	}
+	s := strings.TrimSuffix(strconv.FormatFloat(f, 'f', 1, 64), ".0")
+	return s + " " + string(units[i-1]) + "iB"
 }
 
 // trimFloat renders a CPU-core float with up to one decimal place and no trailing

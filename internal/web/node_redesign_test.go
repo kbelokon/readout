@@ -181,8 +181,8 @@ func TestCapacityBucketThresholds(t *testing.T) {
 		t.Fatalf("no-metrics cpu value = %q, want capacity text 4", cpuNoMetrics.Value)
 	}
 	memNoMetrics := nodesCellView(t, []string{"Name", "Memory"}, []any{"n", "16Gi"}, obj, 1)
-	if memNoMetrics.CapBucket != "" || memNoMetrics.Value != "16Gi" {
-		t.Fatalf("no-metrics memory cell = %#v, want value 16Gi no bucket", memNoMetrics)
+	if memNoMetrics.CapBucket != "" || memNoMetrics.Value != "16 GiB" {
+		t.Fatalf("no-metrics memory cell = %#v, want value 16 GiB no bucket", memNoMetrics)
 	}
 
 	// A capacity cell with usage but MISSING capacity never panics and falls back to

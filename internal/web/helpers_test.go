@@ -62,6 +62,10 @@ func TestTableCellFormattingHelpers(t *testing.T) {
 	if memoryMiBFormat(float64(2*1024*1024)) != "2" || memoryMiBFormat("bad") != "bad" {
 		t.Fatalf("memoryMiBFormat mismatch")
 	}
+	// node memory capacity must read in a binary unit, not the raw "8138032Ki".
+	if humanBytes(8333344768) != "7.8 GiB" || humanBytes(2*1024*1024) != "2 MiB" || humanBytes(512) != "512 B" || humanBytes(1024) != "1 KiB" {
+		t.Fatalf("humanBytes mismatch: %q %q %q %q", humanBytes(8333344768), humanBytes(2*1024*1024), humanBytes(512), humanBytes(1024))
+	}
 	if got, ok := numericCell(int64(3)); !ok || got != 3 {
 		t.Fatalf("numericCell int64 = %v %v", got, ok)
 	}
