@@ -217,6 +217,17 @@ func (s *Server) applyTableOptions(r *http.Request, cluster *kube.Cluster, table
 	kube.FilterRowsByNamespace(table, s.cfg.IncludeNamespaces, s.cfg.ExcludeNamespaces)
 	kube.FilterTable(table, q.Get("filter"), false)
 	kube.GuessColumnClasses(table)
+	// Node CPU/Memory + usage columns render as rich LEFT-aligned bar cells, so
+	// drop the numeric right-alignment GuessColumnClasses infers from their float
+	// sort-cells -- otherwise the header sits right while the bar+value sit left.
+	if table.Resource.Plural == "nodes" {
+		for i := range table.Columns {
+			switch table.Columns[i].Name {
+			case "CPU", "Memory", "CPU Usage", "Memory Usage":
+				table.Columns[i].Class = ""
+			}
+		}
+	}
 	kube.SortTable(table, q.Get("sort"))
 	if limit := q.Get("limit"); limit != "" {
 		n, _ := strconv.Atoi(limit)
