@@ -848,6 +848,7 @@ function renderPalette(query) {
     }
 
     const q = (query || '').toLowerCase().trim();
+    const raw = (query || '').trim();
     list.textContent = '';
     paletteRows = [];
 
@@ -876,6 +877,39 @@ function renderPalette(query) {
             paletteRows.push({ el: row, item: entry, key: group.key });
         });
     });
+
+    // Server-side object search: when the user types, offer a row that runs the
+    // query through the full /search (object names across the in-scope cluster),
+    // so the palette reaches actual resources, not just the static groups. The
+    // href is built from the typed text + current cluster; navigation goes through
+    // the same dataset.href path as every other row.
+    if (raw) {
+        const heading = document.createElement('div');
+        heading.className = 'ro-pal-group';
+        heading.textContent = 'Search';
+        list.appendChild(heading);
+        let href = '/search?q=' + encodeURIComponent(raw);
+        if (paletteScope.cluster) {
+            href += '&cluster=' + encodeURIComponent(paletteScope.cluster);
+        }
+        const row = document.createElement('div');
+        row.className = 'ro-pal-item';
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', 'false');
+        const label = document.createElement('span');
+        label.className = 'pal-label';
+        label.textContent = 'Search for "' + raw + '"'; // textContent -> no injection
+        row.appendChild(label);
+        const meta = document.createElement('span');
+        meta.className = 'pal-meta';
+        meta.textContent = paletteScope.cluster ? 'in ' + paletteScope.cluster : 'all clusters';
+        row.appendChild(meta);
+        row.dataset.href = href;
+        const idx = paletteRows.length;
+        row.addEventListener('mousemove', () => setPaletteActive(idx));
+        list.appendChild(row);
+        paletteRows.push({ el: row, item: { href: href }, key: 'search' });
+    }
 
     if (paletteRows.length === 0) {
         const none = document.createElement('div');
