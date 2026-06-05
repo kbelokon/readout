@@ -429,10 +429,9 @@ func TestBehaviorPodListFacts(t *testing.T) {
 	p.wantAttr("#resource-list-content", "hx-target", "this")
 	p.wantAttr("#resource-list-content", "hx-ext", "morph")
 	p.wantAttr("#resource-list-content", "hx-swap", "morph:innerHTML")
-	// The refresh points its in-flight indicator at BOTH the progress rail and the
-	// loading skeleton (Unit 14): the skeleton `.ro-skeleton` is an
-	// `.htmx-indicator` that fades in only while this request is in flight.
-	p.wantAttr("#resource-list-content", "hx-indicator", "previous .ro-progress, #ro-list-skeleton .ro-skeleton")
+	// The refresh points its in-flight indicator at the single global top progress
+	// bar (#ro-progress in the layout), the same rail every hx-boost navigation uses.
+	p.wantAttr("#resource-list-content", "hx-indicator", "#ro-progress")
 
 	// Column headers in order, each linking to its own ?sort=<col>. The redesign
 	// list engine renders the canonical `.ro-table` inside `.ro-table-wrap`.

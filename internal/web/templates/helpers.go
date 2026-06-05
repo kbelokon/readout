@@ -365,12 +365,6 @@ func stateNamespaceClause(namespace string) string {
 	return ` in namespace "` + namespace + `"`
 }
 
-// skeletonRows is the fixed-length slice the loading skeleton ranges over to
-// emit N `.sk-row` rows (the count is presentational; the value is unused).
-func skeletonRows() []struct{} {
-	return make([]struct{}, 8)
-}
-
 // ownerLabel is "Owner" for a single owner, "Owners" for more.
 func ownerLabel(count int) string {
 	if count > 1 {

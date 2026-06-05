@@ -1529,20 +1529,26 @@
         color: var(--text-faint);
     }
 
-    /* In-flight progress bar (resource-list.html). A thin top rail that fades in
-       (via the .htmx-indicator opacity rule above) while the morph-refresh request
-       is in flight; inside it a bar sweeps left-to-right on a loop. Reuses
-       .htmx-indicator for the show/hide -- htmx adds .htmx-request to the container
-       during its request and points hx-indicator at THIS sibling, so no skeleton or
-       table-blanking spinner is needed. The sweep animation is dropped under
-       reduced-motion (see the media block below); the bar still fades in/out. */
+    /* Global in-flight progress bar. A thin rail fixed across the very top of the
+       viewport (over the sticky topbar) that fades in while ANY request is in
+       flight and sweeps a bar left-to-right. It lives in the layout (one per page)
+       and is the indicator for BOTH every hx-boost navigation (the body sets
+       hx-indicator="#ro-progress") AND the in-place list auto-refresh
+       (#resource-list-content points its hx-indicator here too) -- so it is
+       consistent on every page change, not just when leaving a list. Reuses
+       .htmx-indicator for show/hide (opacity:0 at rest -> 1 on .htmx-request). The
+       sweep is dropped under reduced-motion (media block below); the bar still
+       fades. */
     .ro-progress {
-        position: relative;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
         height: 2px;
-        margin-bottom: 0.5rem;
+        z-index: 200;
         background: var(--surface-2);
-        border-radius: 1px;
         overflow: hidden;
+        pointer-events: none;
     }
     .ro-progress .ro-progress-bar {
         position: absolute;
@@ -2040,12 +2046,6 @@
     .ro-rd .ro-chip.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
     .ro-rd .ro-chip.anno { max-width: 320px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 
-    /* skeleton inline (redesign) */
-    .sk { display: inline-block; height: 11px; border-radius: 4px;
-        background: linear-gradient(90deg, var(--surface-2) 25%, var(--row-hover) 37%, var(--surface-2) 63%);
-        background-size: 400% 100%; animation: sk 1.3s ease infinite; }
-    @keyframes sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
-
     /* ---------------------------------------------------------------- ICON SYSTEM
        .ico=curated lucide glyph; .kind-tile=monogram (hue from API group);
        .kind-img / .kind-emoji=operator override. ~16px sidebar slot. */
@@ -2277,18 +2277,6 @@
         background: var(--st-err-bg); }
     .ro-rd .ro-scope-chip.err .retry { color: var(--st-err); text-decoration: underline; cursor: pointer; }
 
-    /* skeleton table. A separate `.ro-sk-table` (NOT `.ro-table`) so the loading
-       skeleton never collides with the live data table's selectors -- it is a
-       distinct decorative block shown only via the htmx indicator. */
-    .ro-sk-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    .sk-row td { padding: var(--row-py) var(--cell-px); border-bottom: 1px solid var(--border-soft); }
-    .sk-bar { display: block; height: 10px; border-radius: 4px;
-        background: linear-gradient(90deg, var(--surface-2) 25%, var(--row-hover) 37%, var(--surface-2) 63%);
-        background-size: 400% 100%; animation: sk 1.25s ease infinite; }
-    .sk-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
-        background: var(--surface-2); animation: sk-pulse 1.25s ease infinite; }
-    @keyframes sk-pulse { 0%,100%{opacity:.4} 50%{opacity:.9} }
-
     /* big empty state */
     .ro-empty-lg { display: flex; flex-direction: column; align-items: center; justify-content: center;
         text-align: center; padding: 72px 24px; }
@@ -2316,15 +2304,6 @@
        stale, not gone; the morph that lands fresh rows clears the class. */
     .ro-banner.ro-stale-banner[hidden] { display: none; }
     #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
-
-    /* Loading skeleton: kept dormant (`display: none`). It has no valid moment in
-       readout — the first paint is server-rendered WITH rows, and the morph
-       auto-refresh keeps the existing rows, so there is never a "no rows yet"
-       state in the browser. The thin `.ro-progress` rail is the refresh indicator.
-       (An earlier opacity:0 hide left a tall blank gap above every list; a
-       .htmx-request reveal then flashed the skeleton on every hx-boost navigation,
-       because boost puts .htmx-request on an ancestor. display:none avoids both.) */
-    .ro-skeleton { display: none; }
 
     /* ================================================================ MOBILE CARDS (redesign) */
     .ro-cardlist { display: none; flex-direction: column; gap: 8px; }
@@ -2480,7 +2459,6 @@
         .refresh-live .ro-livedot { animation: none; }
         .ro-dot.pulse { animation: none; }
         .rep .rep-track i.updating { animation: none; }
-        .sk, .sk-bar, .sk-dot { animation: none; }
         .ro-rd .ro-palette { transition: none; }
     }
 }

@@ -14,9 +14,9 @@ import templruntime "github.com/a-h/templ/runtime"
 // (forbidden / unreachable / a generic empty), the removable filter chips of the
 // empty-FILTERED state, and the hidden `.ro-banner.warn` the client-side stale
 // path reveals on an auto-refresh error. Each net-new state class (`.ro-empty-lg`,
-// `.ro-empty-glyph`, `.ro-banner`, `.ro-scope`, `.ro-scope-chip`, `.sk-row`,
-// `.sk-bar`) is bare; it resolves against the redesign CSS via the `.ro-rd`
-// content ancestor the list/detail content already carries (D13).
+// `.ro-empty-glyph`, `.ro-banner`, `.ro-scope`, `.ro-scope-chip`) is bare; it
+// resolves against the redesign CSS via the `.ro-rd` content ancestor the
+// list/detail content already carries (D13).
 //
 // VOICE (Principles §11): unreachable shows the REAL transport error string, not
 // a cute message; forbidden names the verb/resource/namespace + 403.
@@ -587,51 +587,6 @@ func staleBanner() templ.Component {
 			return templ_7745c5c3_Err
 		}
 		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "</span><div class=\"bn-body\"><p class=\"bn-title\">Showing last known data — refresh failed</p><p class=\"bn-text\">The cluster did not answer the last auto-refresh. The rows below are the last data that loaded.</p></div><div class=\"bn-actions\"><button type=\"button\" class=\"ro-btn quiet ro-stale-retry\">retry</button></div></div>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		return nil
-	})
-}
-
-// skeletonTable is the loading skeleton (D11): a `.ro-table` of `.sk-row`s whose
-// cells carry `.sk-bar` shimmer (and a `.sk-dot` for the status cell). It is an
-// `.htmx-indicator`, so it is invisible at rest and fades in ONLY while the
-// #resource-list-content refresh request is in flight (htmx points the
-// hx-indicator at it and adds `.htmx-request`), then fades back out when the
-// morph swaps the fresh rows in. Decorative -> aria-hidden.
-func skeletonTable() templ.Component {
-	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
-		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
-		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
-			return templ_7745c5c3_CtxErr
-		}
-		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
-		if !templ_7745c5c3_IsBuffer {
-			defer func() {
-				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
-				if templ_7745c5c3_Err == nil {
-					templ_7745c5c3_Err = templ_7745c5c3_BufErr
-				}
-			}()
-		}
-		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var25 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var25 == nil {
-			templ_7745c5c3_Var25 = templ.NopComponent
-		}
-		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, "<div class=\"ro-skeleton htmx-indicator\" aria-hidden=\"true\"><div class=\"ro-table-wrap\"><table class=\"ro-sk-table\"><tbody>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		for range skeletonRows() {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, "<tr class=\"sk-row\"><td><span class=\"sk-bar\" style=\"width:62%\"></span></td><td><span class=\"sk-dot\"></span></td><td><span class=\"sk-bar\" style=\"width:38%\"></span></td><td><span class=\"sk-bar\" style=\"width:46%\"></span></td><td><span class=\"sk-bar\" style=\"width:30%\"></span></td></tr>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "</tbody></table></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

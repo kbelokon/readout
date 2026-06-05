@@ -46,12 +46,10 @@ type ListBreadcrumb struct {
 templ ResourceList(d ListPageData) {
 	<div class="ro-rd">
 		@listBreadcrumb(d.Breadcrumb)
-		<div class="ro-progress htmx-indicator" aria-hidden="true"><span class="ro-progress-bar"></span></div>
 		if d.List.ShowStaleBanner {
 			@staleBanner()
 		}
-		<div id="ro-list-skeleton">@skeletonTable()</div>
-		<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="previous .ro-progress, #ro-list-skeleton .ro-skeleton" aria-live="polite">
+		<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
 			@ResourceTable(d.List)
 		</div>
 	</div>

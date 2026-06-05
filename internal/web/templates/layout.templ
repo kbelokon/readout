@@ -123,7 +123,8 @@ templ layoutHead(d LayoutData) {
 // every page. Do NOT add the `ro-rd` content marker here -- content templates add
 // it when THEY migrate (D13).
 templ layoutBody(d LayoutData, body templ.Component) {
-	<body class="has-ro-topbar" hx-boost="true" hx-ext="preload" preload="mouseover">
+	<body class="has-ro-topbar" hx-boost="true" hx-indicator="#ro-progress" hx-ext="preload" preload="mouseover">
+		<div id="ro-progress" class="ro-progress htmx-indicator" aria-hidden="true"><span class="ro-progress-bar"></span></div>
 		@topbarC(d.Navbar)
 		<div class="ro-shell">
 			@sidebarC(d.Sidebar)

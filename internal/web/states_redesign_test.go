@@ -361,26 +361,27 @@ func TestEmptyFilterListState(t *testing.T) {
 	p.wantAttr(".ro-empty-row .ro-empty-lg .ro-empty-actions a", "href", "/clusters/test/namespaces/default/pods")
 }
 
-// TestStatesLoadingSkeletonHooks proves the loading skeleton (the `.sk-row`/
-// `.sk-bar` shimmer) is present and wired to the HTMX indicator: it is an
-// `.htmx-indicator` the refresh container points hx-indicator at, so it shows
-// only while the refresh request is in flight.
-func TestStatesLoadingSkeletonHooks(t *testing.T) {
+// TestGlobalProgressBar proves the single global top progress rail (#ro-progress
+// in the layout) is the loading indicator for BOTH every hx-boost navigation (the
+// body carries hx-indicator="#ro-progress") AND the in-place list auto-refresh
+// (#resource-list-content points its hx-indicator at it). The old per-list loading
+// skeleton was removed: it had no valid moment in readout (the first paint is
+// server-rendered with rows and the morph refresh keeps them), and it flashed on
+// every navigation because hx-boost marks an ancestor as loading.
+func TestGlobalProgressBar(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 
-	// The skeleton block is an htmx indicator with sk-row/sk-bar/sk-dot markup.
-	p.wantHas(".ro-skeleton.htmx-indicator")
-	if p.count(".ro-skeleton .sk-row") == 0 {
-		t.Fatalf("loading skeleton has no .sk-row rows")
-	}
-	p.wantHas(".ro-skeleton .sk-row .sk-bar")
-	p.wantHas(".ro-skeleton .sk-row .sk-dot")
-	// The refresh container points its indicator at the skeleton (and the rail).
-	ind := p.attr("#resource-list-content", "hx-indicator")
-	if !strings.Contains(ind, "#ro-list-skeleton .ro-skeleton") {
-		t.Fatalf("hx-indicator %q does not point at the loading skeleton", ind)
-	}
+	// One global progress rail in the layout, an htmx indicator.
+	p.wantHas("#ro-progress.ro-progress.htmx-indicator")
+	p.wantHas("#ro-progress .ro-progress-bar")
+	// The body drives it on every boosted navigation; the list refresh reuses it.
+	p.wantAttr("body", "hx-indicator", "#ro-progress")
+	p.wantAttr("#resource-list-content", "hx-indicator", "#ro-progress")
+	// The retired loading skeleton must be gone everywhere.
+	p.wantAbsent(".ro-skeleton")
+	p.wantAbsent(".sk-row")
+	p.wantAbsent("#ro-list-skeleton")
 }
 
 // TestStatesStaleMarkupHooks proves the CLIENT-SIDE stale path has its markup
