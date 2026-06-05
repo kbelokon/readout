@@ -1241,6 +1241,25 @@ function syncThemeTogglePostTarget() {
 // (addListener is deprecated); the listener body is idempotent.
 PREFERS_DARK.addEventListener('change', syncThemeTogglePostTarget);
 
+// _all-view sticky offset. CSS pins the FIRST column at left:0; in the _all view
+// the first column is the namespace, so the NAME column (2nd) must pin right after
+// it -- but its offset is the namespace column's content-driven width, which CSS
+// can't know. Measure it, hand it to CSS as --ns-col-w, and mark the table with
+// .ro-sticky2. A single-namespace list (name IS the first column) needs neither.
+// Idempotent; re-run on swap and resize since the column width can change.
+function setupStickyNamespace() {
+    document.querySelectorAll('.ro-table-wrap table.ro-table').forEach((table) => {
+        const firstCell = table.querySelector('tbody tr td:first-child');
+        if (firstCell && firstCell.classList.contains('cell-ns')) {
+            table.style.setProperty('--ns-col-w', firstCell.getBoundingClientRect().width + 'px');
+            table.classList.add('ro-sticky2');
+        } else {
+            table.classList.remove('ro-sticky2');
+            table.style.removeProperty('--ns-col-w');
+        }
+    });
+}
+
 // Run all init-time steps. Called on DOMContentLoaded and on htmx:load so the
 // steps re-apply after an hx-boost body swap (which does not refire
 // DOMContentLoaded). Each step is idempotent.
@@ -1251,6 +1270,7 @@ function runInit() {
     collapseSectionsFromHash();
     highlightYamlLine();
     syncThemeTogglePostTarget();
+    setupStickyNamespace();
 }
 
 document.addEventListener('DOMContentLoaded', runInit);
@@ -1259,3 +1279,7 @@ document.addEventListener('DOMContentLoaded', runInit);
 // HTMX events bubble, so we listen on `document` (this script runs in <head>
 // before <body> exists, so document.body would be null at this point anyway).
 document.addEventListener('htmx:load', runInit);
+// The list table morphs in place on ro:refresh; re-measure after the swap settles
+// and on resize (auto-layout column widths shift with the viewport).
+document.addEventListener('htmx:afterSettle', setupStickyNamespace);
+window.addEventListener('resize', setupStickyNamespace);
