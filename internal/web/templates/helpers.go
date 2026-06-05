@@ -234,13 +234,12 @@ func numColClass(colClass string) string {
 }
 
 // cellTdClass is the generic (non-rich) cell <td> class: the augmented cellClass
-// + the column class, plus `trunc` for a secondary free-text cell.
-func cellTdClass(cellClass, colClass string, trunc bool) string {
-	cls := strings.TrimSpace(cellClass + " " + colClass)
-	if trunc {
-		cls = strings.TrimSpace(cls + " trunc")
-	}
-	return cls
+// + the column class. Truncation is NOT a <td> class -- `.trunc` is
+// `display:inline-block` (base.css), which on a <td> drops the cell out of the
+// table row and misaligns every following column. The `.trunc` clamp lives on an
+// inner <span>/<a> instead (matching the mockup's `<span class="trunc">`).
+func cellTdClass(cellClass, colClass string) string {
+	return strings.TrimSpace(cellClass + " " + colClass)
 }
 
 // capClass is the node capacity-bar wrapper class (`cap` + the lo/mid/hi bucket

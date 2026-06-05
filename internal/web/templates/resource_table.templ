@@ -393,16 +393,24 @@ templ tableCell(cell TableCell) {
 			}
 			</td>
 	} else {
-		<td class={ cellTdClass(cell.Class, cell.ColClass, cell.Trunc) } title={ cell.Title }>
+		<td class={ cellTdClass(cell.Class, cell.ColClass) } title={ cell.Title }>
 			switch cell.Kind {
 				case CellLabel:
-					<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
+					if cell.Trunc {
+						<a class="trunc" href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
+					} else {
+						<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
+					}
 				case CellCPU:
 					{ cell.Value }
 				case CellMemory:
 					{ cell.Value + " MiB" }
 				default:
-					{ cell.Value }
+					if cell.Trunc {
+						<span class="trunc">{ cell.Value }</span>
+					} else {
+						{ cell.Value }
+					}
 			}
 			</td>
 	}
