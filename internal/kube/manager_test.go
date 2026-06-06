@@ -41,6 +41,63 @@ func TestSanitizeClusterName(t *testing.T) {
 	}
 }
 
+// TestConnectionFromClusterConfigMapsEveryField is the regression net for the
+// config->triple mapper seam: every ClusterConnection field must land on the
+// Connection's api.Cluster/api.AuthInfo. The other tests exercise the mapper only
+// transitively (or build the triple by hand), so a future field-add that forgot
+// to wire it here could pass the suite -- this asserts the hop directly.
+func TestConnectionFromClusterConfigMapsEveryField(t *testing.T) {
+	cc := appconfig.ClusterConnection{
+		Name:                     "prod",
+		Server:                   "https://api.example",
+		CertificateAuthority:     "/ca.pem",
+		CertificateAuthorityData: []byte("ca-data"),
+		InsecureSkipTLSVerify:    true,
+		TLSServerName:            "sni.example",
+		Token:                    "tok",
+		TokenFile:                "/token",
+		ClientCertificate:        "/cert.pem",
+		ClientCertificateData:    []byte("cert-data"),
+		ClientKey:                "/key.pem",
+		ClientKeyData:            []byte("key-data"),
+		Impersonate:              appconfig.ClusterImpersonation{User: "robot", Groups: []string{"viewers"}, UID: "uid-1"},
+	}
+	conn := connectionFromClusterConfig(&cc)
+	cl, au := conn.Cluster, conn.AuthInfo
+	if au == nil {
+		t.Fatal("AuthInfo is nil despite configured credentials")
+	}
+	switch {
+	case cl.Server != cc.Server:
+		t.Fatalf("Server = %q", cl.Server)
+	case cl.CertificateAuthority != cc.CertificateAuthority:
+		t.Fatalf("CertificateAuthority = %q", cl.CertificateAuthority)
+	case string(cl.CertificateAuthorityData) != "ca-data":
+		t.Fatalf("CertificateAuthorityData = %q", cl.CertificateAuthorityData)
+	case !cl.InsecureSkipTLSVerify:
+		t.Fatal("InsecureSkipTLSVerify not mapped")
+	case cl.TLSServerName != cc.TLSServerName:
+		t.Fatalf("TLSServerName = %q", cl.TLSServerName)
+	case au.Token != cc.Token:
+		t.Fatalf("Token = %q", au.Token)
+	case au.TokenFile != cc.TokenFile:
+		t.Fatalf("TokenFile = %q", au.TokenFile)
+	case au.ClientCertificate != cc.ClientCertificate:
+		t.Fatalf("ClientCertificate = %q", au.ClientCertificate)
+	case string(au.ClientCertificateData) != "cert-data":
+		t.Fatalf("ClientCertificateData = %q", au.ClientCertificateData)
+	case au.ClientKey != cc.ClientKey:
+		t.Fatalf("ClientKey = %q", au.ClientKey)
+	case string(au.ClientKeyData) != "key-data":
+		t.Fatalf("ClientKeyData = %q", au.ClientKeyData)
+	case au.Impersonate != "robot" || len(au.ImpersonateGroups) != 1 || au.ImpersonateGroups[0] != "viewers" || au.ImpersonateUID != "uid-1":
+		t.Fatalf("impersonation not mapped: user=%q groups=%v uid=%q", au.Impersonate, au.ImpersonateGroups, au.ImpersonateUID)
+	}
+	if conn.Source != SourceStatic {
+		t.Fatalf("Source = %v, want static", conn.Source)
+	}
+}
+
 // TestDiscoverStaticBuildsConnectionThroughClientcmd pins that a static cluster's
 // rest.Config is produced via the Connection model (clientcmd), carrying the
 // configured server as Host.
