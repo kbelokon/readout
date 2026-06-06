@@ -46,6 +46,17 @@ type argoExecProviderConfig struct {
 	InstallHint string            `json:"installHint"`
 }
 
+// argoAWSAuthConfig is Argo's awsAuthConfig block (the legacy EKS IAM path). Its
+// only role here is DETECTION: readout does not ship the aws binary, so an Argo
+// Secret authenticating via awsAuthConfig cannot be honored and must be surfaced
+// as a skip-with-error rather than silently producing a credential-less (anonymous)
+// connection. Operators should configure execProviderConfig instead.
+type argoAWSAuthConfig struct {
+	ClusterName string `json:"clusterName"`
+	RoleARN     string `json:"roleARN"`
+	Profile     string `json:"profile"`
+}
+
 // argoClusterConfig is the parsed form of an Argo cluster Secret's `config` JSON
 // blob: the credential + TLS material that does NOT fit the flat top-level
 // name/server. This is the nested shape D6 pins (NOT a flat {server,CA,creds}).
@@ -53,6 +64,7 @@ type argoClusterConfig struct {
 	BearerToken        string                  `json:"bearerToken"`
 	TLSClientConfig    argoTLSClientConfig     `json:"tlsClientConfig"`
 	ExecProviderConfig *argoExecProviderConfig `json:"execProviderConfig"`
+	AWSAuthConfig      *argoAWSAuthConfig      `json:"awsAuthConfig"`
 	Username           string                  `json:"username"`
 	Password           string                  `json:"password"`
 }
@@ -75,6 +87,13 @@ func parseArgoClusterSecret(data map[string][]byte) (*Connection, error) {
 	if server == "" {
 		return nil, fmt.Errorf("argo cluster secret %q: empty server", name)
 	}
+	// name is the ONLY discovery path where the cluster identifier comes from
+	// untrusted Secret content (static enforces non-empty; kubeconfig uses a map
+	// key). Guard it symmetrically with server: an empty name would key the cluster
+	// as "" and collide with any sibling missing a name, hiding a real cluster.
+	if name == "" {
+		return nil, fmt.Errorf("argo cluster secret (server %q): empty name", server)
+	}
 
 	var conf argoClusterConfig
 	rawConfig := data["config"]
@@ -83,6 +102,15 @@ func parseArgoClusterSecret(data map[string][]byte) (*Connection, error) {
 	}
 	if err := json.Unmarshal(rawConfig, &conf); err != nil {
 		return nil, fmt.Errorf("argo cluster secret %q: parse config: %w", name, err)
+	}
+	// awsAuthConfig is the legacy EKS IAM path; readout does not ship the aws
+	// binary (D1 boundary / Accepted Risk), so honoring it would mean building a
+	// credential-less connection that silently runs anonymous -- exactly the class
+	// D8 exists to kill. When awsAuthConfig is the only credential, skip-with-error.
+	if conf.AWSAuthConfig != nil && conf.BearerToken == "" && conf.ExecProviderConfig == nil &&
+		conf.TLSClientConfig.CertData == "" {
+		return nil, fmt.Errorf("argo cluster secret %q: awsAuthConfig is not supported "+
+			"(readout does not ship the aws binary); configure execProviderConfig instead", name)
 	}
 
 	caData, err := decodeArgoB64("caData", name, conf.TLSClientConfig.CAData)

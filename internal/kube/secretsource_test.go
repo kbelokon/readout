@@ -324,3 +324,44 @@ func argoClusterSecret(name string, stringData map[string]string) *corev1.Secret
 		Data: data,
 	}
 }
+
+// TestArgoSecretRejectsUnsupportedAndEmptyName pins the two fork-review fixes:
+// an awsAuthConfig-only Secret (readout ships no aws binary) is skip-with-error
+// rather than a silently-anonymous "healthy" cluster, and an empty name (the one
+// untrusted-content identifier) is skip-with-error rather than an empty-keyed
+// cluster that collides with siblings.
+func TestArgoSecretRejectsUnsupportedAndEmptyName(t *testing.T) {
+	t.Run("awsAuthConfig sole credential is skip-with-error", func(t *testing.T) {
+		data := map[string][]byte{
+			"name":   []byte("eks-prod"),
+			"server": []byte("https://eks.example"),
+			"config": []byte(`{"awsAuthConfig":{"clusterName":"eks-prod","roleARN":"arn:aws:iam::1:role/r"},"tlsClientConfig":{"insecure":false}}`),
+		}
+		if _, err := parseArgoClusterSecret(data); err == nil {
+			t.Fatal("awsAuthConfig-only secret must be skipped with an error, not parsed anonymous")
+		}
+	})
+	t.Run("empty name is skip-with-error", func(t *testing.T) {
+		data := map[string][]byte{
+			"server": []byte("https://no-name.example"),
+			"config": []byte(`{"bearerToken":"tok","tlsClientConfig":{"insecure":true}}`),
+		}
+		if _, err := parseArgoClusterSecret(data); err == nil {
+			t.Fatal("empty-name secret must be skipped with an error")
+		}
+	})
+	t.Run("awsAuthConfig alongside bearerToken still parses via the bearer", func(t *testing.T) {
+		data := map[string][]byte{
+			"name":   []byte("eks-prod"),
+			"server": []byte("https://eks.example"),
+			"config": []byte(`{"bearerToken":"tok","awsAuthConfig":{"clusterName":"eks-prod"},"tlsClientConfig":{"insecure":true}}`),
+		}
+		conn, err := parseArgoClusterSecret(data)
+		if err != nil {
+			t.Fatalf("bearerToken + awsAuthConfig should parse via the bearer: %v", err)
+		}
+		if conn.AuthInfo == nil || conn.AuthInfo.Token != "tok" {
+			t.Fatalf("expected bearer token, got %#v", conn.AuthInfo)
+		}
+	})
+}

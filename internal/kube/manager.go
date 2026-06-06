@@ -283,6 +283,12 @@ func argoHostRESTConfig(cfg *appconfig.Config) (*rest.Config, error) {
 	}
 	for i := range cfg.Clusters {
 		if cfg.Clusters[i].Name == host {
+			// Same non-https-drops-credentials guard discoverStatic applies, so the
+			// Argo host-list failure names the real cause instead of failing as an
+			// opaque anonymous "forbidden".
+			if err := guardStaticTransport(cfg.Clusters[i]); err != nil {
+				return nil, fmt.Errorf("argo host cluster %q: %w", host, err)
+			}
 			restCfg, err := connectionFromClusterConfig(cfg.Clusters[i]).RESTConfig()
 			if err != nil {
 				return nil, fmt.Errorf("argo host cluster %q: %w", host, err)
