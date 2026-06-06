@@ -459,7 +459,8 @@ func resolveClusterConnections(clusters []fileClusterConn) ([]ClusterConnection,
 	}
 	result := make([]ClusterConnection, 0, len(clusters))
 	seen := make(map[string]bool, len(clusters))
-	for _, c := range clusters {
+	for i := range clusters {
+		c := &clusters[i]
 		if c.Name == "" {
 			return nil, errors.New("cluster with empty name in clusters list")
 		}

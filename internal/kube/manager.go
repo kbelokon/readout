@@ -220,7 +220,7 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 func discoverStatic(cfg *appconfig.Config) []discoveredCluster {
 	var result []discoveredCluster
 	for i := range cfg.Clusters {
-		cc := cfg.Clusters[i]
+		cc := &cfg.Clusters[i]
 		dc := discoveredCluster{
 			Name:   cc.Name,
 			Source: SourceStatic,
@@ -286,10 +286,10 @@ func argoHostRESTConfig(cfg *appconfig.Config) (*rest.Config, error) {
 			// Same non-https-drops-credentials guard discoverStatic applies, so the
 			// Argo host-list failure names the real cause instead of failing as an
 			// opaque anonymous "forbidden".
-			if err := guardStaticTransport(cfg.Clusters[i]); err != nil {
+			if err := guardStaticTransport(&cfg.Clusters[i]); err != nil {
 				return nil, fmt.Errorf("argo host cluster %q: %w", host, err)
 			}
-			restCfg, err := connectionFromClusterConfig(cfg.Clusters[i]).RESTConfig()
+			restCfg, err := connectionFromClusterConfig(&cfg.Clusters[i]).RESTConfig()
 			if err != nil {
 				return nil, fmt.Errorf("argo host cluster %q: %w", host, err)
 			}
@@ -303,7 +303,7 @@ func argoHostRESTConfig(cfg *appconfig.Config) (*rest.Config, error) {
 // non-https server, where clientcmd would silently drop them. Impersonation is
 // excluded: clientcmd applies the impersonation block unconditionally (it is not
 // gated on transport TLS), so it is not silently dropped.
-func guardStaticTransport(cc appconfig.ClusterConnection) error {
+func guardStaticTransport(cc *appconfig.ClusterConnection) error {
 	if strings.HasPrefix(cc.Server, "https://") {
 		return nil
 	}
@@ -326,7 +326,7 @@ func guardStaticTransport(cc appconfig.ClusterConnection) error {
 // supplied per request). Token and TokenFile pass through as configured: a
 // tokenFile-only cluster keeps AuthInfo.TokenFile set so clientcmd arms the
 // ~1-minute rotation re-read (D8b); an inline token is used verbatim.
-func connectionFromClusterConfig(cc appconfig.ClusterConnection) *Connection {
+func connectionFromClusterConfig(cc *appconfig.ClusterConnection) *Connection {
 	cluster := &clientcmdapi.Cluster{
 		Server:                   cc.Server,
 		CertificateAuthority:     cc.CertificateAuthority,
