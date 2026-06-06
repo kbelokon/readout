@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,12 +27,11 @@ excludeNamespaces:
   - kube-.*
 clusters:
   - name: one
-    url: https://one
+    server: https://one
   - name: two
-    url: https://two
+    server: https://two
+    insecureSkipTlsVerify: true
 kubeconfigContexts: [ctx-a, ctx-b]
-clusterLabelSelector:
-  region: fra1
 objectLinks:
   pods:
     - href: https://pods/{name}
@@ -96,11 +96,11 @@ func TestParseLoadsYAMLConfigEnvOverridesAndDefaults(t *testing.T) {
 	if len(cfg.IncludeNamespaces) != 2 || !cfg.IncludeNamespaces[1].MatchString("prod-api") || !cfg.ExcludeNamespaces[0].MatchString("kube-system") {
 		t.Fatalf("namespace regexes not compiled: include=%v exclude=%v", cfg.IncludeNamespaces, cfg.ExcludeNamespaces)
 	}
-	if cfg.Clusters["two"] != "https://two" || cfg.KubeconfigContexts[1] != "ctx-b" {
+	if len(cfg.Clusters) != 2 || cfg.Clusters[1].Name != "two" || cfg.Clusters[1].Server != "https://two" || !cfg.Clusters[1].InsecureSkipTLSVerify || cfg.KubeconfigContexts[1] != "ctx-b" {
 		t.Fatalf("clusters/contexts not resolved: %#v %#v", cfg.Clusters, cfg.KubeconfigContexts)
 	}
-	if cfg.ClusterLabelSelector["region"] != "fra1" || cfg.ObjectLinks["pods"][0].Icon != "box" || cfg.LabelLinks["app"][0].Title != "External link" {
-		t.Fatalf("selectors/links not resolved: %#v %#v %#v", cfg.ClusterLabelSelector, cfg.ObjectLinks, cfg.LabelLinks)
+	if cfg.ObjectLinks["pods"][0].Icon != "box" || cfg.LabelLinks["app"][0].Title != "External link" {
+		t.Fatalf("links not resolved: %#v %#v", cfg.ObjectLinks, cfg.LabelLinks)
 	}
 	if cfg.DefaultCustomColumns["pods"] != "Owner:{.metadata.ownerReferences[0].name}" || cfg.PreferredAPIVersions["ingresses"] != "networking.k8s.io/v1" {
 		t.Fatalf("custom columns/preferred versions not resolved: %#v %#v", cfg.DefaultCustomColumns, cfg.PreferredAPIVersions)
@@ -250,6 +250,83 @@ resources:
 	bad := "resources:\n  - kind: Pod\n    grpup: x\n    icon: pod\n"
 	if _, err := Parse([]string{"--config", writeConfig(t, bad)}); err == nil {
 		t.Fatal("unknown field inside a resources entry should be rejected")
+	}
+}
+
+// TestClusterSchemaParsesTripleFields pins the new kubeconfig-semantics cluster
+// surface (D2): per-cluster server/CA-data/TLS/token/clientcert/impersonate
+// parse into the runtime ClusterConnection, base64 *Data decodes like kubeconfig,
+// and the one retained cluster/auth key (clusterAuthUseSessionToken) still parses.
+func TestClusterSchemaParsesTripleFields(t *testing.T) {
+	// "Zm9vLWNh" is base64("foo-ca"); a YAML string decodes into the []byte field
+	// as base64, exactly like kubeconfig's certificate-authority-data.
+	const content = `
+clusterAuthUseSessionToken: true
+clusters:
+  - name: prod
+    server: https://prod.example
+    certificateAuthorityData: Zm9vLWNh
+    tlsServerName: prod.internal
+    tokenFile: /var/run/secrets/token
+    impersonate:
+      user: system:serviceaccount:ns:robot
+      groups: [viewers]
+      uid: uid-1
+`
+	cfg, err := Parse([]string{"--config", writeConfig(t, content)})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.ClusterAuthUseSessionToken {
+		t.Fatal("clusterAuthUseSessionToken not retained/parsed")
+	}
+	if len(cfg.Clusters) != 1 {
+		t.Fatalf("clusters = %#v", cfg.Clusters)
+	}
+	c := cfg.Clusters[0]
+	if c.Name != "prod" || c.Server != "https://prod.example" || c.TLSServerName != "prod.internal" || c.TokenFile != "/var/run/secrets/token" {
+		t.Fatalf("scalar cluster fields not resolved: %#v", c)
+	}
+	if string(c.CertificateAuthorityData) != "foo-ca" {
+		t.Fatalf("certificateAuthorityData base64 not decoded: %q", string(c.CertificateAuthorityData))
+	}
+	if c.Impersonate.User != "system:serviceaccount:ns:robot" || len(c.Impersonate.Groups) != 1 || c.Impersonate.Groups[0] != "viewers" || c.Impersonate.UID != "uid-1" {
+		t.Fatalf("impersonate not resolved: %#v", c.Impersonate)
+	}
+}
+
+// TestClusterDuplicateNameRejected pins D8c (config-parse half): two byte-identical
+// cluster names are a startup error naming the cluster, not silent last-write-wins.
+func TestClusterDuplicateNameRejected(t *testing.T) {
+	const content = `
+clusters:
+  - name: prod
+    server: https://a
+  - name: prod
+    server: https://b
+`
+	_, err := Parse([]string{"--config", writeConfig(t, content)})
+	if err == nil {
+		t.Fatal("duplicate cluster name should be rejected")
+	}
+	if !strings.Contains(err.Error(), "prod") {
+		t.Fatalf("duplicate-name error should name the cluster: %v", err)
+	}
+}
+
+// TestRemovedClusterKeysRejected pins that the old cluster/auth keys removed in
+// D2/D5 are no longer in the schema, so strict parse rejects them rather than
+// silently ignoring a stale config.
+func TestRemovedClusterKeysRejected(t *testing.T) {
+	for _, key := range []string{
+		"clusterRegistryUrl: https://reg\n",
+		"clusterLabelSelector:\n  region: fra1\n",
+		"clusterAuthTokenPath: /token\n",
+		"clusterRegistryBearerTokenPath: /token\n",
+	} {
+		if _, err := Parse([]string{"--config", writeConfig(t, key)}); err == nil {
+			t.Fatalf("removed key %q should be rejected by strict parse", key)
+		}
 	}
 }
 

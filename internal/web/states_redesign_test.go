@@ -154,7 +154,7 @@ func newStateServer(t *testing.T, clusterURL string) *Server {
 	t.Helper()
 	return newServer(t, &config.Config{
 		Port:         8080,
-		Clusters:     map[string]string{"test": clusterURL},
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: clusterURL}},
 		DefaultTheme: "dark",
 		NoAccessLogs: true,
 	}, time.Now())

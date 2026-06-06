@@ -42,6 +42,38 @@ type SidebarGroup struct {
 	Resources []string
 }
 
+// ClusterConnection is one statically-configured cluster carrying kubeconfig
+// field semantics: the fields map 1:1 onto client-go's api.Cluster/api.AuthInfo,
+// so the kube loader builds the canonical connection triple from them and lets
+// clientcmd produce the rest.Config (no hand-set TLS/auth). The *Data fields are
+// []byte so a YAML string decodes as base64 exactly like kubeconfig's
+// certificate-authority-data / client-certificate-data / client-key-data.
+type ClusterConnection struct {
+	Name                     string
+	Server                   string
+	CertificateAuthority     string
+	CertificateAuthorityData []byte
+	InsecureSkipTLSVerify    bool
+	TLSServerName            string
+	Token                    string
+	TokenFile                string
+	ClientCertificate        string
+	ClientCertificateData    []byte
+	ClientKey                string
+	ClientKeyData            []byte
+	Impersonate              ClusterImpersonation
+}
+
+// ClusterImpersonation is the per-cluster static service identity (act-as). It
+// maps onto api.AuthInfo.Impersonate / ImpersonateGroups / ImpersonateUID. It is
+// mutually exclusive with per-request passthrough: when passthrough fires, the
+// kube layer clears it so the request evaluates as the viewer (D4).
+type ClusterImpersonation struct {
+	User   string
+	Groups []string
+	UID    string
+}
+
 // Config is the resolved runtime configuration. Field types match what the
 // rest of the service consumes directly (s.cfg.X); the YAML file is parsed into
 // the unexported fileConfig and folded into this shape by resolve().
@@ -52,14 +84,10 @@ type Config struct {
 	IncludeNamespaces []*regexp.Regexp
 	ExcludeNamespaces []*regexp.Regexp
 
-	Clusters                             map[string]string
-	KubeconfigPath                       string
-	KubeconfigContexts                   []string
-	ClusterRegistryURL                   string
-	ClusterRegistryOAuth2BearerTokenPath string
-	ClusterLabelSelector                 map[string]string
-	ClusterAuthTokenPath                 string
-	ClusterAuthUseSessionToken           bool
+	Clusters                   []ClusterConnection
+	KubeconfigPath             string
+	KubeconfigContexts         []string
+	ClusterAuthUseSessionToken bool
 	ShowContainerLogs                    bool
 	NoAccessLogs                         bool
 	IncludeSecrets                       bool
@@ -126,12 +154,41 @@ type fileSidebarGroup struct {
 	Resources []string `json:"resources"`
 }
 
-// fileCluster is one statically-configured external cluster (name + apiserver
-// URL) written as a list element rather than a map so duplicate-name intent is
-// explicit and the form reads naturally.
+// fileCluster is one external-readout cross-link (name + base URL) written as a
+// list element. It backs `externalClusters` only -- the in-cluster connection
+// surface uses the richer fileClusterConn below.
 type fileCluster struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
+}
+
+// fileClusterConn is one statically-configured cluster connection on the on-disk
+// schema, using kubeconfig field names/semantics. It is a list element so a
+// duplicate name is an explicit, detectable startup error (D8c) rather than a
+// silent last-write-wins. The *Data fields are []byte: sigs.k8s.io/yaml routes
+// YAML through JSON, so a YAML string decodes as base64 -- matching kubeconfig's
+// certificate-authority-data / client-certificate-data / client-key-data.
+type fileClusterConn struct {
+	Name                     string               `json:"name"`
+	Server                   string               `json:"server"`
+	CertificateAuthority     string               `json:"certificateAuthority"`
+	CertificateAuthorityData []byte               `json:"certificateAuthorityData"`
+	InsecureSkipTLSVerify    bool                 `json:"insecureSkipTlsVerify"`
+	TLSServerName            string               `json:"tlsServerName"`
+	Token                    string               `json:"token"`
+	TokenFile                string               `json:"tokenFile"`
+	ClientCertificate        string               `json:"clientCertificate"`
+	ClientCertificateData    []byte               `json:"clientCertificateData"`
+	ClientKey                string               `json:"clientKey"`
+	ClientKeyData            []byte               `json:"clientKeyData"`
+	Impersonate              fileClusterImpersonate `json:"impersonate"`
+}
+
+// fileClusterImpersonate is the on-disk per-cluster static act-as identity.
+type fileClusterImpersonate struct {
+	User   string   `json:"user"`
+	Groups []string `json:"groups"`
+	UID    string   `json:"uid"`
 }
 
 // fileConfig is the on-disk readout.yaml schema. It is a clean nested shape
@@ -142,14 +199,10 @@ type fileConfig struct {
 	IncludeNamespaces []string `json:"includeNamespaces"`
 	ExcludeNamespaces []string `json:"excludeNamespaces"`
 
-	Clusters                             []fileCluster     `json:"clusters"`
-	KubeconfigPath                       string            `json:"kubeconfigPath"`
-	KubeconfigContexts                   []string          `json:"kubeconfigContexts"`
-	ClusterRegistryURL                   string            `json:"clusterRegistryUrl"`
-	ClusterRegistryOAuth2BearerTokenPath string            `json:"clusterRegistryBearerTokenPath"`
-	ClusterLabelSelector                 map[string]string `json:"clusterLabelSelector"`
-	ClusterAuthTokenPath                 string            `json:"clusterAuthTokenPath"`
-	ClusterAuthUseSessionToken           bool              `json:"clusterAuthUseSessionToken"`
+	Clusters                   []fileClusterConn `json:"clusters"`
+	KubeconfigPath             string            `json:"kubeconfigPath"`
+	KubeconfigContexts         []string          `json:"kubeconfigContexts"`
+	ClusterAuthUseSessionToken bool              `json:"clusterAuthUseSessionToken"`
 
 	ShowContainerLogs bool   `json:"showContainerLogs"`
 	NoAccessLogs      bool   `json:"noAccessLogs"`
@@ -258,31 +311,31 @@ func Parse(args []string) (Config, error) {
 // defaults, layers the READOUT_* secret env vars over the file (env wins), and
 // validates. Secrets never live in the file -- only in env or referenced files.
 func resolve(file *fileConfig) (Config, error) {
+	clusters, err := resolveClusterConnections(file.Clusters)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		Port:                                 firstNonZero(file.Port, 8080),
-		KubeconfigPath:                       file.KubeconfigPath,
-		KubeconfigContexts:                   file.KubeconfigContexts,
-		ClusterRegistryURL:                   file.ClusterRegistryURL,
-		ClusterRegistryOAuth2BearerTokenPath: file.ClusterRegistryOAuth2BearerTokenPath,
-		ClusterLabelSelector:                 file.ClusterLabelSelector,
-		ClusterAuthTokenPath:                 file.ClusterAuthTokenPath,
-		ClusterAuthUseSessionToken:           file.ClusterAuthUseSessionToken,
-		ShowContainerLogs:                    file.ShowContainerLogs,
-		NoAccessLogs:                         file.NoAccessLogs,
-		IncludeSecrets:                       file.IncludeSecrets,
-		TemplatesPath:                        file.TemplatesPath,
-		StaticAssetsPath:                     file.StaticAssetsPath,
-		SearchDefaultResourceTypes:           file.Search.DefaultResourceTypes,
-		SearchOfferedResourceTypes:           file.Search.OfferedResourceTypes,
-		SearchMaxConcurrency:                 100,
-		DefaultLabelColumns:                  mapOrEmpty(file.LabelColumns),
-		DefaultHiddenColumns:                 mapOrEmpty(file.HiddenColumns),
-		DefaultCustomColumns:                 mapOrEmpty(file.CustomColumns),
-		PreferredAPIVersions:                 mapOrEmpty(file.PreferredAPIVersions),
-		DefaultTheme:                         firstNonEmpty(file.DefaultTheme, "dark"),
-		ThemeOptions:                         file.ThemeOptions,
-		Clusters:                             clusterMap(file.Clusters),
-		ExternalClusters:                     clusterMap(file.ExternalClusters),
+		Port:                       firstNonZero(file.Port, 8080),
+		KubeconfigPath:             file.KubeconfigPath,
+		KubeconfigContexts:         file.KubeconfigContexts,
+		ClusterAuthUseSessionToken: file.ClusterAuthUseSessionToken,
+		ShowContainerLogs:          file.ShowContainerLogs,
+		NoAccessLogs:               file.NoAccessLogs,
+		IncludeSecrets:             file.IncludeSecrets,
+		TemplatesPath:              file.TemplatesPath,
+		StaticAssetsPath:           file.StaticAssetsPath,
+		SearchDefaultResourceTypes: file.Search.DefaultResourceTypes,
+		SearchOfferedResourceTypes: file.Search.OfferedResourceTypes,
+		SearchMaxConcurrency:       100,
+		DefaultLabelColumns:        mapOrEmpty(file.LabelColumns),
+		DefaultHiddenColumns:       mapOrEmpty(file.HiddenColumns),
+		DefaultCustomColumns:       mapOrEmpty(file.CustomColumns),
+		PreferredAPIVersions:       mapOrEmpty(file.PreferredAPIVersions),
+		DefaultTheme:               firstNonEmpty(file.DefaultTheme, "dark"),
+		ThemeOptions:               file.ThemeOptions,
+		Clusters:                   clusters,
+		ExternalClusters:           clusterMap(file.ExternalClusters),
 		ObjectLinks:                          resolveLinks(file.ObjectLinks),
 		LabelLinks:                           resolveLinks(file.LabelLinks),
 		TimestampLinks:                       resolveLinks(file.TimestampLinks),
@@ -316,7 +369,6 @@ func resolve(file *fileConfig) (Config, error) {
 	cfg.AuthorizationHookURL = firstNonEmpty(os.Getenv("READOUT_AUTHORIZATION_HOOK_URL"), cfg.AuthorizationHookURL)
 	cfg.ResourcePrerenderHookURL = firstNonEmpty(os.Getenv("READOUT_RESOURCE_PRERENDER_HOOK_URL"), cfg.ResourcePrerenderHookURL)
 
-	var err error
 	if cfg.IncludeNamespaces, err = compilePatterns(file.IncludeNamespaces); err != nil {
 		return Config{}, fmt.Errorf("includeNamespaces: %w", err)
 	}
@@ -371,6 +423,48 @@ func mapOrEmpty(m map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return m
+}
+
+// resolveClusterConnections folds the on-disk cluster list into the runtime
+// []ClusterConnection. A cluster with an empty name is an error (it cannot be
+// addressed), and a byte-identical duplicate name is a startup error (D8c,
+// config-parse half) -- replacing the old map's silent last-write-wins. The
+// post-SanitizeClusterName collision case is caught later in the kube loader.
+func resolveClusterConnections(clusters []fileClusterConn) ([]ClusterConnection, error) {
+	if len(clusters) == 0 {
+		return nil, nil
+	}
+	result := make([]ClusterConnection, 0, len(clusters))
+	seen := make(map[string]bool, len(clusters))
+	for _, c := range clusters {
+		if c.Name == "" {
+			return nil, errors.New("cluster with empty name in clusters list")
+		}
+		if seen[c.Name] {
+			return nil, fmt.Errorf("duplicate cluster name %q in clusters list", c.Name)
+		}
+		seen[c.Name] = true
+		result = append(result, ClusterConnection{
+			Name:                     c.Name,
+			Server:                   c.Server,
+			CertificateAuthority:     c.CertificateAuthority,
+			CertificateAuthorityData: c.CertificateAuthorityData,
+			InsecureSkipTLSVerify:    c.InsecureSkipTLSVerify,
+			TLSServerName:            c.TLSServerName,
+			Token:                    c.Token,
+			TokenFile:                c.TokenFile,
+			ClientCertificate:        c.ClientCertificate,
+			ClientCertificateData:    c.ClientCertificateData,
+			ClientKey:                c.ClientKey,
+			ClientKeyData:            c.ClientKeyData,
+			Impersonate: ClusterImpersonation{
+				User:   c.Impersonate.User,
+				Groups: c.Impersonate.Groups,
+				UID:    c.Impersonate.UID,
+			},
+		})
+	}
+	return result, nil
 }
 
 func clusterMap(clusters []fileCluster) map[string]string {

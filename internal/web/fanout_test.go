@@ -78,10 +78,21 @@ func newMultiClusterServer(t *testing.T, clusters map[string]string) *Server {
 	t.Helper()
 	return newTestServerWithConfig(t, &config.Config{
 		Port:                 8080,
-		Clusters:             clusters,
+		Clusters:             clusterConnections(clusters),
 		DefaultTheme:         "dark",
 		SearchMaxConcurrency: 100,
 	})
+}
+
+// clusterConnections adapts the name->server map the multi-cluster test helpers
+// take into the runtime []config.ClusterConnection. Order is irrelevant: the
+// manager sorts clusters by name.
+func clusterConnections(m map[string]string) []config.ClusterConnection {
+	out := make([]config.ClusterConnection, 0, len(m))
+	for name, server := range m {
+		out = append(out, config.ClusterConnection{Name: name, Server: server})
+	}
+	return out
 }
 
 // clusterCellOrder returns the cluster names in the order their cells appear in
@@ -207,7 +218,7 @@ func TestMultiClusterSearchFanInIsDeterministicAndPartialSafe(t *testing.T) {
 	zbad := newClusterFakeAPI(t, clusterFakeOptions{failList: true, delay: 0})
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:                       8080,
-		Clusters:                   map[string]string{"aaa": aaa.URL, "bbb": bbb.URL, "ybad": ybad.URL, "zbad": zbad.URL},
+		Clusters:                   []config.ClusterConnection{{Name: "aaa", Server: aaa.URL}, {Name: "bbb", Server: bbb.URL}, {Name: "ybad", Server: ybad.URL}, {Name: "zbad", Server: zbad.URL}},
 		DefaultTheme:               "dark",
 		SearchMaxConcurrency:       100,
 		SearchDefaultResourceTypes: []string{"pods"},

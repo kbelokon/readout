@@ -66,7 +66,7 @@ func TestRunServerInitAndListenErrors(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	listenCfg := writeConfig(t, "clusters:\n  - name: test\n    url: https://example.invalid\n")
+	listenCfg := writeConfig(t, "clusters:\n  - name: test\n    server: https://example.invalid\n")
 	if code := run([]string{"--config", listenCfg, "--port", "9091"}, &stdout, &stderr); code != 1 {
 		t.Fatalf("listen error exit code = %d, want 1", code)
 	}

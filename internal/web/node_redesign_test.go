@@ -495,7 +495,7 @@ func TestMetricsRaggedGuard(t *testing.T) {
 	api := newNodeMetricsRaggedAPI(t)
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:         8080,
-		Clusters:     map[string]string{"test": api.URL},
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: api.URL}},
 		DefaultTheme: "dark",
 		NoAccessLogs: true,
 	})
@@ -538,7 +538,7 @@ func TestMetricsRaggedGuardRendersThroughHandler(t *testing.T) {
 	api := newNodeListMetricsFailAPI(t)
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:         8080,
-		Clusters:     map[string]string{"test": api.URL},
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: api.URL}},
 		DefaultTheme: "dark",
 		NoAccessLogs: true,
 	})

@@ -194,7 +194,7 @@ func baseConfig(t *testing.T) *config.Config {
 	t.Helper()
 	return &config.Config{
 		Port:         8080,
-		Clusters:     map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme: "dark",
 		NoAccessLogs: true,
 	}

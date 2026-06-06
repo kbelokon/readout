@@ -2,15 +2,11 @@ package kube
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	appconfig "github.com/kbelokon/readout/internal/config"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
@@ -39,184 +35,201 @@ func TestManagerSelectAndClusterOrdering(t *testing.T) {
 	}
 }
 
-func TestManagerHelpers(t *testing.T) {
+func TestSanitizeClusterName(t *testing.T) {
 	if got := SanitizeClusterName("a/b c"); got != "a:b:c" {
 		t.Fatalf("SanitizeClusterName = %q", got)
 	}
-	labels := registryLabels(map[string]any{
-		"id":                     "1",
-		"channel":                "stage",
-		"environment":            "dev",
-		"infrastructure_account": "acc",
-		"region":                 "fra1",
-		"ignored":                "x",
-	})
-	if labels["infrastructure-account"] != "acc" || labels["ignored"] != "" {
-		t.Fatalf("registryLabels = %#v", labels)
+}
+
+// TestDiscoverStaticBuildsConnectionThroughClientcmd pins that a static cluster's
+// rest.Config is produced via the Connection model (clientcmd), carrying the
+// configured server as Host.
+func TestDiscoverStaticBuildsConnectionThroughClientcmd(t *testing.T) {
+	cfg := &appconfig.Config{Clusters: []appconfig.ClusterConnection{{Name: "one", Server: "https://one"}}}
+	got := discoverStatic(cfg)
+	if len(got) != 1 || got[0].Err != nil || got[0].Name != "one" || got[0].Config.Host != "https://one" {
+		t.Fatalf("discoverStatic = %#v", got)
 	}
-	if !labelsMatch(map[string]string{"region": "fra1", "channel!": "prod"}, labels) {
-		t.Fatalf("labels should match: %#v", labels)
-	}
-	if labelsMatch(map[string]string{"channel!": "stage"}, labels) {
-		t.Fatalf("negative selector should reject: %#v", labels)
-	}
-	raw := &clientcmdapi.Config{Contexts: map[string]*clientcmdapi.Context{"ctx": {Cluster: "c", AuthInfo: "u"}}}
-	if got := kubeconfigLabels(raw, "ctx"); len(got) != 0 {
-		t.Fatalf("kubeconfigLabels should return no labels for a context without them, got %#v", got)
-	}
-	if got := kubeconfigLabels(raw, "missing"); len(got) != 0 {
-		t.Fatalf("missing context labels = %#v", got)
+	if got[0].Source != SourceStatic {
+		t.Fatalf("static source = %v", got[0].Source)
 	}
 }
 
-func TestDiscoveryAndBearerTokenHelpers(t *testing.T) {
-	staticCfg := testConfig(map[string]string{"one": "https://one"})
-	static := discoverStatic(&staticCfg)
-	if len(static) != 1 || static[0].Name != "one" || static[0].Config.Host != "https://one" {
-		t.Fatalf("discoverStatic = %#v", static)
-	}
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "token")
-	if err := os.WriteFile(tokenPath, []byte("token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := &rest.Config{Host: "https://cluster", BearerTokenFile: "old"}
-	if err := applyBearerToken(cfg, tokenPath); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.BearerToken != "token" || cfg.BearerTokenFile != "" {
-		t.Fatalf("applyBearerToken = %#v", cfg)
-	}
-	if err := applyBearerToken(cfg, filepath.Join(dir, "missing")); err == nil {
-		t.Fatal("applyBearerToken missing file unexpectedly succeeded")
-	}
-}
-
-func TestDiscoverRegistryFiltersAndLabelsClusters(t *testing.T) {
-	var auth string
-	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth = r.Header.Get("Authorization")
-		if r.URL.Path != "/kubernetes-clusters" {
-			t.Fatalf("unexpected path %s", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{
-			{
-				"alias":                  "stage/one",
-				"api_server_url":         "https://one",
-				"lifecycle_status":       "ready",
-				"id":                     "1",
-				"channel":                "stage",
-				"environment":            "dev",
-				"infrastructure_account": "acc",
-				"region":                 "fra1",
-			},
-			{"alias": "dead", "api_server_url": "https://dead", "lifecycle_status": "deleting"},
-			{"alias": "", "api_server_url": "https://missing"},
-		}})
-	}))
-	defer registry.Close()
-	dir := t.TempDir()
-	registryToken := filepath.Join(dir, "registry-token")
-	clusterToken := filepath.Join(dir, "cluster-token")
-	if err := os.WriteFile(registryToken, []byte("registry\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(clusterToken, []byte("cluster\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	items, err := discoverRegistry(context.Background(), &appconfig.Config{
-		ClusterRegistryURL:                   registry.URL + "/",
-		ClusterRegistryOAuth2BearerTokenPath: registryToken,
-		ClusterAuthTokenPath:                 clusterToken,
-	})
+// TestStaticAuthThreadsBearerToken is the D8a regression guard: a static cluster
+// configured with a token must reach the apiserver as Bearer auth, NOT silently
+// anonymous (the old discoverStatic dropped it). Verified end-to-end against the
+// auth-capturing TLS server.
+func TestStaticAuthThreadsBearerToken(t *testing.T) {
+	srv, rec := newAuthCapturingTLSServer(t)
+	cfg := &appconfig.Config{Clusters: []appconfig.ClusterConnection{{
+		Name:                     "prod",
+		Server:                   srv.URL,
+		CertificateAuthorityData: serverCAPEM(t, srv),
+		Token:                    "static-token",
+	}}}
+	m, err := NewManager(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if auth != "Bearer registry" || len(items) != 1 {
-		t.Fatalf("registry auth/items = %q %#v", auth, items)
+	cluster, ok := m.Get("prod")
+	if !ok {
+		t.Fatalf("static cluster not loaded: %#v / broken=%#v", m.Clusters(), m.Broken())
 	}
-	if items[0].Name != "stage/one" || items[0].Config.BearerToken != "cluster" || items[0].Labels["region"] != "fra1" {
-		t.Fatalf("registry item mismatch: %#v labels=%#v", items[0], items[0].Labels)
+	if _, _, err := cluster.Client.ResourceTypes(context.Background()); err != nil {
+		t.Fatalf("discovery against static TLS cluster: %v", err)
+	}
+	if rec.Authorization() != "Bearer static-token" {
+		t.Fatalf("static cluster reached apiserver as %q, want Bearer static-token (silent anonymous regression)", rec.Authorization())
 	}
 }
 
-func TestDiscoverKubeconfigAndNewManagerStatic(t *testing.T) {
-	dir := t.TempDir()
-	kubeconfigPath := filepath.Join(dir, "config")
-	raw := clientcmdapi.Config{
-		Clusters: map[string]*clientcmdapi.Cluster{
-			"cluster-a": {Server: "https://a"},
-			"cluster-b": {Server: "https://b"},
-		},
-		AuthInfos: map[string]*clientcmdapi.AuthInfo{
-			"user-a": {Token: "a"},
-			"user-b": {Token: "b"},
-		},
-		Contexts: map[string]*clientcmdapi.Context{
-			"ctx-a": {Cluster: "cluster-a", AuthInfo: "user-a"},
-			"ctx-b": {Cluster: "cluster-b", AuthInfo: "user-b"},
-		},
-		CurrentContext: "ctx-a",
-	}
-	if err := clientcmd.WriteToFile(raw, kubeconfigPath); err != nil {
+// TestStaticAnonymousLoads pins that a static cluster with no auth still loads as
+// an anonymous connection (identity supplied per request) -- no Authorization.
+func TestStaticAnonymousLoads(t *testing.T) {
+	srv, rec := newAuthCapturingTLSServer(t)
+	cfg := &appconfig.Config{Clusters: []appconfig.ClusterConnection{{
+		Name:                     "anon",
+		Server:                   srv.URL,
+		CertificateAuthorityData: serverCAPEM(t, srv),
+	}}}
+	m, err := NewManager(context.Background(), cfg)
+	if err != nil {
 		t.Fatal(err)
 	}
-	discovered, err := discoverKubeconfig(&appconfig.Config{KubeconfigPath: kubeconfigPath, KubeconfigContexts: []string{"ctx-b"}})
+	cluster, ok := m.Get("anon")
+	if !ok {
+		t.Fatalf("anonymous static cluster not loaded: broken=%#v", m.Broken())
+	}
+	if _, _, err := cluster.Client.ResourceTypes(context.Background()); err != nil {
+		t.Fatalf("discovery: %v", err)
+	}
+	if rec.Authorization() != "" {
+		t.Fatalf("anonymous cluster sent Authorization %q", rec.Authorization())
+	}
+}
+
+// TestStaticNonHTTPSWithAuthIsBroken pins the finding-C guard: a static cluster
+// that sets TLS/auth fields on a non-https server is surfaced as broken (clientcmd
+// would silently drop the credentials), not run as a silently-anonymous cluster.
+func TestStaticNonHTTPSWithAuthIsBroken(t *testing.T) {
+	cfg := &appconfig.Config{Clusters: []appconfig.ClusterConnection{{
+		Name:   "insecure",
+		Server: "http://plain.example",
+		Token:  "would-be-dropped",
+	}}}
+	m, err := NewManager(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Get("insecure"); ok {
+		t.Fatal("non-https cluster with auth should not load")
+	}
+	broken := m.Broken()
+	if len(broken) != 1 || broken[0].Name != "insecure" {
+		t.Fatalf("expected one broken cluster, got %#v", broken)
+	}
+}
+
+// TestLoadMultiSourceCoexistAndPerContextError pins D3: static and kubeconfig
+// sources COEXIST (no longer mutually exclusive), and a malformed cluster is
+// skipped-with-error without failing its siblings.
+func TestLoadMultiSourceCoexistAndPerContextError(t *testing.T) {
+	good := newTLSFakeAPIServer(t)
+	kubeconfigPath := writeKubeconfig(t, map[string]string{"ctx-a": "https://a"})
+
+	cfg := &appconfig.Config{
+		Clusters: []appconfig.ClusterConnection{
+			{Name: "static-good", Server: good.URL, CertificateAuthorityData: serverCAPEM(t, good)},
+			{Name: "static-bad", Server: "http://plain.example", Token: "dropped"}, // guard -> broken
+		},
+		KubeconfigPath: kubeconfigPath,
+	}
+	m, err := NewManager(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// static-good + the kubeconfig context both load; static-bad is broken.
+	if _, ok := m.Get("static-good"); !ok {
+		t.Fatalf("static-good not loaded: %#v", m.Clusters())
+	}
+	if _, ok := m.Get("ctx-a"); !ok {
+		t.Fatalf("kubeconfig context not loaded alongside static: %#v", m.Clusters())
+	}
+	if len(m.Clusters()) != 2 {
+		t.Fatalf("expected static+kubeconfig coexistence (2 clusters), got %#v", m.Clusters())
+	}
+	if broken := m.Broken(); len(broken) != 1 || broken[0].Name != "static-bad" {
+		t.Fatalf("expected static-bad broken, got %#v", broken)
+	}
+}
+
+// TestDuplicateSanitizedCollision pins D8c (loader-half): two distinct configured
+// names that sanitize to the same key must not silently collapse -- the second is
+// surfaced as a collision error, the first stays loaded.
+func TestDuplicateSanitizedCollision(t *testing.T) {
+	srv := newTLSFakeAPIServer(t)
+	ca := serverCAPEM(t, srv)
+	cfg := &appconfig.Config{Clusters: []appconfig.ClusterConnection{
+		{Name: "team/prod", Server: srv.URL, CertificateAuthorityData: ca},
+		{Name: "team:prod", Server: srv.URL, CertificateAuthorityData: ca},
+	}}
+	m, err := NewManager(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Get("team:prod"); !ok {
+		t.Fatalf("first cluster should win the sanitized key: %#v", m.Clusters())
+	}
+	if len(m.Clusters()) != 1 {
+		t.Fatalf("colliding names must not both load: %#v", m.Clusters())
+	}
+	broken := m.Broken()
+	if len(broken) != 1 {
+		t.Fatalf("expected one collision-broken cluster, got %#v", broken)
+	}
+	if got := broken[0].Err.Error(); !strings.Contains(got, "collides") {
+		t.Fatalf("collision error should explain the collision: %v", got)
+	}
+}
+
+// TestDiscoverKubeconfigLoadsSelectedContext pins kubeconfig discovery + context
+// selection through the loader.
+func TestDiscoverKubeconfigLoadsSelectedContext(t *testing.T) {
+	kubeconfigPath := writeKubeconfig(t, map[string]string{"ctx-a": "https://a", "ctx-b": "https://b"})
+	cfg := &appconfig.Config{KubeconfigPath: kubeconfigPath, KubeconfigContexts: []string{"ctx-b"}}
+	discovered, err := discoverKubeconfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(discovered) != 1 || discovered[0].Name != "ctx-b" || discovered[0].Config.Host != "https://b" {
 		t.Fatalf("discoverKubeconfig = %#v", discovered)
 	}
+}
 
-	manager, err := NewManager(context.Background(), &appconfig.Config{Clusters: map[string]string{"static/one": "https://one"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := manager.Get("static:one"); !ok {
-		t.Fatalf("sanitized static cluster not found: %#v", manager.Clusters())
+func TestReloadMissingKubeconfigErrors(t *testing.T) {
+	cfg := &appconfig.Config{KubeconfigPath: filepath.Join(t.TempDir(), "missing")}
+	if _, err := NewManager(context.Background(), cfg); err == nil {
+		t.Fatal("missing explicit kubeconfig should be a fatal source error")
 	}
 }
 
-func TestDiscoverClustersDispatchesConfiguredSources(t *testing.T) {
-	static, err := discoverClusters(context.Background(), &appconfig.Config{Clusters: map[string]string{"one": "https://one"}})
-	if err != nil || len(static) != 1 || static[0].Name != "one" {
-		t.Fatalf("static discoverClusters = %#v err=%v", static, err)
-	}
-
-	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{
-			{"alias": "from-registry", "api_server_url": "https://registry-cluster", "lifecycle_status": "ready"},
-		}})
-	}))
-	defer registry.Close()
-	fromRegistry, err := discoverClusters(context.Background(), &appconfig.Config{ClusterRegistryURL: registry.URL})
-	if err != nil || len(fromRegistry) != 1 || fromRegistry[0].Name != "from-registry" {
-		t.Fatalf("registry discoverClusters = %#v err=%v", fromRegistry, err)
-	}
-
-	dir := t.TempDir()
-	kubeconfigPath := filepath.Join(dir, "config")
+// writeKubeconfig writes a kubeconfig with one context per name->server entry
+// (each with its own cluster+user) and returns the path.
+func writeKubeconfig(t *testing.T, contexts map[string]string) string {
+	t.Helper()
 	raw := clientcmdapi.Config{
-		Clusters:       map[string]*clientcmdapi.Cluster{"cluster-a": {Server: "https://a"}},
-		AuthInfos:      map[string]*clientcmdapi.AuthInfo{"user-a": {Token: "a"}},
-		Contexts:       map[string]*clientcmdapi.Context{"ctx-a": {Cluster: "cluster-a", AuthInfo: "user-a"}},
-		CurrentContext: "ctx-a",
+		Clusters:  map[string]*clientcmdapi.Cluster{},
+		AuthInfos: map[string]*clientcmdapi.AuthInfo{},
+		Contexts:  map[string]*clientcmdapi.Context{},
 	}
-	if err := clientcmd.WriteToFile(raw, kubeconfigPath); err != nil {
+	for name, server := range contexts {
+		raw.Clusters[name] = &clientcmdapi.Cluster{Server: server}
+		raw.AuthInfos[name] = &clientcmdapi.AuthInfo{Token: "t"}
+		raw.Contexts[name] = &clientcmdapi.Context{Cluster: name, AuthInfo: name}
+	}
+	path := filepath.Join(t.TempDir(), "config")
+	if err := clientcmd.WriteToFile(raw, path); err != nil {
 		t.Fatal(err)
 	}
-	fromKubeconfig, err := discoverClusters(context.Background(), &appconfig.Config{KubeconfigPath: kubeconfigPath})
-	if err != nil || len(fromKubeconfig) != 1 || fromKubeconfig[0].Name != "ctx-a" {
-		t.Fatalf("kubeconfig discoverClusters = %#v err=%v", fromKubeconfig, err)
-	}
-	t.Setenv("KUBECONFIG", kubeconfigPath)
-	fromDefaultKubeconfig, err := discoverClusters(context.Background(), &appconfig.Config{})
-	if err != nil || len(fromDefaultKubeconfig) != 1 || fromDefaultKubeconfig[0].Name != "ctx-a" {
-		t.Fatalf("default kubeconfig discoverClusters = %#v err=%v", fromDefaultKubeconfig, err)
-	}
-}
-
-func testConfig(clusters map[string]string) appconfig.Config {
-	return appconfig.Config{Clusters: clusters}
+	return path
 }

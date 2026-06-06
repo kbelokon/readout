@@ -1332,7 +1332,7 @@ func TestBehaviorAccessLogDefaultOnAndSuppressed(t *testing.T) {
 		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
 		cfg := config.Config{
 			Port:         8080,
-			Clusters:     map[string]string{"test": newServerFakeAPI(t).URL},
+			Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 			DefaultTheme: "dark",
 			NoAccessLogs: noAccessLogs,
 		}

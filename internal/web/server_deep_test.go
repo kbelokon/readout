@@ -26,7 +26,7 @@ import (
 func TestNodeMetricsAndSecretCustomColumns(t *testing.T) {
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:           8080,
-		Clusters:       map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:       []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:   "dark",
 		IncludeSecrets: true,
 	})
@@ -54,7 +54,7 @@ func TestNodeMetricsAndSecretCustomColumns(t *testing.T) {
 func TestAllResourceListSearchAndClusterBranches(t *testing.T) {
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:             8080,
-		Clusters:         map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:         []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:     "dark",
 		ExternalClusters: map[string]string{"external": "https://kwv.example"},
 	})
@@ -81,7 +81,7 @@ func TestAllResourceListSearchAndClusterBranches(t *testing.T) {
 	}
 	blockedNamespace := newTestServerWithConfig(t, &config.Config{
 		Port:              8080,
-		Clusters:          map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:          []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:      "dark",
 		ExcludeNamespaces: []*regexp.Regexp{regexp.MustCompile(`^secret`)},
 	})
@@ -107,7 +107,7 @@ func TestLogsDisabledAndFilteredBranches(t *testing.T) {
 
 	enabled := newTestServerWithConfig(t, &config.Config{
 		Port:              8080,
-		Clusters:          map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:          []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:      "dark",
 		ShowContainerLogs: true,
 	})
@@ -127,7 +127,7 @@ func TestLogsDisabledAndFilteredBranches(t *testing.T) {
 func TestObjectLinkOwnerLinkAndSelectorPodsHelpers(t *testing.T) {
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:         8080,
-		Clusters:     map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme: "dark",
 		ObjectLinks: map[string][]config.Link{
 			"pods": {{Href: "https://obj/{cluster}/{namespace}/{name}", Title: "Object {name}", Icon: "external-link"}},

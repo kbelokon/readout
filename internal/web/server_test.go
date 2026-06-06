@@ -115,7 +115,7 @@ func TestGenericOAuth2FlowCreatesEncryptedSession(t *testing.T) {
 
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:               8080,
-		Clusters:           map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:       "dark",
 		AuthMode:           config.AuthModeOIDC,
 		OIDCClientID:       "client-id",
@@ -173,7 +173,7 @@ func TestPrerenderHookInjectsDetailLink(t *testing.T) {
 		_, _ = w.Write([]byte(`{"links":[{"href":"https://ops.example/pod/nginx","title":"Ops"}]}`))
 	}))
 	defer hook.Close()
-	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: map[string]string{"test": newServerFakeAPI(t).URL}, DefaultTheme: "dark", ResourcePrerenderHookURL: hook.URL})
+	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}}, DefaultTheme: "dark", ResourcePrerenderHookURL: hook.URL})
 	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx?view=yaml", nil)
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
@@ -188,7 +188,7 @@ func TestPrerenderHookInjectsDetailLink(t *testing.T) {
 func TestTimestampLinksDecorateYAML(t *testing.T) {
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:         8080,
-		Clusters:     map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme: "dark",
 		TimestampLinks: map[string][]config.Link{
 			"pods": {{Href: "https://logs.example/{cluster}/{namespace}/{name}/{timestamp}", Title: "Logs {timestamp}"}},
@@ -221,7 +221,7 @@ func TestCustomColumnsCanJoinNodes(t *testing.T) {
 }
 
 func TestSecretDetailMasksDataWhenSecretsAreIncluded(t *testing.T) {
-	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: map[string]string{"test": newServerFakeAPI(t).URL}, DefaultTheme: "dark", IncludeSecrets: true})
+	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}}, DefaultTheme: "dark", IncludeSecrets: true})
 	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/secrets/my-secret", nil)
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
@@ -237,7 +237,7 @@ func TestSecretDetailMasksDataWhenSecretsAreIncluded(t *testing.T) {
 func TestClusterAuthUsesEncryptedSessionToken(t *testing.T) {
 	var lastAuth authRecorder
 	fake := newRecordingServerFakeAPI(t, &lastAuth)
-	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: map[string]string{"test": fake.URL}, DefaultTheme: "dark", ClusterAuthUseSessionToken: true, SessionSecret: "test-secret"})
+	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark", ClusterAuthUseSessionToken: true, SessionSecret: "test-secret"})
 	value, err := app.sessions.Seal(sessionCookieName, authSession{AccessToken: "forwarded-token", Expires: time.Now().Add(time.Hour).Unix()}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func TestClusterAuthUsesEncryptedSessionToken(t *testing.T) {
 func TestRoutesAndPartials(t *testing.T) {
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:                       8080,
-		Clusters:                   map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:                   []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:               "dark",
 		ShowContainerLogs:          true,
 		SearchDefaultResourceTypes: []string{"pods"},
@@ -300,7 +300,7 @@ func TestRoutesAndPartials(t *testing.T) {
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	fake := newServerFakeAPI(t)
-	return newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: map[string]string{"test": fake.URL}, DefaultTheme: "dark"})
+	return newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
 }
 
 func newTestServerWithConfig(t *testing.T, cfg *config.Config) *Server {

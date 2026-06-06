@@ -17,7 +17,7 @@ func TestAuthMiddlewareModes(t *testing.T) {
 	})
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:               8080,
-		Clusters:           map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:       "dark",
 		AuthMode:           config.AuthModeHeaders,
 		TrustedHeaderUser:  "X-User",
@@ -46,7 +46,7 @@ func TestAuthMiddlewareModes(t *testing.T) {
 
 	badMode := newTestServerWithConfig(t, &config.Config{
 		Port:         8080,
-		Clusters:     map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme: "dark",
 		AuthMode:     "bogus",
 	})
@@ -60,7 +60,7 @@ func TestAuthMiddlewareModes(t *testing.T) {
 func TestOAuthLoginLogoutAndURLHelpers(t *testing.T) {
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:               8080,
-		Clusters:           map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:       "dark",
 		OIDCClientID:       "client-id",
 		OAuth2AuthorizeURL: "https://auth.example.test/authorize",
@@ -142,7 +142,7 @@ func TestSessionCodecAndBearerSources(t *testing.T) {
 
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:          8080,
-		Clusters:      map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:      []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:  "dark",
 		SessionSecret: "test-secret",
 	})
@@ -182,7 +182,7 @@ func TestSessionCodecAndBearerSources(t *testing.T) {
 func TestOAuthCallbackRejectsBadInputs(t *testing.T) {
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:               8080,
-		Clusters:           map[string]string{"test": newServerFakeAPI(t).URL},
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:       "dark",
 		OIDCClientID:       "client-id",
 		OAuth2AuthorizeURL: "https://auth.example.test/authorize",
@@ -273,7 +273,7 @@ func TestOAuthCallbackRejectsDeniedExpiredAndHookErrors(t *testing.T) {
 		}
 		app := newTestServerWithConfig(t, &config.Config{
 			Port:                 8080,
-			Clusters:             map[string]string{"test": newServerFakeAPI(t).URL},
+			Clusters:             []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 			DefaultTheme:         "dark",
 			OIDCClientID:         "client-id",
 			OIDCClientSecret:     "client-secret",
