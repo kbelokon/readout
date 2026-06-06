@@ -22,25 +22,80 @@ includeNamespaces: []
 excludeNamespaces:
   - kube-.*
 
-# Statically configured clusters (name + apiserver URL). Omit to use the local
-# kubeconfig instead (kubeconfigPath / kubeconfigContexts below).
+# Statically configured cluster connections. Each entry uses kubeconfig field
+# names/semantics and maps 1:1 onto a kubeconfig cluster+user, so readout hands
+# the connection to client-go and lets it build the TLS/auth exactly as kubectl
+# would -- nothing is hand-rolled. Names must be unique (a duplicate name is a
+# startup error). Omit this block entirely to discover clusters from a kubeconfig
+# instead (kubeconfigPath / kubeconfigContexts below); the two can also coexist.
+#
+# Per-cluster fields (all optional except `name`):
+#   name                     stable identifier used in URLs and the cluster picker
+#   server                   apiserver URL (https://host:port)
+#   certificateAuthority     path to a PEM CA bundle file that signs the apiserver
+#   certificateAuthorityData inline CA bundle, base64-encoded (kubeconfig's
+#                            certificate-authority-data); mutually exclusive with
+#                            certificateAuthority
+#   insecureSkipTlsVerify    skip apiserver certificate verification (do not use
+#                            in production -- prefer pinning the CA above)
+#   tlsServerName            override the SNI / cert hostname checked at handshake
+#                            (when `server` is an IP or differs from the cert SAN)
+#   token                    inline bearer token (a static ServiceAccount token).
+#                            Prefer tokenFile for anything that rotates -- an
+#                            inline token shadows tokenFile and disables refresh.
+#   tokenFile                path to a bearer-token file; client-go re-reads it on
+#                            rotation (e.g. a projected ServiceAccount token)
+#   clientCertificate        path to a client cert PEM (mTLS)
+#   clientCertificateData    inline client cert, base64-encoded
+#   clientKey                path to the client key PEM
+#   clientKeyData            inline client key, base64-encoded
+#   impersonate              act-as identity for THIS cluster's base connection
+#                            {user, groups, uid}. Note: when per-request token
+#                            passthrough fires (clusterAuthUseSessionToken below),
+#                            impersonate is dropped for that request so it is
+#                            always evaluated as the viewer, never the act-as user.
+#
+# An `exec`-style credential plugin is also a supported auth field, but readout's
+# image does NOT bundle the plugin binaries (aws / gke-gcloud-auth-plugin /
+# kubelogin) -- see the README "Connecting to clusters" section.
 clusters:
-  - name: local
-    url: https://127.0.0.1:6443
+  - name: prod
+    server: https://10.0.0.1:6443
+    # Inline CA (base64) instead of a file path, with an explicit server name
+    # because `server` is an IP that won't match the cert SAN otherwise.
+    certificateAuthorityData: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCi4uLiBiYXNlNjQtZW5jb2RlZCBDQSBjZXJ0IC4uLgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+    tlsServerName: kubernetes.default.svc
+    # Rotating ServiceAccount token read from a file (refreshes on rotation).
+    tokenFile: /var/run/secrets/readout/prod-token
+    # Static act-as identity for this cluster's base connection. Dropped on
+    # per-request token passthrough (see clusterAuthUseSessionToken).
+    impersonate:
+      user: system:serviceaccount:readout:viewer
+      groups:
+        - system:authenticated
 
-# kubeconfig discovery (used when no static clusters are listed).
+# kubeconfig discovery (used when no static clusters are listed, or alongside
+# them). kubeconfigPath defaults to the usual kubeconfig resolution when empty;
+# kubeconfigContexts narrows discovery to the named contexts (empty = all).
 kubeconfigPath: ""
 kubeconfigContexts: []
 
-# Cluster registry: a small JSON endpoint that lists clusters dynamically.
-clusterRegistryUrl: ""
-clusterRegistryBearerTokenPath: ""
-clusterLabelSelector: {}
-
-# Per-request cluster auth: forward the frontend session token, or read a
-# bearer token from a file.
-clusterAuthTokenPath: ""
+# Per-request cluster auth: forward the viewer's frontend session token to the
+# apiserver so each request is evaluated under the viewer's own RBAC. When this
+# fires it overrides a connection's static token and impersonate for that request.
 clusterAuthUseSessionToken: false
+
+# Argo CD cluster-Secret discovery (optional). When present, readout lists the
+# Secrets Argo CD labels `argocd.argoproj.io/secret-type=cluster` in a host
+# cluster and turns each into a connection (the nested data.config: server, TLS,
+# bearerToken/exec). A host that is down or RBAC-forbidden is surfaced as a broken
+# source but never blanks the other clusters. Omit the whole block to disable it.
+#   hostCluster: name of a cluster above to list the Secrets FROM ("" = the
+#                in-cluster ServiceAccount where readout runs)
+#   namespace:   where Argo's cluster Secrets live (default: argocd)
+# argoCD:
+#   hostCluster: ""
+#   namespace: argocd
 
 # Behavior toggles.
 showContainerLogs: false   # enable the container-logs tab

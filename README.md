@@ -37,9 +37,11 @@ Everything that used to be a flag is a field in `readout.yaml`, parsed with
 and maps; no anchors or merge keys). Unknown keys are rejected, so a typo fails
 fast at startup. The customization surface, all in the YAML:
 
-- **clusters** — static `name` + apiserver `url` entries, or kubeconfig discovery
-  (`kubeconfigPath` / `kubeconfigContexts`), or a dynamic cluster-registry
-  endpoint (`clusterRegistryUrl`).
+- **clusters** — statically configured cluster connections using kubeconfig field
+  semantics (`server`, `certificateAuthority`/`certificateAuthorityData`,
+  `tlsServerName`, `token`/`tokenFile`, client cert/key, `impersonate`), and/or
+  kubeconfig discovery (`kubeconfigPath` / `kubeconfigContexts`). See
+  [Connecting to clusters](#connecting-to-clusters) below.
 - **columns** — per resource type: `labelColumns` (promote a label to a column),
   `hiddenColumns` (drop a column), and `customColumns`. Custom columns are
   **kubectl-style JSONPath** expressions in `NAME:path` form, exactly like
@@ -64,6 +66,52 @@ fast at startup. The customization surface, all in the YAML:
 See [`readout.yaml`](readout.yaml) for the full annotated schema, including auth
 (`none` / `headers` / `oidc`), theming, external readout cross-links, and the
 external JSON HTTP hooks.
+
+### Connecting to clusters
+
+A cluster connection is built from kubeconfig field semantics and handed to
+client-go, so readout produces TLS and auth exactly the way `kubectl` does —
+nothing is hand-rolled. There are two sources, which may be combined:
+
+- **Static** — entries under `clusters:`, each a per-cluster block with
+  kubeconfig field names that map 1:1 onto a kubeconfig cluster + user:
+  - **Endpoint & TLS** — `server`; CA trust via `certificateAuthority` (PEM file)
+    or `certificateAuthorityData` (inline, base64); `tlsServerName` to override
+    the verified hostname when `server` is an IP or differs from the cert SAN;
+    `insecureSkipTlsVerify` to skip verification (avoid in production — pin the CA
+    instead).
+  - **Auth** — an inline `token`, or a `tokenFile` that client-go re-reads on
+    rotation (prefer `tokenFile` for anything that rotates; an inline `token`
+    shadows the file and disables refresh), or client-certificate mTLS via
+    `clientCertificate`/`clientKey` (PEM files) or
+    `clientCertificateData`/`clientKeyData` (inline, base64).
+  - **Identity** — `impersonate: {user, groups, uid}` sets a static act-as
+    identity for that cluster's base connection.
+  - Cluster names must be unique; a duplicate name is a startup error.
+- **kubeconfig** — `kubeconfigPath` (empty uses the usual kubeconfig resolution)
+  and `kubeconfigContexts` (narrow to named contexts; empty = all).
+
+#### Viewer identity (token passthrough)
+
+By default a connection is used as configured (its static token / cert /
+`impersonate`). Set `clusterAuthUseSessionToken: true` to instead forward the
+**viewer's own** session token to the apiserver per request, so every request is
+evaluated under the viewer's RBAC. Passthrough takes precedence for that request:
+the connection's static token **and** `impersonate` are dropped, so a passthrough
+request is always evaluated as the viewer, never as the static act-as identity.
+
+#### `exec` credential plugins (binary prerequisite)
+
+An `exec`-style credential plugin (the kubeconfig `users[].user.exec` mechanism
+used by `aws eks get-token`, `gke-gcloud-auth-plugin`, `kubelogin`, etc.) is a
+supported auth field on a connection, but **readout's image does not bundle these
+plugin binaries** — same posture as Headlamp, whose image ships only
+`ca-certificates`. The connection is configured for you; the plugin binary is the
+operator's prerequisite and must be present on `PATH` in readout's runtime image,
+or the cluster fails at connect time. Getting those binaries onto the container
+without forking the image (an init-container + shared `emptyDir` on `PATH`, or a
+native image volume) is tracked as backlog **B-002**
+([`docs/forge/backlog.md`](docs/forge/backlog.md)).
 
 ### Secrets (environment only)
 

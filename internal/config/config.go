@@ -74,6 +74,17 @@ type ClusterImpersonation struct {
 	UID    string
 }
 
+// ArgoCDSource configures the Argo CD cluster-Secret discovery source (D6): the
+// kube loader lists Secrets labelled argocd.argoproj.io/secret-type=cluster in a
+// host cluster and parses each into a connection. HostCluster names a configured
+// cluster (in Clusters) to run the list against, or "" to use the in-cluster
+// ServiceAccount. Namespace is where Argo's cluster Secrets live; resolve()
+// defaults it to "argocd" when empty.
+type ArgoCDSource struct {
+	HostCluster string
+	Namespace   string
+}
+
 // Config is the resolved runtime configuration. Field types match what the
 // rest of the service consumes directly (s.cfg.X); the YAML file is parsed into
 // the unexported fileConfig and folded into this shape by resolve().
@@ -88,43 +99,44 @@ type Config struct {
 	KubeconfigPath             string
 	KubeconfigContexts         []string
 	ClusterAuthUseSessionToken bool
-	ShowContainerLogs                    bool
-	NoAccessLogs                         bool
-	IncludeSecrets                       bool
-	Debug                                bool
-	TemplatesPath                        string
-	StaticAssetsPath                     string
-	ObjectLinks                          map[string][]Link
-	LabelLinks                           map[string][]Link
-	TimestampLinks                       map[string][]Link
-	ResourceIcons                        map[ResourceIconKey]string
-	Sidebar                              []SidebarGroup
-	SearchDefaultResourceTypes           []string
-	SearchOfferedResourceTypes           []string
-	SearchMaxConcurrency                 int
-	DefaultLabelColumns                  map[string]string
-	DefaultHiddenColumns                 map[string]string
-	DefaultCustomColumns                 map[string]string
-	PreferredAPIVersions                 map[string]string
-	DefaultTheme                         string
-	ThemeOptions                         []string
-	ExternalClusters                     map[string]string
-	AuthMode                             string
-	TrustedHeaderUser                    string
-	TrustedHeaderEmail                   string
-	TrustedHeaderGroups                  string
-	OIDCIssuerURL                        string
-	OIDCClientID                         string
-	OIDCClientSecret                     string
-	OAuth2ClientIDFile                   string
-	OAuth2ClientSecretFile               string
-	OIDCRedirectURL                      string
-	OAuth2AuthorizeURL                   string
-	OAuth2TokenURL                       string
-	OAuth2Scope                          string
-	SessionSecret                        string
-	AuthorizationHookURL                 string
-	ResourcePrerenderHookURL             string
+	ArgoCD                     *ArgoCDSource
+	ShowContainerLogs          bool
+	NoAccessLogs               bool
+	IncludeSecrets             bool
+	Debug                      bool
+	TemplatesPath              string
+	StaticAssetsPath           string
+	ObjectLinks                map[string][]Link
+	LabelLinks                 map[string][]Link
+	TimestampLinks             map[string][]Link
+	ResourceIcons              map[ResourceIconKey]string
+	Sidebar                    []SidebarGroup
+	SearchDefaultResourceTypes []string
+	SearchOfferedResourceTypes []string
+	SearchMaxConcurrency       int
+	DefaultLabelColumns        map[string]string
+	DefaultHiddenColumns       map[string]string
+	DefaultCustomColumns       map[string]string
+	PreferredAPIVersions       map[string]string
+	DefaultTheme               string
+	ThemeOptions               []string
+	ExternalClusters           map[string]string
+	AuthMode                   string
+	TrustedHeaderUser          string
+	TrustedHeaderEmail         string
+	TrustedHeaderGroups        string
+	OIDCIssuerURL              string
+	OIDCClientID               string
+	OIDCClientSecret           string
+	OAuth2ClientIDFile         string
+	OAuth2ClientSecretFile     string
+	OIDCRedirectURL            string
+	OAuth2AuthorizeURL         string
+	OAuth2TokenURL             string
+	OAuth2Scope                string
+	SessionSecret              string
+	AuthorizationHookURL       string
+	ResourcePrerenderHookURL   string
 }
 
 // fileLink is the on-disk form of Link for the YAML file. sigs.k8s.io/yaml
@@ -169,18 +181,18 @@ type fileCluster struct {
 // YAML through JSON, so a YAML string decodes as base64 -- matching kubeconfig's
 // certificate-authority-data / client-certificate-data / client-key-data.
 type fileClusterConn struct {
-	Name                     string               `json:"name"`
-	Server                   string               `json:"server"`
-	CertificateAuthority     string               `json:"certificateAuthority"`
-	CertificateAuthorityData []byte               `json:"certificateAuthorityData"`
-	InsecureSkipTLSVerify    bool                 `json:"insecureSkipTlsVerify"`
-	TLSServerName            string               `json:"tlsServerName"`
-	Token                    string               `json:"token"`
-	TokenFile                string               `json:"tokenFile"`
-	ClientCertificate        string               `json:"clientCertificate"`
-	ClientCertificateData    []byte               `json:"clientCertificateData"`
-	ClientKey                string               `json:"clientKey"`
-	ClientKeyData            []byte               `json:"clientKeyData"`
+	Name                     string                 `json:"name"`
+	Server                   string                 `json:"server"`
+	CertificateAuthority     string                 `json:"certificateAuthority"`
+	CertificateAuthorityData []byte                 `json:"certificateAuthorityData"`
+	InsecureSkipTLSVerify    bool                   `json:"insecureSkipTlsVerify"`
+	TLSServerName            string                 `json:"tlsServerName"`
+	Token                    string                 `json:"token"`
+	TokenFile                string                 `json:"tokenFile"`
+	ClientCertificate        string                 `json:"clientCertificate"`
+	ClientCertificateData    []byte                 `json:"clientCertificateData"`
+	ClientKey                string                 `json:"clientKey"`
+	ClientKeyData            []byte                 `json:"clientKeyData"`
 	Impersonate              fileClusterImpersonate `json:"impersonate"`
 }
 
@@ -189,6 +201,15 @@ type fileClusterImpersonate struct {
 	User   string   `json:"user"`
 	Groups []string `json:"groups"`
 	UID    string   `json:"uid"`
+}
+
+// fileArgoCD is the on-disk Argo CD cluster-Secret discovery block (D6). It is a
+// pointer in fileConfig so the source is opt-in: absent -> no Secret listing
+// happens; present (even empty) -> the loader lists Argo cluster Secrets, by
+// default against the in-cluster SA in namespace "argocd".
+type fileArgoCD struct {
+	HostCluster string `json:"hostCluster"`
+	Namespace   string `json:"namespace"`
 }
 
 // fileConfig is the on-disk readout.yaml schema. It is a clean nested shape
@@ -203,6 +224,7 @@ type fileConfig struct {
 	KubeconfigPath             string            `json:"kubeconfigPath"`
 	KubeconfigContexts         []string          `json:"kubeconfigContexts"`
 	ClusterAuthUseSessionToken bool              `json:"clusterAuthUseSessionToken"`
+	ArgoCD                     *fileArgoCD       `json:"argoCD"`
 
 	ShowContainerLogs bool   `json:"showContainerLogs"`
 	NoAccessLogs      bool   `json:"noAccessLogs"`
@@ -335,26 +357,27 @@ func resolve(file *fileConfig) (Config, error) {
 		DefaultTheme:               firstNonEmpty(file.DefaultTheme, "dark"),
 		ThemeOptions:               file.ThemeOptions,
 		Clusters:                   clusters,
+		ArgoCD:                     resolveArgoCD(file.ArgoCD),
 		ExternalClusters:           clusterMap(file.ExternalClusters),
-		ObjectLinks:                          resolveLinks(file.ObjectLinks),
-		LabelLinks:                           resolveLinks(file.LabelLinks),
-		TimestampLinks:                       resolveLinks(file.TimestampLinks),
-		ResourceIcons:                        resolveResourceIcons(file.ResourceIcons),
-		Sidebar:                              resolveSidebar(file.Sidebar),
-		AuthMode:                             firstNonEmpty(file.Auth.Mode, AuthModeNone),
-		TrustedHeaderUser:                    firstNonEmpty(file.Auth.TrustedHeaders.User, "X-Forwarded-User"),
-		TrustedHeaderEmail:                   firstNonEmpty(file.Auth.TrustedHeaders.Email, "X-Forwarded-Email"),
-		TrustedHeaderGroups:                  firstNonEmpty(file.Auth.TrustedHeaders.Groups, "X-Forwarded-Groups"),
-		OIDCIssuerURL:                        file.Auth.OIDC.IssuerURL,
-		OIDCClientID:                         file.Auth.OIDC.ClientID,
-		OAuth2ClientIDFile:                   file.Auth.OIDC.ClientIDFile,
-		OAuth2ClientSecretFile:               file.Auth.OIDC.ClientSecretFile,
-		OIDCRedirectURL:                      file.Auth.OIDC.RedirectURL,
-		OAuth2AuthorizeURL:                   file.Auth.OIDC.AuthorizeURL,
-		OAuth2TokenURL:                       file.Auth.OIDC.TokenURL,
-		OAuth2Scope:                          file.Auth.OIDC.Scope,
-		AuthorizationHookURL:                 file.Hooks.AuthorizationURL,
-		ResourcePrerenderHookURL:             file.Hooks.ResourcePrerenderURL,
+		ObjectLinks:                resolveLinks(file.ObjectLinks),
+		LabelLinks:                 resolveLinks(file.LabelLinks),
+		TimestampLinks:             resolveLinks(file.TimestampLinks),
+		ResourceIcons:              resolveResourceIcons(file.ResourceIcons),
+		Sidebar:                    resolveSidebar(file.Sidebar),
+		AuthMode:                   firstNonEmpty(file.Auth.Mode, AuthModeNone),
+		TrustedHeaderUser:          firstNonEmpty(file.Auth.TrustedHeaders.User, "X-Forwarded-User"),
+		TrustedHeaderEmail:         firstNonEmpty(file.Auth.TrustedHeaders.Email, "X-Forwarded-Email"),
+		TrustedHeaderGroups:        firstNonEmpty(file.Auth.TrustedHeaders.Groups, "X-Forwarded-Groups"),
+		OIDCIssuerURL:              file.Auth.OIDC.IssuerURL,
+		OIDCClientID:               file.Auth.OIDC.ClientID,
+		OAuth2ClientIDFile:         file.Auth.OIDC.ClientIDFile,
+		OAuth2ClientSecretFile:     file.Auth.OIDC.ClientSecretFile,
+		OIDCRedirectURL:            file.Auth.OIDC.RedirectURL,
+		OAuth2AuthorizeURL:         file.Auth.OIDC.AuthorizeURL,
+		OAuth2TokenURL:             file.Auth.OIDC.TokenURL,
+		OAuth2Scope:                file.Auth.OIDC.Scope,
+		AuthorizationHookURL:       file.Hooks.AuthorizationURL,
+		ResourcePrerenderHookURL:   file.Hooks.ResourcePrerenderURL,
 	}
 	if file.Search.MaxConcurrency != nil {
 		cfg.SearchMaxConcurrency = *file.Search.MaxConcurrency
@@ -465,6 +488,20 @@ func resolveClusterConnections(clusters []fileClusterConn) ([]ClusterConnection,
 		})
 	}
 	return result, nil
+}
+
+// resolveArgoCD folds the on-disk Argo CD discovery block into the runtime
+// pointer (D6). Absent in the file -> nil (the source is off). Present ->
+// non-nil with Namespace defaulted to "argocd" when the operator left it empty,
+// matching Argo's default install namespace.
+func resolveArgoCD(src *fileArgoCD) *ArgoCDSource {
+	if src == nil {
+		return nil
+	}
+	return &ArgoCDSource{
+		HostCluster: src.HostCluster,
+		Namespace:   firstNonEmpty(src.Namespace, "argocd"),
+	}
 }
 
 func clusterMap(clusters []fileCluster) map[string]string {

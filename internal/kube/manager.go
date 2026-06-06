@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	appconfig "github.com/kbelokon/readout/internal/config"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -159,7 +160,6 @@ type discoveredCluster struct {
 // static list nor an explicit kubeconfig is configured, it falls back to the
 // in-cluster ServiceAccount, then the default kubeconfig.
 func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluster, error) {
-	_ = ctx // reserved for sources that make live calls at discovery (D6)
 	var out []discoveredCluster
 	explicit := false
 
@@ -173,6 +173,24 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 			return nil, err
 		}
 		out = append(out, kc...)
+		explicit = true
+	}
+	// Argo CD cluster-Secret source (D6). It makes a live Secret-list call at
+	// discovery against a host cluster -- a new transitive failure surface. Under
+	// D6/D3 a host that is down / RBAC-forbidden (cannot even be reached or listed)
+	// is a source-level failure that is SURFACED BUT NON-FATAL TO OTHER SOURCES: it
+	// becomes a single broken entry, so configured static/kubeconfig clusters still
+	// load. Individual malformed Secrets are skipped-with-error inside
+	// discoverArgoSecrets. It coexists with the other sources (explicit) so the bare
+	// in-cluster/kubeconfig fallback below does not also fire when ArgoCD is the
+	// only configured source.
+	if cfg.ArgoCD != nil {
+		argo, err := discoverArgoCD(ctx, cfg)
+		if err != nil {
+			out = append(out, discoveredCluster{Name: "argocd", Source: SourceSecret, Err: err})
+		} else {
+			out = append(out, argo...)
+		}
 		explicit = true
 	}
 	if explicit {
@@ -228,6 +246,51 @@ func discoverStatic(cfg *appconfig.Config) []discoveredCluster {
 		result = append(result, dc)
 	}
 	return result
+}
+
+// discoverArgoCD builds the host kubernetes client the Argo source lists through,
+// then delegates to discoverArgoSecrets (D6). Building the host client is a
+// SOURCE-level prerequisite under D3: a host that cannot even be reached
+// (no in-cluster SA, an unknown HostCluster name, a host whose connection or
+// client cannot be built) returns an error here -- the source is surfaced as
+// failed but does not blank the other sources. Once the host client exists, the
+// live LIST and per-Secret parse errors are handled inside discoverArgoSecrets.
+func discoverArgoCD(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluster, error) {
+	hostCfg, err := argoHostRESTConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	client, err := kubernetes.NewForConfig(hostCfg)
+	if err != nil {
+		return nil, fmt.Errorf("argo host client: %w", err)
+	}
+	return discoverArgoSecrets(ctx, client, cfg.ArgoCD.Namespace)
+}
+
+// argoHostRESTConfig resolves the rest.Config of the cluster the Argo Secrets are
+// listed FROM. HostCluster == "" means the in-cluster ServiceAccount; a named
+// host must match a configured cluster (cfg.Clusters), whose connection is built
+// through the canonical model (connectionFromClusterConfig + RESTConfig) so the
+// host list runs with that cluster's TLS/auth -- no hand-set rest.Config.
+func argoHostRESTConfig(cfg *appconfig.Config) (*rest.Config, error) {
+	host := cfg.ArgoCD.HostCluster
+	if host == "" {
+		inCluster, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("argo host: in-cluster config: %w", err)
+		}
+		return inCluster, nil
+	}
+	for i := range cfg.Clusters {
+		if cfg.Clusters[i].Name == host {
+			restCfg, err := connectionFromClusterConfig(cfg.Clusters[i]).RESTConfig()
+			if err != nil {
+				return nil, fmt.Errorf("argo host cluster %q: %w", host, err)
+			}
+			return restCfg, nil
+		}
+	}
+	return nil, fmt.Errorf("argo host cluster %q not found in configured clusters", host)
 }
 
 // guardStaticTransport rejects a static cluster that carries TLS/auth fields on a
