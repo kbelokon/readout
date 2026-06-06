@@ -114,41 +114,77 @@ func newDistinctTLSServer(t *testing.T) (*httptest.Server, []byte) {
 // authRecorder captures the auth-relevant inbound headers on a fake apiserver.
 // It records BOTH Authorization (bearer forwarding) AND the impersonation
 // headers (Act-As) so the viewer-identity tests can prove a passthrough request
-// carries the viewer token and NO static Impersonate-User. Guarded for the
-// concurrent discovery requests client-go fans out on connect.
+// carries the viewer token and NO static Impersonate-User.
+//
+// client-go fans out one discovery request per (group,version) in parallel, so
+// the recorder ACCUMULATES every request rather than keeping only the last: all
+// requests on one connection carry identical auth, so the representative
+// accessors (first non-empty value) are deterministic in VALUE regardless of
+// goroutine scheduling. Do NOT use this to assert per-request header DIFFERENCES.
 type authRecorder struct {
-	mu                sync.Mutex
+	mu       sync.Mutex
+	requests []recordedAuth
+}
+
+type recordedAuth struct {
 	authorization     string
 	impersonateUser   string
 	impersonateGroups []string
-	seen              bool
 }
 
 func (a *authRecorder) record(r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.authorization = r.Header.Get("Authorization")
-	a.impersonateUser = r.Header.Get("Impersonate-User")
-	a.impersonateGroups = r.Header.Values("Impersonate-Group")
-	a.seen = true
+	a.requests = append(a.requests, recordedAuth{
+		authorization:     r.Header.Get("Authorization"),
+		impersonateUser:   r.Header.Get("Impersonate-User"),
+		impersonateGroups: r.Header.Values("Impersonate-Group"),
+	})
 }
 
+// seen reports whether any request reached the server.
+func (a *authRecorder) seen() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.requests) > 0
+}
+
+// Authorization returns the Authorization header common to the connection's
+// requests: the first non-empty value seen, or "" if no request carried one.
 func (a *authRecorder) Authorization() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.authorization
+	for _, req := range a.requests {
+		if req.authorization != "" {
+			return req.authorization
+		}
+	}
+	return ""
 }
 
+// ImpersonateUser returns the Impersonate-User (Act-As) header: the first
+// non-empty value seen, or "" if NO request carried one (the passthrough proof
+// that static impersonation was cleared).
 func (a *authRecorder) ImpersonateUser() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.impersonateUser
+	for _, req := range a.requests {
+		if req.impersonateUser != "" {
+			return req.impersonateUser
+		}
+	}
+	return ""
 }
 
 func (a *authRecorder) ImpersonateGroups() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return append([]string(nil), a.impersonateGroups...)
+	for _, req := range a.requests {
+		if len(req.impersonateGroups) > 0 {
+			return append([]string(nil), req.impersonateGroups...)
+		}
+	}
+	return nil
 }
 
 // newAuthCapturingTLSServer is a TLS fake apiserver that records the auth headers
@@ -267,7 +303,7 @@ func TestAuthCaptureRecordsHeaders(t *testing.T) {
 	if _, _, err := client.ResourceTypes(context.Background()); err != nil {
 		t.Fatalf("discovery against auth-capturing server: %v", err)
 	}
-	if !rec.seen {
+	if !rec.seen() {
 		t.Fatal("auth-capturing server recorded no request")
 	}
 	if rec.Authorization() != "Bearer base-token" {

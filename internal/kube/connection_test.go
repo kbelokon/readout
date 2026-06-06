@@ -124,6 +124,52 @@ func TestRESTConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("exec credential plugin rides the model", func(t *testing.T) {
+		// The exec path is what Unit 8 exercises. clientcmd rejects an ExecConfig
+		// with an unset InteractiveMode (validation.go: "interactiveMode must be
+		// specified"), so a server-side exec connection MUST set Never -- pin that
+		// gate here so Unit 8 inherits a documented, working seam.
+		conn := &Connection{
+			Name:    "c",
+			Cluster: &clientcmdapi.Cluster{Server: host},
+			AuthInfo: &clientcmdapi.AuthInfo{
+				Exec: &clientcmdapi.ExecConfig{
+					APIVersion:      "client.authentication.k8s.io/v1",
+					Command:         "aws",
+					Args:            []string{"eks", "get-token"},
+					InteractiveMode: clientcmdapi.NeverExecInteractiveMode,
+				},
+			},
+		}
+		cfg, err := conn.RESTConfig()
+		if err != nil {
+			t.Fatalf("RESTConfig with exec: %v", err)
+		}
+		if cfg.ExecProvider == nil || cfg.ExecProvider.Command != "aws" {
+			t.Fatalf("ExecProvider not populated from AuthInfo.Exec: %#v", cfg.ExecProvider)
+		}
+	})
+
+	t.Run("OIDC auth provider rides the model", func(t *testing.T) {
+		conn := &Connection{
+			Name:    "c",
+			Cluster: &clientcmdapi.Cluster{Server: host},
+			AuthInfo: &clientcmdapi.AuthInfo{
+				AuthProvider: &clientcmdapi.AuthProviderConfig{
+					Name:   "oidc",
+					Config: map[string]string{"idp-issuer-url": "https://issuer.example"},
+				},
+			},
+		}
+		cfg, err := conn.RESTConfig()
+		if err != nil {
+			t.Fatalf("RESTConfig with auth provider: %v", err)
+		}
+		if cfg.AuthProvider == nil || cfg.AuthProvider.Name != "oidc" {
+			t.Fatalf("AuthProvider not populated from AuthInfo.AuthProvider: %#v", cfg.AuthProvider)
+		}
+	})
+
 	t.Run("nil AuthInfo is a valid anonymous connection", func(t *testing.T) {
 		conn := &Connection{Name: "c", Source: SourceStatic, Cluster: &clientcmdapi.Cluster{Server: host}}
 		cfg, err := conn.RESTConfig()
