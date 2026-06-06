@@ -70,6 +70,7 @@ func (rt *ResourceType) Key() string {
 type Cluster struct {
 	Name   string
 	URL    string
+	Source Source
 	Labels map[string]string
 	Spec   map[string]any
 	Client *Client

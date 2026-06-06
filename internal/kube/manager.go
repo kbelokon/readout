@@ -47,6 +47,7 @@ func (m *Manager) Reload(ctx context.Context) error {
 		next[name] = &Cluster{
 			Name:   name,
 			URL:    item.Config.Host,
+			Source: item.Source,
 			Labels: item.Labels,
 			Spec:   item.Spec,
 			Client: client,
@@ -92,6 +93,7 @@ func (m *Manager) Select(nameCSV string) ([]*Cluster, bool, error) {
 type discoveredCluster struct {
 	Name   string
 	Config *rest.Config
+	Source Source
 	Labels map[string]string
 	Spec   map[string]any
 }
@@ -107,7 +109,7 @@ func discoverClusters(ctx context.Context, cfg *appconfig.Config) ([]discoveredC
 	default:
 		inCluster, inErr := rest.InClusterConfig()
 		if inErr == nil {
-			return []discoveredCluster{{Name: "local", Config: inCluster, Labels: map[string]string{}, Spec: map[string]any{}}}, nil
+			return []discoveredCluster{{Name: "local", Config: inCluster, Source: SourceInCluster, Labels: map[string]string{}, Spec: map[string]any{}}}, nil
 		}
 		clusters, err := discoverKubeconfig(cfg)
 		if err == nil && len(clusters) > 0 {
@@ -123,9 +125,24 @@ func discoverClusters(ctx context.Context, cfg *appconfig.Config) ([]discoveredC
 func discoverStatic(cfg *appconfig.Config) []discoveredCluster {
 	var result []discoveredCluster
 	for name, host := range cfg.Clusters {
+		// Build the rest.Config through the canonical Connection model (D1) rather
+		// than a bare rest.Config{Host}. clientcmd produces the config, so a static
+		// cluster that later carries CA/TLS/auth fields populates them for free.
+		// A malformed host that clientcmd rejects is skipped here; the multi-source
+		// loader (D3) replaces this with typed per-context error surfacing.
+		conn := &Connection{
+			Name:    name,
+			Source:  SourceStatic,
+			Cluster: &clientcmdapi.Cluster{Server: host},
+		}
+		restCfg, err := conn.RESTConfig()
+		if err != nil {
+			continue
+		}
 		result = append(result, discoveredCluster{
 			Name:   name,
-			Config: &rest.Config{Host: host},
+			Config: restCfg,
+			Source: SourceStatic,
 			Labels: map[string]string{},
 			Spec:   map[string]any{"api_server_url": host},
 		})
@@ -248,7 +265,7 @@ func discoverKubeconfig(cfg *appconfig.Config) ([]discoveredCluster, error) {
 				return nil, err
 			}
 		}
-		result = append(result, discoveredCluster{Name: name, Config: restCfg, Labels: kubeconfigLabels(raw, name), Spec: map[string]any{"context": name}})
+		result = append(result, discoveredCluster{Name: name, Config: restCfg, Source: SourceKubeconfig, Labels: kubeconfigLabels(raw, name), Spec: map[string]any{"context": name}})
 	}
 	return result, nil
 }
