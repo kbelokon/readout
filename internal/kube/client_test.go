@@ -142,6 +142,125 @@ func TestClientDiscoveryListGetAndBearerHelpers(t *testing.T) {
 	}
 }
 
+// TestWithBearerClearsImpersonation pins the D4 security property at the field
+// level: the per-request passthrough clone carries the viewer token, drops the
+// rotation file, and clears any static Impersonate so the request evaluates as
+// the viewer, not the static impersonation identity.
+func TestWithBearerClearsImpersonation(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("base-file-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base, err := NewClient(&rest.Config{
+		Host:            "https://api.example",
+		BearerTokenFile: tokenFile,
+		Impersonate:     rest.ImpersonationConfig{UserName: "robot", Groups: []string{"viewers"}},
+	}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wb, err := base.WithBearer("viewer-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wb.config.BearerToken != "viewer-token" {
+		t.Fatalf("BearerToken = %q, want viewer-token", wb.config.BearerToken)
+	}
+	if wb.config.BearerTokenFile != "" {
+		t.Fatalf("BearerTokenFile not cleared on the passthrough clone: %q", wb.config.BearerTokenFile)
+	}
+	if wb.config.Impersonate.UserName != "" || len(wb.config.Impersonate.Groups) != 0 {
+		t.Fatalf("Impersonate not cleared: %#v -- passthrough would get the impersonated identity's RBAC", wb.config.Impersonate)
+	}
+}
+
+// TestImpersonationClearedOnPassthrough proves the clear end-to-end: a base
+// connection with a static Impersonate identity, after WithBearer, reaches the
+// apiserver as the viewer's Bearer with NO Impersonate-User (Act-As) header.
+func TestImpersonationClearedOnPassthrough(t *testing.T) {
+	srv, rec := newAuthCapturingTLSServer(t)
+	base, err := NewClient(&rest.Config{
+		Host:            srv.URL,
+		TLSClientConfig: rest.TLSClientConfig{CAData: serverCAPEM(t, srv)},
+		BearerToken:     "base-token",
+		Impersonate:     rest.ImpersonationConfig{UserName: "robot", Groups: []string{"admins"}},
+	}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wb, err := base.WithBearer("viewer-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := wb.ResourceTypes(context.Background()); err != nil {
+		t.Fatalf("discovery: %v", err)
+	}
+	if rec.Authorization() != "Bearer viewer-token" {
+		t.Fatalf("apiserver saw Authorization %q, want Bearer viewer-token", rec.Authorization())
+	}
+	if rec.ImpersonateUser() != "" {
+		t.Fatalf("Impersonate-User leaked to apiserver: %q -- viewer would get the impersonated RBAC", rec.ImpersonateUser())
+	}
+}
+
+// TestIsAnonymous pins the base-anonymous predicate behind the D8d denial: a
+// connection is anonymous iff it carries no authenticating credential.
+// Impersonation alone does not count (it needs a base credential to authenticate).
+func TestIsAnonymous(t *testing.T) {
+	cert, key := genClientCert(t)
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("t"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		cfg  *rest.Config
+		want bool
+	}{
+		{"bare", &rest.Config{Host: "https://x"}, true},
+		{"inline token", &rest.Config{Host: "https://x", BearerToken: "t"}, false},
+		{"token file", &rest.Config{Host: "https://x", BearerTokenFile: tokenFile}, false},
+		{"client cert", &rest.Config{Host: "https://x", TLSClientConfig: rest.TLSClientConfig{CertData: cert, KeyData: key}}, false},
+		{"impersonate only", &rest.Config{Host: "https://x", Impersonate: rest.ImpersonationConfig{UserName: "u"}}, true},
+	}
+	for _, tc := range cases {
+		c, err := NewClient(tc.cfg, nil, false)
+		if err != nil {
+			t.Fatalf("%s: NewClient: %v", tc.name, err)
+		}
+		if got := c.IsAnonymous(); got != tc.want {
+			t.Fatalf("%s: IsAnonymous = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestDeniedClientIsForbidden pins that a denied client refuses every request
+// method with a Forbidden error (and never panics on its shared-but-unused
+// internals), so the web layer renders the standard forbidden state.
+func TestDeniedClientIsForbidden(t *testing.T) {
+	base, err := NewClient(&rest.Config{Host: "https://x"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := base.Denied()
+	rt := &ResourceType{Version: "v1", Plural: "pods", Namespaced: true}
+	if _, _, err := d.ResourceTypes(context.Background()); !IsForbidden(err) {
+		t.Fatalf("ResourceTypes denied err = %v, want forbidden", err)
+	}
+	if _, err := d.List(context.Background(), rt, ListOptions{Namespace: "ns"}); !IsForbidden(err) {
+		t.Fatalf("List denied err = %v, want forbidden", err)
+	}
+	if _, err := d.Get(context.Background(), rt, "ns", "n"); !IsForbidden(err) {
+		t.Fatalf("Get denied err = %v, want forbidden", err)
+	}
+	if _, err := d.Table(context.Background(), rt, ListOptions{Namespace: "ns"}); !IsForbidden(err) {
+		t.Fatalf("Table denied err = %v, want forbidden", err)
+	}
+	if _, err := d.Logs(context.Background(), LogOptions{Namespace: "ns", Pod: "p"}); !IsForbidden(err) {
+		t.Fatalf("Logs denied err = %v, want forbidden", err)
+	}
+}
+
 func TestDefaultPreferredResourcesKeepCorePodsAheadOfMetrics(t *testing.T) {
 	f := newFakeAPIServer(t)
 	client := f.client(t, false)

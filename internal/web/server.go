@@ -136,6 +136,13 @@ func (s *Server) kubeClient(r *http.Request, cluster *kube.Cluster) *kube.Client
 	}
 	token := s.requestBearer(r)
 	if token == "" {
+		// No viewer token (D8d). Fall through to the base identity -- an in-cluster
+		// SA, a token-file, or a static cluster with its own credential is a real
+		// identity, not silent anonymous. Deny ONLY when the base is itself
+		// anonymous: serving that as anonymous would be a silent downgrade.
+		if cluster.Client.IsAnonymous() {
+			return cluster.Client.Denied()
+		}
 		return cluster.Client
 	}
 	client, err := cluster.Client.WithBearer(token)

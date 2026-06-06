@@ -37,6 +37,12 @@ type Client struct {
 	dynamic        dynamic.Interface
 	core           kubernetes.Interface
 	includeSecrets bool
+	// denied, when set, makes every request method short-circuit with this error
+	// instead of reaching the apiserver. It backs the D8d anonymous-base denial:
+	// a denied client is returned by the web layer when passthrough is on, the
+	// viewer presented no token, and the base connection is itself anonymous, so
+	// serving the request as anonymous (a silent identity downgrade) is refused.
+	denied error
 
 	mu              sync.Mutex
 	discoveredAt    time.Time
@@ -44,6 +50,16 @@ type Client struct {
 	clusterTypes    []ResourceType
 	preferred       map[string]string
 }
+
+// errAnonymousDenied is a Forbidden apiserver Status, so kube.IsForbidden
+// recognizes it and the web layer renders the standard "forbidden" state rather
+// than an opaque error.
+var errAnonymousDenied = &kerrors.StatusError{ErrStatus: metav1.Status{
+	Status:  metav1.StatusFailure,
+	Reason:  metav1.StatusReasonForbidden,
+	Code:    http.StatusForbidden,
+	Message: "anonymous access denied: no viewer token and the cluster connection has no base identity",
+}}
 
 func NewClient(cfg *rest.Config, preferred map[string]string, includeSecrets bool) (*Client, error) {
 	httpClient, err := rest.HTTPClientFor(cfg)
@@ -90,6 +106,12 @@ func (c *Client) WithBearer(token string) (*Client, error) {
 	cfg := rest.CopyConfig(c.config)
 	cfg.BearerToken = strings.TrimPrefix(token, "Bearer ")
 	cfg.BearerTokenFile = ""
+	// Passthrough must evaluate RBAC AS THE VIEWER. rest.CopyConfig propagates a
+	// static Impersonate, and client-go's impersonating round-tripper keys off
+	// Impersonate.UserName (NOT the Authorization header), so without this clear a
+	// passthrough request against a cluster with a static impersonation identity
+	// would silently get that identity's RBAC instead of the viewer's (D4).
+	cfg.Impersonate = rest.ImpersonationConfig{}
 	// Snapshot preferred under the lock: ResourceTypes reassigns c.preferred
 	// under c.mu after discovery, so an unguarded read here (NewClient ranges
 	// the map) would race a concurrent refresh.
@@ -106,7 +128,50 @@ func (c *Client) RESTMapper() *restmapper.DeferredDiscoveryRESTMapper {
 	return restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(c.discovery))
 }
 
+// IsAnonymous reports whether the base connection carries NO authenticating
+// credential (bearer token inline/file, client cert, exec, auth-provider, basic
+// auth). Impersonation is ignored: it is not a credential to authenticate WITH,
+// so an impersonate-only connection with no base credential is still anonymous.
+// Used by the web layer's passthrough denial predicate (D8d).
+func (c *Client) IsAnonymous() bool {
+	cfg := c.config
+	if cfg == nil {
+		return true
+	}
+	return cfg.BearerToken == "" && cfg.BearerTokenFile == "" &&
+		len(cfg.CertData) == 0 && cfg.CertFile == "" &&
+		len(cfg.KeyData) == 0 && cfg.KeyFile == "" &&
+		cfg.ExecProvider == nil && cfg.AuthProvider == nil &&
+		cfg.Username == "" && cfg.Password == ""
+}
+
+// Denied returns a clone of the client whose every request method refuses with a
+// Forbidden error (D8d). It shares the underlying clients (which it never uses,
+// since the request methods short-circuit) and takes a fresh mutex, so it copies
+// no lock value.
+func (c *Client) Denied() *Client {
+	c.mu.Lock()
+	preferred := make(map[string]string, len(c.preferred))
+	for k, v := range c.preferred {
+		preferred[k] = v
+	}
+	c.mu.Unlock()
+	return &Client{
+		config:         c.config,
+		httpClient:     c.httpClient,
+		discovery:      c.discovery,
+		dynamic:        c.dynamic,
+		core:           c.core,
+		includeSecrets: c.includeSecrets,
+		denied:         errAnonymousDenied,
+		preferred:      preferred,
+	}
+}
+
 func (c *Client) ResourceTypes(ctx context.Context) ([]ResourceType, []ResourceType, error) {
+	if c.denied != nil {
+		return nil, nil, c.denied
+	}
 	c.mu.Lock()
 	fresh := !c.discoveredAt.IsZero() && time.Since(c.discoveredAt) < discoveryTTL && (len(c.namespacedTypes) > 0 || len(c.clusterTypes) > 0)
 	if fresh {
@@ -235,6 +300,9 @@ func (c *Client) FindResourceByKind(ctx context.Context, apiVersion, kind string
 }
 
 func (c *Client) List(ctx context.Context, rt *ResourceType, opts ListOptions) (*unstructured.UnstructuredList, error) {
+	if c.denied != nil {
+		return nil, c.denied
+	}
 	listOpts := metav1.ListOptions{LabelSelector: opts.LabelSelector, FieldSelector: opts.FieldSelector}
 	if rt.Namespaced && opts.Namespace != "" && opts.Namespace != AllNamespaces {
 		return c.dynamic.Resource(rt.GVR()).Namespace(opts.Namespace).List(ctx, listOpts)
@@ -243,6 +311,9 @@ func (c *Client) List(ctx context.Context, rt *ResourceType, opts ListOptions) (
 }
 
 func (c *Client) Get(ctx context.Context, rt *ResourceType, namespace, name string) (*unstructured.Unstructured, error) {
+	if c.denied != nil {
+		return nil, c.denied
+	}
 	if rt.Namespaced {
 		return c.dynamic.Resource(rt.GVR()).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	}
@@ -250,6 +321,9 @@ func (c *Client) Get(ctx context.Context, rt *ResourceType, namespace, name stri
 }
 
 func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) (Table, error) {
+	if c.denied != nil {
+		return Table{}, c.denied
+	}
 	u, err := c.tableURL(rt, opts.Namespace)
 	if err != nil {
 		return Table{}, err
@@ -334,6 +408,9 @@ func tableResponseError(statusCode int, status string, body []byte) error {
 }
 
 func (c *Client) Logs(ctx context.Context, opts LogOptions) (string, error) {
+	if c.denied != nil {
+		return "", c.denied
+	}
 	req := c.core.CoreV1().Pods(opts.Namespace).GetLogs(opts.Pod, &corev1.PodLogOptions{
 		Container:  opts.Container,
 		Timestamps: opts.Timestamps,

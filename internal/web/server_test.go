@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/kbelokon/readout/internal/config"
+	"github.com/kbelokon/readout/internal/kube"
+	"k8s.io/client-go/rest"
 )
 
 func TestReadOnlyMiddlewareRejectsWritesEverywhere(t *testing.T) {
@@ -251,6 +253,59 @@ func TestClusterAuthUsesEncryptedSessionToken(t *testing.T) {
 	}
 	if got := lastAuth.value(); got != "Bearer forwarded-token" {
 		t.Fatalf("Authorization = %q, want forwarded session token", got)
+	}
+}
+
+// TestAnonymousBaseDeniedWithoutToken pins the D8d denial: with passthrough on
+// and no viewer token, a cluster whose BASE connection is itself anonymous is
+// denied (a forbidden client) rather than silently served as anonymous.
+func TestAnonymousBaseDeniedWithoutToken(t *testing.T) {
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                       8080,
+		DefaultTheme:               "dark",
+		ClusterAuthUseSessionToken: true,
+		Clusters:                   []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+	})
+	anonBase, err := kube.NewClient(&rest.Config{Host: "http://anon.example"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := &kube.Cluster{Name: "anon", Client: anonBase}
+	req := httptest.NewRequest(http.MethodGet, "/clusters/anon/namespaces/default/pods", nil) // no auth
+	got := app.kubeClient(req, cluster)
+	if _, _, err := got.ResourceTypes(context.Background()); !kube.IsForbidden(err) {
+		t.Fatalf("anonymous base + no viewer token should be denied (forbidden), got err=%v", err)
+	}
+}
+
+// TestPassthroughServesWithViewerToken pins the non-deny side of D8d: a cluster
+// whose base connection carries a real identity (an SA token) is served with that
+// identity when the viewer has no token (NOT denied), and a present viewer token
+// yields a per-request passthrough clone rather than the base client.
+func TestPassthroughServesWithViewerToken(t *testing.T) {
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                       8080,
+		DefaultTheme:               "dark",
+		ClusterAuthUseSessionToken: true,
+		Clusters:                   []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+	})
+	saBase, err := kube.NewClient(&rest.Config{Host: "http://sa.example", BearerToken: "sa-token"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := &kube.Cluster{Name: "sa", Client: saBase}
+
+	// No viewer token: a non-anonymous base falls through to its own identity.
+	noToken := httptest.NewRequest(http.MethodGet, "/clusters/sa/namespaces/default/pods", nil)
+	if got := app.kubeClient(noToken, cluster); got != saBase {
+		t.Fatal("non-anonymous base must serve with its own identity when the viewer has no token (must not be denied)")
+	}
+
+	// Viewer token present: a per-request passthrough clone, not the base client.
+	withToken := httptest.NewRequest(http.MethodGet, "/clusters/sa/namespaces/default/pods", nil)
+	withToken.Header.Set("Authorization", "Bearer viewer-token")
+	if got := app.kubeClient(withToken, cluster); got == saBase {
+		t.Fatal("a present viewer token should yield a passthrough clone, not the base client")
 	}
 }
 
