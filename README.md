@@ -174,7 +174,7 @@ docker run --rm -p 8080:8080 -v "$PWD/readout.yaml:/readout.yaml" ghcr.io/kbelok
 ### Helm chart (OCI, from GHCR)
 
 ```sh
-helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.2.0
+helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.3.0
 ```
 
 ## Deploy
