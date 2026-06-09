@@ -14,6 +14,27 @@ jobs:
       - name: Package and push chart
         run: |
           VERSION="${GITHUB_REF_NAME#chart-v}"
-          helm package chart --version "$VERSION"
+          export VERSION
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("chart/values.yaml")
+          lines = path.read_text().splitlines()
+          in_image = False
+          for idx, line in enumerate(lines):
+              if line == "image:":
+                  in_image = True
+                  continue
+              if in_image and line and not line.startswith(" "):
+                  break
+              if in_image and line.strip().startswith("tag:"):
+                  lines[idx] = f"  tag: {os.environ['VERSION']}"
+                  break
+          else:
+              raise SystemExit("chart/values.yaml image.tag not found")
+          path.write_text("\n".join(lines) + "\n")
+          PY
+          helm package chart --version "$VERSION" --app-version "$VERSION"
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm push "readout-${VERSION}.tgz" oci://ghcr.io/kbelokon/charts
