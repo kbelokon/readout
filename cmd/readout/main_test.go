@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeConfig writes content to a temp readout.yaml and returns its path.
@@ -55,12 +56,18 @@ func TestRunServerInitAndListenErrors(t *testing.T) {
 
 	oldListenAndServe := listenAndServe
 	t.Cleanup(func() { listenAndServe = oldListenAndServe })
-	listenAndServe = func(addr string, handler http.Handler) error {
-		if addr != ":9091" {
-			t.Fatalf("addr = %q, want :9091", addr)
+	listenAndServe = func(srv *http.Server) error {
+		if srv.Addr != ":9091" {
+			t.Fatalf("addr = %q, want :9091", srv.Addr)
 		}
-		if handler == nil {
+		if srv.Handler == nil {
 			t.Fatal("handler is nil")
+		}
+		if srv.ReadHeaderTimeout != 10*time.Second || srv.ReadTimeout != 30*time.Second || srv.IdleTimeout != 120*time.Second {
+			t.Fatalf("server timeouts = header %v read %v idle %v, want 10s/30s/120s", srv.ReadHeaderTimeout, srv.ReadTimeout, srv.IdleTimeout)
+		}
+		if srv.WriteTimeout != 0 {
+			t.Fatalf("WriteTimeout = %v, want unset", srv.WriteTimeout)
 		}
 		return errors.New("listen failed")
 	}
