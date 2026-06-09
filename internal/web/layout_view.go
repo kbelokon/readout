@@ -418,8 +418,8 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string) si
 
 	if cluster != "" && namespace != "" {
 		for _, link := range []navItem{
-			{Text: "Resource Types", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/_resource-types", cluster, namespace)},
-			{Text: "Events", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/events", cluster, namespace)},
+			{Text: "Resource Types", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/_resource-types", url.PathEscape(cluster), url.PathEscape(namespace))},
+			{Text: "Events", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/events", url.PathEscape(cluster), url.PathEscape(namespace))},
 		} {
 			link.Active = r.URL.Path == link.Href
 			v.Meta = append(v.Meta, link)

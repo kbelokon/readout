@@ -213,10 +213,9 @@ func TestSearchScoreLabelValueCountedOnce(t *testing.T) {
 	if got := searchScore("other", two, "redpanda"); got != 1 {
 		t.Fatalf("searchScore with two matching label values = %d, want 1 (counted once)", got)
 	}
-	// No label value matches -> 0; the value check is exact (raw value vs the
-	// lowercased query).
-	if got := searchScore("other", map[string]string{"app": "Redpanda"}, "redpanda"); got != 0 {
-		t.Fatalf("searchScore with case-differing label value = %d, want 0 (exact match)", got)
+	// Label values compare case-insensitively against the lowercased query.
+	if got := searchScore("other", map[string]string{"team": "Platform"}, "platform"); got != 1 {
+		t.Fatalf("searchScore with mixed-case label value = %d, want 1", got)
 	}
 	// Exact title match still scores 10 and the single label +1 stacks to 11.
 	if got := searchScore("redpanda", map[string]string{"app": "redpanda"}, "redpanda"); got != 11 {
