@@ -42,6 +42,10 @@ type Server struct {
 	now func() time.Time
 }
 
+var withBearerClient = func(client *kube.Client, token string) (*kube.Client, error) {
+	return client.WithBearer(token)
+}
+
 func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	manager, err := kube.NewManager(ctx, cfg)
 	if err != nil {
@@ -145,9 +149,10 @@ func (s *Server) kubeClient(r *http.Request, cluster *kube.Cluster) *kube.Client
 		}
 		return cluster.Client
 	}
-	client, err := cluster.Client.WithBearer(token)
+	client, err := withBearerClient(cluster.Client, token)
 	if err != nil {
-		return cluster.Client
+		slog.Error("passthrough client build failed", "cluster", cluster.Name, "error", err)
+		return cluster.Client.Denied()
 	}
 	return client
 }

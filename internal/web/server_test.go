@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -306,6 +307,33 @@ func TestPassthroughServesWithViewerToken(t *testing.T) {
 	withToken.Header.Set("Authorization", "Bearer viewer-token")
 	if got := app.kubeClient(withToken, cluster); got == saBase {
 		t.Fatal("a present viewer token should yield a passthrough clone, not the base client")
+	}
+}
+
+func TestKubeClientDeniedOnBuildFailure(t *testing.T) {
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                       8080,
+		DefaultTheme:               "dark",
+		ClusterAuthUseSessionToken: true,
+		Clusters:                   []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+	})
+	base, err := kube.NewClient(&rest.Config{Host: "http://sa.example", BearerToken: "sa-token"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := &kube.Cluster{Name: "sa", Client: base}
+
+	orig := withBearerClient
+	withBearerClient = func(_ *kube.Client, _ string) (*kube.Client, error) {
+		return nil, errors.New("forced passthrough build failure")
+	}
+	t.Cleanup(func() { withBearerClient = orig })
+
+	req := httptest.NewRequest(http.MethodGet, "/clusters/sa/namespaces/default/pods", nil)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	got := app.kubeClient(req, cluster)
+	if _, _, err := got.ResourceTypes(context.Background()); !kube.IsForbidden(err) {
+		t.Fatalf("passthrough build failure should return a denied client, got err=%v", err)
 	}
 }
 

@@ -131,6 +131,41 @@ func TestBearerForward(t *testing.T) {
 	}
 }
 
+func TestWithBearerClearsBasicAuth(t *testing.T) {
+	srv, rec := newAuthCapturingTLSServer(t)
+	conn := &Connection{
+		Name:    "basic",
+		Source:  SourceStatic,
+		Cluster: &clientcmdapi.Cluster{Server: srv.URL, CertificateAuthorityData: serverCAPEM(t, srv)},
+		AuthInfo: &clientcmdapi.AuthInfo{
+			Username: "cluster-user",
+			Password: "cluster-password",
+		},
+	}
+	cfg, err := conn.RESTConfig()
+	if err != nil {
+		t.Fatalf("RESTConfig: %v", err)
+	}
+	base, err := NewClient(cfg, nil, false)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	viewer, err := base.WithBearer("viewer-token")
+	if err != nil {
+		t.Fatalf("WithBearer with a basic-auth base config failed: %v", err)
+	}
+	if viewer.config.Username != "" || viewer.config.Password != "" {
+		t.Fatalf("passthrough config kept basic auth username=%q password=%q", viewer.config.Username, viewer.config.Password)
+	}
+	if _, _, err := viewer.ResourceTypes(context.Background()); err != nil {
+		t.Fatalf("discovery with passthrough bearer failed: %v", err)
+	}
+	if got := rec.Authorization(); got != "Bearer viewer-token" {
+		t.Fatalf("apiserver saw Authorization %q, want Bearer viewer-token", got)
+	}
+}
+
 // TestTokenRotationWiring asserts the rotation WIRING, scoped honestly per the
 // plan: client-go caches the on-disk token for ~1 minute and its clock seam is
 // unexported, so a live "write A, request, rewrite B, request sees B" assertion
