@@ -22,7 +22,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: readout
-          image: ghcr.io/kbelokon/readout:0.3.0
+          image: ghcr.io/kbelokon/readout:0.4.0
           args:
             - --config
             - /etc/readout/readout.yaml
