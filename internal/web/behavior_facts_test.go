@@ -794,6 +794,7 @@ func TestBehaviorNodeDetailFacts(t *testing.T) {
 	p.wantHas(`[data-name="pods"]`)
 	// The related-pods subtable migrated to the redesign .ro-table.
 	p.wantHas(`.collapsible[data-name="pods"] .ro-table-wrap table.ro-table`)
+	p.wantHas(`.collapsible[data-name="pods"] table.ro-table .cell-status.ok .ro-dot.ok`)
 
 	// Node summary blocks (named facts replacing the retired TestRenderNodeSummary
 	// byte asserts). The three section labels are present, in order.
@@ -1017,6 +1018,24 @@ func TestSearchRender(t *testing.T) {
 	}
 }
 
+func TestSearchMultiNamespace(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	assertMultiNamespaceSearch := func(path string) {
+		p := get(t, app, path, http.StatusOK)
+		p.wantAttr(`.search-hero form input[type="hidden"][name="namespace"]`, "value", "default,states")
+		if opts := normSpace(p.text(".search-opts")); !strings.Contains(opts, "2 namespaces") {
+			t.Fatalf("search-opts line = %q, want it to name the multi-namespace scope", opts)
+		}
+		p.wantHas(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/default/pods/nginx"])`)
+		p.wantHas(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/states/pods/web-creating-7c9f7cd495-6fff6"])`)
+		p.wantAbsent(".ro-scope .ro-scope-chip.err")
+		p.wantBodyExcludes("default%2Cstates")
+	}
+
+	assertMultiNamespaceSearch("/search?q=g&cluster=test&namespace=default&namespace=states&type=pods")
+	assertMultiNamespaceSearch("/search?q=g&cluster=test&namespace=default,states&type=pods")
+}
+
 // TestSearchPartialFailure pins the SEARCH flavour of partial failure (D11): a
 // multi-cluster search where one cluster's backend fails must still render the
 // answering cluster's results, surface a `.ro-banner.warn` "Searched N of M
@@ -1080,14 +1099,27 @@ func TestSearchPartialFailure(t *testing.T) {
 // stay sidebar-free.
 func TestBehaviorSearchAllClustersNoSidebar(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
-	p := get(t, app, "/search?q=nginx", http.StatusOK)
+	for _, path := range []string{
+		"/search?q=nginx",
+		"/search?q=nginx&cluster=_all",
+	} {
+		p := get(t, app, path, http.StatusOK)
 
-	// The redesign body still renders (the search-hero + scope strip are present
-	// for a query).
-	p.wantText(".search-hero .ro-title", "Search")
-	p.wantHas(".search-big input[name=\"q\"]")
-	p.wantHas(".ro-scope")
-	// No sidebar groups, no Meta links, no context pill.
+		// The redesign body still renders (the search-hero + scope strip are present
+		// for a query).
+		p.wantText(".search-hero .ro-title", "Search")
+		p.wantHas(".search-big input[name=\"q\"]")
+		p.wantHas(".ro-scope")
+		// No sidebar groups, no Meta links, no context pill.
+		p.wantAbsent(".menu-label")
+		p.wantAbsent(".menu-item")
+		p.wantAbsent(".context-name")
+	}
+
+	first := newServerFakeAPI(t)
+	second := newServerFakeAPI(t)
+	multi := newMultiClusterServer(t, map[string]string{"first": first.URL, "second": second.URL})
+	p := get(t, multi, "/search?q=nginx&cluster=first,second&namespace=default&type=pods", http.StatusOK)
 	p.wantAbsent(".menu-label")
 	p.wantAbsent(".menu-item")
 	p.wantAbsent(".context-name")
@@ -1116,7 +1148,7 @@ func TestBehaviorSearchNoResults(t *testing.T) {
 // with it, none.
 func TestBehaviorSearchRespectsExcludeNamespaces(t *testing.T) {
 	cfg := baseConfig(t)
-	cfg.ExcludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`default`)}
+	cfg.ExcludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`^default$`)}
 	app := newServer(t, cfg, time.Now())
 	p := get(t, app, "/search?q=nginx&cluster=test&namespace=_all&type=pods", http.StatusOK)
 

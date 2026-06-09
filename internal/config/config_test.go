@@ -136,13 +136,13 @@ func TestParseSidebarKeepsDeclaredOrder(t *testing.T) {
 // TestParsePortFlagOverridesFile pins that the bootstrap --port flag overrides
 // the file value, and that an empty/omitted --config still resolves defaults.
 func TestParsePortFlagOverridesFileAndEmptyConfigDefaults(t *testing.T) {
-	path := writeConfig(t, "port: 9090\n")
+	path := writeConfig(t, "port: 9090\nmetricsPort: 9091\n")
 	cfg, err := Parse([]string{"--config", path, "--port", "7000"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != 7000 {
-		t.Fatalf("--port did not override file: %d", cfg.Port)
+	if cfg.Port != 7000 || cfg.MetricsPort != 9091 {
+		t.Fatalf("port config mismatch: port=%d metricsPort=%d", cfg.Port, cfg.MetricsPort)
 	}
 
 	cfg, err = Parse([]string{"--debug"})
@@ -192,6 +192,89 @@ func TestResolveReadsOAuthSecretFilesAndValidatesErrors(t *testing.T) {
 	}
 	if _, err := Parse([]string{"--config", missing}); err == nil {
 		t.Fatal("missing config file should error")
+	}
+}
+
+func TestOIDCRequiresRedirectURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "explicit oidc mode",
+			content: `
+auth:
+  mode: oidc
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+`,
+		},
+		{
+			name: "implicit issuer config",
+			content: `
+auth:
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+`,
+		},
+		{
+			name: "implicit generic oauth config",
+			content: `
+auth:
+  oidc:
+    clientId: client
+    authorizeUrl: https://issuer.example/authorize
+    tokenUrl: https://issuer.example/token
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]string{"--config", writeConfig(t, tc.content)})
+			if err == nil || !strings.Contains(err.Error(), "auth.oidc.redirectUrl") {
+				t.Fatalf("Parse() error = %v, want auth.oidc.redirectUrl requirement", err)
+			}
+		})
+	}
+
+	ok := `
+auth:
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+    redirectUrl: https://readout.example/oauth2/callback
+`
+	if _, err := Parse([]string{"--config", writeConfig(t, ok)}); err != nil {
+		t.Fatalf("OIDC config with redirectUrl should parse: %v", err)
+	}
+
+	t.Setenv("READOUT_OIDC_REDIRECT_URL", "https://env.example/oauth2/callback")
+	cfg, err := Parse([]string{"--config", writeConfig(t, `
+auth:
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+`)})
+	if err != nil {
+		t.Fatalf("OIDC config with env redirectUrl should parse: %v", err)
+	}
+	if cfg.OIDCRedirectURL != "https://env.example/oauth2/callback" {
+		t.Fatalf("env redirectUrl = %q", cfg.OIDCRedirectURL)
+	}
+}
+
+func TestNamespacePatternAnchored(t *testing.T) {
+	cfg, err := Parse([]string{"--config", writeConfig(t, "includeNamespaces: ['prod-.*']\nexcludeNamespaces: ['kube-system']\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.IncludeNamespaces[0].MatchString("prod-api") || cfg.IncludeNamespaces[0].MatchString("xprod-api") {
+		t.Fatal("include namespace pattern should match whole namespace names only")
+	}
+	if !cfg.ExcludeNamespaces[0].MatchString("kube-system") || cfg.ExcludeNamespaces[0].MatchString("my-kube-system-2") {
+		t.Fatal("exclude namespace pattern should match whole namespace names only")
 	}
 }
 

@@ -2,8 +2,11 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +60,92 @@ func TestAuthMiddlewareModes(t *testing.T) {
 	}
 }
 
+func TestHeaderGroupsReachHook(t *testing.T) {
+	var payload struct {
+		Token   map[string]any `json:"token"`
+		Session authSession    `json:"session"`
+	}
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"allowed": true})
+	}))
+	defer hook.Close()
+
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                 8080,
+		Clusters:             []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:         "dark",
+		AuthMode:             config.AuthModeHeaders,
+		TrustedHeaderUser:    "X-User",
+		TrustedHeaderEmail:   "X-Email",
+		TrustedHeaderGroups:  "X-Groups",
+		AuthorizationHookURL: hook.URL,
+	})
+	nextCalled := false
+	handler := app.auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	req.Header.Set("X-User", "kirill")
+	req.Header.Set("X-Email", "kirill@example.test")
+	req.Header.Set("X-Groups", "viewers, ops, ,debug")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent || !nextCalled {
+		t.Fatalf("headers auth status=%d nextCalled=%t body=%s", rec.Code, nextCalled, rec.Body.String())
+	}
+	if payload.Token["access_token"] != "" || payload.Token["expiry"] == "" {
+		t.Fatalf("headers hook token payload = %#v", payload.Token)
+	}
+	if payload.Session.User != "kirill" || payload.Session.Email != "kirill@example.test" || !reflect.DeepEqual(payload.Session.Groups, []string{"viewers", "ops", "debug"}) {
+		t.Fatalf("headers hook session = %#v", payload.Session)
+	}
+
+	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"allowed": false})
+	}))
+	defer deny.Close()
+	app.cfg.AuthorizationHookURL = deny.URL
+	nextCalled = false
+	req = httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	req.Header.Set("X-Email", "kirill@example.test")
+	req.Header.Set("X-Groups", "viewers")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || nextCalled {
+		t.Fatalf("headers deny status=%d nextCalled=%t body=%s", rec.Code, nextCalled, rec.Body.String())
+	}
+}
+
+func TestHeaderModeNoHookPassthrough(t *testing.T) {
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:               8080,
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:       "dark",
+		AuthMode:           config.AuthModeHeaders,
+		TrustedHeaderUser:  "X-User",
+		TrustedHeaderEmail: "X-Email",
+	})
+	nextCalled := false
+	handler := app.auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	req.Header.Set("X-User", "kirill")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent || !nextCalled {
+		t.Fatalf("headers no-hook status=%d nextCalled=%t body=%s", rec.Code, nextCalled, rec.Body.String())
+	}
+}
+
 func TestOAuthLoginLogoutAndURLHelpers(t *testing.T) {
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:               8080,
@@ -88,6 +177,27 @@ func TestOAuthLoginLogoutAndURLHelpers(t *testing.T) {
 	}
 	if state.OriginalURL != "/" || state.Nonce == "" || queryValue(location, "state") != state.Nonce {
 		t.Fatalf("state = %#v location=%s", state, location)
+	}
+	for _, tc := range []struct {
+		next string
+		want string
+	}{
+		{"/clusters/test", "/clusters/test"},
+		{"//evil.example/path", "/"},
+		{`/\evil.example/path`, "/"},
+	} {
+		rec := httptest.NewRecorder()
+		app.oauth2Login(rec, httptest.NewRequest(http.MethodGet, "/oauth2/login?next="+url.QueryEscape(tc.next), nil))
+		if rec.Code != http.StatusFound {
+			t.Fatalf("login %q status = %d body=%s", tc.next, rec.Code, rec.Body.String())
+		}
+		var state oauthState
+		if err := app.sessions.Open(stateCookieName, cookieNamed(t, rec.Result().Cookies(), stateCookieName).Value, &state); err != nil {
+			t.Fatal(err)
+		}
+		if state.OriginalURL != tc.want {
+			t.Fatalf("login next %q stored OriginalURL %q, want %q", tc.next, state.OriginalURL, tc.want)
+		}
 	}
 
 	logout := httptest.NewRecorder()
@@ -176,6 +286,42 @@ func TestSessionCodecAndBearerSources(t *testing.T) {
 	expiredReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: expiredValue})
 	if _, ok := app.authSession(expiredReq); ok {
 		t.Fatal("expired auth session should not be accepted")
+	}
+}
+
+func TestOAuthCallbackRejectsExternalOriginalURL(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"session-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	defer tokenServer.Close()
+
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:               8080,
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:       "dark",
+		OIDCClientID:       "client-id",
+		OIDCClientSecret:   "client-secret",
+		OAuth2AuthorizeURL: "https://auth.example.test/authorize",
+		OAuth2TokenURL:     tokenServer.URL,
+		OIDCRedirectURL:    "http://example.test/oauth2/callback",
+		SessionSecret:      "test-secret",
+	})
+	for _, originalURL := range []string{"//evil.example/path", `/\evil.example/path`} {
+		value, err := app.sessions.Seal(stateCookieName, oauthState{Nonce: "good", OriginalURL: originalURL}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/oauth2/callback?state=good&code=ok", nil)
+		req.AddCookie(&http.Cookie{Name: stateCookieName, Value: value})
+		rec := httptest.NewRecorder()
+		app.oauth2Callback(rec, req)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("callback for %q status = %d body=%s", originalURL, rec.Code, rec.Body.String())
+		}
+		if loc := rec.Header().Get("Location"); loc != "/" {
+			t.Fatalf("callback for %q Location = %q, want /", originalURL, loc)
+		}
 	}
 }
 

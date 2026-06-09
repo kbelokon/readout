@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeConfig writes content to a temp readout.yaml and returns its path.
@@ -55,13 +57,23 @@ func TestRunServerInitAndListenErrors(t *testing.T) {
 
 	oldListenAndServe := listenAndServe
 	t.Cleanup(func() { listenAndServe = oldListenAndServe })
-	listenAndServe = func(addr string, handler http.Handler) error {
-		if addr != ":9091" {
-			t.Fatalf("addr = %q, want :9091", addr)
+	assertTimeouts := func(t *testing.T, srv *http.Server) {
+		t.Helper()
+		if srv.ReadHeaderTimeout != 10*time.Second || srv.ReadTimeout != 30*time.Second || srv.IdleTimeout != 120*time.Second {
+			t.Fatalf("server timeouts = header %v read %v idle %v, want 10s/30s/120s", srv.ReadHeaderTimeout, srv.ReadTimeout, srv.IdleTimeout)
 		}
-		if handler == nil {
+		if srv.WriteTimeout != 0 {
+			t.Fatalf("WriteTimeout = %v, want unset", srv.WriteTimeout)
+		}
+	}
+	listenAndServe = func(srv *http.Server) error {
+		if srv.Addr != ":9091" {
+			t.Fatalf("addr = %q, want :9091", srv.Addr)
+		}
+		if srv.Handler == nil {
 			t.Fatal("handler is nil")
 		}
+		assertTimeouts(t, srv)
 		return errors.New("listen failed")
 	}
 	stdout.Reset()
@@ -72,5 +84,41 @@ func TestRunServerInitAndListenErrors(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "server exited") {
 		t.Fatalf("listen error stderr = %q", stderr.String())
+	}
+
+	servers := make(chan *http.Server, 2)
+	listenAndServe = func(srv *http.Server) error {
+		servers <- srv
+		return errors.New("listen failed")
+	}
+	stdout.Reset()
+	stderr.Reset()
+	metricsCfg := writeConfig(t, "metricsPort: 9092\nclusters:\n  - name: test\n    server: https://example.invalid\n")
+	if code := run([]string{"--config", metricsCfg, "--port", "9091"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("metrics listen exit code = %d, want 1", code)
+	}
+	seen := map[string]*http.Server{}
+	for len(seen) < 2 {
+		select {
+		case srv := <-servers:
+			seen[srv.Addr] = srv
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for main and metrics servers, saw %v", seen)
+		}
+	}
+	for _, addr := range []string{":9091", ":9092"} {
+		srv := seen[addr]
+		if srv == nil {
+			t.Fatalf("server %s was not started; saw %v", addr, seen)
+		}
+		if srv.Handler == nil {
+			t.Fatalf("server %s handler is nil", addr)
+		}
+		assertTimeouts(t, srv)
+	}
+	rec := httptest.NewRecorder()
+	seen[":9092"].Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "# HELP readout_up") {
+		t.Fatalf("metrics server handler status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

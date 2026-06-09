@@ -17,6 +17,7 @@ func TestOwnerLinksResolveNamespacedAndClusterOwners(t *testing.T) {
 		t.Fatal("test cluster not found")
 	}
 	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx", nil)
+	client := app.kubeClient(req, cluster)
 	pod := kube.NewObject(&kube.ResourceType{APIVersion: "v1", Version: "v1", Plural: "pods", Kind: "Pod", Namespaced: true}, &unstructured.Unstructured{Object: map[string]any{
 		"kind": "Pod",
 		"metadata": map[string]any{
@@ -30,7 +31,7 @@ func TestOwnerLinksResolveNamespacedAndClusterOwners(t *testing.T) {
 			},
 		},
 	}})
-	links := app.ownerLinks(req, cluster, &pod)
+	links := app.ownerLinks(req, client, cluster, &pod)
 	if len(links) != 2 {
 		t.Fatalf("owner links = %#v", links)
 	}
@@ -41,7 +42,7 @@ func TestOwnerLinksResolveNamespacedAndClusterOwners(t *testing.T) {
 		t.Fatalf("node link = %#v", links[1])
 	}
 
-	if links := app.ownerLinks(req, cluster, &kube.Object{Raw: map[string]any{}}); links != nil {
+	if links := app.ownerLinks(req, client, cluster, &kube.Object{Raw: map[string]any{}}); links != nil {
 		t.Fatalf("empty owner refs = %#v", links)
 	}
 }

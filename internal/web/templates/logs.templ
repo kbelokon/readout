@@ -38,6 +38,7 @@ type LogsData struct {
 	TailLines int64
 	PodCount  int
 	FilterVal string
+	ContainerVal string
 
 	Containers []LogContainerTab // rendered only when len > 2 (handler enforces)
 
@@ -57,9 +58,9 @@ templ Logs(d LogsData) {
 		<div class="ro-detail-title"><h1 class="ro-title">{ d.Name }</h1> <span class="ro-kind-badge">{ d.Kind }</span></div>
 		<div class="ro-tabs">@detailTab(false, d.DefaultHref, "Default")@detailTab(false, d.YAMLHref, "YAML")@detailTab(false, d.EventsHref, "Events")<a class="is-active">Logs</a></div>
 		if !d.ShowContainerLogs {
-			<article class="ro-notice" role="note"><p class="ro-notice-title">Container Logs Disabled</p><p>Container logs are not shown as they were disabled in readout. Enable them via the <code>--show-container-logs</code> readout command line option.</p></article>
+			<article class="ro-notice" role="note"><p class="ro-notice-title">Container Logs Disabled</p><p>Container logs are not shown as they were disabled in readout. Enable them with <code>showContainerLogs: true</code> in readout.yaml.</p></article>
 		} else {
-			<form method="get" action="#" class="ro-logs-form"><span>{ "Get last" }</span> <input class="input tail logs-tail-input" type="number" min="1" name="tail_lines" value={ itoa64(d.TailLines) }> <span>{ "log lines per container for " + itoa(d.PodCount) + " pods and filter by" }</span> <input class="input flt logs-filter-input" name="filter" value={ d.FilterVal } placeholder="filter text"> <button type="submit" class="ro-btn">Refresh</button></form>
+			<form method="get" action="#" class="ro-logs-form"><input type="hidden" name="container" value={ d.ContainerVal }><span>{ "Get last" }</span> <input class="input tail logs-tail-input" type="number" min="1" name="tail_lines" value={ itoa64(d.TailLines) }> <span>{ "log lines per container for " + itoa(d.PodCount) + " pods and filter by" }</span> <input class="input flt logs-filter-input" name="filter" value={ d.FilterVal } placeholder="filter text"> <button type="submit" class="ro-btn">Refresh</button></form>
 			if len(d.Containers) > 0 {
 				<div class="ro-logtabs">
 					for _, ct := range d.Containers {

@@ -144,6 +144,27 @@ func TestLogsRedesignFormAndTabs(t *testing.T) {
 	}
 }
 
+func TestLogsRoundTripContainer(t *testing.T) {
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:              8080,
+		Clusters:          []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:      "dark",
+		ShowContainerLogs: true,
+	})
+	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx/logs?container=nginx&tail_lines=50&filter=GET", http.StatusOK)
+	form := p.doc.Find("form.ro-logs-form")
+	if form.Length() != 1 {
+		t.Fatalf("logs forms = %d, want 1", form.Length())
+	}
+	input := form.Find(`input[type="hidden"][name="container"]`)
+	if input.Length() != 1 {
+		t.Fatalf("hidden container inputs = %d, want 1", input.Length())
+	}
+	if got, _ := input.Attr("value"); got != "nginx" {
+		t.Fatalf("hidden container value = %q, want nginx", got)
+	}
+}
+
 // TestLogsRedesignLogLineStructure pins one rendered .ro-logpre line through the
 // REAL logPreHTML builder: a .log-line block wrapping the .log-src source pod, the
 // container name in a colored .log-cN span (palette index = podColor(container)),

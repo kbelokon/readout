@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/web/icons"
@@ -55,8 +56,20 @@ func (s *Server) buildClustersData(selector, filter string) templates.ClustersDa
 		SelectorValue: selector,
 		FilterValue:   filter,
 	}
+	var labelSelector labels.Selector
+	if strings.TrimSpace(selector) != "" {
+		parsed, err := labels.Parse(selector)
+		if err != nil {
+			data.SelectorError = "Invalid label selector: " + err.Error()
+		} else {
+			labelSelector = parsed
+		}
+	}
 	filterText := strings.ToLower(filter)
 	for _, cluster := range clusters {
+		if labelSelector != nil && !labelSelector.Matches(labels.Set(cluster.Labels)) {
+			continue
+		}
 		if filterText != "" && !strings.Contains(strings.ToLower(cluster.Name+" "+cluster.URL+" "+formatLabels(cluster.Labels)), filterText) {
 			continue
 		}

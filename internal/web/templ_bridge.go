@@ -482,7 +482,7 @@ func toSubtable(v *subtableView) *templates.Subtable {
 			CreatedText:  row.CreatedText,
 		}
 		for _, cell := range row.Cells {
-			sr.Cells = append(sr.Cells, templates.SubtableCell{Kind: templates.CellKind(cell.Kind), Value: cell.Value, Class: cell.Class, Href: cell.Href})
+			sr.Cells = append(sr.Cells, templates.SubtableCell{Kind: templates.CellKind(cell.Kind), Value: cell.Value, Class: cell.Class, Href: cell.Href, Tone: cell.Tone})
 		}
 		st.Rows = append(st.Rows, sr)
 	}
@@ -559,10 +559,14 @@ func searchScopeClusterLabel(v *searchView) string {
 }
 
 // searchNamespaceLabel is the scope-opts namespace fragment ("all namespaces" or
-// the single namespace name).
+// the selected namespace count/name).
 func searchNamespaceLabel(v *searchView) string {
 	if v.IsAllNamespaces || v.Namespace == "" {
 		return "all namespaces"
+	}
+	namespaces := searchScopeValues([]string{v.Namespace})
+	if len(namespaces) > 1 {
+		return fmt.Sprintf("%d namespaces", len(namespaces))
 	}
 	return v.Namespace
 }
@@ -614,12 +618,13 @@ func toSearchBreadcrumb(v *searchView) templates.SearchBreadcrumb {
 	b.Cluster = v.Cluster
 	b.ClusterHref = "/clusters/" + url.PathEscape(v.Cluster)
 	b.AllNamespaces = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces"
+	namespaces := searchScopeValues([]string{v.Namespace})
 	if v.IsAllNamespaces {
 		b.ShowAllNamespace = true
-	} else if v.Namespace != "" {
+	} else if len(namespaces) == 1 {
 		b.ShowNamespace = true
-		b.Namespace = v.Namespace
-		b.NamespaceHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(v.Namespace)
+		b.Namespace = namespaces[0]
+		b.NamespaceHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(namespaces[0])
 	}
 	return b
 }

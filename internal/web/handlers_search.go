@@ -11,15 +11,15 @@ import (
 // the results table (.ro-table) -- assembled in buildSearchView and rendered by
 // templates.Search.
 //
-// The /search route is param-less, so the shell scope is taken from the QUERY
-// (?cluster= / ?namespace=) via pageComponentWithScope: with a concrete
-// ?cluster= the layout renders that cluster's sidebar + navbar context; with an
-// empty or all-clusters scope the layout gates emit no sidebar.
+// The /search route is param-less, so the shell scope is derived from the QUERY
+// via pageComponentWithScope. Multi-namespace searches intentionally render the
+// shell at cluster scope: the search body can round-trip "a,b", but sidebar and
+// palette links must not point at a fake namespace named "a,b".
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
-	view, err := s.buildSearchView(r)
+	view, clients, err := s.buildSearchView(r)
 	if err != nil {
 		s.error(w, r, err)
 		return
 	}
-	s.pageComponentWithScope(w, r, "Search", view.Cluster, view.Namespace, templates.Search(toSearchData(&view)))
+	s.pageComponentWithScopeAndClients(w, r, "Search", view.ShellCluster, view.ShellNamespace, clients, templates.Search(toSearchData(&view)))
 }

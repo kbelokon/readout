@@ -36,7 +36,7 @@ spec:
           {{- end }}
           ports:
             - name: http
-              containerPort: 8080
+              containerPort: {{ .Values.config.port | default 8080 }}
           readinessProbe:
             httpGet:
               path: /readyz

@@ -40,7 +40,7 @@ type oauthState struct {
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isPublicPath(r.URL.Path) {
+		if s.isPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -51,6 +51,16 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		case config.AuthModeHeaders:
 			if r.Header.Get(s.cfg.TrustedHeaderUser) == "" && r.Header.Get(s.cfg.TrustedHeaderEmail) == "" {
 				http.Error(w, "missing trusted identity header", http.StatusUnauthorized)
+				return
+			}
+			session := s.trustedHeaderSession(r)
+			allowed, err := s.authorizationHook(r.Context(), &oauth2.Token{}, &session)
+			if err != nil {
+				http.Error(w, "authorization hook failed: "+err.Error(), http.StatusForbidden)
+				return
+			}
+			if !allowed {
+				http.Error(w, "Access Denied", http.StatusForbidden)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -69,9 +79,32 @@ func (s *Server) auth(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) trustedHeaderSession(r *http.Request) authSession {
+	return authSession{
+		User:   r.Header.Get(s.cfg.TrustedHeaderUser),
+		Email:  r.Header.Get(s.cfg.TrustedHeaderEmail),
+		Groups: splitHeaderGroups(r.Header.Get(s.cfg.TrustedHeaderGroups)),
+	}
+}
+
+func splitHeaderGroups(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	groups := make([]string, 0, len(parts))
+	for _, part := range parts {
+		group := strings.TrimSpace(part)
+		if group != "" {
+			groups = append(groups, group)
+		}
+	}
+	return groups
+}
+
 func (s *Server) oauth2Login(w http.ResponseWriter, r *http.Request) {
 	next := r.URL.Query().Get("next")
-	if next == "" || !strings.HasPrefix(next, "/") {
+	if !isLocalRedirect(next) {
 		next = "/"
 	}
 	s.startOAuth2(w, r, next)
@@ -171,7 +204,11 @@ func (s *Server) oauth2Callback(w http.ResponseWriter, r *http.Request) {
 		Secure:   secureCookie(r),
 		SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, state.OriginalURL, http.StatusFound)
+	target := state.OriginalURL
+	if !isLocalRedirect(target) {
+		target = "/"
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 func (s *Server) startOAuth2(w http.ResponseWriter, r *http.Request, originalURL string) {
@@ -282,7 +319,7 @@ func (s *Server) oauthConfigured() bool {
 	return s.cfg.OIDCIssuerURL != "" || (s.cfg.OAuth2AuthorizeURL != "" && s.cfg.OAuth2TokenURL != "")
 }
 
-func isPublicPath(path string) bool {
+func (s *Server) isPublicPath(path string) bool {
 	return path == "/health" ||
 		path == "/healthz" ||
 		path == "/readyz" ||

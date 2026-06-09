@@ -27,20 +27,27 @@ import (
 const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
 
 type Server struct {
-	cfg      config.Config
-	manager  *kube.Manager
-	mux      *http.ServeMux
-	static   http.Handler
-	assets   map[string]string
-	partials map[string]string
-	metrics  *appMetrics
-	sessions *sessionCodec
+	cfg                config.Config
+	manager            *kube.Manager
+	mux                *http.ServeMux
+	static             http.Handler
+	assets             map[string]string
+	partials           map[string]string
+	metrics            *appMetrics
+	sessions           *sessionCodec
+	passthroughClients *kube.PassthroughClientCache
 	// now is the clock for all render-path time (age coloring + the list/search
 	// "took X" footer). It defaults to time.Now in New; tests inject a fixed
 	// instant for deterministic, bucket-exercising output. Under real time
 	// (now == time.Now) every render is byte-identical to a direct time.Now call.
 	now func() time.Time
 }
+
+var withBearerClient = func(client *kube.Client, token string) (*kube.Client, error) {
+	return client.WithBearer(token)
+}
+
+type requestKubeClients map[string]*kube.Client
 
 func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	manager, err := kube.NewManager(ctx, cfg)
@@ -60,15 +67,16 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		cfg:      *cfg,
-		manager:  manager,
-		mux:      http.NewServeMux(),
-		static:   http.FileServerFS(staticFS),
-		assets:   assetHashes(staticFS),
-		partials: loadPartials(cfg.TemplatesPath),
-		metrics:  newAppMetrics(),
-		sessions: sessions,
-		now:      time.Now,
+		cfg:                *cfg,
+		manager:            manager,
+		mux:                http.NewServeMux(),
+		static:             http.FileServerFS(staticFS),
+		assets:             assetHashes(staticFS),
+		partials:           loadPartials(cfg.TemplatesPath),
+		metrics:            newAppMetrics(),
+		sessions:           sessions,
+		passthroughClients: kube.NewPassthroughClientCache(0, 0),
+		now:                time.Now,
 	}
 	s.routes()
 	s.warnMissingSessionSecret()
@@ -96,7 +104,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
 	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
-	s.mux.HandleFunc("GET /metrics", s.metricsHandler)
+	if s.cfg.MetricsPort == 0 {
+		s.mux.HandleFunc("GET /metrics", s.metricsHandler)
+	} else {
+		// Override the catch-all route so the main app listener does not redirect /metrics.
+		s.mux.HandleFunc("GET /metrics", http.NotFound)
+	}
 	s.mux.HandleFunc("GET /oauth2/callback", s.oauth2Callback)
 	s.mux.HandleFunc("GET /oauth2/login", s.oauth2Login)
 	s.mux.HandleFunc("GET /oauth2/logout", s.oauth2Logout)
@@ -145,9 +158,39 @@ func (s *Server) kubeClient(r *http.Request, cluster *kube.Cluster) *kube.Client
 		}
 		return cluster.Client
 	}
-	client, err := cluster.Client.WithBearer(token)
+	var (
+		client *kube.Client
+		err    error
+	)
+	if s.passthroughClients != nil {
+		client, err = s.passthroughClients.Get(cluster.Client, token, withBearerClient)
+	} else {
+		client, err = withBearerClient(cluster.Client, token)
+	}
 	if err != nil {
-		return cluster.Client
+		slog.Error("passthrough client build failed", "cluster", cluster.Name, "error", err)
+		return cluster.Client.Denied()
+	}
+	return client
+}
+
+func (s *Server) kubeClients(r *http.Request, clusters []*kube.Cluster) requestKubeClients {
+	clients := make(requestKubeClients, len(clusters))
+	for _, cluster := range clusters {
+		clients[cluster.Name] = s.kubeClient(r, cluster)
+	}
+	return clients
+}
+
+func (s *Server) requestKubeClient(r *http.Request, clients requestKubeClients, cluster *kube.Cluster) *kube.Client {
+	if clients != nil {
+		if client := clients[cluster.Name]; client != nil {
+			return client
+		}
+	}
+	client := s.kubeClient(r, cluster)
+	if clients != nil {
+		clients[cluster.Name] = client
 	}
 	return client
 }
@@ -169,12 +212,12 @@ func (s *Server) namespaceAllowed(namespace string) bool {
 	return false
 }
 
-func (s *Server) navbarNamespaces(r *http.Request, cluster *kube.Cluster) []string {
-	rt, err := s.kubeClient(r, cluster).FindResource(r.Context(), "namespaces", false, "")
+func (s *Server) navbarNamespaces(r *http.Request, client *kube.Client) []string {
+	rt, err := client.FindResource(r.Context(), "namespaces", false, "")
 	if err != nil {
 		return nil
 	}
-	list, err := s.kubeClient(r, cluster).List(r.Context(), &rt, kube.ListOptions{})
+	list, err := client.List(r.Context(), &rt, kube.ListOptions{})
 	if err != nil {
 		return nil
 	}
@@ -248,7 +291,7 @@ func (s *Server) error(w http.ResponseWriter, r *http.Request, err error) {
 		slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "status", status, "error", err)
 		message = "Internal server error — see server logs"
 	}
-	s.pageComponent(w, r, statusText, templates.ErrorBody(statusText, message))
+	s.pageComponentWithScope(w, r, statusText, "", "", templates.ErrorBody(statusText, message))
 }
 
 type statusError struct {

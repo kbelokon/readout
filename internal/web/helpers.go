@@ -29,6 +29,12 @@ func podColor(name string) string {
 	return fmt.Sprintf("log-c%d", crc32.ChecksumIEEE([]byte(name))%8)
 }
 
+func isLocalRedirect(target string) bool {
+	return strings.HasPrefix(target, "/") &&
+		!strings.HasPrefix(target, "//") &&
+		!strings.HasPrefix(target, `/\`)
+}
+
 // podNameHashSuffix matches a Deployment-style pod name (`<workload>-<rs
 // hash>-<pod hash>`) so the workload prefix can render bright and the trailing
 // hash segments muted. Mirrors the design reference shell.js podName():
@@ -861,6 +867,15 @@ func addQuery(u *url.URL, key, value string) string {
 	clone := *u
 	q := clone.Query()
 	q.Set(key, value)
+	clone.RawQuery = queryEncodeKeepParens(q)
+	return clone.String()
+}
+
+func downloadTSVHref(u *url.URL, plural string) string {
+	clone := *resourceListBaseURL(u)
+	q := clone.Query()
+	q.Set("download", "tsv")
+	q.Set("download_table", plural)
 	clone.RawQuery = queryEncodeKeepParens(q)
 	return clone.String()
 }

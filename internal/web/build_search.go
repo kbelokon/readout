@@ -30,14 +30,16 @@ var searchDefaultResourceTypes = []string{"namespaces", "deployments", "services
 // search form.
 var searchOfferedResourceTypes = []string{"namespaces", "deployments", "replicasets", "services", "ingresses", "daemonsets", "statefulsets", "cronjobs", "pods", "nodes"}
 
-func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
+func (s *Server) buildSearchView(r *http.Request) (searchView, requestKubeClients, error) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	clusterParam := strings.Join(r.URL.Query()["cluster"], ",")
-	namespace := strings.Join(r.URL.Query()["namespace"], ",")
+	namespaces := searchScopeValues(r.URL.Query()["namespace"])
+	namespace := strings.Join(namespaces, ",")
 	clusters, allClusters, err := s.manager.Select(clusterParam)
 	if err != nil {
-		return searchView{}, err
+		return searchView{}, nil, err
 	}
+	clients := s.kubeClients(r, clusters)
 	selector, filterQuery := splitSearchQuery(q)
 	if extra := r.URL.Query().Get("selector"); extra != "" {
 		if selector != "" {
@@ -49,13 +51,23 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 	if len(types) == 0 {
 		types = firstSlice(s.cfg.SearchDefaultResourceTypes, searchDefaultResourceTypes)
 	}
-	isAllNamespaces := namespace == "" || namespace == kube.AllNamespaces
+	isAllNamespaces := len(namespaces) == 0 || (len(namespaces) == 1 && namespaces[0] == kube.AllNamespaces)
+	shellCluster := ""
+	if !allClusters && len(clusters) == 1 {
+		shellCluster = clusters[0].Name
+	}
+	shellNamespace := ""
+	if len(namespaces) == 1 && namespaces[0] != kube.AllNamespaces {
+		shellNamespace = namespaces[0]
+	}
 	start := s.clock()
 
 	view := searchView{
 		Query:             q,
 		Cluster:           clusterParam,
 		Namespace:         namespace,
+		ShellCluster:      shellCluster,
+		ShellNamespace:    shellNamespace,
 		IsAllClusters:     allClusters,
 		IsAllNamespaces:   isAllNamespaces,
 		SelectedTypeCount: len(types),
@@ -84,7 +96,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 	for i, cluster := range clusters {
 		i, cluster := i, cluster
 		g.Go(func() error {
-			slots[i] = s.clusterSearch(r, cluster, types, namespace, selector, filterQuery, isAllNamespaces)
+			slots[i] = s.clusterSearch(r, clients[cluster.Name], cluster, types, namespaces, selector, filterQuery, isAllNamespaces)
 			return nil
 		})
 	}
@@ -145,7 +157,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 			continue
 		}
 		for _, cluster := range clusters {
-			if rt, _, err := findSearchResource(r, s.kubeClient(r, cluster), typ); err == nil {
+			if rt, _, err := findSearchResource(r, clients[cluster.Name], typ); err == nil {
 				searchable[rt.Plural] = rt.Kind
 				break
 			}
@@ -155,7 +167,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 	view.OfferedTypes = buildTypeOptions(searchable, types)
 	sortResults(view.Results, q)
 	view.Duration = s.clock().Sub(start)
-	return view, nil
+	return view, clients, nil
 }
 
 // clusterSearchResult is one cluster's fan-out slot: its ordered result cards,
@@ -184,8 +196,7 @@ type searchErrorRecord struct {
 // namespace filter + text filter -> result cards. Per-type failures are
 // collected as error records, not raised, so the per-cluster work can run as a
 // single fan-out task.
-func (s *Server) clusterSearch(r *http.Request, cluster *kube.Cluster, types []string, namespace, selector, filterQuery string, isAllNamespaces bool) clusterSearchResult {
-	client := s.kubeClient(r, cluster)
+func (s *Server) clusterSearch(r *http.Request, client *kube.Client, cluster *kube.Cluster, types []string, namespaces []string, selector, filterQuery string, isAllNamespaces bool) clusterSearchResult {
 	var out clusterSearchResult
 	seen := map[string]bool{}
 	for _, typ := range types {
@@ -203,43 +214,61 @@ func (s *Server) clusterSearch(r *http.Request, cluster *kube.Cluster, types []s
 		if selector == "" && filterQuery == "" {
 			continue
 		}
-		listNS := namespace
-		if isAllNamespaces || !namespaced {
-			listNS = ""
+		listNamespaces := []string{""}
+		if !isAllNamespaces && namespaced {
+			listNamespaces = namespaces
 		}
-		table, err := client.Table(r.Context(), &rt, kube.ListOptions{Namespace: listNS, LabelSelector: selector})
-		if err != nil {
-			out.errs = append(out.errs, searchErrorRecord{cluster: cluster.Name, resourceType: typ, err: err})
-			continue
+		for _, listNS := range listNamespaces {
+			table, err := client.Table(r.Context(), &rt, kube.ListOptions{Namespace: listNS, LabelSelector: selector})
+			if err != nil {
+				out.errs = append(out.errs, searchErrorRecord{cluster: cluster.Name, resourceType: typ, err: err})
+				continue
+			}
+			// Respect --include-namespaces/--exclude-namespaces (the same as the
+			// list path): drop rows from disallowed namespaces BEFORE the text
+			// filter / label columns / result assembly. No-op under default config
+			// (both sets empty).
+			kube.FilterSearchRowsByNamespace(&table, s.cfg.IncludeNamespaces, s.cfg.ExcludeNamespaces)
+			if filterQuery != "" {
+				kube.FilterTable(&table, filterQuery, true)
+				kube.AddLabelColumns(&table, "*")
+			}
+			nameIdx := nameColumn(&table)
+			for _, row := range table.Rows {
+				name := cellString(row, nameIdx)
+				ns := nestedString(row.Object, "metadata", "namespace")
+				link := resourceHref(cluster.Name, &rt, ns, name)
+				labels, _, _ := unstructured.NestedStringMap(row.Object, "metadata", "labels")
+				created := nestedString(row.Object, "metadata", "creationTimestamp")
+				out.results = append(out.results, searchResult{
+					Title:     name,
+					Kind:      rt.Kind,
+					Group:     apiGroup(rt.APIVersion),
+					IsCRD:     isCRD(rt.APIVersion),
+					Link:      link,
+					Cluster:   cluster.Name,
+					Namespace: ns,
+					Labels:    labels,
+					Created:   formatTimestamp(created),
+					AgeClass:  "num " + s.ageClass(created),
+				})
+			}
 		}
-		// Respect --include-namespaces/--exclude-namespaces (the same as the
-		// list path): drop rows from disallowed namespaces BEFORE the text
-		// filter / label columns / result assembly. No-op under default config
-		// (both sets empty).
-		kube.FilterSearchRowsByNamespace(&table, s.cfg.IncludeNamespaces, s.cfg.ExcludeNamespaces)
-		if filterQuery != "" {
-			kube.FilterTable(&table, filterQuery, true)
-			kube.AddLabelColumns(&table, "*")
-		}
-		nameIdx := nameColumn(&table)
-		for _, row := range table.Rows {
-			name := cellString(row, nameIdx)
-			ns := nestedString(row.Object, "metadata", "namespace")
-			link := resourceHref(cluster.Name, &rt, ns, name)
-			labels, _, _ := unstructured.NestedStringMap(row.Object, "metadata", "labels")
-			created := nestedString(row.Object, "metadata", "creationTimestamp")
-			out.results = append(out.results, searchResult{
-				Title:     name,
-				Kind:      rt.Kind,
-				Group:     apiGroup(rt.APIVersion),
-				IsCRD:     isCRD(rt.APIVersion),
-				Link:      link,
-				Cluster:   cluster.Name,
-				Namespace: ns,
-				Labels:    labels,
-				Created:   formatTimestamp(created),
-				AgeClass:  "num " + s.ageClass(created),
-			})
+	}
+	return out
+}
+
+func searchScopeValues(raw []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, value := range raw {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" || seen[part] {
+				continue
+			}
+			seen[part] = true
+			out = append(out, part)
 		}
 	}
 	return out
@@ -370,7 +399,7 @@ func searchScore(title string, labels map[string]string, query string) int {
 		score += 2
 	}
 	for _, value := range labels {
-		if value == query {
+		if strings.EqualFold(value, query) {
 			score++
 			break
 		}

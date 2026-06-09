@@ -107,6 +107,25 @@ func TestThemeAndURLHelpers(t *testing.T) {
 	}
 }
 
+func TestIsLocalRedirect(t *testing.T) {
+	cases := []struct {
+		target string
+		want   bool
+	}{
+		{"/", true},
+		{"/clusters/test", true},
+		{"//evil.example", false},
+		{`/\evil.example`, false},
+		{"https://evil.example", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isLocalRedirect(tc.target); got != tc.want {
+			t.Fatalf("isLocalRedirect(%q) = %t, want %t", tc.target, got, tc.want)
+		}
+	}
+}
+
 func TestDataExtractionHelpers(t *testing.T) {
 	labels := map[string]string{"b": "2", "a": "1"}
 	if formatLabels(labels) != "a=1,b=2" || first("", "x", "y") != "x" {

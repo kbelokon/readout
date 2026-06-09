@@ -152,22 +152,18 @@ type paletteActionFeed struct {
 	Action string `json:"action,omitempty"`
 }
 
-// buildLayoutView resolves every request-derived input the page shell needs.
-// namespaceOverride lets the detail page pass the object's namespace explicitly;
-// title is the page's <title> stem. The cluster/namespace scope comes from the
-// path values.
-func (s *Server) buildLayoutView(r *http.Request, title string, namespaceOverride *string) layoutView {
-	return s.buildLayoutViewScoped(r, title, r.PathValue("cluster"), effectiveNamespace(r, namespaceOverride))
+func (s *Server) buildLayoutViewWithClients(r *http.Request, title string, namespaceOverride *string, clients requestKubeClients) layoutView {
+	return s.buildLayoutViewScopedWithClients(r, title, r.PathValue("cluster"), effectiveNamespace(r, namespaceOverride), clients)
 }
 
-// buildLayoutViewScoped is buildLayoutView with the cluster + namespace scope
-// supplied explicitly rather than read from the path values. The param-less
-// /search route has no {cluster}/{namespace} path segments, so its handler
-// passes the QUERY (?cluster= / ?namespace=) here. With a concrete cluster this
-// renders that cluster's sidebar + navbar context; with an empty or
-// all-clusters scope the existing buildSidebarView/buildNavbarView
-// gates (cluster != "" && cluster != AllClusters) emit no sidebar, as before.
-func (s *Server) buildLayoutViewScoped(r *http.Request, title, cluster, namespace string) layoutView {
+// buildLayoutViewScopedWithClients resolves the page shell with the cluster +
+// namespace scope supplied explicitly rather than read from path values. The
+// param-less /search route has no {cluster}/{namespace} path segments, so its
+// handler passes the QUERY (?cluster= / ?namespace=) here. With a concrete
+// cluster this renders that cluster's sidebar + navbar context; with an empty or
+// all-clusters scope the existing buildSidebarView/buildNavbarView gates emit no
+// sidebar, as before.
+func (s *Server) buildLayoutViewScopedWithClients(r *http.Request, title, cluster, namespace string, clients requestKubeClients) layoutView {
 	themeName := theme(r, &s.cfg)
 	explicit := themeExplicit(r)
 
@@ -178,8 +174,8 @@ func (s *Server) buildLayoutViewScoped(r *http.Request, title, cluster, namespac
 		}
 	}
 
-	navbar := s.buildNavbarView(r, cluster, namespace, themeName, explicit)
-	sidebar := s.buildSidebarView(r, cluster, namespace)
+	navbar := s.buildNavbarView(r, cluster, namespace, themeName, explicit, clients)
+	sidebar := s.buildSidebarView(r, cluster, namespace, clients)
 	return layoutView{
 		Title:         title,
 		ThemeName:     themeName,
@@ -191,7 +187,7 @@ func (s *Server) buildLayoutViewScoped(r *http.Request, title, cluster, namespac
 		Footer:        s.partials["partials/footer.html"],
 		Navbar:        navbar,
 		Sidebar:       sidebar,
-		Palette:       s.buildPaletteFeed(r, cluster, namespace, &navbar, &sidebar),
+		Palette:       s.buildPaletteFeed(r, cluster, namespace, clients, &navbar, &sidebar),
 	}
 }
 
@@ -202,7 +198,7 @@ func (s *Server) buildLayoutViewScoped(r *http.Request, title, cluster, namespac
 // registry is request-independent) while namespaces/kinds are empty, so the
 // palette opens everywhere. The icon markup is the Unit-1 resolver's
 // already-escaped string carried verbatim.
-func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, navbar *navbarView, sidebar *sidebarView) paletteFeedView {
+func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, clients requestKubeClients, navbar *navbarView, sidebar *sidebarView) paletteFeedView {
 	feed := paletteFeedView{
 		Clusters:   []paletteLinkFeed{},
 		Namespaces: []paletteLinkFeed{},
@@ -237,7 +233,8 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, na
 	// opens with clusters/namespaces.
 	if cluster != "" && cluster != kube.AllClusters {
 		if clusterObj, ok := s.manager.Get(cluster); ok {
-			nsTypes, clusterTypes, _ := s.kubeClient(r, clusterObj).ResourceTypes(r.Context())
+			client := s.requestKubeClient(r, clients, clusterObj)
+			nsTypes, clusterTypes, _ := client.ResourceTypes(r.Context())
 			seen := map[string]bool{}
 			add := func(rt *kube.ResourceType, ns string) {
 				// metrics.k8s.io (PodMetrics/NodeMetrics) is a join source, not a
@@ -347,7 +344,7 @@ func (s *Server) paletteKindEntry(cluster, namespace string, rt *kube.ResourceTy
 	}
 }
 
-func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName string, explicit bool) navbarView {
+func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName string, explicit bool, clients requestKubeClients) navbarView {
 	nextTheme := "dark"
 	if themeName == "dark" {
 		nextTheme = "light"
@@ -361,12 +358,13 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 	}
 	if cluster != "" && cluster != kube.AllClusters {
 		if clusterObj, ok := s.manager.Get(cluster); ok {
+			client := s.requestKubeClient(r, clients, clusterObj)
 			v.ShowContext = true
 			v.ContextName = namespace
 			if v.ContextName == "" {
 				v.ContextName = "None"
 			}
-			for _, ns := range s.navbarNamespaces(r, clusterObj) {
+			for _, ns := range s.navbarNamespaces(r, client) {
 				v.NamespaceLinks = append(v.NamespaceLinks, navItem{
 					Href: fmt.Sprintf("/clusters/%s/namespaces/%s/pods", url.PathEscape(cluster), url.PathEscape(ns)),
 					Text: ns,
@@ -377,11 +375,17 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 	return v
 }
 
-func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string) sidebarView {
+func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, clients requestKubeClients) sidebarView {
 	if cluster == "" {
 		return sidebarView{}
 	}
 	v := sidebarView{ShowMenu: true}
+	var client *kube.Client
+	if s.manager != nil {
+		if clusterObj, ok := s.manager.Get(cluster); ok {
+			client = s.requestKubeClient(r, clients, clusterObj)
+		}
+	}
 
 	groups := s.cfg.Sidebar
 	if len(groups) == 0 {
@@ -393,7 +397,7 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string) si
 		}
 		var links []navItem
 		for _, typ := range group.Resources {
-			link, ok := s.sidebarResourceLink(r, cluster, namespace, typ)
+			link, ok := s.sidebarResourceLink(r, client, cluster, namespace, typ)
 			if !ok {
 				continue
 			}
@@ -418,8 +422,8 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string) si
 
 	if cluster != "" && namespace != "" {
 		for _, link := range []navItem{
-			{Text: "Resource Types", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/_resource-types", cluster, namespace)},
-			{Text: "Events", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/events", cluster, namespace)},
+			{Text: "Resource Types", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/_resource-types", url.PathEscape(cluster), url.PathEscape(namespace))},
+			{Text: "Events", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/events", url.PathEscape(cluster), url.PathEscape(namespace))},
 		} {
 			link.Active = r.URL.Path == link.Href
 			v.Meta = append(v.Meta, link)

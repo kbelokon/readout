@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kbelokon/readout/internal/config"
@@ -83,7 +84,7 @@ func TestAllResourceListSearchAndClusterBranches(t *testing.T) {
 		Port:              8080,
 		Clusters:          []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:      "dark",
-		ExcludeNamespaces: []*regexp.Regexp{regexp.MustCompile(`^secret`)},
+		ExcludeNamespaces: []*regexp.Regexp{regexp.MustCompile(`^secret$`)},
 	})
 	forbidden := httptest.NewRecorder()
 	blockedNamespace.Handler().ServeHTTP(forbidden, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/secret/_resource-types", nil))
@@ -95,6 +96,208 @@ func TestAllResourceListSearchAndClusterBranches(t *testing.T) {
 	if search.Code != http.StatusOK || !strings.Contains(search.Body.String(), "Cluster") {
 		t.Fatalf("search response: status=%d body=%s", search.Code, search.Body.String())
 	}
+}
+
+func TestClusterSelectorFilter(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port: 8080,
+		Clusters: []config.ClusterConnection{
+			{Name: "prod-east", Server: fake.URL},
+			{Name: "prod-west", Server: fake.URL},
+			{Name: "stage-west", Server: fake.URL},
+		},
+		DefaultTheme: "dark",
+	})
+	for _, cluster := range app.manager.Clusters() {
+		switch cluster.Name {
+		case "prod-east":
+			cluster.Labels = map[string]string{"env": "prod", "region": "east"}
+		case "prod-west":
+			cluster.Labels = map[string]string{"env": "prod", "region": "west"}
+		case "stage-west":
+			cluster.Labels = map[string]string{"env": "stage", "region": "west"}
+		}
+	}
+
+	prod := get(t, app, "/clusters?selector=env%3Dprod", http.StatusOK)
+	if got := strings.Join(prod.texts("td.cl-name"), "|"); got != "prod-east|prod-west" {
+		t.Fatalf("selector cluster rows = %q, want prod-east|prod-west", got)
+	}
+	prod.wantAttr(`form.tools-row input[type="hidden"][name="selector"]`, "value", "env=prod")
+
+	prodWest := get(t, app, "/clusters?selector=env%3Dprod&filter=west", http.StatusOK)
+	if got := strings.Join(prodWest.texts("td.cl-name"), "|"); got != "prod-west" {
+		t.Fatalf("selector+filter cluster rows = %q, want prod-west", got)
+	}
+
+	bad := get(t, app, "/clusters?selector=%21%21%21", http.StatusOK)
+	if !strings.Contains(bad.text(".ro-cluster-selector-error"), "Invalid label selector") {
+		t.Fatalf("malformed selector hint = %q", bad.text(".ro-cluster-selector-error"))
+	}
+	if got := strings.Join(bad.texts("td.cl-name"), "|"); got != "prod-east|prod-west|stage-west" {
+		t.Fatalf("malformed selector rows = %q, want all clusters with parse hint", got)
+	}
+}
+
+func TestLimitParam(t *testing.T) {
+	app := &Server{}
+	req := func(query string) *http.Request {
+		return httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods?"+query, nil)
+	}
+	table := func() kube.Table {
+		return kube.Table{
+			Resource: kube.ResourceType{Plural: "pods", Kind: "Pod", Namespaced: true},
+			Columns:  []kube.Column{{Name: "Name"}},
+			Rows: []kube.Row{
+				{Cells: []any{"one"}},
+				{Cells: []any{"two"}},
+				{Cells: []any{"three"}},
+			},
+		}
+	}
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"limit=abc", 3},
+		{"limit=0", 3},
+		{"limit=-1", 3},
+		{"limit=2", 2},
+		{"limit=99", 3},
+	}
+	for _, tc := range cases {
+		tbl := table()
+		app.applyTableOptions(req(tc.query), nil, &tbl, "default", false)
+		if len(tbl.Rows) != tc.want {
+			t.Fatalf("%s left %d rows, want %d", tc.query, len(tbl.Rows), tc.want)
+		}
+		if tc.query == "limit=2" {
+			got := []string{cellDisplayString(tbl.Rows[0].Cells[0]), cellDisplayString(tbl.Rows[1].Cells[0])}
+			if strings.Join(got, ",") != "one,two" {
+				t.Fatalf("limit=2 kept rows %v, want first two rows one,two", got)
+			}
+		}
+	}
+}
+
+func TestBuildCellViewExtraCells(t *testing.T) {
+	app := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods", nil)
+	table := kube.Table{
+		Resource: kube.ResourceType{Plural: "pods", Kind: "Pod", Namespaced: true},
+		Columns:  []kube.Column{{Name: "Name"}, {Name: "Status"}},
+	}
+	row := kube.Row{Cluster: "test", Cells: []any{"nginx", "Running", "extra"}}
+	cv := app.buildCellView(req, &table, row, 2, row.Cells[2], "default", "nginx")
+	if cv.Kind != cellPlain || cv.Value != "extra" {
+		t.Fatalf("extra cell view = %#v, want plain extra", cv)
+	}
+}
+
+func TestTailLinesClamp(t *testing.T) {
+	logQuery := &logQueryRecorder{}
+	fake := newRecordingServerFakeAPIWithLogRecorder(t, nil, logQuery)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:              8080,
+		Clusters:          []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:      "dark",
+		ShowContainerLogs: true,
+	})
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{"tail_lines=bad", "200"},
+		{"tail_lines=-5", "1"},
+		{"tail_lines=100001", "100000"},
+	}
+	for _, tc := range cases {
+		before := len(logQuery.values())
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?container=nginx&"+tc.query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", tc.query, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `name="tail_lines" value="`+tc.want+`"`) {
+			t.Fatalf("%s rendered wrong tail value, want %s body=%s", tc.query, tc.want, rec.Body.String())
+		}
+		values := logQuery.values()
+		if len(values) != before+1 || values[len(values)-1] != tc.want {
+			t.Fatalf("%s log tailLines queries = %v, want last %s", tc.query, values, tc.want)
+		}
+	}
+}
+
+func TestSidebarMetaLinksEscapePathSegments(t *testing.T) {
+	app := &Server{}
+	sidebar := app.buildSidebarView(httptest.NewRequest(http.MethodGet, "/search", nil), "c/a", "team a", nil)
+	want := map[string]string{
+		"Resource Types": "/clusters/c%2Fa/namespaces/team%20a/_resource-types",
+		"Events":         "/clusters/c%2Fa/namespaces/team%20a/events",
+	}
+	for _, item := range sidebar.Meta {
+		if expected, ok := want[item.Text]; ok {
+			if item.Href != expected {
+				t.Fatalf("%s href = %q, want %q", item.Text, item.Href, expected)
+			}
+			delete(want, item.Text)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing sidebar meta links: %v", want)
+	}
+}
+
+func TestErrorPageNoClusterRefetch(t *testing.T) {
+	var namespaceLists atomic.Int64
+	fake := newErrorPageCountingFakeAPI(t, &namespaceLists)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:         8080,
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme: "dark",
+	})
+
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := namespaceLists.Load(); got != 0 {
+		t.Fatalf("error render issued %d namespace LIST calls against the failed cluster, want 0", got)
+	}
+}
+
+func newErrorPageCountingFakeAPI(t *testing.T, namespaceLists *atomic.Int64) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	fixture := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(readFixture(t, name))
+		}
+	}
+	mux.HandleFunc("/api", fixture("discovery/api.json"))
+	mux.HandleFunc("/api/v1", fixture("discovery/api__v1.json"))
+	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
+	mux.HandleFunc("/apis/apps/v1", fixture("discovery/apis__apps__v1.json"))
+	mux.HandleFunc("/apis/cert-manager.io/v1", fixture("discovery/apis__cert-manager.io__v1.json"))
+	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", fixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
+	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", fixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
+	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
+	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
+	mux.HandleFunc("/version", fixture("discovery/version.json"))
+	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "pod backend unavailable", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/api/v1/namespaces", func(w http.ResponseWriter, _ *http.Request) {
+		namespaceLists.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(readFixture(t, "data/render_namespaces_list.json"))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
 }
 
 func TestLogsDisabledAndFilteredBranches(t *testing.T) {
@@ -113,8 +316,21 @@ func TestLogsDisabledAndFilteredBranches(t *testing.T) {
 	})
 	filtered := httptest.NewRecorder()
 	enabled.Handler().ServeHTTP(filtered, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?filter=GET&container=nginx&tail_lines=bad", nil))
-	if filtered.Code != http.StatusOK || !strings.Contains(filtered.Body.String(), "GET / 200") {
+	if filtered.Code != http.StatusOK || !strings.Contains(filtered.Body.String(), "GET / 200") || !strings.Contains(filtered.Body.String(), `name="tail_lines" value="200"`) {
 		t.Fatalf("filtered logs response: status=%d body=%s", filtered.Code, filtered.Body.String())
+	}
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{"tail_lines=-5", `name="tail_lines" value="1"`},
+		{"tail_lines=100001", `name="tail_lines" value="100000"`},
+	} {
+		rec := httptest.NewRecorder()
+		enabled.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?container=nginx&"+tc.query, nil))
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("%s logs response: status=%d want %q body=%s", tc.query, rec.Code, tc.want, rec.Body.String())
+		}
 	}
 
 	missingContainer := httptest.NewRecorder()
@@ -157,7 +373,9 @@ func TestObjectLinkOwnerLinkAndSelectorPodsHelpers(t *testing.T) {
 	if !ok {
 		t.Fatal("test cluster missing")
 	}
-	owners := app.ownerLinks(httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx", nil), cluster, &object)
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx", nil)
+	client := app.kubeClient(req, cluster)
+	owners := app.ownerLinks(req, client, cluster, &object)
 	if len(owners) != 1 || !strings.Contains(owners[0].Href, "/clusters/test/namespaces/default/deployments/nginx") {
 		t.Fatalf("owners = %#v", owners)
 	}
@@ -169,7 +387,7 @@ func TestObjectLinkOwnerLinkAndSelectorPodsHelpers(t *testing.T) {
 		},
 		"spec": map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"app": "nginx"}}},
 	}})
-	pods := app.podsForSelector(httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/deployments/nginx/logs", nil), cluster, &controller, "default")
+	pods := app.podsForSelector(httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/deployments/nginx/logs", nil), client, &controller, "default")
 	if len(pods) == 0 || pods[0].Name() != "nginx" {
 		t.Fatalf("podsForSelector = %#v", pods)
 	}
@@ -205,8 +423,8 @@ func TestJoinCustomColumnsErrorAndEmptyExpressionBranches(t *testing.T) {
 
 func TestNamespaceAllowedStatusErrorAndErrorPage(t *testing.T) {
 	app := newTestServer(t)
-	app.cfg.IncludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`^prod`)}
-	app.cfg.ExcludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`secret`)}
+	app.cfg.IncludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`^prod.*$`)}
+	app.cfg.ExcludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`^prod-secret$`)}
 	if !app.namespaceAllowed("prod-a") || app.namespaceAllowed("default") || app.namespaceAllowed("prod-secret") {
 		t.Fatalf("namespaceAllowed include/exclude mismatch")
 	}
