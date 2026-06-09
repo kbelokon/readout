@@ -831,7 +831,7 @@ func (s *Server) buildToolsView(r *http.Request, table *kube.Table) toolsView {
 		SelectorVal:  q.Get("selector"),
 		FilterVal:    q.Get("filter"),
 	}
-	for _, key := range []string{"join", "sort", "customcols", "hidecols"} {
+	for _, key := range []string{"join", "sort", "customcols", "custom-columns", "hidecols", "hide-columns", "apiVersion", "api_version", "limit", "label-columns"} {
 		if value := q.Get(key); value != "" {
 			tv.HiddenInputs = append(tv.HiddenInputs, hiddenInput{Name: key, Value: value})
 		}

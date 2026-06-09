@@ -251,16 +251,16 @@ templ ResourceTable(d ListData) {
 // partial-failure banner (the happy/partial path; the whole-list forbidden/
 // unreachable STATE short-circuits this in ResourceTable above).
 templ resourceTables(d ListData) {
-	for _, table := range d.Tables {
+	for i, table := range d.Tables {
 		<div class="ro-title-row">
 			<h1 class="title ro-title">{ table.Kind }</h1> <span class="ro-count">{ itoa(table.Count) }</span> <span style="flex:1"></span>
 			<div class="ro-title-actions">
 				<a href={ templ.SafeURL(table.DownloadTSVHref) } title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
-				<a href="#" class="ro-iconbtn toggle-tools" title="Columns &amp; filters" data-target="tools-table-1"><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
+				<a href="#" class="ro-iconbtn toggle-tools" title="Columns &amp; filters" data-target={ toolsTableID(i) }><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
 				<a href={ templ.SafeURL(table.SearchHref) } class="ro-iconbtn" title="Search this type"><span class="icon">@templ.Raw(table.SearchIcon)</span></a>
 			</div>
 		</div>
-		@toolsForm(table.Tools)
+		@toolsForm(table.Tools, i)
 		if table.ShowMetricsHref != "" {
 			<div class="section"><a href={ templ.SafeURL(table.ShowMetricsHref) }>Show CPU/Memory Usage</a></div>
 		}
@@ -430,7 +430,7 @@ templ tableCell(cell TableCell) {
 // list shell), so the bare card classes resolve to the redesign CSS. An empty
 // table emits no cards (the table's own empty-state row already covers it).
 templ cardList(d ListData, table TableData) {
-	<div class="ro-cardlist" aria-hidden="true">
+	<div class="ro-cardlist">
 		for _, row := range table.Rows {
 			@pcard(d, table, row)
 		}
@@ -569,8 +569,8 @@ templ pcardCell(cell TableCell) {
 }
 
 // toolsForm renders the per-table label-columns / selector / filter tools form.
-templ toolsForm(t TableTools) {
-	<form action="#" method="get" id="tools-table-1" class={ "tools-form" + activeSuffix(t.Active) }>
+templ toolsForm(t TableTools, tableIndex int) {
+	<form action="#" method="get" id={ toolsTableID(tableIndex) } class={ "tools-form" + activeSuffix(t.Active) }>
 		for _, in := range t.HiddenInputs {
 			<input type="hidden" name={ in.Name } value={ in.Value }>
 		}
@@ -590,4 +590,8 @@ templ toolsForm(t TableTools) {
 			<div class="ro-tools-actions"><button class="ro-btn quiet" type="submit">Submit</button></div>
 		</div>
 	</form>
+}
+
+func toolsTableID(tableIndex int) string {
+	return "tools-table-" + itoa(tableIndex+1)
 }

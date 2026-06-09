@@ -243,6 +243,7 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		TailLines:         tail,
 		PodCount:          len(pods),
 		FilterVal:         filterText,
+		ContainerVal:      selectedContainer,
 	}
 	if s.cfg.ShowContainerLogs {
 		if len(allContainers) > 2 {

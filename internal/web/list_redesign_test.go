@@ -37,6 +37,52 @@ func renderResourceTable(t *testing.T, d *templates.ListData) *goquery.Document 
 	return doc
 }
 
+func TestToolsFormUniqueIDs(t *testing.T) {
+	doc := renderResourceTable(t, &templates.ListData{
+		Tables: []templates.TableData{
+			{Kind: "Pods", Tools: templates.TableTools{}},
+			{Kind: "Services", Tools: templates.TableTools{}},
+		},
+	})
+	var targets []string
+	doc.Find(".toggle-tools").Each(func(_ int, s *goquery.Selection) {
+		target, _ := s.Attr("data-target")
+		targets = append(targets, target)
+	})
+	if strings.Join(targets, ",") != "tools-table-1,tools-table-2" {
+		t.Fatalf("toggle tools targets = %#v, want tools-table-1/tools-table-2", targets)
+	}
+	for _, id := range []string{"tools-table-1", "tools-table-2"} {
+		if doc.Find("form#"+id).Length() != 1 {
+			t.Fatalf("expected exactly one form#%s, got %d", id, doc.Find("form#"+id).Length())
+		}
+	}
+}
+
+func TestListToolsRoundTripApiVersion(t *testing.T) {
+	app := newTestServer(t)
+	p := get(t, app, "/clusters/test/namespaces/default/pods?apiVersion=v1&api_version=v1&limit=2&label-columns=app&hide-columns=Age", http.StatusOK)
+	form := p.doc.Find("form.tools-form")
+	if form.Length() != 1 {
+		t.Fatalf("tools forms = %d, want 1", form.Length())
+	}
+	for name, want := range map[string]string{
+		"apiVersion":    "v1",
+		"api_version":   "v1",
+		"limit":         "2",
+		"label-columns": "app",
+		"hide-columns":  "Age",
+	} {
+		input := form.Find(`input[type="hidden"][name="` + name + `"]`)
+		if input.Length() != 1 {
+			t.Fatalf("hidden input %q count = %d, want 1", name, input.Length())
+		}
+		if got, _ := input.Attr("value"); got != want {
+			t.Fatalf("hidden input %q value = %q, want %q", name, got, want)
+		}
+	}
+}
+
 // TestPodNameSplitKeepsFullName pins the sticky-name invariant: the pn-head +
 // pn-tail split NEVER drops or rewrites a character -- head+tail reconstructs the
 // exact object name for every input. Pod/ReplicaSet names with a generated hash
