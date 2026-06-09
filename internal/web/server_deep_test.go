@@ -98,6 +98,48 @@ func TestAllResourceListSearchAndClusterBranches(t *testing.T) {
 	}
 }
 
+func TestClusterSelectorFilter(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port: 8080,
+		Clusters: []config.ClusterConnection{
+			{Name: "prod-east", Server: fake.URL},
+			{Name: "prod-west", Server: fake.URL},
+			{Name: "stage-west", Server: fake.URL},
+		},
+		DefaultTheme: "dark",
+	})
+	for _, cluster := range app.manager.Clusters() {
+		switch cluster.Name {
+		case "prod-east":
+			cluster.Labels = map[string]string{"env": "prod", "region": "east"}
+		case "prod-west":
+			cluster.Labels = map[string]string{"env": "prod", "region": "west"}
+		case "stage-west":
+			cluster.Labels = map[string]string{"env": "stage", "region": "west"}
+		}
+	}
+
+	prod := get(t, app, "/clusters?selector=env%3Dprod", http.StatusOK)
+	if got := strings.Join(prod.texts("td.cl-name"), "|"); got != "prod-east|prod-west" {
+		t.Fatalf("selector cluster rows = %q, want prod-east|prod-west", got)
+	}
+	prod.wantAttr(`form.tools-row input[type="hidden"][name="selector"]`, "value", "env=prod")
+
+	prodWest := get(t, app, "/clusters?selector=env%3Dprod&filter=west", http.StatusOK)
+	if got := strings.Join(prodWest.texts("td.cl-name"), "|"); got != "prod-west" {
+		t.Fatalf("selector+filter cluster rows = %q, want prod-west", got)
+	}
+
+	bad := get(t, app, "/clusters?selector=%21%21%21", http.StatusOK)
+	if !strings.Contains(bad.text(".ro-cluster-selector-error"), "Invalid label selector") {
+		t.Fatalf("malformed selector hint = %q", bad.text(".ro-cluster-selector-error"))
+	}
+	if got := strings.Join(bad.texts("td.cl-name"), "|"); got != "prod-east|prod-west|stage-west" {
+		t.Fatalf("malformed selector rows = %q, want all clusters with parse hint", got)
+	}
+}
+
 func TestLimitParam(t *testing.T) {
 	app := &Server{}
 	req := func(query string) *http.Request {
