@@ -137,8 +137,8 @@ func TestMetricsSeparatePort(t *testing.T) {
 		Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme: "dark",
 	})
-	if separate.isPublicPath("/metrics") {
-		t.Fatal("metrics should not be public on the main mux when metricsPort is set")
+	if !separate.isPublicPath("/metrics") {
+		t.Fatal("metrics must bypass auth so the main mux can return the disabled 404 when metricsPort is set")
 	}
 	rec = httptest.NewRecorder()
 	separate.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -149,6 +149,24 @@ func TestMetricsSeparatePort(t *testing.T) {
 	separate.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "# HELP readout_up") {
 		t.Fatalf("separate metrics handler status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	authenticatedMain := newTestServerWithConfig(t, &config.Config{
+		Port:               8080,
+		MetricsPort:        9092,
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:       "dark",
+		AuthMode:           config.AuthModeOIDC,
+		OIDCClientID:       "client-id",
+		OAuth2AuthorizeURL: "https://auth.example.test/authorize",
+		OAuth2TokenURL:     "https://auth.example.test/token",
+		OIDCRedirectURL:    "https://readout.example.test/oauth2/callback",
+		SessionSecret:      "test-secret",
+	})
+	rec = httptest.NewRecorder()
+	authenticatedMain.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusNotFound || rec.Header().Get("Location") != "" {
+		t.Fatalf("authenticated main /metrics status=%d location=%q body=%s, want 404 without auth redirect", rec.Code, rec.Header().Get("Location"), rec.Body.String())
 	}
 }
 

@@ -249,6 +249,20 @@ auth:
 	if _, err := Parse([]string{"--config", writeConfig(t, ok)}); err != nil {
 		t.Fatalf("OIDC config with redirectUrl should parse: %v", err)
 	}
+
+	t.Setenv("READOUT_OIDC_REDIRECT_URL", "https://env.example/oauth2/callback")
+	cfg, err := Parse([]string{"--config", writeConfig(t, `
+auth:
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+`)})
+	if err != nil {
+		t.Fatalf("OIDC config with env redirectUrl should parse: %v", err)
+	}
+	if cfg.OIDCRedirectURL != "https://env.example/oauth2/callback" {
+		t.Fatalf("env redirectUrl = %q", cfg.OIDCRedirectURL)
+	}
 }
 
 func TestNamespacePatternAnchored(t *testing.T) {

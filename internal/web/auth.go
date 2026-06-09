@@ -290,7 +290,7 @@ func (s *Server) isPublicPath(path string) bool {
 	return path == "/health" ||
 		path == "/healthz" ||
 		path == "/readyz" ||
-		(path == "/metrics" && s.cfg.MetricsPort == 0) ||
+		path == "/metrics" ||
 		path == oauthCallbackPath ||
 		path == "/oauth2/login" ||
 		path == "/oauth2/logout" ||
