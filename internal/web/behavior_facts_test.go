@@ -1017,6 +1017,19 @@ func TestSearchRender(t *testing.T) {
 	}
 }
 
+func TestSearchMultiNamespace(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	p := get(t, app, "/search?q=g&cluster=test&namespace=default&namespace=states&type=pods", http.StatusOK)
+
+	p.wantAttr(`.search-hero form input[type="hidden"][name="namespace"]`, "value", "default,states")
+	if opts := normSpace(p.text(".search-opts")); !strings.Contains(opts, "2 namespaces") {
+		t.Fatalf("search-opts line = %q, want it to name the multi-namespace scope", opts)
+	}
+	p.wantHas(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/default/pods/nginx"])`)
+	p.wantHas(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/states/pods/web-creating-7c9f7cd495-6fff6"])`)
+	p.wantAbsent(".ro-scope .ro-scope-chip.err")
+}
+
 // TestSearchPartialFailure pins the SEARCH flavour of partial failure (D11): a
 // multi-cluster search where one cluster's backend fails must still render the
 // answering cluster's results, surface a `.ro-banner.warn` "Searched N of M
