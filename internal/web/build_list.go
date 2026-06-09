@@ -230,8 +230,7 @@ func (s *Server) applyTableOptions(r *http.Request, cluster *kube.Cluster, table
 	}
 	kube.SortTable(table, q.Get("sort"))
 	if limit := q.Get("limit"); limit != "" {
-		n, _ := strconv.Atoi(limit)
-		if n >= 0 && n < len(table.Rows) {
+		if n, err := strconv.Atoi(limit); err == nil && n > 0 && n < len(table.Rows) {
 			table.Rows = table.Rows[:n]
 		}
 	}
@@ -691,6 +690,9 @@ func (s *Server) buildListState(r *http.Request, lc *listContext) *listStateView
 // sort/TSV are untouched.
 func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row, i int, cell any, ns, name string) cellView {
 	value := cellDisplayString(cell)
+	if i >= len(table.Columns) {
+		return cellView{Kind: cellPlain, Value: value}
+	}
 	colName := table.Columns[i].Name
 	cls := cellClass(table, i, cell)
 	if colName == "Age" || colName == "First Seen" {

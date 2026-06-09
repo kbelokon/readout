@@ -97,6 +97,55 @@ func TestAllResourceListSearchAndClusterBranches(t *testing.T) {
 	}
 }
 
+func TestLimitParam(t *testing.T) {
+	app := &Server{}
+	req := func(query string) *http.Request {
+		return httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods?"+query, nil)
+	}
+	table := func() kube.Table {
+		return kube.Table{
+			Resource: kube.ResourceType{Plural: "pods", Kind: "Pod", Namespaced: true},
+			Columns:  []kube.Column{{Name: "Name"}},
+			Rows: []kube.Row{
+				{Cells: []any{"one"}},
+				{Cells: []any{"two"}},
+				{Cells: []any{"three"}},
+			},
+		}
+	}
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"limit=abc", 3},
+		{"limit=0", 3},
+		{"limit=-1", 3},
+		{"limit=2", 2},
+		{"limit=99", 3},
+	}
+	for _, tc := range cases {
+		tbl := table()
+		app.applyTableOptions(req(tc.query), nil, &tbl, "default", false)
+		if len(tbl.Rows) != tc.want {
+			t.Fatalf("%s left %d rows, want %d", tc.query, len(tbl.Rows), tc.want)
+		}
+	}
+}
+
+func TestBuildCellViewExtraCells(t *testing.T) {
+	app := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods", nil)
+	table := kube.Table{
+		Resource: kube.ResourceType{Plural: "pods", Kind: "Pod", Namespaced: true},
+		Columns:  []kube.Column{{Name: "Name"}, {Name: "Status"}},
+	}
+	row := kube.Row{Cluster: "test", Cells: []any{"nginx", "Running", "extra"}}
+	cv := app.buildCellView(req, &table, row, 2, row.Cells[2], "default", "nginx")
+	if cv.Kind != cellPlain || cv.Value != "extra" {
+		t.Fatalf("extra cell view = %#v, want plain extra", cv)
+	}
+}
+
 func TestLogsDisabledAndFilteredBranches(t *testing.T) {
 	disabled := newTestServer(t)
 	rec := httptest.NewRecorder()
@@ -113,8 +162,21 @@ func TestLogsDisabledAndFilteredBranches(t *testing.T) {
 	})
 	filtered := httptest.NewRecorder()
 	enabled.Handler().ServeHTTP(filtered, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?filter=GET&container=nginx&tail_lines=bad", nil))
-	if filtered.Code != http.StatusOK || !strings.Contains(filtered.Body.String(), "GET / 200") {
+	if filtered.Code != http.StatusOK || !strings.Contains(filtered.Body.String(), "GET / 200") || !strings.Contains(filtered.Body.String(), `name="tail_lines" value="200"`) {
 		t.Fatalf("filtered logs response: status=%d body=%s", filtered.Code, filtered.Body.String())
+	}
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{"tail_lines=-5", `name="tail_lines" value="1"`},
+		{"tail_lines=100001", `name="tail_lines" value="100000"`},
+	} {
+		rec := httptest.NewRecorder()
+		enabled.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?container=nginx&"+tc.query, nil))
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("%s logs response: status=%d want %q body=%s", tc.query, rec.Code, tc.want, rec.Body.String())
+		}
 	}
 
 	missingContainer := httptest.NewRecorder()

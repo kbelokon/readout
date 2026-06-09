@@ -162,6 +162,11 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 			tail = n
 		}
 	}
+	if tail < 1 {
+		tail = 1
+	} else if tail > 100000 {
+		tail = 100000
+	}
 	filterText := r.URL.Query().Get("filter")
 	selectedContainer := r.URL.Query().Get("container")
 	var lines []logLine
