@@ -1019,15 +1019,20 @@ func TestSearchRender(t *testing.T) {
 
 func TestSearchMultiNamespace(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
-	p := get(t, app, "/search?q=g&cluster=test&namespace=default&namespace=states&type=pods", http.StatusOK)
-
-	p.wantAttr(`.search-hero form input[type="hidden"][name="namespace"]`, "value", "default,states")
-	if opts := normSpace(p.text(".search-opts")); !strings.Contains(opts, "2 namespaces") {
-		t.Fatalf("search-opts line = %q, want it to name the multi-namespace scope", opts)
+	assertMultiNamespaceSearch := func(path string) {
+		p := get(t, app, path, http.StatusOK)
+		p.wantAttr(`.search-hero form input[type="hidden"][name="namespace"]`, "value", "default,states")
+		if opts := normSpace(p.text(".search-opts")); !strings.Contains(opts, "2 namespaces") {
+			t.Fatalf("search-opts line = %q, want it to name the multi-namespace scope", opts)
+		}
+		p.wantHas(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/default/pods/nginx"])`)
+		p.wantHas(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/states/pods/web-creating-7c9f7cd495-6fff6"])`)
+		p.wantAbsent(".ro-scope .ro-scope-chip.err")
+		p.wantBodyExcludes("default%2Cstates")
 	}
-	p.wantHas(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/default/pods/nginx"])`)
-	p.wantHas(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/states/pods/web-creating-7c9f7cd495-6fff6"])`)
-	p.wantAbsent(".ro-scope .ro-scope-chip.err")
+
+	assertMultiNamespaceSearch("/search?q=g&cluster=test&namespace=default&namespace=states&type=pods")
+	assertMultiNamespaceSearch("/search?q=g&cluster=test&namespace=default,states&type=pods")
 }
 
 // TestSearchPartialFailure pins the SEARCH flavour of partial failure (D11): a

@@ -129,6 +129,12 @@ func TestLimitParam(t *testing.T) {
 		if len(tbl.Rows) != tc.want {
 			t.Fatalf("%s left %d rows, want %d", tc.query, len(tbl.Rows), tc.want)
 		}
+		if tc.query == "limit=2" {
+			got := []string{cellDisplayString(tbl.Rows[0].Cells[0]), cellDisplayString(tbl.Rows[1].Cells[0])}
+			if strings.Join(got, ",") != "one,two" {
+				t.Fatalf("limit=2 kept rows %v, want first two rows one,two", got)
+			}
+		}
 	}
 }
 
@@ -143,6 +149,60 @@ func TestBuildCellViewExtraCells(t *testing.T) {
 	cv := app.buildCellView(req, &table, row, 2, row.Cells[2], "default", "nginx")
 	if cv.Kind != cellPlain || cv.Value != "extra" {
 		t.Fatalf("extra cell view = %#v, want plain extra", cv)
+	}
+}
+
+func TestTailLinesClamp(t *testing.T) {
+	logQuery := &logQueryRecorder{}
+	fake := newRecordingServerFakeAPIWithLogRecorder(t, nil, logQuery)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:              8080,
+		Clusters:          []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:      "dark",
+		ShowContainerLogs: true,
+	})
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{"tail_lines=bad", "200"},
+		{"tail_lines=-5", "1"},
+		{"tail_lines=100001", "100000"},
+	}
+	for _, tc := range cases {
+		before := len(logQuery.values())
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?container=nginx&"+tc.query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", tc.query, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `name="tail_lines" value="`+tc.want+`"`) {
+			t.Fatalf("%s rendered wrong tail value, want %s body=%s", tc.query, tc.want, rec.Body.String())
+		}
+		values := logQuery.values()
+		if len(values) != before+1 || values[len(values)-1] != tc.want {
+			t.Fatalf("%s log tailLines queries = %v, want last %s", tc.query, values, tc.want)
+		}
+	}
+}
+
+func TestSidebarMetaLinksEscapePathSegments(t *testing.T) {
+	app := &Server{}
+	sidebar := app.buildSidebarView(httptest.NewRequest(http.MethodGet, "/search", nil), "c/a", "team a")
+	want := map[string]string{
+		"Resource Types": "/clusters/c%2Fa/namespaces/team%20a/_resource-types",
+		"Events":         "/clusters/c%2Fa/namespaces/team%20a/events",
+	}
+	for _, item := range sidebar.Meta {
+		if expected, ok := want[item.Text]; ok {
+			if item.Href != expected {
+				t.Fatalf("%s href = %q, want %q", item.Text, item.Href, expected)
+			}
+			delete(want, item.Text)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing sidebar meta links: %v", want)
 	}
 }
 

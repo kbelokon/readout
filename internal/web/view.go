@@ -472,6 +472,11 @@ type searchView struct {
 	Query     string
 	Cluster   string
 	Namespace string
+	// ShellNamespace is the real single-namespace scope passed to the page
+	// shell. Multi-namespace search keeps Namespace as CSV for form round-trip,
+	// but leaves the shell at cluster scope so sidebar/palette links never point
+	// at a fake "a,b" namespace.
+	ShellNamespace string
 
 	IsAllClusters   bool
 	IsAllNamespaces bool

@@ -51,12 +51,17 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 		types = firstSlice(s.cfg.SearchDefaultResourceTypes, searchDefaultResourceTypes)
 	}
 	isAllNamespaces := len(namespaces) == 0 || (len(namespaces) == 1 && namespaces[0] == kube.AllNamespaces)
+	shellNamespace := ""
+	if len(namespaces) == 1 && namespaces[0] != kube.AllNamespaces {
+		shellNamespace = namespaces[0]
+	}
 	start := s.clock()
 
 	view := searchView{
 		Query:             q,
 		Cluster:           clusterParam,
 		Namespace:         namespace,
+		ShellNamespace:    shellNamespace,
 		IsAllClusters:     allClusters,
 		IsAllNamespaces:   isAllNamespaces,
 		SelectedTypeCount: len(types),

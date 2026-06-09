@@ -439,6 +439,30 @@ func (a *authRecorder) value() string {
 }
 
 func newRecordingServerFakeAPI(t *testing.T, lastAuth *authRecorder) *httptest.Server {
+	return newRecordingServerFakeAPIWithLogRecorder(t, lastAuth, nil)
+}
+
+type logQueryRecorder struct {
+	mu        sync.Mutex
+	tailLines []string
+}
+
+func (l *logQueryRecorder) record(r *http.Request) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.tailLines = append(l.tailLines, r.URL.Query().Get("tailLines"))
+	l.mu.Unlock()
+}
+
+func (l *logQueryRecorder) values() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.tailLines...)
+}
+
+func newRecordingServerFakeAPIWithLogRecorder(t *testing.T, lastAuth *authRecorder, logQuery *logQueryRecorder) *httptest.Server {
 	mux := http.NewServeMux()
 	fixture := func(name string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -504,6 +528,7 @@ func newRecordingServerFakeAPI(t *testing.T, lastAuth *authRecorder) *httptest.S
 	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx", fixture("data/render_pod_nginx.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx/log", func(w http.ResponseWriter, r *http.Request) {
 		lastAuth.record(r)
+		logQuery.record(r)
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write(readFixture(t, "data/pod_log.txt"))
 	})
