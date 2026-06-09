@@ -156,26 +156,15 @@ document.addEventListener('click', (event) => {
         return;
     }
 
-    // navbar-burger / aside-burger / toggle-tools: toggle `is-active` on the
-    // control itself and on the element named by its `data-target`.
-    const toggle = target.closest('.navbar-burger, .aside-burger, .toggle-tools');
+    // .toggle-tools: toggle `is-active` on the control itself and on the
+    // element named by its `data-target`.
+    const toggle = target.closest('.toggle-tools');
     if (toggle) {
+        event.preventDefault();
         toggle.classList.toggle('is-active');
         const targetEl = document.getElementById(toggle.dataset.target);
         if (targetEl) {
             targetEl.classList.toggle('is-active');
-        }
-        return;
-    }
-
-    // .unselect: uncheck every checkbox inside the element named by data-target.
-    const unselect = target.closest('.unselect');
-    if (unselect) {
-        const container = document.getElementById(unselect.dataset.target);
-        if (container) {
-            container.querySelectorAll('input[type=checkbox]').forEach((inp) => {
-                inp.checked = false;
-            });
         }
         return;
     }
@@ -252,7 +241,11 @@ document.addEventListener('click', (event) => {
         document.querySelectorAll('main .is-collapsed').forEach((el) => {
             names.push(el.dataset.name);
         });
-        document.location.hash = names.length ? `collapsed=${names.join(',')}` : '';
+        if (names.length) {
+            document.location.hash = `collapsed=${names.join(',')}`;
+        } else {
+            window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
         return;
     }
 
@@ -266,9 +259,10 @@ document.addEventListener('click', (event) => {
         return;
     }
 
-    // #namespace-dropdown: toggle `is-active`; focus the searchbox when opening.
-    const nsDropdown = target.closest('#namespace-dropdown');
-    if (nsDropdown) {
+    // #namespace-dropdown .context-trigger: toggle `is-active`; focus the searchbox when opening.
+    const nsTrigger = target.closest('#namespace-dropdown .context-trigger');
+    if (nsTrigger) {
+        const nsDropdown = nsTrigger.closest('#namespace-dropdown');
         nsDropdown.classList.toggle('is-active');
         if (nsDropdown.classList.contains('is-active')) {
             const searchbox = document.getElementById('namespace-searchbox');
@@ -312,12 +306,12 @@ document.addEventListener('input', (event) => {
         return;
     }
 
-    // #namespace-searchbox: filter the .namespace-item links by substring.
+    // #namespace-searchbox: filter the .namespace-item links by case-insensitive substring.
     const searchbox = event.target.closest('#namespace-searchbox');
     if (searchbox) {
-        const filterText = searchbox.value;
+        const filterText = searchbox.value.toLowerCase();
         document.querySelectorAll('.namespace-item').forEach((element) => {
-            if (element.innerText.indexOf(filterText) === -1) {
+            if ((element.innerText || '').toLowerCase().indexOf(filterText) === -1) {
                 element.classList.add('is-hidden');
             } else {
                 element.classList.remove('is-hidden');
@@ -469,7 +463,7 @@ function collapseSectionsFromHash() {
         if (keyVal[0] === 'collapsed' && keyVal[1]) {
             keyVal[1].split(',').forEach((name) => {
                 document
-                    .querySelectorAll(`main .collapsible[data-name=${name}]`)
+                    .querySelectorAll(`main .collapsible[data-name="${CSS.escape(name)}"]`)
                     .forEach((el) => {
                         el.classList.add('is-collapsed');
                     });
@@ -1260,17 +1254,27 @@ function setupStickyNamespace() {
     });
 }
 
+function runInitStep(step) {
+    try {
+        step();
+    } catch (e) {
+        console.warn('readout init step failed', e);
+    }
+}
+
 // Run all init-time steps. Called on DOMContentLoaded and on htmx:load so the
 // steps re-apply after an hx-boost body swap (which does not refire
 // DOMContentLoaded). Each step is idempotent.
 function runInit() {
-    syncRefreshUI();
-    applyRefresh();
-    buildYamlFolds();
-    collapseSectionsFromHash();
-    highlightYamlLine();
-    syncThemeTogglePostTarget();
-    setupStickyNamespace();
+    [
+        syncRefreshUI,
+        applyRefresh,
+        buildYamlFolds,
+        collapseSectionsFromHash,
+        highlightYamlLine,
+        syncThemeTogglePostTarget,
+        setupStickyNamespace,
+    ].forEach(runInitStep);
 }
 
 document.addEventListener('DOMContentLoaded', runInit);
