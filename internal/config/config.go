@@ -413,6 +413,9 @@ func resolve(file *fileConfig) (Config, error) {
 	if cfg.AuthMode != AuthModeNone && cfg.AuthMode != AuthModeHeaders && cfg.AuthMode != AuthModeOIDC {
 		return Config{}, fmt.Errorf("invalid auth mode %q", cfg.AuthMode)
 	}
+	if oidcEnabled(cfg) && cfg.OIDCRedirectURL == "" {
+		return Config{}, errors.New("auth.oidc.redirectUrl is required when OIDC is enabled")
+	}
 	if cfg.SearchMaxConcurrency <= 0 {
 		return Config{}, errors.New("search maxConcurrency must be positive")
 	}
@@ -439,6 +442,11 @@ func firstNonZero(values ...int) int {
 		}
 	}
 	return 0
+}
+
+func oidcEnabled(cfg Config) bool {
+	return cfg.AuthMode == AuthModeOIDC ||
+		(cfg.AuthMode == AuthModeNone && (cfg.OIDCIssuerURL != "" || (cfg.OAuth2AuthorizeURL != "" && cfg.OAuth2TokenURL != "")))
 }
 
 func mapOrEmpty(m map[string]string) map[string]string {
@@ -578,7 +586,7 @@ func compilePatterns(patterns []string) ([]*regexp.Regexp, error) {
 		if p == "" {
 			continue
 		}
-		re, err := regexp.Compile(p)
+		re, err := regexp.Compile("^(?:" + p + ")$")
 		if err != nil {
 			return nil, err
 		}

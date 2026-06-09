@@ -1134,7 +1134,7 @@ func TestBehaviorSearchNoResults(t *testing.T) {
 // with it, none.
 func TestBehaviorSearchRespectsExcludeNamespaces(t *testing.T) {
 	cfg := baseConfig(t)
-	cfg.ExcludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`default`)}
+	cfg.ExcludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`^default$`)}
 	app := newServer(t, cfg, time.Now())
 	p := get(t, app, "/search?q=nginx&cluster=test&namespace=_all&type=pods", http.StatusOK)
 

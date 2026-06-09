@@ -84,7 +84,7 @@ func TestAllResourceListSearchAndClusterBranches(t *testing.T) {
 		Port:              8080,
 		Clusters:          []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme:      "dark",
-		ExcludeNamespaces: []*regexp.Regexp{regexp.MustCompile(`^secret`)},
+		ExcludeNamespaces: []*regexp.Regexp{regexp.MustCompile(`^secret$`)},
 	})
 	forbidden := httptest.NewRecorder()
 	blockedNamespace.Handler().ServeHTTP(forbidden, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/secret/_resource-types", nil))
@@ -379,8 +379,8 @@ func TestJoinCustomColumnsErrorAndEmptyExpressionBranches(t *testing.T) {
 
 func TestNamespaceAllowedStatusErrorAndErrorPage(t *testing.T) {
 	app := newTestServer(t)
-	app.cfg.IncludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`^prod`)}
-	app.cfg.ExcludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`secret`)}
+	app.cfg.IncludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`^prod.*$`)}
+	app.cfg.ExcludeNamespaces = []*regexp.Regexp{regexp.MustCompile(`^prod-secret$`)}
 	if !app.namespaceAllowed("prod-a") || app.namespaceAllowed("default") || app.namespaceAllowed("prod-secret") {
 		t.Fatalf("namespaceAllowed include/exclude mismatch")
 	}

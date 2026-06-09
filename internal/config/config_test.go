@@ -195,6 +195,75 @@ func TestResolveReadsOAuthSecretFilesAndValidatesErrors(t *testing.T) {
 	}
 }
 
+func TestOIDCRequiresRedirectURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "explicit oidc mode",
+			content: `
+auth:
+  mode: oidc
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+`,
+		},
+		{
+			name: "implicit issuer config",
+			content: `
+auth:
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+`,
+		},
+		{
+			name: "implicit generic oauth config",
+			content: `
+auth:
+  oidc:
+    clientId: client
+    authorizeUrl: https://issuer.example/authorize
+    tokenUrl: https://issuer.example/token
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]string{"--config", writeConfig(t, tc.content)})
+			if err == nil || !strings.Contains(err.Error(), "auth.oidc.redirectUrl") {
+				t.Fatalf("Parse() error = %v, want auth.oidc.redirectUrl requirement", err)
+			}
+		})
+	}
+
+	ok := `
+auth:
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+    redirectUrl: https://readout.example/oauth2/callback
+`
+	if _, err := Parse([]string{"--config", writeConfig(t, ok)}); err != nil {
+		t.Fatalf("OIDC config with redirectUrl should parse: %v", err)
+	}
+}
+
+func TestNamespacePatternAnchored(t *testing.T) {
+	cfg, err := Parse([]string{"--config", writeConfig(t, "includeNamespaces: ['prod-.*']\nexcludeNamespaces: ['kube-system']\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.IncludeNamespaces[0].MatchString("prod-api") || cfg.IncludeNamespaces[0].MatchString("xprod-api") {
+		t.Fatal("include namespace pattern should match whole namespace names only")
+	}
+	if !cfg.ExcludeNamespaces[0].MatchString("kube-system") || cfg.ExcludeNamespaces[0].MatchString("my-kube-system-2") {
+		t.Fatal("exclude namespace pattern should match whole namespace names only")
+	}
+}
+
 // TestIconOverride pins the Tier-3 per-resource icon schema (LOCKED): a
 // top-level `resources:` list of typed {kind, group, icon} objects resolves
 // into Config.ResourceIcons keyed by kind+group (NOT a plural-keyed map, and
