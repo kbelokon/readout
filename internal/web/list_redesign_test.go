@@ -83,6 +83,40 @@ func TestListToolsRoundTripApiVersion(t *testing.T) {
 	}
 }
 
+func TestTSVDownloadSelectsTable(t *testing.T) {
+	app := newTestServer(t)
+	page := get(t, app, "/clusters/test/namespaces/default/pods,services", http.StatusOK)
+	var hrefs []string
+	page.doc.Find(`a[title="Download resource list as Tab-Separated-Values (TSV)"]`).Each(func(_ int, s *goquery.Selection) {
+		href, _ := s.Attr("href")
+		hrefs = append(hrefs, href)
+	})
+	for _, want := range []string{
+		"/clusters/test/namespaces/default/pods,services?download=tsv&download_table=pods",
+		"/clusters/test/namespaces/default/pods,services?download=tsv&download_table=services",
+	} {
+		if !contains(hrefs, want) {
+			t.Fatalf("download hrefs = %v, missing %q", hrefs, want)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods,services?download=tsv&download_table=services", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "text/tab-separated-values") {
+		t.Fatalf("service TSV response: status=%d ct=%q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Cluster-IP") || !strings.Contains(body, "frontend") || strings.Contains(body, "nginx") {
+		t.Fatalf("service TSV body selected wrong table:\n%s", body)
+	}
+
+	fallback := httptest.NewRecorder()
+	app.Handler().ServeHTTP(fallback, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods,services?download=tsv&download_table=missing", nil))
+	if !strings.Contains(fallback.Body.String(), "nginx") || strings.Contains(fallback.Body.String(), "Cluster-IP") {
+		t.Fatalf("missing download_table did not fall back to first table:\n%s", fallback.Body.String())
+	}
+}
+
 // TestPodNameSplitKeepsFullName pins the sticky-name invariant: the pn-head +
 // pn-tail split NEVER drops or rewrites a character -- head+tail reconstructs the
 // exact object name for every input. Pod/ReplicaSet names with a generated hash

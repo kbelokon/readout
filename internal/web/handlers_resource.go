@@ -45,12 +45,23 @@ func (s *Server) resourceList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("download") == "tsv" && len(ctx.Tables) > 0 {
-		s.downloadTSV(w, r, &ctx.Tables[0])
+		s.downloadTSV(w, r, selectDownloadTable(ctx.Tables, r.URL.Query().Get("download_table")))
 		return
 	}
 	view := s.buildListView(r, &ctx)
 	partialURL := partialResourceListURL(r)
 	s.pageComponentWithClients(w, r, view.Title(), ctx.Clients, templates.ResourceList(toListPageData(&view, partialURL)))
+}
+
+func selectDownloadTable(tables []kube.Table, plural string) *kube.Table {
+	if plural != "" {
+		for i := range tables {
+			if tables[i].Resource.Plural == plural {
+				return &tables[i]
+			}
+		}
+	}
+	return &tables[0]
 }
 
 func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {

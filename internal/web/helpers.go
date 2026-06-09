@@ -871,6 +871,15 @@ func addQuery(u *url.URL, key, value string) string {
 	return clone.String()
 }
 
+func downloadTSVHref(u *url.URL, plural string) string {
+	clone := *resourceListBaseURL(u)
+	q := clone.Query()
+	q.Set("download", "tsv")
+	q.Set("download_table", plural)
+	clone.RawQuery = queryEncodeKeepParens(q)
+	return clone.String()
+}
+
 // delQuery returns u with the named query params removed (a read-only GET),
 // used by the empty-filtered state: the per-chip ✕ drops one filter param and
 // "Clear filters" drops the whole set. Removing params never changes the verb

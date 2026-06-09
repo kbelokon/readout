@@ -556,7 +556,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 		tv := tableView{
 			Table:           *table,
 			Kind:            pluralizeKind(table.Resource.Kind),
-			DownloadTSVHref: addQuery(resourceListBaseURL(r.URL), "download", "tsv"),
+			DownloadTSVHref: downloadTSVHref(r.URL, table.Resource.Plural),
 			SearchHref:      fmt.Sprintf("/search?cluster=%s&namespace=%s&type=%s", url.QueryEscape(strings.Join(table.Clusters, ",")), url.QueryEscape(lc.Namespace), url.QueryEscape(table.Resource.Plural)),
 			Tools:           s.buildToolsView(r, table),
 			Phase:           kube.PhaseSummary(table),
