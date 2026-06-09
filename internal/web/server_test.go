@@ -170,6 +170,69 @@ func TestMetricsSeparatePort(t *testing.T) {
 	}
 }
 
+func TestPassthroughDiscoveryOncePerCluster(t *testing.T) {
+	discovery := &discoveryCounter{}
+	fake := newRecordingServerFakeAPIWithDiscoveryCounter(t, discovery)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                       8080,
+		Clusters:                   []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:               "dark",
+		ClusterAuthUseSessionToken: true,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods", nil)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resource list status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertDiscoveryCountsAtMostOnce(t, discovery.snapshot())
+
+	beforeAPI := discovery.count("/api")
+	beforeAPIs := discovery.count("/apis")
+	req = httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods", nil)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second resource list status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := discovery.count("/api"); got != beforeAPI {
+		t.Fatalf("second same-viewer request added /api discovery requests: before=%d after=%d", beforeAPI, got)
+	}
+	if got := discovery.count("/apis"); got != beforeAPIs {
+		t.Fatalf("second same-viewer request added /apis discovery requests: before=%d after=%d", beforeAPIs, got)
+	}
+
+	firstDiscovery := &discoveryCounter{}
+	secondDiscovery := &discoveryCounter{}
+	firstFake := newRecordingServerFakeAPIWithDiscoveryCounter(t, firstDiscovery)
+	secondFake := newRecordingServerFakeAPIWithDiscoveryCounter(t, secondDiscovery)
+	multi := newTestServerWithConfig(t, &config.Config{
+		Port: 8080,
+		Clusters: []config.ClusterConnection{
+			{Name: "first", Server: firstFake.URL},
+			{Name: "second", Server: secondFake.URL},
+		},
+		DefaultTheme:               "dark",
+		ClusterAuthUseSessionToken: true,
+	})
+	req = httptest.NewRequest(http.MethodGet, "/clusters/_all/namespaces/default/pods", nil)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	rec = httptest.NewRecorder()
+	multi.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("all-clusters resource list status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	firstCounts := firstDiscovery.snapshot()
+	secondCounts := secondDiscovery.snapshot()
+	if firstCounts["/api"] == 0 || secondCounts["/api"] == 0 {
+		t.Fatalf("both clusters should be queried independently: first=%v second=%v", firstCounts, secondCounts)
+	}
+	assertDiscoveryCountsAtMostOnce(t, firstCounts)
+	assertDiscoveryCountsAtMostOnce(t, secondCounts)
+}
+
 func TestGenericOAuth2FlowCreatesEncryptedSession(t *testing.T) {
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/token" {
@@ -512,13 +575,72 @@ func (l *logQueryRecorder) values() []string {
 	return append([]string(nil), l.tailLines...)
 }
 
+type discoveryCounter struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (d *discoveryCounter) record(r *http.Request) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	if d.counts == nil {
+		d.counts = map[string]int{}
+	}
+	d.counts[r.URL.Path]++
+	d.mu.Unlock()
+}
+
+func (d *discoveryCounter) count(path string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.counts[path]
+}
+
+func (d *discoveryCounter) snapshot() map[string]int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]int, len(d.counts))
+	for path, count := range d.counts {
+		out[path] = count
+	}
+	return out
+}
+
+func assertDiscoveryCountsAtMostOnce(t *testing.T, counts map[string]int) {
+	t.Helper()
+	if counts["/api"] == 0 || counts["/apis"] == 0 {
+		t.Fatalf("expected root discovery paths to be hit, got %v", counts)
+	}
+	for path, count := range counts {
+		if count > 1 {
+			t.Fatalf("%s discovery requests = %d, want at most one per passthrough list request; counts=%v", path, count, counts)
+		}
+	}
+}
+
 func newRecordingServerFakeAPIWithLogRecorder(t *testing.T, lastAuth *authRecorder, logQuery *logQueryRecorder) *httptest.Server {
+	return newRecordingServerFakeAPIWithRecorders(t, lastAuth, logQuery, nil)
+}
+
+func newRecordingServerFakeAPIWithDiscoveryCounter(t *testing.T, discovery *discoveryCounter) *httptest.Server {
+	return newRecordingServerFakeAPIWithRecorders(t, nil, nil, discovery)
+}
+
+func newRecordingServerFakeAPIWithRecorders(t *testing.T, lastAuth *authRecorder, logQuery *logQueryRecorder, discovery *discoveryCounter) *httptest.Server {
 	mux := http.NewServeMux()
 	fixture := func(name string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			lastAuth.record(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(readFixture(t, name))
+		}
+	}
+	discoveryFixture := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			discovery.record(r)
+			fixture(name)(w, r)
 		}
 	}
 	tableOrList := func(tableFixture, listFixture string) http.HandlerFunc {
@@ -532,8 +654,9 @@ func newRecordingServerFakeAPIWithLogRecorder(t *testing.T, lastAuth *authRecord
 			_, _ = w.Write(readFixture(t, listFixture))
 		}
 	}
-	mux.HandleFunc("/api", fixture("discovery/api.json"))
+	mux.HandleFunc("/api", discoveryFixture("discovery/api.json"))
 	mux.HandleFunc("/api/v1", func(w http.ResponseWriter, r *http.Request) {
+		discovery.record(r)
 		lastAuth.record(r)
 		var body map[string]any
 		if err := json.Unmarshal(readFixture(t, "discovery/api__v1.json"), &body); err != nil {
@@ -550,8 +673,9 @@ func newRecordingServerFakeAPIWithLogRecorder(t *testing.T, lastAuth *authRecord
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(body)
 	})
-	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
+	mux.HandleFunc("/apis", discoveryFixture("discovery/apis.json"))
 	mux.HandleFunc("/apis/apps/v1", func(w http.ResponseWriter, r *http.Request) {
+		discovery.record(r)
 		lastAuth.record(r)
 		var body map[string]any
 		if err := json.Unmarshal(readFixture(t, "discovery/apis__apps__v1.json"), &body); err != nil {
@@ -568,12 +692,12 @@ func newRecordingServerFakeAPIWithLogRecorder(t *testing.T, lastAuth *authRecord
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(body)
 	})
-	mux.HandleFunc("/apis/cert-manager.io/v1", fixture("discovery/apis__cert-manager.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", fixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", fixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
-	mux.HandleFunc("/version", fixture("discovery/version.json"))
+	mux.HandleFunc("/apis/cert-manager.io/v1", discoveryFixture("discovery/apis__cert-manager.io__v1.json"))
+	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", discoveryFixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
+	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", discoveryFixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
+	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", discoveryFixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
+	mux.HandleFunc("/apis/storage.k8s.io/v1", discoveryFixture("discovery/apis__storage.k8s.io__v1.json"))
+	mux.HandleFunc("/version", discoveryFixture("discovery/version.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/pods", tableOrList("data/pods_table.json", "data/pods_with_node_list.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx", fixture("data/render_pod_nginx.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx/log", func(w http.ResponseWriter, r *http.Request) {

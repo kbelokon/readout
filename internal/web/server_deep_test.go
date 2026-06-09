@@ -189,7 +189,7 @@ func TestTailLinesClamp(t *testing.T) {
 
 func TestSidebarMetaLinksEscapePathSegments(t *testing.T) {
 	app := &Server{}
-	sidebar := app.buildSidebarView(httptest.NewRequest(http.MethodGet, "/search", nil), "c/a", "team a")
+	sidebar := app.buildSidebarView(httptest.NewRequest(http.MethodGet, "/search", nil), "c/a", "team a", nil)
 	want := map[string]string{
 		"Resource Types": "/clusters/c%2Fa/namespaces/team%20a/_resource-types",
 		"Events":         "/clusters/c%2Fa/namespaces/team%20a/events",
@@ -331,7 +331,9 @@ func TestObjectLinkOwnerLinkAndSelectorPodsHelpers(t *testing.T) {
 	if !ok {
 		t.Fatal("test cluster missing")
 	}
-	owners := app.ownerLinks(httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx", nil), cluster, &object)
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx", nil)
+	client := app.kubeClient(req, cluster)
+	owners := app.ownerLinks(req, client, cluster, &object)
 	if len(owners) != 1 || !strings.Contains(owners[0].Href, "/clusters/test/namespaces/default/deployments/nginx") {
 		t.Fatalf("owners = %#v", owners)
 	}
@@ -343,7 +345,7 @@ func TestObjectLinkOwnerLinkAndSelectorPodsHelpers(t *testing.T) {
 		},
 		"spec": map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"app": "nginx"}}},
 	}})
-	pods := app.podsForSelector(httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/deployments/nginx/logs", nil), cluster, &controller, "default")
+	pods := app.podsForSelector(httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/deployments/nginx/logs", nil), client, &controller, "default")
 	if len(pods) == 0 || pods[0].Name() != "nginx" {
 		t.Fatalf("podsForSelector = %#v", pods)
 	}

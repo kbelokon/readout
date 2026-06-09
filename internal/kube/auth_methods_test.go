@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -163,6 +164,68 @@ func TestWithBearerClearsBasicAuth(t *testing.T) {
 	}
 	if got := rec.Authorization(); got != "Bearer viewer-token" {
 		t.Fatalf("apiserver saw Authorization %q, want Bearer viewer-token", got)
+	}
+}
+
+func TestWithBearerClearsClientCertificateAuth(t *testing.T) {
+	clientCert, clientKey := genClientCert(t)
+
+	var (
+		mu         sync.Mutex
+		seenPeer   bool
+		seenBearer string
+	)
+	inner := http.NewServeMux()
+	discoveryHandlers(inner)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seenBearer = r.Header.Get("Authorization")
+		seenPeer = seenPeer || len(r.TLS.PeerCertificates) > 0
+		mu.Unlock()
+		inner.ServeHTTP(w, r)
+	}))
+	srv.TLS = &tls.Config{ClientAuth: tls.RequestClientCert}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	conn := &Connection{
+		Name:   "mtls-passthrough",
+		Source: SourceStatic,
+		Cluster: &clientcmdapi.Cluster{
+			Server:                   srv.URL,
+			CertificateAuthorityData: serverCAPEM(t, srv),
+		},
+		AuthInfo: &clientcmdapi.AuthInfo{
+			ClientCertificateData: clientCert,
+			ClientKeyData:         clientKey,
+		},
+	}
+	cfg, err := conn.RESTConfig()
+	if err != nil {
+		t.Fatalf("RESTConfig: %v", err)
+	}
+	base, err := NewClient(cfg, nil, false)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	viewer, err := base.WithBearer("viewer-token")
+	if err != nil {
+		t.Fatalf("WithBearer with a client-cert base config failed: %v", err)
+	}
+	if len(viewer.config.CertData) != 0 || viewer.config.CertFile != "" || len(viewer.config.KeyData) != 0 || viewer.config.KeyFile != "" {
+		t.Fatalf("passthrough config kept client cert auth certData=%d certFile=%q keyData=%d keyFile=%q", len(viewer.config.CertData), viewer.config.CertFile, len(viewer.config.KeyData), viewer.config.KeyFile)
+	}
+	if _, _, err := viewer.ResourceTypes(context.Background()); err != nil {
+		t.Fatalf("discovery with passthrough bearer failed: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seenBearer != "Bearer viewer-token" {
+		t.Fatalf("apiserver saw Authorization %q, want Bearer viewer-token", seenBearer)
+	}
+	if seenPeer {
+		t.Fatal("passthrough client presented the base client certificate")
 	}
 }
 

@@ -21,23 +21,24 @@ func (s *Server) cluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	namespaceRT, err := s.kubeClient(r, cluster).FindResource(ctx, "namespaces", false, "")
+	client := s.kubeClient(r, cluster)
+	namespaceRT, err := client.FindResource(ctx, "namespaces", false, "")
 	if err != nil {
 		s.error(w, r, err)
 		return
 	}
-	namespaces, err := s.kubeClient(r, cluster).List(ctx, &namespaceRT, kube.ListOptions{})
+	namespaces, err := client.List(ctx, &namespaceRT, kube.ListOptions{})
 	if err != nil {
 		s.error(w, r, err)
 		return
 	}
-	clusterTypes, err := s.kubeClient(r, cluster).ClusterResourceTypes(ctx)
+	clusterTypes, err := client.ClusterResourceTypes(ctx)
 	if err != nil {
 		s.error(w, r, err)
 		return
 	}
 	data := s.buildClusterData(cluster, &namespaceRT, namespaces, clusterTypes)
-	s.pageComponent(w, r, cluster.Name+" Cluster", templates.Cluster(data))
+	s.pageComponentWithClients(w, r, cluster.Name+" Cluster", requestKubeClients{cluster.Name: client}, templates.Cluster(data))
 }
 
 func (s *Server) clusterResourceTypes(w http.ResponseWriter, r *http.Request) {
@@ -46,12 +47,13 @@ func (s *Server) clusterResourceTypes(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, err)
 		return
 	}
-	types, err := s.kubeClient(r, cluster).ClusterResourceTypes(r.Context())
+	client := s.kubeClient(r, cluster)
+	types, err := client.ClusterResourceTypes(r.Context())
 	if err != nil {
 		s.error(w, r, err)
 		return
 	}
-	s.renderResourceTypes(w, r, cluster.Name, "", types)
+	s.renderResourceTypes(w, r, cluster.Name, "", requestKubeClients{cluster.Name: client}, types)
 }
 
 func (s *Server) namespacedResourceTypes(w http.ResponseWriter, r *http.Request) {
@@ -65,17 +67,18 @@ func (s *Server) namespacedResourceTypes(w http.ResponseWriter, r *http.Request)
 		s.error(w, r, statusError{status: http.StatusForbidden, message: "namespace is not allowed"})
 		return
 	}
-	types, err := s.kubeClient(r, cluster).NamespacedResourceTypes(r.Context())
+	client := s.kubeClient(r, cluster)
+	types, err := client.NamespacedResourceTypes(r.Context())
 	if err != nil {
 		s.error(w, r, err)
 		return
 	}
-	s.renderResourceTypes(w, r, cluster.Name, namespace, types)
+	s.renderResourceTypes(w, r, cluster.Name, namespace, requestKubeClients{cluster.Name: client}, types)
 }
 
-func (s *Server) renderResourceTypes(w http.ResponseWriter, r *http.Request, cluster, namespace string, types []kube.ResourceType) {
+func (s *Server) renderResourceTypes(w http.ResponseWriter, r *http.Request, cluster, namespace string, clients requestKubeClients, types []kube.ResourceType) {
 	data := buildResourceTypesData(cluster, namespace, types)
-	s.pageComponent(w, r, "Resource Types", templates.ResourceTypes(data))
+	s.pageComponentWithClients(w, r, "Resource Types", clients, templates.ResourceTypes(data))
 }
 
 func sortedResourceTypesForDisplay(types []kube.ResourceType) []kube.ResourceType {

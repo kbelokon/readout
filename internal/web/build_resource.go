@@ -25,7 +25,7 @@ import (
 // download=yaml short-circuit) — but the byte-producing path runs through the
 // returned view. A nil *detailView signals the handler already wrote a response
 // (download or hook error) or hit an error it surfaced.
-func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster *kube.Cluster) (*detailView, bool) {
+func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, client *kube.Client, cluster *kube.Cluster) (*detailView, bool) {
 	namespace := r.PathValue("namespace")
 	plural := r.PathValue("plural")
 	name := r.PathValue("name")
@@ -35,7 +35,7 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster
 	}
 	legacyNamespaceObjectPath := namespace != "" && plural == "namespaces" && name == namespace
 	resourceNamespaced := namespace != "" && !legacyNamespaceObjectPath
-	rt, err := s.kubeClient(r, cluster).FindResource(r.Context(), plural, resourceNamespaced, apiVersionParam(r))
+	rt, err := client.FindResource(r.Context(), plural, resourceNamespaced, apiVersionParam(r))
 	if err != nil {
 		if state := s.detailState(r, cluster, plural, name, namespace, "get", err); state != nil {
 			return state, true
@@ -47,7 +47,7 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster
 	if !rt.Namespaced {
 		getNamespace = ""
 	}
-	obj, err := s.kubeClient(r, cluster).Get(r.Context(), &rt, getNamespace, name)
+	obj, err := client.Get(r.Context(), &rt, getNamespace, name)
 	if err != nil {
 		if state := s.detailState(r, cluster, plural, name, namespace, "get", err); state != nil {
 			return state, true
@@ -83,9 +83,9 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, cluster
 			object.Raw = replacement
 		}
 	}
-	relatedPods := s.relatedPods(r, cluster, &object, namespace)
-	events := s.events(r, cluster, &object, namespace)
-	owners := s.ownerLinks(r, cluster, &object)
+	relatedPods := s.relatedPods(r, client, cluster, &object, namespace)
+	events := s.events(r, client, &object, namespace)
+	owners := s.ownerLinks(r, client, cluster, &object)
 
 	pageTitle := object.Name() + " (" + object.Kind() + ")"
 	if renderNamespace != "" && object.Kind() != "Namespace" {
@@ -519,7 +519,7 @@ func (s *Server) buildSubtableView(r *http.Request, table *kube.Table, namespace
 	return v
 }
 
-func (s *Server) relatedPods(r *http.Request, cluster *kube.Cluster, object *kube.Object, namespace string) *kube.Table {
+func (s *Server) relatedPods(r *http.Request, client *kube.Client, cluster *kube.Cluster, object *kube.Object, namespace string) *kube.Table {
 	var labelSelector, fieldSelector string
 	if object.Kind() == "Node" {
 		fieldSelector = "spec.nodeName=" + object.Name()
@@ -529,11 +529,11 @@ func (s *Server) relatedPods(r *http.Request, cluster *kube.Cluster, object *kub
 	if labelSelector == "" && fieldSelector == "" {
 		return nil
 	}
-	podRT, err := s.kubeClient(r, cluster).FindResource(r.Context(), "pods", true, "")
+	podRT, err := client.FindResource(r.Context(), "pods", true, "")
 	if err != nil {
 		return nil
 	}
-	table, err := s.kubeClient(r, cluster).Table(r.Context(), &podRT, kube.ListOptions{Namespace: namespace, LabelSelector: labelSelector, FieldSelector: fieldSelector})
+	table, err := client.Table(r.Context(), &podRT, kube.ListOptions{Namespace: namespace, LabelSelector: labelSelector, FieldSelector: fieldSelector})
 	if err != nil {
 		return nil
 	}
@@ -545,8 +545,8 @@ func (s *Server) relatedPods(r *http.Request, cluster *kube.Cluster, object *kub
 	return &table
 }
 
-func (s *Server) events(r *http.Request, cluster *kube.Cluster, object *kube.Object, namespace string) []map[string]any {
-	eventRT, err := s.kubeClient(r, cluster).FindResource(r.Context(), "events", true, "v1")
+func (s *Server) events(r *http.Request, client *kube.Client, object *kube.Object, namespace string) []map[string]any {
+	eventRT, err := client.FindResource(r.Context(), "events", true, "v1")
 	if err != nil {
 		return nil
 	}
@@ -560,7 +560,7 @@ func (s *Server) events(r *http.Request, cluster *kube.Cluster, object *kube.Obj
 		"involvedObject.kind":      object.Kind(),
 		"involvedObject.uid":       object.UID(),
 	})
-	list, err := s.kubeClient(r, cluster).List(r.Context(), &eventRT, kube.ListOptions{Namespace: ns, FieldSelector: fieldSelector})
+	list, err := client.List(r.Context(), &eventRT, kube.ListOptions{Namespace: ns, FieldSelector: fieldSelector})
 	if err != nil {
 		return nil
 	}
@@ -571,16 +571,16 @@ func (s *Server) events(r *http.Request, cluster *kube.Cluster, object *kube.Obj
 	return events
 }
 
-func (s *Server) podsForSelector(r *http.Request, cluster *kube.Cluster, object *kube.Object, namespace string) []kube.Object {
+func (s *Server) podsForSelector(r *http.Request, client *kube.Client, object *kube.Object, namespace string) []kube.Object {
 	labels := matchLabels(object.Raw)
 	if len(labels) == 0 {
 		return nil
 	}
-	podRT, err := s.kubeClient(r, cluster).FindResource(r.Context(), "pods", true, "")
+	podRT, err := client.FindResource(r.Context(), "pods", true, "")
 	if err != nil {
 		return nil
 	}
-	list, err := s.kubeClient(r, cluster).List(r.Context(), &podRT, kube.ListOptions{Namespace: namespace, LabelSelector: selectorString(labels)})
+	list, err := client.List(r.Context(), &podRT, kube.ListOptions{Namespace: namespace, LabelSelector: selectorString(labels)})
 	if err != nil {
 		return nil
 	}

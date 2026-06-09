@@ -50,7 +50,7 @@ func (s *Server) resourceList(w http.ResponseWriter, r *http.Request) {
 	}
 	view := s.buildListView(r, &ctx)
 	partialURL := partialResourceListURL(r)
-	s.pageComponent(w, r, view.Title(), templates.ResourceList(toListPageData(&view, partialURL)))
+	s.pageComponentWithClients(w, r, view.Title(), ctx.Clients, templates.ResourceList(toListPageData(&view, partialURL)))
 }
 
 func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
@@ -117,11 +117,12 @@ func (s *Server) resourceView(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, err)
 		return
 	}
-	view, ok := s.buildDetailView(w, r, cluster)
+	client := s.kubeClient(r, cluster)
+	view, ok := s.buildDetailView(w, r, client, cluster)
 	if !ok {
 		return
 	}
-	s.pageComponentWithNamespace(w, r, view.Title, &view.Namespace, templates.ResourceView(toDetailData(view)))
+	s.pageComponentWithNamespaceAndClients(w, r, view.Title, &view.Namespace, requestKubeClients{cluster.Name: client}, templates.ResourceView(toDetailData(view)))
 }
 
 func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +131,7 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, err)
 		return
 	}
+	client := s.kubeClient(r, cluster)
 	namespace := r.PathValue("namespace")
 	plural := r.PathValue("plural")
 	name := r.PathValue("name")
@@ -137,12 +139,12 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, statusError{status: http.StatusForbidden, message: "namespace is not allowed"})
 		return
 	}
-	rt, err := s.kubeClient(r, cluster).FindResource(r.Context(), plural, true, "")
+	rt, err := client.FindResource(r.Context(), plural, true, "")
 	if err != nil {
 		s.error(w, r, err)
 		return
 	}
-	obj, err := s.kubeClient(r, cluster).Get(r.Context(), &rt, namespace, name)
+	obj, err := client.Get(r.Context(), &rt, namespace, name)
 	if err != nil {
 		s.error(w, r, err)
 		return
@@ -150,7 +152,7 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 	object := kube.NewObject(&rt, obj)
 	pods := []kube.Object{object}
 	if object.Kind() != "Pod" {
-		pods = s.podsForSelector(r, cluster, &object, namespace)
+		pods = s.podsForSelector(r, client, &object, namespace)
 	}
 	if len(pods) == 0 {
 		s.error(w, r, fmt.Errorf("resource has no logs"))
@@ -184,7 +186,7 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 			if !s.cfg.ShowContainerLogs {
 				continue
 			}
-			logs, err := s.kubeClient(r, cluster).Logs(r.Context(), kube.LogOptions{Namespace: first(pod.Namespace(), namespace), Pod: pod.Name(), Container: container, Timestamps: true, TailLines: tail})
+			logs, err := client.Logs(r.Context(), kube.LogOptions{Namespace: first(pod.Namespace(), namespace), Pod: pod.Name(), Container: container, Timestamps: true, TailLines: tail})
 			if err != nil {
 				continue
 			}
@@ -259,7 +261,7 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		data.LogPre = logPreHTML(lines, filterText)
 	}
-	s.pageComponent(w, r, pageTitle, templates.Logs(data))
+	s.pageComponentWithClients(w, r, pageTitle, requestKubeClients{cluster.Name: client}, templates.Logs(data))
 }
 
 // logPreHTML builds the trusted <pre class="ro-logpre"> block: a leading

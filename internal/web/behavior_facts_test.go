@@ -1098,14 +1098,27 @@ func TestSearchPartialFailure(t *testing.T) {
 // stay sidebar-free.
 func TestBehaviorSearchAllClustersNoSidebar(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
-	p := get(t, app, "/search?q=nginx", http.StatusOK)
+	for _, path := range []string{
+		"/search?q=nginx",
+		"/search?q=nginx&cluster=_all",
+	} {
+		p := get(t, app, path, http.StatusOK)
 
-	// The redesign body still renders (the search-hero + scope strip are present
-	// for a query).
-	p.wantText(".search-hero .ro-title", "Search")
-	p.wantHas(".search-big input[name=\"q\"]")
-	p.wantHas(".ro-scope")
-	// No sidebar groups, no Meta links, no context pill.
+		// The redesign body still renders (the search-hero + scope strip are present
+		// for a query).
+		p.wantText(".search-hero .ro-title", "Search")
+		p.wantHas(".search-big input[name=\"q\"]")
+		p.wantHas(".ro-scope")
+		// No sidebar groups, no Meta links, no context pill.
+		p.wantAbsent(".menu-label")
+		p.wantAbsent(".menu-item")
+		p.wantAbsent(".context-name")
+	}
+
+	first := newServerFakeAPI(t)
+	second := newServerFakeAPI(t)
+	multi := newMultiClusterServer(t, map[string]string{"first": first.URL, "second": second.URL})
+	p := get(t, multi, "/search?q=nginx&cluster=first,second&namespace=default&type=pods", http.StatusOK)
 	p.wantAbsent(".menu-label")
 	p.wantAbsent(".menu-item")
 	p.wantAbsent(".context-name")

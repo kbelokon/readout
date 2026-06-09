@@ -27,7 +27,15 @@ func (s *Server) pageComponent(w http.ResponseWriter, r *http.Request, title str
 }
 
 func (s *Server) pageComponentWithNamespace(w http.ResponseWriter, r *http.Request, title string, namespaceOverride *string, body templ.Component) {
-	v := s.buildLayoutView(r, title, namespaceOverride)
+	s.pageComponentWithNamespaceAndClients(w, r, title, namespaceOverride, nil, body)
+}
+
+func (s *Server) pageComponentWithClients(w http.ResponseWriter, r *http.Request, title string, clients requestKubeClients, body templ.Component) {
+	s.pageComponentWithNamespaceAndClients(w, r, title, nil, clients, body)
+}
+
+func (s *Server) pageComponentWithNamespaceAndClients(w http.ResponseWriter, r *http.Request, title string, namespaceOverride *string, clients requestKubeClients, body templ.Component) {
+	v := s.buildLayoutViewWithClients(r, title, namespaceOverride, clients)
 	s.renderLayout(w, &v, body)
 }
 
@@ -36,7 +44,11 @@ func (s *Server) pageComponentWithNamespace(w http.ResponseWriter, r *http.Reque
 // uses it so the shell sidebar + navbar context render from the ?cluster= /
 // ?namespace= query, matching a cluster-scoped page.
 func (s *Server) pageComponentWithScope(w http.ResponseWriter, r *http.Request, title, cluster, namespace string, body templ.Component) {
-	v := s.buildLayoutViewScoped(r, title, cluster, namespace)
+	s.pageComponentWithScopeAndClients(w, r, title, cluster, namespace, nil, body)
+}
+
+func (s *Server) pageComponentWithScopeAndClients(w http.ResponseWriter, r *http.Request, title, cluster, namespace string, clients requestKubeClients, body templ.Component) {
+	v := s.buildLayoutViewScopedWithClients(r, title, cluster, namespace, clients)
 	s.renderLayout(w, &v, body)
 }
 
@@ -62,15 +74,10 @@ type sidebarLink struct {
 	HasKind bool
 }
 
-func (s *Server) sidebarResourceLink(r *http.Request, cluster, namespace, plural string) (sidebarLink, bool) {
-	if s.manager == nil {
+func (s *Server) sidebarResourceLink(r *http.Request, client *kube.Client, cluster, namespace, plural string) (sidebarLink, bool) {
+	if client == nil {
 		return sidebarLink{Href: sidebarResourceHref(cluster, namespace, plural), Text: sidebarResourceText(plural), Plural: plural}, true
 	}
-	clusterObj, ok := s.manager.Get(cluster)
-	if !ok {
-		return sidebarLink{Href: sidebarResourceHref(cluster, namespace, plural), Text: sidebarResourceText(plural), Plural: plural}, true
-	}
-	client := s.kubeClient(r, clusterObj)
 	var rt kube.ResourceType
 	var err error
 	// A built-in cluster-scoped plural (nodes/namespaces/persistentvolumes) must

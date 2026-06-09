@@ -30,15 +30,16 @@ var searchDefaultResourceTypes = []string{"namespaces", "deployments", "services
 // search form.
 var searchOfferedResourceTypes = []string{"namespaces", "deployments", "replicasets", "services", "ingresses", "daemonsets", "statefulsets", "cronjobs", "pods", "nodes"}
 
-func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
+func (s *Server) buildSearchView(r *http.Request) (searchView, requestKubeClients, error) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	clusterParam := strings.Join(r.URL.Query()["cluster"], ",")
 	namespaces := searchScopeValues(r.URL.Query()["namespace"])
 	namespace := strings.Join(namespaces, ",")
 	clusters, allClusters, err := s.manager.Select(clusterParam)
 	if err != nil {
-		return searchView{}, err
+		return searchView{}, nil, err
 	}
+	clients := s.kubeClients(r, clusters)
 	selector, filterQuery := splitSearchQuery(q)
 	if extra := r.URL.Query().Get("selector"); extra != "" {
 		if selector != "" {
@@ -51,6 +52,10 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 		types = firstSlice(s.cfg.SearchDefaultResourceTypes, searchDefaultResourceTypes)
 	}
 	isAllNamespaces := len(namespaces) == 0 || (len(namespaces) == 1 && namespaces[0] == kube.AllNamespaces)
+	shellCluster := ""
+	if !allClusters && len(clusters) == 1 {
+		shellCluster = clusters[0].Name
+	}
 	shellNamespace := ""
 	if len(namespaces) == 1 && namespaces[0] != kube.AllNamespaces {
 		shellNamespace = namespaces[0]
@@ -61,6 +66,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 		Query:             q,
 		Cluster:           clusterParam,
 		Namespace:         namespace,
+		ShellCluster:      shellCluster,
 		ShellNamespace:    shellNamespace,
 		IsAllClusters:     allClusters,
 		IsAllNamespaces:   isAllNamespaces,
@@ -90,7 +96,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 	for i, cluster := range clusters {
 		i, cluster := i, cluster
 		g.Go(func() error {
-			slots[i] = s.clusterSearch(r, cluster, types, namespaces, selector, filterQuery, isAllNamespaces)
+			slots[i] = s.clusterSearch(r, clients[cluster.Name], cluster, types, namespaces, selector, filterQuery, isAllNamespaces)
 			return nil
 		})
 	}
@@ -151,7 +157,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 			continue
 		}
 		for _, cluster := range clusters {
-			if rt, _, err := findSearchResource(r, s.kubeClient(r, cluster), typ); err == nil {
+			if rt, _, err := findSearchResource(r, clients[cluster.Name], typ); err == nil {
 				searchable[rt.Plural] = rt.Kind
 				break
 			}
@@ -161,7 +167,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, error) {
 	view.OfferedTypes = buildTypeOptions(searchable, types)
 	sortResults(view.Results, q)
 	view.Duration = s.clock().Sub(start)
-	return view, nil
+	return view, clients, nil
 }
 
 // clusterSearchResult is one cluster's fan-out slot: its ordered result cards,
@@ -190,8 +196,7 @@ type searchErrorRecord struct {
 // namespace filter + text filter -> result cards. Per-type failures are
 // collected as error records, not raised, so the per-cluster work can run as a
 // single fan-out task.
-func (s *Server) clusterSearch(r *http.Request, cluster *kube.Cluster, types []string, namespaces []string, selector, filterQuery string, isAllNamespaces bool) clusterSearchResult {
-	client := s.kubeClient(r, cluster)
+func (s *Server) clusterSearch(r *http.Request, client *kube.Client, cluster *kube.Cluster, types []string, namespaces []string, selector, filterQuery string, isAllNamespaces bool) clusterSearchResult {
 	var out clusterSearchResult
 	seen := map[string]bool{}
 	for _, typ := range types {

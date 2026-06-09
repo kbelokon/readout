@@ -33,6 +33,7 @@ type listContext struct {
 	Tables          []kube.Table
 	Errors          []error
 	Duration        time.Duration
+	Clients         requestKubeClients
 }
 
 func (lc *listContext) Title() string {
@@ -51,12 +52,13 @@ func (s *Server) listContext(r *http.Request) (listContext, error) {
 	if err != nil {
 		return listContext{}, err
 	}
+	clients := s.kubeClients(r, clusters)
 	isAllNamespaces := namespace == kube.AllNamespaces
 	resourceTypes := strings.Split(plural, ",")
 	if plural == "all" && namespace != "" {
 		resourceTypes = []string{"pods", "services", "daemonsets", "deployments", "replicasets", "statefulsets", "horizontalpodautoscalers", "jobs", "cronjobs"}
 	} else if plural == kube.AllNamespaces && namespace != "" {
-		resourceTypes = s.unionNamespacedResourceTypes(r, clusters)
+		resourceTypes = s.unionNamespacedResourceTypes(r, clusters, clients)
 	}
 
 	// Fan the per-cluster table assembly out concurrently, bounded by
@@ -74,7 +76,7 @@ func (s *Server) listContext(r *http.Request) (listContext, error) {
 	for i, cluster := range clusters {
 		i, cluster := i, cluster
 		g.Go(func() error {
-			slots[i] = s.clusterTables(r, cluster, resourceTypes, namespace, isAllNamespaces)
+			slots[i] = s.clusterTables(r, clients[cluster.Name], cluster, resourceTypes, namespace, isAllNamespaces)
 			return nil
 		})
 	}
@@ -95,7 +97,7 @@ func (s *Server) listContext(r *http.Request) (listContext, error) {
 			}
 		}
 	}
-	return listContext{Cluster: clusterName, Namespace: namespace, Plural: plural, IsAllClusters: allClusters, IsAllNamespaces: isAllNamespaces, ClusterCount: len(clusters), Tables: tables, Errors: errs, Duration: s.clock().Sub(start)}, nil
+	return listContext{Cluster: clusterName, Namespace: namespace, Plural: plural, IsAllClusters: allClusters, IsAllNamespaces: isAllNamespaces, ClusterCount: len(clusters), Tables: tables, Errors: errs, Duration: s.clock().Sub(start), Clients: clients}, nil
 }
 
 // clusterTableResult is one cluster's fan-out slot: its ordered tables (in
@@ -110,7 +112,7 @@ type clusterTableResult struct {
 // clusterTables builds one cluster's ordered tables for the requested resource
 // types (with per-type FindResource/Table failures collected as error records,
 // not raised) so the per-cluster work can run as a single fan-out task.
-func (s *Server) clusterTables(r *http.Request, cluster *kube.Cluster, resourceTypes []string, namespace string, isAllNamespaces bool) clusterTableResult {
+func (s *Server) clusterTables(r *http.Request, client *kube.Client, cluster *kube.Cluster, resourceTypes []string, namespace string, isAllNamespaces bool) clusterTableResult {
 	var tables []kube.Table
 	var errs []error
 	for _, typ := range resourceTypes {
@@ -118,7 +120,7 @@ func (s *Server) clusterTables(r *http.Request, cluster *kube.Cluster, resourceT
 		if typ == "" {
 			continue
 		}
-		rt, err := s.kubeClient(r, cluster).FindResource(r.Context(), typ, namespace != "", apiVersionParam(r))
+		rt, err := client.FindResource(r.Context(), typ, namespace != "", apiVersionParam(r))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s/%s: %w", cluster.Name, typ, err))
 			continue
@@ -127,7 +129,7 @@ func (s *Server) clusterTables(r *http.Request, cluster *kube.Cluster, resourceT
 		if isAllNamespaces {
 			listNS = ""
 		}
-		table, err := s.kubeClient(r, cluster).Table(r.Context(), &rt, kube.ListOptions{
+		table, err := client.Table(r.Context(), &rt, kube.ListOptions{
 			Namespace:     listNS,
 			LabelSelector: r.URL.Query().Get("selector"),
 		})
@@ -139,7 +141,7 @@ func (s *Server) clusterTables(r *http.Request, cluster *kube.Cluster, resourceT
 		for i := range table.Rows {
 			table.Rows[i].Cluster = cluster.Name
 		}
-		s.applyTableOptions(r, cluster, &table, namespace, isAllNamespaces)
+		s.applyTableOptions(r, client, &table, namespace, isAllNamespaces)
 		tables = append(tables, table)
 	}
 	return clusterTableResult{tables: tables, errs: errs}
@@ -149,14 +151,14 @@ func (s *Server) clusterTables(r *http.Request, cluster *kube.Cluster, resourceT
 // plurals across the clusters (the `_all`-namespaces case). The per-cluster
 // discovery fans out concurrently; the result is a set then sort.Strings, so it
 // is order-independent and deterministic regardless of completion order.
-func (s *Server) unionNamespacedResourceTypes(r *http.Request, clusters []*kube.Cluster) []string {
+func (s *Server) unionNamespacedResourceTypes(r *http.Request, clusters []*kube.Cluster, clients requestKubeClients) []string {
 	perCluster := make([][]string, len(clusters))
 	g, _ := errgroup.WithContext(r.Context())
 	g.SetLimit(s.searchConcurrency())
 	for i, cluster := range clusters {
 		i, cluster := i, cluster
 		g.Go(func() error {
-			types, _ := s.kubeClient(r, cluster).NamespacedResourceTypes(r.Context())
+			types, _ := clients[cluster.Name].NamespacedResourceTypes(r.Context())
 			plurals := make([]string, 0, len(types))
 			for ti := range types {
 				plurals = append(plurals, types[ti].Plural)
@@ -180,7 +182,7 @@ func (s *Server) unionNamespacedResourceTypes(r *http.Request, clusters []*kube.
 	return resourceTypes
 }
 
-func (s *Server) applyTableOptions(r *http.Request, cluster *kube.Cluster, table *kube.Table, namespace string, allNamespaces bool) {
+func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool) {
 	q := r.URL.Query()
 	hide := first(q.Get("hidecols"), q.Get("hide-columns"), s.cfg.DefaultHiddenColumns[table.Resource.Plural])
 	kube.RemoveColumns(table, hide)
@@ -208,11 +210,11 @@ func (s *Server) applyTableOptions(r *http.Request, cluster *kube.Cluster, table
 		decorateNamespaceColumns(table)
 	}
 	if q.Get("join") == "metrics" && (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") {
-		s.joinMetrics(r.Context(), s.kubeClient(r, cluster), table, namespace, allNamespaces, q.Get("selector"))
+		s.joinMetrics(r.Context(), client, table, namespace, allNamespaces, q.Get("selector"))
 	}
 	custom := first(q.Get("customcols"), q.Get("custom-columns"), s.cfg.DefaultCustomColumns[table.Resource.Plural])
 	if custom != "" {
-		s.joinCustomColumns(r.Context(), s.kubeClient(r, cluster), table, namespace, allNamespaces, custom, q)
+		s.joinCustomColumns(r.Context(), client, table, namespace, allNamespaces, custom, q)
 	}
 	kube.FilterRowsByNamespace(table, s.cfg.IncludeNamespaces, s.cfg.ExcludeNamespaces)
 	kube.FilterTable(table, q.Get("filter"), false)

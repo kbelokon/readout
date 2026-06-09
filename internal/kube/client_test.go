@@ -2,12 +2,14 @@ package kube
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/client-go/rest"
 )
@@ -16,6 +18,102 @@ type fakeAPIServer struct {
 	t          *testing.T
 	server     *httptest.Server
 	lastAccept string
+}
+
+func TestPassthroughClientCache(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	cache := NewPassthroughClientCache(5*time.Minute, 8)
+	cache.now = func() time.Time { return now }
+
+	baseA := &Client{}
+	baseB := &Client{}
+	builds := 0
+	build := func(_ *Client, token string) (*Client, error) {
+		builds++
+		return &Client{config: &rest.Config{BearerToken: token}}, nil
+	}
+
+	first, err := cache.Get(baseA, "viewer-token", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := cache.Get(baseA, "viewer-token", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != again || builds != 1 {
+		t.Fatalf("same base/token should reuse cached client: first=%p again=%p builds=%d", first, again, builds)
+	}
+	if got := first.config.BearerToken; got != "viewer-token" {
+		t.Fatalf("cached client bearer token = %q", got)
+	}
+	for key := range cache.entries {
+		if strings.Contains(fmt.Sprintf("%#v", key), "viewer-token") {
+			t.Fatalf("cache key includes raw token: %#v", key)
+		}
+	}
+
+	otherToken, err := cache.Get(baseA, "other-token", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherBase, err := cache.Get(baseB, "viewer-token", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherToken == first {
+		t.Fatal("different tokens should not share a passthrough client")
+	}
+	if otherBase == first {
+		t.Fatal("same token on a different base client should not share a passthrough client")
+	}
+
+	now = now.Add(6 * time.Minute)
+	expired, err := cache.Get(baseA, "viewer-token", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expired == first {
+		t.Fatal("expired passthrough client should be rebuilt")
+	}
+
+	lru := NewPassthroughClientCache(time.Hour, 2)
+	lru.now = func() time.Time { return now }
+	one, err := lru.Get(baseA, "one", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := lru.Get(baseA, "two", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneAgain, err := lru.Get(baseA, "one", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oneAgain != one {
+		t.Fatal("cache hit for one should return the original client before eviction")
+	}
+	if _, err := lru.Get(baseA, "three", build); err != nil {
+		t.Fatal(err)
+	}
+	if len(lru.entries) != 2 {
+		t.Fatalf("size-bounded cache entries = %d, want 2", len(lru.entries))
+	}
+	oneAfterEvict, err := lru.Get(baseA, "one", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oneAfterEvict != one {
+		t.Fatal("recently used passthrough client should be retained by LRU eviction")
+	}
+	twoAfterEvict, err := lru.Get(baseA, "two", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if twoAfterEvict == two {
+		t.Fatal("least-recently used passthrough client should be evicted when max size is exceeded")
+	}
 }
 
 func newFakeAPIServer(t *testing.T) *fakeAPIServer {

@@ -108,6 +108,10 @@ func (c *Client) WithBearer(token string) (*Client, error) {
 	cfg.BearerTokenFile = ""
 	cfg.Username = ""
 	cfg.Password = ""
+	cfg.CertData = nil
+	cfg.CertFile = ""
+	cfg.KeyData = nil
+	cfg.KeyFile = ""
 	// Passthrough must evaluate RBAC AS THE VIEWER. rest.CopyConfig propagates a
 	// static Impersonate, and client-go's impersonating round-tripper keys off
 	// Impersonate.UserName (NOT the Authorization header), so without this clear a

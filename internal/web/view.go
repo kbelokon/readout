@@ -472,6 +472,11 @@ type searchView struct {
 	Query     string
 	Cluster   string
 	Namespace string
+	// ShellCluster is the real single-cluster scope passed to the page shell.
+	// All-cluster and CSV multi-cluster searches keep Cluster for form
+	// round-trip but leave the shell unscoped so sidebar/palette links never
+	// point at a synthetic cluster scope.
+	ShellCluster string
 	// ShellNamespace is the real single-namespace scope passed to the page
 	// shell. Multi-namespace search keeps Namespace as CSV for form round-trip,
 	// but leaves the shell at cluster scope so sidebar/palette links never point

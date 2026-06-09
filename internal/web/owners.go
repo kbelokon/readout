@@ -8,12 +8,11 @@ import (
 	"github.com/kbelokon/readout/internal/kube"
 )
 
-func (s *Server) ownerLinks(r *http.Request, cluster *kube.Cluster, object *kube.Object) []config.Link {
+func (s *Server) ownerLinks(r *http.Request, client *kube.Client, cluster *kube.Cluster, object *kube.Object) []config.Link {
 	refs := object.OwnerReferences()
 	if len(refs) == 0 {
 		return nil
 	}
-	client := s.kubeClient(r, cluster)
 	var links []config.Link
 	for i := range refs {
 		ref := &refs[i]
