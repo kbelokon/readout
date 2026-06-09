@@ -136,13 +136,13 @@ func TestParseSidebarKeepsDeclaredOrder(t *testing.T) {
 // TestParsePortFlagOverridesFile pins that the bootstrap --port flag overrides
 // the file value, and that an empty/omitted --config still resolves defaults.
 func TestParsePortFlagOverridesFileAndEmptyConfigDefaults(t *testing.T) {
-	path := writeConfig(t, "port: 9090\n")
+	path := writeConfig(t, "port: 9090\nmetricsPort: 9091\n")
 	cfg, err := Parse([]string{"--config", path, "--port", "7000"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != 7000 {
-		t.Fatalf("--port did not override file: %d", cfg.Port)
+	if cfg.Port != 7000 || cfg.MetricsPort != 9091 {
+		t.Fatalf("port config mismatch: port=%d metricsPort=%d", cfg.Port, cfg.MetricsPort)
 	}
 
 	cfg, err = Parse([]string{"--debug"})

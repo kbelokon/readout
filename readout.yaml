@@ -15,6 +15,11 @@
 # TCP port to listen on. The --port flag overrides this.
 port: 8080
 
+# Optional separate Prometheus metrics listener. When 0, /metrics is served on
+# the main port as a public endpoint. When non-zero, /metrics is served only on
+# this port and is disabled on the main app listener.
+metricsPort: 0
+
 # Namespace allow/deny. Regular expressions (RE2). Exclude wins over include;
 # an empty include list means "all namespaces". Cluster-scoped objects are
 # never excluded by namespace.

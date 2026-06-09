@@ -120,6 +120,38 @@ func TestMetricsEndpointCountsRoutedRequests(t *testing.T) {
 	}
 }
 
+func TestMetricsSeparatePort(t *testing.T) {
+	mainPort := newTestServer(t)
+	if !mainPort.isPublicPath("/metrics") {
+		t.Fatal("metrics should be public on the main mux when metricsPort is unset")
+	}
+	rec := httptest.NewRecorder()
+	mainPort.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unset metricsPort /metrics status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	separate := newTestServerWithConfig(t, &config.Config{
+		Port:         8080,
+		MetricsPort:  9092,
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme: "dark",
+	})
+	if separate.isPublicPath("/metrics") {
+		t.Fatal("metrics should not be public on the main mux when metricsPort is set")
+	}
+	rec = httptest.NewRecorder()
+	separate.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("separate metricsPort main /metrics status = %d, want 404 body=%s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	separate.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "# HELP readout_up") {
+		t.Fatalf("separate metrics handler status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestGenericOAuth2FlowCreatesEncryptedSession(t *testing.T) {
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/token" {

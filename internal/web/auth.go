@@ -40,7 +40,7 @@ type oauthState struct {
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isPublicPath(r.URL.Path) {
+		if s.isPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -286,11 +286,11 @@ func (s *Server) oauthConfigured() bool {
 	return s.cfg.OIDCIssuerURL != "" || (s.cfg.OAuth2AuthorizeURL != "" && s.cfg.OAuth2TokenURL != "")
 }
 
-func isPublicPath(path string) bool {
+func (s *Server) isPublicPath(path string) bool {
 	return path == "/health" ||
 		path == "/healthz" ||
 		path == "/readyz" ||
-		path == "/metrics" ||
+		(path == "/metrics" && s.cfg.MetricsPort == 0) ||
 		path == oauthCallbackPath ||
 		path == "/oauth2/login" ||
 		path == "/oauth2/logout" ||

@@ -90,6 +90,7 @@ type ArgoCDSource struct {
 // the unexported fileConfig and folded into this shape by resolve().
 type Config struct {
 	Port        int
+	MetricsPort int
 	ShowVersion bool
 
 	IncludeNamespaces []*regexp.Regexp
@@ -215,7 +216,8 @@ type fileArgoCD struct {
 // fileConfig is the on-disk readout.yaml schema. It is a clean nested shape
 // (lists/maps of structs). resolve() folds it into the runtime Config.
 type fileConfig struct {
-	Port int `json:"port"`
+	Port        int `json:"port"`
+	MetricsPort int `json:"metricsPort"`
 
 	IncludeNamespaces []string `json:"includeNamespaces"`
 	ExcludeNamespaces []string `json:"excludeNamespaces"`
@@ -339,6 +341,7 @@ func resolve(file *fileConfig) (Config, error) {
 	}
 	cfg := Config{
 		Port:                       firstNonZero(file.Port, 8080),
+		MetricsPort:                file.MetricsPort,
 		KubeconfigPath:             file.KubeconfigPath,
 		KubeconfigContexts:         file.KubeconfigContexts,
 		ClusterAuthUseSessionToken: file.ClusterAuthUseSessionToken,
@@ -418,6 +421,9 @@ func resolve(file *fileConfig) (Config, error) {
 	}
 	if cfg.SearchMaxConcurrency <= 0 {
 		return Config{}, errors.New("search maxConcurrency must be positive")
+	}
+	if cfg.MetricsPort < 0 {
+		return Config{}, errors.New("metricsPort must be non-negative")
 	}
 	return cfg, nil
 }

@@ -58,7 +58,11 @@ func (s *Server) observeMetrics(next http.Handler) http.Handler {
 }
 
 func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
-	promhttp.HandlerFor(s.metrics.registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
+	s.MetricsHandler().ServeHTTP(w, r)
+}
+
+func (s *Server) MetricsHandler() http.Handler {
+	return promhttp.HandlerFor(s.metrics.registry, promhttp.HandlerOpts{})
 }
 
 type statusWriter struct {

@@ -100,7 +100,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
 	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
-	s.mux.HandleFunc("GET /metrics", s.metricsHandler)
+	if s.cfg.MetricsPort == 0 {
+		s.mux.HandleFunc("GET /metrics", s.metricsHandler)
+	} else {
+		// Override the catch-all route so the main app listener does not redirect /metrics.
+		s.mux.HandleFunc("GET /metrics", http.NotFound)
+	}
 	s.mux.HandleFunc("GET /oauth2/callback", s.oauth2Callback)
 	s.mux.HandleFunc("GET /oauth2/login", s.oauth2Login)
 	s.mux.HandleFunc("GET /oauth2/logout", s.oauth2Logout)
