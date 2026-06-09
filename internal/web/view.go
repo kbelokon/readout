@@ -442,6 +442,7 @@ type subtableCell struct {
 	Value string
 	Class string
 	Href  string
+	Tone  string
 }
 
 // eventView is one rendered event row (already flattened from the raw object).

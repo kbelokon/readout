@@ -482,7 +482,7 @@ func toSubtable(v *subtableView) *templates.Subtable {
 			CreatedText:  row.CreatedText,
 		}
 		for _, cell := range row.Cells {
-			sr.Cells = append(sr.Cells, templates.SubtableCell{Kind: templates.CellKind(cell.Kind), Value: cell.Value, Class: cell.Class, Href: cell.Href})
+			sr.Cells = append(sr.Cells, templates.SubtableCell{Kind: templates.CellKind(cell.Kind), Value: cell.Value, Class: cell.Class, Href: cell.Href, Tone: cell.Tone})
 		}
 		st.Rows = append(st.Rows, sr)
 	}

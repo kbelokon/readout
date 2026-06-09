@@ -794,6 +794,7 @@ func TestBehaviorNodeDetailFacts(t *testing.T) {
 	p.wantHas(`[data-name="pods"]`)
 	// The related-pods subtable migrated to the redesign .ro-table.
 	p.wantHas(`.collapsible[data-name="pods"] .ro-table-wrap table.ro-table`)
+	p.wantHas(`.collapsible[data-name="pods"] table.ro-table .cell-status.ok .ro-dot.ok`)
 
 	// Node summary blocks (named facts replacing the retired TestRenderNodeSummary
 	// byte asserts). The three section labels are present, in order.

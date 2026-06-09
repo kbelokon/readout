@@ -505,10 +505,7 @@ func (s *Server) buildSubtableView(r *http.Request, table *kube.Table, namespace
 				sc.Href = "/clusters/" + url.PathEscape(rowCluster) + "/nodes/" + url.PathEscape(sc.Value)
 			case "Status":
 				sc.Kind = cellStatus
-				// Carry the redesign status tone (ok/warn/err/info/mute) so the
-				// related-pods status cell renders the .cell-status/.ro-dot pair
-				// like the list, not a Bulma text colour. "" tone -> a bare dot.
-				sc.Href = statusTone(cellClass(table, idx, cell))
+				sc.Tone = statusTone(cellClass(table, idx, cell))
 			default:
 				sc.Kind = cellPlain
 			}

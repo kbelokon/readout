@@ -222,6 +222,7 @@ type SubtableCell struct {
 	Value string
 	Class string
 	Href  string
+	Tone  string
 }
 
 // ResourceView is the redesign object-detail page body. The outermost element
@@ -412,7 +413,7 @@ templ subtableC(s Subtable) {
 
 // subtableCell renders one related-pods cell in the redesign vocabulary. Cell 0
 // is the sticky name link (td.cell-name); a Node cell links in td.cell-node; a
-// Status cell is the .cell-status/.ro-dot pair toned by Href (the redesign tone);
+// Status cell is the .cell-status/.ro-dot pair toned by Tone;
 // the rest are plain cells carrying the cellClass.
 templ subtableCell(idx int, cell SubtableCell) {
 	if idx == 0 {
@@ -422,7 +423,7 @@ templ subtableCell(idx int, cell SubtableCell) {
 			case CellNode:
 				<td class="cell-node"><a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a></td>
 			case CellStatus:
-				<td><span class={ cellStatusClass(cell.Href) }><span class={ dotClass(cell.Href) } aria-hidden="true"></span>{ cell.Value }</span></td>
+				<td><span class={ cellStatusClass(cell.Tone) }><span class={ dotClass(cell.Tone) } aria-hidden="true"></span>{ cell.Value }</span></td>
 			default:
 				<td class={ cell.Class }>{ cell.Value }</td>
 		}
