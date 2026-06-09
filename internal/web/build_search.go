@@ -399,7 +399,7 @@ func searchScore(title string, labels map[string]string, query string) int {
 		score += 2
 	}
 	for _, value := range labels {
-		if strings.ToLower(value) == query {
+		if strings.EqualFold(value, query) {
 			score++
 			break
 		}

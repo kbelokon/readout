@@ -152,29 +152,17 @@ type paletteActionFeed struct {
 	Action string `json:"action,omitempty"`
 }
 
-// buildLayoutView resolves every request-derived input the page shell needs.
-// namespaceOverride lets the detail page pass the object's namespace explicitly;
-// title is the page's <title> stem. The cluster/namespace scope comes from the
-// path values.
-func (s *Server) buildLayoutView(r *http.Request, title string, namespaceOverride *string) layoutView {
-	return s.buildLayoutViewWithClients(r, title, namespaceOverride, nil)
-}
-
 func (s *Server) buildLayoutViewWithClients(r *http.Request, title string, namespaceOverride *string, clients requestKubeClients) layoutView {
 	return s.buildLayoutViewScopedWithClients(r, title, r.PathValue("cluster"), effectiveNamespace(r, namespaceOverride), clients)
 }
 
-// buildLayoutViewScoped is buildLayoutView with the cluster + namespace scope
-// supplied explicitly rather than read from the path values. The param-less
-// /search route has no {cluster}/{namespace} path segments, so its handler
-// passes the QUERY (?cluster= / ?namespace=) here. With a concrete cluster this
-// renders that cluster's sidebar + navbar context; with an empty or
-// all-clusters scope the existing buildSidebarView/buildNavbarView
-// gates (cluster != "" && cluster != AllClusters) emit no sidebar, as before.
-func (s *Server) buildLayoutViewScoped(r *http.Request, title, cluster, namespace string) layoutView {
-	return s.buildLayoutViewScopedWithClients(r, title, cluster, namespace, nil)
-}
-
+// buildLayoutViewScopedWithClients resolves the page shell with the cluster +
+// namespace scope supplied explicitly rather than read from path values. The
+// param-less /search route has no {cluster}/{namespace} path segments, so its
+// handler passes the QUERY (?cluster= / ?namespace=) here. With a concrete
+// cluster this renders that cluster's sidebar + navbar context; with an empty or
+// all-clusters scope the existing buildSidebarView/buildNavbarView gates emit no
+// sidebar, as before.
 func (s *Server) buildLayoutViewScopedWithClients(r *http.Request, title, cluster, namespace string, clients requestKubeClients) layoutView {
 	themeName := theme(r, &s.cfg)
 	explicit := themeExplicit(r)

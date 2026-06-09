@@ -416,7 +416,7 @@ func resolve(file *fileConfig) (Config, error) {
 	if cfg.AuthMode != AuthModeNone && cfg.AuthMode != AuthModeHeaders && cfg.AuthMode != AuthModeOIDC {
 		return Config{}, fmt.Errorf("invalid auth mode %q", cfg.AuthMode)
 	}
-	if oidcEnabled(cfg) && cfg.OIDCRedirectURL == "" {
+	if oidcEnabled(&cfg) && cfg.OIDCRedirectURL == "" {
 		return Config{}, errors.New("auth.oidc.redirectUrl is required when OIDC is enabled")
 	}
 	if cfg.SearchMaxConcurrency <= 0 {
@@ -450,7 +450,7 @@ func firstNonZero(values ...int) int {
 	return 0
 }
 
-func oidcEnabled(cfg Config) bool {
+func oidcEnabled(cfg *Config) bool {
 	return cfg.AuthMode == AuthModeOIDC ||
 		(cfg.AuthMode == AuthModeNone && (cfg.OIDCIssuerURL != "" || (cfg.OAuth2AuthorizeURL != "" && cfg.OAuth2TokenURL != "")))
 }
