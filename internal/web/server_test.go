@@ -68,6 +68,20 @@ func TestPreferencesPostIsOnlyWriteAllowlist(t *testing.T) {
 	}
 }
 
+func TestPreferencesRejectsExternalNext(t *testing.T) {
+	app := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/preferences", strings.NewReader("theme=light&next=//evil.example"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/preferences" {
+		t.Fatalf("Location = %q, want /preferences", loc)
+	}
+}
+
 // The resource-list render contract is pinned by named goquery facts: the
 // #resource-list-content hx-get (exact attribute value), the ro-list-table
 // headers + the nginx row cells in TestBehaviorPodListFacts, and the htmx script

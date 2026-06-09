@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +89,27 @@ func TestOAuthLoginLogoutAndURLHelpers(t *testing.T) {
 	}
 	if state.OriginalURL != "/" || state.Nonce == "" || queryValue(location, "state") != state.Nonce {
 		t.Fatalf("state = %#v location=%s", state, location)
+	}
+	for _, tc := range []struct {
+		next string
+		want string
+	}{
+		{"/clusters/test", "/clusters/test"},
+		{"//evil.example/path", "/"},
+		{`/\evil.example/path`, "/"},
+	} {
+		rec := httptest.NewRecorder()
+		app.oauth2Login(rec, httptest.NewRequest(http.MethodGet, "/oauth2/login?next="+url.QueryEscape(tc.next), nil))
+		if rec.Code != http.StatusFound {
+			t.Fatalf("login %q status = %d body=%s", tc.next, rec.Code, rec.Body.String())
+		}
+		var state oauthState
+		if err := app.sessions.Open(stateCookieName, cookieNamed(t, rec.Result().Cookies(), stateCookieName).Value, &state); err != nil {
+			t.Fatal(err)
+		}
+		if state.OriginalURL != tc.want {
+			t.Fatalf("login next %q stored OriginalURL %q, want %q", tc.next, state.OriginalURL, tc.want)
+		}
 	}
 
 	logout := httptest.NewRecorder()
@@ -176,6 +198,42 @@ func TestSessionCodecAndBearerSources(t *testing.T) {
 	expiredReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: expiredValue})
 	if _, ok := app.authSession(expiredReq); ok {
 		t.Fatal("expired auth session should not be accepted")
+	}
+}
+
+func TestOAuthCallbackRejectsExternalOriginalURL(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"session-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	defer tokenServer.Close()
+
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:               8080,
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:       "dark",
+		OIDCClientID:       "client-id",
+		OIDCClientSecret:   "client-secret",
+		OAuth2AuthorizeURL: "https://auth.example.test/authorize",
+		OAuth2TokenURL:     tokenServer.URL,
+		OIDCRedirectURL:    "http://example.test/oauth2/callback",
+		SessionSecret:      "test-secret",
+	})
+	for _, originalURL := range []string{"//evil.example/path", `/\evil.example/path`} {
+		value, err := app.sessions.Seal(stateCookieName, oauthState{Nonce: "good", OriginalURL: originalURL}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/oauth2/callback?state=good&code=ok", nil)
+		req.AddCookie(&http.Cookie{Name: stateCookieName, Value: value})
+		rec := httptest.NewRecorder()
+		app.oauth2Callback(rec, req)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("callback for %q status = %d body=%s", originalURL, rec.Code, rec.Body.String())
+		}
+		if loc := rec.Header().Get("Location"); loc != "/" {
+			t.Fatalf("callback for %q Location = %q, want /", originalURL, loc)
+		}
 	}
 }
 

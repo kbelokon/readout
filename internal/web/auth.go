@@ -71,7 +71,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 
 func (s *Server) oauth2Login(w http.ResponseWriter, r *http.Request) {
 	next := r.URL.Query().Get("next")
-	if next == "" || !strings.HasPrefix(next, "/") {
+	if !isLocalRedirect(next) {
 		next = "/"
 	}
 	s.startOAuth2(w, r, next)
@@ -171,7 +171,11 @@ func (s *Server) oauth2Callback(w http.ResponseWriter, r *http.Request) {
 		Secure:   secureCookie(r),
 		SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, state.OriginalURL, http.StatusFound)
+	target := state.OriginalURL
+	if !isLocalRedirect(target) {
+		target = "/"
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 func (s *Server) startOAuth2(w http.ResponseWriter, r *http.Request, originalURL string) {

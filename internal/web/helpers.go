@@ -29,6 +29,12 @@ func podColor(name string) string {
 	return fmt.Sprintf("log-c%d", crc32.ChecksumIEEE([]byte(name))%8)
 }
 
+func isLocalRedirect(target string) bool {
+	return strings.HasPrefix(target, "/") &&
+		!strings.HasPrefix(target, "//") &&
+		!strings.HasPrefix(target, `/\`)
+}
+
 // podNameHashSuffix matches a Deployment-style pod name (`<workload>-<rs
 // hash>-<pod hash>`) so the workload prefix can render bright and the trailing
 // hash segments muted. Mirrors the design reference shell.js podName():

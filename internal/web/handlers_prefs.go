@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/kbelokon/readout/internal/web/templates"
 )
@@ -23,7 +22,7 @@ func (s *Server) savePreferences(w http.ResponseWriter, r *http.Request) {
 		if allowedTheme(selectedTheme, &s.cfg) {
 			http.SetCookie(w, &http.Cookie{Name: "theme", Value: selectedTheme, Path: "/", SameSite: http.SameSiteLaxMode})
 		}
-		if raw := r.Form.Get("next"); strings.HasPrefix(raw, "/") {
+		if raw := r.Form.Get("next"); isLocalRedirect(raw) {
 			next = raw
 		}
 	}
