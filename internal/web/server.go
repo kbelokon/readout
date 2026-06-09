@@ -253,7 +253,7 @@ func (s *Server) error(w http.ResponseWriter, r *http.Request, err error) {
 		slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "status", status, "error", err)
 		message = "Internal server error — see server logs"
 	}
-	s.pageComponent(w, r, statusText, templates.ErrorBody(statusText, message))
+	s.pageComponentWithScope(w, r, statusText, "", "", templates.ErrorBody(statusText, message))
 }
 
 type statusError struct {

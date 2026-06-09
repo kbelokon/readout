@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kbelokon/readout/internal/config"
@@ -204,6 +205,57 @@ func TestSidebarMetaLinksEscapePathSegments(t *testing.T) {
 	if len(want) != 0 {
 		t.Fatalf("missing sidebar meta links: %v", want)
 	}
+}
+
+func TestErrorPageNoClusterRefetch(t *testing.T) {
+	var namespaceLists atomic.Int64
+	fake := newErrorPageCountingFakeAPI(t, &namespaceLists)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:         8080,
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme: "dark",
+	})
+
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := namespaceLists.Load(); got != 0 {
+		t.Fatalf("error render issued %d namespace LIST calls against the failed cluster, want 0", got)
+	}
+}
+
+func newErrorPageCountingFakeAPI(t *testing.T, namespaceLists *atomic.Int64) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	fixture := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(readFixture(t, name))
+		}
+	}
+	mux.HandleFunc("/api", fixture("discovery/api.json"))
+	mux.HandleFunc("/api/v1", fixture("discovery/api__v1.json"))
+	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
+	mux.HandleFunc("/apis/apps/v1", fixture("discovery/apis__apps__v1.json"))
+	mux.HandleFunc("/apis/cert-manager.io/v1", fixture("discovery/apis__cert-manager.io__v1.json"))
+	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", fixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
+	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", fixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
+	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
+	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
+	mux.HandleFunc("/version", fixture("discovery/version.json"))
+	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "pod backend unavailable", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/api/v1/namespaces", func(w http.ResponseWriter, _ *http.Request) {
+		namespaceLists.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(readFixture(t, "data/render_namespaces_list.json"))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
 }
 
 func TestLogsDisabledAndFilteredBranches(t *testing.T) {
