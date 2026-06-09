@@ -53,6 +53,16 @@ func (s *Server) auth(next http.Handler) http.Handler {
 				http.Error(w, "missing trusted identity header", http.StatusUnauthorized)
 				return
 			}
+			session := s.trustedHeaderSession(r)
+			allowed, err := s.authorizationHook(r.Context(), &oauth2.Token{}, &session)
+			if err != nil {
+				http.Error(w, "authorization hook failed: "+err.Error(), http.StatusForbidden)
+				return
+			}
+			if !allowed {
+				http.Error(w, "Access Denied", http.StatusForbidden)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		case config.AuthModeOIDC:
@@ -67,6 +77,29 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			return
 		}
 	})
+}
+
+func (s *Server) trustedHeaderSession(r *http.Request) authSession {
+	return authSession{
+		User:   r.Header.Get(s.cfg.TrustedHeaderUser),
+		Email:  r.Header.Get(s.cfg.TrustedHeaderEmail),
+		Groups: splitHeaderGroups(r.Header.Get(s.cfg.TrustedHeaderGroups)),
+	}
+}
+
+func splitHeaderGroups(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	groups := make([]string, 0, len(parts))
+	for _, part := range parts {
+		group := strings.TrimSpace(part)
+		if group != "" {
+			groups = append(groups, group)
+		}
+	}
+	return groups
 }
 
 func (s *Server) oauth2Login(w http.ResponseWriter, r *http.Request) {

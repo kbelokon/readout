@@ -2,9 +2,11 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +57,92 @@ func TestAuthMiddlewareModes(t *testing.T) {
 	badMode.auth(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("bad auth mode status = %d", rec.Code)
+	}
+}
+
+func TestHeaderGroupsReachHook(t *testing.T) {
+	var payload struct {
+		Token   map[string]any `json:"token"`
+		Session authSession    `json:"session"`
+	}
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"allowed": true})
+	}))
+	defer hook.Close()
+
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                 8080,
+		Clusters:             []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:         "dark",
+		AuthMode:             config.AuthModeHeaders,
+		TrustedHeaderUser:    "X-User",
+		TrustedHeaderEmail:   "X-Email",
+		TrustedHeaderGroups:  "X-Groups",
+		AuthorizationHookURL: hook.URL,
+	})
+	nextCalled := false
+	handler := app.auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	req.Header.Set("X-User", "kirill")
+	req.Header.Set("X-Email", "kirill@example.test")
+	req.Header.Set("X-Groups", "viewers, ops, ,debug")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent || !nextCalled {
+		t.Fatalf("headers auth status=%d nextCalled=%t body=%s", rec.Code, nextCalled, rec.Body.String())
+	}
+	if payload.Token["access_token"] != "" || payload.Token["expiry"] == "" {
+		t.Fatalf("headers hook token payload = %#v", payload.Token)
+	}
+	if payload.Session.User != "kirill" || payload.Session.Email != "kirill@example.test" || !reflect.DeepEqual(payload.Session.Groups, []string{"viewers", "ops", "debug"}) {
+		t.Fatalf("headers hook session = %#v", payload.Session)
+	}
+
+	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"allowed": false})
+	}))
+	defer deny.Close()
+	app.cfg.AuthorizationHookURL = deny.URL
+	nextCalled = false
+	req = httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	req.Header.Set("X-Email", "kirill@example.test")
+	req.Header.Set("X-Groups", "viewers")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || nextCalled {
+		t.Fatalf("headers deny status=%d nextCalled=%t body=%s", rec.Code, nextCalled, rec.Body.String())
+	}
+}
+
+func TestHeaderModeNoHookPassthrough(t *testing.T) {
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:               8080,
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:       "dark",
+		AuthMode:           config.AuthModeHeaders,
+		TrustedHeaderUser:  "X-User",
+		TrustedHeaderEmail: "X-Email",
+	})
+	nextCalled := false
+	handler := app.auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	req.Header.Set("X-User", "kirill")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent || !nextCalled {
+		t.Fatalf("headers no-hook status=%d nextCalled=%t body=%s", rec.Code, nextCalled, rec.Body.String())
 	}
 }
 
