@@ -332,10 +332,13 @@ func (st *store) listStateFor(path string) *listState {
 }
 
 // namespaceDefaultJSON and nodeMetricsJSON carry the two literal payloads the
-// web suite's embedded server wrote inline.
+// web suite's embedded server wrote inline. podMetricsNginxJSON is the
+// single-object PodMetrics GET for the nginx render pod (the pod-detail
+// containers table fetches it; the item mirrors data/metrics_pods_list.json).
 const (
 	namespaceDefaultJSON = `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"default","creationTimestamp":"2024-01-01T00:00:00Z","resourceVersion":"1"},"status":{"phase":"Active"}}`
 	nodeMetricsJSON      = `{"apiVersion":"metrics.k8s.io/v1beta1","kind":"NodeMetricsList","items":[{"apiVersion":"metrics.k8s.io/v1beta1","kind":"NodeMetrics","metadata":{"name":"worker-1"},"usage":{"cpu":"1","memory":"256Mi"}}]}`
+	podMetricsNginxJSON  = `{"kind":"PodMetrics","apiVersion":"metrics.k8s.io/v1beta1","metadata":{"name":"nginx","namespace":"default","creationTimestamp":"2024-03-01T10:00:00Z"},"containers":[{"name":"nginx","usage":{"cpu":"250m","memory":"128Mi"}}]}`
 )
 
 // seedStore builds the in-memory state from the embedded fixtures. The route
@@ -407,6 +410,7 @@ func seedStore() (*store, error) {
 		st.objects[path] = data
 	}
 	st.objects["/api/v1/namespaces/default"] = []byte(namespaceDefaultJSON)
+	st.objects["/apis/metrics.k8s.io/v1beta1/namespaces/default/pods/nginx"] = []byte(podMetricsNginxJSON)
 
 	logData, err := Fixture("data/pod_log.txt")
 	if err != nil {

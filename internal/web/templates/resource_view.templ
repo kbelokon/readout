@@ -22,7 +22,15 @@ package templates
 type DetailData struct {
 	Breadcrumb DetailBreadcrumb
 
-	Name         string
+	Name string
+	// NameHead/NameTail split the H1 into the bright workload prefix + the
+	// muted hash tail (SPEC §6.6: the hash tail stays faint even in the
+	// title); NameTitle carries the FULL name in a title= tooltip when the
+	// head was middle-truncated. An empty NameHead (hand-built data) falls
+	// back to the plain Name.
+	NameHead     string
+	NameTail     string
+	NameTitle    string
 	Kind         string
 	DownloadHref string
 	DownloadIcon string
@@ -41,9 +49,17 @@ type DetailData struct {
 
 	Labels      []DetailLabelChip
 	Annotations []AnnotationChip
-	Node        *NodeSummary
+	// AnnotationsLong are the >120-char annotation values (SPEC §7.15): each
+	// renders below the chips as a collapsed `key · size` toggle + a hidden
+	// scrollable <pre> payload (readout.js owns the delegated toggle).
+	AnnotationsLong []AnnotationLong
+	Node            *NodeSummary
 
 	Owners []OwnerLink
+
+	// Containers is the pod containers table (D14), rendered between the
+	// owner line and the YAML cards. nil for non-pod kinds.
+	Containers *Containers
 
 	Secret    *SecretData
 	YAMLCards []YAMLCard
@@ -114,6 +130,49 @@ type AnnotationChip struct {
 	Full string
 }
 
+// AnnotationLong is one >120-char annotation (SPEC §7.15): a collapsed
+// `key · size` toggle button whose payload (`Value`, the FULL annotation)
+// expands into a scrollable <pre>. ChevIcon is the pre-rendered chevron SVG.
+type AnnotationLong struct {
+	Key      string
+	Size     string
+	Value    string
+	ChevIcon string
+}
+
+// Containers is the pod containers section (D14): Count/InitCount feed the
+// `Containers · N + M init` label; Rows arrive init-first, badged.
+type Containers struct {
+	Count     int
+	InitCount int
+	Rows      []ContainerRow
+}
+
+// ContainerRow is one container row (matches package-web containerRowView):
+// the state cell speaks the SPEC §3 tone vocabulary (kube.StatusTone via
+// StateTone + the transient StatePulse); empty Ready/Ports/CPU/Mem render the
+// faint "—"; Image is faint secondary text truncated with a title= tooltip.
+type ContainerRow struct {
+	Name string
+	Init bool
+
+	State      string
+	StateTone  string
+	StatePulse bool
+
+	Ready      string
+	ReadyClass string
+
+	Restarts     string
+	RestartsTone string
+	Ago          string
+
+	Ports string
+	CPU   string
+	Mem   string
+	Image string
+}
+
 // OwnerLink is one owner reference: either a kind/name split (rendered with the
 // "(Kind)" suffix) or a plain title.
 type OwnerLink struct {
@@ -160,12 +219,15 @@ type SecretData struct {
 }
 
 // YAMLCard is one collapsible per-section YAML card. Content is the trusted
-// highlighted-YAML HTML for the section, injected raw.
+// highlighted-YAML HTML for the section, injected raw. Collapsed starts the
+// card folded (SPEC §7.15: the Status card collapses by default) via the same
+// is-collapsed class the readout.js section-fold toggle drives.
 type YAMLCard struct {
-	Name     string
-	Title    string
-	CopyIcon string
-	Content  string
+	Name      string
+	Title     string
+	CopyIcon  string
+	Content   string
+	Collapsed bool
 }
 
 // EventRow is one event row in the Events tab table, inheriting the
@@ -244,7 +306,20 @@ templ ResourceView(d DetailData) {
 		if d.State.Kind != "" {
 			@detailStateBlock(d.State)
 		} else {
-			<div class="ro-detail-title"><h1 class="ro-title">{ d.Name }</h1> <span class="ro-kind-badge">{ d.Kind }</span><div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } title="Download resource object as YAML" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
+			<div class="ro-detail-title"><h1
+				class="ro-title"
+				if d.NameTitle != "" {
+					title={ d.NameTitle }
+				}
+			>
+			if d.NameHead != "" && d.NameTail != "" {
+				<span class="pn-head">{ d.NameHead }</span><span class="pn-tail">{ d.NameTail }</span>
+			} else if d.NameHead != "" {
+				<span class="pn-head">{ d.NameHead }</span>
+			} else {
+				{ d.Name }
+			}
+			</h1> <span class="ro-kind-badge">{ d.Kind }</span><div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } title="Download resource object as YAML" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
 				for _, link := range d.Links {
 					<a href={ templ.SafeURL(link.Href) } class="ro-iconbtn" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
 				}</div><span class="ro-detail-meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></div>
@@ -277,12 +352,19 @@ templ detailBody(d DetailData) {
 			}
 			</div></div>
 	}
-	if len(d.Annotations) > 0 {
-		<div class="ro-section"><div class="ro-section-label">Annotations</div><div class="ro-chips">
-			for _, chip := range d.Annotations {
-				<span class="ro-chip anno" title={ chip.Full }><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+	if len(d.Annotations) > 0 || len(d.AnnotationsLong) > 0 {
+		<div class="ro-section"><div class="ro-section-label">Annotations</div>
+			if len(d.Annotations) > 0 {
+				<div class="ro-chips">
+					for _, chip := range d.Annotations {
+						<span class="ro-chip anno" title={ chip.Full }><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+					}
+					</div>
 			}
-			</div></div>
+			for i, long := range d.AnnotationsLong {
+				<div class="anno-long"><button type="button" class="ro-chip anno-toggle" data-annolong={ itoa(i) } aria-expanded="false"><span class="ck">{ long.Key }</span><span class="cs">·</span><span class="cv">{ long.Size }</span><span class="anno-chev">@templ.Raw(long.ChevIcon)</span></button><pre class="anno-pre" hidden>{ long.Value }</pre></div>
+			}
+			</div>
 	}
 	if d.Node != nil {
 		@nodeSummary(*d.Node)
@@ -298,6 +380,9 @@ templ detailBody(d DetailData) {
 			}
 			</div>
 	}
+	if d.Containers != nil {
+		@containersSection(*d.Containers)
+	}
 	if d.Secret != nil {
 		<div class="section ro-section ro-secret-data" data-name="data"><article class="ro-notice ro-notice-info" role="note"><p class="ro-notice-title">Values masked</p><p>Secret values are base64-encoded in the Kubernetes API and are shown masked. This is a read-only view; the real values are never sent to your browser.</p></article><div class="ro-section-label">@templ.Raw("Data &middot; " + itoa(d.Secret.KeyCount) + " key" + pluralSuffix(d.Secret.KeyCount))</div><dl class="ro-secret-rows">
 			for _, key := range d.Secret.Keys {
@@ -306,7 +391,7 @@ templ detailBody(d DetailData) {
 			</dl></div>
 	}
 	for _, card := range d.YAMLCards {
-		<div class="section collapsible ro-yaml-card" data-name={ card.Name }><div class="ro-card-head"><h4 class="title ro-card-title">{ card.Title }</h4><button type="button" class="ro-copy-btn" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="ro-card-content">@templ.Raw(card.Content)</div></div>
+		<div class={ yamlCardClass(card.Collapsed) } data-name={ card.Name }><div class="ro-card-head"><h4 class="title ro-card-title">{ card.Title }</h4><button type="button" class="ro-copy-btn" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="ro-card-content">@templ.Raw(card.Content)</div></div>
 	}
 	if d.ShowNamespaceLinks {
 		<div class="ro-section"><a href={ templ.SafeURL(d.AllObjectsHref) }>Show all objects in this namespace</a></div>
@@ -315,6 +400,61 @@ templ detailBody(d DetailData) {
 	if d.RelatedPods != nil {
 		@subtableC(*d.RelatedPods)
 	}
+}
+
+// containersSection is the pod containers table (D14): a labelled redesign
+// .ro-table between the owner line and the YAML cards. Init containers lead,
+// each badged with the mute `init` kind-badge; the State cell is the
+// .cell-status/.ro-dot pair toned by kube.StatusTone (D4) with the transient
+// pulse (law §1.3); Ready speaks the prototype's ready/not-ready grammar
+// (init rows keep the faint "—"); Restarts reuses the list's
+// .restarts.zero|some + faint "(… ago)" suffix; CPU/Memory show real
+// PodMetrics values or the faint "—" (never zeros for a dead join); Image is
+// faint truncated secondary text with the full ref in its title=.
+templ containersSection(c Containers) {
+	<div class="ro-section ro-containers"><div class="ro-section-label">{ containersLabel(c.Count, c.InitCount) }</div><div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Name</th><th>State</th><th>Ready</th><th class="num">Restarts</th><th>Ports</th><th class="num">CPU</th><th class="num">Memory</th><th>Image</th></tr></thead><tbody>
+		for _, row := range c.Rows {
+			<tr><td class="cell-name"><span class="pn-head">{ row.Name }</span>
+				if row.Init {
+					{ " " }<span class="ro-kind-badge init">init</span>
+				}
+				</td><td>
+				if row.State == "" {
+					<span class="faint">—</span>
+				} else {
+					<span class={ cellStatusClass(row.StateTone) }><span class={ dotClass2(row.StateTone, row.StatePulse) } aria-hidden="true"></span>{ row.State }</span>
+				}
+				</td><td>
+				if row.Ready == "" {
+					<span class="faint">—</span>
+				} else {
+					<span class={ readyClassRD(row.ReadyClass) }>{ row.Ready }</span>
+				}
+				</td><td class="num"><span class={ restartsClassRD(row.RestartsTone) }>{ row.Restarts }</span>
+				if row.Ago != "" {
+					{ " " }<span class="ago">{ row.Ago }</span>
+				}
+				</td><td>
+				if row.Ports == "" {
+					<span class="faint">—</span>
+				} else {
+					{ row.Ports }
+				}
+				</td><td class="num">
+				if row.CPU == "" {
+					<span class="faint">—</span>
+				} else {
+					{ row.CPU }
+				}
+				</td><td class="num">
+				if row.Mem == "" {
+					<span class="faint">—</span>
+				} else {
+					{ row.Mem }
+				}
+				</td><td class="faint"><span class="trunc w-img" title={ row.Image }>{ row.Image }</span></td></tr>
+		}
+		</tbody></table></div></div>
 }
 
 // eventsSection is the Events-tab view: a labelled section wrapping the toned

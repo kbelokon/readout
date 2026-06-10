@@ -214,6 +214,7 @@ type metricsItem struct {
 }
 
 type containerUsage struct {
+	Name  string        `json:"name"`
 	Usage resourceUsage `json:"usage"`
 }
 
@@ -241,4 +242,35 @@ func MetricsUsage(obj map[string]any) (key string, cpu, mem float64) {
 		return key, cpu, mem
 	}
 	return key, item.Usage.CPU.AsApproximateFloat64(), item.Usage.Memory.AsApproximateFloat64()
+}
+
+// ContainerUsage is one container's resolved usage from a PodMetrics
+// `containers[]` entry: CPU in cores, memory in bytes.
+type ContainerUsage struct {
+	CPU    float64
+	Memory float64
+}
+
+// PodContainerUsage decodes a PodMetrics item into per-container usage keyed
+// by container name (the pod-detail containers table joins on it, D14). It
+// lives next to MetricsUsage so the metrics-object -> typed-values conversion
+// stays at this one seam. An undecodable object or one without a containers
+// list yields nil — the caller renders the no-metrics placeholder.
+func PodContainerUsage(obj map[string]any) map[string]ContainerUsage {
+	var item metricsItem
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &item); err != nil {
+		return nil
+	}
+	if len(item.Containers) == 0 {
+		return nil
+	}
+	out := make(map[string]ContainerUsage, len(item.Containers))
+	for i := range item.Containers {
+		c := &item.Containers[i]
+		out[c.Name] = ContainerUsage{
+			CPU:    c.Usage.CPU.AsApproximateFloat64(),
+			Memory: c.Usage.Memory.AsApproximateFloat64(),
+		}
+	}
+	return out
 }

@@ -428,6 +428,9 @@ func toDetailData(v *detailView) templates.DetailData {
 	d := templates.DetailData{
 		Breadcrumb:         toDetailBreadcrumb(v),
 		Name:               object.Name(),
+		NameHead:           v.NameHead,
+		NameTail:           v.NameTail,
+		NameTitle:          v.NameTitle,
 		Kind:               object.Kind(),
 		DownloadHref:       v.DownloadHref,
 		DownloadIcon:       icon("download"),
@@ -453,8 +456,34 @@ func toDetailData(v *detailView) templates.DetailData {
 	for _, chip := range v.Annotations {
 		d.Annotations = append(d.Annotations, templates.AnnotationChip{Key: chip.Key, Val: chip.Val, Full: chip.Full})
 	}
+	for _, long := range v.AnnotationsLong {
+		d.AnnotationsLong = append(d.AnnotationsLong, templates.AnnotationLong{Key: long.Key, Size: long.Size, Value: long.Value, ChevIcon: icon("chevron-down")})
+	}
 	if v.Node != nil {
 		d.Node = toNodeSummary(*v.Node)
+	}
+	if v.Containers != nil {
+		c := &templates.Containers{Count: v.Containers.Count, InitCount: v.Containers.InitCount}
+		for i := range v.Containers.Rows {
+			row := &v.Containers.Rows[i]
+			c.Rows = append(c.Rows, templates.ContainerRow{
+				Name:         row.Name,
+				Init:         row.Init,
+				State:        row.State,
+				StateTone:    row.StateTone,
+				StatePulse:   row.StatePulse,
+				Ready:        row.Ready,
+				ReadyClass:   row.ReadyClass,
+				Restarts:     row.Restarts,
+				RestartsTone: row.RestartsTone,
+				Ago:          row.Ago,
+				Ports:        row.Ports,
+				CPU:          row.CPU,
+				Mem:          row.Mem,
+				Image:        row.Image,
+			})
+		}
+		d.Containers = c
 	}
 	for _, owner := range v.Owners {
 		kind, name := splitOwnerTitle(owner.Title)
@@ -468,7 +497,7 @@ func toDetailData(v *detailView) templates.DetailData {
 		d.Secret = &templates.SecretData{KeyCount: v.Secret.KeyCount, Keys: v.Secret.Keys}
 	}
 	for _, card := range v.YAMLCards {
-		d.YAMLCards = append(d.YAMLCards, templates.YAMLCard{Name: card.Name, Title: card.Title, CopyIcon: icon("copy"), Content: card.Content})
+		d.YAMLCards = append(d.YAMLCards, templates.YAMLCard{Name: card.Name, Title: card.Title, CopyIcon: icon("copy"), Content: card.Content, Collapsed: card.Collapsed})
 	}
 	if v.RelatedPods != nil {
 		d.RelatedPods = toSubtable(v.RelatedPods)

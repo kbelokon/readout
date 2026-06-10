@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,16 +132,34 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, client 
 	// highlighted block was already resolved into v.HighlightedYAML above.
 	v.CreatedMeta = formatTimestamp(object.CreationTimestamp())
 	v.Version = nestedString(object.Raw, "metadata", "resourceVersion")
+	v.NameHead, v.NameTail, v.NameTitle = detailNameParts(&object)
 	if v.DefaultTab {
 		v.Labels = buildLabelChips(cluster.Name, renderNamespace, &object)
-		v.Annotations = buildAnnotationChips(&object)
+		v.Annotations, v.AnnotationsLong = buildAnnotationChips(&object)
 		if object.Kind() == "Node" {
 			v.Node = buildNodeSummaryView(&object)
+		}
+		if object.Kind() == "Pod" {
+			v.Containers = s.buildContainersView(&object, s.podContainerMetrics(r, client, renderNamespace, object.Name()))
 		}
 		v.Secret = secretView
 		v.YAMLCards = s.buildYAMLCards(cluster.Name, renderNamespace, &object)
 	}
 	return v, true
+}
+
+// detailNameParts resolves the detail H1's head/tail split: the same
+// splitObjectName + SPEC §4.2 MiddleTruncate pair the table name cells apply
+// (D14), so a pod/replicaset hash tail renders faint even in the title (SPEC
+// §6.6) and an over-42-char head middle-truncates with the FULL name riding
+// in the title= tooltip (nameTitle non-empty only then).
+func detailNameParts(object *kube.Object) (head, tail, nameTitle string) {
+	head, tail = splitObjectName(object.Resource.Plural, object.Name())
+	if display, truncated := MiddleTruncate(head, nameHeadMax, nameHeadLead, nameHeadTrail); truncated {
+		head = display
+		nameTitle = object.Name()
+	}
+	return head, tail, nameTitle
 }
 
 // detailState classifies a detail-page fetch failure into the forbidden state
@@ -214,29 +233,184 @@ func buildLabelChips(cluster, namespace string, object *kube.Object) []labelChip
 	return out
 }
 
-// buildAnnotationChips resolves the annotation chips (sorted keys). Val is the
-// value truncated to 40 for the clipped chip body; Full is the complete
-// "key: value" string for the title= tooltip, so the chip can clip its body
-// while the tooltip still shows the full untruncated value.
-func buildAnnotationChips(object *kube.Object) []annotationChipView {
+// annotationLongThreshold is the SPEC §7.15 chip/block split: an annotation
+// value over this many bytes (last-applied-configuration and friends) is no
+// chip — it renders as a collapsed `key · size` toggle expanding to a
+// scrollable <pre>. At or under it, the value stays a chip (40-char display
+// cut, full value in the title= tooltip).
+const annotationLongThreshold = 120
+
+// buildAnnotationChips resolves the annotations (sorted keys) into the two
+// SPEC §7.15 forms. Chips (≤120 chars): Val is the value truncated to 40 for
+// the clipped chip body; Full is the complete "key: value" string for the
+// title= tooltip. Long values (>120 chars): the key + humanBytes size for the
+// collapsed toggle, plus the full value for the expandable <pre> — a long
+// value never gets a chip OR a tooltip-only rendering.
+func buildAnnotationChips(object *kube.Object) ([]annotationChipView, []annotationLongView) {
 	annotations := object.Annotations()
 	if len(annotations) == 0 {
-		return nil
+		return nil, nil
 	}
 	keys := make([]string, 0, len(annotations))
 	for key := range annotations {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	out := make([]annotationChipView, 0, len(keys))
+	var chips []annotationChipView
+	var long []annotationLongView
 	for _, key := range keys {
-		out = append(out, annotationChipView{
+		value := annotations[key]
+		if len(value) > annotationLongThreshold {
+			long = append(long, annotationLongView{
+				Key:   key,
+				Size:  humanBytes(int64(len(value))),
+				Value: value,
+			})
+			continue
+		}
+		chips = append(chips, annotationChipView{
 			Key:  key,
-			Val:  truncate(annotations[key], 40),
-			Full: key + ": " + annotations[key],
+			Val:  truncate(value, 40),
+			Full: key + ": " + value,
 		})
 	}
-	return out
+	return chips, long
+}
+
+// podContainerMetrics fetches the pod's PodMetrics object and resolves its
+// per-container usage map. Availability detection mirrors joinMetrics: a
+// cluster without metrics-server fails FindResourceByKind (discovery, cached
+// 60s) and a too-young pod fails the Get — both yield nil, which renders every
+// CPU/Memory cell as the faint "—" (D14: real values only when the metrics
+// join is live; never zeros invented for a dead join).
+func (s *Server) podContainerMetrics(r *http.Request, client *kube.Client, namespace, name string) map[string]kube.ContainerUsage {
+	rt, err := client.FindResourceByKind(r.Context(), "metrics.k8s.io/v1beta1", "PodMetrics", true)
+	if err != nil {
+		return nil
+	}
+	obj, err := client.Get(r.Context(), &rt, namespace, name)
+	if err != nil {
+		return nil
+	}
+	return kube.PodContainerUsage(obj.Object)
+}
+
+// buildContainersView resolves the pod containers table (D14). Pod is a fixed
+// kind, so the object is decoded once into a corev1.Pod. Rows are driven by
+// the SPEC declaration order — spec.initContainers first (each badged `init`),
+// then spec.containers — so every declared container appears even before the
+// kubelet posts a status; each row joins its status.initContainerStatuses /
+// status.containerStatuses entry by container name (state, ready, restarts +
+// ago) and its PodMetrics containers[] usage when the metrics join is live.
+// Image and ports come from the spec side of the join. A pod that declares no
+// containers (or fails to decode) yields nil — no section renders.
+func (s *Server) buildContainersView(object *kube.Object, usage map[string]kube.ContainerUsage) *containersSectionView {
+	var pod corev1.Pod
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Raw, &pod); err != nil {
+		return nil
+	}
+	if len(pod.Spec.Containers)+len(pod.Spec.InitContainers) == 0 {
+		return nil
+	}
+	statuses := make(map[string]*corev1.ContainerStatus, len(pod.Status.ContainerStatuses)+len(pod.Status.InitContainerStatuses))
+	for i := range pod.Status.InitContainerStatuses {
+		statuses[pod.Status.InitContainerStatuses[i].Name] = &pod.Status.InitContainerStatuses[i]
+	}
+	for i := range pod.Status.ContainerStatuses {
+		statuses[pod.Status.ContainerStatuses[i].Name] = &pod.Status.ContainerStatuses[i]
+	}
+	v := &containersSectionView{Count: len(pod.Spec.Containers), InitCount: len(pod.Spec.InitContainers)}
+	now := s.clock()
+	for i := range pod.Spec.InitContainers {
+		v.Rows = append(v.Rows, containerRow(&pod.Spec.InitContainers[i], statuses, usage, true, now))
+	}
+	for i := range pod.Spec.Containers {
+		v.Rows = append(v.Rows, containerRow(&pod.Spec.Containers[i], statuses, usage, false, now))
+	}
+	return v
+}
+
+// containerRow resolves one container row from the spec entry + its joined
+// status and metrics. The state cell speaks the SPEC §3 status vocabulary:
+// the word is Running / the terminated reason / the waiting reason (D14 —
+// CrashLoopBackOff, ImagePullBackOff, Completed, ... ARE the state), toned by
+// kube.StatusTone (D4) and pulsing only for the transient set (law §1.3). An
+// absent status renders the faint "—" state and an untoned 0-restart cell —
+// the row never invents runtime facts the kubelet has not posted.
+func containerRow(spec *corev1.Container, statuses map[string]*corev1.ContainerStatus, usage map[string]kube.ContainerUsage, init bool, now time.Time) containerRowView {
+	row := containerRowView{
+		Name:     spec.Name,
+		Init:     init,
+		Ports:    containerPortsText(spec.Ports),
+		Image:    spec.Image,
+		Restarts: "0",
+	}
+	if u, ok := usage[spec.Name]; ok {
+		row.CPU = cpuFormat(u.CPU)
+		row.Mem = memoryMiBFormat(u.Memory) + "Mi"
+	}
+	status := statuses[spec.Name]
+	if status == nil {
+		row.RestartsTone = restartsTone(row.Restarts)
+		return row
+	}
+	row.State = containerStateWord(status)
+	row.StateTone = kube.StatusTone(row.State)
+	row.StatePulse = transientStatus(row.State)
+	if !init {
+		// The prototype's regular-row ready grammar; init rows keep the faint
+		// "—" (an init container's readiness is its completion).
+		if status.Ready {
+			row.Ready, row.ReadyClass = "ready", "full"
+		} else {
+			row.Ready, row.ReadyClass = "not ready", "partial"
+		}
+	}
+	row.Restarts = groupThousands(strconv.Itoa(int(status.RestartCount)))
+	row.RestartsTone = restartsTone(row.Restarts)
+	if status.RestartCount > 0 {
+		if t := status.LastTerminationState.Terminated; t != nil && !t.FinishedAt.IsZero() {
+			row.Ago = "(" + duration.HumanDuration(now.Sub(t.FinishedAt.Time)) + " ago)"
+		}
+	}
+	return row
+}
+
+// containerStateWord derives the SPEC §3 state word from a container status:
+// Running, the terminated reason (Completed, Error, OOMKilled, ...), or the
+// waiting reason (CrashLoopBackOff, ContainerCreating, ...) — the same words
+// the pod list's Status column speaks, so kube.StatusTone owns their tones. A
+// reason-less terminated/waiting state falls back to the bare state name; a
+// status carrying none of the three yields "" (rendered as the faint "—").
+func containerStateWord(status *corev1.ContainerStatus) string {
+	switch state := &status.State; {
+	case state.Running != nil:
+		return "Running"
+	case state.Terminated != nil:
+		return first(state.Terminated.Reason, "Terminated")
+	case state.Waiting != nil:
+		return first(state.Waiting.Reason, "Waiting")
+	}
+	return ""
+}
+
+// containerPortsText renders a spec container's ports as the prototype's
+// `port/PROTO` list ("1337/TCP", multi-port comma-joined). The protocol
+// defaults to TCP when the spec omits it (the API default). No ports yields
+// "" — the cell renders the faint "—".
+func containerPortsText(ports []corev1.ContainerPort) string {
+	if len(ports) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		proto := string(p.Protocol)
+		if proto == "" {
+			proto = "TCP"
+		}
+		parts = append(parts, strconv.Itoa(int(p.ContainerPort))+"/"+proto)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // buildNodeSummaryView resolves the Node-kind summary blocks (conditions,
@@ -353,7 +527,9 @@ func buildSecretDataView(object *kube.Object) *secretDataView {
 
 // buildYAMLCards resolves the per-section YAML cards: sorted top-level keys
 // (excluding metadata/apiVersion/kind and the Secret data key), the capitalized
-// title, and the highlighted-YAML content.
+// title, and the highlighted-YAML content. The status card starts Collapsed
+// (SPEC §7.15: Spec open, Status collapsed by default — status is the
+// machine-noise section on every kind); the readout.js fold toggle reopens it.
 func (s *Server) buildYAMLCards(cluster, namespace string, object *kube.Object) []yamlCardView {
 	keys := make([]string, 0, len(object.Raw))
 	for key := range object.Raw {
@@ -367,9 +543,10 @@ func (s *Server) buildYAMLCards(cluster, namespace string, object *kube.Object) 
 	for _, key := range keys {
 		data, _ := yamlview.Marshal(object.Raw[key])
 		out = append(out, yamlCardView{
-			Name:    key,
-			Title:   capitalizeWord(key),
-			Content: s.highlightYAML(cluster, namespace, object, key+"-", string(data)),
+			Name:      key,
+			Title:     capitalizeWord(key),
+			Content:   s.highlightYAML(cluster, namespace, object, key+"-", string(data)),
+			Collapsed: key == "status",
 		})
 	}
 	return out

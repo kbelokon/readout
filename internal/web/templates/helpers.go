@@ -255,6 +255,27 @@ func chipClass(extra bool) string {
 	return "ro-chip"
 }
 
+// containersLabel is the pod containers section label, mirroring the
+// prototype grammar: `Containers · N`, plus ` + M init` when init containers
+// exist.
+func containersLabel(count, initCount int) string {
+	label := "Containers · " + strconv.Itoa(count)
+	if initCount > 0 {
+		label += " + " + strconv.Itoa(initCount) + " init"
+	}
+	return label
+}
+
+// yamlCardClass is the per-section YAML card class: the collapsible card
+// triple, plus `is-collapsed` when the card starts folded (SPEC §7.15 -- the
+// Status card collapses by default; the readout.js fold toggle reopens it).
+func yamlCardClass(collapsed bool) string {
+	if collapsed {
+		return "section collapsible ro-yaml-card is-collapsed"
+	}
+	return "section collapsible ro-yaml-card"
+}
+
 // thClass is the table header class: the kube column class (e.g. "num" for a
 // numeric column) plus the redesign `sorted` modifier on the active sort column.
 func thClass(colClass string, sorted bool) string {

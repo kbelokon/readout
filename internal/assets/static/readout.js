@@ -242,6 +242,25 @@ document.addEventListener('click', (event) => {
         }
         return;
     }
+    // Long-annotation toggle (SPEC §7.15): a >120-char annotation renders as a
+    // collapsed `key · size` button + a hidden scrollable <pre> payload. The
+    // delegated click flips the [hidden] attribute on the sibling .anno-pre,
+    // mirrors the state into aria-expanded, and rotates the chevron via the
+    // .open class -- CSP-clean (no inline handler) and morph-safe (server truth
+    // re-renders collapsed; expansion is a transient peek, like the chip
+    // overflow above).
+    const annoToggle = target.closest('[data-annolong]');
+    if (annoToggle) {
+        event.preventDefault();
+        const pre = annoToggle.parentElement && annoToggle.parentElement.querySelector('.anno-pre');
+        if (pre) {
+            const open = pre.hidden;
+            pre.hidden = !open;
+            annoToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+            annoToggle.classList.toggle('open', open);
+        }
+        return;
+    }
     // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
     // sidebar by toggling `.is-active` on `.ro-sidebar` (the <760px reveal CSS +
     // the button itself are owned by Unit 15; this is the JS half of D11). No-op

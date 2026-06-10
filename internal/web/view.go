@@ -411,6 +411,15 @@ type detailView struct {
 	Object    kube.Object
 	Title     string
 
+	// NameHead/NameTail split the detail H1 into the bright workload prefix +
+	// the muted hash tail (SPEC §6.6: the hash tail stays faint even in the
+	// title), via the same splitObjectName/MiddleTruncate pair the table name
+	// cells use (D14). NameTitle carries the FULL name for the title= tooltip
+	// when the head was middle-truncated; "" otherwise.
+	NameHead  string
+	NameTail  string
+	NameTitle string
+
 	DownloadHref string
 	Links        []config.Link
 
@@ -440,7 +449,16 @@ type detailView struct {
 
 	Labels      []labelChipView
 	Annotations []annotationChipView
-	Node        *nodeSummaryView // non-nil only for Kind == Node
+	// AnnotationsLong are the >120-char annotation values (SPEC §7.15 /
+	// D14): each renders as a collapsed `key · size` toggle whose payload
+	// expands into a scrollable <pre>, never as a chip.
+	AnnotationsLong []annotationLongView
+	Node            *nodeSummaryView // non-nil only for Kind == Node
+
+	// Containers is the pod containers table (D14): init containers first
+	// (badged), then regular, each joining status/spec/metrics. nil for
+	// non-pod kinds and for a pod whose spec decodes no containers.
+	Containers *containersSectionView
 
 	Secret    *secretDataView // non-nil only for masked Secret with data
 	YAMLCards []yamlCardView
@@ -487,6 +505,52 @@ type annotationChipView struct {
 	Full string
 }
 
+// annotationLongView is one >120-char annotation (SPEC §7.15): the key, the
+// humanBytes payload size shown on the collapsed toggle, and the full value
+// rendered (escaped) inside the hidden scrollable <pre>.
+type annotationLongView struct {
+	Key   string
+	Size  string
+	Value string
+}
+
+// containersSectionView is the pod containers table (D14): Count/InitCount
+// drive the `Containers · N + M init` section label; Rows are ordered init
+// containers first (badged), then regular, both in spec declaration order.
+type containersSectionView struct {
+	Count     int
+	InitCount int
+	Rows      []containerRowView
+}
+
+// containerRowView is one container row. State/Ready/Restarts/Ago come from
+// the status.containerStatuses / status.initContainerStatuses entry joined by
+// name; Ports/Image come from the spec.containers entry; CPU/Mem come from the
+// PodMetrics containers[] join when live ("" renders the faint "—"). The
+// StateTone is kube.StatusTone(State) (D4 — the single value->tone owner, the
+// waiting/terminated reason IS the state word); StatePulse marks the transient
+// set (law §1.3).
+type containerRowView struct {
+	Name string
+	Init bool
+
+	State      string
+	StateTone  string
+	StatePulse bool
+
+	Ready      string // "ready" / "not ready"; "" (init or no status) renders "—"
+	ReadyClass string // full / partial
+
+	Restarts     string
+	RestartsTone string // zero / some
+	Ago          string // "(6d ago)" suffix, "" when never restarted
+
+	Ports string
+	CPU   string
+	Mem   string
+	Image string
+}
+
 // nodeSummaryView holds the resolved Node-kind summary blocks.
 type nodeSummaryView struct {
 	Conditions  []nodeConditionView
@@ -520,10 +584,14 @@ type secretDataView struct {
 
 // yamlCardView is one resolved per-section YAML card. Content is the trusted
 // highlighted-YAML HTML produced by the YAML highlighter (injected raw).
+// Collapsed marks a card that starts folded (SPEC §7.15: the Status card is
+// collapsed by default) — the same is-collapsed class the readout.js section
+// fold toggles.
 type yamlCardView struct {
-	Name    string
-	Title   string
-	Content string
+	Name      string
+	Title     string
+	Content   string
+	Collapsed bool
 }
 
 // subtableView is the related-pods subtable on the detail page, with column sort

@@ -84,8 +84,9 @@ func buildDefaultDetailView(t *testing.T, obj *kube.Object) *detailView {
 		Version:      nestedString(obj.Raw, "metadata", "resourceVersion"),
 		DownloadHref: objectDownloadYAMLHref("test", obj.Namespace(), obj),
 	}
+	v.NameHead, v.NameTail, v.NameTitle = detailNameParts(obj)
 	v.Labels = buildLabelChips("test", obj.Namespace(), obj)
-	v.Annotations = buildAnnotationChips(obj)
+	v.Annotations, v.AnnotationsLong = buildAnnotationChips(obj)
 	v.YAMLCards = app.buildYAMLCards("test", obj.Namespace(), obj)
 	return v
 }

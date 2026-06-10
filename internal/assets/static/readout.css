@@ -2273,6 +2273,20 @@
     .ro-rd a.ro-chip:hover .cv { color: var(--accent-text); }
     .ro-rd .ro-chip.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
     .ro-rd .ro-chip.anno { max-width: 320px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+
+    /* long annotations (SPEC §7.15): a >120-char value renders as a collapsed
+       `key · size` toggle chip; the payload expands into a scrollable <pre>
+       capped at 300px (the only place a long annotation value renders whole).
+       readout.js flips [hidden] on the .anno-pre + .open on the toggle. */
+    .ro-rd .anno-long { margin-top: 7px; }
+    .ro-rd .ro-chip.anno-toggle { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    .ro-rd .ro-chip.anno-toggle:hover { border-color: var(--border-strong); }
+    .ro-rd .ro-chip.anno-toggle .anno-chev { display: inline-flex; color: var(--text-faint); transition: transform var(--dur); }
+    .ro-rd .ro-chip.anno-toggle.open .anno-chev { transform: rotate(180deg); }
+    .ro-rd .anno-pre { margin: 7px 0 0; padding: 11px 14px; background: var(--code-bg);
+        border: 1px solid var(--border); border-radius: var(--radius-sm);
+        font: 11px/1.65 var(--font-mono); color: var(--text-muted);
+        max-height: 300px; max-width: 720px; overflow: auto; }
     /* In a list TABLE the label chips must WRAP inside a bounded column instead
        of blowing it out to max-content (which widened the table past the viewport
        and clipped the last chip at the scroll edge). Bounding the chip CONTAINER
@@ -2371,6 +2385,13 @@
     .ro-rd .ro-kind-badge { order: 0; font-weight: 400; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
         text-transform: uppercase; padding: 3px 8px; border-radius: 5px;
         background: var(--accent-weak); color: var(--accent); }
+    /* the containers-table `init` badge is MUTE, not accent (D14): an init
+       container is a fact, not a call to action. */
+    .ro-rd .ro-kind-badge.init { background: var(--st-mute-bg); color: var(--st-mute); }
+    /* SPEC §6.6: the hash tail stays faint even in the title; the tail also
+       sheds the heading weight so the workload head leads (prototype). The
+       colours ride the global .pn-head/.pn-tail rules. */
+    .ro-detail-title .ro-title .pn-tail { font-weight: 500; }
     .ro-detail-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); margin-left: auto; }
     .ro-detail-actions { display: flex; gap: 4px; }
 
