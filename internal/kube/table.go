@@ -621,8 +621,13 @@ func equalStrings(a, b []string) bool {
 //	warn  Pending, ContainerCreating, PodInitializing, Terminating, Warning,
 //	      Released, Init:* without an error
 //	err   CrashLoopBackOff, Error, Failed, NotReady, OOMKilled,
-//	      ImagePullBackOff, Evicted, BackoffLimitExceeded, Init:* whose state
-//	      carries Error/BackOff
+//	      ImagePullBackOff, Evicted, BackoffLimitExceeded, ErrImagePull,
+//	      CreateContainerConfigError, InvalidImageName, OutOfcpu, Init:* whose
+//	      state carries Error/BackOff
+//
+// The last four extend SPEC §3 by user decision (2026-06-10): they are
+// terminal pod failure words v1 rendered red; the SPEC's mute fallback was a
+// signal regression on real clusters.
 //
 // Anything else falls back to mute: an unknown status is shown grey, never
 // colour-invented. The events Reason vocabulary (Killing, Pulling, ...) is
@@ -637,7 +642,8 @@ func StatusTone(value string) string {
 		return "mute"
 	case "Pending", "ContainerCreating", "PodInitializing", "Terminating", "Warning", "Released":
 		return "warn"
-	case "CrashLoopBackOff", "Error", "Failed", "NotReady", "OOMKilled", "ImagePullBackOff", "Evicted", "BackoffLimitExceeded":
+	case "CrashLoopBackOff", "Error", "Failed", "NotReady", "OOMKilled", "ImagePullBackOff", "Evicted", "BackoffLimitExceeded",
+		"ErrImagePull", "CreateContainerConfigError", "InvalidImageName", "OutOfcpu":
 		return "err"
 	}
 	// Init container progress ("Init:0/1", "Init:CrashLoopBackOff", ...): an

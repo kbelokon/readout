@@ -316,6 +316,13 @@ var specStatusToneRows = []struct {
 	{"ImagePullBackOff", "err"},
 	{"Evicted", "err"},
 	{"BackoffLimitExceeded", "err"},
+	// err — D4 amendment 2026-06-10 (user-approved): terminal pod failure
+	// words v1 rendered red; SPEC §3 omitted them and the mute fallback was
+	// a signal regression on real clusters.
+	{"ErrImagePull", "err"},
+	{"CreateContainerConfigError", "err"},
+	{"InvalidImageName", "err"},
+	{"OutOfcpu", "err"},
 	{"Init:CrashLoopBackOff", "err"},
 	{"Init:Error", "err"},
 	{"Init:ImagePullBackOff", "err"},

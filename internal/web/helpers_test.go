@@ -130,13 +130,19 @@ func TestStatusToneSpecTableCrossPackage(t *testing.T) {
 		{"Init:Error", "err", false},
 		{"Init:ImagePullBackOff", "err", false},
 		{"Init:CreateContainerConfigError", "err", false},
+		// err -- D4 amendment 2026-06-10 (user-approved SPEC §3 extension):
+		// terminal pod failure words v1 rendered red
+		{"ErrImagePull", "err", false},
+		{"CreateContainerConfigError", "err", false},
+		{"InvalidImageName", "err", false},
+		{"OutOfcpu", "err", false},
 		// fallback mute -- unknown words, the cordoned-node status, and empty
 		{"SomeOperatorPhase", "mute", false},
 		{"Ready,SchedulingDisabled", "mute", false},
 		{"", "mute", false},
 	}
-	if len(rows) != 32 {
-		t.Fatalf("cross-package tone rows = %d, want the 32 rows of internal/kube/table_test.go's specStatusToneRows (keep the mirrors in sync)", len(rows))
+	if len(rows) != 36 {
+		t.Fatalf("cross-package tone rows = %d, want the 36 rows of internal/kube/table_test.go's specStatusToneRows (keep the mirrors in sync)", len(rows))
 	}
 	plurals := []string{"pods", "namespaces", "nodes", "persistentvolumes", "persistentvolumeclaims", "jobs", "widgets"}
 	for _, c := range rows {
