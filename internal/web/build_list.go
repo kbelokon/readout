@@ -34,6 +34,13 @@ type listContext struct {
 	Errors          []error
 	Duration        time.Duration
 	Clients         requestKubeClients
+
+	// ColVis maps each table's plural to its column-visibility universe (D8):
+	// every column of the fully-decorated table plus the synthetic Created, with
+	// hidden/identity flags -- captured at the removal point in applyTableOptions
+	// (the removed columns are gone from Tables, so the popover needs this to
+	// re-offer them) and merged across clusters like MergeTables merges columns.
+	ColVis map[string][]columnVis
 }
 
 func (lc *listContext) Title() string {
@@ -85,8 +92,12 @@ func (s *Server) listContext(r *http.Request) (listContext, error) {
 	var tables []kube.Table
 	var errs []error
 	byPlural := map[string]int{}
+	colVis := map[string][]columnVis{}
 	for _, slot := range slots {
 		errs = append(errs, slot.errs...)
+		for plural, vis := range slot.colVis {
+			colVis[plural] = mergeColumnVis(colVis[plural], vis)
+		}
 		for ti := range slot.tables {
 			table := &slot.tables[ti]
 			if idx, ok := byPlural[table.Resource.Plural]; ok {
@@ -97,15 +108,17 @@ func (s *Server) listContext(r *http.Request) (listContext, error) {
 			}
 		}
 	}
-	return listContext{Cluster: clusterName, Namespace: namespace, Plural: plural, IsAllClusters: allClusters, IsAllNamespaces: isAllNamespaces, ClusterCount: len(clusters), Tables: tables, Errors: errs, Duration: s.clock().Sub(start), Clients: clients}, nil
+	return listContext{Cluster: clusterName, Namespace: namespace, Plural: plural, IsAllClusters: allClusters, IsAllNamespaces: isAllNamespaces, ClusterCount: len(clusters), Tables: tables, Errors: errs, Duration: s.clock().Sub(start), Clients: clients, ColVis: colVis}, nil
 }
 
 // clusterTableResult is one cluster's fan-out slot: its ordered tables (in
-// resourceTypes iteration order) plus the per-(cluster,type) failures collected
+// resourceTypes iteration order), the per-plural column-visibility universes
+// captured by applyTableOptions, plus the per-(cluster,type) failures collected
 // as error records. The caller merges slots across clusters in fixed cluster
 // order.
 type clusterTableResult struct {
 	tables []kube.Table
+	colVis map[string][]columnVis
 	errs   []error
 }
 
@@ -115,6 +128,7 @@ type clusterTableResult struct {
 func (s *Server) clusterTables(r *http.Request, client *kube.Client, cluster *kube.Cluster, resourceTypes []string, namespace string, isAllNamespaces bool) clusterTableResult {
 	var tables []kube.Table
 	var errs []error
+	colVis := map[string][]columnVis{}
 	for _, typ := range resourceTypes {
 		typ = strings.TrimSpace(typ)
 		if typ == "" {
@@ -141,10 +155,11 @@ func (s *Server) clusterTables(r *http.Request, client *kube.Client, cluster *ku
 		for i := range table.Rows {
 			table.Rows[i].Cluster = cluster.Name
 		}
-		s.applyTableOptions(r, client, &table, namespace, isAllNamespaces)
+		vis := s.applyTableOptions(r, client, &table, namespace, isAllNamespaces)
+		colVis[table.Resource.Plural] = mergeColumnVis(colVis[table.Resource.Plural], vis)
 		tables = append(tables, table)
 	}
-	return clusterTableResult{tables: tables, errs: errs}
+	return clusterTableResult{tables: tables, colVis: colVis, errs: errs}
 }
 
 // unionNamespacedResourceTypes resolves the sorted union of namespaced resource
@@ -182,7 +197,7 @@ func (s *Server) unionNamespacedResourceTypes(r *http.Request, clusters []*kube.
 	return resourceTypes
 }
 
-func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool) {
+func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool) []columnVis {
 	q := r.URL.Query()
 	// D9 cookie fill: the ro_prefs colvis/sort prefs stand in for ABSENT URL
 	// params (URL always wins; single-type pages only; render-only -- r.URL is
@@ -198,7 +213,6 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 			hide = s.cfg.DefaultHiddenColumns[table.Resource.Plural]
 		}
 	}
-	kube.RemoveColumns(table, hide)
 	labels := first(q.Get("labelcols"), q.Get("label-columns"), s.cfg.DefaultLabelColumns[table.Resource.Plural])
 	kube.AddLabelColumns(table, labels)
 	if table.Resource.Plural == "nodes" {
@@ -229,6 +243,16 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 	if custom != "" {
 		s.joinCustomColumns(r.Context(), client, table, namespace, allNamespaces, custom, q)
 	}
+	// Column visibility (D8): applied AFTER the label / synthetic / joined
+	// columns land, so the hide spec can remove synthetic columns too (until v2
+	// it ran before the decorations, which made node Pods/Conditions, the
+	// deployment Rollout, the namespace Labels, and the joined usage columns
+	// unhideable) and the captured universe covers everything the table renders.
+	// Filters and sort still run AFTER the removal, exactly as before: a hidden
+	// column stays unfilterable and unsortable. The identity column is protected
+	// here -- never removed, `*` included (the sticky first column, the
+	// name-click open, and the row gestures all hang off it).
+	vis := applyHiddenColumns(table, hide)
 	kube.FilterRowsByNamespace(table, s.cfg.IncludeNamespaces, s.cfg.ExcludeNamespaces)
 	kube.FilterTable(table, q.Get("filter"), false)
 	// Filters v2 (D7): the repeatable `?f=` chips, single-type pages only (the
@@ -261,6 +285,85 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 			table.Rows = table.Rows[:n]
 		}
 	}
+	return vis
+}
+
+// columnVis is one column-visibility entry (D8): a column of the FULLY
+// decorated table (label columns, synthetic node/deployment/namespace columns,
+// joined usage columns, the template-synthetic Created) plus whether the
+// current render hides it and whether it is the protected identity column.
+// The ⊞ popover renders one checkbox per entry, so hidden columns stay
+// re-offerable even though they are gone from the kube.Table.
+type columnVis struct {
+	Name     string
+	Hidden   bool
+	Identity bool
+}
+
+// applyHiddenColumns resolves the effective hidecols spec against the
+// decorated table: it returns the full popover universe and removes the hidden
+// columns. The identity column -- the "Name" column, or the first column for a
+// kind whose Table has none (the same nameColumn rule the row keys and the
+// sticky column use) -- is NEVER removed, `*` included: a forced
+// ?hidecols=Name is ignored server-side (D8). The synthetic Created column is
+// template-rendered, not a kube column, so it joins the universe here and
+// hides via the render flag rather than kube.RemoveColumns.
+func applyHiddenColumns(table *kube.Table, spec string) []columnVis {
+	hidden := map[string]bool{}
+	for _, name := range strings.Split(spec, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			hidden[name] = true
+		}
+	}
+	hides := func(name string) bool { return hidden["*"] || hidden[name] }
+	protected := ""
+	if len(table.Columns) > 0 {
+		protected = table.Columns[nameColumn(table)].Name
+	}
+	vis := make([]columnVis, 0, len(table.Columns)+1)
+	var remove []string
+	for _, col := range table.Columns {
+		entry := columnVis{Name: col.Name, Identity: col.Name == protected}
+		if !entry.Identity && hides(col.Name) {
+			entry.Hidden = true
+			remove = append(remove, col.Name)
+		}
+		vis = append(vis, entry)
+	}
+	vis = append(vis, columnVis{Name: "Created", Hidden: hides("Created")})
+	if len(remove) > 0 {
+		// k8s printer-column names never contain commas (the same invariant the
+		// cookie's comma-joined fill relies on), so the explicit name list is a
+		// safe RemoveColumns spec -- and `*` never reaches kube unexpanded.
+		kube.RemoveColumns(table, strings.Join(remove, ","))
+	}
+	return vis
+}
+
+// mergeColumnVis unions two column-visibility universes the way MergeTables
+// unions columns: the left order wins and unseen right entries append -- but
+// BEFORE the trailing Created entry, so the synthetic column stays last,
+// mirroring the rendered header order. A nil left passes right through.
+func mergeColumnVis(left, right []columnVis) []columnVis {
+	if left == nil {
+		return right
+	}
+	seen := map[string]bool{}
+	for _, entry := range left {
+		seen[entry.Name] = true
+	}
+	for _, entry := range right {
+		if seen[entry.Name] {
+			continue
+		}
+		seen[entry.Name] = true
+		if n := len(left); n > 0 && left[n-1].Name == "Created" {
+			left = append(left[:n-1], entry, left[n-1])
+		} else {
+			left = append(left, entry)
+		}
+	}
+	return left
 }
 
 func (s *Server) joinMetrics(ctx context.Context, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, labelSelector string) {
@@ -629,6 +732,21 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 		}
 		if (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") && joinValue == "" {
 			tv.ShowMetricsHref = addQuery(r.URL, "join", "metrics")
+		}
+		// Column visibility (D8): the synthetic Created column hides through a
+		// render flag (it is not a kube column), and the popover universe rides
+		// only on single-type pages -- the same D1 gate the loop, the chips
+		// editor, and the cookie fill share. A hand-built listContext without
+		// ColVis (tests) keeps Created shown.
+		if vis, ok := lc.ColVis[table.Resource.Plural]; ok {
+			for _, entry := range vis {
+				if entry.Name == "Created" {
+					tv.HideCreated = entry.Hidden
+				}
+			}
+			if single {
+				tv.ColumnVis = vis
+			}
 		}
 		for _, col := range table.Columns {
 			sortParam := col.Name

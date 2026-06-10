@@ -354,9 +354,13 @@ func warnIcon() string {
 }
 
 // emptyColspan computes the empty-row <td> colspan: the kube.Table column count
-// + 1 (the Created column), plus the optional Cluster / Namespace columns.
-func emptyColspan(columnCount int, multiCluster, allNamespaces bool) int {
-	colspan := columnCount + 1
+// + 1 for the Created column (unless the D8 hide set suppressed it), plus the
+// optional Cluster / Namespace columns.
+func emptyColspan(columnCount int, multiCluster, allNamespaces, hideCreated bool) int {
+	colspan := columnCount
+	if !hideCreated {
+		colspan++
+	}
 	if multiCluster {
 		colspan++
 	}

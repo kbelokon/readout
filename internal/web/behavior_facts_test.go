@@ -80,10 +80,12 @@ func TestBehaviorAppChromeAndJSContract(t *testing.T) {
 	p.wantAbsent("nav.navbar")
 	p.wantHas(".ro-shell aside.ro-sidebar #aside-menu")
 	p.wantHas(".ro-shell main.ro-main")
-	// The tools-table toggle is CONTENT (the resource-list tools form), unchanged
-	// by the shell migration; it still names its target via data-target.
-	p.wantAttr("a.toggle-tools", "data-target", "tools-table-1")
-	p.wantHas("#tools-table-1")
+	// Single-type pages carry the D8 columns popover in the title row (it
+	// replaced the v1 toggle-tools + tools form there; multi-type pages keep
+	// the old chrome -- pinned in TestColsPopoverSingleTypeGate).
+	p.wantAttr("button#ro-cols-btn[data-cols-toggle]", "title", "Columns")
+	p.wantHas("#ro-cols-pop .col-toggle")
+	p.wantAbsent("a.toggle-tools")
 
 	// Auto-refresh dropdown: each option carries data-interval; the handler
 	// stores that value and re-arms the poll.
@@ -519,14 +521,16 @@ func TestBehaviorPodListFacts(t *testing.T) {
 	// "Show CPU/Memory Usage" affordance (join=metrics not yet applied).
 	p.wantAttr(`a[href="/clusters/test/namespaces/default/pods?join=metrics"]`, "href", "/clusters/test/namespaces/default/pods?join=metrics")
 
-	// The tools form carries the owned .ro-* layout and the labelcols / selector /
-	// filter inputs the delegated submit handler blanks-when-empty.
-	p.wantHas(`form.tools-form .ro-tools-grid`)
-	p.wantHas(`form.tools-form .ro-tools-field .ro-input[name="labelcols"]`)
-	p.wantHas(`form.tools-form .ro-tools-field .ro-input[name="selector"]`)
-	p.wantHas(`form.tools-form .ro-tools-field .ro-input[name="filter"]`)
-	p.wantHas(`form.tools-form .ro-field-icon`)
-	p.wantHas(`form.tools-form button.ro-btn.quiet[type="submit"]`)
+	// The labelcols / selector inputs live in the D8 columns popover on
+	// single-type pages (the delegated submit handler blanks-when-empty matches
+	// form.ro-pop-form too); the filter input's home is the chips editor (D7),
+	// so the v1 tools form is fully retired here.
+	p.wantHas(`form.ro-pop-form .ro-input[name="labelcols"]`)
+	p.wantHas(`form.ro-pop-form .ro-input[name="selector"]`)
+	p.wantHas(`form.ro-pop-form .ro-field-icon`)
+	p.wantHas(`form.ro-pop-form button.ro-btn.quiet[type="submit"]`)
+	p.wantHas(`#ro-filter-input`)
+	p.wantAbsent(`form.tools-form`)
 }
 
 // TestBehaviorPodListSortToggle pins the descending-toggle behaviour: with
@@ -605,19 +609,19 @@ func TestBehaviorPodListAllNamespaces(t *testing.T) {
 func TestBehaviorListQueryMatrix(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 
-	t.Run("labelcols adds an App column and activates the tools form", func(t *testing.T) {
+	t.Run("labelcols adds an App column and fills the popover input", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?labelcols=app", http.StatusOK)
-		p.wantAttr(`form.tools-form .ro-input[name="labelcols"]`, "value", "app")
-		p.wantHas("form.tools-form.is-active")
-		p.wantHas("form.tools-form.is-active .ro-tools-grid")
+		p.wantAttr(`form.ro-pop-form .ro-input[name="labelcols"]`, "value", "app")
 		if !contains(p.texts("thead th"), "App") {
 			t.Fatalf("labelcols=app did not add an App column: %v", p.texts("thead th"))
 		}
+		// The label column joins the popover universe as a hideable entry.
+		p.wantHas(`#ro-cols-pop .col-toggle[data-col="App"] .ro-check[checked]`)
 	})
 
-	t.Run("selector round-trips into the selector input", func(t *testing.T) {
+	t.Run("selector round-trips into the popover selector input", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?selector=app%3Dnginx", http.StatusOK)
-		p.wantAttr(`form.tools-form .ro-input[name="selector"]`, "value", "app=nginx")
+		p.wantAttr(`form.ro-pop-form .ro-input[name="selector"]`, "value", "app=nginx")
 		// The selector rides every header's partial sort hx-get (D6: the partial
 		// request must carry the full current query so a sort keeps the selector).
 		want := "/clusters/test/namespaces/default/pods/_table?selector=app%3Dnginx&sort=Name"
@@ -626,13 +630,15 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("filter narrows rows and round-trips into the filter input", func(t *testing.T) {
+	t.Run("filter narrows rows (the param keeps working without its retired input)", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?filter=nginx", http.StatusOK)
-		p.wantAttr(`form.tools-form .ro-input[name="filter"]`, "value", "nginx")
 		if got := p.texts("td.cell-name"); strings.Join(got, "|") != "nginx" {
 			t.Fatalf("filter=nginx rows = %v, want [nginx]", got)
 		}
 		p.wantText(".ro-phase-strip .ro-phase-tally .ro-phase-count", "1")
+		// The filter input's new home is the chips editor (D7); no legacy input.
+		p.wantAbsent(`input[name="filter"]`)
+		p.wantHas("#ro-filter-input")
 	})
 
 	t.Run("a filter matching nothing renders the empty-FILTERED state", func(t *testing.T) {

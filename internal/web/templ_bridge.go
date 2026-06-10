@@ -215,9 +215,25 @@ func toTableData(t *tableView) templates.TableData {
 		CreatedIcon:        t.CreatedIcon,
 		CreatedSorted:      t.CreatedIcon != "",
 		CreatedPartialHref: t.CreatedPartialHref,
+		HideCreated:        t.HideCreated,
 		EmptyKind:          t.Table.Resource.Kind,
 		EmptyGlyph:         icon("inbox"),
 		ClearHref:          t.ClearHref,
+	}
+	// The ⊞ column-visibility popover (D8): single-type pages only (buildListView
+	// fills ColumnVis under the D1 gate). It absorbs the tools form's labelcols +
+	// selector inputs, so it reuses the resolved toolsView values + hidden-input
+	// round-trip; nil keeps the v1 toggle-tools chrome.
+	if len(t.ColumnVis) > 0 {
+		pop := &templates.ColsPopover{
+			Plural: t.Table.Resource.Plural,
+			Icon:   icon("columns-3"),
+			Tools:  toTableTools(&t.Tools),
+		}
+		for _, entry := range t.ColumnVis {
+			pop.Entries = append(pop.Entries, templates.ColsEntry{Name: entry.Name, Hidden: entry.Hidden, Identity: entry.Identity})
+		}
+		td.Cols = pop
 	}
 	if t.EmptyAction != nil {
 		td.EmptyActionHref = t.EmptyAction.Href

@@ -135,6 +135,18 @@ type tableView struct {
 	// (D1), where the Created header stays a plain boosted link.
 	CreatedPartialHref string
 
+	// HideCreated suppresses the synthetic Created header/cells (D8): the
+	// Created column is template-rendered, not a kube column, so the hide set
+	// reaches it through this flag rather than kube.RemoveColumns. The zero
+	// value keeps Created shown.
+	HideCreated bool
+
+	// ColumnVis is the column-visibility popover universe (D8): every column of
+	// the fully-decorated table + the synthetic Created, with hidden/identity
+	// flags. Non-nil only on single-type pages (the D1 gate); nil keeps the v1
+	// toggle-tools form chrome.
+	ColumnVis []columnVis
+
 	Tools toolsView
 
 	Rows []rowView

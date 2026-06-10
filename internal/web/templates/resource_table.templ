@@ -2,10 +2,11 @@ package templates
 
 // resource_table.templ is the resource-list TABLE fragment (the body of the
 // `.../{plural}/_table` GET partial route AND the inner content of the full
-// list page's #resource-list-content container): per-table title row (count chip
-// + TSV/columns/search-this actions) + tools form + phase strip + the redesign
-// `.ro-table` (in `.ro-table-wrap`), then the footer meta line and the
-// all-cluster partial-failure banner.
+// list page's #resource-list-content container): per-table title row (count
+// chip + TSV / columns / search-this actions -- the columns action is the D8
+// ⊞ popover on single-type pages, the v1 toggle-tools + tools form elsewhere)
+// + phase strip + the redesign `.ro-table` (in `.ro-table-wrap`), then the
+// footer meta line and the all-cluster partial-failure banner.
 //
 // This is the canonical resource-list ENGINE: it renders Pods (rich cells),
 // Nodes/Deployments/Namespaces (rich cells arrive in later waves), and every
@@ -108,6 +109,17 @@ type TableData struct {
 
 	Tools TableTools
 
+	// Cols is the ⊞ column-visibility popover (D8): non-nil on single-type
+	// pages, where it REPLACES the v1 toggle-tools button + tools form (the
+	// filter input's new home is the chips editor, labelcols + selector move
+	// into the popover). nil (multi-type pages, D1) keeps the v1 chrome.
+	Cols *ColsPopover
+
+	// HideCreated suppresses the synthetic Created header and cells (D8): the
+	// Created column is rendered by this template, not carried by the kube
+	// Table, so the hide set reaches it through this flag.
+	HideCreated bool
+
 	ShowMetricsHref string
 
 	Phase     []PhaseChip
@@ -177,6 +189,27 @@ type TableColumn struct {
 	// headers, so the synthetic Created / leading Cluster/Namespace headers
 	// (which the server-side filter cannot bind) are never suggested.
 	Hint string
+}
+
+// ColsPopover is the ⊞ column-visibility popover (D8): the per-column
+// checkbox entries (the full universe -- hidden columns included, so they stay
+// re-offerable) plus the labelcols / selector inputs absorbed from the tools
+// form (Tools carries their values and the hidden param round-trip; its
+// FilterVal is unused here -- the chips editor owns filtering).
+type ColsPopover struct {
+	Plural  string
+	Icon    string // pre-rendered ⊞ glyph (raw SVG)
+	Entries []ColsEntry
+	Tools   TableTools
+}
+
+// ColsEntry is one popover checkbox: the column name, whether the current
+// render hides it, and whether it is the protected identity column (rendered
+// checked + disabled -- the server ignores it in hidecols too).
+type ColsEntry struct {
+	Name     string
+	Hidden   bool
+	Identity bool
 }
 
 // TableTools is the per-table tools form (label columns / selector / filter).
@@ -315,11 +348,20 @@ templ resourceTables(d ListData) {
 			<h1 class="title ro-title">{ table.Kind }</h1> <span class="ro-count">{ itoa(table.Count) }</span> <span style="flex:1"></span>
 			<div class="ro-title-actions">
 				<a href={ templ.SafeURL(table.DownloadTSVHref) } title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
-				<a href="#" class="ro-iconbtn toggle-tools" title="Columns &amp; filters" data-target={ toolsTableID(i) }><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
+				if table.Cols != nil {
+					<span class="rel">
+						<button type="button" id="ro-cols-btn" class="ro-iconbtn" data-cols-toggle title="Columns" aria-haspopup="true" aria-expanded="false"><span class="icon">@templ.Raw(table.Cols.Icon)</span></button>
+						@colsPopover(*table.Cols)
+					</span>
+				} else {
+					<a href="#" class="ro-iconbtn toggle-tools" title="Columns &amp; filters" data-target={ toolsTableID(i) }><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
+				}
 				<a href={ templ.SafeURL(table.SearchHref) } class="ro-iconbtn" title="Search this type"><span class="icon">@templ.Raw(table.SearchIcon)</span></a>
 			</div>
 		</div>
-		@toolsForm(table.Tools, i)
+		if table.Cols == nil {
+			@toolsForm(table.Tools, i)
+		}
 		if i == 0 && d.FilterBar != nil {
 			@filterBar(*d.FilterBar)
 		}
@@ -356,14 +398,16 @@ templ resourceTables(d ListData) {
 					}
 				>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
 			}
-			<th class={ thClass("", table.CreatedSorted) }><a
-				href={ templ.SafeURL(table.CreatedHref) }
-				if table.CreatedPartialHref != "" {
-					hx-get={ table.CreatedPartialHref }
-					hx-target="#resource-list-content"
-					hx-swap="morph"
-				}
-			>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
+			if !table.HideCreated {
+				<th class={ thClass("", table.CreatedSorted) }><a
+					href={ templ.SafeURL(table.CreatedHref) }
+					if table.CreatedPartialHref != "" {
+						hx-get={ table.CreatedPartialHref }
+						hx-target="#resource-list-content"
+						hx-swap="morph"
+					}
+				>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
+			}
 			</tr></thead><tbody>
 			for _, row := range table.Rows {
 				<tr
@@ -382,10 +426,13 @@ templ resourceTables(d ListData) {
 					for _, cell := range row.Cells {
 						@tableCell(cell)
 					}
-					<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</td></tr>
+					if !table.HideCreated {
+						<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</td>
+					}
+					</tr>
 			}
 			if len(table.Rows) == 0 {
-				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces)) }>
+				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces, table.HideCreated)) }>
 					if len(table.EmptyFilters) > 0 {
 						@emptyFiltered(d, table)
 					} else {
@@ -547,7 +594,7 @@ templ pcard(d ListData, table TableData, row TableRow) {
 					<span class="m"><span class="k">{ metaKey(&table, ci) }</span>@pcardCell(cell)</span>
 				}
 			}
-			if row.CreatedText != "" {
+			if !table.HideCreated && row.CreatedText != "" {
 				<span class="m"><span class="k">created</span><span class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</span></span>
 			}
 			</div>
@@ -682,6 +729,62 @@ templ toolsForm(t TableTools, tableIndex int) {
 
 func toolsTableID(tableIndex int) string {
 	return "tools-table-" + itoa(tableIndex+1)
+}
+
+// colsPopover renders the ⊞ column-visibility popover (D8): one checkbox row
+// per column of the FULL universe (hidden columns included; the identity
+// column checked + disabled), then the labelcols / selector form absorbed from
+// the v1 tools form. It lives inside the morphed fragment, so every toggle's
+// partial re-render refreshes the checkbox states from server truth;
+// readout.js owns the open state (`.is-open`, re-applied after each morph) and
+// the toggle gesture (cookie write + RO-No-Push `_table` re-render -- never a
+// history entry). The stable ids let idiomorph match the popover and its
+// inputs across morphs (ignoreActiveValue keeps a focused draft).
+templ colsPopover(c ColsPopover) {
+	<div class="ro-pop" id="ro-cols-pop" data-plural={ c.Plural }>
+		<div class="pop-head">Columns</div>
+		for _, entry := range c.Entries {
+			<button
+				type="button"
+				class="col-toggle"
+				data-col={ entry.Name }
+				if entry.Identity {
+					disabled
+					title="The identity column cannot be hidden"
+				}
+			><input
+				type="checkbox"
+				class="ro-check"
+				tabindex="-1"
+				if !entry.Hidden {
+					checked
+				}
+				if entry.Identity {
+					disabled
+				}
+			><span>{ entry.Name }</span></button>
+		}
+		@colsPopoverForm(c)
+	</div>
+}
+
+// colsPopoverForm is the labelcols + selector half of the popover: the same
+// read-only GET form mechanics the v1 tools form used (hidden inputs
+// round-trip the other params; readout.js blanks empty input names on submit
+// so they never pollute the URL). Capabilities kept: the `labelcols` /
+// `selector` params and their config defaults are untouched -- only the input
+// chrome moved here.
+templ colsPopoverForm(c ColsPopover) {
+	<form action="#" method="get" class="ro-pop-form">
+		for _, in := range c.Tools.HiddenInputs {
+			<input type="hidden" name={ in.Name } value={ in.Value }>
+		}
+		<div class="pop-head">Label columns</div>
+		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TableIcon)</span><input id="ro-cols-labelcols" class="ro-input" type="text" placeholder="Labels as columns (comma separated, '*' for all)" name="labelcols" value={ c.Tools.LabelColsVal } aria-label="Label columns"></span>
+		<div class="pop-head">Label selector</div>
+		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TagsIcon)</span><input id="ro-cols-selector" class="ro-input" type="text" placeholder="Label selector (label=value)" name="selector" value={ c.Tools.SelectorVal } aria-label="Label selector"></span>
+		<div class="ro-tools-actions"><button class="ro-btn quiet" type="submit">Apply</button></div>
+	</form>
 }
 
 // rowChip renders one label chip in a table cell (and its mobile-card mirror):

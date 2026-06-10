@@ -64,10 +64,16 @@ func TestToolsFormUniqueIDs(t *testing.T) {
 
 func TestListToolsRoundTripApiVersion(t *testing.T) {
 	app := newTestServer(t)
+	// Single-type pages re-home the labelcols/selector inputs into the D8
+	// columns popover (form.ro-pop-form); the hidden-input param round-trip is
+	// the contract under test and must survive the move.
 	p := get(t, app, "/clusters/test/namespaces/default/pods?apiVersion=v1&api_version=v1&limit=2&label-columns=app&hide-columns=Age", http.StatusOK)
-	form := p.doc.Find("form.tools-form")
+	form := p.doc.Find("form.ro-pop-form")
 	if form.Length() != 1 {
-		t.Fatalf("tools forms = %d, want 1", form.Length())
+		t.Fatalf("popover forms = %d, want 1", form.Length())
+	}
+	if p.doc.Find("form.tools-form").Length() != 0 {
+		t.Fatalf("single-type page still renders the retired v1 tools form")
 	}
 	for name, want := range map[string]string{
 		"apiVersion":    "v1",
@@ -83,6 +89,13 @@ func TestListToolsRoundTripApiVersion(t *testing.T) {
 		if got, _ := input.Attr("value"); got != want {
 			t.Fatalf("hidden input %q value = %q, want %q", name, got, want)
 		}
+	}
+	// The live labelcols/selector inputs moved with their values.
+	if got, _ := form.Find(`input[name="labelcols"]`).Attr("value"); got != "app" {
+		t.Fatalf("popover labelcols value = %q, want %q", got, "app")
+	}
+	if form.Find(`input[name="selector"]`).Length() != 1 {
+		t.Fatalf("popover lost the selector input")
 	}
 }
 

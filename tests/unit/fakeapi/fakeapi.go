@@ -465,9 +465,15 @@ func seedStore() (*store, error) {
 	}
 	st.lists["/api/v1/namespaces"] = namespaces
 
-	// The nodes route historically serves the namespaces fixture for Table
-	// negotiation and the node list otherwise -- preserved verbatim.
-	nodes, err := newListState("data/render_namespaces_list.json", "data/nodes_list.json")
+	// Nodes carry BOTH forms: a REAL nodes Table (kubectl -o wide printer
+	// columns incl. External-IP / OS-Image / Kernel-Version, with the full Node
+	// object riding each row -- the D8 column-visibility surface and the rich
+	// capacity/conditions cells read it) and the node List form consumed by the
+	// pods `join=nodes` custom-column join. The Table's worker-1 row matches the
+	// /api/v1/nodes/worker-1 object route, so the list page's name click
+	// resolves. (Historically the Table form served the namespaces fixture,
+	// which decoded as a ZERO-row table -- the nodes list page rendered empty.)
+	nodes, err := newListState("data/nodes_table.json", "data/nodes_list.json")
 	if err != nil {
 		return nil, err
 	}

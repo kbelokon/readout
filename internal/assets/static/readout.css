@@ -2572,6 +2572,35 @@
     .ro-rd .ro-ac-item .ac-hint { margin-left: auto; color: var(--text-faint); font-size: 11px; }
     .ro-rd .ro-ac-item.active { background: var(--accent-weak); }
 
+    /* ----------------------------------------------------------------------------
+       Column-visibility popover (D8) -- the ⊞ title-row action's dropdown:
+       one checkbox row per column (the identity row disabled) plus the
+       labelcols / selector form absorbed from the v1 tools form. Ported from
+       the prototype's chrome.css (.rel / .ro-pop / .pop-head / .col-toggle)
+       and scoped under the `.ro-rd` content marker like the chips editor. */
+    .ro-rd .rel { position: relative; }
+    .ro-rd .ro-pop { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 70;
+        width: 260px; padding: 5px; background: var(--surface); border: 1px solid var(--border-strong);
+        border-radius: var(--radius); box-shadow: var(--shadow-pop); }
+    .ro-rd .ro-pop.is-open { display: block; }
+    .ro-rd .ro-pop .pop-head { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--text-faint); padding: 7px 9px 4px; }
+    .ro-rd .col-toggle { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 9px;
+        border: 0; background: none; border-radius: var(--radius-sm); font-family: var(--font-ui);
+        font-size: 12.5px; color: var(--text); cursor: pointer; text-align: left; }
+    .ro-rd .col-toggle:hover { background: var(--surface-2); }
+    .ro-rd .col-toggle .ro-check { pointer-events: none; }
+    /* the identity row: locked on -- muted, no hover affordance */
+    .ro-rd .col-toggle:disabled { cursor: default; }
+    .ro-rd .col-toggle:disabled:hover { background: none; }
+    .ro-rd .col-toggle:disabled span { color: var(--text-faint); }
+    .ro-rd .col-toggle .ro-check:checked:disabled { background: var(--st-mute); border-color: var(--st-mute); }
+    /* the absorbed labelcols / selector form under a hairline */
+    .ro-rd .ro-pop-form { display: flex; flex-direction: column; gap: 4px; margin-top: 5px;
+        padding: 0 4px 6px; border-top: 1px solid var(--border-soft); }
+    .ro-rd .ro-pop-form .pop-head { padding-left: 5px; }
+    .ro-rd .ro-pop-form .ro-tools-actions { margin-top: 6px; }
+
     /* big empty state */
     .ro-empty-lg { display: flex; flex-direction: column; align-items: center; justify-content: center;
         text-align: center; padding: 72px 24px; }

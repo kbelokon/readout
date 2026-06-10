@@ -36,7 +36,10 @@ func TestNodeMetricsAndSecretCustomColumns(t *testing.T) {
 	if nodes.Code != http.StatusOK {
 		t.Fatalf("nodes metrics status=%d body=%s", nodes.Code, nodes.Body.String())
 	}
-	for _, needle := range []string{"CPU Usage", "Memory Usage", "No Node objects"} {
+	// The fakeapi nodes Table carries the worker-1 row (it served a zero-row
+	// bogus fixture before the D8 column work), so the metrics join renders the
+	// usage columns OVER a populated table now.
+	for _, needle := range []string{"CPU Usage", "Memory Usage", "worker-1"} {
 		if !strings.Contains(nodes.Body.String(), needle) {
 			t.Fatalf("node metrics missing %q: %s", needle, nodes.Body.String())
 		}

@@ -304,8 +304,8 @@ func TestFilterMultiTypePagesIgnoreF(t *testing.T) {
 
 // TestFilterLegacyCoexistence proves both grammars run together: the legacy
 // `?filter=` free text AND an `f` chip both apply, and `?selector=` rides the
-// same request as `f` (forwarded to the API + round-tripped into the tools
-// form) while f filters the rows.
+// same request as `f` (forwarded to the API + round-tripped into the D8
+// columns popover's selector input) while f filters the rows.
 func TestFilterLegacyCoexistence(t *testing.T) {
 	app := newTestServer(t)
 
@@ -318,7 +318,7 @@ func TestFilterLegacyCoexistence(t *testing.T) {
 	if names := p2.texts("td.cell-name"); strings.Join(names, ",") != "my-app" {
 		t.Fatalf("selector+f rows = %v, want my-app only (f applied alongside selector)", names)
 	}
-	p2.wantAttr(`form.tools-form input[name="selector"]`, "value", "app=nginx")
+	p2.wantAttr(`form.ro-pop-form input[name="selector"]`, "value", "app=nginx")
 	// Both params travel together on the rebuilt sort hrefs.
 	if !p2.containsHref("thead th a", "/clusters/test/namespaces/default/pods?f=name%3Amy&selector=app%3Dnginx&sort=Name") {
 		t.Fatalf("sort hrefs lost a grammar: %v", p2.attrs("thead th a", "href"))

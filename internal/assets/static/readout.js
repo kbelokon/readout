@@ -200,6 +200,32 @@ document.addEventListener('click', (event) => {
         }
         return;
     }
+    // Column-visibility popover (D8): the ⊞ title-row button toggles the
+    // popover open/closed. Open state is derived from the DOM (a boosted body
+    // swap renders it closed, so a stale flag can never invert the gesture);
+    // the colsPopOpen flag only re-applies `.is-open` after fragment morphs.
+    const colsBtn = target.closest('[data-cols-toggle]');
+    if (colsBtn) {
+        event.preventDefault();
+        const pop = document.getElementById('ro-cols-pop');
+        setColsPopOpen(!!pop && !pop.classList.contains('is-open'));
+        return;
+    }
+    // A column checkbox row: flip the checkbox optimistically, then commit the
+    // COMPLETE hidden set (as the user now sees it) to the ro_prefs cookie and
+    // re-render the fragment through the container's own programmatic path --
+    // cookie-state, not URL-state: RO-No-Push, zero history entries (D6/D9).
+    // The identity row is a disabled <button>, so its clicks never fire.
+    const colToggle = target.closest('.col-toggle');
+    if (colToggle) {
+        event.preventDefault();
+        const check = colToggle.querySelector('.ro-check');
+        if (check) {
+            check.checked = !check.checked;
+        }
+        commitColumnVisibility(colToggle.closest('.ro-pop'));
+        return;
+    }
     // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
     // sidebar by toggling `.is-active` on `.ro-sidebar` (the <760px reveal CSS +
     // the button itself are owned by Unit 15; this is the JS half of D11). No-op
@@ -526,9 +552,10 @@ document.addEventListener('focusin', (event) => {
 // Delegated SUBMIT handlers
 // ---------------------------------------------------------------------------
 document.addEventListener('submit', (event) => {
-    // form.tools-form: blank the `name` of empty inputs so they do not become
-    // empty query parameters in the resulting GET URL.
-    const form = event.target.closest('form.tools-form');
+    // form.tools-form (the v1 multi-type tools form) and form.ro-pop-form (the
+    // D8 popover's labelcols/selector form): blank the `name` of empty inputs
+    // so they do not become empty query parameters in the resulting GET URL.
+    const form = event.target.closest('form.tools-form, form.ro-pop-form');
     if (form) {
         Array.prototype.slice.call(form.getElementsByTagName('input')).forEach((input) => {
             if (input.name && !input.value) {
@@ -1307,10 +1334,10 @@ function roPrefsSetSort(plural, sort) {
     writePrefs(prefs);
 }
 
-// roPrefsSetHiddenColumns is the COLUMN-VISIBILITY write surface (Unit 9's
-// popover writes through it; nothing calls it yet). names is the COMPLETE
-// hidden-column list for the plural as the user sees it -- an EMPTY array is
-// an explicit "hide nothing" that the server distinguishes from "no
+// roPrefsSetHiddenColumns is the COLUMN-VISIBILITY write surface: the D8
+// columns popover commits through it (commitColumnVisibility). names is the
+// COMPLETE hidden-column list for the plural as the user sees it -- an EMPTY
+// array is an explicit "hide nothing" that the server distinguishes from "no
 // preference" (it suppresses the DefaultHiddenColumns config default).
 function roPrefsSetHiddenColumns(plural, names) {
     const prefs = readPrefs();
@@ -1680,6 +1707,12 @@ document.addEventListener('htmx:afterSwap', (event) => {
         if (filterInput && document.activeElement === filterInput && filterInput.value) {
             updateFilterAC();
         }
+        // The columns popover re-rendered closed (server truth carries no
+        // `.is-open`); re-open it when it was open before the swap so a column
+        // toggle / tick never snaps it shut mid-interaction (D8).
+        if (colsPopOpen) {
+            setColsPopOpen(true);
+        }
     }
 });
 
@@ -1734,6 +1767,84 @@ window.roRowState = {
         return Array.from(rowSelection);
     },
 };
+
+// ---------------------------------------------------------------------------
+// Column-visibility popover (D8, client half) -- the ⊞ title-row popover on
+// single-type list pages. The popover itself is SERVER-rendered inside the
+// morphed fragment (one checkbox per column of the full universe, hidden
+// columns included; the identity row disabled; the absorbed labelcols/selector
+// form); this script owns only the open state and the toggle gesture.
+// ---------------------------------------------------------------------------
+// A toggle is cookie-state, not URL-state (D9): it writes the COMPLETE hidden
+// set through roPrefsSetHiddenColumns (an empty array is the explicit "hide
+// nothing" that suppresses the config default) and re-renders by riding the
+// container's own programmatic path (requestListRefresh -> source
+// #resource-list-content -> RO-No-Push), so the server never answers with
+// HX-Push-Url -- zero history entries, and the URL never changes. The morph
+// re-renders the popover from server truth (checkbox states included) and
+// wipes the client-added `.is-open`, so colsPopOpen re-applies it after every
+// list swap; runInit re-derives the flag from the DOM so a boosted body swap
+// (which renders the popover closed) can never leave a stale-open flag.
+let colsPopOpen = false;
+
+function setColsPopOpen(open) {
+    colsPopOpen = open;
+    const pop = document.getElementById('ro-cols-pop');
+    if (pop) {
+        pop.classList.toggle('is-open', open);
+    }
+    const btn = document.getElementById('ro-cols-btn');
+    if (btn) {
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+}
+
+// syncColsPopState re-derives the open flag from the freshly-rendered DOM
+// (init + boosted swaps render the popover closed; no popover -> closed).
+function syncColsPopState() {
+    const pop = document.getElementById('ro-cols-pop');
+    colsPopOpen = !!pop && pop.classList.contains('is-open');
+}
+
+// commitColumnVisibility reads the popover's checkbox state into the complete
+// hidden-column list, persists it, and re-renders the fragment. The identity
+// row (disabled) never contributes; an in-flight container request (a tick or
+// a rapid prior toggle) is aborted first so a stale response can never land
+// over the newer cookie state.
+function commitColumnVisibility(pop) {
+    if (!pop) {
+        return;
+    }
+    const plural = pop.dataset.plural || '';
+    if (!plural) {
+        return;
+    }
+    const hidden = [];
+    pop.querySelectorAll('.col-toggle').forEach((toggle) => {
+        const check = toggle.querySelector('.ro-check');
+        if (!toggle.disabled && check && !check.checked && toggle.dataset.col) {
+            hidden.push(toggle.dataset.col);
+        }
+    });
+    roPrefsSetHiddenColumns(plural, hidden);
+    const content = document.getElementById('resource-list-content');
+    if (content && typeof htmx !== 'undefined') {
+        htmx.trigger(content, 'htmx:abort');
+    }
+    requestListRefresh();
+}
+
+// A click outside the popover (and not on its ⊞ opener) closes it -- the same
+// dismissal contract the autocomplete dropdown uses.
+document.addEventListener('click', (event) => {
+    if (!colsPopOpen) {
+        return;
+    }
+    if (event.target.closest('#ro-cols-pop') || event.target.closest('[data-cols-toggle]')) {
+        return;
+    }
+    setColsPopOpen(false);
+});
 
 // ---------------------------------------------------------------------------
 // Filters v2 chips editor (D7, client half) -- free-text live match, operator
@@ -2307,6 +2418,9 @@ function runInit() {
         // windowing init (Unit 24) that prunes rows from the DOM -- at this point
         // the DOM still IS the complete dataset.
         captureRowModelFromDocument,
+        // Columns-popover open flag (D8): re-derived from the fresh DOM so a
+        // boosted body swap (rendered closed) never leaves a stale-open flag.
+        syncColsPopState,
         // Row state is keyed by OBJECT identity and survives boosted body swaps
         // (script state persists); re-paint it on every init pass so a return
         // to a list re-decorates the same objects immediately, not only on the

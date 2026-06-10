@@ -113,6 +113,38 @@ func TestParseLoadsYAMLConfigEnvOverridesAndDefaults(t *testing.T) {
 	}
 }
 
+// TestHiddenColumnsShipV2DefaultsAndFileOverrides pins the D8 default-hidden
+// sets: an empty config ships the v2 noise-off defaults (nodes + pods), a file
+// entry for a kind REPLACES that kind's default outright (an explicit empty
+// value re-shows everything), and untouched kinds keep their shipped default.
+func TestHiddenColumnsShipV2DefaultsAndFileOverrides(t *testing.T) {
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultHiddenColumns["nodes"] != "External-IP,OS-Image,Kernel-Version,Created" {
+		t.Fatalf("nodes default = %q, want the v2 noise-off set", cfg.DefaultHiddenColumns["nodes"])
+	}
+	if cfg.DefaultHiddenColumns["pods"] != "IP,Nominated Node,Readiness Gates" {
+		t.Fatalf("pods default = %q, want the v2 noise-off set", cfg.DefaultHiddenColumns["pods"])
+	}
+
+	path := writeConfig(t, "hiddenColumns:\n  nodes: \"\"\n  pods: Status\n  secrets: Data\n")
+	cfg, err = Parse([]string{"--config", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.DefaultHiddenColumns["nodes"]; got != "" {
+		t.Fatalf("explicit-empty nodes entry = %q, want the default disabled", got)
+	}
+	if got := cfg.DefaultHiddenColumns["pods"]; got != "Status" {
+		t.Fatalf("file pods entry = %q, want it to replace the default outright", got)
+	}
+	if got := cfg.DefaultHiddenColumns["secrets"]; got != "Data" {
+		t.Fatalf("file secrets entry = %q, want the file value", got)
+	}
+}
+
 // TestParseSidebarKeepsDeclaredOrder pins that sidebar groups are an ordered
 // slice and the iterated order matches the file (NOT alphabetical -- "Workloads"
 // is declared before "Cluster", which would flip under alphabetical sorting).
