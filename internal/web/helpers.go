@@ -879,10 +879,17 @@ func delQuery(u *url.URL, keys ...string) string {
 }
 
 // queryEncodeKeepParens URL-encodes the query values but leaves parentheses
-// literal, so selector links like `?selector=app(in)(a,b)` stay readable in the
-// address bar instead of showing %28/%29.
+// and commas literal, so selector links like `?selector=app(in)(a,b)` stay
+// readable in the address bar instead of showing %28/%29. The literal comma
+// is also LOAD-BEARING for Filters v2 (D7): an `?f=status:Running,Pending`
+// chip's OR-comma is RAW on the wire, and every server-rebuilt href (sort
+// headers, metrics join, TSV download) round-trips the query through this
+// codec -- encoding the comma to %2C would silently collapse the OR into a
+// literal-comma alternative on the first click. The known cost: a deep link
+// that deliberately encodes %2C (a literal comma inside one alternative)
+// degrades to an OR comma after one rebuilt-href navigation.
 func queryEncodeKeepParens(values url.Values) string {
-	return strings.NewReplacer("%28", "(", "%29", ")").Replace(values.Encode())
+	return strings.NewReplacer("%28", "(", "%29", ")", "%2C", ",").Replace(values.Encode())
 }
 
 func resourceListBaseURL(u *url.URL) *url.URL {

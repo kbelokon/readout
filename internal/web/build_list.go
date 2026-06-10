@@ -218,6 +218,18 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 	}
 	kube.FilterRowsByNamespace(table, s.cfg.IncludeNamespaces, s.cfg.ExcludeNamespaces)
 	kube.FilterTable(table, q.Get("filter"), false)
+	// Filters v2 (D7): the repeatable `?f=` chips, single-type pages only (the
+	// D1 boundary -- the same gate the interaction loop uses). A multi-type
+	// page that receives `f` anyway IGNORES it: never a 500, never a
+	// surprise-empty table the client UI cannot explain. Chips run on the full
+	// dataset BEFORE sort/limit, after the joins/decorations (so the joined
+	// metrics and synthetic columns are filterable) and alongside the legacy
+	// params -- both grammars AND-combine. Parsed from RawQuery because the
+	// OR-comma is RAW on the wire; an encoded %2C is a literal comma inside
+	// one alternative (see filter.go).
+	if isSingleListType(r.PathValue("plural")) {
+		applyFilterChips(table, parseFilterParams(r.URL.RawQuery))
+	}
 	kube.GuessColumnClasses(table)
 	// Node CPU/Memory + usage columns render as rich LEFT-aligned bar cells, so
 	// drop the numeric right-alignment GuessColumnClasses infers from their float
@@ -572,7 +584,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	filterChips := buildFilterChips(r)
 	clearHref := ""
 	if len(filterChips) > 0 {
-		clearHref = delQuery(r.URL, "filter", "selector", "labelcols", "label-columns")
+		clearHref = delQuery(r.URL, "filter", "selector", "labelcols", "label-columns", "f")
 	}
 
 	for ti := range lc.Tables {
@@ -703,6 +715,16 @@ func buildFilterChips(r *http.Request) []filterChipView {
 	}
 	if labelCols := first(q.Get("labelcols"), q.Get("label-columns")); labelCols != "" {
 		chips = append(chips, filterChipView{Label: "labels: " + labelCols, RemoveHref: delQuery(r.URL, "labelcols", "label-columns")})
+	}
+	// Filters v2 chips (D7): one removable chip per `?f=` param, single-type
+	// pages only (the same gate applyTableOptions filters under -- a multi-type
+	// page ignores `f`, so its emptiness must never be blamed on it). The ✕
+	// removes exactly that raw occurrence so sibling chips keep their raw
+	// OR-comma encoding byte-for-byte.
+	if isSingleListType(r.PathValue("plural")) {
+		for _, chip := range parseFilterParams(r.URL.RawQuery) {
+			chips = append(chips, filterChipView{Label: chip.display(), RemoveHref: delQueryRawValue(r.URL, "f", chip.Raw)})
+		}
 	}
 	return chips
 }
