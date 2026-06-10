@@ -50,6 +50,12 @@ users:
   user: {}
 `
 
+// readoutConfig enables the surfaces the suite exercises beyond the zero
+// config: container logs (the /logs page renders the disabled notice without
+// it; fakeapi serves the pod-log fixture either way).
+const readoutConfig = `showContainerLogs: true
+`
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -72,7 +78,7 @@ func run() error {
 	defer fake.Close()
 	log.Printf("fakeapi listening on %s (control surface at %s/__control/)", fake.URL, fake.URL)
 
-	kubeconfig, cleanup, err := writeKubeconfig(fake.URL)
+	kubeconfig, configPath, cleanup, err := writeConfigs(fake.URL)
 	if err != nil {
 		return err
 	}
@@ -83,7 +89,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cmd := exec.CommandContext(ctx, binary, "--port", strconv.Itoa(readoutPort))
+	cmd := exec.CommandContext(ctx, binary, "--port", strconv.Itoa(readoutPort), "--config", configPath)
 	// Duplicate env keys resolve last-wins, so an inherited KUBECONFIG is
 	// overridden by the generated one.
 	cmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfig)
@@ -117,21 +123,28 @@ func readoutBinary() (string, error) {
 	return abs, nil
 }
 
-// writeKubeconfig renders a single-context kubeconfig pointing at the fake
-// apiserver. The context name becomes readout's cluster name, so the suite
-// navigates to /clusters/e2e.
-func writeKubeconfig(serverURL string) (path string, cleanup func(), err error) {
+// writeConfigs renders the harness file pair into one temp dir: a
+// single-context kubeconfig pointing at the fake apiserver (the context name
+// becomes readout's cluster name, so the suite navigates to /clusters/e2e) and
+// the readout.yaml the binary is launched with (--config).
+func writeConfigs(serverURL string) (kubeconfig, configPath string, cleanup func(), err error) {
 	dir, err := os.MkdirTemp("", "readout-e2e-")
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	path = filepath.Join(dir, "kubeconfig")
+	cleanup = func() { _ = os.RemoveAll(dir) }
+	kubeconfig = filepath.Join(dir, "kubeconfig")
 	content := fmt.Sprintf(kubeconfigTemplate, serverURL)
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", nil, err
+	if err := os.WriteFile(kubeconfig, []byte(content), 0o600); err != nil {
+		cleanup()
+		return "", "", nil, err
 	}
-	return path, func() { _ = os.RemoveAll(dir) }, nil
+	configPath = filepath.Join(dir, "readout.yaml")
+	if err := os.WriteFile(configPath, []byte(readoutConfig), 0o600); err != nil {
+		cleanup()
+		return "", "", nil, err
+	}
+	return kubeconfig, configPath, cleanup, nil
 }
 
 func envInt(name string, fallback int) int {

@@ -174,6 +174,23 @@ document.addEventListener('click', (event) => {
         requestListRefresh();
         return;
     }
+    // Logs Follow toggle (D25): the active accent "Following" sticks the
+    // stream to its tail; clicking flips to the quiet "Follow" (and back).
+    // Re-activating snaps the stream to the tail immediately. Pure class +
+    // label flips -- no request, the read-only floor is untouched.
+    const logFollow = target.closest('#logFollow');
+    if (logFollow) {
+        const following = !logFollow.classList.toggle('quiet');
+        logFollow.setAttribute('aria-pressed', following ? 'true' : 'false');
+        const label = logFollow.querySelector('.follow-label');
+        if (label) {
+            label.textContent = following ? 'Following' : 'Follow';
+        }
+        if (following) {
+            logsScrollToTail();
+        }
+        return;
+    }
     // Chips editor (D7): a chip's ✕ is a real link (no-JS fallback) whose href
     // is the server-built removal URL; intercept it to ride the v2 partial loop
     // (morph + canonical push) instead of a full navigation.
@@ -452,6 +469,27 @@ document.addEventListener('change', (event) => {
             ).length > 0;
             button.disabled = !anyChecked;
         }
+        return;
+    }
+
+    // Logs display toggles (D25): CLIENT-SIDE only, no refetch. The timestamps
+    // checkbox shows/hides the .log-ts spans via the stream's `hide-ts` class;
+    // the wrap checkbox toggles `wrap` (pre-wrap + break-word). The server
+    // already rendered every span -- these are pure presentation flips.
+    const logTs = event.target.closest('#logTs');
+    if (logTs) {
+        const pre = document.querySelector('pre.ro-logpre');
+        if (pre) {
+            pre.classList.toggle('hide-ts', !logTs.checked);
+        }
+        return;
+    }
+    const logWrap = event.target.closest('#logWrap');
+    if (logWrap) {
+        const pre = document.querySelector('pre.ro-logpre');
+        if (pre) {
+            pre.classList.toggle('wrap', logWrap.checked);
+        }
     }
 });
 
@@ -711,7 +749,8 @@ function collapseSectionsFromHash() {
 // we compute each line's indentation at load and inject a fold toggle before any
 // line that OPENS a nested block (a `key:` / `- key:` whose following lines indent
 // deeper). Clicking the toggle hides that block's deeper-indented child lines and
-// shows a `{ N lines }` summary -- the `containers: > { ... }` affordance.
+// shows the faint italic `… N lines` note (the v2 prototype's fold-note) on the
+// opener line -- the `containers: … 5 lines` affordance.
 //
 // Everything is DOM-only (document.createElement, classList, dataset) -- no eval,
 // no innerHTML-with-handlers, no inline style. The whole pass is wrapped in
@@ -743,13 +782,13 @@ function yamlEffectiveIndent(text) {
 // removed. Folded child lines stay in the DOM (only hidden), so this is the FULL
 // source YAML in any fold state -- the per-section copy stays correct. Clones the
 // cell (cheap, code-only) so the live DOM is untouched, then drops the toggle +
-// summary nodes before reading textContent.
+// fold-note nodes before reading textContent.
 function yamlCodeText(codeCell) {
-    if (!codeCell.querySelector('.ro-fold-toggle, .ro-fold-summary')) {
+    if (!codeCell.querySelector('.ro-fold-toggle, .ro-fold-note')) {
         return codeCell.textContent; // no folds injected -> raw text already clean
     }
     const clone = codeCell.cloneNode(true);
-    clone.querySelectorAll('.ro-fold-toggle, .ro-fold-summary').forEach((el) => {
+    clone.querySelectorAll('.ro-fold-toggle, .ro-fold-note').forEach((el) => {
         el.remove();
     });
     return clone.textContent;
@@ -816,22 +855,12 @@ function buildYamlFolds() {
                 // body = contiguous following lines indented deeper than the opener
                 let end = i + 1;
                 let bodyCount = 0;
-                let itemCount = 0;
                 while (end < lines.length) {
                     if (isBlank[end]) {
                         end++;
                         continue;
                     }
                     if (indents[end] > indents[i]) {
-                        const t = lines[end].textContent.replace(/^\s+/, '');
-                        // a direct sequence item of THIS block (one level deeper,
-                        // list indicator) -> counts toward the "N items" summary
-                        if (
-                            indents[end] === indents[i] + 2 &&
-                            (t === '-' || t.startsWith('- ') || t.startsWith('-\t'))
-                        ) {
-                            itemCount++;
-                        }
                         lines[end].dataset.foldOf = lines[end].dataset.foldOf
                             ? `${lines[end].dataset.foldOf} ${lines[i].id}`
                             : lines[i].id;
@@ -844,7 +873,7 @@ function buildYamlFolds() {
                 if (bodyCount === 0) {
                     continue;
                 }
-                injectFoldControls(lines[i], bodyCount, itemCount);
+                injectFoldControls(lines[i], bodyCount);
             }
         } catch (e) {
             // Anything unexpected -> leave this block plainly highlighted (the
@@ -854,12 +883,14 @@ function buildYamlFolds() {
     });
 }
 
-// Inject the fold toggle + collapsed summary into an opener line span. The toggle
-// is a real <button> (keyboard-focusable, CSP-clean) placed right after the line's
-// leading <a> anchor so the caret sits at the start of the line; the summary is a
-// hidden <span> appended at the line's end, shown by CSS only when folded. Both
-// carry a class the copy path strips, so neither pollutes the copied raw YAML.
-function injectFoldControls(lineSpan, bodyCount, itemCount) {
+// Inject the fold toggle + collapsed fold-note into an opener line span. The
+// toggle is a real <button> (keyboard-focusable, CSP-clean) placed right after
+// the line's leading <a> anchor so the caret sits at the start of the line; the
+// note is a hidden <span class="ro-fold-note"> ("… N lines", faint italic per
+// the v2 prototype) appended at the line's end, shown by CSS only when folded.
+// Both carry a class the copy path strips, so neither pollutes the copied raw
+// YAML.
+function injectFoldControls(lineSpan, bodyCount) {
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'ro-fold-toggle';
@@ -867,15 +898,10 @@ function injectFoldControls(lineSpan, bodyCount, itemCount) {
     toggle.setAttribute('aria-label', 'Toggle block');
     toggle.dataset.fold = lineSpan.id;
 
-    const summary = document.createElement('span');
-    summary.className = 'ro-fold-summary';
+    const note = document.createElement('span');
+    note.className = 'ro-fold-note';
     const lineWord = bodyCount === 1 ? 'line' : 'lines';
-    if (itemCount > 0) {
-        const itemWord = itemCount === 1 ? 'item' : 'items';
-        summary.textContent = ` { ${itemCount} ${itemWord} · ${bodyCount} ${lineWord} }`;
-    } else {
-        summary.textContent = ` { ${bodyCount} ${lineWord} }`;
-    }
+    note.textContent = ` … ${bodyCount} ${lineWord}`;
 
     // Place the toggle after the leading anchor (so it reads at the line start,
     // left of the key); fall back to prepend if no anchor is present.
@@ -887,13 +913,41 @@ function injectFoldControls(lineSpan, bodyCount, itemCount) {
     } else {
         lineSpan.insertBefore(toggle, lineSpan.firstChild);
     }
-    // Append the summary at the very end of the line content, BEFORE the trailing
-    // newline text node so the collapsed summary renders on the opener's own line.
+    // Append the note at the very end of the line content, BEFORE the trailing
+    // newline text node so the collapsed note renders on the opener's own line.
     const last = lineSpan.lastChild;
     if (last && last.nodeType === 3 && last.textContent.indexOf('\n') !== -1) {
-        lineSpan.insertBefore(summary, last);
+        lineSpan.insertBefore(note, last);
     } else {
-        lineSpan.appendChild(summary);
+        lineSpan.appendChild(note);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Logs page Follow (D25) -- stick the stream to its tail.
+// ---------------------------------------------------------------------------
+// The .ro-logpre stream is its own scroll container (max-height + overflow in
+// CSS) with the newest entries at the bottom. While the Follow toggle is
+// active (the default "Following" state) the view pins to the tail: on page
+// load and whenever the user re-activates the toggle. There is no client
+// streaming -- the page refreshes via the form GET -- so "follow" means
+// "start at, and snap back to, the tail".
+
+// logsScrollToTail pins the log stream to its tail.
+function logsScrollToTail() {
+    const pre = document.querySelector('pre.ro-logpre');
+    if (pre) {
+        pre.scrollTop = pre.scrollHeight;
+    }
+}
+
+// initLogsFollow starts a logs page at the stream tail when the Follow toggle
+// is active (it renders active by default). Idempotent: re-pinning an
+// already-pinned stream is a no-op, and pages without #logFollow bail.
+function initLogsFollow() {
+    const follow = document.getElementById('logFollow');
+    if (follow && !follow.classList.contains('quiet')) {
+        logsScrollToTail();
     }
 }
 
@@ -3563,6 +3617,7 @@ function runInit() {
         buildYamlFolds,
         collapseSectionsFromHash,
         highlightYamlLine,
+        initLogsFollow,
         syncThemeTogglePostTarget,
         setupStickyNamespace,
         // Chips-editor row model (D7/D20): captured from the full server-rendered

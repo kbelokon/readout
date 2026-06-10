@@ -364,6 +364,14 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		return lines[i].Container < lines[j].Container
 	})
+	// Download-logs (D25): a plain GET over the SAME assembled view -- the
+	// container/tail/filter params shape `lines` exactly like the on-screen
+	// stream. Branches before the page render; gated on showContainerLogs so a
+	// disabled deployment never serves log bytes through the download spelling.
+	if s.cfg.ShowContainerLogs && r.URL.Query().Get("download") == "txt" {
+		s.downloadLogs(w, r, lines)
+		return
+	}
 	allContainers := make([]string, 0, len(containerSet))
 	for name := range containerSet {
 		allContainers = append(allContainers, name)
@@ -389,7 +397,25 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		FilterVal:         filterText,
 		ContainerVal:      selectedContainer,
 	}
+	// The logs H1 carries the same pn-head/pn-tail split as the detail title
+	// (Unit 13 flagged the plain-name gap here).
+	data.NameHead, data.NameTail, data.NameTitle = detailNameParts(&object)
 	if s.cfg.ShowContainerLogs {
+		// The Download-logs title action mirrors the on-screen view: same
+		// container/tail/filter params, download=txt spelling.
+		dq := url.Values{}
+		dq.Set("download", "txt")
+		if selectedContainer != "" {
+			dq.Set("container", selectedContainer)
+		}
+		dq.Set("tail_lines", strconv.FormatInt(tail, 10))
+		if filterText != "" {
+			dq.Set("filter", filterText)
+		}
+		data.DownloadHref = base + "/logs?" + dq.Encode()
+		data.DownloadIcon = icon("download")
+		data.FollowIcon = icon("rotate-cw")
+
 		if len(allContainers) > 2 {
 			for _, container := range allContainers {
 				text := container
@@ -454,6 +480,21 @@ func splitLogTimestamp(text string) (ts, msg string) {
 	}
 	ts, msg, _ = strings.Cut(text, " ")
 	return ts, msg
+}
+
+// downloadLogs serves the assembled log stream as a plain-text attachment
+// (D25: the Download-logs title action is a plain GET). One line per entry in
+// display order -- source pod, container, then the raw entry text (timestamp
+// prefix + message, folded continuation lines kept inline) -- so the file
+// mirrors the on-screen stream without markup. The filename derives from the
+// request path exactly like downloadYAML (slashes to underscores).
+func (s *Server) downloadLogs(w http.ResponseWriter, r *http.Request, lines []logLine) {
+	filename := strings.Trim(strings.ReplaceAll(r.URL.Path, "/", "_"), "_")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`.txt"`)
+	for _, l := range lines {
+		_, _ = fmt.Fprintf(w, "%s %s %s\n", l.Pod, l.Container, l.Text)
+	}
 }
 
 func (s *Server) downloadYAML(w http.ResponseWriter, r *http.Request, obj map[string]any) {

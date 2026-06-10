@@ -258,4 +258,12 @@ func TestBulkDownloadSurfaceAnchorsOptOutOfBoost(t *testing.T) {
 
 	detail := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
 	detail.wantAttr(`.ro-detail-actions a[title="Download resource object as YAML"]`, "hx-boost", "false")
+
+	// The Download-logs title action (D25, Unit 22) is the third
+	// download-serving anchor; it renders only with container logs enabled.
+	logsCfg := baseConfig(t)
+	logsCfg.ShowContainerLogs = true
+	logsApp := newServer(t, logsCfg, bulkClock)
+	logs := get(t, logsApp, "/clusters/test/namespaces/default/pods/nginx/logs", http.StatusOK)
+	logs.wantAttr(`.ro-detail-actions a[title="Download logs"]`, "hx-boost", "false")
 }

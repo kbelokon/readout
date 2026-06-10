@@ -1007,7 +1007,7 @@
     /* ---------------------------------------------------------------------------
        Nested-YAML-block folding. readout.js (buildYamlFolds)
        injects a quiet caret <button>.ro-fold-toggle into each line that opens a
-       nested block, plus a hidden .ro-fold-summary on that line; clicking the
+       nested block, plus a hidden .ro-fold-note on that line; clicking the
        toggle adds `ro-line-folded` to the block's deeper-indented child line
        spans. Presentation only -- the line anchors + raw lines (for copy) are
        untouched. App layer; no inline style, no forced-priority override. The fold UI works in
@@ -1017,7 +1017,15 @@
        The toggle is a borderless inline button carrying ONLY a caret (drawn via
        ::before so it adds no text node -- the copy clone strips the control anyway,
        but a contentless caret keeps the rendered line text clean too). It points
-       down when expanded, right when folded (matches the section-card caret). */
+       down when expanded, right when folded (matches the section-card caret).
+
+       v2 (D26): the caret is a quiet hover affordance -- invisible (opacity 0,
+       its inline space still reserved so the YAML text never shifts) until the
+       pointer is over its line, the button has keyboard focus, or the block is
+       folded; revealed with the shared opacity transition, like the prototype's
+       gutter-hover chevron. The Pygments structure has no per-line gutter cell
+       (one .linenos column for the whole block), so "gutter hover" maps to the
+       line span the toggle lives in. */
     .ro-fold-toggle {
         display: inline;
         margin: 0 0.3em 0 0;
@@ -1029,22 +1037,29 @@
         line-height: inherit;
         cursor: pointer;
         vertical-align: baseline;
+        opacity: 0;
+        transition: opacity var(--dur);
     }
     .ro-fold-toggle::before { content: "\25be"; }       /* down -- expanded */
     .ro-fold-toggle.is-folded::before { content: "\25b8"; } /* right -- folded */
+    .highlighttable td.code pre > span:hover > .ro-fold-toggle,
+    .ro-fold-toggle:focus,
+    .ro-fold-toggle.is-folded { opacity: 1; }
     .ro-fold-toggle:hover,
     .ro-fold-toggle:focus { color: var(--accent-text); }
 
-    /* The collapsed-block summary ("{ 3 items · 24 lines }") rides the opener line,
-       shown only when that opener is folded. It is faint + slightly italic so it
-       reads as a meta affordance, not YAML content. Driven off the sibling toggle's
-       is-folded state so it appears in lockstep with the caret. */
-    .ro-fold-summary {
+    /* The collapsed-block fold-note ("… 24 lines") rides the opener line, shown
+       only when that opener is folded. It is faint + italic so it reads as a
+       meta affordance, not YAML content (v2 prototype .fold-note). Driven off
+       the sibling toggle's is-folded state so it appears in lockstep with the
+       caret. */
+    .ro-fold-note {
         display: none;
         color: var(--text-faint);
         font-style: italic;
+        user-select: none;
     }
-    .ro-fold-toggle.is-folded ~ .ro-fold-summary { display: inline; }
+    .ro-fold-toggle.is-folded ~ .ro-fold-note { display: inline; }
 
     /* A folded child line is removed from flow (its raw text stays in the DOM for
        copy; only the rendering is hidden). */
@@ -2514,6 +2529,17 @@
     .ro-rd .ro-logs-form input:focus { border-color: var(--accent); }
     .ro-rd .ro-logs-form .tail { width: 74px; }
     .ro-rd .ro-logs-form .flt { width: 200px; }
+    /* The client-side display toggles (D25): checkbox labels read as one unit,
+       the spacer pushes the Follow button to the row's far end (prototype). The
+       generic `.ro-logs-form input` text-input sizing above out-specifies the
+       bare `.ro-check` rules, so the checkbox geometry + checked accent are
+       re-stated at input.ro-check specificity. */
+    .ro-rd .ro-logs-form label { display: inline-flex; align-items: center; gap: 7px; }
+    .ro-rd .ro-logs-form input.ro-check { width: 15px; height: 15px; padding: 0;
+        border: 1.5px solid var(--border-strong); border-radius: 4px; }
+    .ro-rd .ro-logs-form input.ro-check:hover { border-color: var(--accent); }
+    .ro-rd .ro-logs-form input.ro-check:checked { background: var(--accent); border-color: var(--accent); }
+    .ro-rd .ro-logs-form .spacer { flex: 1; }
 
     /* buttons (redesign) */
     .ro-btn { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 14px;
@@ -2533,10 +2559,18 @@
     .ro-logtabs a:hover { background: var(--surface-2); color: var(--text); }
     .ro-logtabs a.is-active { background: var(--accent-weak); color: var(--accent); }
 
+    /* The stream is its own scroll container (prototype: max-height + overflow
+       auto) so the Follow toggle has a tail to stick to. */
     .ro-rd .ro-logpre { margin: 0; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
-        font-family: var(--font-mono); font-size: 12px; line-height: 1.7; padding: 12px 0; overflow-x: auto; }
+        font-family: var(--font-mono); font-size: 12px; line-height: 1.7; padding: 12px 0;
+        overflow: auto; max-height: calc(100vh - 280px); }
     .ro-rd .ro-logpre .log-line { display: block; white-space: pre; padding: 0 16px; }
+    /* wrap toggle (D25): long lines soft-wrap instead of scrolling sideways. */
+    .ro-rd .ro-logpre.wrap .log-line { white-space: pre-wrap; word-break: break-word; }
     .ro-rd .ro-logpre .log-line:hover { background: var(--row-hover); }
+    /* timestamps toggle (D25): hide the .log-ts spans client-side -- the spans
+       stay in the DOM, no refetch. */
+    .ro-rd .ro-logpre.hide-ts .log-ts { display: none; }
     .log-src { color: var(--text-faint); }
     .log-ts { color: var(--text-faint); }
 
@@ -3012,6 +3046,7 @@
         .ro-bulkbar { transition: none; }
         .ro-toast { animation: none; transition: none; }
         .skel { animation: none; }
+        .ro-fold-toggle { transition: none; }
     }
 }
 

@@ -282,3 +282,170 @@ func TestLogsRedesignDisabledNotice(t *testing.T) {
 		t.Fatalf("enabled log stream missing GET / 200: %q", normSpace(stream.Text()))
 	}
 }
+
+// TestLogsRedesignDisplayControls pins the D25 deltas through the Logs templ:
+// the pn-head/pn-tail title split (the same Unit 13 helper the detail title
+// uses), the Download-logs title action (a plain GET anchor that opts out of
+// hx-boost -- boost would swap the attachment bytes into <body>), and the
+// client-side display controls in the logs form: the checked timestamps
+// checkbox, the unchecked wrap checkbox (both nameless, so they never ride the
+// Refresh GET), the spacer, and the stateful Follow button rendering active
+// ("Following", aria-pressed) by default.
+func TestLogsRedesignDisplayControls(t *testing.T) {
+	base := "/clusters/test/namespaces/default/pods/redis-master-86f4f9fb6c-cwm9z"
+	doc := renderLogs(t, &templates.LogsData{
+		Name:              "redis-master-86f4f9fb6c-cwm9z",
+		NameHead:          "redis-master",
+		NameTail:          "-86f4f9fb6c-cwm9z",
+		Kind:              "Pod",
+		DownloadHref:      base + "/logs?download=txt&tail_lines=200",
+		DownloadIcon:      `<svg class="lucide-icon"></svg>`,
+		FollowIcon:        `<svg class="lucide-icon"></svg>`,
+		ShowContainerLogs: true,
+		TailLines:         200,
+		PodCount:          1,
+		LogPre:            `<pre class="ro-logpre">` + "\n</pre>",
+	})
+
+	// Title split: bright workload head + muted hash tail (Unit 13 parity).
+	if got := normSpace(doc.Find("h1.ro-title .pn-head").Text()); got != "redis-master" {
+		t.Fatalf("logs .pn-head = %q, want redis-master", got)
+	}
+	if got := normSpace(doc.Find("h1.ro-title .pn-tail").Text()); got != "-86f4f9fb6c-cwm9z" {
+		t.Fatalf("logs .pn-tail = %q, want -86f4f9fb6c-cwm9z", got)
+	}
+
+	// Download-logs title action: plain GET + the hx-boost opt-out.
+	dl := doc.Find(`.ro-detail-actions a[title="Download logs"]`)
+	if dl.Length() != 1 {
+		t.Fatalf("Download-logs anchors = %d, want 1", dl.Length())
+	}
+	if href, _ := dl.Attr("href"); href != base+"/logs?download=txt&tail_lines=200" {
+		t.Fatalf("Download-logs href = %q", href)
+	}
+	if boost, _ := dl.Attr("hx-boost"); boost != "false" {
+		t.Fatalf("Download-logs anchor hx-boost = %q, want false", boost)
+	}
+
+	// Timestamps toggle: on by default; nameless (client-side only).
+	ts := doc.Find("form.ro-logs-form input#logTs.ro-check")
+	if ts.Length() != 1 {
+		t.Fatalf("#logTs checkboxes = %d, want 1", ts.Length())
+	}
+	if _, checked := ts.Attr("checked"); !checked {
+		t.Fatalf("#logTs must render checked (timestamps shown by default)")
+	}
+	if _, named := ts.Attr("name"); named {
+		t.Fatalf("#logTs must carry no form name (client-side toggle, no refetch)")
+	}
+
+	// Wrap toggle: off by default; nameless.
+	wrap := doc.Find("form.ro-logs-form input#logWrap.ro-check")
+	if wrap.Length() != 1 {
+		t.Fatalf("#logWrap checkboxes = %d, want 1", wrap.Length())
+	}
+	if _, checked := wrap.Attr("checked"); checked {
+		t.Fatalf("#logWrap must render unchecked (no wrap by default)")
+	}
+	if _, named := wrap.Attr("name"); named {
+		t.Fatalf("#logWrap must carry no form name (client-side toggle, no refetch)")
+	}
+
+	// The spacer pushes the Follow button to the row end (prototype layout).
+	if doc.Find("form.ro-logs-form .spacer").Length() != 1 {
+		t.Fatalf("logs form missing the .spacer")
+	}
+
+	// Follow: a type=button (never submits the Refresh GET) rendering the
+	// ACTIVE accent state by default -- "Following", aria-pressed=true, no
+	// quiet class; readout.js flips label/class/aria on click.
+	follow := doc.Find(`form.ro-logs-form button#logFollow[type="button"]`)
+	if follow.Length() != 1 {
+		t.Fatalf("#logFollow buttons = %d, want 1", follow.Length())
+	}
+	if got := normSpace(follow.Find(".follow-label").Text()); got != "Following" {
+		t.Fatalf("#logFollow label = %q, want Following", got)
+	}
+	if pressed, _ := follow.Attr("aria-pressed"); pressed != "true" {
+		t.Fatalf("#logFollow aria-pressed = %q, want true", pressed)
+	}
+	if follow.HasClass("quiet") {
+		t.Fatalf("#logFollow must not render quiet (Following is the default)")
+	}
+}
+
+// TestLogsDownloadRoute pins the Download-logs GET end to end (D25): with
+// container logs enabled, ?download=txt serves the assembled stream as a
+// text/plain attachment named after the request path -- one `pod container
+// text` line per entry, honoring the filter param exactly like the on-screen
+// view. With logs disabled the download spelling is inert: the route falls
+// through to the regular HTML page (the disabled notice), never serving log
+// bytes.
+func TestLogsDownloadRoute(t *testing.T) {
+	cfg := &config.Config{
+		Port:              8080,
+		Clusters:          []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:      "dark",
+		ShowContainerLogs: true,
+	}
+	app := newTestServerWithConfig(t, cfg)
+
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?download=txt", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="clusters_test_namespaces_default_pods_nginx_logs.txt"` {
+		t.Fatalf("Content-Disposition = %q", got)
+	}
+	// One `pod container text` line per entry, raw timestamp text kept.
+	if !strings.Contains(rec.Body.String(), "nginx nginx 2026-01-01T00:00:00Z Starting nginx") {
+		t.Fatalf("download body missing the pod/container-prefixed first entry:\n%s", rec.Body.String())
+	}
+
+	// The filter param shapes the download exactly like the on-screen stream.
+	filtered := httptest.NewRecorder()
+	app.Handler().ServeHTTP(filtered, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?download=txt&filter=GET", nil))
+	if filtered.Code != http.StatusOK {
+		t.Fatalf("filtered download status = %d, want 200", filtered.Code)
+	}
+	if !strings.Contains(filtered.Body.String(), "GET / 200") {
+		t.Fatalf("filtered download missing the matching line:\n%s", filtered.Body.String())
+	}
+	if strings.Contains(filtered.Body.String(), "Starting nginx") {
+		t.Fatalf("filtered download must drop non-matching lines:\n%s", filtered.Body.String())
+	}
+
+	// The live page wires the title action to this exact spelling.
+	page := get(t, app, "/clusters/test/namespaces/default/pods/nginx/logs", http.StatusOK)
+	href, _ := page.doc.Find(`.ro-detail-actions a[title="Download logs"]`).Attr("href")
+	if href != "/clusters/test/namespaces/default/pods/nginx/logs?download=txt&tail_lines=200" {
+		t.Fatalf("live Download-logs href = %q", href)
+	}
+	// And the live H1 carries the pn-head split (nginx has no hash tail).
+	if got := normSpace(page.doc.Find("h1.ro-title .pn-head").Text()); got != "nginx" {
+		t.Fatalf("live logs .pn-head = %q, want nginx", got)
+	}
+
+	// Logs disabled: the download spelling serves the regular HTML notice page,
+	// never an attachment.
+	off := newTestServerWithConfig(t, &config.Config{
+		Port:         8080,
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme: "dark",
+	})
+	offRec := httptest.NewRecorder()
+	off.Handler().ServeHTTP(offRec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?download=txt", nil))
+	if offRec.Code != http.StatusOK {
+		t.Fatalf("disabled download status = %d, want 200", offRec.Code)
+	}
+	if got := offRec.Header().Get("Content-Disposition"); got != "" {
+		t.Fatalf("disabled logs must not serve an attachment, got Content-Disposition %q", got)
+	}
+	if !strings.Contains(offRec.Body.String(), "Container Logs Disabled") {
+		t.Fatalf("disabled download spelling must fall through to the notice page")
+	}
+}

@@ -1,12 +1,22 @@
 package templates
 
 // logs.templ is the resource-logs page body: the breadcrumb, the redesign detail
-// title (name + kind badge) + the Default/YAML/Events/Logs tabs (Logs active --
-// the SAME .ro-detail-title/.ro-kind-badge/.ro-tabs chrome and tab set as
+// title (the pn-head/pn-tail split name + kind badge + the Download-logs title
+// action, D25) + the Default/YAML/Events/Logs tabs (Logs active -- the SAME
+// .ro-detail-title/.ro-kind-badge/.ro-tabs chrome and tab set as
 // resource_view.templ, so detail and logs stay visually consistent), and -- when
-// container logs are enabled -- the .ro-logs-form (tail/filter/Refresh), the
-// optional per-container .ro-logtabs (active = green pill), and the .ro-logpre
-// log block.
+// container logs are enabled -- the .ro-logs-form (tail/filter/Refresh plus the
+// CLIENT-SIDE timestamps/wrap toggles and the stateful Following⇄Follow button,
+// D25), the optional per-container .ro-logtabs (active = green pill), and the
+// .ro-logpre log block.
+//
+// The timestamps/wrap checkboxes and the Follow button are presentation-only:
+// readout.js toggles classes on the .ro-logpre stream (hide-ts / wrap) and
+// sticks the scroll to the tail -- no refetch, so they carry no form `name` and
+// never ride the Refresh GET. The Download-logs anchor is a plain GET
+// (?download=txt over the same container/tail/filter view) and opts out of
+// hx-boost: boost would swap the attachment bytes into <body> instead of
+// downloading (htmx 2.0.4, the Unit 17 lesson).
 //
 // The outermost content element carries the `ro-rd` content marker (D13) so the
 // canonical class names below (.ro-detail-title, .ro-kind-badge, .ro-tabs,
@@ -21,17 +31,31 @@ package templates
 // as a trusted raw string in the handler and injected via templ.Raw -- templ
 // element trees would normalize the whitespace. The behavior-fact net pins the
 // active Logs tab, the ro-logs-form, the ro-logtabs active pill, the ro-logpre
-// block + a structured log line, and the disabled-state notice.
+// block + a structured log line, the disabled-state notice, and (Unit 22) the
+// display controls + the Download-logs action (logs_redesign_test.go).
 
 // LogsData is the resolved resource-logs input.
 type LogsData struct {
 	Breadcrumb DetailBreadcrumb
 
-	Name        string
+	Name string
+	// NameHead/NameTail/NameTitle mirror the detail title split (Unit 13):
+	// the bright workload prefix, the muted hash tail, and the full-name
+	// tooltip when the head was middle-truncated.
+	NameHead    string
+	NameTail    string
+	NameTitle   string
 	Kind        string
 	DefaultHref string
 	YAMLHref    string
 	EventsHref  string
+
+	// DownloadHref/DownloadIcon render the Download-logs title action (D25,
+	// plain GET). Empty DownloadHref hides the action (logs disabled).
+	DownloadHref string
+	DownloadIcon string
+	// FollowIcon is the rotate-cw glyph inside the Follow button.
+	FollowIcon string
 
 	ShowContainerLogs bool
 
@@ -55,12 +79,31 @@ type LogContainerTab struct {
 templ Logs(d LogsData) {
 	<div class="ro-rd">
 		@detailBreadcrumb(d.Breadcrumb)
-		<div class="ro-detail-title"><h1 class="ro-title">{ d.Name }</h1> <span class="ro-kind-badge">{ d.Kind }</span></div>
+		<div class="ro-detail-title"><h1
+			class="ro-title"
+			if d.NameTitle != "" {
+				title={ d.NameTitle }
+			}
+		>
+		if d.NameHead != "" && d.NameTail != "" {
+			<span class="pn-head">{ d.NameHead }</span><span class="pn-tail">{ d.NameTail }</span>
+		} else if d.NameHead != "" {
+			<span class="pn-head">{ d.NameHead }</span>
+		} else {
+			{ d.Name }
+		}
+		// The download anchor opts out of hx-boost: boost would swap the
+		// attachment body into <body> instead of downloading (htmx 2.0.4).
+		</h1> <span class="ro-kind-badge">{ d.Kind }</span>
+		if d.DownloadHref != "" {
+			<div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } hx-boost="false" title="Download logs" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a></div>
+		}
+		</div>
 		<div class="ro-tabs">@detailTab(false, d.DefaultHref, "Default")@detailTab(false, d.YAMLHref, "YAML")@detailTab(false, d.EventsHref, "Events")<a class="is-active">Logs</a></div>
 		if !d.ShowContainerLogs {
 			<article class="ro-notice" role="note"><p class="ro-notice-title">Container Logs Disabled</p><p>Container logs are not shown as they were disabled in readout. Enable them with <code>showContainerLogs: true</code> in readout.yaml.</p></article>
 		} else {
-			<form method="get" action="#" class="ro-logs-form"><input type="hidden" name="container" value={ d.ContainerVal }><span>{ "Get last" }</span> <input class="input tail logs-tail-input" type="number" min="1" name="tail_lines" value={ itoa64(d.TailLines) }> <span>{ "log lines per container for " + itoa(d.PodCount) + " pods and filter by" }</span> <input class="input flt logs-filter-input" name="filter" value={ d.FilterVal } placeholder="filter text"> <button type="submit" class="ro-btn">Refresh</button></form>
+			<form method="get" action="#" class="ro-logs-form"><input type="hidden" name="container" value={ d.ContainerVal }><span>{ "Get last" }</span> <input class="input tail logs-tail-input" type="number" min="1" name="tail_lines" value={ itoa64(d.TailLines) }> <span>{ "log lines per container for " + itoa(d.PodCount) + " pods and filter by" }</span> <input class="input flt logs-filter-input" name="filter" value={ d.FilterVal } placeholder="filter text"> <button type="submit" class="ro-btn">Refresh</button> <label class="logs-ts-toggle"><input type="checkbox" class="ro-check" id="logTs" checked> timestamps</label> <label class="logs-wrap-toggle"><input type="checkbox" class="ro-check" id="logWrap"> wrap</label> <span class="spacer"></span> <button type="button" class="ro-btn sm" id="logFollow" aria-pressed="true"><span class="icon">@templ.Raw(d.FollowIcon)</span><span class="follow-label">Following</span></button></form>
 			if len(d.Containers) > 0 {
 				<div class="ro-logtabs">
 					for _, ct := range d.Containers {
