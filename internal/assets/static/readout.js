@@ -78,6 +78,40 @@ if (typeof Idiomorph !== 'undefined'
 }
 
 // ---------------------------------------------------------------------------
+// ro-morph: the CSP-safe idiomorph swap of the v2 list loop (D6).
+// ---------------------------------------------------------------------------
+// The vendored idiomorph extension parses any non-trivial hx-swap config
+// ("morph:{…}") through Function() -- dynamic code evaluation that the strict
+// CSP (script-src 'self', no unsafe-eval) blocks at runtime. The v2 list loop
+// NEEDS non-default morph config: ignoreActiveValue keeps the user's filter
+// draft + caret when a refresh tick morphs the fragment mid-typing (the server
+// fragment would otherwise sync the stale value over the draft; hx-preserve is
+// no alternative -- htmx 2.0.4 detaches/reattaches preserved nodes, dropping
+// focus). So the config is delivered FROM JS: this handleSwap hook calls
+// Idiomorph.morph with an explicit config OBJECT -- no attribute eval anywhere.
+// Used by #resource-list-content (hx-ext="ro-morph" + hx-swap="morph") and the
+// sort-header partial requests inside it (hx-ext is inherited). morphStyle
+// "innerHTML" swaps the fragment INTO the persistent container; rows carry
+// data-key-derived ids, so idiomorph matches them by object identity and a
+// re-sorted fragment MOVES the existing <tr> nodes instead of rewriting them
+// positionally. defaults.callbacks (the cell-flash hooks above) still merge in:
+// an explicit config object without `callbacks` inherits Idiomorph.defaults.
+if (typeof htmx !== 'undefined' && typeof Idiomorph !== 'undefined') {
+    htmx.defineExtension('ro-morph', {
+        isInlineSwap: (swapStyle) => swapStyle === 'morph',
+        handleSwap: (swapStyle, target, fragment) => {
+            if (swapStyle !== 'morph') {
+                return false; // not ours -> htmx falls through to its native swaps
+            }
+            return Idiomorph.morph(target, fragment.children, {
+                morphStyle: 'innerHTML',
+                ignoreActiveValue: true,
+            });
+        },
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Delegated CLICK handlers
 // ---------------------------------------------------------------------------
 document.addEventListener('click', (event) => {
@@ -110,18 +144,16 @@ document.addEventListener('click', (event) => {
         return;
     }
     // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
-    // #resource-list-content. On success the morph swaps fresh rows and the
-    // afterSwap handler clears the stale dim + re-hides the banner; on another
-    // failure the responseError handler keeps it stale. Pure DOM, GET-only -- the
-    // read-only floor is untouched (it triggers the element's existing ro:refresh,
-    // never a write).
+    // #resource-list-content through the shared refresh path (the v2 loop
+    // derives the `_table` URL from location.href at click time; the v1
+    // multi-type container triggers its baked ro:refresh). On success the morph
+    // swaps fresh rows and the afterSwap handler clears the stale dim +
+    // re-hides the banner; on another failure the responseError handler keeps
+    // it stale. Pure DOM, GET-only -- the read-only floor is untouched.
     const staleRetry = target.closest('.ro-stale-retry');
     if (staleRetry) {
         event.preventDefault();
-        const content = document.getElementById('resource-list-content');
-        if (content && typeof htmx !== 'undefined') {
-            htmx.trigger(content, 'ro:refresh');
-        }
+        requestListRefresh();
         return;
     }
     // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
@@ -1058,14 +1090,91 @@ function closePalette() {
 // (#refresh-dropdown: Off / 5 / 15 / 30 / 60s); the choice is a CLIENT preference
 // in localStorage (no server write -- the read-only floor stays intact, and it
 // persists across navigation). When an interval is set and a resource-list page
-// is showing (the #resource-list-content container exists), we dispatch the
-// element's OWN `ro:refresh` htmx event on that interval. Triggering the
-// element's configured request (not a standalone htmx.ajax) keeps its
-// hx-ext="morph" + hx-swap="morph:innerHTML" path, so the table morphs in place
-// (scroll / focus / row selection survive). Polling PAUSES while the tab is
-// hidden (no background API hammering), and refreshes once immediately on return.
+// is showing (the #resource-list-content container exists), the tick re-fetches
+// the table fragment so it morphs in place.
+//
+// TWO container contracts (D1/D6):
+//   - v2 single-type pages mark the container data-live-url="location" and bake
+//     NO request URL: the tick (and every programmatic re-fetch) derives the
+//     `_table` URL from location.href AT FIRE TIME, so a sort/filter the user
+//     pushed into history is never reverted by a later tick (the old baked
+//     PartialURL contract did exactly that). The request is issued with the
+//     container as its htmx source, keeping its hx-ext="ro-morph" +
+//     hx-swap="morph" + hx-indicator wiring.
+//   - v1 multi-type pages keep the baked hx-get + ro:refresh trigger.
+//
+// Ticks are PROGRAMMATIC: htmx:configRequest marks every request issued by the
+// container itself with RO-No-Push, so the `_table` handler never answers them
+// with HX-Push-Url (htmx pushes one history entry per header occurrence with no
+// same-URL dedupe -- an unconditional push would turn a 5s interval into junk
+// history per tick). The timer is also SUPPRESSED while a user-initiated table
+// request (a sort-header hx-get) is in flight, and a user action aborts an
+// in-flight tick -- never the other way around (bare hx-sync would let a tick
+// cancel the user's request). Polling PAUSES while the tab is hidden (no
+// background API hammering), and refreshes once immediately on return.
 const REFRESH_KEY = 'roRefresh';
 let refreshTimerId = null;
+
+// userListRequestsInFlight counts USER-initiated requests targeting
+// #resource-list-content (requests from any element other than the container
+// itself, e.g. a sort-header hx-get). While > 0 the refresh tick is suppressed.
+// Preload warm-ups (HX-Preloaded) are excluded: the preload extension hijacks
+// the XHR callbacks, so htmx:afterRequest never fires for them and counting one
+// would suppress ticks forever.
+let userListRequestsInFlight = 0;
+
+function isPreloadRequest(event) {
+    const cfg = event.detail && event.detail.requestConfig;
+    return !!cfg && !!cfg.headers && cfg.headers['HX-Preloaded'] === 'true';
+}
+
+// True for a USER-initiated request that will swap #resource-list-content: the
+// target is the container but the issuing element is something else (the tick,
+// the stale retry, and every other programmatic re-fetch are issued BY the
+// container, so they do not match).
+function isUserListRequest(event) {
+    const detail = event && event.detail;
+    if (!detail || !detail.elt || !detail.target) {
+        return false;
+    }
+    if (detail.elt.id === 'resource-list-content') {
+        return false;
+    }
+    return detail.target.id === 'resource-list-content' && !isPreloadRequest(event);
+}
+
+// Mark every request the container itself issues (tick / retry / programmatic
+// re-fetch) as non-push: the `_table` handler omits HX-Push-Url for these, so
+// only genuine user gestures create history entries (D6).
+document.addEventListener('htmx:configRequest', (event) => {
+    const elt = event.detail && event.detail.elt;
+    if (elt && elt.id === 'resource-list-content') {
+        event.detail.headers['RO-No-Push'] = 'true';
+    }
+});
+
+document.addEventListener('htmx:beforeRequest', (event) => {
+    if (!isUserListRequest(event)) {
+        return;
+    }
+    userListRequestsInFlight++;
+    // The user action wins: abort the container's own in-flight request (a
+    // tick that started before the click). htmx aborts the request belonging
+    // to the element htmx:abort is triggered on -- the user's request lives on
+    // its own element and is untouched. Inert when the container is idle.
+    const content = document.getElementById('resource-list-content');
+    if (content && typeof htmx !== 'undefined') {
+        htmx.trigger(content, 'htmx:abort');
+    }
+});
+
+// htmx:afterRequest fires on load, error, abort, AND timeout, so the in-flight
+// count always returns to zero.
+document.addEventListener('htmx:afterRequest', (event) => {
+    if (isUserListRequest(event)) {
+        userListRequestsInFlight = Math.max(0, userListRequestsInFlight - 1);
+    }
+});
 
 function refreshInterval() {
     try {
@@ -1075,14 +1184,48 @@ function refreshInterval() {
     }
 }
 
+// listTableURL derives the `_table` partial URL from the LIVE document URL at
+// fire time (path + "/_table" + the current query) -- the D6 replacement for
+// the render-time-baked PartialURL contract. location reflects every canonical
+// URL the sort/filter loop pushed, so the tick always re-fetches what the user
+// is looking at.
+function listTableURL() {
+    const u = new URL(window.location.href);
+    return u.pathname.replace(/\/+$/, '') + '/_table' + u.search;
+}
+
+// requestListRefresh re-fetches the list fragment through the container's own
+// htmx wiring: the v2 path issues a GET to the location-derived `_table` URL
+// with the container as source (so its morph ext / target / indicator apply
+// and configRequest marks it RO-No-Push); the v1 multi-type path triggers the
+// element's baked ro:refresh request.
+function requestListRefresh() {
+    const content = document.getElementById('resource-list-content');
+    if (!content || typeof htmx === 'undefined') {
+        return;
+    }
+    if (content.dataset.liveUrl === 'location') {
+        const request = htmx.ajax('GET', listTableURL(), { source: content });
+        if (request && typeof request.catch === 'function') {
+            // A transport failure rejects the htmx.ajax promise; the failure is
+            // already handled via htmx:sendError (the stale dim + banner), so
+            // swallow the rejection instead of spamming unhandled-rejection logs
+            // once per failed tick.
+            request.catch(() => {});
+        }
+    } else {
+        htmx.trigger(content, 'ro:refresh');
+    }
+}
+
 function fireRefresh() {
     if (document.hidden) {
         return; // paused while the tab is in the background
     }
-    const container = document.getElementById('resource-list-content');
-    if (container && typeof htmx !== 'undefined') {
-        htmx.trigger(container, 'ro:refresh');
+    if (userListRequestsInFlight > 0) {
+        return; // a user-initiated table request is in flight -- never stomp it
     }
+    requestListRefresh();
 }
 
 // (Re)arm the interval from the stored preference. Idempotent: clears any prior
@@ -1139,12 +1282,22 @@ document.addEventListener('visibilitychange', () => {
 // stale state. Pure DOM writes -> CSP-clean.
 const STALE_DIM_CLASS = 'ro-stale';
 
-// True when the htmx event belongs to the live resource-list refresh (the
-// request element is #resource-list-content). Guards so an unrelated boosted
-// navigation error never dims the table.
+// True when the htmx event belongs to a request that lands in the live
+// resource-list region: issued BY #resource-list-content (the refresh tick /
+// retry) or TARGETING it (a user sort/filter partial in the v2 loop). Guards
+// so an unrelated boosted navigation error never dims the table. Preload
+// warm-ups never swap, so they are excluded.
 function isListRefreshEvent(event) {
-    const elt = event && event.detail && event.detail.elt;
-    return !!elt && elt.id === 'resource-list-content';
+    const detail = event && event.detail;
+    if (!detail || isPreloadRequest(event)) {
+        return false;
+    }
+    const elt = detail.elt;
+    if (!!elt && elt.id === 'resource-list-content') {
+        return true;
+    }
+    const target = detail.target;
+    return !!target && target.id === 'resource-list-content';
 }
 
 function markListStale() {
@@ -1185,12 +1338,68 @@ document.addEventListener('htmx:sendError', (event) => {
 });
 // A successful refresh swap on #resource-list-content lands fresh rows -> clear
 // any prior stale dim + hide the banner. htmx:afterSwap fires only on a 2xx that
-// actually swapped, so a recovered refresh self-heals the stale state.
+// actually swapped, so a recovered refresh self-heals the stale state. The same
+// moment re-applies the identity-keyed row state (selection / j-k focus): the
+// morph syncs server HTML over client classes, so they must be re-keyed onto
+// the rows by data-key after EVERY swap (tick or user sort/filter).
 document.addEventListener('htmx:afterSwap', (event) => {
     if (isListRefreshEvent(event)) {
         clearListStale();
+        reapplyRowState();
     }
 });
+
+// ---------------------------------------------------------------------------
+// Identity-keyed row state (D6): selection + j/k focus survive every morph
+// ---------------------------------------------------------------------------
+// Single-type list rows carry data-key="cluster/ns/name" (and an id derived
+// from it, which idiomorph uses to match rows by OBJECT identity, never by
+// position). Row-level client state lives here, keyed by that identity:
+//   - rowSelection: the multi-select set (the bulk-bar feed, Unit 16)
+//   - rowFocusKey:  the single j/k keyboard-focus row (gesture lands in Unit 16)
+// A morph syncs the server's class attribute over any client-added class (the
+// cell-flash WeakMap machinery proved this), so the classes are RE-APPLIED from
+// this store on htmx:afterSwap above. Because the keys are object identities,
+// a re-sorted or filtered fragment re-decorates the SAME objects wherever their
+// rows land. window.roRowState is the deliberate seam the selection gesture
+// (Unit 16) and the e2e suite drive; everything is pure DOM classList writes
+// (CSP-clean, read-only floor untouched).
+const rowSelection = new Set();
+let rowFocusKey = null;
+
+function reapplyRowState() {
+    const content = document.getElementById('resource-list-content');
+    if (!content) {
+        return;
+    }
+    content.querySelectorAll('tr[data-key]').forEach((tr) => {
+        tr.classList.toggle('is-selected', rowSelection.has(tr.dataset.key));
+        tr.classList.toggle('kfocus', tr.dataset.key === rowFocusKey);
+    });
+}
+
+window.roRowState = {
+    setSelected(key, on) {
+        if (on) {
+            rowSelection.add(key);
+        } else {
+            rowSelection.delete(key);
+        }
+        reapplyRowState();
+    },
+    setFocus(key) {
+        rowFocusKey = key || null;
+        reapplyRowState();
+    },
+    clear() {
+        rowSelection.clear();
+        rowFocusKey = null;
+        reapplyRowState();
+    },
+    selectedKeys() {
+        return Array.from(rowSelection);
+    },
+};
 
 // ---------------------------------------------------------------------------
 // Theme-toggle POST target (prefers-aware, cookieless-safe)
@@ -1274,6 +1483,12 @@ function runInit() {
         highlightYamlLine,
         syncThemeTogglePostTarget,
         setupStickyNamespace,
+        // Row state is keyed by OBJECT identity and survives boosted body swaps
+        // (script state persists); re-paint it on every init pass so a return
+        // to a list re-decorates the same objects immediately, not only on the
+        // next morph. Lifecycle policy (when to clear) lands with the selection
+        // gesture in Unit 16.
+        reapplyRowState,
     ].forEach(runInitStep);
 }
 

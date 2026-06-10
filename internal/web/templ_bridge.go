@@ -185,24 +185,25 @@ func stateKindAndGlyph(kind listStateKind) (string, string) {
 
 func toTableData(t *tableView) templates.TableData {
 	td := templates.TableData{
-		Kind:            t.Kind,
-		Count:           len(t.Table.Rows),
-		DownloadTSVHref: t.DownloadTSVHref,
-		SearchHref:      t.SearchHref,
-		DownloadIcon:    icon("download"),
-		ToolsIcon:       icon("caret-square-down"),
-		SearchIcon:      icon("search"),
-		Tools:           toTableTools(&t.Tools),
-		ShowMetricsHref: t.ShowMetricsHref,
-		PhaseRows:       len(t.Table.Rows),
-		MultiCluster:    len(t.Table.Clusters) > 1,
-		ColumnCount:     len(t.Table.Columns),
-		CreatedHref:     t.CreatedHref,
-		CreatedIcon:     t.CreatedIcon,
-		CreatedSorted:   t.CreatedIcon != "",
-		EmptyKind:       t.Table.Resource.Kind,
-		EmptyGlyph:      icon("inbox"),
-		ClearHref:       t.ClearHref,
+		Kind:               t.Kind,
+		Count:              len(t.Table.Rows),
+		DownloadTSVHref:    t.DownloadTSVHref,
+		SearchHref:         t.SearchHref,
+		DownloadIcon:       icon("download"),
+		ToolsIcon:          icon("caret-square-down"),
+		SearchIcon:         icon("search"),
+		Tools:              toTableTools(&t.Tools),
+		ShowMetricsHref:    t.ShowMetricsHref,
+		PhaseRows:          len(t.Table.Rows),
+		MultiCluster:       len(t.Table.Clusters) > 1,
+		ColumnCount:        len(t.Table.Columns),
+		CreatedHref:        t.CreatedHref,
+		CreatedIcon:        t.CreatedIcon,
+		CreatedSorted:      t.CreatedIcon != "",
+		CreatedPartialHref: t.CreatedPartialHref,
+		EmptyKind:          t.Table.Resource.Kind,
+		EmptyGlyph:         icon("inbox"),
+		ClearHref:          t.ClearHref,
 	}
 	if t.EmptyAction != nil {
 		td.EmptyActionHref = t.EmptyAction.Href
@@ -226,6 +227,7 @@ func toTableData(t *tableView) templates.TableData {
 			Name:        col.Name,
 			SortIcon:    t.Columns[i].SortIcon,
 			Sorted:      t.Columns[i].SortIcon != "",
+			PartialHref: t.Columns[i].PartialHref,
 		})
 	}
 	for i := range t.Rows {
@@ -238,6 +240,8 @@ func toTableData(t *tableView) templates.TableData {
 			Namespace:    row.Namespace,
 			CreatedClass: row.CreatedClass,
 			CreatedText:  row.CreatedText,
+			Key:          row.Key,
+			DomID:        rowDomID(row.Key),
 		}
 		if row.CreatedText != "" {
 			tr.CreatedTitle = "created " + row.CreatedText
@@ -284,6 +288,30 @@ func toTableData(t *tableView) templates.TableData {
 	return td
 }
 
+// rowDomID derives the row's DOM id from its data-key (D6: idiomorph matches
+// rows by id, never position). The id must be safe inside the quoted attribute
+// selector idiomorph uses (`[id="…"]`) and as an HTML id, so '%', '"', '\',
+// whitespace, and control bytes are percent-escaped; everything else (incl.
+// '/') passes through, keeping the common case readable ("row-c/ns/name").
+// Percent-escaping '%' itself keeps distinct keys mapping to distinct ids.
+// An empty key (a multi-type v1 row) yields an empty id (no attribute emitted).
+func rowDomID(key string) string {
+	if key == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("row-")
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if c <= ' ' || c == '"' || c == '\\' || c == '%' || c == 0x7f {
+			fmt.Fprintf(&b, "%%%02X", c)
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 // toListPageData maps the listView + the request-derived partial URL onto the
 // full-page templ ListPageData (breadcrumb + the htmx container's `_table` URL
 // + the table fragment).
@@ -300,6 +328,7 @@ func toListPageData(v *listView, partialURL string) templates.ListPageData {
 			Plural:          v.Plural,
 		},
 		PartialURL: partialURL,
+		SingleType: v.SingleType,
 		List:       toListData(v),
 	}
 }

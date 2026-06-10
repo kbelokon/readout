@@ -21,6 +21,14 @@ package templates
 // carried in ListData; the renderer touches no request and recomputes nothing.
 // Trusted pre-rendered chrome (inline SVG icons, the sort-direction icon) rides
 // in as raw strings.
+//
+// The v2 interaction loop (D6, single-type pages only -- D1): sort headers with
+// a non-empty PartialHref are hx-get requests against the `_table` partial,
+// morph-swapped into #resource-list-content (the handler pushes the CANONICAL
+// page URL via HX-Push-Url -- never the partial URL); rows with a non-empty Key
+// carry data-key="cluster/ns/name" plus an id derived from it, so idiomorph
+// matches rows by object identity rather than position and readout.js re-keys
+// selection/focus state onto the same object after every morph.
 
 // ListData is the resolved resource-list input shared by the full page and the
 // `_table` partial. The all-* flags drive the leading Cluster/Namespace columns
@@ -88,6 +96,11 @@ type TableData struct {
 	CreatedIcon   string
 	CreatedSorted bool // active sort is the synthetic Created column
 
+	// CreatedPartialHref is the Created header's `_table` partial sort URL: when
+	// non-empty (single-type pages, D6) the header becomes an hx-get morph swap
+	// of #resource-list-content; empty keeps the v1 boosted link (D1).
+	CreatedPartialHref string
+
 	Rows []TableRow
 
 	EmptyKind  string // Resource.Kind for the empty-state sentence
@@ -120,6 +133,10 @@ type PhaseChip struct {
 // TableColumn is one column header: its title/class + sort link + the
 // pre-rendered sort-direction icon (raw HTML, empty when not the sort column).
 // Sorted marks the active sort column (the redesign `th.sorted` highlight).
+// PartialHref, when non-empty (single-type pages, D6), turns the header link
+// into an hx-get of the `_table` partial morph-swapped into
+// #resource-list-content; SortHref stays the canonical page URL for
+// history/new-tab/no-JS. Empty PartialHref keeps the v1 boosted link (D1).
 type TableColumn struct {
 	Description string
 	Class       string
@@ -127,6 +144,7 @@ type TableColumn struct {
 	Name        string
 	SortIcon    string
 	Sorted      bool
+	PartialHref string
 }
 
 // TableTools is the per-table tools form (label columns / selector / filter).
@@ -148,7 +166,10 @@ type HiddenInput struct {
 }
 
 // TableRow is one body row: its status class, the optional Cluster/Namespace
-// cells, the per-column cells, and the Created cell.
+// cells, the per-column cells, and the Created cell. Key/DomID carry the D6
+// row identity ("cluster/ns/name" + the id derived from it): when non-empty
+// (single-type pages) the <tr> emits data-key + id so idiomorph matches rows
+// by identity (never position) and client row state re-keys across morphs.
 type TableRow struct {
 	StatusClass  string
 	ClusterHref  string
@@ -159,6 +180,8 @@ type TableRow struct {
 	CreatedClass string
 	CreatedText  string
 	CreatedTitle string
+	Key          string
+	DomID        string
 }
 
 // TableCell is one body cell. Kind selects the render branch; Class is the full
@@ -279,12 +302,32 @@ templ resourceTables(d ListData) {
 				<th>Namespace</th>
 			}
 			for _, col := range table.Columns {
-				<th title={ col.Description } class={ thClass(col.Class, col.Sorted) }><a href={ templ.SafeURL(col.SortHref) }>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
+				<th title={ col.Description } class={ thClass(col.Class, col.Sorted) }><a
+					href={ templ.SafeURL(col.SortHref) }
+					if col.PartialHref != "" {
+						hx-get={ col.PartialHref }
+						hx-target="#resource-list-content"
+						hx-swap="morph"
+					}
+				>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
 			}
-			<th class={ thClass("", table.CreatedSorted) }><a href={ templ.SafeURL(table.CreatedHref) }>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
+			<th class={ thClass("", table.CreatedSorted) }><a
+				href={ templ.SafeURL(table.CreatedHref) }
+				if table.CreatedPartialHref != "" {
+					hx-get={ table.CreatedPartialHref }
+					hx-target="#resource-list-content"
+					hx-swap="morph"
+				}
+			>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
 			</tr></thead><tbody>
 			for _, row := range table.Rows {
-				<tr class={ rowClass(row.StatusClass) }>
+				<tr
+					class={ rowClass(row.StatusClass) }
+					if row.Key != "" {
+						id={ row.DomID }
+						data-key={ row.Key }
+					}
+				>
 					if table.MultiCluster {
 						<td class="cell-clu"><a href={ templ.SafeURL(row.ClusterHref) }>{ row.Cluster }</a></td>
 					}

@@ -4,6 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -673,4 +676,188 @@ func TestListSingleClusterNeverShowsPartialFailure(t *testing.T) {
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 	p.wantAbsent(".ro-banner.warn:not(.ro-stale-banner)")
 	p.wantAbsent(".ro-partial-note")
+}
+
+// ---------------------------------------------------------------------------
+// V2 interaction loop (D6) + the D1 surface boundary.
+// ---------------------------------------------------------------------------
+
+// TestRowKeyAndDomID pins the row-identity encoding (D6): the key collapses
+// empty segments, and the derived DOM id stays unique and safe inside the
+// quoted attribute selector idiomorph matches ids with ([id="…"]) -- '%', '"',
+// '\', and whitespace are percent-escaped (escaping '%' itself keeps distinct
+// keys mapping to distinct ids); everything else, '/' included, is literal.
+func TestRowKeyAndDomID(t *testing.T) {
+	cases := []struct {
+		cluster, ns, name string
+		wantKey, wantID   string
+	}{
+		{"test", "default", "nginx", "test/default/nginx", "row-test/default/nginx"},
+		{"test", "", "worker-1", "test/worker-1", "row-test/worker-1"}, // cluster-scoped: empty ns collapses
+		{"c", "n", `we"ird`, `c/n/we"ird`, "row-c/n/we%22ird"},
+		{"c", "n", "pct%20", "c/n/pct%20", "row-c/n/pct%2520"},
+		{"c", "n", "sp ace", "c/n/sp ace", "row-c/n/sp%20ace"},
+	}
+	for _, tc := range cases {
+		if got := rowKey(tc.cluster, tc.ns, tc.name); got != tc.wantKey {
+			t.Fatalf("rowKey(%q,%q,%q) = %q, want %q", tc.cluster, tc.ns, tc.name, got, tc.wantKey)
+		}
+		if got := rowDomID(tc.wantKey); got != tc.wantID {
+			t.Fatalf("rowDomID(%q) = %q, want %q", tc.wantKey, got, tc.wantID)
+		}
+	}
+	if got := rowDomID(""); got != "" {
+		t.Fatalf("rowDomID(\"\") = %q, want empty (multi-type rows emit no id)", got)
+	}
+}
+
+// TestListLoopSurfaceBoundary pins the D1 boundary: a multi-TYPE page
+// (plural=CSV) keeps the v1 contract untouched -- the baked-partial-URL
+// container re-fetched on ro:refresh, plain boosted sort links (no hx-get),
+// identity-less rows, no bulk-bar mount -- while the single-type page (pinned
+// in TestBehaviorPodListFacts) runs the v2 loop.
+func TestListLoopSurfaceBoundary(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	p := get(t, app, "/clusters/test/namespaces/default/pods,services", http.StatusOK)
+
+	// v1 container contract, byte-for-byte.
+	p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods,services/_table")
+	p.wantAttr("#resource-list-content", "hx-trigger", "ro:refresh")
+	p.wantAttr("#resource-list-content", "hx-ext", "morph")
+	p.wantAttr("#resource-list-content", "hx-swap", "morph:innerHTML")
+	p.wantAbsent("#resource-list-content[data-live-url]")
+
+	// v1 sort headers: plain boosted links, no partial hx-get.
+	p.wantAbsent("thead th a[hx-get]")
+
+	// v1 rows: no identity attributes, no bulk-bar mount.
+	p.wantAbsent("tr[data-key]")
+	p.wantAbsent("#ro-bulkbar")
+}
+
+// TestListPartialFragmentCarriesCanonicalHrefs proves the `_table` fragment
+// resolves its request-derived hrefs against the CANONICAL list URL, never the
+// partial's own path (D6 state coherence). Before the buildListView
+// canonicalization, a fragment delivered by a refresh tick baked
+// `…/_table?sort=…` into its sort hrefs, so the next header click navigated to
+// the bare fragment.
+func TestListPartialFragmentCarriesCanonicalHrefs(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	p := get(t, app, "/clusters/test/namespaces/default/pods/_table?selector=app%3Dnginx", http.StatusOK)
+
+	// Canonical hrefs (history/new-tab) + partial hx-get (the loop), both
+	// carrying the live query.
+	if !contains(p.attrs("thead th a", "href"), "/clusters/test/namespaces/default/pods?selector=app%3Dnginx&sort=Name") {
+		t.Fatalf("partial fragment sort href not canonical: %v", p.attrs("thead th a", "href"))
+	}
+	if !contains(p.attrs("thead th a", "hx-get"), "/clusters/test/namespaces/default/pods/_table?selector=app%3Dnginx&sort=Name") {
+		t.Fatalf("partial fragment sort hx-get not the partial URL: %v", p.attrs("thead th a", "hx-get"))
+	}
+	// The refreshed fragment keeps the row identity attributes (the morph
+	// re-keys selection/focus from them after every swap).
+	p.wantAttr(`tr[data-key="test/default/nginx"]`, "id", "row-test/default/nginx")
+}
+
+// TestListPartialPushURLContract pins the D6 history-push matrix on the
+// `_table` handler: ONLY a user-initiated htmx request gets HX-Push-Url, and
+// the pushed URL is the CANONICAL list path + the live query -- never the
+// partial URL. Ticks/programmatic re-fetches (RO-No-Push), preload warm-ups
+// (HX-Preloaded), non-htmx requests, and multi-type pages (D1) get no push:
+// htmx pushes one history entry per header occurrence with no same-URL dedupe,
+// so any of those pushing would spray junk history entries.
+func TestListPartialPushURLContract(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	tableGET := func(path string, headers map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200\nbody=%s", path, rec.Code, rec.Body.String())
+		}
+		return rec
+	}
+
+	const partial = "/clusters/test/namespaces/default/pods/_table?sort=Name"
+
+	// User-initiated sort/filter (an htmx request with no programmatic marker):
+	// push the canonical page URL with the query intact.
+	rec := tableGET(partial, map[string]string{"HX-Request": "true"})
+	if got := rec.Header().Get("HX-Push-Url"); got != "/clusters/test/namespaces/default/pods?sort=Name" {
+		t.Fatalf("user sort push = %q, want the canonical list URL", got)
+	}
+
+	// Tick / programmatic re-fetch: marked RO-No-Push by the client -> no push.
+	rec = tableGET(partial, map[string]string{"HX-Request": "true", "RO-No-Push": "true"})
+	if got := rec.Header().Get("HX-Push-Url"); got != "" {
+		t.Fatalf("tick push = %q, want none (a 5s interval would spray history)", got)
+	}
+
+	// Preload warm-up: never a user gesture -> no push.
+	rec = tableGET(partial, map[string]string{"HX-Request": "true", "HX-Preloaded": "true"})
+	if got := rec.Header().Get("HX-Push-Url"); got != "" {
+		t.Fatalf("preload push = %q, want none", got)
+	}
+
+	// A non-htmx GET (curl, crawler): no push header.
+	rec = tableGET(partial, nil)
+	if got := rec.Header().Get("HX-Push-Url"); got != "" {
+		t.Fatalf("non-htmx push = %q, want none", got)
+	}
+
+	// Multi-type partials sit outside the loop (D1): no push even for an htmx
+	// request.
+	rec = tableGET("/clusters/test/namespaces/default/pods,services/_table", map[string]string{"HX-Request": "true"})
+	if got := rec.Header().Get("HX-Push-Url"); got != "" {
+		t.Fatalf("multi-type push = %q, want none", got)
+	}
+}
+
+// TestListLoopReadoutJSContract pins the readout.js half of the D6 loop the
+// same way the stale-path test does (no headless JS runner in this suite; the
+// e2e suite exercises the runtime behavior): the CSP-safe ro-morph extension
+// delivering the morph config as a JS object, the location-derived tick URL,
+// the RO-No-Push programmatic marker, the user-request in-flight suppression,
+// and the identity-keyed row-state store re-applied after swaps.
+func TestListLoopReadoutJSContract(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
+	if err != nil {
+		t.Fatalf("read readout.js: %v", err)
+	}
+	js := string(src)
+	for _, needle := range []string{
+		"htmx.defineExtension('ro-morph'", // the JS-config morph path (no attribute eval)
+		"ignoreActiveValue: true",         // filter draft/focus survives a mid-typing morph
+		"dataset.liveUrl === 'location'",  // the v2 container marker readout.js keys on
+		"'/_table'",                       // the tick derives the partial URL from location
+		"RO-No-Push",                      // programmatic requests opt out of history push
+		"userListRequestsInFlight",        // tick suppression while a user request runs
+		"htmx:abort",                      // a user action aborts an in-flight tick
+		"reapplyRowState",                 // identity-keyed state re-applied after swaps
+		"roRowState",                      // the Unit-16 selection-gesture seam
+		"tr[data-key]",                    // state re-keys onto rows by object identity
+	} {
+		if !strings.Contains(js, needle) {
+			t.Fatalf("readout.js v2 loop missing %q", needle)
+		}
+	}
+	// The morph config must be delivered as an explicit JS OBJECT inside the
+	// extension -- never serialized into an hx-swap attribute value (the
+	// vendored extension evals "morph:{…}" specs via Function(), which CSP
+	// script-src 'self' blocks at runtime). Pin that no code path WRITES an
+	// hx-swap config spec; the rendered-markup side is pinned below.
+	if regexp.MustCompile(`hx-swap[^\n]*morph:\{`).MatchString(js) {
+		t.Fatalf("readout.js must not write attribute-spec morph config (CSP-blocked eval)")
+	}
+
+	// And the rendered page never emits an eval-needing morph spec either: the
+	// only hx-swap values on a single-type list are "morph" (the ro-morph JS
+	// path) on the container/headers; the v1 multi-type page keeps
+	// "morph:innerHTML" (a literal string compare in the vendored ext, no eval).
+	app := newServer(t, baseConfig(t), time.Now())
+	get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK).wantBodyExcludes("morph:{")
+	get(t, app, "/clusters/test/namespaces/default/pods,services", http.StatusOK).wantBodyExcludes("morph:{")
 }

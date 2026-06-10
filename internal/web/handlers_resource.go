@@ -85,6 +85,24 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, view.State.SourceErr)
 		return
 	}
+	// Canonical-URL history push (D6): a USER-initiated sort/filter request gets
+	// the CANONICAL list URL (path minus `/_table`, current query) pushed into
+	// history -- never the partial URL (hx-push-url="true" would push
+	// `…/_table?…`; a reload of that entry renders a bare fragment). The header
+	// is deliberately conditional: htmx pushes one history entry per HX-Push-Url
+	// occurrence with NO same-URL dedupe, so an unconditional header would turn a
+	// 5s refresh interval into one junk entry per tick. Ticks and every other
+	// programmatic re-fetch mark themselves with RO-No-Push (readout.js sets it
+	// on requests issued by #resource-list-content itself; column toggles and
+	// later programmatic surfaces ride the same header), preload warm-ups carry
+	// HX-Preloaded, non-htmx requests have no HX-Request, and the loop is
+	// single-type-only (D1) -- none of those push.
+	if isSingleListType(r.PathValue("plural")) &&
+		r.Header.Get("HX-Request") == "true" &&
+		r.Header.Get("RO-No-Push") == "" &&
+		r.Header.Get("HX-Preloaded") != "true" {
+		w.Header().Set("HX-Push-Url", resourceListBaseURL(r.URL).String())
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.ResourceTable(toListData(&view)).Render(r.Context(), w)
 }

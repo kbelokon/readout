@@ -31,6 +31,13 @@ type listView struct {
 	Errors          []error
 	Tables          []tableView
 
+	// SingleType marks a single-resource-type list page -- the D1 surface
+	// boundary for the v2 interaction loop (D6). Only single-type pages get the
+	// partial sort headers, row identity keys, the location-derived refresh tick,
+	// and the bulk-bar mount; multi-type pages (plural=all / CSV / _all) keep the
+	// v1 behavior (boosted sort links + the render-time-baked partial URL).
+	SingleType bool
+
 	// AllNamespacesHref is the precomputed "Show <plural> across all namespaces"
 	// link target (carries the current query string). Empty when the link should
 	// not render.
@@ -108,6 +115,11 @@ type tableView struct {
 	CreatedHref string
 	CreatedIcon string
 
+	// CreatedPartialHref is the synthetic Created header's `_table` partial sort
+	// URL (the hx-get target of the v2 loop, D6). Empty on multi-type pages
+	// (D1), where the Created header stays a plain boosted link.
+	CreatedPartialHref string
+
 	Tools toolsView
 
 	Rows []rowView
@@ -137,10 +149,14 @@ type filterChipView struct {
 	RemoveHref string
 }
 
-// columnView precomputes a column header's sort link and indicator.
+// columnView precomputes a column header's sort link and indicator. SortHref is
+// the CANONICAL page URL (history/new-tab/no-JS); PartialHref is the same sort
+// against the `_table` partial route -- the header's hx-get in the v2 loop (D6).
+// PartialHref is empty on multi-type pages (D1 boundary: v1 boosted links).
 type columnView struct {
-	SortHref string
-	SortIcon string
+	SortHref    string
+	SortIcon    string
+	PartialHref string
 }
 
 // toolsView precomputes the resource-list tools form (label columns, selector,
@@ -169,6 +185,14 @@ type rowView struct {
 	Cells        []cellView
 	CreatedClass string
 	CreatedText  string
+
+	// Key is the row's stable object identity "cluster/ns/name" (empty segments
+	// collapsed) -- the D6 row-identity contract. The renderer emits it as
+	// data-key plus an id derived from it, so idiomorph matches rows by identity
+	// (never position) and client row state (selection, j/k focus) re-keys onto
+	// the same object across morphs. Empty on multi-type pages (D1), where rows
+	// stay identity-less v1 markup.
+	Key string
 }
 
 // cellView precomputes a single body cell. Kind selects the render branch; the

@@ -435,16 +435,27 @@ func TestBehaviorPodListFacts(t *testing.T) {
 	p.wantText("title", "pods in test - readout")
 	p.wantText("h1.title", "Pods")
 
-	// #resource-list-content htmx wiring (the live-refresh contract readout.js
-	// fires ro:refresh against). Every attribute pinned by exact value.
-	p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods/_table")
-	p.wantAttr("#resource-list-content", "hx-trigger", "ro:refresh")
+	// #resource-list-content htmx wiring -- the v2 single-type loop (D6): the
+	// container bakes NO request URL (data-live-url="location" is the readout.js
+	// contract: the refresh tick derives the `_table` URL from location.href at
+	// fire time, so it can never revert a pushed sort/filter), and swaps go
+	// through the CSP-safe ro-morph extension (hx-swap="morph", config delivered
+	// as a JS object -- attribute-spec morph config would be eval'd and blocked).
+	p.wantAttr("#resource-list-content", "data-live-url", "location")
 	p.wantAttr("#resource-list-content", "hx-target", "this")
-	p.wantAttr("#resource-list-content", "hx-ext", "morph")
-	p.wantAttr("#resource-list-content", "hx-swap", "morph:innerHTML")
+	p.wantAttr("#resource-list-content", "hx-ext", "ro-morph")
+	p.wantAttr("#resource-list-content", "hx-swap", "morph")
+	// The render-time-baked PartialURL contract is REPLACED on single-type pages:
+	// a baked hx-get/hx-trigger here would resurrect the tick-reverts-sort bug.
+	p.wantAbsent("#resource-list-content[hx-get]")
+	p.wantAbsent("#resource-list-content[hx-trigger]")
 	// The refresh points its in-flight indicator at the single global top progress
 	// bar (#ro-progress in the layout), the same rail every hx-boost navigation uses.
 	p.wantAttr("#resource-list-content", "hx-indicator", "#ro-progress")
+	// The bulk-bar mount (Unit 16 content) sits OUTSIDE the swap target so a
+	// morph never touches it.
+	p.wantHas("#ro-bulkbar")
+	p.wantAbsent("#resource-list-content #ro-bulkbar")
 
 	// Column headers in order, each linking to its own ?sort=<col>. The redesign
 	// list engine renders the canonical `.ro-table` inside `.ro-table-wrap`.
@@ -457,7 +468,22 @@ func TestBehaviorPodListFacts(t *testing.T) {
 		if !p.containsHref("thead th a", want) {
 			t.Fatalf("missing column sort href %q among %v", want, p.attrs("thead th a", "href"))
 		}
+		// The v2 loop (D6): every header ALSO carries an hx-get of the same sort
+		// against the `_table` partial, morph-swapped into the persistent
+		// container (the canonical href stays for history/new-tab/no-JS).
+		wantPartial := "/clusters/test/namespaces/default/pods/_table?sort=" + col
+		if !contains(p.attrs("thead th a", "hx-get"), wantPartial) {
+			t.Fatalf("missing column partial sort hx-get %q among %v", wantPartial, p.attrs("thead th a", "hx-get"))
+		}
 	}
+	p.wantAttr("thead th a[hx-get]", "hx-target", "#resource-list-content")
+	p.wantAttr("thead th a[hx-get]", "hx-swap", "morph")
+
+	// Row identity (D6): every row carries data-key="cluster/ns/name" plus the
+	// id derived from it, so idiomorph matches rows by object identity (never
+	// position) and client selection/focus state re-keys across morphs.
+	p.wantAttr(`tr[data-key="test/default/nginx"]`, "id", "row-test/default/nginx")
+	p.wantAttr(`tr[data-key="test/default/my-app"]`, "id", "row-test/default/my-app")
 
 	// Phase strip: the Running tally (redesign phase strip, dot tone "ok").
 	p.wantText(".ro-phase-label", "Running")
@@ -511,16 +537,18 @@ func TestBehaviorPodListSortToggle(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods?sort=Name", http.StatusOK)
 
-	// hx-get carries the sort through to the partial refresh URL.
-	p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods/_table?sort=Name")
-
 	// The Name header now points at the :desc toggle (percent-encoded colon) and
 	// carries a sort icon; goquery returns the href HTML-decoded (&amp;->&) but
-	// keeps %3A literal.
+	// keeps %3A literal. Its hx-get carries the SAME toggle against the `_table`
+	// partial (D6: the sort interaction is a partial morph; the container no
+	// longer bakes a request URL -- the tick derives it from location).
 	nameHeader := p.doc.Find(`thead th:has(a) a:contains("Name")`).First()
 	href, _ := nameHeader.Attr("href")
 	if href != "/clusters/test/namespaces/default/pods?sort=Name%3Adesc" {
 		t.Fatalf("Name header href = %q, want ...?sort=Name%%3Adesc", href)
+	}
+	if hxGet, _ := nameHeader.Attr("hx-get"); hxGet != "/clusters/test/namespaces/default/pods/_table?sort=Name%3Adesc" {
+		t.Fatalf("Name header hx-get = %q, want .../_table?sort=Name%%3Adesc", hxGet)
 	}
 	if nameHeader.Find(".icon").Length() == 0 {
 		t.Fatalf("active sort column should render a sort icon")
@@ -552,13 +580,17 @@ func TestBehaviorPodListSortToggle(t *testing.T) {
 }
 
 // TestBehaviorPodListAllNamespaces pins the all-namespaces variant: a leading
-// Namespace column appears, the breadcrumb shows "all", and the partial URL
-// targets the _all path.
+// Namespace column appears, the breadcrumb shows "all", and the v2 loop's
+// partial sort headers target the _all path (an all-NAMESPACES pods list is
+// still a single-TYPE page, so the D6 loop applies).
 func TestBehaviorPodListAllNamespaces(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/_all/pods", http.StatusOK)
 
-	p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/_all/pods/_table")
+	p.wantAttr("#resource-list-content", "data-live-url", "location")
+	if !contains(p.attrs("thead th a", "hx-get"), "/clusters/test/namespaces/_all/pods/_table?sort=Name") {
+		t.Fatalf("missing _all-path partial sort hx-get among %v", p.attrs("thead th a", "hx-get"))
+	}
 	headers := p.texts("table.ro-table thead th")
 	if headers[0] != "Namespace" {
 		t.Fatalf("all-namespaces first header = %q, want Namespace (headers=%v)", headers[0], headers)
@@ -586,7 +618,12 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 	t.Run("selector round-trips into the selector input", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?selector=app%3Dnginx", http.StatusOK)
 		p.wantAttr(`form.tools-form .ro-input[name="selector"]`, "value", "app=nginx")
-		p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods/_table?selector=app%3Dnginx")
+		// The selector rides every header's partial sort hx-get (D6: the partial
+		// request must carry the full current query so a sort keeps the selector).
+		want := "/clusters/test/namespaces/default/pods/_table?selector=app%3Dnginx&sort=Name"
+		if !contains(p.attrs("thead th a", "hx-get"), want) {
+			t.Fatalf("selector missing from partial sort hx-get: %v", p.attrs("thead th a", "hx-get"))
+		}
 	})
 
 	t.Run("filter narrows rows and round-trips into the filter input", func(t *testing.T) {
@@ -656,7 +693,12 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 
 	t.Run("custom-columns round-trips into hx-get and adds the column", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?custom-columns=Image=spec.containers[0].image", http.StatusOK)
-		p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods/_table?custom-columns=Image=spec.containers[0].image")
+		// The custom-columns spec rides the partial sort hx-get (addQuery
+		// re-encodes the query, so '=' and brackets are percent-escaped).
+		want := "/clusters/test/namespaces/default/pods/_table?custom-columns=Image%3Dspec.containers%5B0%5D.image&sort=Name"
+		if !contains(p.attrs("thead th a", "hx-get"), want) {
+			t.Fatalf("custom-columns missing from partial sort hx-get: %v", p.attrs("thead th a", "hx-get"))
+		}
 		if !contains(p.texts("thead th"), "Image") {
 			t.Fatalf("custom-columns did not add an Image column: %v", p.texts("thead th"))
 		}

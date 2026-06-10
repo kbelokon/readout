@@ -517,9 +517,32 @@ func evalJSONPath(jp *jsonpath.JSONPath, obj any) string {
 // listView, resolving every request-derived href and flag here so render never
 // touches *http.Request.
 func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
+	// Canonicalize the request URL FIRST (D6 state coherence): this builder
+	// serves BOTH the full page and the `_table` partial, and every href it
+	// resolves (sort headers, metrics join, label-selector links, filter chips,
+	// retry) must point at the canonical LIST PAGE -- never at the partial.
+	// Without this, a fragment rendered by the partial handler baked
+	// `…/_table?sort=…` into its hrefs, so the first navigation after a refresh
+	// tick landed on the bare fragment. The shallow request clone keeps
+	// context/path values intact; only the URL is rewritten.
+	canonical := *r
+	canonical.URL = resourceListBaseURL(r.URL)
+	r = &canonical
 	q := r.URL.Query()
 	sortValue := q.Get("sort")
 	joinValue := q.Get("join")
+
+	// The D1 surface boundary: the v2 interaction loop (partial sort headers,
+	// row identity, location-derived ticks) applies to single-resource-type
+	// pages only. partialSortURL is the `_table` base the header hx-get links
+	// sort against; nil disables the whole loop for multi-type pages.
+	single := isSingleListType(lc.Plural)
+	var partialSortURL *url.URL
+	if single {
+		clone := *r.URL
+		clone.Path = strings.TrimRight(clone.Path, "/") + "/_table"
+		partialSortURL = &clone
+	}
 
 	v := listView{
 		Cluster:         lc.Cluster,
@@ -530,6 +553,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 		ClusterCount:    lc.ClusterCount,
 		Duration:        lc.Duration,
 		Errors:          lc.Errors,
+		SingleType:      single,
 	}
 	if lc.Namespace != "" && lc.Plural != "namespaces" && !lc.IsAllNamespaces {
 		v.AllNamespacesHref = fmt.Sprintf("/clusters/%s/namespaces/_all/%s?%s", url.PathEscape(lc.Cluster), url.PathEscape(lc.Plural), r.URL.RawQuery)
@@ -569,13 +593,20 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 			if sortValue == col.Name {
 				sortParam = col.Name + ":desc"
 			}
-			tv.Columns = append(tv.Columns, columnView{
+			cv := columnView{
 				SortHref: addQuery(r.URL, "sort", sortParam),
 				SortIcon: sortIcon(sortValue, col.Name),
-			})
+			}
+			if partialSortURL != nil {
+				cv.PartialHref = addQuery(partialSortURL, "sort", sortParam)
+			}
+			tv.Columns = append(tv.Columns, cv)
 		}
 		tv.CreatedHref = addQuery(r.URL, "sort", createdSortParam(sortValue))
 		tv.CreatedIcon = sortIcon(sortValue, "Created")
+		if partialSortURL != nil {
+			tv.CreatedPartialHref = addQuery(partialSortURL, "sort", createdSortParam(sortValue))
+		}
 
 		multiCluster := len(table.Clusters) > 1
 		for _, row := range table.Rows {
@@ -589,6 +620,9 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 				Namespace:    ns,
 				CreatedClass: s.ageClass(nestedString(row.Object, "metadata", "creationTimestamp")),
 				CreatedText:  formatTimestamp(nestedString(row.Object, "metadata", "creationTimestamp")),
+			}
+			if single {
+				rv.Key = rowKey(row.Cluster, ns, name)
 			}
 			if multiCluster {
 				rv.ClusterHref = "/clusters/" + url.PathEscape(row.Cluster)
@@ -631,6 +665,27 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 		}
 	}
 	return v
+}
+
+// isSingleListType reports whether the {plural} path segment names exactly ONE
+// resource type -- the D1 surface boundary for the v2 interaction loop (D6).
+// Multi-type pages ("all", the "_all" union, and CSV lists) keep the v1
+// behavior: boosted sort links, no row identity, the baked partial URL.
+func isSingleListType(plural string) bool {
+	return plural != "" && plural != "all" && plural != kube.AllNamespaces && !strings.Contains(plural, ",")
+}
+
+// rowKey is the stable row object identity "cluster/ns/name" with empty
+// segments collapsed (a cluster-scoped object yields "cluster/name") -- the D6
+// data-key contract that morphs, selection, and j/k focus key on.
+func rowKey(cluster, namespace, name string) string {
+	parts := make([]string, 0, 3)
+	for _, part := range []string{cluster, namespace, name} {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 // buildFilterChips resolves the removable active-filter chips for the
