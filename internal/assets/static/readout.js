@@ -1763,7 +1763,7 @@ document.addEventListener('htmx:beforeRequest', (event) => {
 // Auto-refresh interval (live table morph-refresh)
 // ---------------------------------------------------------------------------
 // OFF by default -- the page is static. The user picks an interval in the navbar
-// (#refresh-dropdown: Off / 5 / 15 / 30 / 60s); the choice persists in the
+// (#refresh-dropdown: Off / 5 / 10 / 30 / 60s, D18); the choice persists in the
 // ro_prefs cookie (D9 -- written by THIS script, no server write route: the
 // read-only floor stays intact; the server merely renders the persisted state
 // into the topbar at SSR). The legacy v1 home, the `roRefresh` localStorage
@@ -1795,7 +1795,17 @@ document.addEventListener('htmx:beforeRequest', (event) => {
 // never written anymore -- refreshMode() reads it once as the migration
 // fallback into the ro_prefs cookie (D9).
 const REFRESH_KEY = 'roRefresh';
+// THE pending tick timer -- a setTimeout CHAIN, not setInterval: the wait
+// before the next tick depends on the failure backoff stage (SPEC §8.3), so
+// every tick / failure / recovery re-derives it.
 let refreshTimerId = null;
+// Epoch ms of the next armed tick (0 = none) -- the stale banner's live
+// "Retrying in Ns" countdown reads it.
+let refreshNextAt = 0;
+// Consecutive failed list-refresh attempts since the last success; 0 =
+// healthy. Stage 1 retries at the base cadence (1x), stage 2 at 2x, stage 3
+// (where it stays) at 4x, the wait capped at 60s; the first success resets it.
+let refreshFailureStage = 0;
 
 // userListRequestsInFlight tracks USER-initiated requests targeting
 // #resource-list-content (requests from any element other than the container
@@ -1989,17 +1999,56 @@ function fireRefresh() {
     requestListRefresh();
 }
 
-// (Re)arm the interval from the stored preference. Idempotent: clears any prior
-// timer first, so hx-boost body swaps and repeated init passes never stack timers.
-function applyRefresh() {
+// refreshDelaySeconds is the wait until the NEXT tick: the chosen interval
+// while healthy (stage 0) and after the FIRST failure (stage 1 retries at the
+// base cadence, 1x), then 2x / 4x of it for repeated failures, the backoff
+// wait capped at 60s (SPEC §8.3: 1x -> 2x -> 4x, cap 60s, reset on success).
+function refreshDelaySeconds() {
+    const secs = refreshInterval();
+    if (secs <= 0) {
+        return 0;
+    }
+    if (refreshFailureStage <= 1) {
+        return secs;
+    }
+    const factor = refreshFailureStage === 2 ? 2 : 4;
+    return Math.min(secs * factor, 60);
+}
+
+// scheduleRefreshTick (re)arms THE single pending tick refreshDelaySeconds()
+// from NOW. Idempotent: any prior timer is cleared first, so init passes,
+// interval picks, failures, and recoveries all converge on one armed timer
+// (hx-boost body swaps can never stack timers, exactly like the old
+// setInterval contract). A fired tick re-schedules BEFORE issuing its request
+// so a skipped fire (hidden tab, in-flight gate) never kills the chain; a
+// failure/recovery handler then re-arms again with the escalated/reset wait.
+function scheduleRefreshTick() {
     if (refreshTimerId !== null) {
-        window.clearInterval(refreshTimerId);
+        window.clearTimeout(refreshTimerId);
         refreshTimerId = null;
     }
-    const secs = refreshInterval();
-    if (secs > 0) {
-        refreshTimerId = window.setInterval(fireRefresh, secs * 1000);
+    const delay = refreshDelaySeconds();
+    if (delay <= 0) {
+        refreshNextAt = 0;
+        updateStaleCountdown();
+        return;
     }
+    refreshNextAt = Date.now() + delay * 1000;
+    refreshTimerId = window.setTimeout(() => {
+        refreshTimerId = null;
+        scheduleRefreshTick();
+        fireRefresh();
+    }, delay * 1000);
+    updateStaleCountdown();
+}
+
+// (Re)arm the poll from the stored preference. Runs on every init pass (a
+// fresh full-page render is by definition not stale) and on an interval pick
+// (a deliberate cadence choice) -- both end any failure backoff: the next
+// failure escalates from scratch.
+function applyRefresh() {
+    refreshFailureStage = 0;
+    scheduleRefreshTick();
 }
 
 // Reflect the stored preference in the navbar control (label + active option +
@@ -2043,6 +2092,55 @@ document.addEventListener('visibilitychange', () => {
 // stale state. Pure DOM writes -> CSP-clean.
 const STALE_DIM_CLASS = 'ro-stale';
 
+// The 1s ticker repainting the live "Retrying in Ns" countdown while the
+// stale banner is visible (started by markListStale, stopped by
+// clearListStale -- the banner and its countdown share a lifetime).
+let staleCountdownId = null;
+
+// updateStaleCountdown paints seconds-to-next-retry into the banner's
+// [data-stale-countdown] span. The span is re-queried on every paint (never
+// cached -- the banner is chrome outside the swap target, but cheap lookups
+// keep this safe against any re-render). With no retry armed (interval Off;
+// the banner can still reveal when a user-initiated table request fails) the
+// shipped "…" placeholder is restored -- Retry now stays the affordance.
+function updateStaleCountdown() {
+    const span = document.querySelector('.ro-stale-banner [data-stale-countdown]');
+    if (!span) {
+        return;
+    }
+    if (!refreshNextAt) {
+        span.textContent = '…';
+        return;
+    }
+    const remaining = Math.max(0, Math.ceil((refreshNextAt - Date.now()) / 1000));
+    span.textContent = remaining + 's';
+}
+
+// noteRefreshFailure escalates the backoff one stage (1x -> 2x -> 4x, where
+// it stays) and re-arms the pending tick at the escalated wait, measured from
+// the failure itself -- so the banner's countdown always aims at the real
+// next attempt. Every failed list fetch escalates: the scheduled tick, the
+// Retry-now re-fire, a failed user sort -- each was a real failed attempt.
+function noteRefreshFailure() {
+    refreshFailureStage = Math.min(refreshFailureStage + 1, 3);
+    scheduleRefreshTick();
+}
+
+// noteRefreshRecovery: the FIRST successful swap after >=1 failures resets
+// the backoff to the base cadence and announces it -- "refresh resumed" is
+// the SECOND sanctioned toast trigger (D24/SPEC §8.8). Plain successes
+// (stage 0) stay silent: the toast is recovery-only, never per-tick.
+function noteRefreshRecovery() {
+    if (refreshFailureStage === 0) {
+        return;
+    }
+    refreshFailureStage = 0;
+    scheduleRefreshTick();
+    if (typeof window.roToast === 'function') {
+        window.roToast('Refresh resumed');
+    }
+}
+
 // True when the htmx event belongs to a request that lands in the live
 // resource-list region: issued BY #resource-list-content (the refresh tick /
 // retry) or TARGETING it (a user sort/filter partial in the v2 loop). Guards
@@ -2070,6 +2168,13 @@ function markListStale() {
     if (banner) {
         banner.hidden = false;
     }
+    // Live countdown for the banner's "Retrying in Ns" (Unit 21 wiring of the
+    // data-stale-countdown hook). The immediate paint lands the right number
+    // before the ticker's first 1s beat.
+    if (staleCountdownId === null) {
+        staleCountdownId = window.setInterval(updateStaleCountdown, 1000);
+    }
+    updateStaleCountdown();
 }
 
 function clearListStale() {
@@ -2081,12 +2186,19 @@ function clearListStale() {
     if (banner) {
         banner.hidden = true;
     }
+    if (staleCountdownId !== null) {
+        window.clearInterval(staleCountdownId);
+        staleCountdownId = null;
+    }
 }
 
 // A non-2xx reply to the refresh GET: keep the rows (htmx does not swap on
-// error), dim them, reveal the stale banner.
+// error), dim them, reveal the stale banner. The failure note FIRST: it
+// re-aims the retry schedule, so the banner reveals with the countdown
+// already pointing at the real next attempt.
 document.addEventListener('htmx:responseError', (event) => {
     if (isListRefreshEvent(event)) {
+        noteRefreshFailure();
         markListStale();
     }
 });
@@ -2094,6 +2206,7 @@ document.addEventListener('htmx:responseError', (event) => {
 // GET: same stale treatment -- the last-good rows stay, dimmed, with the banner.
 document.addEventListener('htmx:sendError', (event) => {
     if (isListRefreshEvent(event)) {
+        noteRefreshFailure();
         markListStale();
     }
 });
@@ -2105,6 +2218,7 @@ document.addEventListener('htmx:sendError', (event) => {
 // the rows by data-key after EVERY swap (tick or user sort/filter).
 document.addEventListener('htmx:afterSwap', (event) => {
     if (isListRefreshEvent(event)) {
+        noteRefreshRecovery();
         clearListStale();
         reapplyRowState();
         // The morph synced server HTML over the client-added filter classes and

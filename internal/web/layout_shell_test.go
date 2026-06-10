@@ -48,10 +48,10 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantHas("header.ro-topbar .ro-search .kbd-hint .ro-kbd")
 	p.wantAttr("header.ro-topbar .ro-search", "data-palette-open", "true")
 
-	// Refresh control: the existing localStorage/ro:refresh wiring is preserved --
-	// the five interval options, the #refresh-label, the #refresh-dropdown hook.
-	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,15,30,60" {
-		t.Fatalf("refresh-option data-interval set = %v, want [0 5 15 30 60]", got)
+	// Refresh control: the five interval options (10 replaced 15 per D18/SPEC
+	// §8.3), the #refresh-label, the #refresh-dropdown hook.
+	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,10,30,60" {
+		t.Fatalf("refresh-option data-interval set = %v, want [0 5 10 30 60]", got)
 	}
 	p.wantHas(".tb-group .tb-btn.refresh-live")
 	p.wantHas(".tb-group .tb-btn.refresh-live .ro-livedot")

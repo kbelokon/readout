@@ -87,10 +87,10 @@ func TestBehaviorAppChromeAndJSContract(t *testing.T) {
 	p.wantHas("#ro-cols-pop .col-toggle")
 	p.wantAbsent("a.toggle-tools")
 
-	// Auto-refresh dropdown: each option carries data-interval; the handler
-	// stores that value and re-arms the poll.
-	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,15,30,60" {
-		t.Fatalf("refresh-option data-interval set = %v, want [0 5 15 30 60]", got)
+	// Auto-refresh dropdown: each option carries data-interval (10 replaced 15
+	// per D18/SPEC §8.3); the handler stores that value and re-arms the poll.
+	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,10,30,60" {
+		t.Fatalf("refresh-option data-interval set = %v, want [0 5 10 30 60]", got)
 	}
 	p.wantHas("#refresh-label")
 

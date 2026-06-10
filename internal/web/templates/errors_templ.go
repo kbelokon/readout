@@ -604,8 +604,9 @@ func emptyPlain(d ListData, table TableData) templ.Component {
 // `hidden` attribute and dims #resource-list-content (it never blanks the rows
 // -- HTMX keeps them on error). Copy per D16: "Auto-refresh failed — showing
 // the last good data" / "Retrying in Ns" / Retry now. The countdown span
-// ships as a placeholder hook (data-stale-countdown); Unit 21 wires the live
-// backoff numbers into it. The Retry now button re-fires the read-only refresh
+// (data-stale-countdown) carries readout.js's live backoff countdown ("Ns",
+// repainted every second); the "…" placeholder shows only while no retry is
+// armed (interval Off). The Retry now button re-fires the read-only refresh
 // GET.
 func staleBanner() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
