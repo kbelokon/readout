@@ -18,3 +18,9 @@ coverage.*
 # Never publish: forge notes and parity artifacts
 docs/
 test-artifacts/
+
+# Playwright e2e suite artifacts (baselines under __screenshots__/ ARE committed)
+tests/e2e/node_modules/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+tests/e2e/blob-report/
