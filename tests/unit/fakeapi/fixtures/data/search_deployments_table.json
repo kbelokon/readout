@@ -1,0 +1,29 @@
+{
+  "kind": "Table",
+  "apiVersion": "meta.k8s.io/v1",
+  "metadata": {"resourceVersion": "22400"},
+  "columnDefinitions": [
+    {"name": "Name", "type": "string", "format": "name", "priority": 0, "description": "Name of the deployment"},
+    {"name": "Ready", "type": "string", "format": "", "priority": 0, "description": "Replicas ready"},
+    {"name": "Up-to-date", "type": "string", "format": "", "priority": 0, "description": "Updated replicas"},
+    {"name": "Available", "type": "string", "format": "", "priority": 0, "description": "Available replicas"},
+    {"name": "Age", "type": "string", "format": "", "priority": 0, "description": "Age of the deployment"}
+  ],
+  "rows": [
+    {
+      "cells": ["api-gateway", "1/1", "1", "1", "15m"],
+      "object": {
+        "kind": "PartialObjectMetadata",
+        "apiVersion": "meta.k8s.io/v1",
+        "metadata": {
+          "name": "api-gateway",
+          "namespace": "default",
+          "uid": "00000000-0000-0000-0000-000000000211",
+          "resourceVersion": "22401",
+          "creationTimestamp": "2024-03-01T08:00:00Z",
+          "labels": {"app": "api-gateway"}
+        }
+      }
+    }
+  ]
+}

@@ -17,11 +17,6 @@ import (
 // itoa is strconv.Itoa, exposed under a short name for the count expressions.
 func itoa(n int) string { return strconv.Itoa(n) }
 
-// escapeHTML is html.EscapeString, exposed under a short name for the search
-// page's snippet/no-results helpers that assemble a trusted HTML string (so the
-// <em> highlight emits via a single @templ.Raw without a stray text-node child).
-func escapeHTML(s string) string { return html.EscapeString(s) }
-
 // itoa64 formats an int64 (the logs tail_lines value) as a base-10 string.
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
 

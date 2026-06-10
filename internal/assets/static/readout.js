@@ -145,6 +145,15 @@ document.addEventListener('click', (event) => {
         openPalette();
         return;
     }
+    // The search page's "Refine · ⌘K" button (Unit 20/D12): open the palette
+    // PREFILLED with the query the page searched (baked server-side into
+    // data-query), so refining is one keystroke away from the grouped results.
+    const searchRefine = target.closest('[data-search-refine]');
+    if (searchRefine) {
+        event.preventDefault();
+        openPalette(searchRefine.dataset.query || '');
+        return;
+    }
     // A click on the palette backdrop ITSELF (the dimmed area outside the panel)
     // closes it, like Esc. A click inside the panel does not match (the panel is a
     // descendant, so target.closest stops at the panel, not the backdrop root).

@@ -1,29 +1,37 @@
 package templates
 
-// search.templ is the redesign multi-cluster search page body (D4/D11/D13). It
-// renders the breadcrumb, the `.search-hero` (title + the big `.search-big`
-// query input + the `.search-opts` scope line), the multi-cluster
-// partial-failure `.ro-banner.warn` summary ("Searched N of M clusters"), the
-// per-cluster `.ro-scope-chip.ok|err` strip (the `.err` chip carries an inline
-// read-only `.retry` GET link), and the results `.ro-table`
-// (Cluster / Namespace / Kind icon+name / Name / Age) plus the `.ro-foundline`
-// footer.
+// search.templ is the redesign multi-cluster search page body (D4/D11/D12/D13).
+// It renders the breadcrumb, the title row (with the "Refine · ⌘K" palette
+// trigger when a query ran), the `.search-hero` (the big `.search-big` query
+// input + the restored resource-type checkbox row + the `.search-opts` scope
+// line), the multi-cluster partial-failure `.ro-banner.warn` summary ("Searched
+// N of M clusters"), the per-cluster `.ro-scope-chip.ok|err` strip (the `.err`
+// chip carries an inline read-only `.retry` GET link), the totals strip
+// ("N objects · M clusters · K kinds" + "searched M clusters in T s"), and the
+// results grouped per cluster (D12): one `.search-group` per answering cluster
+// -- header = health dot + mono cluster name + count chip -- each holding its
+// own `.ro-table` (Kind / Name / Namespace / Age).
 //
 // The OUTERMOST content element carries the `ro-rd` content marker (D13): the
 // colliding redesign classes here -- .ro-breadcrumb, .ro-scope / .ro-scope-chip,
-// .ro-table -- are scoped under .ro-rd in readout.css, so they resolve only when
-// this content root carries the marker. The net-new `.search-hero`/`.search-big`/
-// `.search-opts`/`td.cell-clu`/`td.cell-ns`/`.res-kind` classes are bare (not
-// .ro-rd-scoped).
+// .ro-table, .ro-phase-strip -- are scoped under .ro-rd in readout.css, so they
+// resolve only when this content root carries the marker. The net-new
+// `.search-hero`/`.search-big`/`.search-opts`/`.search-types`/`.search-group`/
+// `.search-cluster`/`td.cell-ns`/`.res-kind` classes are bare (not .ro-rd-scoped).
 //
 // The page is server-driven and READ-ONLY: the search is a GET to /search (the
-// `.search-big` input + hidden cluster/namespace/type inputs round-trip the
-// scope), and every retry (the banner "Retry failed" + each `.ro-scope-chip.err`
-// `.retry`) is a read-only GET that re-runs the SAME search scoped to the failed
-// cluster(s) -- never a write path. Every value is resolved in the package-web
-// assembly layer (buildSearchView -> toSearchData); the renderer touches no
-// request and no kube client. Inline-SVG + kind icons ride in as raw strings via
-// @templ.Raw (icons.KindIcon escapes every runtime-derived part).
+// `.search-big` input + hidden cluster/namespace inputs + the `name="type"`
+// checkboxes round-trip the scope), and every retry (the banner "Retry failed" +
+// each `.ro-scope-chip.err` `.retry`) is a read-only GET that re-runs the SAME
+// search scoped to the failed cluster(s) -- never a write path. The "Refine ·
+// ⌘K" button is type="button": readout.js (delegated [data-search-refine]
+// listener) opens the ⌘K palette prefilled with the query -- no inline handler,
+// no form side effects. Every value is resolved in the package-web assembly
+// layer (buildSearchView -> toSearchData); the renderer touches no request and
+// no kube client. Inline-SVG + kind icons ride in as raw strings via @templ.Raw
+// (icons.KindIcon escapes every runtime-derived part). The <mark> highlight is
+// a VIEW-MODEL SPLIT: NamePre/NameMark/NamePost emit as auto-escaped text nodes
+// around a literal <mark> element -- never templ.Raw over user-derived text.
 
 // SearchData is the resolved search-page input.
 type SearchData struct {
@@ -37,10 +45,10 @@ type SearchData struct {
 
 	HasQuery bool
 
-	// HiddenTypes are the ?type= plurals preserved as hidden form inputs so
-	// re-submitting the query box keeps the same resource-type scope (the
-	// redesign moves type selection out of the body into the scope summary).
-	HiddenTypes []string
+	// Types are the restored resource-type checkboxes (D12): plural = input
+	// value, Kind = label, Checked marks the plurals of the current selection.
+	// They submit with the same GET form as the query box.
+	Types []SearchTypeOption
 
 	// Scope-opts line ("in <cluster> · <namespace> · <types>").
 	ScopeClusterLabel string // "all clusters" / "N clusters" / the single cluster name
@@ -54,8 +62,38 @@ type SearchData struct {
 	// ScopeClusters are the per-cluster chips in the `.ro-scope` strip.
 	ScopeClusters []SearchScopeChip
 
-	Results       []SearchResultRow
-	ResultSummary string // the `.ro-foundline` count sentence
+	// TotalsLine + TotalsMeta are the totals strip: "N objects · M clusters · K
+	// kinds" and "searched M clusters in T s" (clusters in the line = clusters
+	// that contributed results; clusters in the meta = clusters searched).
+	TotalsLine string
+	TotalsMeta string
+
+	// Groups are the per-cluster result blocks, in fixed cluster-name order.
+	Groups []SearchGroup
+
+	// EmptyTitle/EmptyText are the no-results state copy (prototype VIEW.search):
+	// "Nothing matched “q”" + the searched-scope sentence.
+	EmptyTitle string
+	EmptyText  string
+}
+
+// SearchTypeOption is one restored resource-type checkbox: Plural is the input
+// value, Kind the label text, Checked marks a type in the current selection.
+type SearchTypeOption struct {
+	Plural  string
+	Kind    string
+	Checked bool
+}
+
+// SearchGroup is one cluster's result block (D12): the header (health dot +
+// mono cluster name + count chip) and the cluster's result rows. DotTone is
+// live health per colour law D3: "ok" for a cluster that answered fully, "err"
+// when the same cluster also carries failure records (a partial answer).
+type SearchGroup struct {
+	Cluster string
+	DotTone string
+	Count   int
+	Rows    []SearchResultRow
 }
 
 // SearchBreadcrumb is the search-page breadcrumb (all / cluster / namespace /
@@ -97,32 +135,45 @@ type SearchScopeChip struct {
 	RetryHref string
 }
 
-// SearchResultRow is one row in the results `.ro-table`: the Cluster + Namespace
-// cells (their own links), the Kind cell (the resolved kind icon + the kind
-// name), the Name cell (the object link), and the Age cell (the formatted
-// created timestamp coloured by its age bucket).
+// SearchResultRow is one row in a group's `.ro-table`: the Kind cell (resolved
+// kind icon + kind name), the Name cell (the object link, carrying the Unit 10
+// pn-head/pn-tail split with the D12 NamePre/<mark>NameMark</mark>/NamePost
+// head segments -- each an escaped text node), the Namespace cell (its own
+// link), and the Age cell (the formatted created timestamp coloured by its age
+// bucket). NameTitle is the full-name tooltip when the head middle-truncated.
 type SearchResultRow struct {
-	Cluster     string
-	ClusterHref string
-	Namespace   string
-	NsHref      string
-	HasNs       bool
-	Kind        string
-	KindIcon    string // resolved icons.KindIcon markup (raw)
-	Name        string
-	Link        string
-	Age         string // formatTimestamp(created)
-	AgeClass    string // num + age-* bucket
+	Namespace string
+	NsHref    string
+	HasNs     bool
+	Kind      string
+	KindIcon  string // resolved icons.KindIcon markup (raw)
+	NamePre   string
+	NameMark  string
+	NamePost  string
+	NameTail  string
+	NameTitle string
+	Link      string
+	Age       string // formatTimestamp(created)
+	AgeClass  string // num + age-* bucket
 }
 
 templ Search(d SearchData) {
 	<div class="ro-rd">
 		@searchBreadcrumb(d.Breadcrumb)
-		<div class="search-hero"><h1 class="ro-title">Search</h1><form action="/search" method="get"><input type="hidden" name="cluster" value={ d.Cluster }><input type="hidden" name="namespace" value={ d.Namespace }>
-			for _, typ := range d.HiddenTypes {
-				<input type="hidden" name="type" value={ typ }>
+		<div class="search-hero"><div class="ro-title-row"><h1 class="ro-title">Search</h1>
+			if d.HasQuery {
+				<span style="flex:1"></span><div class="ro-title-actions"><button type="button" class="ro-btn quiet sm" data-search-refine data-query={ d.Query } title="Refine in the command palette"><span class="ico sm" aria-hidden="true">@iconC("search")</span><span>Refine · ⌘K</span></button></div>
 			}
-			<div class="search-big"><span class="ico">@templ.Raw(d.SearchIcon)</span><input type="text" name="q" value={ d.Query } placeholder="Search query text" spellcheck="false"></div></form>
+			</div><form action="/search" method="get"><input type="hidden" name="cluster" value={ d.Cluster }><input type="hidden" name="namespace" value={ d.Namespace }><div class="search-big"><span class="ico">@templ.Raw(d.SearchIcon)</span><input type="text" name="q" value={ d.Query } placeholder="Search query text" spellcheck="false"></div>
+			if len(d.Types) > 0 {
+				<div class="search-types">
+					for _, opt := range d.Types {
+						<label class="search-type"><input class="ro-check" type="checkbox" name="type" value={ opt.Plural } checked?={ opt.Checked }><span>{ opt.Kind }</span></label>
+					}
+					<button class="ro-btn quiet sm" type="submit">Search</button>
+				</div>
+			}
+			</form>
 			if d.HasQuery {
 				<div class="search-opts"><span>in</span> <span class="ro-scope-chip ok"><span class="ro-dot ok" aria-hidden="true"></span>{ d.ScopeClusterLabel }</span> <span>·</span> <span>{ d.NamespaceLabel }</span> <span>·</span> <span>{ d.TypeLabel }</span></div>
 			}
@@ -136,19 +187,29 @@ templ Search(d SearchData) {
 					@searchScopeChip(chip)
 				}
 				</div>
-		}
-		if len(d.Results) > 0 {
-			<div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Cluster</th><th>Namespace</th><th>Kind</th><th>Name</th><th class="num">Age</th></tr></thead><tbody>
-				for _, row := range d.Results {
-					@searchResultRow(row)
+			<div class="ro-phase-strip"><div class="ro-phase-tally"><span class="ro-phase-chip">{ d.TotalsLine }</span></div><span class="ro-phase-meta">{ d.TotalsMeta }</span></div>
+			if len(d.Groups) > 0 {
+				for _, group := range d.Groups {
+					@searchGroupBlock(group)
 				}
-				</tbody></table></div>
-		} else if d.HasQuery {
-			<div class="ro-noresults"><p>@templ.Raw(noResultsText(d.Query))</p></div>
+			} else {
+				<div class="ro-empty-lg"><div class="ro-empty-glyph"><span class="ico">@iconC("search")</span></div><h3>{ d.EmptyTitle }</h3><p>{ d.EmptyText }</p></div>
+			}
 		}
-		if d.HasQuery {
-			<div class="ro-table-meta"><span class="ro-foundline">{ d.ResultSummary }</span></div>
-		}
+	</div>
+}
+
+// searchGroupBlock renders one cluster's result group (D12): the
+// `.search-cluster` header -- the live-health dot, the mono cluster name, the
+// count chip -- and the group's own results `.ro-table`.
+templ searchGroupBlock(group SearchGroup) {
+	<div class="search-group">
+		<div class="search-cluster"><span class={ dotClass(group.DotTone) } aria-hidden="true"></span><span class="mono">{ group.Cluster }</span><span class="ro-count">{ itoa(group.Count) }</span></div>
+		<div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Kind</th><th>Name</th><th>Namespace</th><th class="num">Age</th></tr></thead><tbody>
+			for _, row := range group.Rows {
+				@searchResultRow(row)
+			}
+			</tbody></table></div>
 	</div>
 }
 
@@ -164,18 +225,37 @@ templ searchScopeChip(chip SearchScopeChip) {
 	}
 }
 
-// searchResultRow renders one results-table row. The Kind cell pairs the resolved
-// kind icon (raw) with the kind name in a `.res-kind` flex; the Cluster/Namespace
-// cells are muted links; the Name cell is the sticky object link; the Age cell
-// carries the age-bucket colour.
+// searchResultRow renders one group-table row. The Kind cell pairs the resolved
+// kind icon (raw) with the kind name in a `.res-kind` flex; the Name cell is the
+// sticky object link carrying the pn-head/pn-tail split, with the matched query
+// fragment in a literal <mark> between the escaped NamePre/NamePost text nodes
+// (an unmatched name has the whole display head in NamePre); the Namespace cell
+// is a muted link; the Age cell carries the age-bucket colour. The head+tail
+// span pairs stay on ONE source line so templ emits no whitespace between them
+// (the name must read as a single unbroken identifier).
 templ searchResultRow(row SearchResultRow) {
-	<tr><td class="cell-clu"><a href={ templ.SafeURL(row.ClusterHref) }>{ row.Cluster }</a></td><td class="cell-ns">
+	<tr><td><span class="res-kind"><span class="rk-ico" aria-hidden="true">@templ.Raw(row.KindIcon)</span>{ row.Kind }</span></td><td class="cell-name"><a
+		href={ templ.SafeURL(row.Link) }
+		if row.NameTitle != "" {
+			title={ row.NameTitle }
+		}
+	>
+		if row.NameTail != "" && row.NameMark != "" {
+			<span class="pn-head">{ row.NamePre }<mark>{ row.NameMark }</mark>{ row.NamePost }</span><span class="pn-tail">{ row.NameTail }</span>
+		} else if row.NameTail != "" {
+			<span class="pn-head">{ row.NamePre }</span><span class="pn-tail">{ row.NameTail }</span>
+		} else if row.NameMark != "" {
+			<span class="pn-head">{ row.NamePre }<mark>{ row.NameMark }</mark>{ row.NamePost }</span>
+		} else {
+			<span class="pn-head">{ row.NamePre }</span>
+		}
+		</a></td><td class="cell-ns">
 		if row.HasNs {
 			<a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a>
 		} else {
 			<span class="faint">—</span>
 		}
-		</td><td><span class="res-kind"><span class="rk-ico" aria-hidden="true">@templ.Raw(row.KindIcon)</span>{ row.Kind }</span></td><td class="cell-name"><a href={ templ.SafeURL(row.Link) }>{ row.Name }</a></td><td class={ row.AgeClass } title={ row.Age }>{ row.Age }</td></tr>
+		</td><td class={ row.AgeClass } title={ row.Age }>{ row.Age }</td></tr>
 }
 
 // searchBreadcrumb renders the search-page breadcrumb (all / cluster /
@@ -193,11 +273,4 @@ templ searchBreadcrumb(b SearchBreadcrumb) {
 			}
 		}
 		<li class="is-active"><a href="#">search</a></li></ul></nav>
-}
-
-// noResultsText is the trusted "No results found for "<q>"." sentence,
-// html-escaped here so it emits via a single @templ.Raw (a text node after
-// @templ.Raw would be parsed as that call's dropped children).
-func noResultsText(query string) string {
-	return `No results found for "` + escapeHTML(query) + `".`
 }

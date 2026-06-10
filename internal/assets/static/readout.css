@@ -2927,6 +2927,30 @@
     td.cell-clu a:hover { color: var(--accent); }
     .res-kind { display: inline-flex; align-items: center; gap: 8px; }
 
+    /* Search v2 (D12, prototype VIEW.search + data.css SEARCH RESULTS):
+       restored resource-type checkboxes, per-cluster result groups, and the
+       match highlight. `.search-types`/`.search-group`/`.search-cluster` are
+       net-new (bare, like the other search classes); `mark` is an ELEMENT
+       selector so it is scoped under the `.ro-rd` content marker -- only the
+       migrated search body emits it, and the browser's yellow default must not
+       leak anywhere else. The group count chip reuses the title-row count-chip
+       recipe (the prototype emits `.ro-count` here but never styles it outside
+       the title row -- a prototype gap, resolved toward the chip the SPEC names). */
+    .search-types { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin: 0 0 12px; }
+    .search-types .search-type { display: inline-flex; align-items: center; gap: 6px;
+        font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+    .search-types .search-type:hover { color: var(--text); }
+    .search-group { margin-bottom: 22px; }
+    .search-cluster { display: flex; align-items: center; gap: 9px; margin: 0 0 9px;
+        font-size: 13px; color: var(--text); }
+    .search-cluster .mono { font-weight: 500; }
+    .search-cluster .ro-count { font-family: var(--font-mono); font-size: 11.5px; font-weight: 500;
+        color: var(--text-muted); background: var(--surface-2);
+        border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; }
+    .ro-rd mark { background: var(--accent-weak); color: var(--accent-text); border-radius: 3px;
+        padding: 0 1px; font-weight: 600; }
+    .ro-rd .ro-phase-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+
     /* "Pods Mobile.html" inline <style> -- the mobile-only chrome (the menu toggle).
        The artboard's forced-mobile layout overrides (sidebar/search hidden, cardlist
        shown) are produced by base.css's @media (max-width:760px) -- ALSO ported below

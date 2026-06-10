@@ -1040,14 +1040,25 @@ func TestSearchRender(t *testing.T) {
 	p.wantHas(".ro-rd")
 	p.wantText(".search-hero .ro-title", "Search")
 
-	// The `.search-big` GET form round-trips the query + the scope (cluster /
-	// namespace / type) as hidden inputs so re-submitting keeps the scope. The
-	// search is a read-only GET to /search.
+	// The `.search-big` GET form round-trips the query + the cluster/namespace
+	// scope as hidden inputs; the resource-type scope rides the RESTORED
+	// checkbox row (D12) -- the searched type is checked, an unsearched offered
+	// type renders unchecked -- so re-submitting keeps the scope. The search is
+	// a read-only GET to /search.
 	p.wantAttr(`.search-hero form[action="/search"]`, "method", "get")
 	p.wantAttr(`.search-big input[name="q"]`, "value", "nginx")
 	p.wantAttr(`.search-hero form input[type="hidden"][name="cluster"]`, "value", "test")
 	p.wantAttr(`.search-hero form input[type="hidden"][name="namespace"]`, "value", "default")
-	p.wantHas(`.search-hero form input[type="hidden"][name="type"][value="pods"]`)
+	p.wantHas(`.search-types input[type="checkbox"][name="type"][value="pods"][checked]`)
+	p.wantHas(`.search-types input[type="checkbox"][name="type"][value="services"]:not([checked])`)
+	p.wantHas(`.search-types .ro-btn[type="submit"]`)
+
+	// The "Refine · ⌘K" affordance: a type=button (never a submit) carrying the
+	// query for the delegated readout.js listener that opens the ⌘K palette
+	// prefilled. The TOPBAR search affordance stays the palette trigger.
+	p.wantAttr(`.ro-title-actions button[data-search-refine]`, "data-query", "nginx")
+	p.wantAttr(`.ro-title-actions button[data-search-refine]`, "type", "button")
+	p.wantHas(`.ro-topbar .ro-search[data-palette-open]`)
 
 	// Scope-opts line: a `.ok` cluster chip naming the single cluster + the
 	// namespace + the type summary.
@@ -1064,15 +1075,26 @@ func TestSearchRender(t *testing.T) {
 		t.Fatalf("scope `.ok` chip = %q, want it to start with the cluster name", got)
 	}
 
-	// Results table: the nginx row carries its Cluster + Namespace links, the Kind
-	// cell pairs an icon with the kind name, the Name cell is the sticky object
-	// link, and the Age column header is present.
-	row := p.doc.Find(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/default/pods/nginx"])`)
-	if row.Length() != 1 {
-		t.Fatalf("expected exactly one nginx result row, found %d", row.Length())
+	// Grouped results (D12): the single cluster renders one `.search-group`
+	// whose header carries the ok dot + the mono cluster name + the count chip;
+	// the group table drops the Cluster column (the header owns it). The nginx
+	// row carries its Namespace link, the Kind cell pairs an icon with the kind
+	// name, the Name cell is the sticky object link (whole-match query => the
+	// full head is the <mark>), and the Age column header is present.
+	group := p.doc.Find(".search-group")
+	if group.Length() != 1 {
+		t.Fatalf("expected exactly one .search-group, found %d", group.Length())
 	}
-	if got := normSpace(row.Find("td.cell-clu a").Text()); got != "test" {
-		t.Fatalf("result Cluster cell = %q, want test", got)
+	if got := normSpace(group.Find(".search-cluster .mono").Text()); got != "test" {
+		t.Fatalf("group header cluster = %q, want test", got)
+	}
+	p.wantHas(".search-group .search-cluster .ro-dot.ok")
+	if got := normSpace(group.Find(".search-cluster .ro-count").Text()); got != "1" {
+		t.Fatalf("group count chip = %q, want 1", got)
+	}
+	row := group.Find(`table.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/default/pods/nginx"])`)
+	if row.Length() != 1 {
+		t.Fatalf("expected exactly one nginx result row in the group, found %d", row.Length())
 	}
 	if got := normSpace(row.Find("td.cell-ns a").Text()); got != "default" {
 		t.Fatalf("result Namespace cell = %q, want default", got)
@@ -1083,12 +1105,19 @@ func TestSearchRender(t *testing.T) {
 	if row.Find("td .res-kind .ico, td .res-kind .kind-tile, td .res-kind svg").Length() == 0 {
 		t.Fatalf("result Kind cell missing the resolved kind icon")
 	}
+	if got := row.Find("td.cell-name a .pn-head mark").Text(); got != "nginx" {
+		t.Fatalf("name <mark> = %q, want the matched fragment nginx", got)
+	}
 	p.wantText(".ro-table thead th.num", "Age")
 
-	// Foundline footer: the redesign `.ro-foundline` count sentence.
-	if got := p.text(".ro-table-meta .ro-foundline"); !strings.Contains(got, `Found 1 object matching "nginx"`) {
-		t.Fatalf("foundline = %q, want a 'Found 1 object matching \"nginx\"' sentence", got)
+	// Totals strip (replaces the foundline): the tally line + the searched meta.
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-chip")); got != "1 object · 1 cluster · 1 kind" {
+		t.Fatalf("totals chip = %q, want '1 object · 1 cluster · 1 kind'", got)
 	}
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-meta")); !strings.HasPrefix(got, "searched 1 cluster in ") {
+		t.Fatalf("totals meta = %q, want a 'searched 1 cluster in <T>s' sentence", got)
+	}
+	p.wantAbsent(".ro-foundline")
 
 	// Shell sidebar + navbar context render from the ?cluster=/?namespace= QUERY
 	// (the /search route is param-less): the sidebar is built from the cluster
@@ -1173,9 +1202,14 @@ func TestSearchPartialFailure(t *testing.T) {
 		t.Fatalf("`.err` chip retry href = %q (ok=%v), want a read-only /search GET scoped to cluster=zbad", chipRetry, ok)
 	}
 
-	// Foundline names the failed-cluster clause.
-	if got := p.text(".ro-foundline"); !strings.Contains(got, "1 cluster failed") {
-		t.Fatalf("foundline = %q, want it to note the failed cluster", got)
+	// The totals strip tallies only the answering cluster's results while the
+	// meta reports the FULL searched scope -- the failed cluster is counted as
+	// searched (its failure is the banner + `.err` chip's story, D12).
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-chip")); got != "1 object · 1 cluster · 1 kind" {
+		t.Fatalf("totals chip = %q, want '1 object · 1 cluster · 1 kind' (answering cluster only)", got)
+	}
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-meta")); !strings.HasPrefix(got, "searched 2 clusters in ") {
+		t.Fatalf("totals meta = %q, want 'searched 2 clusters in <T>s' (failed cluster still searched)", got)
 	}
 }
 
@@ -1213,17 +1247,20 @@ func TestBehaviorSearchAllClustersNoSidebar(t *testing.T) {
 	p.wantAbsent(".context-name")
 }
 
-// TestBehaviorSearchNoResults pins the redesign "no results" block + the
-// foundline footer for a query that matches nothing: no results table, the
-// `.ro-noresults` sentence, and a "Found 0 objects" foundline.
+// TestBehaviorSearchNoResults pins the redesign "no results" state (D12,
+// prototype VIEW.search empty copy) for a query that matches nothing: no group
+// renders, the `.ro-empty-lg` card carries the "Nothing matched “q”" headline +
+// the searched-scope sentence, and the totals strip stays truthful at zero.
 func TestBehaviorSearchNoResults(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/search?q=zzzznomatch&cluster=test&namespace=default&type=pods", http.StatusOK)
 
+	p.wantAbsent(".search-group")
 	p.wantAbsent(".ro-table tbody tr")
-	p.wantText(".ro-noresults p", `No results found for "zzzznomatch".`)
-	if got := p.text(".ro-foundline"); !strings.Contains(got, `Found 0 objects matching "zzzznomatch"`) {
-		t.Fatalf("foundline = %q, want a 'Found 0 objects matching \"zzzznomatch\"' sentence", got)
+	p.wantText(".ro-empty-lg h3", "Nothing matched “zzzznomatch”")
+	p.wantText(".ro-empty-lg p", "Searched names across 1 cluster and 1 resource type.")
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-chip")); got != "0 objects · 0 clusters · 0 kinds" {
+		t.Fatalf("totals chip = %q, want '0 objects · 0 clusters · 0 kinds'", got)
 	}
 }
 
@@ -1242,7 +1279,7 @@ func TestBehaviorSearchRespectsExcludeNamespaces(t *testing.T) {
 
 	p.wantAbsent(".ro-table tbody tr")
 	p.wantBodyExcludes("/clusters/test/namespaces/default/pods/nginx")
-	p.wantText(".ro-noresults p", `No results found for "nginx".`)
+	p.wantText(".ro-empty-lg h3", "Nothing matched “nginx”")
 }
 
 // ---------------------------------------------------------------------------

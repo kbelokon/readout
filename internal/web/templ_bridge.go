@@ -643,11 +643,13 @@ func toSubtable(v *subtableView) *templates.Subtable {
 
 // toSearchData maps the package-web searchView onto the redesign templ
 // SearchData: the breadcrumb branches, the form round-trip (query + hidden
-// cluster/namespace/type inputs), the scope-opts labels, the partial-failure
-// banner, the per-cluster `.ro-scope-chip.ok|err` chips (with the read-only retry
-// hrefs), the results-table rows (with the resolved kind icon + the age-bucket
-// cell), and the foundline. Every value was resolved in buildSearchView; the
-// search + kind icons are pre-rendered to raw strings.
+// cluster/namespace inputs + the restored resource-type checkboxes), the
+// scope-opts labels, the partial-failure banner, the per-cluster
+// `.ro-scope-chip.ok|err` chips (with the read-only retry hrefs), the totals
+// strip, the per-cluster result groups (rows carrying the resolved kind icon,
+// the pn-head/pn-tail + mark name segments, and the age-bucket cell), and the
+// no-results copy. Every value was resolved in buildSearchView; the search +
+// kind icons are pre-rendered to raw strings.
 func toSearchData(v *searchView) templates.SearchData {
 	hasQuery := v.Query != ""
 	offeredCount := len(v.OfferedTypes)
@@ -659,11 +661,13 @@ func toSearchData(v *searchView) templates.SearchData {
 		Namespace:         v.Namespace,
 		SearchIcon:        icon("search"),
 		HasQuery:          hasQuery,
-		HiddenTypes:       v.SelectedTypes,
 		ScopeClusterLabel: searchScopeClusterLabel(v),
 		NamespaceLabel:    searchNamespaceLabel(v),
 		TypeLabel:         searchTypeLabel(allTypes, v.SelectedTypeCount),
 		Banner:            searchBanner(v),
+	}
+	for _, opt := range v.OfferedTypes {
+		d.Types = append(d.Types, templates.SearchTypeOption{Plural: opt.Plural, Kind: opt.Kind, Checked: opt.Checked})
 	}
 	for _, c := range v.ScopeClusters {
 		d.ScopeClusters = append(d.ScopeClusters, templates.SearchScopeChip{
@@ -674,26 +678,55 @@ func toSearchData(v *searchView) templates.SearchData {
 			RetryHref: c.RetryHref,
 		})
 	}
-	for i := range v.Results {
-		res := &v.Results[i]
-		d.Results = append(d.Results, templates.SearchResultRow{
-			Cluster:     res.Cluster,
-			ClusterHref: "/clusters/" + url.PathEscape(res.Cluster),
-			Namespace:   res.Namespace,
-			NsHref:      "/clusters/" + url.PathEscape(res.Cluster) + "/namespaces/" + url.PathEscape(res.Namespace),
-			HasNs:       res.Namespace != "",
-			Kind:        res.Kind,
-			KindIcon:    string(icons.KindIcon(res.Kind, res.Group, res.IsCRD, "")),
-			Name:        res.Title,
-			Link:        res.Link,
-			Age:         res.Created,
-			AgeClass:    res.AgeClass,
-		})
+	for gi := range v.Groups {
+		group := &v.Groups[gi]
+		tone := "ok"
+		if group.Failed {
+			tone = "err"
+		}
+		tg := templates.SearchGroup{Cluster: group.Cluster, DotTone: tone, Count: len(group.Results)}
+		for i := range group.Results {
+			res := &group.Results[i]
+			tg.Rows = append(tg.Rows, templates.SearchResultRow{
+				Namespace: res.Namespace,
+				NsHref:    "/clusters/" + url.PathEscape(res.Cluster) + "/namespaces/" + url.PathEscape(res.Namespace),
+				HasNs:     res.Namespace != "",
+				Kind:      res.Kind,
+				KindIcon:  string(icons.KindIcon(res.Kind, res.Group, res.IsCRD, "")),
+				NamePre:   res.NamePre,
+				NameMark:  res.NameMark,
+				NamePost:  res.NamePost,
+				NameTail:  res.NameTail,
+				NameTitle: res.NameTitle,
+				Link:      res.Link,
+				Age:       res.Created,
+				AgeClass:  res.AgeClass,
+			})
+		}
+		d.Groups = append(d.Groups, tg)
 	}
 	if hasQuery {
-		d.ResultSummary = searchFoundLine(v)
+		d.TotalsLine, d.TotalsMeta = searchTotals(v)
+		d.EmptyTitle = "Nothing matched “" + v.Query + "”"
+		d.EmptyText = fmt.Sprintf("Searched names across %d cluster%s and %d resource type%s.",
+			len(v.ScopeClusters), pluralS(len(v.ScopeClusters)), v.SelectedTypeCount, pluralS(v.SelectedTypeCount))
 	}
 	return d
+}
+
+// searchTotals builds the totals strip (D12): the tally line counts what the
+// results ACTUALLY span -- "N objects · M clusters · K kinds" where M is the
+// clusters that contributed results (the group count) -- and the meta reports
+// what the search COVERED: "searched M clusters in T s" over every cluster in
+// scope, with the same %.3f timing the list footers use.
+func searchTotals(v *searchView) (line, meta string) {
+	line = fmt.Sprintf("%d object%s · %d cluster%s · %d kind%s",
+		len(v.Results), pluralS(len(v.Results)),
+		len(v.Groups), pluralS(len(v.Groups)),
+		v.KindCount, pluralS(v.KindCount))
+	meta = fmt.Sprintf("searched %d cluster%s in %.3fs",
+		len(v.ScopeClusters), pluralS(len(v.ScopeClusters)), v.Duration.Seconds())
+	return line, meta
 }
 
 // searchScopeClusterLabel is the scope-opts cluster fragment: "all clusters" for
@@ -779,27 +812,6 @@ func toSearchBreadcrumb(v *searchView) templates.SearchBreadcrumb {
 		b.NamespaceHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(namespaces[0])
 	}
 	return b
-}
-
-// searchFoundLine is the redesign `.ro-foundline` footer sentence ("Found N
-// objects matching "<q>" across A of M clusters in T seconds[ · K cluster(s)
-// failed].") with object/cluster pluralization, %.3f timing, and the trailing
-// failed-cluster clause appended only when a cluster did not answer.
-func searchFoundLine(v *searchView) string {
-	total := len(v.ScopeClusters)
-	failed := 0
-	for _, c := range v.ScopeClusters {
-		if c.Failed {
-			failed++
-		}
-	}
-	answered := total - failed
-	line := fmt.Sprintf("Found %d object%s matching %q across %d of %d cluster%s in %.3f seconds",
-		len(v.Results), pluralS(len(v.Results)), v.Query, answered, total, pluralS(total), v.Duration.Seconds())
-	if failed > 0 {
-		line += fmt.Sprintf(" · %d cluster%s failed", failed, pluralS(failed))
-	}
-	return line + "."
 }
 
 func toTableTools(t *toolsView) templates.TableTools {

@@ -707,16 +707,12 @@ type searchView struct {
 	IsAllClusters   bool
 	IsAllNamespaces bool
 
-	// OfferedTypes are the resource-type checkboxes, sorted by plural; Checked
-	// marks the types in the current ?type= selection.
+	// OfferedTypes are the resource-type checkboxes (restored in the body per
+	// D12), sorted by plural; Checked marks the types in the current ?type=
+	// selection, so the GET form round-trips the type scope without hidden
+	// inputs.
 	OfferedTypes      []searchTypeOption
 	SelectedTypeCount int // len(resource_types) -- drives the "type N" chip
-
-	// SelectedTypes is the raw ?type= plural set the search ran with (or the
-	// configured default when the request carried none). The redesign search
-	// drops the in-body checkbox UI, so these round-trip as hidden form inputs to
-	// preserve the type scope when the query box is re-submitted.
-	SelectedTypes []string
 
 	// ScopeClusters are the chips in the scope strip (search_clusters). When
 	// IsAllClusters and ScopeClusters is empty, the strip shows "all clusters".
@@ -726,6 +722,16 @@ type searchView struct {
 
 	Results  []searchResult
 	Duration time.Duration
+
+	// Groups partitions Results per cluster in fixed cluster-name order (D12):
+	// one group per cluster that contributed at least one result, rows keeping
+	// the sortResults total order. A cluster that answered with zero hits (or
+	// failed) grows no group -- its presence is the scope chip's job.
+	Groups []searchGroup
+
+	// KindCount is the number of DISTINCT result kinds across Results, the "K
+	// kinds" leg of the totals strip.
+	KindCount int
 
 	// RetryFailedHref is the read-only GET the partial-failure banner's "Retry
 	// failed" action points at: the SAME search re-scoped to the comma-joined set
@@ -757,12 +763,30 @@ type searchScopeCluster struct {
 	RetryHref   string
 }
 
+// searchGroup is one cluster's block in the grouped results render (D12): the
+// header (ok dot + mono cluster name + count chip) plus that cluster's result
+// rows. Failed carries the cluster's scope-chip status so the header dot can
+// tell partial health truthfully (a cluster can answer SOME types and fail
+// others) -- colour law D3: the dot is live health, not decoration.
+type searchGroup struct {
+	Cluster string
+	Failed  bool
+	Results []searchResult
+}
+
 // searchResult is one search hit row in the redesign results table
-// (Cluster/Namespace/Kind/Name/Age). Cluster + Namespace populate their own
-// cells; Kind + Group + IsCRD drive the kind-icon resolver (icons.KindIcon) in
+// (Kind/Name/Namespace/Age under a per-cluster group header). Cluster keys the
+// group; Kind + Group + IsCRD drive the kind-icon resolver (icons.KindIcon) in
 // the Kind cell; Created feeds the Age cell's bucket class. Labels feeds the
-// sort score (searchScore ranks on Title + Labels). The redesign table drops the
-// per-card snippet UI, so no match snippets are retained on the result row.
+// sort score (searchScore ranks on Title + Labels).
+//
+// The name cell reuses the Unit 10 treatment server-side: NamePre/NameMark/
+// NamePost are the display HEAD (splitObjectName + MiddleTruncate) split around
+// the first case-insensitive query-word match (NameMark "" = no mark), NameTail
+// is the muted hash tail (never marked), and NameTitle carries the full name
+// tooltip when the head middle-truncated. Pre+Mark+Post always reassemble the
+// display head, so the templ can emit each segment as an auto-escaped text node
+// around a literal <mark> -- no templ.Raw over user-derived text (D12).
 type searchResult struct {
 	Title     string
 	Kind      string
@@ -774,4 +798,10 @@ type searchResult struct {
 	Created   string // formatTimestamp(creationTimestamp); "" => no age cell text
 	AgeClass  string // the num + age-* bucket class for the Age cell
 	Labels    map[string]string
+
+	NamePre   string
+	NameMark  string
+	NamePost  string
+	NameTail  string
+	NameTitle string
 }
