@@ -311,8 +311,9 @@ func TestBehaviorClusterOverviewAgeBuckets(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Resource-types pages: the full kind matrix WITHOUT needing per-kind list
 // fixtures -- a non-pod namespaced built-in (ReplicaSet), a CRD (Certificate
-// with the CRD badge), plus the cluster/namespaced split and the Namespaced
-// boolean cells.
+// with the CRD badge), plus the cluster/namespaced split and the quiet
+// bordered scope badges (D3: categorical values get a badge, never a green
+// boolean or a dot).
 // ---------------------------------------------------------------------------
 
 func TestBehaviorResourceTypesMatrix(t *testing.T) {
@@ -344,21 +345,32 @@ func TestBehaviorResourceTypesMatrix(t *testing.T) {
 		t.Fatalf("Deployment (apps/v1 built-in) must NOT carry a CRD badge")
 	}
 
-	// Namespaced boolean pill bound to the ROW's flag (not just "some pill
-	// exists"): a known namespaced row (Deployment) carries ro-bool-yes, and on
-	// the cluster page a known cluster-scoped row (Node) carries ro-bool-no. An
-	// inverted boolean would break one of these.
-	deployBool := p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/default/deployments"])`)
-	if deployBool.Find(".ro-bool-yes").Length() != 1 || deployBool.Find(".ro-bool-no").Length() != 0 {
-		t.Fatalf("Deployment (namespaced) row should carry ro-bool-yes, not ro-bool-no")
+	// Scope badge bound to the ROW's flag (not just "some badge exists"): a known
+	// namespaced row (Deployment) carries the quiet .scope-badge.ns reading
+	// "namespaced", and on the cluster page a known cluster-scoped row carries
+	// .scope-badge.cluster reading "cluster" (the amber-bordered variant). An
+	// inverted scope would break one of these. D3: no green boolean text, no dot.
+	deployScope := p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/default/deployments"])`)
+	if deployScope.Find(".scope-badge.ns").Length() != 1 || deployScope.Find(".scope-badge.cluster").Length() != 0 {
+		t.Fatalf("Deployment (namespaced) row should carry .scope-badge.ns, not .scope-badge.cluster")
+	}
+	if got := normSpace(deployScope.Find(".scope-badge.ns").Text()); got != "namespaced" {
+		t.Fatalf("Deployment scope badge text = %q, want namespaced", got)
 	}
 	pc := get(t, app, "/clusters/test/_resource-types", http.StatusOK)
 	// CSINode has a unique href (Node + NodeMetrics both link to /nodes, so that
-	// href matches two rows); CSINode is cluster-scoped, so its row carries
-	// ro-bool-no and never ro-bool-yes.
-	csiBool := pc.doc.Find(`tr:has(a[href="/clusters/test/csinodes"])`)
-	if csiBool.Find(".ro-bool-no").Length() != 1 || csiBool.Find(".ro-bool-yes").Length() != 0 {
-		t.Fatalf("CSINode (cluster-scoped) row should carry ro-bool-no, not ro-bool-yes")
+	// href matches two rows); CSINode is cluster-scoped, so its row carries the
+	// .scope-badge.cluster variant and never .scope-badge.ns.
+	csiScope := pc.doc.Find(`tr:has(a[href="/clusters/test/csinodes"])`)
+	if csiScope.Find(".scope-badge.cluster").Length() != 1 || csiScope.Find(".scope-badge.ns").Length() != 0 {
+		t.Fatalf("CSINode (cluster-scoped) row should carry .scope-badge.cluster, not .scope-badge.ns")
+	}
+	if got := normSpace(csiScope.Find(".scope-badge.cluster").Text()); got != "cluster" {
+		t.Fatalf("CSINode scope badge text = %q, want cluster", got)
+	}
+	// The retired green boolean pills are gone from both pages.
+	if p.doc.Find(".ro-bool-yes, .ro-bool-no").Length() != 0 || pc.doc.Find(".ro-bool-yes, .ro-bool-no").Length() != 0 {
+		t.Fatalf("retired .ro-bool-yes/.ro-bool-no pills still rendered on a resource-types page")
 	}
 	// Cluster tab vs Namespaced tab active state. Resource-types borrows the
 	// detail-page `.ro-tabs` chrome (anchor-based, the active tab carries
@@ -374,8 +386,8 @@ func TestBehaviorResourceTypesMatrix(t *testing.T) {
 // the active tab on the <a>, a PLAIN `.ro-table` (in `.ro-table-wrap`, not the
 // legacy `.ro-list-table`) for the kind matrix, the KEEP-AS-IS cell classes
 // (`.ro-cell-kind` kind link + sibling `.ro-crd-badge`, `.ro-rt-group`,
-// `.ro-rt-version`, `.ro-bool-yes`/`.ro-bool-no`), and the kind-icon resolver in
-// the Kind cell (`.res-kind .ico`).
+// `.ro-rt-version`), the quiet bordered `.scope-badge` scope cell (D3), and the
+// kind-icon resolver in the Kind cell (`.res-kind .ico`).
 func TestResourceTypesRender(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/_resource-types", http.StatusOK)
@@ -389,7 +401,7 @@ func TestResourceTypesRender(t *testing.T) {
 	p.wantAbsent(".ro-list-table")
 
 	// KEEP-AS-IS cell classes survive: the Deployment row carries the kind link in
-	// `.ro-cell-kind`, the mono group/version cells, and the namespaced `true` pill.
+	// `.ro-cell-kind`, the mono group/version cells, and the quiet scope badge.
 	deployRow := p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/default/deployments"])`)
 	if deployRow.Length() == 0 {
 		t.Fatalf("Deployment row missing from resource-types table")
@@ -400,8 +412,8 @@ func TestResourceTypesRender(t *testing.T) {
 	if deployRow.Find("td.ro-rt-group").Length() != 1 || deployRow.Find("td.ro-rt-version").Length() != 1 {
 		t.Fatalf("Deployment row missing the KEEP-AS-IS group/version cells")
 	}
-	if deployRow.Find(".ro-bool-yes").Length() != 1 {
-		t.Fatalf("Deployment (namespaced) row should carry ro-bool-yes")
+	if deployRow.Find(".scope-badge.ns").Length() != 1 {
+		t.Fatalf("Deployment (namespaced) row should carry .scope-badge.ns")
 	}
 	// The Kind cell pairs the resolved kind icon with the link (borrow rule:
 	// icons.KindIcon).
@@ -836,10 +848,11 @@ func TestBehaviorNodeDetailFacts(t *testing.T) {
 }
 
 // TestBehaviorDetailLabelChips pins the resource-view label/annotation chips in
-// the redesign vocabulary: each label is an anchor to the selector-filtered list
-// carrying the bare .ro-chip class (label text directly inside, no inner .tag),
-// the selector value kept literal (key=value, NOT url-encoded). The annotations
-// render as non-link .ro-chip.anno pills that truncate with a title= tooltip.
+// the v2 vocabulary (D3: chips are NEUTRAL; key and value differ by ink weight
+// through the .ck/.cs/.cv spans, never by hue): each label is an anchor to the
+// selector-filtered list carrying the bare .ro-chip class, the selector value
+// kept literal (key=value, NOT url-encoded). The annotations render as non-link
+// .ro-chip.anno pills that truncate with a title= tooltip.
 func TestBehaviorDetailLabelChips(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
@@ -858,22 +871,34 @@ func TestBehaviorDetailLabelChips(t *testing.T) {
 		t.Fatalf("label chip href = %q, want a literal selector=key=value link", href)
 	}
 	// The nginx pod fixture carries app=nginx; that chip's exact selector href +
-	// its bare-text label (the redesign chip has no inner .tag).
+	// the ink-weight key/value split: the key sits in .ck, the ghost colon in
+	// .cs, the firm value in .cv (D3 -- weight, not hue, separates key from value).
 	appChip := p.doc.Find(`.ro-chips a[href="/clusters/test/namespaces/default/pods?selector=app=nginx"]`)
 	if appChip.Length() != 1 {
 		t.Fatalf("expected the app=nginx label chip with a literal selector href, hrefs=%v", p.attrs(".ro-chips a.ro-chip", "href"))
 	}
-	if got := normSpace(appChip.Text()); got != "app: nginx" {
-		t.Fatalf("label chip text = %q, want app: nginx", got)
+	if k, v := normSpace(appChip.Find(".ck").Text()), normSpace(appChip.Find(".cv").Text()); k != "app" || v != "nginx" {
+		t.Fatalf("label chip ck/cv = %q/%q, want app/nginx", k, v)
+	}
+	if appChip.Find(".cs").Length() != 1 {
+		t.Fatalf("label chip missing the .cs separator span")
 	}
 
 	// Annotations render as non-link .ro-chip.anno pills carrying the full value
-	// in title= (the fixture's example.com/note: generic-annotation).
+	// in title= (the fixture's example.com/note: generic-annotation), with the
+	// same .ck/.cs/.cv split inside the chip body.
 	p.wantText(`.ro-section:has(.ro-section-label:contains("Annotations")) .ro-section-label`, "Annotations")
-	annText := p.texts("span.ro-chip.anno")
-	assertContainsAll(t, "annotation chips", annText, "example.com/note: generic-annotation")
-	if title, _ := p.doc.Find("span.ro-chip.anno").First().Attr("title"); title != "example.com/note: generic-annotation" {
-		t.Fatalf("annotation chip title = %q, want the full key: value tooltip", title)
+	anno := p.doc.Find(`span.ro-chip.anno[title="example.com/note: generic-annotation"]`)
+	if anno.Length() != 1 {
+		t.Fatalf("expected the example.com/note annotation chip with the full key: value tooltip, titles=%v", p.attrs("span.ro-chip.anno", "title"))
+	}
+	if k, v := normSpace(anno.Find(".ck").Text()), normSpace(anno.Find(".cv").Text()); k != "example.com/note" || v != "generic-annotation" {
+		t.Fatalf("annotation chip ck/cv = %q/%q, want example.com/note/generic-annotation", k, v)
+	}
+
+	// D3 negative: the retired green chip accent never reaches the detail DOM.
+	if p.doc.Find(".ro-chip.app").Length() != 0 {
+		t.Fatalf("retired .ro-chip.app accent rendered on the detail page")
 	}
 }
 

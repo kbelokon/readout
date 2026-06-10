@@ -272,7 +272,7 @@ func toTableData(t *tableView) templates.TableData {
 				tc.RepSegments = append(tc.RepSegments, templates.RepSegment{State: seg.State})
 			}
 			for _, chip := range cell.Chips {
-				tc.Chips = append(tc.Chips, templates.RowChip{Class: chip.Class, Text: chip.Text})
+				tc.Chips = append(tc.Chips, templates.RowChip{Key: chip.Key, Val: chip.Val})
 			}
 			if cell.Kind == cellRollout {
 				tc.RolloutIcon = icon(rolloutIconName(cell.RolloutState))
@@ -354,7 +354,7 @@ func toDetailData(v *detailView) templates.DetailData {
 		d.Links = append(d.Links, templates.DetailLink{Href: link.Href, Title: link.Title, Icon: icon(link.Icon)})
 	}
 	for _, chip := range v.Labels {
-		d.Labels = append(d.Labels, templates.DetailLabelChip{Href: chip.Href, Class: chip.Class, Key: chip.Key, Val: chip.Val})
+		d.Labels = append(d.Labels, templates.DetailLabelChip{Href: chip.Href, Key: chip.Key, Val: chip.Val})
 	}
 	for _, chip := range v.Annotations {
 		d.Annotations = append(d.Annotations, templates.AnnotationChip{Key: chip.Key, Val: chip.Val, Full: chip.Full})

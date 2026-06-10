@@ -235,19 +235,17 @@ type cellView struct {
 	RolloutState string
 
 	// Chips are the namespace label chips for cellChips: one per metadata.labels
-	// entry (sorted), each carrying its chip class (the .app accent for
-	// app.kubernetes.io/* labels) + its "key: value" text. Empty means a namespace
+	// entry (sorted), each carrying its key/value pair. Empty means a namespace
 	// with no labels, rendered as a muted "—".
 	Chips []chipView
 }
 
-// chipView is one namespace label chip: Class is the FULL redesign chip class
-// (the canonical "ro-chip" + the " app" accent token for app.kubernetes.io/*
-// labels, scoped under the list shell's .ro-rd marker), Text is the "key: value"
-// label shown in the pill.
+// chipView is one namespace label chip: the label key and value, rendered as a
+// NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3 colour law:
+// every label chip is neutral; the green `.app` accent is retired).
 type chipView struct {
-	Class string
-	Text  string
+	Key string
+	Val string
 }
 
 // repSegment is one deployment replica-track segment. State is "" for a filled
@@ -353,13 +351,13 @@ type detailStateView struct {
 	BackHref  string
 }
 
-// labelChipView is one resolved label chip: the selector href, the full chip
-// class (incl. the app accent), and the key/value.
+// labelChipView is one resolved label chip: the selector href and the
+// key/value. Every label chip is a NEUTRAL `.ro-chip` (D3 colour law -- the
+// green app.kubernetes.io/* accent is retired; key/value differ by ink weight).
 type labelChipView struct {
-	Href  string
-	Class string
-	Key   string
-	Val   string
+	Href string
+	Key  string
+	Val  string
 }
 
 // annotationChipView is one resolved annotation chip. Val is the truncated

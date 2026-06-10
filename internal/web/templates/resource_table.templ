@@ -194,12 +194,12 @@ type TableCell struct {
 	Chips []RowChip // namespace label chips (empty -> muted "—")
 }
 
-// RowChip is one namespace label chip: Class is the full redesign chip class
-// (`ro-chip` + the ` app` accent token for app.kubernetes.io/* labels), Text is
-// the "key: value" label shown in the pill.
+// RowChip is one namespace label chip: the label key and value, rendered as a
+// NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3 colour
+// law: every label chip is neutral; the green `.app` accent is retired).
 type RowChip struct {
-	Class string
-	Text  string
+	Key string
+	Val string
 }
 
 // Cond is one abnormal node condition pill (name + redesign tone warn/err/ok).
@@ -392,7 +392,7 @@ templ tableCell(cell TableCell) {
 			} else {
 				<div class="ro-chips">
 					for _, chip := range cell.Chips {
-						<span class={ chip.Class }>{ chip.Text }</span>
+						<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
 					}
 				</div>
 			}
@@ -553,7 +553,7 @@ templ pcardCell(cell TableCell) {
 			} else {
 				<div class="ro-chips">
 					for _, chip := range cell.Chips {
-						<span class={ chip.Class }>{ chip.Text }</span>
+						<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
 					}
 				</div>
 			}

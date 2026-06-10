@@ -201,10 +201,9 @@ func buildLabelChips(cluster, namespace string, object *kube.Object) []labelChip
 			href = fmt.Sprintf("/clusters/%s/%s?selector=%s", url.PathEscape(cluster), url.PathEscape(object.Resource.Endpoint()), selector)
 		}
 		out = append(out, labelChipView{
-			Href:  href,
-			Class: redesignChipClass(key),
-			Key:   key,
-			Val:   val,
+			Href: href,
+			Key:  key,
+			Val:  val,
 		})
 	}
 	return out

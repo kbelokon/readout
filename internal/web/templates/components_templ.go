@@ -14,11 +14,10 @@ import (
 )
 
 // components.templ holds the shared templ building blocks the page bodies and
-// the layout reuse: the inline-SVG icon wrapper, the command-palette overlay +
-// its row <template>, and the small ro-chip / CRD-badge / boolean pill
-// fragments. Trusted raw HTML (the Lucide SVGs) is emitted via templ.Raw; every
-// data value goes through templ's contextual auto-escaping. The DOM these emit
-// is pinned by the behavior-fact net.
+// the layout reuse: the inline-SVG icon wrapper, the command-palette overlay,
+// and the default footer. Trusted raw HTML (the Lucide SVGs) is emitted via
+// templ.Raw; every data value goes through templ's contextual auto-escaping.
+// The DOM these emit is pinned by the behavior-fact net.
 
 // iconC renders an inline Lucide SVG by name. The SVG markup is trusted,
 // build-time-constant chrome (no user data), so it is emitted raw.
@@ -50,9 +49,6 @@ func iconC(name string) templ.Component {
 		return nil
 	})
 }
-
-// chipKey is one label/annotation chip key=value class fragment; templ adds the
-// " ro-label-app" suffix for app.kubernetes.io/* keys via appLabelClassC.
 
 // CommandPalette is the ⌘K jump-to overlay, included once per page in the
 // layout. It owns no data: readout.js reads the server-built #ro-palette-data
@@ -131,7 +127,7 @@ func defaultFooter() templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(version.Version)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/components.templ`, Line: 41, Col: 113}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/components.templ`, Line: 37, Col: 113}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {

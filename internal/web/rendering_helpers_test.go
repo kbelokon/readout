@@ -64,9 +64,6 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	if namespaceEmptyText("default", false) == "" || namespaceEmptyText("default", true) != "" {
 		t.Fatal("namespaceEmptyText mismatch")
 	}
-	if appLabelClass("app.kubernetes.io/name") == "" || appLabelClass("team") != "" {
-		t.Fatal("appLabelClass mismatch")
-	}
 	if cpuFormat(0.25) != "250m" || memoryMiBFormat(float64(2*1024*1024)) != "2" || cpuFormat("bad") != "bad" {
 		t.Fatal("resource format mismatch")
 	}

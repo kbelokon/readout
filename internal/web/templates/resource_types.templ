@@ -10,13 +10,15 @@ package templates
 // colliding redesign classes here -- .ro-breadcrumb, .ro-tabs, .ro-table -- are
 // scoped under .ro-rd in readout.css, so they resolve only when this content root
 // carries the marker. The KEEP-AS-IS resource-type cell classes (.ro-cell-kind,
-// .ro-crd-badge, .ro-rt-group, .ro-rt-version, .ro-bool-yes/.ro-bool-no) are
-// preserved verbatim -- the resource-types/secret-barrier behavior tests assert
-// them. The Kind cell pairs the resolved kind icon (icons.KindIcon, raw) with the
-// kind link.
+// .ro-crd-badge, .ro-rt-group, .ro-rt-version) are preserved verbatim -- the
+// resource-types/secret-barrier behavior tests assert them. The scope cell is the
+// quiet bordered `.scope-badge` (D3 colour law: categorical values get a badge,
+// never green text or a dot; the cluster variant earns an amber-mixed border).
+// The Kind cell pairs the resolved kind icon (icons.KindIcon, raw) with the kind
+// link.
 //
 // The behavior-fact net pins the kind links, the CRD badge riding only on custom
-// resources, the per-row boolean pill, and the active tab.
+// resources, the per-row scope badge, and the active tab.
 
 // ResourceTypesData is the resolved resource-types input. NamespaceCrumb is the
 // breadcrumb namespace ("" => cluster-scoped page). NamespacedTabHref is the
@@ -56,7 +58,7 @@ templ ResourceTypes(d ResourceTypesData) {
 			</ul></nav>
 		<div class="ro-title-row"><h1 class="ro-title">Resource Types</h1><span class="ro-count">{ itoa(d.Count) }</span></div>
 		<div class="ro-tabs ro-rt-tabs">@rtTab(d.ClusterActive, d.ClusterTab, "Cluster")@rtTab(!d.ClusterActive, d.NamespacedTab, "Namespaced")</div>
-		<div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Kind</th><th>API Group</th><th>Version</th><th>Namespaced</th></tr></thead><tbody>
+		<div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Kind</th><th>API Group</th><th>Version</th><th>Scope</th></tr></thead><tbody>
 			for _, row := range d.Rows {
 				<tr><td class="ro-cell-kind"><span class="res-kind">@templ.Raw(row.Icon)<a href={ templ.SafeURL(row.Href) }>{ row.Kind }</a></span>
 					if row.IsCRD {
@@ -64,9 +66,9 @@ templ ResourceTypes(d ResourceTypesData) {
 					}
 					</td><td class="ro-rt-group">{ row.Group }</td><td class="ro-rt-version">{ row.Version }</td><td>
 					if row.Namespaced {
-						<span class="ro-bool-yes">true</span>
+						<span class="scope-badge ns">namespaced</span>
 					} else {
-						<span class="ro-bool-no">false</span>
+						<span class="scope-badge cluster">cluster</span>
 					}
 					</td></tr>
 			}

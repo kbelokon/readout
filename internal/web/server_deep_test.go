@@ -77,7 +77,7 @@ func TestAllResourceListSearchAndClusterBranches(t *testing.T) {
 	}
 	clusterTypes := httptest.NewRecorder()
 	app.Handler().ServeHTTP(clusterTypes, httptest.NewRequest(http.MethodGet, "/clusters/test/_resource-types", nil))
-	if clusterTypes.Code != http.StatusOK || !strings.Contains(clusterTypes.Body.String(), "ro-bool-no") {
+	if clusterTypes.Code != http.StatusOK || !strings.Contains(clusterTypes.Body.String(), "scope-badge cluster") {
 		t.Fatalf("cluster resource types response: status=%d body=%s", clusterTypes.Code, clusterTypes.Body.String())
 	}
 	blockedNamespace := newTestServerWithConfig(t, &config.Config{

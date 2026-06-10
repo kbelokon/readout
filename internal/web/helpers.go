@@ -592,32 +592,11 @@ func namespaceEmptyText(namespace string, allNamespaces bool) string {
 	return ""
 }
 
-func appLabelClass(key string) string {
-	if strings.HasPrefix(key, "app.kubernetes.io/") {
-		return " ro-label-app"
-	}
-	return ""
-}
-
-// redesignChipClass is the FULL redesign chip class for a label key: the
-// canonical "ro-chip", plus the " app" accent token for app.kubernetes.io/*
-// labels. It reuses the same app.kubernetes.io/ recognition as appLabelClass /
-// chipClass, but emits the redesign canonical ".app" token (scoped under a
-// migrated screen's .ro-rd marker) instead of the legacy ".ro-label-app" accent,
-// so the list namespace chips AND the detail label chips match the mockup
-// `<span class="ro-chip app">` vocabulary.
-func redesignChipClass(key string) string {
-	if strings.HasPrefix(key, "app.kubernetes.io/") {
-		return "ro-chip app"
-	}
-	return "ro-chip"
-}
-
 // namespaceLabelChips builds the namespace label-chip view models from the row
-// object's metadata.labels (sorted by key for a stable order). Each chip carries
-// the redesign chip class (the .app accent for app.kubernetes.io/* labels) and its
-// "key: value" text. A namespace with no labels yields nil, so the renderer shows
-// the muted "—".
+// object's metadata.labels (sorted by key for a stable order). Every chip is
+// NEUTRAL (D3 colour law: the green app.kubernetes.io/* accent is retired; the
+// key/value pair differs by ink weight in the renderer). A namespace with no
+// labels yields nil, so the renderer shows the muted "—".
 func namespaceLabelChips(obj map[string]any) []chipView {
 	labels, _, _ := unstructured.NestedStringMap(obj, "metadata", "labels")
 	if len(labels) == 0 {
@@ -630,7 +609,7 @@ func namespaceLabelChips(obj map[string]any) []chipView {
 	sort.Strings(keys)
 	chips := make([]chipView, 0, len(keys))
 	for _, key := range keys {
-		chips = append(chips, chipView{Class: redesignChipClass(key), Text: key + ": " + labels[key]})
+		chips = append(chips, chipView{Key: key, Val: labels[key]})
 	}
 	return chips
 }

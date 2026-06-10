@@ -40,13 +40,12 @@ type NamespaceRow struct {
 	Created  string
 }
 
-// LabelChip is a non-link label pill rendered as `<span class={Class}>key:
-// val</span>` (the redesign `.ro-chip` vocabulary, with the ` app` accent token
-// for app.kubernetes.io/* labels). Class is the FULL redesign chip class.
+// LabelChip is a non-link label pill rendered as a NEUTRAL `.ro-chip` with the
+// `.ck`/`.cs`/`.cv` ink-weight split (D3 colour law: every label chip is
+// neutral; the green app.kubernetes.io/* accent is retired).
 type LabelChip struct {
-	Class string
-	Key   string
-	Val   string
+	Key string
+	Val string
 }
 
 // ClusterResourceTypeRow is one cluster resource-type row (Kind + CRD badge,
@@ -67,7 +66,7 @@ templ Cluster(d ClusterData) {
 			if len(d.ClusterChips) > 0 {
 				<div class="ro-chips">
 					for _, chip := range d.ClusterChips {
-						<span class={ chip.Class }>{ chip.Key + ": " + chip.Val }</span>
+						<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
 					}
 					</div>
 			}
@@ -78,7 +77,7 @@ templ Cluster(d ClusterData) {
 					if len(ns.Chips) > 0 {
 						<div class="ro-chips">
 							for _, chip := range ns.Chips {
-								<span class={ chip.Class }>{ chip.Key + ": " + chip.Val }</span>
+								<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
 							}
 							</div>
 					}

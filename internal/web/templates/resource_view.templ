@@ -97,12 +97,12 @@ type DetailLink struct {
 
 // DetailLabelChip is one label pill on the detail page: an anchor to the
 // selector-filtered list (distinct from the cluster page's non-link LabelChip).
-// Class is the FULL ro-chip class incl. the app accent.
+// Every chip is a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight
+// split (D3 colour law: the green app.kubernetes.io/* accent is retired).
 type DetailLabelChip struct {
-	Href  string
-	Class string
-	Key   string
-	Val   string
+	Href string
+	Key  string
+	Val  string
 }
 
 // AnnotationChip is a non-link annotation pill. Val is the truncated value shown
@@ -266,14 +266,14 @@ templ detailBody(d DetailData) {
 	if len(d.Labels) > 0 {
 		<div class="ro-section"><div class="ro-section-label">Labels</div><div class="ro-chips">
 			for _, chip := range d.Labels {
-				<a href={ templ.SafeURL(chip.Href) } class={ chip.Class }>{ chip.Key + ": " + chip.Val }</a>
+				<a href={ templ.SafeURL(chip.Href) } class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></a>
 			}
 			</div></div>
 	}
 	if len(d.Annotations) > 0 {
 		<div class="ro-section"><div class="ro-section-label">Annotations</div><div class="ro-chips">
 			for _, chip := range d.Annotations {
-				<span class="ro-chip anno" title={ chip.Full }>{ chip.Key + ": " + chip.Val }</span>
+				<span class="ro-chip anno" title={ chip.Full }><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
 			}
 			</div></div>
 	}

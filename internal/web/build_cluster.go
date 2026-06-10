@@ -23,15 +23,15 @@ import (
 
 // labelChips builds the redesign non-link label pills (D11/D13) shared by the
 // clusters-entry rows, the cluster-overview meta line, and the namespace rows.
-// Each pill renders as `<span class={Class}>key: val</span>`; Class is the
-// canonical redesign chip class (`ro-chip`, plus the ` app` accent token for
-// app.kubernetes.io/* labels via redesignChipClass) so it matches the migrated
-// list/detail `.ro-chip` vocabulary scoped under the page's .ro-rd marker.
+// Each pill renders as a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv`
+// ink-weight split (D3 colour law: the green app.kubernetes.io/* accent is
+// retired), matching the migrated list/detail `.ro-chip` vocabulary scoped
+// under the page's .ro-rd marker.
 func labelChips(labels map[string]string) []templates.LabelChip {
 	keys := sortedKeys(labels)
 	chips := make([]templates.LabelChip, 0, len(keys))
 	for _, key := range keys {
-		chips = append(chips, templates.LabelChip{Class: redesignChipClass(key), Key: key, Val: labels[key]})
+		chips = append(chips, templates.LabelChip{Key: key, Val: labels[key]})
 	}
 	return chips
 }

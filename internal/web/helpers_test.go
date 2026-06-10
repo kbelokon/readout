@@ -31,9 +31,6 @@ func TestFormattingHelpers(t *testing.T) {
 	if namespaceEmptyText("prod", false) != `in namespace "prod" ` || namespaceEmptyText("prod", true) != "" {
 		t.Fatalf("namespaceEmptyText mismatch")
 	}
-	if appLabelClass("app.kubernetes.io/name") == "" || appLabelClass("plain") != "" {
-		t.Fatalf("appLabelClass mismatch")
-	}
 	if truncate("abcdef", 5) != "abcdef" || truncate("abcdefghijkl", 5) != "ab..." || truncate("abcdefgh", 2) != "ab" || truncate("abc", 5) != "abc" {
 		t.Fatalf("truncate mismatch")
 	}

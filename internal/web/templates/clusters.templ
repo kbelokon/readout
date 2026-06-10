@@ -31,8 +31,8 @@ type ClustersData struct {
 }
 
 // ClusterRow is one in-cluster row: name + API URL + the label chips. Each chip
-// carries the FULL redesign chip class (`ro-chip`, plus the ` app` accent token
-// for app.kubernetes.io/* labels) and its `key: val` text.
+// is a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3
+// colour law: the green app.kubernetes.io/* accent is retired).
 type ClusterRow struct {
 	Name  string
 	URL   string
@@ -58,7 +58,7 @@ templ Clusters(d ClustersData) {
 					if len(row.Chips) > 0 {
 						<div class="ro-chips">
 							for _, chip := range row.Chips {
-								<span class={ chip.Class }>{ chip.Key + ": " + chip.Val }</span>
+								<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
 							}
 							</div>
 					}
