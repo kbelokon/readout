@@ -630,14 +630,20 @@
         .navbar-end .search-item .control { max-width: none; }
 
         aside.menu { padding: 0.5rem 1.5rem; margin-bottom: 1.5rem; }
-        aside #aside-menu { display: none; padding-top: 1rem; }
+        /* NOTE (Unit 23): the legacy Bulma-era `aside #aside-menu { display: none }`
+           + `#aside-menu.is-active { display: block }` reveal pair was REMOVED here:
+           the descendant selector matched the REDESIGN sidebar's #aside-menu div
+           too, blanking the sidebar content at every viewport ≤1023px (empty rail
+           strip at 761-1023px, empty hamburger overlay below 760px -- readout.js
+           toggles `.is-active` on `.ro-sidebar`, never on #aside-menu, so the
+           legacy show-rule could never fire). The redesign owns this range now:
+           the `.ro-rail` icon rail (760-1100px) and the ≤760px card/hamburger
+           blocks near the end of this layer. */
 
         aside a[role="button"] { display: block; height: 1rem;}
         aside a[role="button"] span { display: block; background: hsl(0, 0%, 71%); position: relative; height: 1px; margin: 0 auto; width: 66%; }
         aside a[role="button"] span:nth-child(1) { top: calc(50% - 1px); }
         aside a[role="button"] span:nth-child(2) { top: calc(50% + 1px); }
-
-        #aside-menu.is-active { display: block; }
 
         main { padding: 0 1.5rem; }
 
@@ -2996,6 +3002,35 @@
        in this layer -- so only the menu-toggle chrome (no media query) is lifted here. */
     .menu-toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px;
         height: 32px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); }
+
+    /* icon rail (Unit 23 / SPEC §8.5 / D22): between the mobile card layer
+       (≤760px) and the full sidebar (>1100px) the sidebar collapses to an
+       icon-only rail. The `.ro-rail` modifier rides on the aside markup at every
+       width (the `.has-cards` pattern); THIS media query decides when it bites:
+       labels + counts hide (each entry's label survives as its `title` tooltip,
+       layout.templ), kind icons center in a 52px strip, group labels become thin
+       dividers, and the active entry keeps the accent-weak fill + the left accent
+       bar (::before re-anchored to the narrower 6px padding). The content column
+       (.ro-main, flex:1 min-width:0) reflows into the reclaimed width; wide tables
+       keep scrolling horizontally inside .ro-table-wrap with the sticky first
+       column, so the name column never leaves reach. The ns pill clamps harder so
+       a long namespace ellipsises instead of crowding the topbar (its
+       .context-name already carries text-overflow: ellipsis). The 760.02px floor
+       keeps the rail clear of the ≤760px mobile block below (fractional viewport
+       widths at the seam fall back to the full sidebar -- never to overlap). */
+    @media (min-width: 760.02px) and (max-width: 1100px) {
+        .ro-sidebar.ro-rail { width: 52px; padding: 14px 6px 24px; overflow-x: hidden; }
+        .ro-sidebar.ro-rail .menu-label {
+            height: 0; padding: 0; margin: 10px 6px 8px; overflow: hidden;
+            border-top: 1px solid var(--border-soft);
+        }
+        .ro-sidebar.ro-rail .menu-label:first-child { display: none; }
+        .ro-sidebar.ro-rail .menu-list a { justify-content: center; gap: 0; padding: 8px 0; }
+        .ro-sidebar.ro-rail .menu-list a .nav-label,
+        .ro-sidebar.ro-rail .menu-list a .menu-count { display: none; }
+        .ro-sidebar.ro-rail .menu-list a.is-active::before { left: -6px; }
+        .ctx-dd { max-width: min(22rem, 26vw); }
+    }
 
     /* responsive switch (from base.css @media max-width:760px) -- drives the mobile
        card layout the Pods Mobile artboard shows. Below 760px the sidebar is hidden

@@ -100,6 +100,12 @@ func TestMobileCardsPreserveTransientPulse(t *testing.T) {
 	if got := normSpace(creatingCard.Find(".pc-name").Text()); got != "web-creating-7c9f7cd495-6fff6" {
 		t.Fatalf("card name = %q, want the full split name", got)
 	}
+	// The age meta carries the v2 age-bucket class (Unit 23: the card cell speaks
+	// the SAME §4.3 age vocabulary the table does). 3s old at the fixed clock ->
+	// .age-fresh, computed from the object's creationTimestamp by the pipeline.
+	if got := normSpace(creatingCard.Find(`.pc-meta .m:has(.k:contains("age")) .age-fresh`).Text()); got != "3s" {
+		t.Fatalf("creating card age meta = %q, want 3s inside .age-fresh", got)
+	}
 
 	steadyCard := p.doc.Find(`.ro-pcard:has(.pc-name a[href="/clusters/test/namespaces/states/pods/web-steady-7c9f7cd495-ccccc"])`)
 	if steadyCard.Find(".pc-status.ok .ro-dot.ok").Length() != 1 {
@@ -107,6 +113,21 @@ func TestMobileCardsPreserveTransientPulse(t *testing.T) {
 	}
 	if steadyCard.Find(".ro-dot.pulse").Length() != 0 {
 		t.Fatalf("steady card dot must NOT pulse")
+	}
+	// 5h old = 0.21 of the 24h window -> .age-recent: the buckets shade
+	// fresh->old in the card exactly as they do in the table column.
+	if got := normSpace(steadyCard.Find(`.pc-meta .m:has(.k:contains("age")) .age-recent`).Text()); got != "5h" {
+		t.Fatalf("steady card age meta = %q, want 5h inside .age-recent", got)
+	}
+	// The degraded pod's chronic restarts meta keeps the amber tone + the faint
+	// "(2m ago)" recency suffix -- the .restarts.some/.ago pair is the v2 wire
+	// vocabulary, not a card-only rendering.
+	degradedCard := p.doc.Find(`.ro-pcard:has(.pc-name a[href="/clusters/test/namespaces/states/pods/web-degraded-7c9f7cd495-bbbbb"])`)
+	if degradedCard.Find(".pc-meta .restarts.some").Length() != 1 {
+		t.Fatalf("degraded card restarts meta missing .restarts.some")
+	}
+	if got := normSpace(degradedCard.Find(".pc-meta .m .ago").Text()); got != "(2m ago)" {
+		t.Fatalf("degraded card restarts recency = %q, want (2m ago) in .ago", got)
 	}
 
 	// The card list mirrors the table's two transient pulses (creating + terminating).
@@ -171,25 +192,29 @@ func TestMobileCardsMultiClusterMetaKeepsClusterAndNamespace(t *testing.T) {
 // TestMobileCardsThroughEngineMirrorTableCells closes the engine-level contract: the
 // ResourceTable templ, rendered directly over a crafted ListData, emits the
 // `.ro-cardlist`/`.ro-pcard` structure with the SAME cell data as the `.ro-table`
-// body -- the name in `.pc-name`, the status tone in `.pc-status`, and a generic data
-// cell as a keyed meta row. This pins the markup independent of the assembly layer.
+// body -- the name in `.pc-name`, the status tone in `.pc-status`, a generic data
+// cell as a keyed meta row, and a chips cell as the SAME neutral `.ro-chip`
+// (ck/cs/cv ink-weight split, NO tint modifier) the table strip renders. This pins
+// the markup independent of the assembly layer.
 func TestMobileCardsThroughEngineMirrorTableCells(t *testing.T) {
 	d := templates.ListData{
 		Plural: "pods",
 		Tables: []templates.TableData{{
 			Kind:        "Pods",
 			Count:       1,
-			ColumnCount: 3,
+			ColumnCount: 4,
 			Columns: []templates.TableColumn{
 				{Name: "Name"},
 				{Name: "Status"},
 				{Name: "Ready"},
+				{Name: "Labels"},
 			},
 			Rows: []templates.TableRow{{
 				Cells: []templates.TableCell{
 					{Kind: templates.CellName, Value: "web-0", NameHead: "web-0", Href: "/clusters/test/namespaces/default/pods/web-0"},
 					{Kind: templates.CellStatus, Value: "Running", Tone: "ok", ColClass: "cell-status"},
 					{Kind: templates.CellReady, Value: "1/1", Ratio: "full", ColClass: "num"},
+					{Kind: templates.CellChips, Chips: []templates.RowChip{{Key: "app", Val: "web"}}},
 				},
 				CreatedText: "2026-06-01 00:00:00",
 			}},
@@ -226,6 +251,21 @@ func TestMobileCardsThroughEngineMirrorTableCells(t *testing.T) {
 	}
 	if !containsString(keys, "created") {
 		t.Fatalf("the synthetic Created column should surface as a card meta row: %v", keys)
+	}
+
+	// The Labels chips cell rides into the card meta as the SAME neutral chip the
+	// table strip renders: a `.ro-chip` with the ck/cs/cv ink-weight split and NO
+	// tint modifier class (D3: labels are identification, not status -- the v1
+	// `.app` green tint must never resurface in the card projection).
+	chip := card.Find(`.pc-meta .m:has(.k:contains("labels")) .ro-chips .ro-chip`)
+	if chip.Length() != 1 {
+		t.Fatalf("card labels meta missing its .ro-chip; meta html=%s", htmlOf(t, card.Find(".pc-meta")))
+	}
+	if k, v := normSpace(chip.Find(".ck").Text()), normSpace(chip.Find(".cv").Text()); k != "app" || v != "web" {
+		t.Fatalf("card chip = %q:%q, want app:web in the .ck/.cv split", k, v)
+	}
+	if cls, _ := chip.Attr("class"); cls != "ro-chip" {
+		t.Fatalf("card chip class = %q, want the bare neutral ro-chip (no tint modifier)", cls)
 	}
 }
 

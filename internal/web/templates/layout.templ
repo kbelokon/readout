@@ -205,9 +205,15 @@ templ topbarC(n Navbar) {
 // are kept (readout.js mobile reveal + the existing nav-harvest contract). Meta
 // entries (Resource Types / Events) get a chrome glyph via icons.MetaIcon so they
 // match the icon-slot + label row shape.
+//
+// The `ro-rail` modifier (Unit 23 / SPEC §8.5) is ALWAYS present (the
+// `.has-cards` pattern): readout.css's 760-1100px media query keys on it to
+// collapse the sidebar into the icon-only rail; outside that range the class is
+// inert. The label-as-tooltip half lives on each link's title attribute
+// (sidebarLinkC).
 templ sidebarC(s Sidebar) {
 	if s.ShowMenu {
-		<aside class="ro-sidebar"><div id="aside-menu">
+		<aside class="ro-sidebar ro-rail"><div id="aside-menu">
 			for _, group := range s.Groups {
 				<p class="menu-label">{ group.Label }</p><ul class="menu-list">
 					for _, link := range group.Links {
@@ -230,9 +236,12 @@ templ sidebarC(s Sidebar) {
 // resolver markup is trusted-shape) + the label + the optional trailing mono
 // count (D13: absent on a failed fetch or out of single-cluster scope; a real
 // zero renders "0"), with the .menu-item class and the .is-active accent on
-// the current path. iconMarkup may be empty (no slot).
+// the current path. iconMarkup may be empty (no slot). The title attribute
+// carries the label so the 760-1100px icon rail (Unit 23 / SPEC §8.5), which
+// hides .nav-label, still names every entry via the native tooltip; at full
+// width it is a harmless restatement of the visible label.
 templ sidebarLinkC(link NavItem, iconMarkup string) {
-	<a class={ menuItemClass(link.Active) } href={ templ.SafeURL(link.Href) }>
+	<a class={ menuItemClass(link.Active) } href={ templ.SafeURL(link.Href) } title={ link.Text }>
 		if iconMarkup != "" {
 			@templ.Raw(iconMarkup)
 		}
