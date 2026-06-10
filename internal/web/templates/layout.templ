@@ -155,6 +155,7 @@ templ layoutBody(d LayoutData, body templ.Component) {
 		<div id="ro-palette-data" hidden>{ d.PaletteJSON }</div>
 		@footerC(d.Footer)
 		@CommandPalette()
+		@kbdOverlayC()
 		<div id="ro-toasts" class="ro-toasts" role="status" aria-live="polite"></div>
 	</body>
 }
@@ -269,6 +270,41 @@ templ rowCtxMenuC() {
 		<button type="button" role="menuitem" data-ctx="logs" hidden><span class="ico sm" aria-hidden="true">@iconC("terminal")</span><span>View logs</span></button>
 		<hr>
 		<button type="button" role="menuitem" data-ctx="download"><span class="ico sm" aria-hidden="true">@iconC("download")</span><span>Download YAML</span></button>
+	</div>
+}
+
+// kbdOverlayC is the "?" keyboard-map overlay (Unit 18 / D10): GLOBAL chrome
+// (it rides every page next to the palette -- the j/k/⏎ gestures themselves
+// stay single-type-page behaviors, but the map is discoverable everywhere).
+// Markup mirrors the prototype card (Readout v2.html #kbdOverlay): Navigate /
+// Act columns of `.kbd-row` entries, the mono `.kbd-foot` caption. readout.js
+// owns open/close ("open" class + aria-hidden, the palette pattern): "?"
+// toggles, esc/backdrop-click close and restore the prior focus. The card
+// carries tabindex="-1" so the overlay can move focus INTO the dialog on open
+// (it has no other focusable content -- Tab is trapped by the keydown handler,
+// so focus can never reach the page behind the modal).
+templ kbdOverlayC() {
+	<div class="kbd-overlay" id="ro-kbd-overlay" aria-hidden="true">
+		<div class="kbd-card" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1">
+			<h3>Keyboard</h3>
+			<div class="kbd-cols">
+				<div>
+					<div class="kbd-grp">Navigate</div>
+					<div class="kbd-row"><kbd class="ro-kbd">&#8984;K</kbd><span>Jump to anything</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">j</kbd><kbd class="ro-kbd">k</kbd><span>Move row focus</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">&#9166;</kbd><span>Open focused row</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">esc</kbd><span>Close / back out</span></div>
+				</div>
+				<div>
+					<div class="kbd-grp">Act</div>
+					<div class="kbd-row"><kbd class="ro-kbd">click</kbd><span>Select row (bulk bar)</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">rmb</kbd><span>Row context menu</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">&#9166;</kbd><span>Filter &#8594; make chip</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">&#9003;</kbd><span>Remove last chip</span></div>
+				</div>
+			</div>
+			<div class="kbd-foot mono">? toggles this card</div>
+		</div>
 	</div>
 }
 

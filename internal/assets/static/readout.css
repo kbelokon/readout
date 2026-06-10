@@ -2147,6 +2147,10 @@
     .ro-table tbody tr { transition: background .08s ease; }
     .ro-table tbody tr:hover { background: var(--row-hover); }
     .ro-table tbody tr.is-selected { background: var(--row-sel); }
+    /* j/k keyboard row focus (Unit 18 / D10) -- prototype data.css order:
+       kfocus is declared AFTER is-selected so a focused+selected row reads as
+       the focused one (hover tint + the accent bar on the sticky cell). */
+    .ro-table tbody tr.kfocus { background: var(--row-hover); }
 
     /* Sticky identifier column(s). The FIRST column is always sticky so the header
        and body pin the SAME column -- the name in a single-namespace list, the
@@ -2171,6 +2175,8 @@
     .ro-table.ro-sticky2 thead th:nth-child(2) { background: var(--thead-bg); z-index: 3; }
     .ro-table tbody tr:hover td:first-child,
     .ro-table.ro-sticky2 tbody tr:hover td.cell-name { background: var(--row-hover); }
+    .ro-table tbody tr.kfocus td:first-child,
+    .ro-table.ro-sticky2 tbody tr.kfocus td.cell-name { background: var(--row-hover); }
     .ro-table tbody tr.is-selected td:first-child,
     .ro-table.ro-sticky2 tbody tr.is-selected td.cell-name {
         background-color: var(--surface);
@@ -2183,6 +2189,9 @@
     }
     /* green selected marker pinned on the sticky cell */
     .ro-table tbody tr.is-selected td:first-child { box-shadow: inset 2.5px 0 0 var(--accent); }
+    /* keyboard-focus accent bar (prototype: declared last, so it also reads
+       over the selected marker and the row-status stripes from @layer theme) */
+    .ro-table tbody tr.kfocus td:first-child { box-shadow: inset 2.5px 0 0 var(--accent); }
 
     /* name cell -- the loud identifier. NEVER truncated. */
     td.cell-name { color: var(--id-color); }
@@ -2836,6 +2845,27 @@
         transition: opacity .2s ease, transform .2s ease; }
     .ro-toast.is-leaving { opacity: 0; transform: translateY(4px); }
     @keyframes ro-toast-in { from { opacity: 0; transform: translateY(6px); } }
+
+    /* ================================================================ "?" KEYBOARD OVERLAY (Unit 18 / D10) */
+    /* The keyboard-map card -- lifted verbatim from the v2 prototype data.css
+       (.kbd-overlay block). Global layout chrome (kbdOverlayC) revealed via
+       `open` on the backdrop; readout.js owns toggle/esc/backdrop-close and
+       the focus trap (the card is the dialog's only focus stop). z-index 210
+       keeps it above the palette (200-tier) like the prototype. */
+    .kbd-overlay { position: fixed; inset: 0; z-index: 210; background: var(--overlay-bg);
+        backdrop-filter: blur(2px); display: none; place-items: center; }
+    .kbd-overlay.open { display: grid; }
+    .kbd-card { width: 480px; background: var(--surface); border: 1px solid var(--border-strong);
+        border-radius: 13px; box-shadow: var(--shadow-pop); padding: 22px 24px 14px; }
+    .kbd-card h3 { font-size: 15px; font-weight: 650; margin: 0 0 14px; }
+    .kbd-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px; }
+    .kbd-grp { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--text-faint); margin: 4px 0 8px; }
+    .kbd-row { display: flex; align-items: center; gap: 7px; padding: 4px 0;
+        font-size: 12.5px; color: var(--text-muted); }
+    .kbd-row span:last-child { margin-left: 2px; }
+    .kbd-foot { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border-soft);
+        font-size: 10.5px; color: var(--text-ghost); text-align: center; }
 
     /* ================================================================ LIST-SPECIFIC CELLS (redesign) */
     /* roles (nodes) -- redesign, canonical name under the .ro-rd content marker */

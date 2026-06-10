@@ -286,6 +286,18 @@ func thClass(colClass string, sorted bool) string {
 	return parts
 }
 
+// ariaSort derives the sorted header's aria-sort value (D23/SPEC §8.6) from
+// the pre-rendered sort icon markup -- the SAME single source the visual
+// direction uses (sortIcon emits `sort-asc` for ascending, the plain chevron
+// for descending), so the announced direction can never drift from the drawn
+// one. Callers gate on Sorted, so this only ever sees a non-empty icon.
+func ariaSort(sortIcon string) string {
+	if strings.Contains(sortIcon, "sort-asc") {
+		return "ascending"
+	}
+	return "descending"
+}
+
 // rowClass keeps the existing row-status stripe class on the body row (carried
 // through from assembly); empty when the row has no status. The redesign uses it
 // only for the selected-row accent, but the class itself stays byte-stable.

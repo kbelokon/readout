@@ -429,7 +429,12 @@ templ resourceTables(d ListData) {
 				}
 				</div><div class="ro-phase-total"><span class="ro-phase-count">{ itoa(table.PhaseRows) }</span>{ " object" }{ pluralSuffix(table.PhaseRows) }{ " · " }{ formatSeconds(d.DurationSeconds) }{ "s" }</div></div>
 		}
-		<div class="ro-table-wrap has-cards"><table class="ro-table"><thead><tr>
+		// The wrap is keyboard-reachable (tabindex) -- required for a scrollable
+		// region anyway -- and carries role="group", which supports the JS-managed
+		// aria-activedescendant that mirrors the j/k row focus (D23/SPEC §8.6:
+		// "j/k focus moves aria-activedescendant"). readout.js writes/clears the
+		// attribute from the identity-keyed focus store after every morph.
+		<div class="ro-table-wrap has-cards" role="group" tabindex="0" aria-label={ table.Kind }><table class="ro-table"><thead><tr>
 			if table.MultiCluster {
 				<th>Cluster</th>
 			}
@@ -443,6 +448,9 @@ templ resourceTables(d ListData) {
 					if col.Hint != "" {
 						data-hint={ col.Hint }
 					}
+					if col.Sorted {
+						aria-sort={ ariaSort(col.SortIcon) }
+					}
 				><a
 					href={ templ.SafeURL(col.SortHref) }
 					if col.PartialHref != "" {
@@ -453,7 +461,12 @@ templ resourceTables(d ListData) {
 				>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
 			}
 			if !table.HideCreated {
-				<th class={ thClass("", table.CreatedSorted) }><a
+				<th
+					class={ thClass("", table.CreatedSorted) }
+					if table.CreatedSorted {
+						aria-sort={ ariaSort(table.CreatedIcon) }
+					}
+				><a
 					href={ templ.SafeURL(table.CreatedHref) }
 					if table.CreatedPartialHref != "" {
 						hx-get={ table.CreatedPartialHref }

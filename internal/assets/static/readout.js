@@ -1971,9 +1971,26 @@ function reapplyRowState() {
     if (!content) {
         return;
     }
+    let focusedRow = null;
     content.querySelectorAll('tr[data-key]').forEach((tr) => {
         tr.classList.toggle('is-selected', rowSelection.has(tr.dataset.key));
-        tr.classList.toggle('kfocus', tr.dataset.key === rowFocusKey);
+        const focused = tr.dataset.key === rowFocusKey;
+        tr.classList.toggle('kfocus', focused);
+        if (focused) {
+            focusedRow = tr;
+        }
+    });
+    // a11y (D23/SPEC §8.6): the table wrap mirrors the focused row's id as
+    // aria-activedescendant (the wrap is the focusable role="group" container
+    // the template renders). Synced HERE -- the single place row state lands in
+    // the DOM -- so the attribute survives every morph exactly like kfocus
+    // does, and clears when the focused row left the fragment.
+    content.querySelectorAll('.ro-table-wrap').forEach((wrap) => {
+        if (focusedRow && focusedRow.id && wrap.contains(focusedRow)) {
+            wrap.setAttribute('aria-activedescendant', focusedRow.id);
+        } else {
+            wrap.removeAttribute('aria-activedescendant');
+        }
     });
 }
 
@@ -2353,6 +2370,200 @@ document.addEventListener('htmx:beforeSwap', (event) => {
 document.addEventListener('htmx:historyRestore', () => {
     reapplyRowState();
     updateBulkBar();
+});
+
+// ---------------------------------------------------------------------------
+// Keyboard row navigation + the "?" keyboard-map overlay (Unit 18 / D10/D23)
+// ---------------------------------------------------------------------------
+// j/k move a single keyboard row focus through the VISIBLE identity rows of
+// the list (single-type pages only by construction: only those rows carry
+// data-key, D1), ⏎ opens the focused row's detail href, "?" toggles the
+// keyboard-map card. Focus is keyed by data-key through the identity store
+// above (window.roRowState.setFocus -> rowFocusKey), so it survives every
+// morph: reapplyRowState re-paints `kfocus` AND mirrors the focused row id
+// into the table wrap's aria-activedescendant after each swap.
+//
+// The gesture keys are INERT while any text-entry surface or overlay owns the
+// keyboard: a focused input/textarea/select (the chips editor's ⏎-commits-a-
+// chip protocol above all -- it must never double as ⏎-opens-a-row), the ⌘K
+// palette, the row context menu, the namespace dropdown, the ⊞ columns
+// popover, and the kbd overlay itself (where only esc/"?" act, and Tab is
+// trapped: the card is the dialog's only stop, so focus cannot escape to the
+// page behind it). Pure delegated DOM listeners -- CSP-clean, survives every
+// swap, read-only floor untouched (⏎ issues a plain GET navigation, the
+// palette/ctxmenu pattern).
+
+// keyboardTargetIsTextEntry: the focused element owns typed characters, so
+// the gesture keys must pass through untouched (j in the filter editor is the
+// letter j, ⏎ commits a chip -- handleFilterInputKeydown owns that protocol).
+function keyboardTargetIsTextEntry(target) {
+    if (!target || target.nodeType !== 1) {
+        return false;
+    }
+    const tag = target.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+}
+
+// keyboardSurfaceBusy: an open palette / context menu / namespace dropdown /
+// columns popover owns the keys (SPEC §8.6: menus and overlays are modal to
+// the keyboard).
+function keyboardSurfaceBusy() {
+    const palette = document.getElementById(PALETTE_ID);
+    if (palette && palette.classList.contains('open')) {
+        return true;
+    }
+    const menu = document.getElementById('ro-ctxmenu');
+    if (menu && menu.classList.contains('is-open')) {
+        return true;
+    }
+    const nsDropdown = document.getElementById('namespace-dropdown');
+    if (nsDropdown && nsDropdown.classList.contains('is-active')) {
+        return true;
+    }
+    return colsPopOpen;
+}
+
+// visibleKeyRows: the identity rows j/k walk, in DOM order, with rows the
+// live free-text filter is hiding excluded (focus lands only on rows the user
+// can see). Reads the DOM (not the row model) deliberately: the rows in the
+// document ARE the navigable surface.
+function visibleKeyRows() {
+    return Array.from(
+        document.querySelectorAll('#resource-list-content tbody tr[data-key]')
+    ).filter((tr) => !tr.classList.contains('ro-row-filtered'));
+}
+
+// moveRowFocus steps the focus key by delta through the visible rows,
+// clamping at both ends (the prototype's j/k semantics: the first j lands on
+// the first row; k at the top stays at the top). Returns true when a row took
+// focus (the caller preventDefaults only then, so j/k on a page with no
+// identity rows keeps every browser default, e.g. Firefox quick-find).
+function moveRowFocus(delta) {
+    const rows = visibleKeyRows();
+    if (rows.length === 0) {
+        return false;
+    }
+    const current = rows.findIndex((tr) => tr.dataset.key === rowFocusKey);
+    const next = Math.max(0, Math.min(rows.length - 1, current + delta));
+    window.roRowState.setFocus(rows[next].dataset.key);
+    rows[next].scrollIntoView({ block: 'nearest' });
+    return true;
+}
+
+// openFocusedRow (⏎): navigate to the focused row's server-resolved open
+// href -- the same data-href the context menu's Open binds (it mirrors the
+// name anchor exactly, namespaces drill-down included). Only acts when the
+// focused row is still present AND visible.
+function openFocusedRow() {
+    if (!rowFocusKey) {
+        return false;
+    }
+    const row = visibleKeyRows().find((tr) => tr.dataset.key === rowFocusKey);
+    if (!row || !row.dataset.href) {
+        return false;
+    }
+    window.location.assign(row.dataset.href);
+    return true;
+}
+
+// --- the "?" keyboard-map overlay (layout chrome, kbdOverlayC) --------------
+// Open/close follow the palette pattern: the `open` class + aria-hidden, with
+// the prior focus remembered so esc lands the keyboard user back where they
+// were. The card (tabindex="-1") takes focus on open; it is the dialog's only
+// focus stop, so the Tab trap in the keydown handler below completes the
+// focus trap.
+let kbdPriorFocus = null;
+
+function kbdOverlayEl() {
+    return document.getElementById('ro-kbd-overlay');
+}
+
+function kbdOverlayOpen() {
+    const overlay = kbdOverlayEl();
+    return !!overlay && overlay.classList.contains('open');
+}
+
+function openKbdOverlay() {
+    const overlay = kbdOverlayEl();
+    if (!overlay) {
+        return;
+    }
+    kbdPriorFocus = document.activeElement;
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    const card = overlay.querySelector('.kbd-card');
+    if (card) {
+        card.focus();
+    }
+}
+
+function closeKbdOverlay() {
+    const overlay = kbdOverlayEl();
+    if (!overlay) {
+        return;
+    }
+    overlay.classList.remove('open');
+    overlay.setAttribute('aria-hidden', 'true');
+    if (kbdPriorFocus && document.contains(kbdPriorFocus)
+        && typeof kbdPriorFocus.focus === 'function') {
+        kbdPriorFocus.focus();
+    }
+    kbdPriorFocus = null;
+}
+
+// A click on the overlay backdrop ITSELF (outside the card) closes it -- the
+// palette's backdrop contract.
+document.addEventListener('click', (event) => {
+    if (event.target.id === 'ro-kbd-overlay') {
+        closeKbdOverlay();
+    }
+});
+
+// THE gesture keydown listener. Runs after the palette listener (registration
+// order) -- that one returns without preventDefault for every key handled
+// here, and the gates below keep the two surfaces disjoint (palette open ->
+// inert here; its input focused -> text-entry gate).
+document.addEventListener('keydown', (event) => {
+    // The kbd overlay is modal: esc and "?" close it, Tab is trapped on the
+    // card (its only focus stop), everything else is inert while open.
+    if (kbdOverlayOpen()) {
+        if (event.key === 'Escape' || event.key === '?') {
+            event.preventDefault();
+            closeKbdOverlay();
+        } else if (event.key === 'Tab') {
+            event.preventDefault();
+        }
+        return;
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+        return; // never hijack a chorded shortcut
+    }
+    if (keyboardTargetIsTextEntry(event.target) || keyboardSurfaceBusy()) {
+        return;
+    }
+    if (event.key === '?') {
+        event.preventDefault();
+        openKbdOverlay();
+        return;
+    }
+    if (event.key === 'j' || event.key === 'k') {
+        if (moveRowFocus(event.key === 'j' ? 1 : -1)) {
+            event.preventDefault();
+        }
+        return;
+    }
+    if (event.key === 'Enter') {
+        // ⏎ opens the focused row -- but never steals the key from a real
+        // control (a focused sort-header link, button, or summary keeps its
+        // native activation; the focusable table wrap is intentionally NOT
+        // excluded -- ⏎ there is the aria-activedescendant pattern).
+        if (event.target.closest && event.target.closest('a, button, summary')) {
+            return;
+        }
+        if (openFocusedRow()) {
+            event.preventDefault();
+        }
+    }
 });
 
 // ---------------------------------------------------------------------------
