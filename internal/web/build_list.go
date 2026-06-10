@@ -1318,19 +1318,22 @@ func filterFieldHint(col *kube.Column) string {
 
 // buildListState classifies a single-cluster whole-list failure into the
 // forbidden state (an apiserver 403 naming the verb/resource/namespace) or the
-// unreachable state (a transport/dial failure that never reached the apiserver
-// -- shown with its REAL error string, never a cute message, Principles §11). It
-// returns nil for any other failure (a missing resource type, a 5xx with a
-// Status), so those keep the existing partial-error banner. The retry is the
+// unreachable state (a transport/dial failure that never reached the apiserver,
+// OR an apiserver 5xx Status -- both shown with the REAL error string in the
+// mono errdetail block, never a cute message, SPEC §1.5/D16). It returns nil
+// for any other failure (a missing resource type, a 4xx Status such as a bad
+// selector), so those keep the existing partial-error banner. The retry is the
 // same list URL (a read-only GET); Back to clusters is /clusters.
 func (s *Server) buildListState(r *http.Request, lc *listContext) *listStateView {
 	err := lc.Errors[0]
 	forbidden := kube.IsForbidden(err)
-	unreachable := !forbidden && !kube.IsNotFound(err) && !kube.IsAPIStatusError(err)
+	apiStatus := kube.IsAPIStatusError(err)
+	unreachable := !forbidden && !kube.IsNotFound(err) && (!apiStatus || kube.IsServerError(err))
 	if !forbidden && !unreachable {
 		return nil
 	}
 	state := &listStateView{
+		Cluster:   lc.Cluster,
 		Verb:      "list",
 		Resource:  lc.Plural,
 		Namespace: lc.Namespace,
@@ -1340,12 +1343,31 @@ func (s *Server) buildListState(r *http.Request, lc *listContext) *listStateView
 	}
 	if forbidden {
 		state.Kind = stateForbidden
+		state.Hint = forbiddenStateHint
 		state.Detail = "403 Forbidden · " + err.Error()
 	} else {
 		state.Kind = stateUnreachable
+		state.Hint = unreachableStateHint(apiStatus)
 		state.Detail = err.Error()
 	}
 	return state
+}
+
+// forbiddenStateHint is the one plain-language line of the forbidden state
+// (prototype VIEW.states copy, D16); the verbatim 403 Status rides below it in
+// the mono errdetail block.
+const forbiddenStateHint = "Your credentials can browse this cluster, but RBAC denies this view."
+
+// unreachableStateHint is the plain-language line of the unreachable state.
+// The prototype copy ("the request never made it") is literal for a transport
+// failure; an apiserver 5xx DID reach the apiserver, so it gets a truthful
+// variant -- the verbatim Status message below carries the real detail either
+// way (SPEC §1.5).
+func unreachableStateHint(apiAnswered bool) string {
+	if apiAnswered {
+		return "The apiserver answered with an error."
+	}
+	return "The request never made it to the apiserver."
 }
 
 // buildCellView resolves one body cell: its render branch, value, classes, and

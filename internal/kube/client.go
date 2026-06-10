@@ -529,8 +529,21 @@ func IsForbidden(err error) bool {
 // back (any HTTP status). A transport-level failure (dial/timeout/no-such-host)
 // is NOT an API status error, so the web layer treats `!IsAPIStatusError` as
 // "unreachable" (the cluster could not be reached at all) and shows the real
-// transport error, while a 5xx WITH a Status stays on the redacted error page.
+// transport error.
 func IsAPIStatusError(err error) bool {
 	var status kerrors.APIStatus
 	return errors.As(err, &status)
+}
+
+// IsServerError reports whether err is an apiserver Status with a 5xx code --
+// the apiserver was reached but failed to serve the request. The web layer
+// folds this into the unreachable whole-list/detail state (D16: the card shows
+// the REAL Status message verbatim); 4xx Statuses (bad selectors, conflicts)
+// keep their existing handling.
+func IsServerError(err error) bool {
+	var status kerrors.APIStatus
+	if !errors.As(err, &status) {
+		return false
+	}
+	return status.Status().Code >= 500
 }

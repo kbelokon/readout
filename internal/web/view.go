@@ -92,10 +92,12 @@ const (
 // "Back to clusters" escape.
 type listStateView struct {
 	Kind      listStateKind
+	Cluster   string // the cluster the failure names ("Can’t reach <cluster>")
 	Verb      string // "list" (the read-only verb that was denied/attempted)
 	Resource  string // the resource plural the request targeted
 	Namespace string // the namespace scope ("" / "_all" rendered as a clause)
-	Detail    string // forbidden: "403 Forbidden · <reason>"; unreachable: the real error
+	Hint      string // the ONE plain-language line under the headline (D16)
+	Detail    string // the verbatim apiserver/transport string for the mono errdetail block
 	RetryHref string // a read-only GET back to this same list URL
 	BackHref  string // "/clusters"
 
@@ -477,11 +479,13 @@ type detailView struct {
 // clusters.
 type detailStateView struct {
 	Kind      listStateKind
+	Cluster   string
 	Verb      string
 	Resource  string
 	Name      string
 	Namespace string
-	Detail    string
+	Hint      string // the ONE plain-language line under the headline (D16)
+	Detail    string // the verbatim apiserver/transport string (mono errdetail)
 	RetryHref string
 	BackHref  string
 }

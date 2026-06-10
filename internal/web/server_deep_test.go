@@ -263,6 +263,10 @@ func TestErrorPageNoClusterRefetch(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx", nil))
+	// A 4xx-backed detail fetch stays on the BARE error page (the D16 state card
+	// captures forbidden/unreachable/5xx only; s.error maps this generic failure
+	// to its 500 page); the invariant under test: that error render must NOT
+	// refetch namespaces against the failed cluster.
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
 	}
@@ -291,7 +295,10 @@ func newErrorPageCountingFakeAPI(t *testing.T, namespaceLists *atomic.Int64) *ht
 	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
 	mux.HandleFunc("/version", fixture("discovery/version.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx", func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "pod backend unavailable", http.StatusInternalServerError)
+		// A 4xx (not 5xx): the D16 state card captures forbidden/unreachable/5xx,
+		// so this failure falls through to the bare s.error page -- the surface
+		// whose no-refetch invariant this test pins.
+		http.Error(w, "pod request rejected", http.StatusBadRequest)
 	})
 	mux.HandleFunc("/api/v1/namespaces", func(w http.ResponseWriter, _ *http.Request) {
 		namespaceLists.Add(1)

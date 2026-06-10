@@ -83,13 +83,17 @@ type EditorChip struct {
 }
 
 // ListState is the resolved whole-list failure state. Kind is "" (no state),
-// "forbidden", or "unreachable". Forbidden names the verb/resource/namespace +
-// 403 in Detail; unreachable carries the REAL transport error string in Detail.
+// "forbidden", or "unreachable". Hint is the ONE plain-language line under the
+// headline; Detail carries the VERBATIM apiserver/transport string for the
+// mono `.errdetail` block (SPEC §1.5). Cluster names the failing cluster in
+// the unreachable headline ("Can’t reach <cluster>").
 type ListState struct {
 	Kind      string
+	Cluster   string
 	Verb      string
 	Resource  string
 	Namespace string
+	Hint      string
 	Detail    string
 	GlyphIcon string // pre-rendered state glyph (raw SVG)
 	RetryHref string
@@ -140,7 +144,6 @@ type TableData struct {
 
 	Rows []TableRow
 
-	EmptyKind  string // Resource.Kind for the empty-state sentence
 	EmptyGlyph string // pre-rendered empty-state glyph (raw SVG, the inbox icon)
 
 	// Empty-state enrichment (rendered only when Rows is empty). EmptyActionHref/

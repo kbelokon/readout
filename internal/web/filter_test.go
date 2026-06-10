@@ -335,12 +335,12 @@ func TestFilterEmptyFilteredStateChips(t *testing.T) {
 	p := get(t, app, "/clusters/test/namespaces/default/pods?f=status:Gone&f=node:zzz", http.StatusOK)
 
 	p.wantAbsent("td.cell-name")
-	p.wantText(".ro-empty-row .ro-empty-lg h3", "No Pod objects match your filters")
-	chips := strings.Join(p.texts(".ro-empty-row .ro-scope .ro-scope-chip"), " | ")
+	p.wantText(".ro-empty-row .ro-empty-lg h3", "No Pods match the active filters")
+	chips := strings.Join(p.texts(".ro-empty-row .ro-empty-lg .ro-empty-chips .ro-scope-chip"), " | ")
 	if !strings.Contains(chips, "status:Gone") || !strings.Contains(chips, "node:zzz") {
 		t.Fatalf("empty-filtered chips %q do not name both f chips", chips)
 	}
-	removeHrefs := p.attrs(".ro-empty-row .ro-scope .ro-scope-chip a.retry", "href")
+	removeHrefs := p.attrs(".ro-empty-row .ro-empty-lg .ro-empty-chips .ro-scope-chip a.chip-x", "href")
 	if !contains(removeHrefs, "/clusters/test/namespaces/default/pods?f=node:zzz") {
 		t.Fatalf("removing the first chip must keep the second raw: %v", removeHrefs)
 	}

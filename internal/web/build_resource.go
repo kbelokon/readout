@@ -164,19 +164,22 @@ func detailNameParts(object *kube.Object) (head, tail, nameTitle string) {
 
 // detailState classifies a detail-page fetch failure into the forbidden state
 // (a 403 naming the verb/resource/namespace) or the unreachable state (a
-// transport/dial failure shown with its REAL error string), returning a
-// state-only detailView the handler renders at 200. It returns nil for any other
-// failure (a NotFound object -> a real 404, a 5xx with a Status, the policy 403),
-// so the caller falls through to s.error and the existing status-code page. The
-// breadcrumb is built from the request path (cluster/namespace/plural/name) so no
-// fetched object is needed -- the fetch is exactly what failed.
+// transport/dial failure or an apiserver 5xx Status, shown with the REAL error
+// string in the mono errdetail block, D16), returning a state-only detailView
+// the handler renders at 200. It returns nil for any other failure (a NotFound
+// object -> a real 404, a 4xx Status, the policy 403), so the caller falls
+// through to s.error and the existing status-code page. The breadcrumb is built
+// from the request path (cluster/namespace/plural/name) so no fetched object is
+// needed -- the fetch is exactly what failed.
 func (s *Server) detailState(r *http.Request, cluster *kube.Cluster, plural, name, namespace, verb string, err error) *detailView {
 	forbidden := kube.IsForbidden(err)
-	unreachable := !forbidden && !kube.IsNotFound(err) && !kube.IsAPIStatusError(err)
+	apiStatus := kube.IsAPIStatusError(err)
+	unreachable := !forbidden && !kube.IsNotFound(err) && (!apiStatus || kube.IsServerError(err))
 	if !forbidden && !unreachable {
 		return nil
 	}
 	state := &detailStateView{
+		Cluster:   cluster.Name,
 		Verb:      verb,
 		Resource:  plural,
 		Name:      name,
@@ -186,9 +189,11 @@ func (s *Server) detailState(r *http.Request, cluster *kube.Cluster, plural, nam
 	}
 	if forbidden {
 		state.Kind = stateForbidden
+		state.Hint = forbiddenStateHint
 		state.Detail = "403 Forbidden · " + err.Error()
 	} else {
 		state.Kind = stateUnreachable
+		state.Hint = unreachableStateHint(apiStatus)
 		state.Detail = err.Error()
 	}
 	title := name + " (" + plural + ")"

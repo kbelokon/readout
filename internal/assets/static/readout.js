@@ -1887,6 +1887,61 @@ document.addEventListener('htmx:afterSwap', (event) => {
 });
 
 // ---------------------------------------------------------------------------
+// Loading skeleton (D16 / SPEC §7.19) -- shown ONLY into an EMPTY swap target
+// ---------------------------------------------------------------------------
+// Every full page is server-rendered with rows already in place, and the morph
+// refresh keeps the last-good rows, so the only valid skeleton moment is a
+// partial request landing in an EMPTY #resource-list-content (no table, no
+// state card -- the first paint of a partial into a blank region). A POPULATED
+// table NEVER gets a skeleton over live rows (the data-never-disappears law);
+// boosted full-page navigations keep the global #ro-progress sweep instead.
+// The rows are cloned from the inert server-baked #ro-skel-template sibling
+// (schema-mirroring column widths, bottom fade) -- pure DOM, CSP-clean.
+
+// True when the list region carries NO content a skeleton could cover: the
+// fragment always renders either a .ro-table (even at zero rows) or the
+// .ro-empty-lg state card, so "neither present" === empty region.
+function listRegionIsEmpty(content) {
+    return !content.querySelector('.ro-table, .ro-empty-lg');
+}
+
+document.addEventListener('htmx:beforeRequest', (event) => {
+    if (!isListRefreshEvent(event)) {
+        return;
+    }
+    const content = document.getElementById('resource-list-content');
+    const template = document.getElementById('ro-skel-template');
+    if (!content || !template || !listRegionIsEmpty(content)) {
+        return;
+    }
+    content.replaceChildren(
+        ...Array.from(template.children, (node) => node.cloneNode(true))
+    );
+});
+
+// A failed request into a skeleton-only region removes the skeleton (htmx does
+// not swap on error), so the region returns to empty instead of shimmering
+// forever. Last-good rows are never involved: the skeleton only ever existed
+// in a region that had none.
+function clearListSkeleton() {
+    const content = document.getElementById('resource-list-content');
+    const skel = content && content.querySelector(':scope > .ro-skel');
+    if (skel) {
+        skel.remove();
+    }
+}
+document.addEventListener('htmx:responseError', (event) => {
+    if (isListRefreshEvent(event)) {
+        clearListSkeleton();
+    }
+});
+document.addEventListener('htmx:sendError', (event) => {
+    if (isListRefreshEvent(event)) {
+        clearListSkeleton();
+    }
+});
+
+// ---------------------------------------------------------------------------
 // Identity-keyed row state (D6): selection + j/k focus survive every morph
 // ---------------------------------------------------------------------------
 // Single-type list rows carry data-key="cluster/ns/name" (and an id derived

@@ -377,6 +377,57 @@ func rolloutClass(state string) string {
 	return "rollout " + state
 }
 
+// skelRowCount is the number of placeholder rows the loading skeleton renders
+// (the prototype loading screen renders 12).
+const skelRowCount = 12
+
+// skelWidths mirrors the VISIBLE column layout of the list's first table into
+// the skeleton cell widths (D16: rows mirror the column schema widths): the
+// optional leading Cluster/Namespace columns, every kube column that survived
+// the hide set, and the synthetic Created column unless hidden. Widths follow
+// the prototype renderSkeleton mapping (identity 220 / age 40 / default 80).
+func skelWidths(d *ListData) []int {
+	if len(d.Tables) == 0 {
+		return nil
+	}
+	t := &d.Tables[0]
+	var widths []int
+	if t.MultiCluster {
+		widths = append(widths, 120)
+	}
+	if d.IsAllNamespaces {
+		widths = append(widths, 80)
+	}
+	for i, col := range t.Columns {
+		widths = append(widths, skelColWidth(col.Name, i))
+	}
+	if !t.HideCreated {
+		widths = append(widths, 40)
+	}
+	return widths
+}
+
+// skelColWidth maps one column to its prototype skeleton width: the first
+// (identity) column is wide, age-shaped columns narrow, everything else the
+// default bar.
+func skelColWidth(name string, index int) int {
+	if index == 0 {
+		return 220
+	}
+	switch name {
+	case "Age", "First Seen", "Last Seen", "Created":
+		return 40
+	}
+	return 80
+}
+
+// skelStyle is the per-cell inline declaration of one skeleton bar: the column
+// width plus the row fade toward the bottom (prototype: 1 - row*0.08, floored
+// well above zero by the 12-row cap).
+func skelStyle(width, row int) string {
+	return fmt.Sprintf("width:%dpx;opacity:%.2f", width, 1.0-float64(row)*0.08)
+}
+
 // warnIcon is the redesign partial-failure banner glyph (lucide triangle-alert),
 // wrapped in the same <svg> shell as the icons package glyphs so it themes via
 // `.ico svg`. A static constant: no runtime-derived data crosses it.
@@ -402,43 +453,44 @@ func emptyColspan(columnCount int, multiCluster, allNamespaces, hideCreated bool
 }
 
 // emptyNamespaceText is the namespace clause inside the empty-state sentence.
-// It returns trusted HTML (the namespace is html-escaped here): `in namespace
-// "<ns>" ` (with a trailing space) when scoped to one namespace, else "".
+// It returns trusted HTML (the namespace is html-escaped here): ` in namespace
+// “<ns>”` (prototype curly quotes) when scoped to one namespace, else "".
 func emptyNamespaceText(namespace string, allNamespaces bool) string {
 	if namespace != "" && !allNamespaces {
-		return `in namespace "` + html.EscapeString(namespace) + `" `
+		return " in namespace “" + html.EscapeString(namespace) + "”"
 	}
 	return ""
 }
 
-// emptyTitle is the full empty-state sentence ("No <Kind> objects <ns-clause>
-// found."), returned as one trusted HTML string so the templ card emits it via a
-// single @templ.Raw -- a text node after @templ.Raw is parsed as that call's
-// children (and templ.Raw drops children), so the sentence must be one piece.
-// kind is html-escaped here; the namespace clause is escaped inside
-// emptyNamespaceText.
-func emptyTitle(kind, namespace string, allNamespaces bool) string {
-	return "No " + html.EscapeString(kind) + " objects " + emptyNamespaceText(namespace, allNamespaces) + "found."
+// emptyTitle is the full plainly-empty sentence per the prototype VIEW.states
+// copy ("No <Kind> found in namespace “<ns>”", D16), returned as one trusted
+// HTML string so the templ card emits it via a single @templ.Raw -- a text node
+// after @templ.Raw is parsed as that call's children (and templ.Raw drops
+// children), so the sentence must be one piece. kindPlural is the pluralized
+// display kind (TableData.Kind, e.g. "Pods"), html-escaped here; the namespace
+// clause is escaped inside emptyNamespaceText.
+func emptyTitle(kindPlural, namespace string, allNamespaces bool) string {
+	return "No " + html.EscapeString(kindPlural) + " found" + emptyNamespaceText(namespace, allNamespaces)
 }
 
-// hintClass is the reason-line class on a state card: `hint` always, plus `mono`
-// when the line carries a real (transport) error string so it renders in the
-// mono face (matching the mockup's `.hint.mono` for the verbatim error).
-func hintClass(mono bool) string {
-	if mono {
-		return "hint mono"
+// emptyGlyphClass is the state-card glyph tile class: bare for the neutral
+// (empty/first-run) tile, plus the warn (forbidden) / err (unreachable) tone.
+func emptyGlyphClass(tone string) string {
+	if tone == "" {
+		return "ro-empty-glyph"
 	}
-	return "hint"
+	return "ro-empty-glyph " + tone
 }
 
-// stateNamespaceClause is the " in namespace "<ns>"" suffix on a forbidden-state
-// title, naming the namespace scope the verb was denied in. Empty for a
-// cluster-scoped or all-namespaces request (no single namespace to name).
+// stateNamespaceClause is the ` in “<ns>”` suffix on a forbidden-state title
+// (prototype copy: `Not allowed to list secrets in “kube-system”`), naming the
+// namespace scope the verb was denied in. Empty for a cluster-scoped or
+// all-namespaces request (no single namespace to name).
 func stateNamespaceClause(namespace string) string {
 	if namespace == "" || namespace == "_all" {
 		return ""
 	}
-	return ` in namespace "` + namespace + `"`
+	return " in “" + namespace + "”"
 }
 
 // ownerLabel is "Owner" for a single owner, "Owners" for more.

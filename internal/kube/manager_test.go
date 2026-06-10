@@ -270,6 +270,30 @@ func TestReloadMissingKubeconfigErrors(t *testing.T) {
 	}
 }
 
+// TestZeroContextKubeconfigStartsEmpty pins the first-run reachability
+// prerequisite (D16/D17): with NO configured source, no in-cluster
+// ServiceAccount, and a $KUBECONFIG that resolves to zero contexts, the manager
+// must come up with an EMPTY cluster set instead of failing NewManager -- a
+// fatal error here exits main before the listener binds, so the first-run
+// screen (and its Re-check GET) could never render.
+func TestZeroContextKubeconfigStartsEmpty(t *testing.T) {
+	t.Setenv("KUBECONFIG", writeKubeconfig(t, map[string]string{}))
+	// Blank the in-cluster env so the SA fallback cannot fire on a CI pod.
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+
+	m, err := NewManager(context.Background(), &appconfig.Config{})
+	if err != nil {
+		t.Fatalf("zero-context kubeconfig must not be a fatal startup error: %v", err)
+	}
+	if got := m.Clusters(); len(got) != 0 {
+		t.Fatalf("expected an empty cluster set, got %#v", got)
+	}
+	if got := m.Broken(); len(got) != 0 {
+		t.Fatalf("zero configured clusters must not surface broken entries: %#v", got)
+	}
+}
+
 // writeKubeconfig writes a kubeconfig with one context per name->server entry
 // (each with its own cluster+user) and returns the path.
 func writeKubeconfig(t *testing.T, contexts map[string]string) string {

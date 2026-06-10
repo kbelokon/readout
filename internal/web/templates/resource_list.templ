@@ -65,12 +65,37 @@ templ ResourceList(d ListPageData) {
 			<div id="resource-list-content" data-live-url="location" hx-target="this" hx-ext="ro-morph" hx-swap="morph" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
 				@ResourceTable(d.List)
 			</div>
+			@listSkeleton(d.List)
 			<div id="ro-bulkbar" hidden></div>
 		} else {
 			<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
 				@ResourceTable(d.List)
 			</div>
 		}
+	</div>
+}
+
+// listSkeleton is the loading-skeleton SOURCE (D16/SPEC §7.19): a hidden,
+// inert block of schema-mirroring placeholder rows -- one `.skel` bar per
+// VISIBLE column (widths from skelWidths), fading toward the bottom. It lives
+// OUTSIDE the #resource-list-content morph target so it survives swaps and is
+// still present when the container is empty. readout.js clones it into the
+// container on htmx:beforeRequest ONLY when the swap target region is EMPTY
+// (no table, no state card -- the first paint of a partial into a blank
+// region); a POPULATED table NEVER gets a skeleton over live rows (the
+// data-never-disappears law) -- slow refreshes keep the last-good rows.
+// Boosted full-page navigations keep the global #ro-progress sweep instead.
+templ listSkeleton(d ListData) {
+	<div id="ro-skel-template" hidden aria-hidden="true">
+		<div class="ro-skel ro-table-wrap">
+			for row := 0; row < skelRowCount; row++ {
+				<div class="skel-row">
+					for _, w := range skelWidths(&d) {
+						<div class="skel" style={ skelStyle(w, row) }></div>
+					}
+				</div>
+			}
+			</div>
 	</div>
 }
 

@@ -2504,6 +2504,7 @@
     .ro-btn-primary:hover { color: var(--accent-on); }
     .ro-btn.quiet { background: var(--surface); color: var(--text-muted); border-color: var(--border); }
     .ro-btn.quiet:hover { color: var(--text); border-color: var(--border-strong); }
+    .ro-btn.sm { height: 28px; padding: 0 10px; font-size: 12px; }
     .ro-btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
 
     .ro-logtabs { display: flex; gap: 2px; margin: 0 0 12px; }
@@ -2643,23 +2644,40 @@
     .ro-rd .ro-pop-form .pop-head { padding-left: 5px; }
     .ro-rd .ro-pop-form .ro-tools-actions { margin-top: 6px; }
 
-    /* big empty state */
+    /* big empty / failure state (prototype VIEW.states markup, D16) */
     .ro-empty-lg { display: flex; flex-direction: column; align-items: center; justify-content: center;
         text-align: center; padding: 72px 24px; }
     .ro-empty-glyph { width: 52px; height: 52px; border-radius: 13px; display: flex; align-items: center;
         justify-content: center; background: var(--surface-2); border: 1px solid var(--border); margin-bottom: 18px; }
     .ro-empty-glyph .ico svg { width: 24px; height: 24px; color: var(--text-faint); }
+    .ro-empty-glyph.err { background: var(--st-err-bg); border-color: transparent; }
+    .ro-empty-glyph.err .ico svg { color: var(--st-err); }
+    .ro-empty-glyph.warn { background: var(--st-warn-bg); border-color: transparent; }
+    .ro-empty-glyph.warn .ico svg { color: var(--st-warn); }
     .ro-empty-lg h3 { font-size: 16px; font-weight: 600; margin: 0 0 6px; color: var(--text); }
-    .ro-empty-lg p { font-size: 13px; color: var(--text-muted); margin: 0 0 4px; max-width: 420px; }
+    .ro-empty-lg p { font-size: 13px; color: var(--text-muted); margin: 0 0 4px; max-width: 460px; }
     .ro-empty-lg .hint { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+    /* the VERBATIM apiserver/transport string (SPEC §1.5): mono, code surface,
+       breaks anywhere -- the real error is never clipped into a cute message */
+    .ro-empty-lg .errdetail { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted);
+        background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+        padding: 8px 12px; margin-top: 10px; max-width: 560px; word-break: break-all; white-space: normal; }
+    .ro-empty-lg .errdetail .note { opacity: .55; }
     .ro-empty-lg .ro-btn { margin-top: 18px; }
     /* State action row (Retry / Back to clusters / Clear filters): a centred row
        of buttons under the empty-state copy. Margin lives here (not per-button) so
        multiple buttons share one top gap. */
     .ro-empty-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
     .ro-empty-actions .ro-btn { margin-top: 0; }
+    /* the empty-FILTERED card's inline active-chips strip (prototype) */
+    .ro-empty-chips { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
     .ro-empty-inline { padding: 36px 20px; text-align: center; color: var(--text-faint);
         font-size: 13px; font-family: var(--font-ui); }
+
+    /* first-run (SPEC §7.2, D17): the instruction screen at zero configured
+       clusters -- the command block reads as a terminal, so it left-aligns
+       inside the centred card */
+    .ro-firstrun .errdetail { text-align: left; }
 
     /* Stale (client-side, D11). readout.js reveals the pre-rendered hidden
        `.ro-stale-banner` and adds `.ro-stale` to #resource-list-content on an
@@ -2670,6 +2688,20 @@
        stale, not gone; the morph that lands fresh rows clears the class. */
     .ro-banner.ro-stale-banner[hidden] { display: none; }
     #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
+
+    /* Loading skeleton (D16 / SPEC §7.19). Rows mirror the visible column
+       widths (inline width per .skel bar, baked server-side in
+       #ro-skel-template) and fade toward the bottom (inline opacity).
+       readout.js clones the rows into #resource-list-content ONLY when the
+       swap target region is empty -- a populated table NEVER gets a skeleton
+       (data never disappears). The shimmer dies under prefers-reduced-motion
+       (the media block at the end of this layer). */
+    .skel-row { display: flex; gap: 14px; padding: var(--row-py) var(--cell-px);
+        border-bottom: 1px solid var(--border-soft); }
+    .skel { height: 11px; border-radius: 4px;
+        background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
+        background-size: 400% 100%; animation: skel-shimmer 1.4s linear infinite; }
+    @keyframes skel-shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
 
     /* ================================================================ MOBILE CARDS (redesign) */
     .ro-cardlist { display: none; flex-direction: column; gap: 8px; }
@@ -2847,6 +2879,7 @@
         .ro-dot.pulse { animation: none; }
         .rep .rep-track i.updating { animation: none; }
         .ro-rd .ro-palette { transition: none; }
+        .skel { animation: none; }
     }
 }
 

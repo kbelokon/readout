@@ -77,14 +77,18 @@ type DetailData struct {
 }
 
 // DetailState is the resolved detail-page failure state, mirroring ListState:
-// Kind is "" / "forbidden" / "unreachable"; Detail names the 403 reason or the
-// REAL transport error string.
+// Kind is "" / "forbidden" / "unreachable"; Hint is the one plain-language
+// line; Detail carries the verbatim 403 reason or the REAL transport error
+// string for the mono `.errdetail` block; Cluster names the failing cluster in
+// the unreachable headline.
 type DetailState struct {
 	Kind      string
+	Cluster   string
 	Verb      string
 	Resource  string
 	Name      string
 	Namespace string
+	Hint      string
 	Detail    string
 	GlyphIcon string
 	RetryHref string

@@ -208,13 +208,19 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 		}), nil
 	}
 	kc, err := discoverKubeconfig(cfg)
-	if err == nil && len(kc) > 0 {
-		return append(out, kc...), nil
-	}
 	if err != nil {
 		return nil, err
 	}
-	return nil, inErr
+	if len(kc) > 0 {
+		return append(out, kc...), nil
+	}
+	// Neither fallback produced a connection: no in-cluster ServiceAccount and
+	// the default/$KUBECONFIG kubeconfig resolves to zero contexts. Zero
+	// configured clusters is a PRESENTABLE state (the first-run screen, D17),
+	// not a fatal startup error -- the server must come up so the screen and its
+	// Re-check GET can render. (It used to return inErr here, which made
+	// NewManager -> web.New -> main exit before binding the listener.)
+	return out, nil
 }
 
 func discoverStatic(cfg *appconfig.Config) []discoveredCluster {

@@ -654,25 +654,25 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 		// same list path).
 		p := get(t, app, "/clusters/test/namespaces/default/pods?filter=zzz-no-such-pod", http.StatusOK)
 		p.wantAbsent("td.cell-name")
-		p.wantText(".ro-empty-row .ro-empty-lg h3", "No Pod objects match your filters")
-		if got := p.text(".ro-empty-row .ro-scope .ro-scope-chip"); !strings.Contains(got, "zzz-no-such-pod") {
+		p.wantText(".ro-empty-row .ro-empty-lg h3", "No Pods match the active filters")
+		if got := p.text(".ro-empty-row .ro-empty-lg .ro-empty-chips .ro-scope-chip"); !strings.Contains(got, "zzz-no-such-pod") {
 			t.Fatalf("empty-filtered chip = %q, want it to name the filter", got)
 		}
 		// The chip ✕ removes just the filter param; Clear filters drops the set.
-		p.wantAttr(".ro-empty-row .ro-scope .ro-scope-chip a.retry", "href", "/clusters/test/namespaces/default/pods")
+		p.wantAttr(".ro-empty-row .ro-empty-lg .ro-empty-chips .ro-scope-chip a.chip-x", "href", "/clusters/test/namespaces/default/pods")
 		p.wantAttr(".ro-empty-row .ro-empty-actions a", "href", "/clusters/test/namespaces/default/pods")
 	})
 
 	t.Run("a genuinely empty list renders the plain empty sentence + broad action", func(t *testing.T) {
-		// Pins the empty-state sentence "No <Kind> objects in namespace "<ns>"
-		// found." verbatim (the redesign .ro-empty-lg in-table state). This guards
-		// the templ empty-state against the @templ.Raw children-drop that would
-		// silently lose the trailing "found." -- a regression the row-bearing facts
-		// cannot see. With no filter active the broad next action ("Show pods across
-		// all namespaces") is offered.
+		// Pins the empty-state sentence `No <Kind> found in namespace “<ns>”`
+		// verbatim (the prototype VIEW.states copy, D16). This guards the templ
+		// empty-state against the @templ.Raw children-drop that would silently lose
+		// the namespace clause -- a regression the row-bearing facts cannot see.
+		// With no filter active the broad next action ("Show pods across all
+		// namespaces") is offered.
 		p := get(t, app, "/clusters/test/namespaces/empty/pods", http.StatusOK)
 		p.wantAbsent("td.cell-name")
-		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-title", `No Pod objects in namespace "empty" found.`)
+		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-title", "No Pods found in namespace “empty”")
 		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-hint", "Nothing to show here yet.")
 		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-actions a", "Show pods across all namespaces")
 	})

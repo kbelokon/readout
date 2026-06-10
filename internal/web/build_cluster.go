@@ -59,6 +59,11 @@ func (s *Server) buildClustersData(r *http.Request, selector, filter string) tem
 		Count:         len(clusters) + len(s.cfg.ExternalClusters),
 		SelectorValue: selector,
 		FilterValue:   filter,
+		// First-run (SPEC §7.2 / D17): ZERO clusters configured anywhere -- no
+		// loaded clusters, no broken ones (a configured-but-broken cluster is a
+		// different failure, not "nothing configured"), and no external links.
+		// The filter/selector never affect this: Count is computed pre-filter.
+		FirstRun: len(clusters) == 0 && len(s.manager.Broken()) == 0 && len(s.cfg.ExternalClusters) == 0,
 	}
 	var labelSelector labels.Selector
 	if strings.TrimSpace(selector) != "" {

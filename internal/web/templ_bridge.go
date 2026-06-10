@@ -178,9 +178,11 @@ func toListState(s *listStateView) templates.ListState {
 	kind, glyph := stateKindAndGlyph(s.Kind)
 	return templates.ListState{
 		Kind:      kind,
+		Cluster:   s.Cluster,
 		Verb:      s.Verb,
 		Resource:  s.Resource,
 		Namespace: s.Namespace,
+		Hint:      s.Hint,
 		Detail:    s.Detail,
 		GlyphIcon: glyph,
 		RetryHref: s.RetryHref,
@@ -216,7 +218,6 @@ func toTableData(t *tableView) templates.TableData {
 		CreatedSorted:      t.CreatedIcon != "",
 		CreatedPartialHref: t.CreatedPartialHref,
 		HideCreated:        t.HideCreated,
-		EmptyKind:          t.Table.Resource.Kind,
 		EmptyGlyph:         icon("inbox"),
 		ClearHref:          t.ClearHref,
 	}
@@ -413,10 +414,12 @@ func toDetailData(v *detailView) templates.DetailData {
 			Name:       v.State.Name,
 			State: templates.DetailState{
 				Kind:      kind,
+				Cluster:   v.State.Cluster,
 				Verb:      v.State.Verb,
 				Resource:  v.State.Resource,
 				Name:      v.State.Name,
 				Namespace: v.State.Namespace,
+				Hint:      v.State.Hint,
 				Detail:    v.State.Detail,
 				GlyphIcon: glyph,
 				RetryHref: v.State.RetryHref,
