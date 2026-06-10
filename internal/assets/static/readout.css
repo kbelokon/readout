@@ -2354,6 +2354,46 @@
     .ro-rd .ro-chips.expanded .more-n { display: none; }
     .ro-rd .ro-chips.expanded .more-less { display: inline; }
 
+    /* ------------------------------------------------ VIRTUALIZATION (Unit 24 / D20)
+       Above ~500 rows the server marks the wrap `.ro-windowed` (it replaces
+       `has-cards`; resource_table.templ owns the threshold) and readout.js
+       windows the tbody: only the viewport's rows render, framed by two
+       `.ro-vspacer` rows whose heights stand in for the off-window rows.
+
+       The fixed-height row law (recorded SPEC deviation): while windowed the
+       events msg clamps to ONE line (full text in its title) and chip strips
+       never wrap -- variable-height rows would break the spacer offset math
+       exactly where virtualization first engages. Below the threshold the
+       full SPEC behavior (msg wrap + in-cell expand) is untouched. */
+
+    /* spacer rows: pure height carriers -- no padding/border (their height is
+       set exactly by JS), no hover tint, and ABOVE ALL no sticky/background
+       from the first-column rules (a colspan spacer cell would otherwise pin
+       a surface-coloured bar over horizontal scrolls). */
+    .ro-table tbody tr.ro-vspacer,
+    .ro-table tbody tr.ro-vspacer:hover { background: none; }
+    .ro-table tbody tr.ro-vspacer > td {
+        padding: 0; border: 0;
+        position: static; background: transparent;
+    }
+    /* the browser's scroll anchoring would fight the spacer-height swaps that
+       windowing performs above the viewport (classic virtualization jitter);
+       anchor selection skips an overflow-anchor:none subtree entirely */
+    .ro-rd .ro-table-wrap.ro-windowed { overflow-anchor: none; }
+    /* readout.js pins the header widths it measured from the FULL render and
+       flips the table to fixed layout, so the window's content can never
+       re-derive column widths scroll-step by scroll-step */
+    .ro-rd .ro-windowed table.ro-table.ro-virtualized { table-layout: fixed; }
+    /* the fixed-height law: one-line msg (title recovers the full text),
+       non-wrapping chip strips, and a static +N (title carries the list) */
+    .ro-rd .ro-windowed td.ro-event-msg {
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        max-width: 520px;
+    }
+    .ro-rd .ro-windowed .ro-chips { flex-wrap: nowrap; }
+    .ro-rd .ro-chip.more.more-static { cursor: help; }
+    .ro-rd .ro-chip.more.more-static:hover { color: var(--text-faint); border-color: var(--border); }
+
     /* events Age second layer ("(first 41h ago)"): faint 11px next to the
        bucket-coloured leading token (SPEC §4 evage). */
     .ro-rd .evage-rest { font-size: 11px; }

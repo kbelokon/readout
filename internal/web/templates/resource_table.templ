@@ -1,5 +1,7 @@
 package templates
 
+import "strings"
+
 // resource_table.templ is the resource-list TABLE fragment (the body of the
 // `.../{plural}/_table` GET partial route AND the inner content of the full
 // list page's #resource-list-content container): per-table title row (count
@@ -377,6 +379,49 @@ const (
 	keysCellMax  = 3
 )
 
+// virtualizeThreshold is the D20 windowing boundary (~500 rows), owned HERE:
+// readout.js engages its virtualizer off the `ro-windowed` wrap class this
+// template emits, so the threshold has exactly one owner. Above it (Unit 24):
+//   - the wrap swaps `has-cards` for `ro-windowed` and the mobile card
+//     projection is NOT emitted (600 hidden .ro-pcard subtrees must not ride
+//     every morph);
+//   - the events msg cell clamps to one line in CSS and carries the full text
+//     in its title (recorded SPEC deviation, the fixed-height law);
+//   - in-cell chip/keys expansion is disabled: the +N renders as a static
+//     chip whose title carries the full list, and the `.xtra` overflow chips
+//     are not emitted at all.
+const virtualizeThreshold = 500
+
+// tableWindowed reports whether a table crosses the windowing threshold.
+func tableWindowed(table TableData) bool { return len(table.Rows) > virtualizeThreshold }
+
+// tableWrapClass picks the wrap modifier: the mobile-card projection marker
+// below the threshold, the D20 `ro-windowed` marker above it.
+func tableWrapClass(windowed bool) string {
+	if windowed {
+		return "ro-table-wrap ro-windowed"
+	}
+	return "ro-table-wrap has-cards"
+}
+
+// chipsTitle / keysTitle render the FULL chip list for the windowed +N's
+// title (D20: expansion disabled while windowed; the title recovers the data).
+func chipsTitle(chips []RowChip) string {
+	parts := make([]string, len(chips))
+	for i, chip := range chips {
+		parts[i] = chip.Key + ":" + chip.Val
+	}
+	return strings.Join(parts, ", ")
+}
+
+func keysTitle(keys []KeyChip) string {
+	parts := make([]string, len(keys))
+	for i, key := range keys {
+		parts[i] = key.Name + " · " + key.Size
+	}
+	return strings.Join(parts, ", ")
+}
+
 // ResourceTable renders the full table fragment (one block per table + the
 // footer + the partial-failure banner). This is what the `_table` partial
 // returns and what the full list page wraps in #resource-list-content.
@@ -434,7 +479,11 @@ templ resourceTables(d ListData) {
 		// aria-activedescendant that mirrors the j/k row focus (D23/SPEC §8.6:
 		// "j/k focus moves aria-activedescendant"). readout.js writes/clears the
 		// attribute from the identity-keyed focus store after every morph.
-		<div class="ro-table-wrap has-cards" role="group" tabindex="0" aria-label={ table.Kind }><table class="ro-table"><thead><tr>
+		// Above the windowing threshold the wrap carries `ro-windowed` instead
+		// of `has-cards` (Unit 24/D20): the virtualizer engages off it, the
+		// fixed-height clamp CSS keys off it, and <760px keeps the table
+		// visible because the card projection below is suppressed.
+		<div class={ tableWrapClass(tableWindowed(table)) } role="group" tabindex="0" aria-label={ table.Kind }><table class="ro-table"><thead><tr>
 			if table.MultiCluster {
 				<th>Cluster</th>
 			}
@@ -498,7 +547,7 @@ templ resourceTables(d ListData) {
 						<td class="cell-ns"><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></td>
 					}
 					for _, cell := range row.Cells {
-						@tableCell(cell)
+						@tableCell(cell, tableWindowed(table))
 					}
 					if !table.HideCreated {
 						<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</td>
@@ -515,7 +564,13 @@ templ resourceTables(d ListData) {
 					</td></tr>
 			}
 			</tbody></table></div>
-		@cardList(d, table)
+		// Card suppression above the windowing threshold (Unit 24/D20): the
+		// server-rendered mobile projection would ride EVERY morph as 600
+		// hidden .ro-pcard subtrees. Below the threshold the card layer is
+		// unchanged (D22).
+		if !tableWindowed(table) {
+			@cardList(d, table)
+		}
 	}
 	<div class="ro-table-meta">
 		if d.AllNamespacesHref != "" {
@@ -538,7 +593,13 @@ templ resourceTables(d ListData) {
 // A middle-truncated name (head > 42 chars, SPEC §4.2) renders its truncated
 // head with the FULL name in the link's title; a short name keeps the exact
 // v1 markup (bare value when there is no hash tail).
-templ tableCell(cell TableCell) {
+//
+// windowed (Unit 24/D20, true above the virtualization threshold) flips the
+// fixed-height variants: the events msg cell gains a full-text title (CSS
+// clamps it to one line off the wrap's ro-windowed class) and the chip/keys
+// strips render their +N as a static title-carrying chip instead of the
+// in-cell expand.
+templ tableCell(cell TableCell, windowed bool) {
 	if cell.Kind == CellName {
 		<td class="cell-name"><a
 			href={ templ.SafeURL(cell.Href) }
@@ -609,7 +670,7 @@ templ tableCell(cell TableCell) {
 			if len(cell.Chips) == 0 {
 				<span class="faint">—</span>
 			} else {
-				@chipsStrip(cell.Chips)
+				@chipsStrip(cell.Chips, windowed)
 			}
 			</td>
 	} else if cell.Kind == CellPending {
@@ -665,7 +726,7 @@ templ tableCell(cell TableCell) {
 			if len(cell.Keys) == 0 {
 				<span class="faint">—</span>
 			} else {
-				@keysChips(cell.Keys)
+				@keysChips(cell.Keys, windowed)
 			}
 			</td>
 	} else if cell.Kind == CellCount {
@@ -683,7 +744,15 @@ templ tableCell(cell TableCell) {
 			}
 			</td>
 	} else if cell.Kind == CellMsg {
-		<td class="ro-event-msg">{ cell.Value }</td>
+		// While windowed the CSS clamps the msg to ONE line (the D20
+		// fixed-height law); the title carries the full text so it stays
+		// recoverable (§1.4). Below the threshold: full wrap, no title.
+		<td
+			class="ro-event-msg"
+			if windowed {
+				title={ cell.Value }
+			}
+		>{ cell.Value }</td>
 	} else {
 		<td class={ cellTdClass(cell.Class, cell.ColClass) } title={ cell.Title }>
 			switch cell.Kind {
@@ -845,7 +914,9 @@ templ pcardCell(cell TableCell) {
 			if len(cell.Chips) == 0 {
 				<span class="faint">—</span>
 			} else {
-				@chipsStrip(cell.Chips)
+				// cards exist only below the windowing threshold, so the
+				// in-cell expand machinery always applies here
+				@chipsStrip(cell.Chips, false)
 			}
 		case CellPending:
 			if cell.Pulse {
@@ -880,7 +951,7 @@ templ pcardCell(cell TableCell) {
 			if len(cell.Keys) == 0 {
 				<span class="faint">—</span>
 			} else {
-				@keysChips(cell.Keys)
+				@keysChips(cell.Keys, false)
 			}
 		case CellCount:
 			<span class={ cell.Class }>{ "×" + cell.Value }</span>
@@ -1017,13 +1088,24 @@ templ rowChip(chip RowChip, extra bool) {
 // button toggles the expansion IN-CELL (its text flips to "less" via the
 // `.more-n`/`.more-less` CSS swap). Callers branch the empty case ("—")
 // themselves.
-templ chipsStrip(chips []RowChip) {
+//
+// While windowed (Unit 24/D20) expansion is DISABLED -- expanding a strip
+// in-cell would break the fixed row height exactly where virtualization
+// engages -- so the overflow chips are not emitted at all and the +N renders
+// static with the full list in its title.
+templ chipsStrip(chips []RowChip, windowed bool) {
 	<div class="ro-chips">
 		for ci, chip := range chips {
-			@rowChip(chip, ci >= chipsCellMax)
+			if !windowed || ci < chipsCellMax {
+				@rowChip(chip, !windowed && ci >= chipsCellMax)
+			}
 		}
 		if len(chips) > chipsCellMax {
-			@moreChip(len(chips)-chipsCellMax, "")
+			if windowed {
+				@moreChipStatic(len(chips)-chipsCellMax, "", chipsTitle(chips))
+			} else {
+				@moreChip(len(chips)-chipsCellMax, "")
+			}
 		}
 	</div>
 }
@@ -1032,14 +1114,21 @@ templ chipsStrip(chips []RowChip) {
 // `name · size` chip per key (name firm `.cv`, size faint `.ck`), the first
 // keysCellMax shown, the rest behind the `+N keys` expand -- the SAME
 // `.xtra`/`.expanded` machinery the label chips use. Secret VALUES are absent
-// by construction: KeyChip carries only the key name + byte size.
-templ keysChips(keys []KeyChip) {
+// by construction: KeyChip carries only the key name + byte size. The
+// windowed flag flattens the overflow exactly like chipsStrip above.
+templ keysChips(keys []KeyChip, windowed bool) {
 	<div class="ro-chips">
 		for ki, key := range keys {
-			<span class={ chipClass(ki >= keysCellMax) }><span class="cv">{ key.Name }</span><span class="cs">·</span><span class="ck">{ key.Size }</span></span>
+			if !windowed || ki < keysCellMax {
+				<span class={ chipClass(!windowed && ki >= keysCellMax) }><span class="cv">{ key.Name }</span><span class="cs">·</span><span class="ck">{ key.Size }</span></span>
+			}
 		}
 		if len(keys) > keysCellMax {
-			@moreChip(len(keys)-keysCellMax, " keys")
+			if windowed {
+				@moreChipStatic(len(keys)-keysCellMax, " keys", keysTitle(keys))
+			} else {
+				@moreChip(len(keys)-keysCellMax, " keys")
+			}
 		}
 	</div>
 }
@@ -1052,6 +1141,14 @@ templ keysChips(keys []KeyChip) {
 // flips it with the class).
 templ moreChip(n int, suffix string) {
 	<button type="button" class="ro-chip more" data-more aria-expanded="false"><span class="more-n">{ "+" + itoa(n) + suffix }</span><span class="more-less">less</span></button>
+}
+
+// moreChipStatic is the WINDOWED overflow chip (Unit 24/D20): no data-more
+// hook (the delegated expand handler can never match it -- expansion is
+// disabled by construction, not by suppression), no button semantics; the
+// full chip list rides the title instead.
+templ moreChipStatic(n int, suffix string, full string) {
+	<span class="ro-chip more more-static" title={ full }>{ "+" + itoa(n) + suffix }</span>
 }
 
 // filterBar renders the Filters v2 chips editor (D7): the `.ro-tools-filter`

@@ -535,6 +535,13 @@ func seedStore() (*store, error) {
 	}
 	st.lists["/api/v1/nodes"] = nodes
 
+	// The "big" namespace (Unit 24 / D20): 600-row pods + events Tables,
+	// generated in bigfixtures.go but ordinary store state like every other
+	// fixture -- the windowing e2e matrix (tick-while-windowed, sort, clamp,
+	// out-of-window free text) runs on plain LIST responses, no injection.
+	st.lists["/api/v1/namespaces/big/pods"] = &listState{table: bigPodsTable()}
+	st.lists["/api/v1/namespaces/big/events"] = &listState{table: bigEventsTable()}
+
 	podMetrics, err := newListState("", "data/metrics_pods_list.json")
 	if err != nil {
 		return nil, err
