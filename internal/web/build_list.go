@@ -164,6 +164,35 @@ func (s *Server) clusterTables(r *http.Request, client *kube.Client, cluster *ku
 	return clusterTableResult{tables: tables, colVis: colVis, errs: errs}
 }
 
+// streamListContext wraps ONE cluster's pristine snapshot table into the same
+// listContext shape the `_table` partial renders from (D19): cluster tags,
+// then the full applyTableOptions pass — decorations, hidecols, the legacy
+// filter params AND the `?f=` chips, sort — exactly like clusterTables, so
+// the pushed fragment is byte-shaped like a `_table` response and morphs
+// cleanly. The ?join=metrics columns are fed from the stream's cached 30s
+// sub-poll (metricsUsage) instead of a per-push live fetch. The snapshot
+// arrives as a render clone; every mutation this pass makes stays in it.
+func (s *Server) streamListContext(r *http.Request, client *kube.Client, cluster string, table *kube.Table, metricsUsage map[string][2]float64) listContext {
+	start := s.clock()
+	namespace := r.PathValue("namespace")
+	isAllNamespaces := namespace == kube.AllNamespaces
+	table.Clusters = []string{cluster}
+	for i := range table.Rows {
+		table.Rows[i].Cluster = cluster
+	}
+	vis := s.applyTableOptionsWithUsage(r, client, table, namespace, isAllNamespaces, metricsUsage)
+	return listContext{
+		Cluster:         cluster,
+		Namespace:       namespace,
+		Plural:          r.PathValue("plural"),
+		IsAllNamespaces: isAllNamespaces,
+		ClusterCount:    1,
+		Tables:          []kube.Table{*table},
+		ColVis:          map[string][]columnVis{table.Resource.Plural: vis},
+		Duration:        s.clock().Sub(start),
+	}
+}
+
 // unionNamespacedResourceTypes resolves the sorted union of namespaced resource
 // plurals across the clusters (the `_all`-namespaces case). The per-cluster
 // discovery fans out concurrently; the result is a set then sort.Strings, so it
@@ -200,6 +229,16 @@ func (s *Server) unionNamespacedResourceTypes(r *http.Request, clusters []*kube.
 }
 
 func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool) []columnVis {
+	return s.applyTableOptionsWithUsage(r, client, table, namespace, allNamespaces, nil)
+}
+
+// applyTableOptionsWithUsage is applyTableOptions with an optional pre-fetched
+// metrics overlay: a non-nil metricsUsage feeds the ?join=metrics columns
+// instead of a live metrics fetch. The Live stream (D19) renders pushes at up
+// to ~3/s and refreshes usage on its own 30s sub-poll, so its renders must
+// never re-list the metrics API; everything else passes nil and keeps the
+// per-request fetch.
+func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, metricsUsage map[string][2]float64) []columnVis {
 	q := r.URL.Query()
 	// D9 cookie fill: the ro_prefs colvis/sort prefs stand in for ABSENT URL
 	// params (URL always wins; single-type pages only; render-only -- r.URL is
@@ -266,7 +305,11 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 		decorateEventColumns(table)
 	}
 	if q.Get("join") == "metrics" && (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") {
-		s.joinMetrics(r.Context(), client, table, namespace, allNamespaces, q.Get("selector"))
+		usage := metricsUsage
+		if usage == nil {
+			usage = s.fetchMetricsUsage(r.Context(), client, table.Resource.Namespaced, namespace, allNamespaces, q.Get("selector"))
+		}
+		applyMetricsUsage(table, usage)
 	}
 	custom := first(q.Get("customcols"), q.Get("custom-columns"), s.cfg.DefaultCustomColumns[table.Resource.Plural])
 	if custom != "" {
@@ -407,17 +450,24 @@ func mergeColumnVis(left, right []columnVis) []columnVis {
 }
 
 func (s *Server) joinMetrics(ctx context.Context, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, labelSelector string) {
-	table.Columns = append(table.Columns, kube.Column{Name: "CPU Usage"}, kube.Column{Name: "Memory Usage"})
+	applyMetricsUsage(table, s.fetchMetricsUsage(ctx, client, table.Resource.Namespaced, namespace, allNamespaces, labelSelector))
+}
+
+// fetchMetricsUsage resolves the metrics.k8s.io usage overlay for a pods or
+// nodes scope: "namespace/name" → [cpu cores, memory bytes], decoded through
+// kube.MetricsUsage (the typed quantity seam). nil when discovery or the
+// metrics LIST fails — applyMetricsUsage then writes the zero placeholders,
+// preserving the old joinMetrics failure shape. Split from the column apply
+// so the Live stream (D19) can refresh usage on its own 30s sub-poll instead
+// of re-fetching per push.
+func (s *Server) fetchMetricsUsage(ctx context.Context, client *kube.Client, namespaced bool, namespace string, allNamespaces bool, labelSelector string) map[string][2]float64 {
 	metricsKind := "NodeMetrics"
-	if table.Resource.Namespaced {
+	if namespaced {
 		metricsKind = "PodMetrics"
 	}
-	rt, err := client.FindResourceByKind(ctx, "metrics.k8s.io/v1beta1", metricsKind, table.Resource.Namespaced)
+	rt, err := client.FindResourceByKind(ctx, "metrics.k8s.io/v1beta1", metricsKind, namespaced)
 	if err != nil {
-		for i := range table.Rows {
-			table.Rows[i].Cells = append(table.Rows[i].Cells, 0, 0)
-		}
-		return
+		return nil
 	}
 	listNS := namespace
 	if allNamespaces {
@@ -425,24 +475,22 @@ func (s *Server) joinMetrics(ctx context.Context, client *kube.Client, table *ku
 	}
 	list, err := client.List(ctx, &rt, kube.ListOptions{Namespace: listNS, LabelSelector: labelSelector})
 	if err != nil {
-		// The CPU/Memory columns were appended up front; if the metrics LIST call
-		// fails AFTER discovery succeeded, every row must still get its two
-		// placeholder cells, or the rows are short two cells and the table renders
-		// ragged (column count > row cell count). Append the "metrics unknown" zero
-		// placeholders so column/row cell counts always match. Never blank or crash.
-		for i := range table.Rows {
-			table.Rows[i].Cells = append(table.Rows[i].Cells, 0, 0)
-		}
-		return
+		return nil
 	}
 	usage := map[string][2]float64{}
 	for _, item := range list.Items {
-		// kube.MetricsUsage decodes the metrics item (Pod or Node) typed and
-		// sums its cpu (cores) / memory (bytes) via resource.Quantity — the seam
-		// that replaced the hand-rolled quantity parser.
 		key, cpu, mem := kube.MetricsUsage(item.Object)
 		usage[key] = [2]float64{cpu, mem}
 	}
+	return usage
+}
+
+// applyMetricsUsage appends the CPU/Memory Usage columns and EVERY row's two
+// usage cells from the overlay. A row without metrics — and every row when
+// the fetch failed (nil map) — gets the "metrics unknown" zero placeholders,
+// so column/row cell counts always match and the table never renders ragged.
+func applyMetricsUsage(table *kube.Table, usage map[string][2]float64) {
+	table.Columns = append(table.Columns, kube.Column{Name: "CPU Usage"}, kube.Column{Name: "Memory Usage"})
 	for i := range table.Rows {
 		key := nestedString(table.Rows[i].Object, "metadata", "namespace") + "/" + nestedString(table.Rows[i].Object, "metadata", "name")
 		value := usage[key]

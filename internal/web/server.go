@@ -46,6 +46,17 @@ type Server struct {
 	// each sidebar entry points at, TTL-invalidated against the s.now clock.
 	// The zero value is ready; no constructor wiring needed.
 	counts countCache
+
+	// streamSlots caps concurrent Live streams (D19): every open `_stream`
+	// handler holds one slot for its whole lifetime; when the channel is full
+	// the next stream gets 429 BEFORE any SSE headers. The slot releases on
+	// every handler exit path (deferred at acquisition).
+	streamSlots chan struct{}
+
+	// shutdownCh mirrors the New() context's Done channel: when the process
+	// is shutting down, open Live streams emit `event: ro-terminal` (reason
+	// "shutdown") and close instead of dying mid-frame (D19).
+	shutdownCh <-chan struct{}
 }
 
 var withBearerClient = func(client *kube.Client, token string) (*kube.Client, error) {
@@ -82,6 +93,8 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		sessions:           sessions,
 		passthroughClients: kube.NewPassthroughClientCache(0, 0),
 		now:                time.Now,
+		streamSlots:        make(chan struct{}, streamCapMax),
+		shutdownCh:         ctx.Done(),
 	}
 	s.routes()
 	s.warnMissingSessionSecret()
@@ -127,6 +140,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /clusters/{cluster}/namespaces/{namespace}/_resource-types", s.namespacedResourceTypes)
 	s.mux.HandleFunc("GET /clusters/{cluster}/{plural}/_table", s.resourceListPartial)
 	s.mux.HandleFunc("GET /clusters/{cluster}/namespaces/{namespace}/{plural}/_table", s.resourceListPartial)
+	s.mux.HandleFunc("GET /clusters/{cluster}/{plural}/_stream", s.resourceStream)
+	s.mux.HandleFunc("GET /clusters/{cluster}/namespaces/{namespace}/{plural}/_stream", s.resourceStream)
 	s.mux.HandleFunc("GET /clusters/{cluster}/namespaces/{namespace}/{plural}/{name}/logs", s.resourceLogs)
 	s.mux.HandleFunc("GET /clusters/{cluster}/{plural}/{name}", s.resourceView)
 	s.mux.HandleFunc("GET /clusters/{cluster}/namespaces/{namespace}/{plural}/{name}", s.resourceView)
