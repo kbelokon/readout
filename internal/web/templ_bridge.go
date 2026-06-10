@@ -314,6 +314,10 @@ func toTableData(t *tableView) templates.TableData {
 				Roles:        cell.Roles,
 				RepNum:       cell.RepNum,
 				RolloutState: cell.RolloutState,
+				More:         cell.More,
+				EvKind:       cell.EvKind,
+				EvName:       cell.EvName,
+				EvAgeRest:    cell.EvAgeRest,
 			}
 			for _, cond := range cell.Conds {
 				tc.Conds = append(tc.Conds, templates.Cond{Name: cond.Name, Tone: cond.Tone})
@@ -324,8 +328,23 @@ func toTableData(t *tableView) templates.TableData {
 			for _, chip := range cell.Chips {
 				tc.Chips = append(tc.Chips, templates.RowChip{Key: chip.Key, Val: chip.Val, Href: chip.Href})
 			}
-			if cell.Kind == cellRollout {
+			for _, key := range cell.Keys {
+				tc.Keys = append(tc.Keys, templates.KeyChip{Name: key.Name, Size: key.Size})
+			}
+			switch cell.Kind {
+			case cellRollout:
 				tc.RolloutIcon = icon(rolloutIconName(cell.RolloutState))
+			case cellTLS:
+				// The earned-green lock (SPEC §4.13), pre-rendered only for a
+				// terminated cell (the "—" fallback carries no icon).
+				if cell.Value != "" {
+					tc.CellIcon = icon("lock")
+				}
+			case cellEvObj:
+				// The events Object kind icon: the same 3-tier resolver every
+				// kind surface uses (group unknown on an event ref -> monogram
+				// hue keys on the kind, exactly like the reference kindIcon).
+				tc.CellIcon = string(icons.KindIcon(cell.EvKind, "", false, ""))
 			}
 			tr.Cells = append(tr.Cells, tc)
 		}

@@ -973,6 +973,13 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 	case colName == "Name":
 		cv.Kind = cellName
 		cv.NameHead, cv.NameTail = splitObjectName(table.Resource.Plural, value)
+		// SPEC §4.2 middle truncation: a head longer than 42 chars displays as
+		// `first26…last12` with the FULL name in the tooltip. The hash tail is
+		// never touched, so a cron pod's job/pod suffix stays unique on screen.
+		if display, truncated := MiddleTruncate(cv.NameHead, nameHeadMax, nameHeadLead, nameHeadTrail); truncated {
+			cv.NameHead = display
+			cv.Title = value
+		}
 		href := resourceHref(row.Cluster, &table.Resource, ns, name)
 		if table.Resource.Plural == "namespaces" {
 			href = fmt.Sprintf("/clusters/%s/namespaces/%s/pods", url.PathEscape(row.Cluster), url.PathEscape(name))
@@ -1055,6 +1062,10 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cv.Kind = cellRestarts
 		cv.Value, cv.Ago = splitRestarts(value)
 		cv.Tone = restartsTone(cv.Value)
+		// SPEC §4.5: the restart count gets a thousands separator (1047 ->
+		// 1,047). Applied after the tone (which keys on the raw "0") and safe
+		// for any non-numeric cell (groupThousands passes those through).
+		cv.Value = groupThousands(cv.Value)
 	default:
 		cv.Kind = cellPlain
 		if isSecondaryTextColumn(colName) {
@@ -1069,6 +1080,161 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		}
 	}
 	return cv
+}
+
+// ---------------------------------------------------------------------------
+// SPEC §4 cookbook cell constructors (Unit 10). Each builds the resolved
+// cellView for one corner-case cell type over plain data; the kind-specific
+// schema decorators that read row objects and CALL these land with the
+// services/ingress/configmap/secret/cronjob/job columns (Unit 11) and the
+// events columns (Unit 12). Display-only: the kube.Table cell keeps its raw
+// value for sort/filter/TSV.
+// ---------------------------------------------------------------------------
+
+// portsCellMax / hostsCellMax / keysCellMax / chipsCellMax are the SPEC §4
+// in-cell overflow thresholds: 2 ports, 1 host, 3 data keys, 2 label/selector
+// chips shown before the faint +N (ports/hosts) or the +N expand button
+// (keys/chips).
+const (
+	portsCellMax = 2
+	hostsCellMax = 1
+	keysCellMax  = 3
+	chipsCellMax = 2
+)
+
+// pendingCellView resolves a service External-IP / ingress Address cell (SPEC
+// §4.12): empty -> the faint `<none>`, the literal `<pending>` -> an amber
+// PULSING dot + the word "pending" (an in-flight state, law §1.3), anything
+// else -> the plain address.
+func pendingCellView(value string) cellView {
+	cv := cellView{Kind: cellPending, Value: value}
+	if value == "<pending>" {
+		cv.Value = "pending"
+		cv.Tone = "warn"
+		cv.Pulse = true
+	}
+	return cv
+}
+
+// portsCellView resolves a service Ports cell (SPEC §4.11): the first 2 ports
+// joined ", ", a faint "+N" for the rest, and the FULL comma-joined list in the
+// tooltip. No ports -> the muted "—" (empty Value).
+func portsCellView(ports []string) cellView {
+	cv := cellView{Kind: cellPorts}
+	if len(ports) == 0 {
+		return cv
+	}
+	shown := ports
+	if len(ports) > portsCellMax {
+		shown = ports[:portsCellMax]
+		cv.More = "+" + strconv.Itoa(len(ports)-portsCellMax)
+	}
+	cv.Value = strings.Join(shown, ", ")
+	cv.Title = strings.Join(ports, ", ")
+	return cv
+}
+
+// hostsCellView resolves an ingress Hosts cell (SPEC §4.11): the first host +
+// a faint "+N hosts", with the full newline-joined list in the tooltip. No
+// hosts -> the muted "—" (empty Value).
+func hostsCellView(hosts []string) cellView {
+	cv := cellView{Kind: cellHosts}
+	if len(hosts) == 0 {
+		return cv
+	}
+	cv.Value = hosts[0]
+	if len(hosts) > hostsCellMax {
+		cv.More = "+" + strconv.Itoa(len(hosts)-hostsCellMax) + " hosts"
+		cv.Title = strings.Join(hosts, "\n")
+	}
+	return cv
+}
+
+// tlsCellView resolves an ingress TLS cell (SPEC §4.13): the green lock +
+// "tls" ONLY when TLS is terminated (an EARNED green: live protection, D3),
+// else the muted "—".
+func tlsCellView(terminated bool) cellView {
+	cv := cellView{Kind: cellTLS}
+	if terminated {
+		cv.Value = "tls"
+		cv.Tone = "ok"
+	}
+	return cv
+}
+
+// lastRunCellView resolves a cronjob Last Schedule cell (SPEC §4.14): the
+// age-bucket colour (the value is already a kubectl compressed duration) +
+// a " ago" suffix; a cronjob that never ran -> the faint `<never>` (empty
+// Value).
+func lastRunCellView(value string) cellView {
+	cv := cellView{Kind: cellLastRun}
+	if value == "" {
+		return cv
+	}
+	cv.Value = value + " ago"
+	cv.Class = durationAgeClass(value)
+	return cv
+}
+
+// keysCellView resolves a configmap/secret Data cell (SPEC §4.10): one
+// `name · size` chip per key, the first keysCellMax shown, the rest behind the
+// `+N keys` in-cell expand. The keyChipView carries ONLY the key name + byte
+// size -- secret values are structurally absent from the view model. Empty
+// data -> the muted "—".
+func keysCellView(keys []keyChipView) cellView {
+	return cellView{Kind: cellKeys, Keys: keys}
+}
+
+// countCellView resolves an events Count cell (SPEC §4.15): `×N` with a
+// thousands separator; ≥20 reads chronic (the amber .restarts.some ink), a
+// 0/1 count fades. The class strings are final span classes lifted from the
+// reference countCell.
+func countCellView(n int) cellView {
+	cv := cellView{Kind: cellCount, Value: groupThousands(strconv.Itoa(n))}
+	switch {
+	case n >= 20:
+		cv.Class = "restarts some"
+	case n > 1:
+		cv.Class = ""
+	default:
+		cv.Class = "faint"
+	}
+	return cv
+}
+
+// evObjCellView resolves an events Object cell (SPEC §4 evobj): the kind icon
+// (pre-rendered in the bridge) + the faint "Kind/" prefix + the 20…8
+// middle-truncated object name, full name in the tooltip when truncated
+// (SPEC §4.2 -- the truncation rule beats the reference DOM, which dropped the
+// tooltip).
+func evObjCellView(kind, name string) cellView {
+	cv := cellView{Kind: cellEvObj, Value: name, EvKind: kind, EvName: name}
+	if display, truncated := MiddleTruncate(name, evObjNameMax, evObjLead, evObjTrail); truncated {
+		cv.EvName = display
+		cv.Title = name
+	}
+	return cv
+}
+
+// evAgeCellView resolves an events Age cell (SPEC §4 evage): the leading age
+// token carries the age-bucket colour; any remainder ("(first 41h ago)")
+// renders as the faint 11px second layer.
+func evAgeCellView(value string) cellView {
+	cv := cellView{Kind: cellEvAge}
+	first, rest, _ := strings.Cut(strings.TrimSpace(value), " ")
+	cv.Value = first
+	cv.EvAgeRest = strings.TrimSpace(rest)
+	if first != "" {
+		cv.Class = durationAgeClass(first)
+	}
+	return cv
+}
+
+// msgCellView resolves an events Message cell (SPEC §4.16): the ONLY wrapping
+// column in the system (td.ro-event-msg, max-width 520px in CSS). The value is
+// plain text; templ escapes it at render.
+func msgCellView(value string) cellView {
+	return cellView{Kind: cellMsg, Value: value}
 }
 
 // secondaryTextColumns are the recognized k8s Table columns whose value is long

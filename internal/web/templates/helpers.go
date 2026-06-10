@@ -245,6 +245,16 @@ func restartsClassRD(tone string) string {
 	return "restarts " + tone
 }
 
+// chipClass is the label/data chip class: `ro-chip`, plus the `.xtra` marker
+// on a chip past the in-cell overflow threshold -- hidden by CSS until its
+// `.ro-chips` strip gains `.expanded` (SPEC §4.9/§4.10).
+func chipClass(extra bool) string {
+	if extra {
+		return "ro-chip xtra"
+	}
+	return "ro-chip"
+}
+
 // thClass is the table header class: the kube column class (e.g. "num" for a
 // numeric column) plus the redesign `sorted` modifier on the active sort column.
 func thClass(colClass string, sorted bool) string {

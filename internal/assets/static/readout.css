@@ -2282,6 +2282,27 @@
     .ro-rd .ro-table-wrap .ro-chips { max-width: 34rem; }
     .ro-rd .ro-table-wrap .ro-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 
+    /* in-cell +N overflow (SPEC §4.9 label/selector chips, §4.10 data keys):
+       chips past the threshold carry `.xtra` and stay hidden until the strip
+       gains `.expanded` (toggled by the delegated readout.js click on the
+       `.ro-chip.more[data-more]` button -- no inline handlers under the CSP).
+       The button face swaps `+N` <-> "less" purely in CSS via .more-n/.more-less.
+       UNIT-24 HOOK: `.expanded` is set ONLY by the user toggle, so a parent
+       scope can disable in-cell expansion under virtualization by hiding the
+       button (e.g. `.ro-rd .ro-windowed .ro-chip.more { display: none; }`) --
+       no JS change needed. */
+    .ro-rd .ro-chip.more { color: var(--text-faint); cursor: pointer; }
+    .ro-rd .ro-chip.more:hover { color: var(--text-muted); border-color: var(--border-strong); }
+    .ro-rd .ro-chips .xtra { display: none; }
+    .ro-rd .ro-chips.expanded .xtra { display: inline-flex; }
+    .ro-rd .ro-chip.more .more-less { display: none; }
+    .ro-rd .ro-chips.expanded .more-n { display: none; }
+    .ro-rd .ro-chips.expanded .more-less { display: inline; }
+
+    /* events Age second layer ("(first 41h ago)"): faint 11px next to the
+       bucket-coloured leading token (SPEC §4 evage). */
+    .ro-rd .evage-rest { font-size: 11px; }
+
     /* ---------------------------------------------------------------- ICON SYSTEM
        .ico=curated lucide glyph; .kind-tile=monogram (hue from API group);
        .kind-img / .kind-emoji=operator override. ~16px sidebar slot. */

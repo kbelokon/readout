@@ -262,11 +262,11 @@ type TableCell struct {
 	Tone     string // status-dot / cell-status tone (ok/warn/err/info/mute)
 	Ratio    string // ready ratio tone (full/partial/zero)
 	Pulse    bool   // transient status -> .ro-dot.pulse
-	NameHead string // bright workload prefix (sticky name cell)
-	NameTail string // muted hash suffix (NameHead+NameTail == Value)
+	NameHead string // bright workload prefix (sticky name cell); middle-truncated past 42 chars (full name then in Title)
+	NameTail string // muted hash suffix -- NEVER truncated
 	Ago      string // optional "(… ago)" suffix on a restarts cell
 	Trunc    bool   // secondary free-text cell: truncate with Title tooltip
-	Title    string // full-value tooltip (truncated or age cell)
+	Title    string // full-value tooltip (truncated, age, ports/hosts, evobj cells)
 
 	CapBucket string // node capacity bar bucket (lo/mid/hi); "" -> no colour fill
 	CapPct    int    // node capacity bar fill width %; 0 -> empty bar
@@ -279,7 +279,22 @@ type TableCell struct {
 	RolloutState string       // deployment rollout state (done/prog/paused)
 	RolloutIcon  string       // pre-rendered rollout glyph (raw SVG, themed by state colour)
 
-	Chips []RowChip // namespace label chips (empty -> muted "—")
+	Chips []RowChip // label/selector chips (empty -> muted "—"); 2 + the +N in-cell expand
+
+	More      string    // faint overflow suffix on a ports/hosts cell ("+N" / "+N hosts")
+	Keys      []KeyChip // configmap/secret data chips (name · size); 3 + the +N keys in-cell expand
+	EvKind    string    // events object kind (faint "Kind/" prefix)
+	EvName    string    // events object name, 20…8 middle-truncated (full name in Title)
+	EvAgeRest string    // faint 11px second layer of an events age cell
+	CellIcon  string    // pre-rendered glyph for the tls lock / evobj kind icon (raw trusted markup)
+}
+
+// KeyChip is one configmap/secret data chip (`name · size`): the key name and
+// its human byte size. No value field exists by construction -- secret VALUES
+// never enter the DOM (SPEC §4.10).
+type KeyChip struct {
+	Name string
+	Size string
 }
 
 // RowChip is one namespace label chip: the label key and value, rendered as a
@@ -326,6 +341,26 @@ const (
 	CellReplicas
 	CellRollout
 	CellChips
+	// SPEC §4 cookbook corner-case kinds -- the order MUST mirror the
+	// package-web cellKind enum (the bridge casts between them).
+	CellPending
+	CellPorts
+	CellHosts
+	CellTLS
+	CellLastRun
+	CellKeys
+	CellCount
+	CellEvObj
+	CellEvAge
+	CellMsg
+)
+
+// chipsCellMax / keysCellMax are the SPEC §4.9/§4.10 in-cell overflow
+// thresholds: 2 label/selector chips and 3 data-key chips shown before the
+// extras hide behind `.xtra` + the `+N` expand button.
+const (
+	chipsCellMax = 2
+	keysCellMax  = 3
 )
 
 // ResourceTable renders the full table fragment (one block per table + the
@@ -461,11 +496,21 @@ templ resourceTables(d ListData) {
 // tableCell renders one body cell, branching on Kind. The Name branch is its own
 // sticky `td.cell-name` (with the pn-head/pn-tail split); the rest share the
 // (cellClass + colClass) <td> wrapper and reskin into the redesign vocabulary.
+// A middle-truncated name (head > 42 chars, SPEC §4.2) renders its truncated
+// head with the FULL name in the link's title; a short name keeps the exact
+// v1 markup (bare value when there is no hash tail).
 templ tableCell(cell TableCell) {
 	if cell.Kind == CellName {
-		<td class="cell-name"><a href={ templ.SafeURL(cell.Href) }>
+		<td class="cell-name"><a
+			href={ templ.SafeURL(cell.Href) }
+			if cell.Title != "" {
+				title={ cell.Title }
+			}
+		>
 			if cell.NameTail != "" {
 				<span class="pn-head">{ cell.NameHead }</span><span class="pn-tail">{ cell.NameTail }</span>
+			} else if cell.Title != "" {
+				<span class="pn-head">{ cell.NameHead }</span>
 			} else {
 				{ cell.Value }
 			}
@@ -525,13 +570,81 @@ templ tableCell(cell TableCell) {
 			if len(cell.Chips) == 0 {
 				<span class="faint">—</span>
 			} else {
-				<div class="ro-chips">
-					for _, chip := range cell.Chips {
-						@rowChip(chip)
-					}
-				</div>
+				@chipsStrip(cell.Chips)
 			}
 			</td>
+	} else if cell.Kind == CellPending {
+		<td class={ cell.ColClass }>
+			if cell.Pulse {
+				<span class={ cellStatusClass(cell.Tone) }><span class={ dotClass2(cell.Tone, cell.Pulse) } aria-hidden="true"></span>{ cell.Value }</span>
+			} else if cell.Value == "" {
+				<span class="faint">{ "<none>" }</span>
+			} else {
+				{ cell.Value }
+			}
+			</td>
+	} else if cell.Kind == CellPorts {
+		if cell.Value == "" {
+			<td class={ cell.ColClass }><span class="faint">—</span></td>
+		} else {
+			<td class={ cell.ColClass } title={ cell.Title }>
+				{ cell.Value }
+				if cell.More != "" {
+					{ " " }<span class="faint" title={ cell.Title }>{ cell.More }</span>
+				}
+				</td>
+		}
+	} else if cell.Kind == CellHosts {
+		<td class={ cell.ColClass }>
+			if cell.Value == "" {
+				<span class="faint">—</span>
+			} else {
+				{ cell.Value }
+				if cell.More != "" {
+					{ " " }<span class="faint" title={ cell.Title }>{ cell.More }</span>
+				}
+			}
+			</td>
+	} else if cell.Kind == CellTLS {
+		<td class={ cell.ColClass }>
+			if cell.Value != "" {
+				<span class="cell-status ok" title="TLS terminated"><span class="ico sm">@templ.Raw(cell.CellIcon)</span>{ cell.Value }</span>
+			} else {
+				<span class="faint">—</span>
+			}
+			</td>
+	} else if cell.Kind == CellLastRun {
+		<td class={ cell.ColClass }>
+			if cell.Value == "" {
+				<span class="faint">{ "<never>" }</span>
+			} else {
+				<span class={ cell.Class }>{ cell.Value }</span>
+			}
+			</td>
+	} else if cell.Kind == CellKeys {
+		<td>
+			if len(cell.Keys) == 0 {
+				<span class="faint">—</span>
+			} else {
+				@keysChips(cell.Keys)
+			}
+			</td>
+	} else if cell.Kind == CellCount {
+		<td class={ numColClass(cell.ColClass) }><span class={ cell.Class }>{ "×" + cell.Value }</span></td>
+	} else if cell.Kind == CellEvObj {
+		<td
+			if cell.Title != "" {
+				title={ cell.Title }
+			}
+		><span class="res-kind">@templ.Raw(cell.CellIcon)<span class="faint">{ cell.EvKind + "/" }</span>{ cell.EvName }</span></td>
+	} else if cell.Kind == CellEvAge {
+		<td class={ cell.ColClass }><span class={ cell.Class }>{ cell.Value }</span>
+			if cell.EvAgeRest != "" {
+				{ " " }<span class="faint evage-rest">{ cell.EvAgeRest }</span>
+			}
+			</td>
+	} else if cell.Kind == CellMsg {
+		<td class="ro-event-msg">{ cell.Value }</td>
 	} else {
 		<td class={ cellTdClass(cell.Class, cell.ColClass) } title={ cell.Title }>
 			switch cell.Kind {
@@ -608,9 +721,16 @@ templ pcard(d ListData, table TableData, row TableRow) {
 templ pcardName(row TableRow) {
 	<span class="pc-name">
 		if cell, ok := nameCell(&row); ok {
-			<a href={ templ.SafeURL(cell.Href) }>
+			<a
+				href={ templ.SafeURL(cell.Href) }
+				if cell.Title != "" {
+					title={ cell.Title }
+				}
+			>
 				if cell.NameTail != "" {
 					<span class="pn-head">{ cell.NameHead }</span><span class="pn-tail">{ cell.NameTail }</span>
+				} else if cell.Title != "" {
+					<span class="pn-head">{ cell.NameHead }</span>
 				} else {
 					{ cell.Value }
 				}
@@ -686,11 +806,56 @@ templ pcardCell(cell TableCell) {
 			if len(cell.Chips) == 0 {
 				<span class="faint">—</span>
 			} else {
-				<div class="ro-chips">
-					for _, chip := range cell.Chips {
-						@rowChip(chip)
-					}
-				</div>
+				@chipsStrip(cell.Chips)
+			}
+		case CellPending:
+			if cell.Pulse {
+				<span class={ cellStatusClass(cell.Tone) }><span class={ dotClass2(cell.Tone, cell.Pulse) } aria-hidden="true"></span>{ cell.Value }</span>
+			} else if cell.Value == "" {
+				<span class="faint">{ "<none>" }</span>
+			} else {
+				{ cell.Value }
+			}
+		case CellPorts, CellHosts:
+			if cell.Value == "" {
+				<span class="faint">—</span>
+			} else {
+				{ cell.Value }
+				if cell.More != "" {
+					{ " " }<span class="faint" title={ cell.Title }>{ cell.More }</span>
+				}
+			}
+		case CellTLS:
+			if cell.Value != "" {
+				<span class="cell-status ok" title="TLS terminated"><span class="ico sm">@templ.Raw(cell.CellIcon)</span>{ cell.Value }</span>
+			} else {
+				<span class="faint">—</span>
+			}
+		case CellLastRun:
+			if cell.Value == "" {
+				<span class="faint">{ "<never>" }</span>
+			} else {
+				<span class={ cell.Class }>{ cell.Value }</span>
+			}
+		case CellKeys:
+			if len(cell.Keys) == 0 {
+				<span class="faint">—</span>
+			} else {
+				@keysChips(cell.Keys)
+			}
+		case CellCount:
+			<span class={ cell.Class }>{ "×" + cell.Value }</span>
+		case CellEvObj:
+			<span
+				class="res-kind"
+				if cell.Title != "" {
+					title={ cell.Title }
+				}
+			>@templ.Raw(cell.CellIcon)<span class="faint">{ cell.EvKind + "/" }</span>{ cell.EvName }</span>
+		case CellEvAge:
+			<span class={ cell.Class }>{ cell.Value }</span>
+			if cell.EvAgeRest != "" {
+				{ " " }<span class="faint evage-rest">{ cell.EvAgeRest }</span>
 			}
 		case CellMemory:
 			{ cell.Value + " MiB" }
@@ -795,12 +960,57 @@ templ colsPopoverForm(c ColsPopover) {
 // rowChip renders one label chip in a table cell (and its mobile-card mirror):
 // a click-to-filter anchor when Href is set (single-type pages, D7/SPEC §8.1),
 // an inert span otherwise. Both keep the NEUTRAL `.ck`/`.cs`/`.cv` split (D3).
-templ rowChip(chip RowChip) {
+// extra marks an overflow chip past the SPEC §4.9 in-cell threshold: it
+// carries `.xtra` and stays hidden until the strip expands.
+templ rowChip(chip RowChip, extra bool) {
 	if chip.Href != "" {
-		<a class="ro-chip" href={ templ.SafeURL(chip.Href) } title={ "Filter by " + chip.Key + "=" + chip.Val }><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></a>
+		<a class={ chipClass(extra) } href={ templ.SafeURL(chip.Href) } title={ "Filter by " + chip.Key + "=" + chip.Val }><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></a>
 	} else {
-		<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+		<span class={ chipClass(extra) }><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
 	}
+}
+
+// chipsStrip renders a label/selector chip strip with the SPEC §4.9 in-cell
+// overflow: the first chipsCellMax chips show, the extras carry `.xtra`
+// (hidden until the `.ro-chips` strip gains `.expanded`), and the trailing +N
+// button toggles the expansion IN-CELL (its text flips to "less" via the
+// `.more-n`/`.more-less` CSS swap). Callers branch the empty case ("—")
+// themselves.
+templ chipsStrip(chips []RowChip) {
+	<div class="ro-chips">
+		for ci, chip := range chips {
+			@rowChip(chip, ci >= chipsCellMax)
+		}
+		if len(chips) > chipsCellMax {
+			@moreChip(len(chips)-chipsCellMax, "")
+		}
+	</div>
+}
+
+// keysChips renders a configmap/secret data-keys strip (SPEC §4.10): one
+// `name · size` chip per key (name firm `.cv`, size faint `.ck`), the first
+// keysCellMax shown, the rest behind the `+N keys` expand -- the SAME
+// `.xtra`/`.expanded` machinery the label chips use. Secret VALUES are absent
+// by construction: KeyChip carries only the key name + byte size.
+templ keysChips(keys []KeyChip) {
+	<div class="ro-chips">
+		for ki, key := range keys {
+			<span class={ chipClass(ki >= keysCellMax) }><span class="cv">{ key.Name }</span><span class="cs">·</span><span class="ck">{ key.Size }</span></span>
+		}
+		if len(keys) > keysCellMax {
+			@moreChip(len(keys)-keysCellMax, " keys")
+		}
+	</div>
+}
+
+// moreChip is the in-cell overflow toggle (SPEC §4.9/§4.10): a real <button>
+// (keyboard-reachable) carrying `data-more` for the delegated readout.js
+// toggle -- the strict CSP forbids inline handlers. Collapsed it shows
+// "+N<suffix>"; once the strip carries `.expanded` the CSS hides `.more-n`
+// and reveals `.more-less` ("less"). aria-expanded mirrors the state (the JS
+// flips it with the class).
+templ moreChip(n int, suffix string) {
+	<button type="button" class="ro-chip more" data-more aria-expanded="false"><span class="more-n">{ "+" + itoa(n) + suffix }</span><span class="more-less">less</span></button>
 }
 
 // filterBar renders the Filters v2 chips editor (D7): the `.ro-tools-filter`

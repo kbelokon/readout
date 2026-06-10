@@ -67,6 +67,62 @@ func splitObjectName(plural, name string) (head, tail string) {
 	return name, ""
 }
 
+// SPEC §4.2 middle-truncation thresholds. Table/palette/detail identifier
+// heads: >42 chars -> first 26 + "…" + last 12. Event object names: >34 ->
+// first 20 + "…" + last 8.
+const (
+	nameHeadMax   = 42
+	nameHeadLead  = 26
+	nameHeadTrail = 12
+	evObjNameMax  = 34
+	evObjLead     = 20
+	evObjTrail    = 8
+)
+
+// MiddleTruncate shortens an identifier that exceeds max runes to
+// `lead…trail` (SPEC §4.2): the prefix identifies the workload, the suffix
+// stays unique, and the full name must ride in a `title=` tooltip whenever
+// truncated reports true. It counts and slices in RUNE space so a multi-byte
+// name is never cut mid-rune. Exported because every identifier surface shares
+// it: the table name cells + event objects consume it now; the palette feed
+// (Unit 19) and the detail title (Unit 13) consume it from their own assembly.
+func MiddleTruncate(name string, max, lead, trail int) (display string, truncated bool) {
+	runes := []rune(name)
+	if len(runes) <= max || lead+trail >= len(runes) {
+		return name, false
+	}
+	return string(runes[:lead]) + "…" + string(runes[len(runes)-trail:]), true
+}
+
+// groupThousands inserts comma thousands separators into a plain base-10 digit
+// string ("1047" -> "1,047"), the SPEC §4.5/§4.15 restart/event-count format.
+// Anything that is not purely digits (an empty cell, an already-grouped value,
+// a decorated string) passes through unchanged, so the helper can never
+// corrupt a non-numeric cell. Unit 6's filter engine strips these commas when
+// it parses leading numeric tokens, so the display stays filter-compatible.
+func groupThousands(value string) string {
+	if value == "" || len(value) <= 3 {
+		return value
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return value
+		}
+	}
+	var b strings.Builder
+	lead := len(value) % 3
+	if lead > 0 {
+		b.WriteString(value[:lead])
+	}
+	for i := lead; i < len(value); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(value[i : i+3])
+	}
+	return b.String()
+}
+
 // statusTone decodes a kube.CellClass Bulma text class into the status-dot tone
 // vocabulary (ok/warn/err/info/mute). The value->tone DECISIONS live in exactly
 // one place -- kube.StatusTone, the SPEC §3 table, which CellClass delegates
@@ -675,6 +731,59 @@ func numericCell(cell any) (float64, bool) {
 
 func formatTimestamp(value string) string {
 	return strings.TrimSuffix(strings.ReplaceAll(value, "T", " "), "Z")
+}
+
+// durationToken matches one `<count><unit>` segment of a kubectl-style
+// compressed duration ("3h2m", "41d", "1y127d"). The unit vocabulary is the
+// SPEC §4.3 parser set: s m h d w y.
+var durationToken = regexp.MustCompile(`(\d+)([smhdwy])`)
+
+// durationUnitMinutes maps the SPEC §4.3 duration units onto minutes,
+// mirroring the design reference ageMinutes (render.js) byte-faithfully.
+var durationUnitMinutes = map[byte]float64{
+	's': 1.0 / 60,
+	'm': 1,
+	'h': 60,
+	'd': 1440,
+	'w': 10080,
+	'y': 525600,
+}
+
+// ageMinutes parses a kubectl-style compressed duration string into minutes by
+// summing its `<count><unit>` tokens. Unrecognized text contributes nothing
+// ("<unknown>" -> 0), matching the reference parser's regex scan.
+func ageMinutes(value string) float64 {
+	var minutes float64
+	for _, m := range durationToken.FindAllStringSubmatch(value, -1) {
+		n, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			continue
+		}
+		minutes += n * durationUnitMinutes[m[2][0]]
+	}
+	return minutes
+}
+
+// durationAgeClass buckets a kubectl-style duration STRING as a fraction of
+// the 24h window (SPEC §4.3, the same fractions s.ageClass applies to
+// timestamps): <10% fresh, <35% recent, <65% day, <100% week, ≥1d old. The
+// duration flavour serves the cells whose source value is already a compressed
+// duration (cronjob Last Schedule, event ages) rather than an RFC3339
+// timestamp.
+func durationAgeClass(value string) string {
+	fraction := ageMinutes(value) / (24 * 60)
+	switch {
+	case fraction < 0.10:
+		return "age-fresh"
+	case fraction < 0.35:
+		return "age-recent"
+	case fraction < 0.65:
+		return "age-day"
+	case fraction < 1.0:
+		return "age-week"
+	default:
+		return "age-old"
+	}
 }
 
 func (s *Server) ageClass(value string) string {

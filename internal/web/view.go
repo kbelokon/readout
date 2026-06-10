@@ -258,7 +258,10 @@ type cellView struct {
 	// Pulse marks a transient status whose dot animates (.pulse).
 	Pulse bool
 	// NameHead/NameTail split an identifier into a bright workload prefix + a
-	// muted hash suffix for the sticky name cell. NameHead+NameTail == Value.
+	// muted hash suffix for the sticky name cell. NameHead+NameTail == Value,
+	// EXCEPT when the head exceeds the SPEC §4.2 threshold (42 chars): the head
+	// is then middle-truncated for display (26…12) and Title carries the FULL
+	// name. The tail/hash is NEVER truncated.
 	NameHead string
 	NameTail string
 	// Ago is the optional "(… ago)" suffix on a restarts cell (muted).
@@ -302,8 +305,38 @@ type cellView struct {
 
 	// Chips are the namespace label chips for cellChips: one per metadata.labels
 	// entry (sorted), each carrying its key/value pair. Empty means a namespace
-	// with no labels, rendered as a muted "—".
+	// with no labels, rendered as a muted "—". In tables the renderer shows the
+	// first chipsCellMax chips; the rest carry `.xtra` (hidden) behind the `+N`
+	// in-cell expand button (SPEC §4.9).
 	Chips []chipView
+
+	// More is the faint overflow suffix on a ports/hosts cell ("+N" / "+N
+	// hosts"); the full list rides in Title. Empty when nothing overflows.
+	More string
+	// Keys are the configmap/secret data chips for cellKeys (`name · size`).
+	// Secret VALUES never reach this view model -- a key chip carries ONLY the
+	// key name and its byte size (SPEC §4.10). Past keysCellMax the renderer
+	// hides chips behind the `+N keys` in-cell expand, same `.xtra` machinery
+	// as the label chips.
+	Keys []keyChipView
+	// EvKind/EvName are the events Object cell split for cellEvObj: EvKind
+	// renders faint with a trailing slash next to its kind icon; EvName is the
+	// 20…8 middle-truncated object name (Title carries the full name when
+	// truncated, SPEC §4.2).
+	EvKind string
+	EvName string
+	// EvAgeRest is the faint second layer of an events Age cell for cellEvAge
+	// (e.g. "(first 41h ago)"); Value keeps the leading age token, which is the
+	// only part the age bucket colours.
+	EvAgeRest string
+}
+
+// keyChipView is one configmap/secret data chip for cellKeys: the key name and
+// its HUMAN byte size ("4.2 KiB"). By construction no value field exists --
+// secret values must never be serialized into a view model (SPEC §4.10).
+type keyChipView struct {
+	Name string
+	Size string
 }
 
 // chipView is one namespace label chip: the label key and value, rendered as a
@@ -351,6 +384,21 @@ const (
 	cellReplicas
 	cellRollout
 	cellChips
+	// The SPEC §4 cookbook corner-case kinds (Unit 10). The kind-specific
+	// schema decorators that EMIT most of them land with the services/ingress/
+	// configmap/secret/cronjob/job (Unit 11) and events (Unit 12) columns; the
+	// constructors live in build_list.go and the renderers in
+	// resource_table.templ.
+	cellPending // empty -> faint <none>; literal <pending> -> amber pulsing dot + word
+	cellPorts   // first 2 ports + faint +N, full list in title
+	cellHosts   // first host + faint "+N hosts", full list in title
+	cellTLS     // green lock + "tls" ONLY when terminated, else "—"
+	cellLastRun // age-scale colour + " ago"; never ran -> faint <never>
+	cellKeys    // data chips `name · size`, 3 + "+N keys" in-cell expand
+	cellCount   // events ×N, ≥20 amber, 1 faint, thousands separator
+	cellEvObj   // kind icon + faint "Kind/" + 20…8 middle-truncated name
+	cellEvAge   // two-layer age: bucket-coloured first token + faint remainder
+	cellMsg     // the ONLY wrapping cell in the system (max-width 520px)
 )
 
 // detailView is the view model for the resource-view (object detail) page. The

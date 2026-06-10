@@ -226,6 +226,22 @@ document.addEventListener('click', (event) => {
         commitColumnVisibility(colToggle.closest('.ro-pop'));
         return;
     }
+    // In-cell +N overflow (SPEC §4.9/§4.10): the `.ro-chip.more[data-more]`
+    // button toggles `.expanded` on its OWN `.ro-chips` strip, revealing the
+    // `.xtra` chips in place (the button face flips +N <-> "less" in CSS).
+    // Delegated so it survives every morph; aria-expanded mirrors the state.
+    // Note: a refresh morph re-renders the strip collapsed (server truth) --
+    // expansion is a transient peek, not persisted state.
+    const moreChips = target.closest('[data-more]');
+    if (moreChips) {
+        event.preventDefault();
+        const chips = moreChips.closest('.ro-chips');
+        if (chips) {
+            const expanded = chips.classList.toggle('expanded');
+            moreChips.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        }
+        return;
+    }
     // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
     // sidebar by toggling `.is-active` on `.ro-sidebar` (the <760px reveal CSS +
     // the button itself are owned by Unit 15; this is the JS half of D11). No-op
