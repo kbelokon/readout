@@ -217,6 +217,48 @@ test('choosing entries builds the persisted Recents group: newest first, deduped
   expect(groups[0].labels).toEqual(['Nodes', 'Pods']);
 });
 
+test('the Recents store caps at five: a sixth choice evicts the oldest entry', async ({ page }) => {
+  await page.goto(PODS);
+
+  // Seed a FULL recents store (five entries, newest first) through the
+  // persisted localStorage shape readPaletteRecents accepts: a label plus a
+  // same-origin href, each a distinct dedupe target.
+  await page.evaluate(() => {
+    const seeds = [1, 2, 3, 4, 5].map((n) => ({
+      label: `Seed ${n}`,
+      href: `/clusters/e2e/nodes?seed=${n}`,
+    }));
+    window.localStorage.setItem('ro-pref-recents', JSON.stringify(seeds));
+  });
+
+  // One real choice (Nodes) lands newest-first; the store stays capped at
+  // five, so the OLDEST seed (Seed 5, the tail) is evicted.
+  await openPalette(page);
+  await page.locator('#ro-palette-input').fill('nodes');
+  await page.keyboard.press('ArrowDown');
+  await expect(page.locator(activeLabel)).toHaveText('Nodes');
+  await page.keyboard.press('Enter');
+  await page.waitForURL(/\/clusters\/e2e\/nodes$/);
+
+  await openPalette(page);
+  const groups = await paletteGroups(page);
+  expect(groups[0].title).toBe('Recents');
+  expect(groups[0].labels).toEqual(['Nodes', 'Seed 1', 'Seed 2', 'Seed 3', 'Seed 4']);
+
+  // The persisted store itself holds exactly the same five -- the cap is a
+  // WRITE-side bound, not a render-time trim of a growing store.
+  const stored = await page.evaluate(
+    () => JSON.parse(window.localStorage.getItem('ro-pref-recents') || '[]') as { label: string }[]
+  );
+  expect(stored.map((entry) => entry.label)).toEqual([
+    'Nodes',
+    'Seed 1',
+    'Seed 2',
+    'Seed 3',
+    'Seed 4',
+  ]);
+});
+
 test('the Actions group keeps the v1 content on a detail page: tab jumps, Logs, Toggle theme', async ({
   page,
 }) => {

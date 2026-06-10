@@ -220,6 +220,83 @@ test('row focus survives a refresh-tick morph that reorders rows (keyed, not pos
   await expect(page.locator('tr[data-key="e2e/default/omega"]')).not.toHaveClass(/kfocus/);
 });
 
+test('deleting the focused row clears aria-activedescendant and kfocus; j clamps at the bottom', async ({
+  page,
+}) => {
+  await seedThird();
+  await page.goto(PODS);
+  await expect(page.locator('#resource-list-content td.cell-name')).toHaveText([
+    'nginx',
+    'my-app',
+    'zeta',
+  ]);
+
+  // Walk to the BOTTOM row; one more j clamps there (the j twin of the
+  // existing k-at-the-top clamp).
+  await page.keyboard.press('j');
+  await page.keyboard.press('j');
+  await page.keyboard.press('j');
+  await expectFocus(page, 'e2e/default/zeta');
+  await page.keyboard.press('j');
+  await expectFocus(page, 'e2e/default/zeta');
+
+  // Delete the focused row out from under its key: the next tick's morph
+  // drops the row, and the row-state re-apply must CLEAR the wrap's
+  // aria-activedescendant (SPEC §8.6: never announce a row that left the
+  // document) with zero kfocus rows -- the clear branch of the focus mirror.
+  await pickInterval(page, 5);
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: 'DELETED',
+      object: { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'zeta', namespace: 'default' } },
+    },
+  ]);
+  await waitForTick(page);
+  await expect(page.locator('#resource-list-content td.cell-name')).toHaveText([
+    'nginx',
+    'my-app',
+  ]);
+  await expect(page.locator(focusedRow)).toHaveCount(0);
+  await expect(page.locator('#resource-list-content .ro-table-wrap')).not.toHaveAttribute(
+    'aria-activedescendant'
+  );
+});
+
+test('j/k walk only the visible rows: live-filtered rows are skipped', async ({ page }) => {
+  await seedThird();
+  await page.goto(PODS);
+  await expect(page.locator('#resource-list-content td.cell-name')).toHaveText([
+    'nginx',
+    'my-app',
+    'zeta',
+  ]);
+
+  // A live free-text draft ("a") hides nginx (no request -- the chips
+  // editor's client-side name match toggles ro-row-filtered) and keeps
+  // my-app + zeta visible. Blur the editor so the gesture keys re-arm.
+  await page.locator('#ro-filter-input').fill('a');
+  await page.locator('#ro-filter-input').blur();
+  await expect(page.locator('tr[data-key="e2e/default/nginx"]')).toHaveClass(/ro-row-filtered/);
+  await expect(page.locator('tr[data-key="e2e/default/my-app"]')).not.toHaveClass(
+    /ro-row-filtered/
+  );
+  await expect(page.locator('tr[data-key="e2e/default/zeta"]')).not.toHaveClass(/ro-row-filtered/);
+
+  // The first j lands on the first VISIBLE row (my-app) -- the hidden nginx
+  // is skipped, not focused-then-stepped-over.
+  await page.keyboard.press('j');
+  await expectFocus(page, 'e2e/default/my-app');
+  await page.keyboard.press('j');
+  await expectFocus(page, 'e2e/default/zeta');
+  // k walks back up and clamps on the visible top: never onto hidden nginx.
+  await page.keyboard.press('k');
+  await expectFocus(page, 'e2e/default/my-app');
+  await page.keyboard.press('k');
+  await expectFocus(page, 'e2e/default/my-app');
+  await expect(page.locator('tr[data-key="e2e/default/nginx"]')).not.toHaveClass(/kfocus/);
+});
+
 test('"?" opens the keyboard overlay focus-trapped; esc closes and returns focus; backdrop closes', async ({
   page,
 }) => {

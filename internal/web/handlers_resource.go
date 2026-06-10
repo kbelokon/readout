@@ -220,6 +220,16 @@ func (s *Server) downloadBulkYAML(w http.ResponseWriter, r *http.Request) {
 	objects := map[string]map[string]any{}
 	for ti := range ctx.Tables {
 		for _, row := range ctx.Tables[ti].Rows {
+			// Secret VALUES are never serialized (D5). The single-object
+			// download masks the fetched object before marshaling
+			// (buildDetailView -> maskSecret); this path serializes the
+			// table's row objects, so it applies the SAME treatment before
+			// any row can reach the YAML writer. In-place mutation is safe:
+			// the rows come from this request's own table fan-out, and the
+			// download path returns without rendering anything else.
+			if nestedString(row.Object, "kind") == "Secret" {
+				maskSecret(row.Object)
+			}
 			key := nestedString(row.Object, "metadata", "name")
 			if ns := nestedString(row.Object, "metadata", "namespace"); ctx.IsAllNamespaces && ns != "" {
 				key = ns + "/" + key

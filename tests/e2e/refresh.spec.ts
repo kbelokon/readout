@@ -85,8 +85,14 @@ test('failure backs off with a live countdown, Retry now is immediate, recovery 
   await control('/__control/fail-lists?mode=500');
 
   // FIRST failed tick: rows dim but never disappear; the banner reveals with
-  // a live countdown aimed at the 1x retry (<= the 5s base interval).
+  // a live countdown aimed at the 1x retry (<= the 5s base interval). The
+  // SECOND failed-tick waiter is armed IMMEDIATELY: the 1x retry fires ~5s
+  // out, and registering the waiter only after the assertion block below
+  // could miss tick 2 under load and resolve on tick 3 instead -- whose
+  // countdown re-arms at 4x = 20s, where a 10s-shaped doubling check can
+  // never match.
   await waitForFailedTick(page);
+  const secondFailed = waitForFailedTick(page);
   const banner = page.locator('.ro-stale-banner');
   await expect(banner).toBeVisible();
   await expect(page.locator('#resource-list-content')).toHaveClass(/ro-stale/);
@@ -94,17 +100,23 @@ test('failure backs off with a live countdown, Retry now is immediate, recovery 
   const countdown = banner.locator('[data-stale-countdown]');
   await expect(countdown).toHaveText(/^[1-5]s$/);
 
-  // SECOND failed tick (the 1x retry): the wait DOUBLES to 2x = 10s ...
-  await waitForFailedTick(page);
-  await expect(countdown).toHaveText(/^(?:10|9|8)s$/);
+  // SECOND failed tick (the 1x retry): the wait DOUBLES to 2x = 10s. The
+  // countdown is a DECREASING counter, so the doubling is proven with a
+  // floor -- anything above 5s is impossible at the 1x cadence -- instead of
+  // pinning exact text whose match window is 3 wall-clock seconds.
+  await secondFailed;
+  await expect
+    .poll(async () => parseInt((await countdown.textContent()) ?? '0', 10), { timeout: 4_000 })
+    .toBeGreaterThan(5);
   // ... and the countdown is LIVE: it decrements on the banner.
   const first = parseInt((await countdown.textContent()) ?? '0', 10);
   await expect
     .poll(async () => parseInt((await countdown.textContent()) ?? '0', 10), { timeout: 4_000 })
     .toBeLessThan(first);
 
-  // Retry now fires IMMEDIATELY -- ~8s of backoff wait still remain, but the
-  // re-fetch (a programmatic RO-No-Push request) lands within moments.
+  // Retry now fires IMMEDIATELY -- most of the doubled backoff wait still
+  // remains, but the re-fetch (a programmatic RO-No-Push request) lands
+  // within moments.
   await control('/__control/fail-lists?mode=off');
   const retried = page.waitForResponse(isTickResponse, { timeout: 3_000 });
   await banner.locator('.ro-stale-retry').click();

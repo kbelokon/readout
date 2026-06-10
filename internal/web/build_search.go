@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kbelokon/readout/internal/kube"
 	"golang.org/x/sync/errgroup"
@@ -250,24 +251,39 @@ func searchResultName(plural, name, filterQuery string) (pre, mark, post, tail, 
 // case-insensitive occurrence of the first matching query word, for the D12
 // <mark> wrap. Matching is PLAIN strings.Index over lowered strings -- never a
 // regex -- so names and queries carrying regex-special characters ('.', '+',
-// '(' ...) match literally. Byte offsets from the lowered scan are applied to
-// the original string ONLY when lowering preserved byte length (always true
-// for DNS-1123 names + ASCII queries); otherwise the word is retried as an
-// exact-case match, and a miss leaves the display unmarked -- an honest
-// degradation, never a mid-rune split. pre+mark+post == display, always.
+// '(' ...) match literally. A byte offset from the lowered scan is applied to
+// the original string only under a PER-OCCURRENCE guard: it must land on a
+// rune start in display, end on one, and the display slice must case-fold to
+// the word (lowering can change individual rune widths while preserving the
+// whole string's byte length -- e.g. U+023A grows 2->3 bytes while U+212B
+// shrinks 3->2 -- so a whole-string length check cannot vouch for any single
+// offset). A rejected candidate retries the next occurrence; exhausting them
+// falls back to an exact-case match, and a miss leaves the display unmarked --
+// an honest degradation, never a mid-rune split. The fast path is unchanged:
+// DNS-1123 names + ASCII queries accept the first occurrence immediately.
+// pre+mark+post == display, always.
 func markFirstMatch(display string, words []string) (pre, mark, post string) {
 	lowerDisplay := strings.ToLower(display)
-	safeLower := len(lowerDisplay) == len(display)
 	for _, word := range words {
 		if word == "" {
 			continue
 		}
 		lowerWord := strings.ToLower(word)
-		if safeLower && len(lowerWord) == len(word) {
-			if i := strings.Index(lowerDisplay, lowerWord); i >= 0 {
-				return display[:i], display[i : i+len(lowerWord)], display[i+len(lowerWord):]
+		if len(lowerWord) == len(word) {
+			for from := 0; ; {
+				i := strings.Index(lowerDisplay[from:], lowerWord)
+				if i < 0 {
+					break
+				}
+				i += from
+				end := i + len(lowerWord)
+				if end <= len(display) && utf8.RuneStart(display[i]) &&
+					(end == len(display) || utf8.RuneStart(display[end])) &&
+					strings.EqualFold(display[i:end], word) {
+					return display[:i], display[i:end], display[end:]
+				}
+				from = i + 1
 			}
-			continue
 		}
 		if i := strings.Index(display, word); i >= 0 {
 			return display[:i], display[i : i+len(word)], display[i+len(word):]

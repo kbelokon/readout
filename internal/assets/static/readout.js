@@ -167,10 +167,19 @@ document.addEventListener('click', (event) => {
     // multi-type container triggers its baked ro:refresh). On success the morph
     // swaps fresh rows and the afterSwap handler clears the stale dim +
     // re-hides the banner; on another failure the responseError handler keeps
-    // it stale. Pure DOM, GET-only -- the read-only floor is untouched.
+    // it stale. An in-flight container request (a HUNG tick is exactly the
+    // state this button exists for) is aborted first -- issuing a second
+    // container request would make htmx QUEUE it, and a queued request replays
+    // on the next htmx:abort with its stale queue-time URL (the
+    // commitColumnVisibility pattern; no queue may ever form). Pure DOM,
+    // GET-only -- the read-only floor is untouched.
     const staleRetry = target.closest('.ro-stale-retry');
     if (staleRetry) {
         event.preventDefault();
+        const content = document.getElementById('resource-list-content');
+        if (content && typeof htmx !== 'undefined') {
+            htmx.trigger(content, 'htmx:abort');
+        }
         requestListRefresh();
         return;
     }
@@ -475,12 +484,15 @@ document.addEventListener('change', (event) => {
     // Logs display toggles (D25): CLIENT-SIDE only, no refetch. The timestamps
     // checkbox shows/hides the .log-ts spans via the stream's `hide-ts` class;
     // the wrap checkbox toggles `wrap` (pre-wrap + break-word). The server
-    // already rendered every span -- these are pure presentation flips.
+    // already rendered every span -- these are pure presentation flips. Both
+    // flips reflow the stream, so while Following is active the tail is
+    // re-pinned afterwards (a followed stream must stay at its tail).
     const logTs = event.target.closest('#logTs');
     if (logTs) {
         const pre = document.querySelector('pre.ro-logpre');
         if (pre) {
             pre.classList.toggle('hide-ts', !logTs.checked);
+            logsPinTailIfFollowing();
         }
         return;
     }
@@ -489,6 +501,7 @@ document.addEventListener('change', (event) => {
         const pre = document.querySelector('pre.ro-logpre');
         if (pre) {
             pre.classList.toggle('wrap', logWrap.checked);
+            logsPinTailIfFollowing();
         }
     }
 });
@@ -561,10 +574,16 @@ document.addEventListener('keyup', (event) => {
 document.addEventListener('keydown', (event) => {
     // Open on Meta+K (mac ⌘K) OR Ctrl+K (the decorative navbar <kbd>⌘K</kbd> is
     // the advertised hook). Ignore when a modifier combo also carries Alt/Shift
-    // so we never hijack an unrelated browser/OS shortcut.
+    // so we never hijack an unrelated browser/OS shortcut. The palette is
+    // exclusive among the overlay surfaces: an open "?" keyboard map or row
+    // context menu closes FIRST (closeKbdOverlay restores ITS prior focus
+    // before openPalette captures the restore target), so one Esc afterwards
+    // closes exactly one surface.
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey
         && (event.key === 'k' || event.key === 'K')) {
         event.preventDefault();
+        closeKbdOverlay();
+        closeRowMenu();
         openPalette();
         return;
     }
@@ -618,15 +637,22 @@ document.addEventListener('keydown', (event) => {
 // The read-only topbar search box also opens the palette on keyboard FOCUS
 // (Tab-into / programmatic focus): focusin bubbles to document, so one delegated
 // listener covers it without a per-element handler that an hx-boost swap would
-// drop. We immediately blur the box so the caret never lands in the inert input
-// and hand focus to the palette's own query box via openPalette().
+// drop. openPalette runs FIRST, while the box still holds focus, so it captures
+// the box as the Esc restore target (blurring first would make Esc restore to
+// <body>); the blur after it only matters when openPalette no-opped (overlay
+// missing) -- otherwise focus already moved to the palette's query box. The
+// paletteRestoringFocus gate keeps the close-restore from re-opening: focusing
+// the box FROM closePalette fires this very listener.
 document.addEventListener('focusin', (event) => {
+    if (paletteRestoringFocus) {
+        return;
+    }
     const opener = event.target.closest('[data-palette-open]');
     if (opener) {
+        openPalette();
         if (typeof event.target.blur === 'function') {
             event.target.blur();
         }
-        openPalette();
     }
 });
 
@@ -941,14 +967,23 @@ function logsScrollToTail() {
     }
 }
 
-// initLogsFollow starts a logs page at the stream tail when the Follow toggle
-// is active (it renders active by default). Idempotent: re-pinning an
-// already-pinned stream is a no-op, and pages without #logFollow bail.
-function initLogsFollow() {
+// logsPinTailIfFollowing re-pins the stream to its tail when the Follow
+// toggle is active. Beyond page init, the wrap/timestamps display toggles
+// call it after their class flips: both reflow the stream (line heights and
+// widths change), which would otherwise drift a followed tail mid-stream.
+// Idempotent: re-pinning an already-pinned stream is a no-op, and pages
+// without #logFollow bail.
+function logsPinTailIfFollowing() {
     const follow = document.getElementById('logFollow');
     if (follow && !follow.classList.contains('quiet')) {
         logsScrollToTail();
     }
+}
+
+// initLogsFollow starts a logs page at the stream tail when the Follow toggle
+// is active (it renders active by default).
+function initLogsFollow() {
+    logsPinTailIfFollowing();
 }
 
 // ---------------------------------------------------------------------------
@@ -1528,6 +1563,11 @@ function activatePaletteSelection() {
 // (keyboard users land back where they were instead of on <body>).
 let palettePriorFocus = null;
 
+// True only while closePalette is handing focus back to the prior element:
+// when that element is the topbar [data-palette-open] box, the focus restore
+// itself fires focusin, which would re-open the palette the user just closed.
+let paletteRestoringFocus = false;
+
 // Open the palette: reveal the overlay (the `open` class -- never inline style),
 // build the grouped rows from the blob, seed + focus the query box, and seat the
 // first row active. Idempotent: re-opening just rebuilds from the (possibly
@@ -1540,19 +1580,27 @@ function openPalette(prefill) {
     if (!palette || !input) {
         return; // overlay not present (defensive) -> no-op
     }
-    palettePriorFocus = document.activeElement;
+    // Capture the restore target only on a CLOSED->open transition: a second
+    // ⌘K while open would otherwise capture the palette's own (focused) query
+    // box, and Esc would then focus a hidden input that swallows typing.
+    if (!palette.classList.contains('open')) {
+        palettePriorFocus = document.activeElement;
+    }
     palette.classList.add('open');
     palette.setAttribute('aria-hidden', 'false');
     input.value = typeof prefill === 'string' ? prefill : '';
     renderPalette(input.value);
     input.focus(); // focus after it is shown so the caret lands in the box
 }
-// The deliberate external seam: the search page's Refine·⌘K affordance (Unit
-// 20) opens the palette prefilled with its query.
+// The deliberate external seam (e2e / console): programmatic palette opening,
+// optionally prefilled. No in-app caller goes through it -- the search page's
+// Refine·⌘K affordance rides the delegated [data-search-refine] click path.
 window.roOpenPalette = openPalette;
 
 // Close the palette: drop the `open` class and restore focus to wherever it was
-// before opening (if that element is still in the document).
+// before opening (if that element is still in the document). A restore target
+// INSIDE the palette is refused -- focusing the now-hidden query box would
+// swallow subsequent typing.
 function closePalette() {
     const palette = document.getElementById(PALETTE_ID);
     if (!palette) {
@@ -1561,8 +1609,11 @@ function closePalette() {
     palette.classList.remove('open');
     palette.setAttribute('aria-hidden', 'true');
     if (palettePriorFocus && document.contains(palettePriorFocus)
+        && !palette.contains(palettePriorFocus)
         && typeof palettePriorFocus.focus === 'function') {
+        paletteRestoringFocus = true;
         palettePriorFocus.focus();
+        paletteRestoringFocus = false;
     }
     palettePriorFocus = null;
 }
@@ -2358,11 +2409,12 @@ document.addEventListener('htmx:sendError', (event) => {
 // Single-type list rows carry data-key="cluster/ns/name" (and an id derived
 // from it, which idiomorph uses to match rows by OBJECT identity, never by
 // position). Row-level client state lives here, keyed by that identity:
-//   - rowSelection: the multi-select Map, key -> { name, download } -- the
-//     bulk-action payload (full untruncated name + the single-object
-//     ?download=yaml href) captured from the row at selection time, so Copy
-//     names / bulk download (Unit 17) can act on a selected object even after
-//     a server-side filter dropped its row from the DOM.
+//   - rowSelection: the multi-select Map, key -> { name } -- the bulk-action
+//     payload (the full untruncated object name) captured from the row at
+//     selection time, so Copy names / bulk download (Unit 17, which builds
+//     its names list from key/name against the bar-level data-bulk-href) can
+//     act on a selected object even after a server-side filter dropped its
+//     row from the DOM.
 //   - rowFocusKey:  the single j/k keyboard-focus row (gesture lands in Unit 18)
 // A morph syncs the server's class attribute over any client-added class (the
 // cell-flash WeakMap machinery proved this), so the classes are RE-APPLIED from
@@ -2410,18 +2462,20 @@ function lastKeySegment(key) {
     return parts[parts.length - 1] || '';
 }
 
-// rowSelectionEntry captures the bulk-action payload for key from its row.
+// rowSelectionEntry captures the bulk-action payload for key from its row:
+// the object NAME (the bulk download derives its names list from key/name;
+// per-row download hrefs stay on the row dataset for the context menu).
 function rowSelectionEntry(key) {
     const content = document.getElementById('resource-list-content');
     let entry = null;
     if (content) {
         content.querySelectorAll('tr[data-key]').forEach((tr) => {
             if (tr.dataset.key === key) {
-                entry = { name: tr.dataset.name || lastKeySegment(key), download: tr.dataset.download || '' };
+                entry = { name: tr.dataset.name || lastKeySegment(key) };
             }
         });
     }
-    return entry || { name: lastKeySegment(key), download: '' };
+    return entry || { name: lastKeySegment(key) };
 }
 
 function setRowSelected(key, on) {
@@ -2451,10 +2505,12 @@ window.roRowState = {
     selectedKeys() {
         return Array.from(rowSelection.keys());
     },
-    // selectedEntries feeds the bulk actions: Copy names reads .name here, and
-    // Unit 17's bulk Download-YAML reads the per-object .download hrefs.
+    // selectedEntries feeds the bulk actions: Copy names reads .name, and the
+    // bulk Download-YAML builds its names list from .key/.name against the
+    // bar-level data-bulk-href base (bulkDownloadYAML) -- there is no
+    // per-object href in the store.
     selectedEntries() {
-        return Array.from(rowSelection, ([key, entry]) => ({ key: key, name: entry.name, download: entry.download }));
+        return Array.from(rowSelection, ([key, entry]) => ({ key: key, name: entry.name }));
     },
 };
 
@@ -2569,7 +2625,7 @@ function roCopyText(text, done) {
 }
 
 // toggleRowSelection is the row-click gesture: flip this row's key in the
-// store and repaint. The payload (name, download href) is captured from the
+// store and repaint. The payload (the object name) is captured from the
 // clicked row itself.
 function toggleRowSelection(tr) {
     const key = tr.dataset.key;
@@ -2579,7 +2635,7 @@ function toggleRowSelection(tr) {
     if (rowSelection.has(key)) {
         rowSelection.delete(key);
     } else {
-        rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key), download: tr.dataset.download || '' });
+        rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key) });
     }
     reapplyRowState();
     updateBulkBar();
@@ -2763,11 +2819,15 @@ document.addEventListener('keydown', (event) => {
 // change" moment (SPEC §6.4) where selection clears. Content morphs target
 // #resource-list-content, never body, so sort/filter/refresh keep selection;
 // full-page navigations reset script state for free. The fresh body renders
-// its own closed menu + empty bar.
+// its own closed menu + empty bar. clearListStale rides along for its
+// clearInterval half: the stale-countdown 1s ticker is otherwise stopped only
+// by a successful LIST swap, so navigating away from a stale list would leak
+// it across the body swap (repainting a banner the fresh body renders hidden).
 document.addEventListener('htmx:beforeSwap', (event) => {
     if (event.detail && event.detail.target === document.body) {
         closeRowMenu();
         clearRowState();
+        clearListStale();
     }
 });
 

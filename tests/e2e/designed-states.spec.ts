@@ -137,6 +137,24 @@ test('the loading skeleton never covers a populated table and fires into a blank
   const triggerRefresh = () =>
     page.evaluate(() => (window as unknown as { requestListRefresh(): void }).requestListRefresh());
 
+  // waitForResponse settles at the NETWORK layer; the page-side swap lands a
+  // beat LATER -- and this fragment is byte-identical to the pre-swap DOM, so
+  // post-release assertions would pass against the stale DOM while the late
+  // swap then repopulates the container AFTER the positive phase empties it
+  // (the flake this barrier closes). armSwapDone installs a page-side
+  // htmx:afterSwap once-listener promise BEFORE release; awaiting it after
+  // the response pins "the swap actually landed".
+  const armSwapDone = () =>
+    page.evaluate(() => {
+      (window as unknown as { __swapDone?: Promise<void> }).__swapDone = new Promise<void>(
+        (resolve) => {
+          document.body.addEventListener('htmx:afterSwap', () => resolve(), { once: true });
+        }
+      );
+    });
+  const awaitSwapDone = () =>
+    page.evaluate(() => (window as unknown as { __swapDone?: Promise<void> }).__swapDone);
+
   // NEGATIVE (the data-never-disappears law): a refresh over the POPULATED
   // table never shows a skeleton -- not while the request is held in flight,
   // not after it lands.
@@ -146,16 +164,20 @@ test('the loading skeleton never covers a populated table and fires into a blank
   await inFlight;
   await expect(skel).toHaveCount(0);
   await expect(rows).toHaveText(['nginx', 'my-app']);
+  await armSwapDone();
   hold = false;
   const settled = page.waitForResponse((r) => r.url().includes('/_table'));
   release();
   await settled;
+  await awaitSwapDone();
   await expect(rows).toHaveText(['nginx', 'my-app']);
   await expect(skel).toHaveCount(0);
 
   // POSITIVE (the gate's other polarity): empty the swap target, refresh --
   // the skeleton clones into the blank region while the request is in flight,
-  // then the landing fragment replaces it with the real rows.
+  // then the landing fragment replaces it with the real rows. The first
+  // request is fully settled (swap awaited above), so this refresh can never
+  // queue behind it inside htmx and replay with a stale URL.
   await page.evaluate(() => {
     const content = document.getElementById('resource-list-content');
     if (content) content.replaceChildren();

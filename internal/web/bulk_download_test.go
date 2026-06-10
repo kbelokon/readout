@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/tests/unit/fakeapi"
 )
 
@@ -148,6 +149,72 @@ func TestBulkDownloadMissingNameComment(t *testing.T) {
 	}
 	if n := strings.Count(rec.Body.String(), "kind: ConfigMap"); n != 2 {
 		t.Fatalf("object documents = %d, want 2", n)
+	}
+}
+
+// TestBulkDownloadMasksSecretValues pins the D5 law (secret VALUES are never
+// serialized) on the BULK path: the single-object download masks the fetched
+// object before marshaling (buildDetailView -> maskSecret), and the bulk
+// multi-document download serializes the table's row objects, so it must
+// apply the SAME treatment. Every data value of every requested Secret comes
+// back as the mask sentinel; neither the base64 wire form nor its decoded
+// plaintext appears anywhere in the response (the fixture's
+// render_secrets_table.json carries the exact pairs below). Key NAMES survive
+// (the mask replaces values, never keys), and non-secret kinds keep their
+// data untouched -- the mask is Secret-only. Needs IncludeSecrets=true: under
+// the default config the Secret type is not even discoverable (the secret
+// barrier, TestBehaviorSecretBarrierDefaultOff).
+func TestBulkDownloadMasksSecretValues(t *testing.T) {
+	app := newServer(t, withSecrets(t), bulkClock)
+	rec := bulkGet(t, app,
+		"/clusters/test/namespaces/default/secrets?download=yaml&names=my-secret,parse-prod",
+		http.StatusOK)
+
+	body := rec.Body.String()
+	if docs := splitYAMLDocs(body); len(docs) != 2 {
+		t.Fatalf("documents = %d, want 2\nbody=%s", len(docs), body)
+	}
+	if n := strings.Count(body, "kind: Secret"); n != 2 {
+		t.Fatalf("kind: Secret documents = %d, want 2\nbody=%s", n, body)
+	}
+	// The fixture's base64 wire values and their decoded plaintexts. The
+	// decoded "token" (dG9rZW4=) is deliberately absent from this list: it is
+	// a substring of the surviving "api-token" KEY, so only its base64 form
+	// is assertable.
+	for _, leak := range []string{
+		"c3VwZXItc2VjcmV0LXZhbHVl", "super-secret-value",
+		"dG9rZW4=",
+		"bW9uZ29kYi5pbnRlcm5hbC5leGFtcGxl", "mongodb.internal.example",
+		"aHVudGVyMi1leHBvcnQtZ3JhZGU=", "hunter2-export-grade",
+		"bWFzdGVyLWtleS1zZW50aW5lbC0weENBRkU=", "master-key-sentinel-0xCAFE",
+		"QUtJQUZBS0VBQ0NFU1NLRVk=", "AKIAFAKEACCESSKEY",
+	} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("bulk YAML leaks secret material %q\nbody=%s", leak, body)
+		}
+	}
+	// Every one of the 2+4 data values is the sentinel, and the key names stay.
+	if n := strings.Count(body, kube.SecretContentHidden); n != 6 {
+		t.Fatalf("mask sentinel occurrences = %d, want 6 (one per data value)\nbody=%s", n, body)
+	}
+	for _, key := range []string{"password:", "api-token:", "MONGODB_HOST:", "PARSE_MASTER_KEY:"} {
+		if !strings.Contains(body, key) {
+			t.Fatalf("masked secret lost its key %q\nbody=%s", key, body)
+		}
+	}
+	// The same maskSecret treatment hides annotations too (the detail path's
+	// exact transformation, helpers.go maskSecret).
+	if !strings.Contains(body, "annotations-hidden") {
+		t.Fatalf("bulk secret docs miss the annotations-hidden marker\nbody=%s", body)
+	}
+
+	// Control: a CONFIGMAP bulk download keeps its data values verbatim --
+	// the mask applies to Secrets only, never to other kinds.
+	cm := bulkGet(t, app,
+		"/clusters/test/namespaces/default/configmaps?download=yaml&names=app-config",
+		http.StatusOK)
+	if got := cm.Body.String(); !strings.Contains(got, "port: 1337") || strings.Contains(got, kube.SecretContentHidden) {
+		t.Fatalf("configmap bulk download must keep data values unmasked\nbody=%s", got)
 	}
 }
 

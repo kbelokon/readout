@@ -112,16 +112,20 @@ test('over-cap selection disables bulk download with ONE refusal toast; under-ca
       (window as any).roRowState.setSelected(`e2e/default/ghost-${i}`, true);
     }
   });
-  await expect(page.locator('#ro-bulk-count')).toHaveText('101 selected');
-  await expect(page.locator('#ro-bulk-download')).toBeDisabled();
-  await expect(page.locator('.ro-toast')).toHaveCount(1);
-  await expect(page.locator('.ro-toast')).toHaveText('Download refused: 101 selected (max 100)');
-
   // Growing the over-cap selection does NOT stack more toasts (one per
-  // crossing).
+  // crossing). The growth happens IMMEDIATELY after the crossing -- before
+  // any assertions -- so the whole no-stacking check runs well inside the
+  // first toast's 3.5s lifetime (asserting on the 101 state first used to
+  // eat into it).
   await page.evaluate(() => (window as any).roRowState.setSelected('e2e/default/ghost-101', true));
   await expect(page.locator('#ro-bulk-count')).toHaveText('102 selected');
-  await expect(page.locator('.ro-toast')).toHaveCount(1);
+  await expect(page.locator('#ro-bulk-download')).toBeDisabled();
+  // Toast creation is synchronous inside the setSelected evaluates above, so
+  // the count is asserted WITHOUT retry: a stacked second toast must fail
+  // here, not be waited away.
+  expect(await page.locator('.ro-toast').count()).toBe(1);
+  // The text pins the toast to the 101 CROSSING (the 102 growth toasts nothing).
+  await expect(page.locator('.ro-toast')).toHaveText('Download refused: 101 selected (max 100)');
 
   // The toast is transient: 3.5s visible, then it leaves on its own.
   await expect(page.locator('.ro-toast')).toHaveCount(0, { timeout: 6_000 });
