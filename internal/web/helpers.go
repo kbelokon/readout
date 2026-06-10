@@ -67,10 +67,13 @@ func splitObjectName(plural, name string) (head, tail string) {
 	return name, ""
 }
 
-// statusTone maps the existing kube.CellClass Bulma text-color tone onto the
-// redesign status-dot tone vocabulary (ok/warn/err/info/mute). An empty Bulma
-// class (an unmocked kind, or a value with no recognised status) yields "" so the
-// generic fallback cell emits a dot with no tone colour.
+// statusTone decodes a kube.CellClass Bulma text class into the status-dot tone
+// vocabulary (ok/warn/err/info/mute). The value->tone DECISIONS live in exactly
+// one place -- kube.StatusTone, the SPEC §3 table, which CellClass delegates
+// every status word to -- so this is a pure decoding of that wire class, never a
+// second opinion about a word. "info" survives only for the events Reason map
+// (a kept vocabulary outside SPEC §3); an empty class (a non-status cell) yields
+// "" so the generic fallback emits a dot with no tone colour.
 func statusTone(bulmaClass string) string {
 	switch bulmaClass {
 	case "has-text-success":
@@ -88,11 +91,13 @@ func statusTone(bulmaClass string) string {
 	}
 }
 
-// transientPodPhase reports whether a pod status phase is an in-flight state that
-// should animate (the dot gets .pulse). Per the design rulebook ONLY in-flight
-// states pulse; steady states (Running/Completed/CrashLoopBackOff/Error/...)
-// never animate.
-func transientPodPhase(value string) bool {
+// transientStatus reports whether a status value is an in-flight state that
+// should animate (the dot gets .pulse): ContainerCreating, Pending,
+// Terminating, PodInitializing, and Init:* progress without an error. Per the
+// design rulebook (law §1.3) ONLY this transient set pulses -- steady states
+// never animate, and errors NEVER pulse (the Init error/backoff states are
+// excluded here and tone err via kube.StatusTone).
+func transientStatus(value string) bool {
 	switch strings.TrimSpace(value) {
 	case "ContainerCreating", "Terminating", "PodInitializing", "Pending":
 		return true

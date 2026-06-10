@@ -411,12 +411,20 @@ func rowStatus(table *Table, row Row) status {
 	return strongest
 }
 
+// RowStatusClass is the row stripe class. SPEC §3 stripes ONLY err and warn
+// rows (the 3px inset first-cell stripe); ok/info/neutral rows carry no class,
+// so a healthy row never earns a decorative stripe (colour law: green is for
+// action/live health, not row chrome). The SPEC's "warn excluding Completed"
+// clause is vacuous under StatusTone -- Completed is mute, so it never reaches
+// warn -- and is deliberately NOT special-cased here. The selected-row accent
+// stripe takes precedence in CSS.
 func RowStatusClass(table *Table, row Row) string {
-	s := rowStatus(table, row)
-	if s == statusNeutral {
+	switch s := rowStatus(table, row); s {
+	case statusErr, statusWarn:
+		return "row-status-" + s.slug()
+	default:
 		return ""
 	}
-	return "row-status-" + s.slug()
 }
 
 func PhaseSummary(table *Table) []PhaseCount {
@@ -603,12 +611,76 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// StatusTone is THE single status value->tone mapping (design SPEC §3). Every
+// status WORD in the system resolves through this table -- list tables, the
+// detail header, palette statuses, the phase strip, and events -- so no two
+// surfaces can ever disagree about a word's tone:
+//
+//	ok    Running, Ready, Active, Bound, Complete
+//	mute  Completed, Succeeded, Normal, Suspended
+//	warn  Pending, ContainerCreating, PodInitializing, Terminating, Warning,
+//	      Released, Init:* without an error
+//	err   CrashLoopBackOff, Error, Failed, NotReady, OOMKilled,
+//	      ImagePullBackOff, Evicted, BackoffLimitExceeded, Init:* whose state
+//	      carries Error/BackOff
+//
+// Anything else falls back to mute: an unknown status is shown grey, never
+// colour-invented. The events Reason vocabulary (Killing, Pulling, ...) is
+// deliberately OUTSIDE this table -- a Reason is not a status word, so the
+// Reason map in CellClass keeps its own (kept) per-value classes.
+func StatusTone(value string) string {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "Running", "Ready", "Active", "Bound", "Complete":
+		return "ok"
+	case "Completed", "Succeeded", "Normal", "Suspended":
+		return "mute"
+	case "Pending", "ContainerCreating", "PodInitializing", "Terminating", "Warning", "Released":
+		return "warn"
+	case "CrashLoopBackOff", "Error", "Failed", "NotReady", "OOMKilled", "ImagePullBackOff", "Evicted", "BackoffLimitExceeded":
+		return "err"
+	}
+	// Init container progress ("Init:0/1", "Init:CrashLoopBackOff", ...): an
+	// errored init state is err, the in-flight rest are warn.
+	if strings.HasPrefix(value, "Init:") {
+		if strings.Contains(value, "Error") || strings.Contains(value, "BackOff") {
+			return "err"
+		}
+		return "warn"
+	}
+	return "mute"
+}
+
+// statusToneClass encodes a StatusTone tone as the Bulma text class CellClass
+// speaks on the wire (cellStatus and the web layer's statusTone decode it
+// back). StatusTone never yields "info" -- that class survives only for the
+// events Reason map.
+func statusToneClass(tone string) string {
+	switch tone {
+	case "ok":
+		return "has-text-success"
+	case "warn":
+		return "has-text-warning"
+	case "err":
+		return "has-text-danger"
+	default: // mute (the StatusTone fallback)
+		return "has-text-grey"
+	}
+}
+
+// CellClass resolves a cell's Bulma text class. Status WORDS -- any plural's
+// Status column plus the events Type column (Normal/Warning ARE SPEC §3
+// vocabulary) -- delegate to StatusTone, the single value->tone table, so
+// CellClass cannot hold a second opinion about a status word. The remaining
+// branches are the non-status vocabularies kept on purpose: the events Reason
+// map (Reasons sit outside SPEC §3) and the numeric severity rules (pod
+// restarts, zero usage, zero available).
 func CellClass(plural, col string, cell any) string {
 	value := strings.TrimSpace(fmt.Sprint(cell))
 	switch plural {
 	case "events":
-		if col == "Type" && value == "Warning" {
-			return "has-text-warning"
+		if col == "Type" {
+			return statusToneClass(StatusTone(value))
 		}
 		if col == "Reason" {
 			switch value {
@@ -620,40 +692,6 @@ func CellClass(plural, col string, cell any) string {
 				return "has-text-success"
 			case "SawCompletedJob", "TriggeredScaleUp":
 				return "has-text-info"
-			}
-		}
-	case "persistentvolumeclaims":
-		if col == "Status" {
-			switch value {
-			case "Pending":
-				return "has-text-warning"
-			case "Bound":
-				return "has-text-success"
-			}
-		}
-	case "persistentvolumes":
-		if col == "Status" {
-			switch value {
-			case "Terminating":
-				return "has-text-danger"
-			case "Bound":
-				return "has-text-success"
-			}
-		}
-	case "nodes":
-		if col == "Status" && value == "Ready" {
-			return "has-text-success"
-		}
-	case "namespaces":
-		if col == "Status" {
-			switch value {
-			case "Active":
-				return "has-text-success"
-			case "Terminating":
-				// A stuck-Terminating namespace is operationally a warning; map it to
-				// the warn tone so the redesign status dot reads `.ro-dot.warn`
-				// (statusTone "has-text-warning" -> "warn").
-				return "has-text-warning"
 			}
 		}
 	case "deployments":
@@ -678,18 +716,10 @@ func CellClass(plural, col string, cell any) string {
 				return "has-text-warning"
 			}
 			return "has-text-danger"
-		case "Status":
-			switch value {
-			case "Completed":
-				return "has-text-info"
-			case "ContainerCreating", "Init:0/1", "Pending", "PodInitializing", "Terminating":
-				return "has-text-warning"
-			case "CrashLoopBackOff", "CreateContainerConfigError", "ErrImagePull", "Error", "Evicted", "ImagePullBackOff", "Init:CrashLoopBackOff", "Init:CreateContainerConfigError", "Init:Error", "InvalidImageName", "OOMKilled", "OutOfcpu":
-				return "has-text-danger"
-			case "Running":
-				return "has-text-success"
-			}
 		}
+	}
+	if col == "Status" {
+		return statusToneClass(StatusTone(value))
 	}
 	return ""
 }

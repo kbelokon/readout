@@ -279,6 +279,138 @@ func TestStatusHelpers(t *testing.T) {
 	}
 }
 
+// specStatusToneRows is the SPEC §3 status table verbatim -- one case per row,
+// including the Init:* prefix family and the explicit mute fallback. It backs
+// both the direct StatusTone pin and the CellClass delegation proof, so the
+// vocabulary is written down exactly once in this package's tests.
+var specStatusToneRows = []struct {
+	value string
+	tone  string
+}{
+	// ok
+	{"Running", "ok"},
+	{"Ready", "ok"},
+	{"Active", "ok"},
+	{"Bound", "ok"},
+	{"Complete", "ok"},
+	// mute
+	{"Completed", "mute"},
+	{"Succeeded", "mute"},
+	{"Normal", "mute"},
+	{"Suspended", "mute"},
+	// warn
+	{"Pending", "warn"},
+	{"ContainerCreating", "warn"},
+	{"PodInitializing", "warn"},
+	{"Terminating", "warn"},
+	{"Warning", "warn"},
+	{"Released", "warn"},
+	{"Init:0/1", "warn"},
+	{"Init:1/2", "warn"},
+	// err
+	{"CrashLoopBackOff", "err"},
+	{"Error", "err"},
+	{"Failed", "err"},
+	{"NotReady", "err"},
+	{"OOMKilled", "err"},
+	{"ImagePullBackOff", "err"},
+	{"Evicted", "err"},
+	{"BackoffLimitExceeded", "err"},
+	{"Init:CrashLoopBackOff", "err"},
+	{"Init:Error", "err"},
+	{"Init:ImagePullBackOff", "err"},
+	{"Init:CreateContainerConfigError", "err"},
+	// fallback: anything outside the table is mute (shown grey, never invented)
+	{"SomeOperatorPhase", "mute"},
+	{"Ready,SchedulingDisabled", "mute"},
+	{"", "mute"},
+}
+
+// TestStatusToneSpecTable pins kube.StatusTone -- THE single value->tone
+// mapping (SPEC §3) -- row by row, including the Init:* error/backoff split and
+// the mute fallback.
+func TestStatusToneSpecTable(t *testing.T) {
+	for _, c := range specStatusToneRows {
+		if got := StatusTone(c.value); got != c.tone {
+			t.Fatalf("StatusTone(%q) = %q, want %q", c.value, got, c.tone)
+		}
+	}
+	// Whitespace-tolerant like CellClass's trimmed values.
+	if got := StatusTone("  Running "); got != "ok" {
+		t.Fatalf("StatusTone untrimmed = %q, want ok", got)
+	}
+}
+
+// TestCellClassDelegatesStatusWordsToStatusTone is the delegation proof for the
+// single-owner law (D4): for EVERY SPEC §3 word, CellClass's class for a Status
+// column is exactly the statusToneClass encoding of StatusTone -- across the
+// previously hand-switched plurals (pods/namespaces/nodes/pv/pvc), kinds that
+// never had a switch (jobs), an unknown plural, and the events Type column
+// (Normal/Warning are SPEC vocabulary too). A re-introduced per-plural status
+// override in CellClass cannot pass this.
+func TestCellClassDelegatesStatusWordsToStatusTone(t *testing.T) {
+	plurals := []string{"pods", "namespaces", "nodes", "persistentvolumes", "persistentvolumeclaims", "jobs", "widgets"}
+	for _, c := range specStatusToneRows {
+		want := statusToneClass(StatusTone(c.value))
+		for _, plural := range plurals {
+			if got := CellClass(plural, "Status", c.value); got != want {
+				t.Fatalf("CellClass(%q, Status, %q) = %q, want %q (disagrees with StatusTone)", plural, c.value, got, want)
+			}
+		}
+		if got := CellClass("events", "Type", c.value); got != want {
+			t.Fatalf("CellClass(events, Type, %q) = %q, want %q (disagrees with StatusTone)", c.value, got, want)
+		}
+	}
+	// The encoding itself is lossless for the four tones the table speaks.
+	enc := map[string]string{"ok": "has-text-success", "warn": "has-text-warning", "err": "has-text-danger", "mute": "has-text-grey"}
+	for tone, class := range enc {
+		if got := statusToneClass(tone); got != class {
+			t.Fatalf("statusToneClass(%q) = %q, want %q", tone, got, class)
+		}
+	}
+}
+
+// TestRowStatusStripeOnlyErrAndWarn pins the SPEC §3 stripe rule: ONLY err and
+// warn rows carry a row-status-* class. A Running (ok) row and a Completed
+// (mute -> neutral) row carry none -- the "warn excluding Completed" SPEC
+// clause holds with no special case because Completed never tones warn. The
+// kept events Reason map still feeds the stripe (a danger Reason stripes err).
+func TestRowStatusStripeOnlyErrAndWarn(t *testing.T) {
+	pods := Table{
+		Resource: ResourceType{Plural: "pods", Kind: "Pod"},
+		Columns:  []Column{{Name: "Name"}, {Name: "Status"}},
+	}
+	cases := []struct {
+		status string
+		want   string
+	}{
+		{"Running", ""},
+		{"Completed", ""},
+		{"Pending", "row-status-warn"},
+		{"Init:1/2", "row-status-warn"},
+		{"CrashLoopBackOff", "row-status-err"},
+		{"Init:CrashLoopBackOff", "row-status-err"},
+		{"SomeOperatorPhase", ""},
+	}
+	for _, c := range cases {
+		row := Row{Cells: []any{"p", c.status}}
+		if got := RowStatusClass(&pods, row); got != c.want {
+			t.Fatalf("pods %q stripe = %q, want %q", c.status, got, c.want)
+		}
+	}
+	events := Table{
+		Resource: ResourceType{Plural: "events", Kind: "Event"},
+		Columns:  []Column{{Name: "Type"}, {Name: "Reason"}},
+	}
+	if got := RowStatusClass(&events, Row{Cells: []any{"Warning", "FailedScheduling"}}); got != "row-status-err" {
+		t.Fatalf("events danger-Reason stripe = %q, want row-status-err", got)
+	}
+	// An ok-Reason row (Started) must NOT stripe green -- ok stripes are retired.
+	if got := RowStatusClass(&events, Row{Cells: []any{"Normal", "Started"}}); got != "" {
+		t.Fatalf("events ok-Reason stripe = %q, want none", got)
+	}
+}
+
 func TestPhaseSummaryForPodsUsesStatusCellLabels(t *testing.T) {
 	table := Table{
 		Resource: ResourceType{Plural: "pods", Kind: "Pod"},
@@ -297,7 +429,8 @@ func TestPhaseSummaryForPodsUsesStatusCellLabels(t *testing.T) {
 		class string
 	}{
 		{"Running", 2, "has-text-success"},
-		{"Completed", 1, "has-text-info"},
+		// Completed is mute under SPEC §3 (a finished pod is history, not info).
+		{"Completed", 1, "has-text-grey"},
 		{"ImagePullBackOff", 1, "has-text-danger"},
 	}
 	if len(got) != len(want) {
@@ -326,9 +459,10 @@ func TestRowStatusClassNames(t *testing.T) {
 		Resource: ResourceType{Plural: "pods", Kind: "Pod"},
 		Columns:  []Column{{Name: "Status"}},
 	}
+	// SPEC §3: ok rows carry NO stripe class (only err/warn stripe).
 	row := Row{Cells: []any{"Running"}}
-	if got := RowStatusClass(&table, row); got != "row-status-ok" {
-		t.Fatalf("class = %q, want row-status-ok", got)
+	if got := RowStatusClass(&table, row); got != "" {
+		t.Fatalf("class = %q, want none for an ok row", got)
 	}
 	table = Table{
 		Resource: ResourceType{Plural: "events", Kind: "Event"},

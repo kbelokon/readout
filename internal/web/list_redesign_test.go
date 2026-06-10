@@ -171,14 +171,14 @@ func TestStatusToneMapping(t *testing.T) {
 
 	transient := []string{"ContainerCreating", "Terminating", "PodInitializing", "Pending", "Init:0/1"}
 	for _, phase := range transient {
-		if !transientPodPhase(phase) {
-			t.Fatalf("transientPodPhase(%q) = false, want true (in-flight state)", phase)
+		if !transientStatus(phase) {
+			t.Fatalf("transientStatus(%q) = false, want true (in-flight state)", phase)
 		}
 	}
 	steady := []string{"Running", "Completed", "CrashLoopBackOff", "Error", "Init:CrashLoopBackOff", "ImagePullBackOff"}
 	for _, phase := range steady {
-		if transientPodPhase(phase) {
-			t.Fatalf("transientPodPhase(%q) = true, want false (steady state must not pulse)", phase)
+		if transientStatus(phase) {
+			t.Fatalf("transientStatus(%q) = true, want false (steady state must not pulse)", phase)
 		}
 	}
 }
@@ -391,7 +391,7 @@ func statesRow(p *page, name string) *goquery.Selection {
 
 // TestPodsListTransientStatusPulsesThroughRender closes the load-bearing gap: the
 // POSITIVE pulse direction reaching the DOM. It drives the real handler against
-// the "states" pods fixture (statusTone + transientPodPhase run in assembly), and
+// the "states" pods fixture (statusTone + transientStatus run in assembly), and
 // asserts that a TRANSIENT pod's status dot pulses while a STEADY Running pod in
 // the SAME render does not. Reverting dotClass2 to never append " pulse" makes
 // this fail (the transient rows lose their .ro-dot.pulse).

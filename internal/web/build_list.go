@@ -582,6 +582,8 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 			ns := nestedString(row.Object, "metadata", "namespace")
 			name := cellString(row, nameColumn(table))
 			rv := rowView{
+				// The row stripe (SPEC §3: err/warn rows only) derives from the same
+				// kube.StatusTone table the status dot uses, via RowStatusClass.
 				StatusClass:  kube.RowStatusClass(table, row),
 				Cluster:      row.Cluster,
 				Namespace:    ns,
@@ -764,10 +766,13 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cv.Value = memoryMiBFormat(cell)
 	case colName == "Status":
 		cv.Kind = cellStatus
+		// cls is kube.CellClass's encoding of kube.StatusTone (SPEC §3, the single
+		// value->tone owner), so the dot tone always exists (fallback mute).
 		cv.Tone = statusTone(cls)
-		if table.Resource.Plural == "pods" {
-			cv.Pulse = transientPodPhase(value)
-		}
+		// Pulse the transient set for ANY kind's status cell (law §1.3) -- the set
+		// itself gates (steady and err states never pulse), so a Terminating
+		// namespace pulses exactly like a Terminating pod.
+		cv.Pulse = transientStatus(value)
 	case colName == "Ready" && strings.Contains(value, "/"):
 		cv.Kind = cellReady
 		cv.Ratio = readyRatioClass(value)

@@ -47,7 +47,8 @@ func TestFormattingHelpers(t *testing.T) {
 
 func TestTableCellFormattingHelpers(t *testing.T) {
 	table := kube.Table{Resource: kube.ResourceType{Plural: "pods"}, Columns: []kube.Column{{Name: "Name"}, {Name: "Status"}, {Name: "CPU Usage"}, {Name: "Memory Usage"}}}
-	if cellClass(&table, 1, "Running") != "has-text-success" || cellClass(&table, 1, "Completed") != "has-text-info" || cellClass(&table, 1, "ImagePullBackOff") != "has-text-danger" || cellClass(&table, 1, "Pending") != "has-text-warning" {
+	// Completed encodes mute under SPEC §3 (was the retired info tone).
+	if cellClass(&table, 1, "Running") != "has-text-success" || cellClass(&table, 1, "Completed") != "has-text-grey" || cellClass(&table, 1, "ImagePullBackOff") != "has-text-danger" || cellClass(&table, 1, "Pending") != "has-text-warning" {
 		t.Fatalf("cellClass mismatch")
 	}
 	if cellClass(&table, -1, "x") != "" || readyRatioClass("0/2") != "zero" || readyRatioClass("2/2") != "full" || readyRatioClass("1/2") != "partial" || readyRatioClass("ready") != "" {
@@ -74,6 +75,102 @@ func TestTableCellFormattingHelpers(t *testing.T) {
 	}
 	if got, ok := numericCell("bad"); ok || got != 0 {
 		t.Fatalf("numericCell bad = %v %v", got, ok)
+	}
+}
+
+// TestStatusToneSpecTableCrossPackage is the cross-package delegation proof for
+// the single-owner law (D4): for EVERY SPEC §3 row, the tone the web layer
+// decodes out of kube.CellClass equals kube.StatusTone's verdict -- across the
+// formerly hand-switched plurals, kinds that never had a switch (jobs), an
+// unknown plural, and the events Type column. kube.CellClass and the tone table
+// cannot disagree on a SPEC word without failing here. Each row also pins the
+// pulse rule (law §1.3): ONLY the transient set animates -- Init:1/2 is
+// warn+pulse, Init:CrashLoopBackOff is err and (like every err) NEVER pulses.
+func TestStatusToneSpecTableCrossPackage(t *testing.T) {
+	rows := []struct {
+		value string
+		tone  string
+		pulse bool
+	}{
+		// ok -- steady, never pulse
+		{"Running", "ok", false},
+		{"Ready", "ok", false},
+		{"Active", "ok", false},
+		{"Bound", "ok", false},
+		{"Complete", "ok", false},
+		// mute -- history/quiet, never pulse
+		{"Completed", "mute", false},
+		{"Succeeded", "mute", false},
+		{"Normal", "mute", false},
+		{"Suspended", "mute", false},
+		// warn -- the transient subset pulses, the steady warns do not
+		{"Pending", "warn", true},
+		{"ContainerCreating", "warn", true},
+		{"PodInitializing", "warn", true},
+		{"Terminating", "warn", true},
+		{"Warning", "warn", false},
+		{"Released", "warn", false},
+		{"Init:0/1", "warn", true},
+		{"Init:1/2", "warn", true},
+		// err -- errors NEVER pulse
+		{"CrashLoopBackOff", "err", false},
+		{"Error", "err", false},
+		{"Failed", "err", false},
+		{"NotReady", "err", false},
+		{"OOMKilled", "err", false},
+		{"ImagePullBackOff", "err", false},
+		{"Evicted", "err", false},
+		{"BackoffLimitExceeded", "err", false},
+		{"Init:CrashLoopBackOff", "err", false},
+		{"Init:Error", "err", false},
+		// fallback mute
+		{"SomeOperatorPhase", "mute", false},
+	}
+	plurals := []string{"pods", "namespaces", "nodes", "persistentvolumes", "persistentvolumeclaims", "jobs", "widgets"}
+	for _, c := range rows {
+		if got := kube.StatusTone(c.value); got != c.tone {
+			t.Fatalf("kube.StatusTone(%q) = %q, want %q", c.value, got, c.tone)
+		}
+		for _, plural := range plurals {
+			if got := statusTone(kube.CellClass(plural, "Status", c.value)); got != c.tone {
+				t.Fatalf("statusTone(CellClass(%q, Status, %q)) = %q, want %q (CellClass disagrees with StatusTone)", plural, c.value, got, c.tone)
+			}
+		}
+		if got := statusTone(kube.CellClass("events", "Type", c.value)); got != c.tone {
+			t.Fatalf("statusTone(CellClass(events, Type, %q)) = %q, want %q", c.value, got, c.tone)
+		}
+		if got := transientStatus(c.value); got != c.pulse {
+			t.Fatalf("transientStatus(%q) = %t, want %t", c.value, got, c.pulse)
+		}
+		if c.tone == "err" && transientStatus(c.value) {
+			t.Fatalf("err state %q must never pulse (law §1.3)", c.value)
+		}
+	}
+}
+
+// TestStatusCellTransientPulseNotPodGated pins that the transient pulse reaches
+// the assembled status cell for a NON-pod kind too: a Terminating namespace's
+// status cell pulses exactly like a Terminating pod's (the word set gates, not
+// the plural), while its Active neighbour stays steady with an ok tone.
+func TestStatusCellTransientPulseNotPodGated(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	table := &kube.Table{
+		Resource: kube.ResourceType{Plural: "namespaces", Kind: "Namespace", Version: "v1", APIVersion: "v1"},
+		Columns:  []kube.Column{{Name: "Name"}, {Name: "Status"}},
+		Clusters: []string{"test"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces", nil)
+	row := kube.Row{Cells: []any{"doomed", "Terminating"}, Cluster: "test", Object: map[string]any{
+		"metadata": map[string]any{"name": "doomed", "creationTimestamp": "2026-06-02T10:45:45Z"},
+	}}
+	cv := app.buildCellView(req, table, row, 1, row.Cells[1], "", "doomed")
+	if cv.Kind != cellStatus || cv.Tone != "warn" || !cv.Pulse {
+		t.Fatalf("Terminating namespace cell = kind %d tone %q pulse %t, want status/warn/pulsing", cv.Kind, cv.Tone, cv.Pulse)
+	}
+	row.Cells = []any{"healthy", "Active"}
+	cv = app.buildCellView(req, table, row, 1, row.Cells[1], "", "healthy")
+	if cv.Tone != "ok" || cv.Pulse {
+		t.Fatalf("Active namespace cell = tone %q pulse %t, want steady ok", cv.Tone, cv.Pulse)
 	}
 }
 
