@@ -85,6 +85,12 @@ type NavItem struct {
 	// (icons.KindIcon / icons.PluralMonogram), emitted raw. Empty for nav items
 	// that carry no icon slot (namespaces, Meta links).
 	Icon string
+
+	// Count/HasCount carry the per-kind object count (D13): the trailing mono
+	// `.menu-count` span. HasCount distinguishes a real "0" (rendered) from an
+	// absent count (failed fetch / multi-cluster scope / non-kind entry).
+	Count    string
+	HasCount bool
 }
 
 // Layout renders the full HTML document around body. The <html> data-theme
@@ -213,14 +219,19 @@ templ sidebarC(s Sidebar) {
 }
 
 // sidebarLinkC renders one sidebar entry: the icon slot (emitted raw -- the
-// resolver markup is trusted-shape) + the label, with the .menu-item class and
-// the .is-active accent on the current path. iconMarkup may be empty (no slot).
+// resolver markup is trusted-shape) + the label + the optional trailing mono
+// count (D13: absent on a failed fetch or out of single-cluster scope; a real
+// zero renders "0"), with the .menu-item class and the .is-active accent on
+// the current path. iconMarkup may be empty (no slot).
 templ sidebarLinkC(link NavItem, iconMarkup string) {
 	<a class={ menuItemClass(link.Active) } href={ templ.SafeURL(link.Href) }>
 		if iconMarkup != "" {
 			@templ.Raw(iconMarkup)
 		}
 		<span class="nav-label">{ link.Text }</span>
+		if link.HasCount {
+			<span class="menu-count">{ link.Count }</span>
+		}
 	</a>
 }
 

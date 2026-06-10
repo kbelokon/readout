@@ -105,8 +105,11 @@ func toNavItems(items []navItem) []templates.NavItem {
 		return nil
 	}
 	out := make([]templates.NavItem, len(items))
-	for i, it := range items {
-		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active}
+	for i := range items {
+		it := &items[i]
+		// Count/HasCount ride along for the sidebar Meta entries (the Events
+		// meta carries a count, D13); namespace nav items never set them.
+		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active, Count: it.Count, HasCount: it.HasCount}
 	}
 	return out
 }
@@ -121,8 +124,9 @@ func toSidebarItems(items []navItem) []templates.NavItem {
 		return nil
 	}
 	out := make([]templates.NavItem, len(items))
-	for i, it := range items {
-		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active, Icon: string(it.Icon)}
+	for i := range items {
+		it := &items[i]
+		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active, Icon: string(it.Icon), Count: it.Count, HasCount: it.HasCount}
 	}
 	return out
 }

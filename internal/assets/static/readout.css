@@ -2041,6 +2041,12 @@
         content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px;
         width: 2.5px; border-radius: 2px; background: var(--accent);
     }
+    /* Per-kind object count (D13, SPEC §6.2): the trailing mono badge on a
+       sidebar entry. margin-left:auto pushes it to the row's right edge. */
+    .ro-sidebar .menu-list a .menu-count {
+        margin-left: auto; font-family: var(--font-mono);
+        font-size: 11px; color: var(--text-faint);
+    }
 
     .ro-main { flex: 1; min-width: 0; padding: 22px 26px 80px; }
     .ro-main.wide { max-width: 100%; }

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -309,7 +310,7 @@ func (c *Client) List(ctx context.Context, rt *ResourceType, opts ListOptions) (
 	if c.denied != nil {
 		return nil, c.denied
 	}
-	listOpts := metav1.ListOptions{LabelSelector: opts.LabelSelector, FieldSelector: opts.FieldSelector}
+	listOpts := metav1.ListOptions{LabelSelector: opts.LabelSelector, FieldSelector: opts.FieldSelector, Limit: opts.Limit}
 	if rt.Namespaced && opts.Namespace != "" && opts.Namespace != AllNamespaces {
 		return c.dynamic.Resource(rt.GVR()).Namespace(opts.Namespace).List(ctx, listOpts)
 	}
@@ -342,6 +343,9 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 	if opts.FieldSelector != "" {
 		q.Set("fieldSelector", opts.FieldSelector)
 	}
+	if opts.Limit > 0 {
+		q.Set("limit", strconv.FormatInt(opts.Limit, 10))
+	}
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -362,6 +366,7 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 		return Table{}, tableResponseError(resp.StatusCode, resp.Status, body)
 	}
 	var raw struct {
+		Metadata          metav1.ListMeta                `json:"metadata"`
 		ColumnDefinitions []metav1.TableColumnDefinition `json:"columnDefinitions"`
 		Rows              []struct {
 			Cells  []any           `json:"cells"`
@@ -371,7 +376,7 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return Table{}, err
 	}
-	table := Table{Resource: *rt, Clusters: []string{}}
+	table := Table{Resource: *rt, Clusters: []string{}, RemainingItemCount: raw.Metadata.RemainingItemCount}
 	for _, col := range raw.ColumnDefinitions {
 		table.Columns = append(table.Columns, Column{
 			Name:        col.Name,

@@ -18,7 +18,12 @@ func defaultSidebarGroups() []config.SidebarGroup {
 	return []config.SidebarGroup{
 		{Label: "Cluster Resources", Resources: []string{"namespaces", "nodes", "persistentvolumes"}},
 		{Label: "Controllers", Resources: []string{"deployments", "cronjobs", "jobs", "daemonsets", "statefulsets"}},
-		{Label: "Pod Management", Resources: []string{"ingresses", "services", "pods", "configmaps"}},
+		// Secrets close the §6.2 Pod Management group (D13). With the secret
+		// barrier down (IncludeSecrets=false, the default) discovery filters the
+		// Secret type out, sidebarResourceLink fails to resolve it, and the entry
+		// simply does not render -- so the curated entry only appears when the
+		// operator opted into secrets.
+		{Label: "Pod Management", Resources: []string{"ingresses", "services", "pods", "configmaps", "secrets"}},
 	}
 }
 
@@ -109,6 +114,18 @@ type navItem struct {
 	Plural  string
 	IsCRD   bool
 	HasKind bool // true once a kube.ResourceType was resolved (vs the no-discovery fallback)
+
+	// Resource is the full resolved kube.ResourceType behind the entry (zero
+	// unless HasKind). The sidebar counts fetch needs the parts the flat fields
+	// above drop -- APIVersion (the count cache key) and Namespaced (whether the
+	// count is namespace- or cluster-scoped).
+	Resource kube.ResourceType
+
+	// Count/HasCount carry the per-kind object count (D13): the mono
+	// `.menu-count` value. HasCount distinguishes a real "0" (rendered) from a
+	// failed or never-attempted fetch (no count shown).
+	Count    string
+	HasCount bool
 
 	// Icon is the pre-rendered per-entry glyph from the Unit-1 resolver
 	// (icons.KindIcon when HasKind, else icons.PluralMonogram), resolved in the
@@ -235,7 +252,8 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, cl
 		}
 	}
 
-	for _, ns := range navbar.NamespaceLinks {
+	for i := range navbar.NamespaceLinks {
+		ns := &navbar.NamespaceLinks[i]
 		feed.Namespaces = append(feed.Namespaces, paletteLinkFeed{Name: ns.Text, Href: ns.Href})
 	}
 
@@ -299,7 +317,8 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, cl
 	for _, a := range feed.Actions {
 		metaSeen[a.Label] = true
 	}
-	for _, meta := range sidebar.Meta {
+	for i := range sidebar.Meta {
+		meta := &sidebar.Meta[i]
 		if metaSeen[meta.Text] {
 			continue
 		}
@@ -415,14 +434,15 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, cl
 				continue
 			}
 			item := navItem{
-				Href:    link.Href,
-				Text:    link.Text,
-				Active:  r.URL.Path == link.Href,
-				Kind:    link.Kind,
-				Group:   link.Group,
-				Plural:  link.Plural,
-				IsCRD:   link.IsCRD,
-				HasKind: link.HasKind,
+				Href:     link.Href,
+				Text:     link.Text,
+				Active:   r.URL.Path == link.Href,
+				Kind:     link.Kind,
+				Group:    link.Group,
+				Plural:   link.Plural,
+				IsCRD:    link.IsCRD,
+				HasKind:  link.HasKind,
+				Resource: link.Resource,
 			}
 			item.Icon = sidebarNavIcon(s, &item)
 			links = append(links, item)
@@ -434,16 +454,64 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, cl
 	}
 
 	if cluster != "" && namespace != "" {
-		for _, link := range []navItem{
+		metaLinks := []navItem{
 			{Text: "Resource Types", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/_resource-types", url.PathEscape(cluster), url.PathEscape(namespace))},
 			{Text: "Events", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/events", url.PathEscape(cluster), url.PathEscape(namespace))},
-		} {
-			link.Active = r.URL.Path == link.Href
-			v.Meta = append(v.Meta, link)
 		}
+		for i := range metaLinks {
+			metaLinks[i].Active = r.URL.Path == metaLinks[i].Href
+		}
+		v.Meta = append(v.Meta, metaLinks...)
 	} else if cluster != "" {
 		href := fmt.Sprintf("/clusters/%s/_resource-types", cluster)
 		v.Meta = append(v.Meta, navItem{Text: "Resource Types", Href: href, Active: r.URL.Path == href})
 	}
+
+	// Per-kind counts (D13): collected AFTER the view is fully assembled so the
+	// target pointers into v.Groups/v.Meta stay valid, fetched concurrently
+	// under one short deadline. With no concrete client (multi-cluster `_all`,
+	// unknown cluster, no manager) no targets resolve and the sidebar renders
+	// no counts.
+	s.attachSidebarCounts(r.Context(), client, cluster, s.sidebarCountTargets(r, client, namespace, &v))
 	return v
+}
+
+// sidebarCountTargets collects the sidebar entries that receive a count: every
+// group entry with a resolved resource type, plus the namespace-scope Events
+// meta entry (the §6.2 prototype shows a count on Events but not on Resource
+// Types, which is not a kind). Namespaced kinds count within the in-scope
+// namespace; cluster-scoped kinds count cluster-wide.
+func (s *Server) sidebarCountTargets(r *http.Request, client *kube.Client, namespace string, v *sidebarView) []countTarget {
+	if client == nil {
+		return nil
+	}
+	var targets []countTarget
+	for gi := range v.Groups {
+		for li := range v.Groups[gi].Links {
+			item := &v.Groups[gi].Links[li]
+			if !item.HasKind {
+				continue
+			}
+			ns := ""
+			if item.Resource.Namespaced {
+				ns = namespace
+			}
+			targets = append(targets, countTarget{item: item, resource: item.Resource, namespace: ns})
+		}
+	}
+	if namespace != "" {
+		for mi := range v.Meta {
+			if v.Meta[mi].Text != "Events" {
+				continue
+			}
+			// The Events meta link lists the preferred events kind in the scoped
+			// namespace; resolve the same type for its count. Discovery is already
+			// warm (the groups above resolved through it); a failure just leaves
+			// the Events entry uncounted.
+			if rt, err := client.FindResource(r.Context(), "events", true, ""); err == nil {
+				targets = append(targets, countTarget{item: &v.Meta[mi], resource: rt, namespace: namespace})
+			}
+		}
+	}
+	return targets
 }

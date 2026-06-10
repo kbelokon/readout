@@ -41,6 +41,11 @@ type Server struct {
 	// instant for deterministic, bucket-exercising output. Under real time
 	// (now == time.Now) every render is byte-identical to a direct time.Now call.
 	now func() time.Time
+
+	// counts is the sidebar per-kind count cache (D13): keyed by the exact list
+	// each sidebar entry points at, TTL-invalidated against the s.now clock.
+	// The zero value is ready; no constructor wiring needed.
+	counts countCache
 }
 
 var withBearerClient = func(client *kube.Client, token string) (*kube.Client, error) {

@@ -96,12 +96,24 @@ type Table struct {
 	Columns  []Column
 	Rows     []Row
 	Clusters []string
+
+	// RemainingItemCount mirrors the response's metadata.remainingItemCount:
+	// with a ListOptions.Limit the apiserver returns the first chunk plus an
+	// ESTIMATE of how many items it left out (nil when the list was complete or
+	// the server does not paginate). The sidebar counts consume it as
+	// len(Rows) + RemainingItemCount.
+	RemainingItemCount *int64
 }
 
 type ListOptions struct {
 	Namespace     string
 	LabelSelector string
 	FieldSelector string
+
+	// Limit caps the number of items the apiserver returns (the chunked-list
+	// `?limit=N` parameter); 0 means no limit. A limited response carries
+	// metadata.remainingItemCount + continue, which Table surfaces.
+	Limit int64
 }
 
 type LogOptions struct {

@@ -180,6 +180,44 @@ func TestTableUsesServerSideTableAccept(t *testing.T) {
 	}
 }
 
+// TestTableLimitChunkAndRemainingItemCount pins the chunked Table fetch the
+// sidebar counts ride on: ListOptions.Limit becomes the `?limit=N` query
+// parameter, the response chunk is decoded as-is, and the chunk's
+// metadata.remainingItemCount surfaces on Table.RemainingItemCount. An
+// unlimited fetch keeps RemainingItemCount nil.
+func TestTableLimitChunkAndRemainingItemCount(t *testing.T) {
+	f := newFakeAPIServer(t)
+	client := f.client(t, false)
+
+	rt, err := client.FindResource(context.Background(), "pods", true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := client.Table(context.Background(), &rt, ListOptions{Namespace: "default", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pods fixture has 2 rows: limit=1 must return one row and report the
+	// remainder (the fakeapi mirrors the live-probed apiserver shape).
+	if len(table.Rows) != 1 {
+		t.Fatalf("limited table rows = %d, want 1", len(table.Rows))
+	}
+	if table.RemainingItemCount == nil || *table.RemainingItemCount != 1 {
+		t.Fatalf("limited table RemainingItemCount = %v, want 1", table.RemainingItemCount)
+	}
+
+	full, err := client.Table(context.Background(), &rt, ListOptions{Namespace: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Rows) != 2 {
+		t.Fatalf("unlimited table rows = %d, want 2", len(full.Rows))
+	}
+	if full.RemainingItemCount != nil {
+		t.Fatalf("unlimited table RemainingItemCount = %v, want nil", full.RemainingItemCount)
+	}
+}
+
 func TestClientDiscoveryListGetAndBearerHelpers(t *testing.T) {
 	f := newFakeAPIServer(t)
 	client := f.client(t, false)
