@@ -110,6 +110,67 @@ test('a cluster-scoped kind shows no namespace crumb and no all-namespaces link'
   await expect(page.locator('.ro-table-meta a', { hasText: 'across all namespaces' })).toBeVisible();
 });
 
+test('the loading skeleton never covers a populated table and fires into a blank region', async ({ page }) => {
+  await page.goto(PODS);
+  const rows = page.locator('#resource-list-content table.ro-table tbody td.cell-name');
+  const skel = page.locator('#resource-list-content .skel-row');
+  await expect(rows).toHaveText(['nginx', 'my-app']);
+
+  // Hold every `_table` partial in the browser network layer so the in-flight
+  // window is deterministic (the fakeapi has no delay control).
+  let hold = false;
+  const pending: Array<() => void> = [];
+  const release = () => {
+    while (pending.length > 0) {
+      const resolve = pending.shift();
+      if (resolve) resolve();
+    }
+  };
+  await page.route('**/_table*', async (route) => {
+    if (hold) {
+      await new Promise<void>((resolve) => pending.push(resolve));
+    }
+    await route.continue();
+  });
+  // requestListRefresh is the production refresh path (the tick / Retry-now
+  // entry point); a top-level classic-script function, reachable on window.
+  const triggerRefresh = () =>
+    page.evaluate(() => (window as unknown as { requestListRefresh(): void }).requestListRefresh());
+
+  // NEGATIVE (the data-never-disappears law): a refresh over the POPULATED
+  // table never shows a skeleton -- not while the request is held in flight,
+  // not after it lands.
+  hold = true;
+  let inFlight = page.waitForRequest((r) => r.url().includes('/_table'));
+  await triggerRefresh();
+  await inFlight;
+  await expect(skel).toHaveCount(0);
+  await expect(rows).toHaveText(['nginx', 'my-app']);
+  hold = false;
+  const settled = page.waitForResponse((r) => r.url().includes('/_table'));
+  release();
+  await settled;
+  await expect(rows).toHaveText(['nginx', 'my-app']);
+  await expect(skel).toHaveCount(0);
+
+  // POSITIVE (the gate's other polarity): empty the swap target, refresh --
+  // the skeleton clones into the blank region while the request is in flight,
+  // then the landing fragment replaces it with the real rows.
+  await page.evaluate(() => {
+    const content = document.getElementById('resource-list-content');
+    if (content) content.replaceChildren();
+  });
+  hold = true;
+  inFlight = page.waitForRequest((r) => r.url().includes('/_table'));
+  await triggerRefresh();
+  await inFlight;
+  await expect(skel.first()).toBeVisible();
+  hold = false;
+  release();
+  await expect(rows).toHaveText(['nginx', 'my-app']);
+  await expect(skel).toHaveCount(0);
+});
+
 test('a failed auto-refresh dims the last-good rows and reveals the stale banner', async ({ page }) => {
   await page.goto(PODS);
   const rows = page.locator('#resource-list-content table.ro-table tbody td.cell-name');

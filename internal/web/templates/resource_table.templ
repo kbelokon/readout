@@ -860,6 +860,8 @@ templ pcardCell(cell TableCell) {
 			if cell.EvAgeRest != "" {
 				{ " " }<span class="faint evage-rest">{ cell.EvAgeRest }</span>
 			}
+		case CellMsg:
+			<span class="ro-event-msg">{ cell.Value }</span>
 		case CellMemory:
 			{ cell.Value + " MiB" }
 		default:

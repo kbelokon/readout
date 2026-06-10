@@ -2723,6 +2723,10 @@
     .ro-pcard .pc-meta .m .k { color: var(--text-faint); }
     .ro-pcard .pc-status { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono);
         font-size: 11.5px; flex: none; }
+    /* events message in a card meta row: the same muted wrap treatment as the
+       table's td.ro-event-msg (that rule is td-scoped and cannot reach a card
+       <span>); min-width lets the span shrink-wrap inside the inline-flex .m */
+    .ro-pcard .pc-meta .ro-event-msg { white-space: normal; min-width: 0; color: var(--text-muted); }
 
     /* ================================================================ ⌘K PALETTE (redesign canonical .ro-pal-*)
        The redesign palette is an OVERLAY appended to <body>, OUTSIDE the `.ro-rd`

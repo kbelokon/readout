@@ -229,6 +229,47 @@ func TestMobileCardsThroughEngineMirrorTableCells(t *testing.T) {
 	}
 }
 
+// TestMobileCardsEventsMessageKeepsMsgTreatment pins the card projection of the
+// events Message cell (SPEC §4.16): below 760px the card meta value must carry
+// the SAME `.ro-event-msg` treatment marker the table's td does (muted ink +
+// wrapping live in CSS keyed on that class; the td-scoped rule cannot reach a
+// card <span>, so a card-scope rule keys on the same class). Without the
+// CellMsg branch in pcardCell the message rendered as bare unstyled text.
+// Driven through the REAL bridge pipeline (renderCellViews), which emits the
+// card list alongside the table.
+func TestMobileCardsEventsMessageKeepsMsgTreatment(t *testing.T) {
+	const msg = "Back-off restarting failed container app in pod ugc-backend-8b9fc9d44-nxxz9"
+	doc := renderCellViews(t, "events", "Events", []string{"Message"}, []cellView{msgCellView(msg)})
+
+	// The table half (the existing desktop contract) still holds.
+	if doc.Find("table.ro-table td.ro-event-msg").Length() != 1 {
+		t.Fatalf("table message cell lost its td.ro-event-msg treatment")
+	}
+
+	// The card half: the meta value rides in a .ro-event-msg span, verbatim.
+	cardMsg := doc.Find(".ro-cardlist .ro-pcard .pc-meta .m .ro-event-msg")
+	if cardMsg.Length() != 1 {
+		t.Fatalf("card message meta missing the .ro-event-msg treatment; card meta html=%s", htmlOf(t, doc.Find(".ro-cardlist .ro-pcard .pc-meta")))
+	}
+	if got := normSpace(cardMsg.Text()); got != msg {
+		t.Fatalf("card message text = %q, want the verbatim message %q", got, msg)
+	}
+	// And the meta row is keyed by its column header, like every other cell.
+	if key := normSpace(doc.Find(".ro-cardlist .ro-pcard .pc-meta .m .k").First().Text()); key != "message" {
+		t.Fatalf("card message meta key = %q, want message", key)
+	}
+}
+
+// htmlOf renders a selection back to HTML for failure messages.
+func htmlOf(t *testing.T, sel *goquery.Selection) string {
+	t.Helper()
+	h, err := sel.Html()
+	if err != nil {
+		t.Fatalf("render selection html: %v", err)
+	}
+	return h
+}
+
 // TestMobileMenuToggleExistsWhereverSidebarDoes pins the hamburger contract (D11):
 // the topbar carries a `.menu-toggle` <button> on every page that renders a sidebar
 // (so the delegated readout.js click can reveal it), and OMITS it on the Clusters

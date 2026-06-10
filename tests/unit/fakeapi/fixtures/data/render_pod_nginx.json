@@ -8,7 +8,10 @@
     "resourceVersion": "201",
     "creationTimestamp": "2024-03-01T10:00:00Z",
     "labels": {"app": "nginx"},
-    "annotations": {"example.com/note": "generic-annotation"}
+    "annotations": {
+      "example.com/note": "generic-annotation",
+      "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"labels\":{\"app\":\"nginx\"},\"name\":\"nginx\",\"namespace\":\"default\"},\"spec\":{\"containers\":[{\"image\":\"nginx:1.27\",\"name\":\"nginx\",\"ports\":[{\"containerPort\":80,\"protocol\":\"TCP\"}]}]}}\n"
+    }
   },
   "spec": {
     "containers": [

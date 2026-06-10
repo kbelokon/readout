@@ -2,11 +2,14 @@ package kube
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	appconfig "github.com/kbelokon/readout/internal/config"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
@@ -291,6 +294,38 @@ func TestZeroContextKubeconfigStartsEmpty(t *testing.T) {
 	}
 	if got := m.Broken(); len(got) != 0 {
 		t.Fatalf("zero configured clusters must not surface broken entries: %#v", got)
+	}
+}
+
+// TestBrokenInClusterServiceAccountSurfacesAsBroken pins the other half of the
+// in-cluster fallback: when the env says we ARE in a pod (KUBERNETES_SERVICE_
+// HOST/PORT set) but the ServiceAccount config is broken (the token file is
+// unreadable), rest.InClusterConfig fails with a NON-ErrNotInCluster error.
+// That error must surface as a broken "local" cluster -- NOT be silently
+// discarded and masked as the first-run "nothing configured" state (which
+// buildClustersData suppresses whenever Broken() is non-empty). Only the real
+// not-in-a-cluster sentinel may fall through silently.
+func TestBrokenInClusterServiceAccountSurfacesAsBroken(t *testing.T) {
+	if _, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token"); err == nil {
+		t.Skip("a real in-cluster ServiceAccount token exists; cannot fake a broken in-cluster env")
+	}
+	t.Setenv("KUBECONFIG", writeKubeconfig(t, map[string]string{}))
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+
+	m, err := NewManager(context.Background(), &appconfig.Config{})
+	if err != nil {
+		t.Fatalf("a broken in-cluster ServiceAccount must not be a fatal startup error: %v", err)
+	}
+	if got := m.Clusters(); len(got) != 0 {
+		t.Fatalf("no cluster can load from a broken ServiceAccount, got %#v", got)
+	}
+	broken := m.Broken()
+	if len(broken) != 1 || broken[0].Name != "local" || broken[0].Source != SourceInCluster {
+		t.Fatalf("expected ONE broken in-cluster entry named local, got %#v", broken)
+	}
+	if broken[0].Err == nil || errors.Is(broken[0].Err, rest.ErrNotInCluster) {
+		t.Fatalf("the broken entry must carry the REAL ServiceAccount error, got %v", broken[0].Err)
 	}
 }
 

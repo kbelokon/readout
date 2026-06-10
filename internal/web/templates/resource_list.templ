@@ -80,11 +80,12 @@ templ ResourceList(d ListPageData) {
 // VISIBLE column (widths from skelWidths), fading toward the bottom. It lives
 // OUTSIDE the #resource-list-content morph target so it survives swaps and is
 // still present when the container is empty. readout.js clones it into the
-// container on htmx:beforeRequest ONLY when the swap target region is EMPTY
-// (no table, no state card -- the first paint of a partial into a blank
-// region); a POPULATED table NEVER gets a skeleton over live rows (the
-// data-never-disappears law) -- slow refreshes keep the last-good rows.
-// Boosted full-page navigations keep the global #ro-progress sweep instead.
+// container on htmx:beforeRequest ONLY when the swap target region is BLANK
+// (zero element children -- the first paint of a partial into an empty
+// region); a POPULATED region (table, state card, or banner) NEVER gets a
+// skeleton over its content (the data-never-disappears law) -- slow refreshes
+// keep the last-good rows. Boosted full-page navigations keep the global
+// #ro-progress sweep instead.
 templ listSkeleton(d ListData) {
 	<div id="ro-skel-template" hidden aria-hidden="true">
 		<div class="ro-skel ro-table-wrap">

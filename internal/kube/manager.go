@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -206,6 +207,15 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 			Labels: map[string]string{},
 			Spec:   map[string]any{},
 		}), nil
+	}
+	// Only the real not-in-a-cluster sentinel may fall through silently. Any
+	// OTHER failure means the env says we ARE in a pod (KUBERNETES_SERVICE_HOST/
+	// PORT set) but the ServiceAccount config is broken (unreadable token file,
+	// ...) -- surface it as a broken cluster instead of silently masking it as
+	// the first-run "nothing configured" state (broken clusters suppress
+	// first-run in the web layer's buildClustersData).
+	if !errors.Is(inErr, rest.ErrNotInCluster) {
+		out = append(out, discoveredCluster{Name: "local", Source: SourceInCluster, Err: inErr})
 	}
 	kc, err := discoverKubeconfig(cfg)
 	if err != nil {

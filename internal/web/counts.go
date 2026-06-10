@@ -20,10 +20,13 @@ package web
 // (recorded SPEC deviation D13: §6.2 says "live"; page-load + TTL is the
 // deliberate cost cut). A failed fetch renders NO count (and the failure is
 // remembered for the same TTL so a broken kind is not re-probed on every page
-// load); zero objects render "0".
+// load) -- EXCEPT when the failure is the caller's own cancellation (an
+// aborted page load), which says nothing about the kind and is never cached;
+// zero objects render "0".
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"time"
@@ -167,6 +170,14 @@ func (s *Server) cachedCount(ctx context.Context, client *kube.Client, cluster s
 	if err == nil {
 		entry.count = tableCount(&table)
 		entry.ok = true
+	} else if ctx.Err() == context.Canceled || errors.Is(err, context.Canceled) {
+		// The CALLER's own cancellation (an aborted page load propagating into
+		// the fan-out ctx) says nothing about the kind -- never negative-cache
+		// it, or one aborted load blanks every sidebar count for a full TTL.
+		// The per-fetch deadline stays cached deliberately: countFetchTimeout
+		// firing surfaces as DeadlineExceeded (not Canceled), so a dead-slow
+		// kind still costs one probe per TTL window, not one per page load.
+		return 0, false
 	}
 	s.counts.store(key, entry)
 	return entry.count, entry.ok

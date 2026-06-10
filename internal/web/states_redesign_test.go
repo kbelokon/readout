@@ -509,29 +509,35 @@ func TestLoadingSkeletonStateHooks(t *testing.T) {
 		t.Fatalf("hidecols skeleton bars = %d, want %d", got, headerCount-1)
 	}
 
-	// The JS half: the skeleton fires ONLY into an empty region (gated on the
-	// absence of a table/state card), clones the inert template, and a failed
+	// The JS half: the skeleton fires ONLY into a BLANK region (zero element
+	// children -- ANY existing content, table, state card, or banner, is
+	// something a clone would wipe), clones the inert template, and a failed
 	// request clears it. There is no headless JS runner in this suite, so pin
-	// the source wiring exactly like the stale-handler test does.
+	// the source wiring exactly like the stale-handler test does; the behavior
+	// itself is driven end to end by the designed-states e2e skeleton case.
 	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
 	if err != nil {
 		t.Fatalf("read readout.js: %v", err)
 	}
 	js := string(src)
 	for _, needle := range []string{
-		"ro-skel-template",          // the inert source template
-		"listRegionIsEmpty",         // the empty-target gate
-		"'.ro-table, .ro-empty-lg'", // populated = table OR state card -> no skeleton
-		"clearListSkeleton",         // failed request removes the skeleton
+		"ro-skel-template",        // the inert source template
+		"listRegionIsEmpty",       // the empty-target gate
+		"childElementCount === 0", // blank region = zero element children (a selector denylist once missed the banner-only region)
+		"clearListSkeleton",       // failed request removes the skeleton
 	} {
 		if !strings.Contains(js, needle) {
 			t.Fatalf("readout.js skeleton path missing %q", needle)
 		}
 	}
-	// The gate is REAL: the clone only happens behind listRegionIsEmpty.
-	gated := regexp.MustCompile(`(?s)listRegionIsEmpty\(content\)\)\s*\{\s*return`)
+	// The gate is REAL *and the polarity is anchored*: the clone bails on
+	// `|| !listRegionIsEmpty(content))` -- a populated region returns early.
+	// The old pin (`listRegionIsEmpty\(content\)\)\s*\{\s*return`) matched the
+	// INVERTED gate too (skeleton over live rows), so the `\|\|\s*!` prefix is
+	// load-bearing.
+	gated := regexp.MustCompile(`\|\|\s*!listRegionIsEmpty\(content\)\)\s*\{\s*return`)
 	if !gated.MatchString(js) {
-		t.Fatalf("skeleton clone is not gated on listRegionIsEmpty (a populated table would get a skeleton)")
+		t.Fatalf("skeleton clone is not polarity-gated on !listRegionIsEmpty (a populated table would get a skeleton)")
 	}
 }
 
@@ -668,6 +674,36 @@ func TestUnreachableDetailState(t *testing.T) {
 	}
 }
 
+// TestApiserver500DetailStateIsUnreachable pins the 5xx half of the DETAIL
+// unreachable classification (build_resource.go detailState, the twin of
+// TestApiserver500ListStateIsUnreachable): an apiserver that answers the object
+// Get with an InternalError STATUS (HTTP 500 + a Status body) renders the SAME
+// unreachable card at 200 -- the verbatim Status message in the mono errdetail
+// block under the truthful apiserver-answered plain line -- with the detail
+// chrome (breadcrumb) intact and Back to clusters present.
+func TestApiserver500DetailStateIsUnreachable(t *testing.T) {
+	api := newStateFakeAPI(t, stateFakeOptions{serverErrorPods: true})
+	app := newStateServer(t, api.URL)
+	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
+
+	p.wantHas(".ro-rd .ro-breadcrumb")
+	p.wantText(".ro-rd .ro-empty-lg h3", "Can’t reach test")
+	p.wantHas(".ro-rd .ro-empty-lg .ro-empty-glyph.err")
+	p.wantText(".ro-rd .ro-empty-lg p", "The apiserver answered with an error.")
+	detail := p.text(".ro-rd .ro-empty-lg .errdetail")
+	if !strings.Contains(detail, serverErrorFixtureMessage) {
+		t.Fatalf("detail 500 errdetail %q does not carry the verbatim Status message", detail)
+	}
+	actions := p.attrs(".ro-rd .ro-empty-lg .ro-empty-actions a", "href")
+	if !contains(actions, "/clusters") {
+		t.Fatalf("detail 500 state missing Back to clusters: %v", actions)
+	}
+	labels := p.texts(".ro-rd .ro-empty-lg .ro-empty-actions a")
+	if !contains(labels, "Retry") {
+		t.Fatalf("detail 500 state missing a Retry action: %v", labels)
+	}
+}
+
 // TestDetailNotFoundStaysA404 pins the boundary: a missing object is NOT a
 // cluster failure, so it keeps its real 404 status page (the state path only
 // captures forbidden / unreachable). Guards against the state path swallowing a
@@ -770,6 +806,34 @@ func TestFirstRunHasNoLoginUI(t *testing.T) {
 // instruction card.
 func TestFirstRunNotShownWithClusters(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
+	p := get(t, app, "/clusters", http.StatusOK)
+	p.wantAbsent(".ro-firstrun")
+	p.wantHas(".ro-rd table.ro-select-table")
+}
+
+// TestFirstRunNotShownOnBrokenInCluster pins the other gate boundary (the
+// manager half is TestBrokenInClusterServiceAccountSurfacesAsBroken): a pod
+// whose in-cluster ServiceAccount is BROKEN (env set, token unreadable) is a
+// configured-but-broken cluster, NOT "nothing configured" -- the first-run
+// instruction card must not swallow the failure (broken clusters suppress
+// FirstRun in buildClustersData).
+func TestFirstRunNotShownOnBrokenInCluster(t *testing.T) {
+	if _, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token"); err == nil {
+		t.Skip("a real in-cluster ServiceAccount token exists; cannot fake a broken in-cluster env")
+	}
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(path, []byte("apiVersion: v1\nkind: Config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBECONFIG", path)
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	app := newServer(t, &config.Config{
+		Port:         8080,
+		DefaultTheme: "dark",
+		NoAccessLogs: true,
+	}, time.Now())
+
 	p := get(t, app, "/clusters", http.StatusOK)
 	p.wantAbsent(".ro-firstrun")
 	p.wantHas(".ro-rd table.ro-select-table")

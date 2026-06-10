@@ -389,6 +389,13 @@ func TestCountCellFormat(t *testing.T) {
 	if cv := countCellView(12); cv.Value != "12" || cv.Class != "" {
 		t.Fatalf("count 12 = %#v, want plain (under the chronic threshold)", cv)
 	}
+	// The exact chronic boundary: 19 is the last plain count, 20 the first amber.
+	if cv := countCellView(19); cv.Value != "19" || cv.Class != "" {
+		t.Fatalf("count 19 = %#v, want plain (just under the chronic threshold)", cv)
+	}
+	if cv := countCellView(20); cv.Value != "20" || cv.Class != "restarts some" {
+		t.Fatalf("count 20 = %#v, want amber (the ≥20 chronic boundary)", cv)
+	}
 	if cv := countCellView(1); cv.Class != "faint" {
 		t.Fatalf("count 1 = %#v, want faint", cv)
 	}

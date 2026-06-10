@@ -1891,18 +1891,21 @@ document.addEventListener('htmx:afterSwap', (event) => {
 // ---------------------------------------------------------------------------
 // Every full page is server-rendered with rows already in place, and the morph
 // refresh keeps the last-good rows, so the only valid skeleton moment is a
-// partial request landing in an EMPTY #resource-list-content (no table, no
-// state card -- the first paint of a partial into a blank region). A POPULATED
-// table NEVER gets a skeleton over live rows (the data-never-disappears law);
-// boosted full-page navigations keep the global #ro-progress sweep instead.
-// The rows are cloned from the inert server-baked #ro-skel-template sibling
-// (schema-mirroring column widths, bottom fade) -- pure DOM, CSP-clean.
+// partial request landing in a BLANK #resource-list-content (the first paint
+// of a partial into an empty region). A POPULATED region NEVER gets a skeleton
+// over its content (the data-never-disappears law); boosted full-page
+// navigations keep the global #ro-progress sweep instead. The rows are cloned
+// from the inert server-baked #ro-skel-template sibling (schema-mirroring
+// column widths, bottom fade) -- pure DOM, CSP-clean.
 
-// True when the list region carries NO content a skeleton could cover: the
-// fragment always renders either a .ro-table (even at zero rows) or the
-// .ro-empty-lg state card, so "neither present" === empty region.
+// True when the list region is a BLANK region: zero element children. The
+// probe is element-count, not a selector list, because ANY existing content is
+// something the skeleton clone (replaceChildren) would wipe -- a selector
+// denylist ('.ro-table, .ro-empty-lg') once misclassified a banner-only region
+// (the all-cluster partial-failure banner with no table) as empty and the
+// clone destroyed the only visible diagnostic.
 function listRegionIsEmpty(content) {
-    return !content.querySelector('.ro-table, .ro-empty-lg');
+    return content.childElementCount === 0;
 }
 
 document.addEventListener('htmx:beforeRequest', (event) => {

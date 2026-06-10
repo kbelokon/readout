@@ -20,6 +20,7 @@ package web
 //     keep working and gain counts.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -170,6 +171,48 @@ func TestSidebarCountsCachedForTTL(t *testing.T) {
 	get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 	if got := fetches.Load(); got <= first {
 		t.Fatalf("render after the TTL did not re-fetch: %d limit=1 fetches, want > %d", got, first)
+	}
+}
+
+// TestCountsCallerCancellationIsNotNegativeCached pins the cancellation
+// boundary of the negative cache: a count fetch that fails because the
+// CALLER's own context was cancelled (an aborted page load) says nothing about
+// the kind, so it must NOT be remembered as a failure -- the old behaviour
+// blanked every sidebar count for a full TTL after one aborted load. The very
+// next render re-fetches and the count lands. Genuine kind failures keep their
+// deliberate TTL caching (TestSidebarCountsCachedForTTL), and the per-fetch
+// deadline (DeadlineExceeded, not Canceled) stays cached too.
+func TestCountsCallerCancellationIsNotNegativeCached(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
+	cluster, ok := app.manager.Get("test")
+	if !ok {
+		t.Fatal("fixture cluster missing")
+	}
+	resource := kube.ResourceType{APIVersion: "v1", Version: "v1", Kind: "Pod", Plural: "pods", Namespaced: true}
+	newTargets := func() []countTarget {
+		return []countTarget{{item: &navItem{}, resource: resource, namespace: "default"}}
+	}
+
+	// The aborted page load: the parent (request) context is already cancelled
+	// when the count fan-out starts.
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	aborted := newTargets()
+	app.attachSidebarCounts(cancelledCtx, cluster.Client, "test", aborted)
+	if aborted[0].item.HasCount {
+		t.Fatalf("a cancelled fetch cannot produce a count, got %q", aborted[0].item.Count)
+	}
+	key := countKey{cluster: "test", apiVersion: "v1", plural: "pods", namespace: "default"}
+	if entry, hit := app.counts.lookup(key, app.clock()); hit {
+		t.Fatalf("the caller's own cancellation was negative-cached as %+v -- one aborted load would blank the sidebar counts for %v", entry, countTTL)
+	}
+
+	// The next render (inside the same TTL window) re-fetches and the count
+	// lands (pods_table.json: 2 rows, the limit-ignoring fixture shape).
+	next := newTargets()
+	app.attachSidebarCounts(context.Background(), cluster.Client, "test", next)
+	if !next[0].item.HasCount || next[0].item.Count != "2" {
+		t.Fatalf("the render after the aborted load did not re-fetch the count: HasCount=%t Count=%q", next[0].item.HasCount, next[0].item.Count)
 	}
 }
 
