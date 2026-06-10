@@ -33,8 +33,9 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantHas("header.ro-topbar")
 	p.wantAbsent("nav.navbar")
 
-	// Brand mask + name (the CSS mask over readout-logo.svg inherits --brand).
-	p.wantHas("header.ro-topbar .brand-item .brand-logo")
+	// Brand chip + mask + name: the SPEC 2.5 .brand-chip wrapper carries the
+	// dark chip behind the .brand-logo CSS mask (which inherits --brand).
+	p.wantHas("header.ro-topbar .brand-item .brand-chip .brand-logo")
 	p.wantText("header.ro-topbar .brand-name", "readout")
 
 	// The body opts into the fixed-topbar offset class for the redesign shell.

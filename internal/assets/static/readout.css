@@ -2963,10 +2963,10 @@
 
     /* Per-row left status stripe: a thin inset bar down the row's leading
        edge in the matching status colour. Painted as an inset box-shadow on the
-       row's first cell so it does not consume layout width or move any column;
-       neutral rows carry no row-status-* class -> no stripe. */
-    tr.row-status-ok   > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-ok); }
-    tr.row-status-info > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-info); }
+       row's first cell so it does not consume layout width or move any column.
+       SPEC §3: the producer (kube.RowStatusClass) emits row-status-* for err
+       and warn rows ONLY -- ok/mute rows carry no class and no stripe -- so
+       only these two rules exist. */
     tr.row-status-warn > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-warn); }
     tr.row-status-err  > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-err); }
 

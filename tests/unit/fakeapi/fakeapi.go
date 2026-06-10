@@ -139,11 +139,13 @@ func New(opts ...Option) (*Server, error) {
 
 	s.httpServer = httptest.NewUnstartedServer(root)
 	if s.listenAddr != "" {
+		// Close the default ephemeral listener BEFORE attempting the custom
+		// listen so a failed listen does not leak it.
+		_ = s.httpServer.Listener.Close()
 		listener, err := net.Listen("tcp", s.listenAddr)
 		if err != nil {
 			return nil, fmt.Errorf("fakeapi: listen on %s: %w", s.listenAddr, err)
 		}
-		_ = s.httpServer.Listener.Close()
 		s.httpServer.Listener = listener
 	}
 	s.httpServer.Start()

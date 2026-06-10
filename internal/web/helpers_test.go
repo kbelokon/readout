@@ -86,6 +86,11 @@ func TestTableCellFormattingHelpers(t *testing.T) {
 // cannot disagree on a SPEC word without failing here. Each row also pins the
 // pulse rule (law §1.3): ONLY the transient set animates -- Init:1/2 is
 // warn+pulse, Init:CrashLoopBackOff is err and (like every err) NEVER pulses.
+//
+// The rows mirror specStatusToneRows in internal/kube/table_test.go row for
+// row (that table is unexported test code, so it cannot be shared across
+// packages); when a SPEC §3 word is added there it MUST be added here too --
+// the count guard below trips when the sets drift in size.
 func TestStatusToneSpecTableCrossPackage(t *testing.T) {
 	rows := []struct {
 		value string
@@ -123,8 +128,15 @@ func TestStatusToneSpecTableCrossPackage(t *testing.T) {
 		{"BackoffLimitExceeded", "err", false},
 		{"Init:CrashLoopBackOff", "err", false},
 		{"Init:Error", "err", false},
-		// fallback mute
+		{"Init:ImagePullBackOff", "err", false},
+		{"Init:CreateContainerConfigError", "err", false},
+		// fallback mute -- unknown words, the cordoned-node status, and empty
 		{"SomeOperatorPhase", "mute", false},
+		{"Ready,SchedulingDisabled", "mute", false},
+		{"", "mute", false},
+	}
+	if len(rows) != 32 {
+		t.Fatalf("cross-package tone rows = %d, want the 32 rows of internal/kube/table_test.go's specStatusToneRows (keep the mirrors in sync)", len(rows))
 	}
 	plurals := []string{"pods", "namespaces", "nodes", "persistentvolumes", "persistentvolumeclaims", "jobs", "widgets"}
 	for _, c := range rows {

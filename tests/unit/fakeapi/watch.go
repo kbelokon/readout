@@ -9,6 +9,7 @@ package fakeapi
 // kube watch unit (Unit 25), which consumes watchHub.queue.
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -161,24 +162,41 @@ func (s *Server) enqueueEvent(ev ScriptEvent) {
 	s.watches.mu.Unlock()
 }
 
+// applyQueuedEvent applies queue entry index to the list state. watches.mu is
+// held across the WHOLE application, generation check included, so a
+// /__control/reset can never reseed the store between the check and the apply
+// (the lock order is watches.mu -> store.mu; nothing acquires them in
+// reverse). The apply works on a deep copy of the queued event and writes only
+// the scalar Applied/ResourceVersion back: queued maps are never written after
+// enqueue, so the snapshot encoder may read them outside watches.mu.
 func (s *Server) applyQueuedEvent(generation, index int) {
 	s.watches.mu.Lock()
+	defer s.watches.mu.Unlock()
 	if generation != s.watches.generation || index >= len(s.watches.queue) {
-		s.watches.mu.Unlock()
 		return
 	}
-	event := s.watches.queue[index].Event
-	s.watches.mu.Unlock()
-
-	rv := s.store.applyScriptEvent(&event)
-
-	s.watches.mu.Lock()
-	if generation == s.watches.generation && index < len(s.watches.queue) {
-		s.watches.queue[index].Applied = true
-		s.watches.queue[index].ResourceVersion = rv
+	event, err := cloneScriptEvent(&s.watches.queue[index].Event)
+	if err != nil {
+		return // queued events were JSON-decoded at POST time; a failed round-trip is unreachable
 	}
-	s.watches.mu.Unlock()
+	rv := s.store.applyScriptEvent(event)
+	s.watches.queue[index].Applied = true
+	s.watches.queue[index].ResourceVersion = rv
 	// Watch STREAM playback to open connections lands in Unit 25.
+}
+
+// cloneScriptEvent deep-copies a scripted event via a JSON round-trip so the
+// store never aliases the queued event's maps (see applyQueuedEvent).
+func cloneScriptEvent(ev *ScriptEvent) (*ScriptEvent, error) {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return nil, err
+	}
+	out := &ScriptEvent{}
+	if err := json.Unmarshal(data, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // applyScriptEvent mutates the targeted collection state and returns the new
