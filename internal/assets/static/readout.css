@@ -1843,8 +1843,15 @@
         border-bottom: 1px solid var(--border);
     }
     header.ro-topbar .brand-item { display: flex; align-items: center; gap: 9px; padding-right: 4px; }
+    /* the mark sits on a small dark chip (SPEC 2.5: #0d1117, radius 7, the SAME
+       in BOTH themes) so the light-green brand stays readable on the light
+       header too */
+    header.ro-topbar .brand-chip {
+        width: 26px; height: 26px; border-radius: 7px; background: #0d1117;
+        display: grid; place-items: center; flex: none;
+    }
     header.ro-topbar .brand-logo {
-        width: 22px; height: 26px; display: block;
+        width: 15px; height: 18px; display: block;
         background: var(--brand);
         -webkit-mask: url(/assets/readout-logo.svg) center / contain no-repeat;
         mask: url(/assets/readout-logo.svg) center / contain no-repeat;
@@ -2746,10 +2753,12 @@
        --------------------------------------------------------------------------- */
 
     :root {
-        /* geometry + density -- SHARED by both themes. Lifted EXACT from base.css
-           (the redesign source of truth): row-py 9px / cell-px 14px, radius 7px
-           (sm 5px / pill 5px), topbar 52px, sidebar 224px. */
-        --row-py: 9px;
+        /* geometry + density -- SHARED by both themes. Values byte-exact from
+           the v2 handoff (docs/design_handoff_readout_v2/styles/tokens.css, the
+           token source of truth): cell-px 14px, radius 7px (sm 5px / pill 5px),
+           topbar 52px, sidebar 224px. v2 default density is COZY (row-py 11px);
+           the [data-density="compact"] override below returns ultra-dense. */
+        --row-py: 11px;
         --cell-px: 14px;
         --radius: 7px;
         --radius-sm: 5px;
@@ -2757,38 +2766,59 @@
         --topbar-h: 52px;
         --sidebar-w: 224px;
 
+        /* motion -- the one shared easing curve + duration for transitions */
+        --ease: cubic-bezier(.32,.72,0,1);
+        --dur: .14s;
+
         /* brand -- promoted from logo-only into accents (shared by both themes) */
         --brand: #56E0BC;
         --brand-ink: #04140f;
 
-        /* LIGHT palette "Contrast" -- default. Mapped from base.css body.theme-light. */
+        /* LIGHT palette "Contrast+" -- default. Real surface ladder (bg /
+           surface / surface-2 / surface-3), tiered borders, an honest 3-step
+           shadow scale; --header-bg is translucent so the sticky topbar's
+           backdrop blur shows content scrolling under it. */
         --bg: #ffffff;
         --surface: #ffffff;
         --surface-2: #f4f5f6;
-        --header-bg: #ffffffcc;
-        --sidebar-bg: #fbfbfc;
-        --thead-bg: #fafafa;
+        --surface-3: #e9ebed;
+        --header-bg: rgba(255,255,255,.84);
+        --sidebar-bg: #fafbfb;
+        --thead-bg: #fafbfb;
         --card-head-bg: #fafafa;
         --code-bg: #fafafa;
-        --row-hover: #f6f8f7;
+        --row-hover: #f5f8f7;
         --row-sel: rgba(20,150,120,.07);
-        --overlay-bg: rgba(15,20,25,.26);
+        --overlay-bg: rgba(15,20,25,.28);
 
         --text: #0b0c0e;
         --text-muted: #51555c;
         --text-faint: #898d94;
+        --text-ghost: #b8bbc0;
+
         --border: #e7e8ea;
         --border-soft: #f0f0f2;
         --border-strong: #d3d5d8;
 
         --accent: #0c8f6e;            /* darkened green -- reads as the one saturated action */
         --accent-on: #ffffff;
-        --accent-weak: rgba(12,143,110,.1);
+        --accent-weak: rgba(12,143,110,.10);
         --accent-text: #0c8f6e;       /* accent used as TEXT (readout-specific token) */
         --id-color: #14181d;          /* identifiers + name links */
         --link: #146a52;
 
-        --label-app-bg: #e3f6ef;      /* app.kubernetes.io/* label chips */
+        /* label chips -- NEUTRAL (v2 colour law: green = action / live health /
+           freshness / active nav, nothing else; key and value differ by ink
+           weight, not hue) */
+        --chip-bg: #f4f5f6;
+        --chip-border: #e7e8ea;
+        --chip-key: #6c7076;
+        --chip-val: #2c3036;
+
+        /* app.kubernetes.io/* label chips -- repo-only tokens still consumed by
+           .ro-chip.app; the v2 colour law retires that green accent when the
+           label-chip unit re-points it at the neutral --chip-* set. */
+        --label-app-bg: #e3f6ef;
         --label-app-fg: #0c8f6e;
 
         --st-ok:   #11824a; --st-ok-bg:   #e7f6ee;
@@ -2798,33 +2828,40 @@
         --st-mute: #6a7078; --st-mute-bg: #eef0f2;
 
         /* age scale -- the freshest-to-oldest age cell colours (fresh = darkened
-           brand -> old grey). Token VALUES recoloured per D6; the 5 buckets stay. */
+           brand -> old grey). The 5 buckets stay. */
         --age-fresh: #0c8f6e; --age-recent: #3f7a64; --age-day: #5f6f66; --age-week: #777777; --age-old: #a3a6ab;
 
         /* YAML / Pygments syntax. nt->key num->m bool->kc string->s2/.l comment->c. */
         --tok-key: #1a46c2; --tok-str: #117a3d; --tok-num: #8a5a06; --tok-bool: #7a3fd1;
 
+        /* honest 3-step shadow scale; pop always rings with the border */
+        --shadow-sm: 0 1px 2px rgba(15,20,25,.05), 0 1px 1px rgba(15,20,25,.03);
+        --shadow-md: 0 4px 12px -2px rgba(15,20,25,.10), 0 2px 4px -2px rgba(15,20,25,.06);
         --shadow-pop: 0 16px 40px -12px rgba(15,20,25,.22), 0 0 0 1px var(--border);
     }
 
-    /* DARK palette "Terminal" -- the configured default look. Mapped EXACT from
-       base.css :root (its dark default is the source of truth). */
+    /* DARK palette "Terminal" -- repo values kept, separation deepened one
+       notch (bg -> surface -> surface-2 -> surface-3). Values byte-exact from
+       the v2 handoff tokens.css. */
     [data-theme="dark"] {
-        --bg: #0c0e12;
+        --bg: #0b0d11;
         --surface: #0f1217;
         --surface-2: #161a21;
-        --header-bg: #0c0e12cc;
-        --sidebar-bg: #0b0d11;
+        --surface-3: #1e232c;
+        --header-bg: rgba(11,13,17,.80);
+        --sidebar-bg: #0a0c0f;
         --thead-bg: #0f1217;
         --card-head-bg: #161a21;
         --code-bg: #090b0e;
         --row-hover: #14181f;
-        --row-sel: rgba(86,224,188,.07);
+        --row-sel: rgba(86,224,188,.08);
         --overlay-bg: rgba(0,0,0,.62);
 
         --text: #dbe1e8;
         --text-muted: #98a1ae;
         --text-faint: #5d6675;
+        --text-ghost: #3e4654;
+
         --border: #1d222b;
         --border-soft: #161b22;
         --border-strong: #2c333f;
@@ -2834,7 +2871,12 @@
         --accent-weak: rgba(86,224,188,.12);
         --accent-text: #56E0BC;       /* accent used as TEXT (readout-specific token) */
         --id-color: #d2d8df;          /* identifiers / row name links -- off-white */
-        --link: #cfd6df;
+        --link: #7fe9cd;
+
+        --chip-bg: #161a21;
+        --chip-border: #232a34;
+        --chip-key: #828d9c;
+        --chip-val: #c2cad4;
 
         --label-app-bg: rgba(86,224,188,.13);
         --label-app-fg: #7fe9cd;
@@ -2849,19 +2891,25 @@
 
         --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
 
+        --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+        --shadow-md: 0 6px 16px -4px rgba(0,0,0,.5);
         --shadow-pop: 0 12px 40px -8px rgba(0,0,0,.6), 0 0 0 1px var(--border);
     }
 
     /* Cookieless users on a dark OS get the dark palette; an explicit light
-       choice still wins (same rule the app already uses for age/log/Pygments). */
+       choice still wins (same rule the app already uses for age/log/Pygments).
+       This block MUST stay value-identical to [data-theme="dark"] above -- a
+       stale mirror silently hands system-dark users old values (the Unit 2
+       acceptance script checks the mirror). */
     @media (prefers-color-scheme: dark) {
         :root:not([data-theme="light"]) {
-            --bg: #0c0e12; --surface: #0f1217; --surface-2: #161a21;
-            --header-bg: #0c0e12cc; --sidebar-bg: #0b0d11; --thead-bg: #0f1217;
-            --card-head-bg: #161a21; --code-bg: #090b0e; --row-hover: #14181f; --row-sel: rgba(86,224,188,.07); --overlay-bg: rgba(0,0,0,.62);
-            --text: #dbe1e8; --text-muted: #98a1ae; --text-faint: #5d6675;
+            --bg: #0b0d11; --surface: #0f1217; --surface-2: #161a21; --surface-3: #1e232c;
+            --header-bg: rgba(11,13,17,.80); --sidebar-bg: #0a0c0f; --thead-bg: #0f1217;
+            --card-head-bg: #161a21; --code-bg: #090b0e; --row-hover: #14181f; --row-sel: rgba(86,224,188,.08); --overlay-bg: rgba(0,0,0,.62);
+            --text: #dbe1e8; --text-muted: #98a1ae; --text-faint: #5d6675; --text-ghost: #3e4654;
             --border: #1d222b; --border-soft: #161b22; --border-strong: #2c333f;
-            --accent: #56E0BC; --accent-on: #04140f; --accent-weak: rgba(86,224,188,.12); --accent-text: #56E0BC; --id-color: #d2d8df; --link: #cfd6df;
+            --accent: #56E0BC; --accent-on: #04140f; --accent-weak: rgba(86,224,188,.12); --accent-text: #56E0BC; --id-color: #d2d8df; --link: #7fe9cd;
+            --chip-bg: #161a21; --chip-border: #232a34; --chip-key: #828d9c; --chip-val: #c2cad4;
             --label-app-bg: rgba(86,224,188,.13); --label-app-fg: #7fe9cd;
             --st-ok: #3ddc97; --st-ok-bg: rgba(61,220,151,.13);
             --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);
@@ -2870,9 +2918,16 @@
             --st-mute: #6b7686; --st-mute-bg: rgba(120,130,148,.13);
             --age-fresh: #56E0BC; --age-recent: #6fcfae; --age-day: #8aa39a; --age-week: #8b94a0; --age-old: #5d6675;
             --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+            --shadow-md: 0 6px 16px -4px rgba(0,0,0,.5);
             --shadow-pop: 0 12px 40px -8px rgba(0,0,0,.6), 0 0 0 1px var(--border);
         }
     }
+
+    /* density -- CSS-only attribute override (v2 default is cozy 11px). NO UI
+       control ships for it (D2): flipping it means setting data-density on
+       <html> by hand. */
+    [data-density="compact"] { --row-py: 7px; }
 
     /* ---------------------------------------------------------------------------
        Dynamic colours, de-inlined (CSP).

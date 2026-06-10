@@ -141,7 +141,9 @@ templ layoutBody(d LayoutData, body templ.Component) {
 
 // topbarC is the redesign sticky blurred topbar. It MUST be a <header
 // class="ro-topbar"> (D13) so the header.ro-topbar CSS applies. It carries: the
-// brand mask (.brand-logo over readout-logo.svg, inheriting --brand) + name; the
+// brand mark on its SPEC 2.5 dark chip (.brand-chip wrapping the .brand-logo
+// mask over readout-logo.svg, inheriting --brand -- the chip stays #0d1117 in
+// BOTH themes so the light-green mark reads on the light header) + name; the
 // Clusters .topnav link; the namespace context dropdown (.ctx-dd, only with a
 // cluster in scope) keeping the readout.js hooks (#namespace-dropdown /
 // #namespace-searchbox / .namespace-item / .context-name); a flexible spacer; the
@@ -163,7 +165,7 @@ templ topbarC(n Navbar) {
 		if n.ShowSidebar {
 			<button type="button" class="menu-toggle" aria-label="Toggle navigation menu" aria-controls="aside-menu"><span class="ico sm" aria-hidden="true">@iconC("sliders")</span></button>
 		}
-		<a class="brand-item" href="/clusters" aria-label="readout home"><span class="brand-logo" aria-hidden="true"></span><span class="brand-name">readout</span></a><nav class="topnav"><a class="is-active" href="/clusters">Clusters</a></nav>
+		<a class="brand-item" href="/clusters" aria-label="readout home"><span class="brand-chip" aria-hidden="true"><span class="brand-logo"></span></span><span class="brand-name">readout</span></a><nav class="topnav"><a class="is-active" href="/clusters">Clusters</a></nav>
 		if n.ShowContext {
 			<div id="namespace-dropdown"><button type="button" class="ctx-dd context-trigger" aria-haspopup="true" aria-label="Switch namespace"><span class="ctx-dot" aria-hidden="true"></span><span class="context-name">{ n.ContextName }</span><span class="ctx-caret ico sm" aria-hidden="true">@iconC("chevron-down")</span></button><div class="ctx-menu"><div class="ctx-search"><input id="namespace-searchbox" type="text" placeholder="type to filter" autocomplete="off"></div>
 				for _, ns := range n.NamespaceLinks {
