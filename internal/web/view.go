@@ -563,17 +563,25 @@ type subtableCell struct {
 // eventView is one rendered event row (already flattened from the raw object).
 // Tone is the redesign status tone for the Type cell (mute for Normal/unknown,
 // warn for Warning), mapped from the events/Type cell class via statusTone.
-// AgeClass is the age bucket for lastTimestamp at days=1 (the .age-* token on the
-// Age <td>). The Reason cell renders plain and From faint in the redesign; the
-// Message <td>'s ro-event-msg class is static (emitted in the templ).
+// Count/CountClass are the ×N dedupe cell (D15: ≥20 amber "restarts some", 1
+// faint); Age is the leading compressed-duration token with AgeClass its
+// .age-* bucket, AgeRest the faint "(first 41h ago)" second layer (empty for
+// a single occurrence or a ≤60s spread), and AgeTitle the full last-seen
+// timestamp tooltip. The Reason cell renders plain and From faint in the
+// redesign; the Message <td>'s ro-event-msg class is static (emitted in the
+// templ).
 type eventView struct {
-	Type     string
-	Tone     string
-	Reason   string
-	Age      string
-	AgeClass string
-	From     string
-	Message  string
+	Type       string
+	Tone       string
+	Reason     string
+	Count      string
+	CountClass string
+	Age        string
+	AgeClass   string
+	AgeRest    string
+	AgeTitle   string
+	From       string
+	Message    string
 }
 
 // searchView is the view model for the search page. Every value the

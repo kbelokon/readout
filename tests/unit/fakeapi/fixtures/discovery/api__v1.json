@@ -55,6 +55,14 @@
       "kind": "Namespace",
       "verbs": ["get", "list", "watch"],
       "shortNames": ["ns"]
+    },
+    {
+      "name": "persistentvolumes",
+      "singularName": "persistentvolume",
+      "namespaced": false,
+      "kind": "PersistentVolume",
+      "verbs": ["get", "list", "watch"],
+      "shortNames": ["pv"]
     }
   ]
 }

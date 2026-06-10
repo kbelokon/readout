@@ -10,6 +10,13 @@
       "preferredVersion": {"groupVersion": "apps/v1", "version": "v1"}
     },
     {
+      "name": "batch",
+      "versions": [
+        {"groupVersion": "batch/v1", "version": "v1"}
+      ],
+      "preferredVersion": {"groupVersion": "batch/v1", "version": "v1"}
+    },
+    {
       "name": "storage.k8s.io",
       "versions": [
         {"groupVersion": "storage.k8s.io/v1", "version": "v1"}

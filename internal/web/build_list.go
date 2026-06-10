@@ -249,6 +249,22 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 		// (the server-side Table has no TLS column, SPEC §7.10).
 		decorateIngressColumns(table)
 	}
+	if table.Resource.Plural == "jobs" {
+		// Jobs get the verbatim-status guarantee (SPEC §7.11): a printer without
+		// the Status column gains one derived from status.conditions, and a bare
+		// "Failed" refines to the condition's verbatim reason
+		// (BackoffLimitExceeded).
+		decorateJobColumns(table)
+	}
+	if table.Resource.Plural == "events" {
+		// Events get the ×N dedupe column (D15): the count decodes from each
+		// row's object across BOTH event API shapes and lands before Message so
+		// the wrapping msg column stays last. CronJobs and PersistentVolumes need
+		// no table-level decoration — their printer columns already carry the v2
+		// schema surface (Suspend/Last Schedule cells reskin in buildCellView;
+		// the PV Status column rides the generic status cell).
+		decorateEventColumns(table)
+	}
 	if q.Get("join") == "metrics" && (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") {
 		s.joinMetrics(r.Context(), client, table, namespace, allNamespaces, q.Get("selector"))
 	}
@@ -551,6 +567,126 @@ func decorateIngressColumns(table *kube.Table) {
 	for i := range table.Rows {
 		table.Rows[i].Cells = append(table.Rows[i].Cells, ingressTLSText(table.Rows[i].Object))
 	}
+}
+
+// insertTableColumn inserts a named column at idx (appending when idx is out
+// of range) and gives EVERY row its matching cell from cell(obj), keeping
+// columns and cells in lockstep so the table never goes ragged. The shared
+// seam under the jobs Status and events Count decorators, which must place
+// their column mid-table (after Name / before Message) rather than append.
+func insertTableColumn(table *kube.Table, idx int, name string, cell func(obj map[string]any) any) {
+	if idx < 0 || idx > len(table.Columns) {
+		idx = len(table.Columns)
+	}
+	table.Columns = append(table.Columns, kube.Column{})
+	copy(table.Columns[idx+1:], table.Columns[idx:])
+	table.Columns[idx] = kube.Column{Name: name}
+	for i := range table.Rows {
+		row := &table.Rows[i]
+		value := cell(row.Object)
+		if idx >= len(row.Cells) {
+			row.Cells = append(row.Cells, value)
+			continue
+		}
+		row.Cells = append(row.Cells, nil)
+		copy(row.Cells[idx+1:], row.Cells[idx:])
+		row.Cells[idx] = value
+	}
+}
+
+// decorateJobColumns guarantees the jobs verbatim-status surface (SPEC §7.11).
+// A printer WITHOUT the Status column (pre-1.30 apiservers) gains a synthetic
+// one right after the identity column, derived from status.conditions
+// (jobStatusText). A printer WITH it keeps its cell as the truth — except a
+// bare "Failed", which refines to the Failed condition's verbatim reason
+// (`BackoffLimitExceeded`, never a paraphrase) so display, sort, TSV, and
+// filter all speak the full status name. A Status column the decorator already
+// added (or any non-Failed printer word) is never rewritten, so the pass is
+// idempotent.
+func decorateJobColumns(table *kube.Table) {
+	idx := columnIndex(table.Columns, "Status")
+	if idx < 0 {
+		at := columnIndex(table.Columns, "Name")
+		if at < 0 {
+			// No Name column: append, never displace the identity (first) column.
+			at = len(table.Columns)
+		} else {
+			at++
+		}
+		insertTableColumn(table, at, "Status", func(obj map[string]any) any { return jobStatusText(obj) })
+		return
+	}
+	for i := range table.Rows {
+		row := &table.Rows[i]
+		if idx >= len(row.Cells) || cellDisplayString(row.Cells[idx]) != "Failed" {
+			continue
+		}
+		if reason := jobFailedReason(row.Object); reason != "" {
+			row.Cells[idx] = reason
+		}
+	}
+}
+
+// jobStatusText derives the jobs Status DISPLAY value from the object for
+// printers that lack the column: the first True condition wins — a Failed
+// condition surfaces its verbatim reason (BackoffLimitExceeded), any other
+// condition its type (Complete, Suspended, FailureTarget, …) — and a job with
+// no true condition is still Running.
+func jobStatusText(obj map[string]any) string {
+	conditions, _, _ := unstructured.NestedSlice(obj, "status", "conditions")
+	for _, item := range conditions {
+		cond, ok := item.(map[string]any)
+		if !ok || nestedString(cond, "status") != "True" {
+			continue
+		}
+		typ := nestedString(cond, "type")
+		if typ == "Failed" {
+			if reason := nestedString(cond, "reason"); reason != "" {
+				return reason
+			}
+		}
+		if typ != "" {
+			return typ
+		}
+	}
+	return "Running"
+}
+
+// jobFailedReason is the verbatim reason of a job's true Failed condition
+// ("" when the job has none) — the refinement source for a printer's bare
+// "Failed" Status cell.
+func jobFailedReason(obj map[string]any) string {
+	conditions, _, _ := unstructured.NestedSlice(obj, "status", "conditions")
+	for _, item := range conditions {
+		cond, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if nestedString(cond, "type") == "Failed" && nestedString(cond, "status") == "True" {
+			return nestedString(cond, "reason")
+		}
+	}
+	return ""
+}
+
+// decorateEventColumns appends the events ×N dedupe column (D15): the count
+// decodes from each row's object with the pinned dual-API precedence
+// (series.count → count → deprecatedCount, defaulting to 1) and the cell
+// carries the plain int64 so sort, TSV, and filter see the numeric truth; the
+// rich ×N cell re-decodes at cell-build time. The column lands BEFORE Message
+// so the wrapping msg column stays last. A Count column the server-side Table
+// already provided (a priority-1 printer column) is never duplicated — the
+// rich cell still re-decodes from the object either way.
+func decorateEventColumns(table *kube.Table) {
+	if columnIndex(table.Columns, "Count") >= 0 {
+		return
+	}
+	insertTableColumn(table, columnIndex(table.Columns, "Message"), "Count", func(obj map[string]any) any {
+		if item, ok := decodeEventItem(obj); ok {
+			return item.eventCount()
+		}
+		return int64(1)
+	})
 }
 
 // decorateConfigMapColumns curates the configmaps Data column for the keys
@@ -1337,6 +1473,74 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		// The secret Data column renders key chips with DECODED byte sizes; the
 		// VALUE bytes never reach the view model (SPEC §4.10, secretKeyChips).
 		cv = keysCellView(secretKeyChips(row.Object))
+	case table.Resource.Plural == "cronjobs" && colName == "Suspend":
+		// The cronjob Suspend cell renders the prototype's status vocabulary:
+		// the printer's boolean maps false→Active (ok, live health) /
+		// true→Suspended (mute, SPEC §3) with the tone owned by kube.StatusTone
+		// via CellClass — display-only; the kube.Table cell keeps the printer
+		// boolean for sort/TSV/filter. Neither word is transient, so no pulse.
+		label := "Active"
+		if strings.EqualFold(value, "true") {
+			label = "Suspended"
+		}
+		cv.Kind = cellStatus
+		cv.Value = label
+		cv.Tone = statusTone(kube.CellClass(table.Resource.Plural, "Status", label))
+	case table.Resource.Plural == "cronjobs" && colName == "Last Schedule":
+		// SPEC §4.14 lastrun cell: the printer's compressed duration gains the
+		// age-bucket colour + " ago"; a cronjob that never ran prints the
+		// literal <none> on the wire — that IS the empty case → faint <never>.
+		if value == "<none>" {
+			value = ""
+		}
+		cv = lastRunCellView(value)
+	case table.Resource.Plural == "jobs" && colName == "Completions" && strings.Contains(value, "/"):
+		// SPEC §4.4: completions share the ready-ratio grammar (full green when
+		// n==m, partial amber, zero faint).
+		cv.Kind = cellReady
+		cv.Ratio = readyRatioClass(value)
+	case table.Resource.Plural == "events" && colName == "Type":
+		// The events Type cell is a status cell whose vocabulary IS SPEC §3
+		// (Normal→mute, Warning→warn — never an invented stronger severity);
+		// CellClass("events","Type",…) delegates to kube.StatusTone. Neither
+		// word is transient, so no pulse.
+		cv.Kind = cellStatus
+		cv.Tone = statusTone(cls)
+	case table.Resource.Plural == "events" && colName == "Object":
+		// SPEC §4 evobj: kind icon + faint "Kind/" + the 20…8 middle-truncated
+		// name, decoded from involvedObject (core/v1) or regarding
+		// (events.k8s.io/v1). An undecodable ref keeps the printer's plain
+		// "kind/name" cell.
+		if item, ok := decodeEventItem(row.Object); ok && item.refName() != "" {
+			cv = evObjCellView(item.refKind(), item.refName())
+		} else {
+			cv.Kind = cellPlain
+		}
+	case table.Resource.Plural == "events" && colName == "Count":
+		// SPEC §4.15 ×N cell over the D15 dual-API count decode (≥20 amber, 1
+		// faint). Re-decoded from the row object so a server-provided Count
+		// column shows the same pinned-precedence truth as the decorated one.
+		n := 1
+		if item, ok := decodeEventItem(row.Object); ok {
+			n = int(item.eventCount())
+		}
+		cv = countCellView(n)
+	case table.Resource.Plural == "events" && colName == "Last Seen":
+		// SPEC §4 evage: the two-layer age built from the D15 timestamp decode
+		// (last-seen lead token bucket-coloured; "(first <dur> ago)" faint when
+		// count > 1 and the spread exceeds 60s). When no timestamp decodes the
+		// printer's own Last Seen duration stays as the single layer.
+		text := value
+		if item, ok := decodeEventItem(row.Object); ok {
+			if t := eventAgeText(item, s.clock()); t != "" {
+				text = t
+			}
+		}
+		cv = evAgeCellView(text)
+	case table.Resource.Plural == "events" && colName == "Message":
+		// SPEC §4.16 msg: THE only wrapping column in the system (the 520px
+		// clamp lives in CSS on td.ro-event-msg).
+		cv = msgCellView(value)
 	case colName == "CPU Usage":
 		cv.Kind = cellCPU
 		cv.Value = cpuFormat(cell)

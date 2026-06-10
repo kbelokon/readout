@@ -781,8 +781,9 @@ func TestBehaviorPodDetailFacts(t *testing.T) {
 
 // TestBehaviorPodEventsTabFacts pins the Events TAB (a separate ?view=events
 // GET): the toned events table renders the fixture's single Scheduled event with
-// the redesign status-dot/cell-status pair on the Type cell, the age bucket on
-// the Age cell, and the wrapping .ro-event-msg on the Message cell.
+// the redesign status-dot/cell-status pair on the Type cell, the inherited
+// events-list cells (D15: the ×N count, the compressed-duration age with its
+// bucket class on the span), and the wrapping .ro-event-msg on the Message cell.
 func TestBehaviorPodEventsTabFacts(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx?view=events", http.StatusOK)
@@ -807,9 +808,18 @@ func TestBehaviorPodEventsTabFacts(t *testing.T) {
 	if got := normSpace(eventRow.Find(".cell-status").Text()); got != "Normal" {
 		t.Fatalf("event Type text = %q, want Normal", got)
 	}
-	// Age cell carries the age class for lastTimestamp at days=1 == age-old.
-	if ageCls, _ := eventRow.Find("td:nth-child(3)").Attr("class"); ageCls != "age-old" {
-		t.Fatalf("event Age cell class = %q, want age-old (age_color lastTimestamp days=1)", ageCls)
+	// Count cell: the fixture event carries no count -> the faint ×1 (D15).
+	if got := normSpace(eventRow.Find("td.num span.faint").Text()); got != "×1" {
+		t.Fatalf("event Count cell = %q, want the faint ×1", got)
+	}
+	// Age cell: the 2024 lastTimestamp is years before now -> the age-old
+	// bucket on the duration span (single layer: a once-seen event never gets
+	// the "(first … ago)" second layer).
+	if eventRow.Find("td span.age-old").Length() != 1 {
+		t.Fatalf("event Age cell missing the age-old duration span: %s", normSpace(eventRow.Text()))
+	}
+	if eventRow.Find(".evage-rest").Length() != 0 {
+		t.Fatalf("single-occurrence event must not render the second age layer")
 	}
 }
 

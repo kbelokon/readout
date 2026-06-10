@@ -354,6 +354,7 @@ func seedStore() (*store, error) {
 	for path, name := range map[string]string{
 		"/api":                               "discovery/api.json",
 		"/apis":                              "discovery/apis.json",
+		"/apis/batch/v1":                     "discovery/apis__batch__v1.json",
 		"/apis/cert-manager.io/v1":           "discovery/apis__cert-manager.io__v1.json",
 		"/apis/gateway.networking.k8s.io/v1": "discovery/apis__gateway.networking.k8s.io__v1.json",
 		"/apis/gateway.networking.k8s.io/v1beta1": "discovery/apis__gateway.networking.k8s.io__v1beta1.json",
@@ -444,7 +445,12 @@ func seedStore() (*store, error) {
 	}
 	st.lists["/api/v1/namespaces/default/services"] = services
 
-	events, err := newListState("", "data/render_events_nginx.json")
+	// Events in "default" carry BOTH forms: the Table form feeds the events
+	// LIST screen (which negotiates as=Table; the dual-API count/timestamp
+	// rows exercise the D15 decode — a core-shape count=141 aggregate, a
+	// series-shape event, a single event, and a tight-burst spread ≤60s) and
+	// the List form feeds the detail Events tab (client.List).
+	events, err := newListState("data/events_table.json", "data/render_events_nginx.json")
 	if err != nil {
 		return nil, err
 	}
@@ -474,6 +480,32 @@ func seedStore() (*store, error) {
 		return nil, err
 	}
 	st.lists["/apis/networking.k8s.io/v1/namespaces/default/ingresses"] = ingresses
+
+	// CronJobs in "default" exercise the SPEC §7.11 cells: schedule verbatim,
+	// the Suspend boolean (false→Active ok / true→Suspended mute), and the
+	// Last Schedule lastrun cell incl. the never-ran <none> → <never>.
+	cronjobs, err := newListState("data/cronjobs_table.json", "")
+	if err != nil {
+		return nil, err
+	}
+	st.lists["/apis/batch/v1/namespaces/default/cronjobs"] = cronjobs
+
+	// Jobs in "default" exercise the verbatim job statuses: the printer's
+	// bare "Failed" refines to the Failed condition's BackoffLimitExceeded,
+	// and Completions ride the ready-ratio grammar (1/1 full, 8/10 partial).
+	jobs, err := newListState("data/jobs_table.json", "")
+	if err != nil {
+		return nil, err
+	}
+	st.lists["/apis/batch/v1/namespaces/default/jobs"] = jobs
+
+	// PersistentVolumes (cluster-scoped) exercise the uuid-shaped names that
+	// must never split or truncate, plus the Bound/Released/Failed tones.
+	persistentvolumes, err := newListState("data/persistentvolumes_table.json", "")
+	if err != nil {
+		return nil, err
+	}
+	st.lists["/api/v1/persistentvolumes"] = persistentvolumes
 
 	// Namespaces carry BOTH forms: the Table form (rows with labels -- the
 	// resource-list page negotiates as=Table, and the label-chip click-to-filter

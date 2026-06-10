@@ -315,9 +315,15 @@ func TestEventsTabTonedTable(t *testing.T) {
 	if got := normSpace(muteRow.Find("td.ro-event-msg").Text()); got != "Successfully assigned default/x to node-1" {
 		t.Fatalf("event message cell = %q", got)
 	}
-	// Age bucket: the 2024-03 event is months before the fixed clock -> age-old.
-	if cls, _ := muteRow.Find("td:nth-child(3)").Attr("class"); cls != "age-old" {
-		t.Fatalf("event age cell class = %q, want age-old", cls)
+	// The detail tab inherits the events-list cells (D15): a countless event
+	// reads the faint ×1 in the Count column.
+	if got := normSpace(muteRow.Find("td.num span.faint").Text()); got != "×1" {
+		t.Fatalf("event count cell = %q, want the faint ×1", got)
+	}
+	// Age: the compressed duration since lastTimestamp, bucket class on the
+	// span (the 2024-03 event is months before the fixed clock -> 91d/age-old).
+	if got := normSpace(muteRow.Find("td span.age-old").Text()); got != "91d" {
+		t.Fatalf("event age cell = %q, want the age-old 91d duration", got)
 	}
 	// From cell is faint.
 	if muteRow.Find("td.faint").Length() == 0 {

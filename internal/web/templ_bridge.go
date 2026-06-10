@@ -475,7 +475,19 @@ func toDetailData(v *detailView) templates.DetailData {
 	}
 	for i := range v.Events {
 		ev := &v.Events[i]
-		d.Events = append(d.Events, templates.EventRow{Type: ev.Type, Tone: ev.Tone, Reason: ev.Reason, Age: ev.Age, AgeClass: ev.AgeClass, From: ev.From, Message: ev.Message})
+		d.Events = append(d.Events, templates.EventRow{
+			Type:       ev.Type,
+			Tone:       ev.Tone,
+			Reason:     ev.Reason,
+			Count:      ev.Count,
+			CountClass: ev.CountClass,
+			Age:        ev.Age,
+			AgeClass:   ev.AgeClass,
+			AgeRest:    ev.AgeRest,
+			AgeTitle:   ev.AgeTitle,
+			From:       ev.From,
+			Message:    ev.Message,
+		})
 	}
 	return d
 }

@@ -168,21 +168,28 @@ type YAMLCard struct {
 	Content  string
 }
 
-// EventRow is one event row in the Events tab table. Tone is the redesign
-// status-dot/cell-status tone for the Type cell (mute for Normal/unknown, warn
-// for Warning), resolved in build_resource.go from the events/Type cell class.
-// AgeClass is the age bucket class for lastTimestamp at days=1 (the .age-* token
-// on the Age <td>). The Reason cell renders plain and the From cell faint
-// (redesign reserves saturation for status); the Message <td> carries the
-// wrapping ro-event-msg class (emitted below, not threaded through data).
+// EventRow is one event row in the Events tab table, inheriting the
+// events-list cells (D15). Tone is the redesign status-dot/cell-status tone
+// for the Type cell (mute for Normal/unknown, warn for Warning), resolved in
+// build_resource.go from the events/Type cell class. Count/CountClass are the
+// ×N dedupe cell (≥20 amber, 1 faint); Age is the leading compressed-duration
+// token carrying the AgeClass age bucket, AgeRest the faint "(first 41h ago)"
+// second layer, AgeTitle the full last-seen timestamp tooltip. The Reason cell
+// renders plain and the From cell faint (redesign reserves saturation for
+// status); the Message <td> carries the wrapping ro-event-msg class (emitted
+// below, not threaded through data).
 type EventRow struct {
-	Type     string
-	Tone     string
-	Reason   string
-	Age      string
-	AgeClass string
-	From     string
-	Message  string
+	Type       string
+	Tone       string
+	Reason     string
+	Count      string
+	CountClass string
+	Age        string
+	AgeClass   string
+	AgeRest    string
+	AgeTitle   string
+	From       string
+	Message    string
 }
 
 // Subtable is the related-pods subtable on the detail page. ShowNamespace gates
@@ -311,16 +318,27 @@ templ detailBody(d DetailData) {
 }
 
 // eventsSection is the Events-tab view: a labelled section wrapping the toned
-// events table (redesign .ro-table). The Type cell is a status-dot/cell-status
-// pair toned mute (Normal) or warn (Warning); Age carries its age-bucket class;
-// From is faint; Message is the wrapping .ro-event-msg cell. Read-only.
+// events table (redesign .ro-table), inheriting the events-list cells (D15).
+// The Type cell is a status-dot/cell-status pair toned mute (Normal) or warn
+// (Warning); Count is the ×N dedupe cell (≥20 amber, 1 faint); Age is the
+// two-layer compressed duration (bucket-coloured lead token + faint
+// "(first … ago)" remainder, full last-seen timestamp in the tooltip); From
+// is faint; Message is the wrapping .ro-event-msg cell. Read-only.
 templ eventsSection(events []EventRow) {
-	<div class="ro-section"><div class="ro-section-label">Events</div><div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Type</th><th>Reason</th><th>Age</th><th>From</th><th>Message</th></tr></thead><tbody>
+	<div class="ro-section"><div class="ro-section-label">Events</div><div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Type</th><th>Reason</th><th class="num">Count</th><th>Age</th><th>From</th><th>Message</th></tr></thead><tbody>
 		if len(events) == 0 {
-			<tr><td colspan="5">No events found.</td></tr>
+			<tr><td colspan="6">No events found.</td></tr>
 		} else {
 			for _, ev := range events {
-				<tr><td><span class={ cellStatusClass(ev.Tone) }><span class={ dotClass(ev.Tone) } aria-hidden="true"></span>{ ev.Type }</span></td><td>{ ev.Reason }</td><td class={ numClass(ev.AgeClass) }>{ ev.Age }</td><td class="faint">{ ev.From }</td><td class="ro-event-msg">{ ev.Message }</td></tr>
+				<tr><td><span class={ cellStatusClass(ev.Tone) }><span class={ dotClass(ev.Tone) } aria-hidden="true"></span>{ ev.Type }</span></td><td>{ ev.Reason }</td><td class="num"><span class={ ev.CountClass }>{ "×" + ev.Count }</span></td><td
+					if ev.AgeTitle != "" {
+						title={ ev.AgeTitle }
+					}
+				><span class={ ev.AgeClass }>{ ev.Age }</span>
+					if ev.AgeRest != "" {
+						{ " " }<span class="faint evage-rest">{ ev.AgeRest }</span>
+					}
+					</td><td class="faint">{ ev.From }</td><td class="ro-event-msg">{ ev.Message }</td></tr>
 			}
 		}
 		</tbody></table></div></div>

@@ -6,12 +6,14 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/yamlview"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/duration"
 )
 
 // build_resource.go is the data-assembly layer for the resource-view (object
@@ -375,18 +377,27 @@ func (s *Server) buildYAMLCards(cluster, namespace string, object *kube.Object) 
 
 // eventItem is the local typed view of an event object. The core/v1 `events`
 // endpoint dual-writes BOTH the old core/v1 Event shape and the newer
-// events.k8s.io/v1 shape into the same list, so this one struct carries both
-// spellings and buildEventViews normalizes between them — fixing the "Unknown"
-// the new-style fields used to render. Decoded once via FromUnstructured at the
-// buildEventViews seam (a fixed, known kind).
+// events.k8s.io/v1 shape into the same list (and an events.k8s.io list spells
+// the legacy fields `deprecated*`), so this one struct carries every spelling
+// and the accessors below normalize between them with the PINNED D15
+// precedence. Decoded once via FromUnstructured at the decodeEventItem seam
+// (a fixed, known kind) — the detail events tab (buildEventViews) and the
+// events list cells (buildCellView) share it.
 type eventItem struct {
 	Type   string `json:"type"`
 	Reason string `json:"reason"`
-	// Age source, in precedence order: core/v1 lastTimestamp, then
-	// events.k8s.io eventTime, then the series last-observed time.
-	LastTimestamp string `json:"lastTimestamp"`
-	EventTime     string `json:"eventTime"`
-	Series        struct {
+	// Timestamps, both API spellings. eventTime is a metav1.MicroTime
+	// (RFC3339 with fractional seconds — parseEventTime handles both).
+	FirstTimestamp           string `json:"firstTimestamp"`
+	DeprecatedFirstTimestamp string `json:"deprecatedFirstTimestamp"`
+	LastTimestamp            string `json:"lastTimestamp"`
+	DeprecatedLastTimestamp  string `json:"deprecatedLastTimestamp"`
+	EventTime                string `json:"eventTime"`
+	// Counts, both API spellings, plus the series aggregate.
+	Count           int64 `json:"count"`
+	DeprecatedCount int64 `json:"deprecatedCount"`
+	Series          struct {
+		Count            int64  `json:"count"`
 		LastObservedTime string `json:"lastObservedTime"`
 	} `json:"series"`
 	// Message: core/v1 `message`, events.k8s.io `note`.
@@ -397,10 +408,50 @@ type eventItem struct {
 		Component string `json:"component"`
 	} `json:"source"`
 	ReportingController string `json:"reportingController"`
+	// Object reference: core/v1 involvedObject, events.k8s.io regarding.
+	InvolvedObject struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+	} `json:"involvedObject"`
+	Regarding struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+	} `json:"regarding"`
 }
 
-func (e *eventItem) timestamp() string {
-	return first(e.LastTimestamp, e.EventTime, e.Series.LastObservedTime)
+// decodeEventItem decodes a raw event object into the dual-shape eventItem.
+// Whole-number JSON floats convert cleanly into the int64 count fields
+// (runtime.DefaultUnstructuredConverter truncates only fractionless floats).
+func decodeEventItem(raw map[string]any) (*eventItem, bool) {
+	var event eventItem
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, &event); err != nil {
+		return nil, false
+	}
+	return &event, true
+}
+
+// eventCount is the D15-pinned count precedence: series.count → count →
+// deprecatedCount. An event that decodes no explicit count occurred once
+// (the ×1 faint cell), never zero.
+func (e *eventItem) eventCount() int64 {
+	for _, n := range []int64{e.Series.Count, e.Count, e.DeprecatedCount} {
+		if n > 0 {
+			return n
+		}
+	}
+	return 1
+}
+
+// firstSeen is the D15-pinned first-seen precedence: firstTimestamp →
+// deprecatedFirstTimestamp → eventTime.
+func (e *eventItem) firstSeen() string {
+	return first(e.FirstTimestamp, e.DeprecatedFirstTimestamp, e.EventTime)
+}
+
+// lastSeen is the D15-pinned last-seen precedence: series.lastObservedTime →
+// lastTimestamp → deprecatedLastTimestamp → eventTime.
+func (e *eventItem) lastSeen() string {
+	return first(e.Series.LastObservedTime, e.LastTimestamp, e.DeprecatedLastTimestamp, e.EventTime)
 }
 
 func (e *eventItem) message() string {
@@ -411,40 +462,89 @@ func (e *eventItem) from() string {
 	return first(e.Source.Component, e.ReportingController)
 }
 
-// buildEventViews flattens raw event objects into render-ready event rows. The
-// Type cell tone is the redesign status tone mapped from kube.CellClass("events",
+func (e *eventItem) refKind() string {
+	return first(e.InvolvedObject.Kind, e.Regarding.Kind)
+}
+
+func (e *eventItem) refName() string {
+	return first(e.InvolvedObject.Name, e.Regarding.Name)
+}
+
+// parseEventTime parses an event timestamp: RFC3339, with the fractional
+// seconds a metav1.MicroTime (eventTime / series.lastObservedTime) carries
+// accepted by the same layout (Go parses an in-input fraction even when the
+// layout has none).
+func parseEventTime(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	return t, err == nil
+}
+
+// eventAgeText builds the two-layer event age (D15): the compressed kubectl
+// duration since last-seen, plus the `(first <dur> ago)` second layer when
+// count > 1 AND last − first > 60s (the pinned threshold — a tight burst
+// stays single-layer because both layers would read the same). No last-seen
+// at all yields "" so callers keep their own fallback.
+func eventAgeText(e *eventItem, now time.Time) string {
+	last, ok := parseEventTime(e.lastSeen())
+	if !ok {
+		return ""
+	}
+	age := duration.HumanDuration(now.Sub(last))
+	if e.eventCount() > 1 {
+		if firstT, ok := parseEventTime(e.firstSeen()); ok && last.Sub(firstT) > time.Minute {
+			age += " (first " + duration.HumanDuration(now.Sub(firstT)) + " ago)"
+		}
+	}
+	return age
+}
+
+// buildEventViews flattens raw event objects into render-ready event rows for
+// the detail Events tab, which inherits the events-list cells (D15): the Type
+// cell tone is the redesign status tone mapped from kube.CellClass("events",
 // "Type", <value>) via statusTone, then defaulted to "mute" for a Normal event
-// (which carries no kube class) so the redesign dot still reads grey; the Age
-// cell shows the resolved timestamp (formatTimestamp: 'T'->' ', strip trailing
-// 'Z'; "Unknown" when empty) classed by ageClass (a 1-day window); From is the
-// resolved reporting component. The Message cell's static ro-event-msg class is
-// emitted in the templ. Each event is decoded into eventItem so both the core/v1
-// and events.k8s.io/v1 spellings normalize to one row.
+// (which carries no kube class) so the redesign dot still reads grey; the
+// Count cell is the ×N countCellView (≥20 amber, 1 faint); the Age cell is the
+// two-layer eventAgeText split by evAgeCellView (bucket-coloured lead token +
+// faint remainder), with the full last-seen timestamp in the tooltip and
+// "Unknown" (age-old) when no timestamp decodes; From is the resolved
+// reporting component. The Message cell's static ro-event-msg class is emitted
+// in the templ. Each event is decoded into eventItem so the core/v1,
+// events.k8s.io/v1, and deprecated-* spellings normalize to one row.
 func (s *Server) buildEventViews(events []map[string]any) []eventView {
+	now := s.clock()
 	out := make([]eventView, 0, len(events))
 	for _, raw := range events {
-		var event eventItem
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, &event); err != nil {
+		event, ok := decodeEventItem(raw)
+		if !ok {
 			continue
-		}
-		timestamp := event.timestamp()
-		age := "Unknown"
-		if timestamp != "" {
-			age = formatTimestamp(timestamp)
 		}
 		tone := statusTone(kube.CellClass("events", "Type", event.Type))
 		if tone == "" {
 			tone = "mute"
 		}
-		out = append(out, eventView{
-			Type:     event.Type,
-			Tone:     tone,
-			Reason:   event.Reason,
-			Age:      age,
-			AgeClass: s.ageClass(timestamp),
-			From:     event.from(),
-			Message:  event.message(),
-		})
+		countCell := countCellView(int(event.eventCount()))
+		ev := eventView{
+			Type:       event.Type,
+			Tone:       tone,
+			Reason:     event.Reason,
+			Count:      countCell.Value,
+			CountClass: countCell.Class,
+			Age:        "Unknown",
+			AgeClass:   "age-old",
+			From:       event.from(),
+			Message:    event.message(),
+		}
+		if text := eventAgeText(event, now); text != "" {
+			ageCell := evAgeCellView(text)
+			ev.Age = ageCell.Value
+			ev.AgeRest = ageCell.EvAgeRest
+			ev.AgeClass = ageCell.Class
+			ev.AgeTitle = "last seen " + formatTimestamp(event.lastSeen())
+		}
+		out = append(out, ev)
 	}
 	return out
 }
