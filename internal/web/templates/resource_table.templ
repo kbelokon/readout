@@ -775,7 +775,12 @@ templ colsPopover(c ColsPopover) {
 // `selector` params and their config defaults are untouched -- only the input
 // chrome moved here.
 templ colsPopoverForm(c ColsPopover) {
-	<form action="#" method="get" class="ro-pop-form">
+	// hx-boost="false": the body-level boost would otherwise intercept this
+	// submit ahead of the document-level JS merge handler and race it with a
+	// form-fields-only GET (last-write-wins wiped the f= chips
+	// nondeterministically); the JS submit handler owns this form, the native
+	// GET stays as the no-JS floor.
+	<form action="#" method="get" class="ro-pop-form" hx-boost="false">
 		for _, in := range c.Tools.HiddenInputs {
 			<input type="hidden" name={ in.Name } value={ in.Value }>
 		}
