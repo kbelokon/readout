@@ -67,6 +67,13 @@ type navbarView struct {
 	NextTheme     string
 	ToggleNextURL string
 	ThemeExplicit bool
+
+	// RefreshMode is the persisted auto-refresh mode from the ro_prefs cookie
+	// (D9): "" (no preference) / "Off" / an interval in seconds as a string /
+	// the future "Live". The topbar renders the refresh label + active option
+	// from it at SSR so the persisted choice paints without the JS sync flash;
+	// readout.js re-derives the same state from the same cookie on init.
+	RefreshMode string
 }
 
 // sidebarView is the resolved sidebar: the grouped resource-type links (each
@@ -215,10 +222,15 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, cl
 	}
 
 	if s.manager != nil {
+		// The palette cluster list is the topbar's cluster nav, i.e. a
+		// cluster-ENTRY surface: each link consumes the persisted
+		// namespace-per-cluster pref via clusterEntryHref (D9 -- link
+		// construction only, never a redirect).
+		nsPrefs := prefsFromRequest(r).Namespaces
 		for _, c := range s.manager.Clusters() {
 			feed.Clusters = append(feed.Clusters, paletteLinkFeed{
 				Name: c.Name,
-				Href: "/clusters/" + url.PathEscape(c.Name),
+				Href: clusterEntryHref(c.Name, nsPrefs[c.Name]),
 			})
 		}
 	}
@@ -355,6 +367,7 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 		NextTheme:       nextTheme,
 		ToggleNextURL:   r.URL.RequestURI(),
 		ThemeExplicit:   explicit,
+		RefreshMode:     prefsFromRequest(r).Refresh,
 	}
 	if cluster != "" && cluster != kube.AllClusters {
 		if clusterObj, ok := s.manager.Get(cluster); ok {

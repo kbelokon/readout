@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Server) clusters(w http.ResponseWriter, r *http.Request) {
-	data := s.buildClustersData(r.URL.Query().Get("selector"), r.URL.Query().Get("filter"))
+	data := s.buildClustersData(r, r.URL.Query().Get("selector"), r.URL.Query().Get("filter"))
 	s.pageComponent(w, r, "Clusters", templates.Clusters(data))
 }
 

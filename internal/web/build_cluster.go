@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -48,9 +49,12 @@ func sortedKeys(m map[string]string) []string {
 // buildClustersData assembles the clusters-list view model: the count, the form
 // round-trip values, the filtered in-cluster rows, and the external-cluster
 // rows. The filter matches the prior handler (case-insensitive over
-// name+url+labels).
-func (s *Server) buildClustersData(selector, filter string) templates.ClustersData {
+// name+url+labels). Each row's entry link consumes the persisted
+// namespace-per-cluster pref via clusterEntryHref (D9 -- the clusters page is a
+// cluster-ENTRY surface; link construction only, never a redirect).
+func (s *Server) buildClustersData(r *http.Request, selector, filter string) templates.ClustersData {
 	clusters := s.manager.Clusters()
+	nsPrefs := prefsFromRequest(r).Namespaces
 	data := templates.ClustersData{
 		Count:         len(clusters) + len(s.cfg.ExternalClusters),
 		SelectorValue: selector,
@@ -75,6 +79,7 @@ func (s *Server) buildClustersData(selector, filter string) templates.ClustersDa
 		}
 		data.Rows = append(data.Rows, templates.ClusterRow{
 			Name:  cluster.Name,
+			Href:  clusterEntryHref(cluster.Name, nsPrefs[cluster.Name]),
 			URL:   cluster.URL,
 			Chips: labelChips(cluster.Labels),
 		})

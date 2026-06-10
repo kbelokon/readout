@@ -214,17 +214,16 @@ document.addEventListener('click', (event) => {
         return;
     }
 
-    // Auto-refresh interval option (navbar #refresh-dropdown): store the chosen
-    // interval client-side, re-arm the poll, and reflect it in the control. The
-    // dropdown opens through CSS hover/focus, so there is no open/close handler
-    // here -- only the selection.
+    // Auto-refresh interval option (navbar #refresh-dropdown): persist the
+    // chosen mode in the ro_prefs cookie (D9 -- the legacy roRefresh
+    // localStorage write is retired; refreshMode() still reads that key once as
+    // a migration fallback), re-arm the poll, and reflect it in the control.
+    // The dropdown opens through CSS hover/focus, so there is no open/close
+    // handler here -- only the selection.
     const refreshOption = target.closest('.refresh-option');
     if (refreshOption) {
-        try {
-            window.localStorage.setItem(REFRESH_KEY, refreshOption.dataset.interval);
-        } catch (e) {
-            // localStorage unavailable -> the choice just will not persist
-        }
+        const interval = parseInt(refreshOption.dataset.interval, 10) || 0;
+        roPrefsSetRefresh(interval > 0 ? String(interval) : 'Off');
         syncRefreshUI();
         applyRefresh();
         refreshOption.blur(); // close the hover-dropdown after a keyboard/touch pick
@@ -332,6 +331,22 @@ document.addEventListener('click', (event) => {
         location.hash = `#${lineNumber.href.split('#')[1]}`;
         highlightYamlLine();
         event.preventDefault();
+        return;
+    }
+
+    // Namespace switch (D9): picking a namespace in the topbar dropdown records
+    // it as this cluster's last-used namespace in the ro_prefs cookie. The
+    // server consumes it ONLY when building cluster-entry hrefs (the clusters
+    // page rows + the palette cluster nav) -- never as a redirect. The click is
+    // deliberately NOT prevented: the boosted navigation proceeds as before,
+    // the write is a side record of the gesture.
+    const nsItem = target.closest('#namespace-dropdown .namespace-item');
+    if (nsItem) {
+        const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//
+            .exec(nsItem.getAttribute('href') || '');
+        if (hrefMatch) {
+            roPrefsSetNamespace(decodeURIComponent(hrefMatch[1]), decodeURIComponent(hrefMatch[2]));
+        }
         return;
     }
 
@@ -1146,14 +1161,234 @@ function closePalette() {
 }
 
 // ---------------------------------------------------------------------------
+// ro_prefs preference cookie (D9) -- THE pref write path (the server only reads)
+// ---------------------------------------------------------------------------
+// One compact cookie persists column visibility per plural, sort per plural,
+// the auto-refresh mode, and a last-used namespace per cluster, so SSR renders
+// the persisted state without a double paint. Wire format (pinned, mirrored by
+// internal/web/prefs.go -- the canonical reference): `ro_prefs=v1.<base64url(
+// JSON)>`; raw JSON is cookie-unsafe (column names like "Nominated Node" carry
+// spaces, JSON carries quotes/commas). Payload shape:
+//   { kinds: [{ k, sort?, hide? }...],   // most-recent-first per-plural entries
+//     refresh: 'Off'|'5'|...|'Live',     // stringly so Live needs no migration
+//     ns: { cluster: namespace } }       // '_all' is a valid value
+// Writes happen ONLY on direct user interactions (sort click, column toggle,
+// interval pick, namespace switch) -- never because a URL arrived with
+// explicit params, and never for programmatic traffic (ticks mark themselves
+// RO-No-Push). Attributes: Path=/; SameSite=Lax; Max-Age=31536000, Secure on
+// https, NOT HttpOnly (this script writes it). No server write path exists --
+// the read-only edge keeps its GET-only surface. Above the 3KB encoded cap,
+// kind entries evict from the array TAIL (least recently used; the writers
+// below move a touched entry to the front -- deterministic, no timestamps).
+const PREFS_COOKIE = 'ro_prefs';
+const PREFS_VERSION_PREFIX = 'v1.';
+const PREFS_MAX_ENCODED = 3072;
+const PREFS_COOKIE_MAX_AGE = 31536000; // one year, in seconds
+
+// b64urlEncodeUTF8 / b64urlDecodeUTF8: base64url (URL-safe alphabet, no
+// padding) over the UTF-8 bytes of a string -- TextEncoder/TextDecoder keep
+// multi-byte column names (CRD printer columns) intact through btoa/atob,
+// matching Go's base64.RawURLEncoding byte-for-byte.
+function b64urlEncodeUTF8(text) {
+    const bytes = new TextEncoder().encode(text);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) {
+        bin += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlDecodeUTF8(encoded) {
+    const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    const bin = window.atob(b64 + '===='.slice(b64.length % 4 || 4));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
+}
+
+function prefsCookieValue() {
+    const parts = document.cookie ? document.cookie.split('; ') : [];
+    for (let i = 0; i < parts.length; i++) {
+        if (parts[i].indexOf(PREFS_COOKIE + '=') === 0) {
+            return parts[i].slice(PREFS_COOKIE.length + 1);
+        }
+    }
+    return '';
+}
+
+// readPrefs parses the cookie into a NORMALIZED prefs object. Lenient by
+// design (matching the server's decodePrefs): a missing/foreign-version/
+// corrupt cookie yields empty prefs, never a throw -- the next write simply
+// starts fresh.
+function readPrefs() {
+    const empty = { kinds: [], refresh: '', ns: {} };
+    const value = prefsCookieValue();
+    if (!value || value.indexOf(PREFS_VERSION_PREFIX) !== 0) {
+        return empty;
+    }
+    try {
+        const decoded = JSON.parse(b64urlDecodeUTF8(value.slice(PREFS_VERSION_PREFIX.length)));
+        if (!decoded || typeof decoded !== 'object') {
+            return empty;
+        }
+        return {
+            kinds: Array.isArray(decoded.kinds)
+                ? decoded.kinds.filter((e) => !!e && typeof e === 'object' && typeof e.k === 'string')
+                : [],
+            refresh: typeof decoded.refresh === 'string' ? decoded.refresh : '',
+            ns: (decoded.ns && typeof decoded.ns === 'object' && !Array.isArray(decoded.ns)) ? decoded.ns : {},
+        };
+    } catch (e) {
+        return empty;
+    }
+}
+
+// encodePrefsValue renders the cookie value, evicting kind entries from the
+// tail while the encoded value exceeds the 3KB cap (the entries are
+// most-recent-first, so the least recently used kinds drop first). Never
+// mutates the caller's arrays.
+function encodePrefsValue(prefs) {
+    const out = {};
+    if (prefs.kinds && prefs.kinds.length > 0) {
+        out.kinds = prefs.kinds;
+    }
+    if (prefs.refresh) {
+        out.refresh = prefs.refresh;
+    }
+    if (prefs.ns && Object.keys(prefs.ns).length > 0) {
+        out.ns = prefs.ns;
+    }
+    let value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
+    while (value.length > PREFS_MAX_ENCODED && out.kinds && out.kinds.length > 0) {
+        out.kinds = out.kinds.slice(0, -1); // D9 eviction: drop the tail kind
+        if (out.kinds.length === 0) {
+            delete out.kinds;
+        }
+        value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
+    }
+    return value;
+}
+
+function writePrefs(prefs) {
+    try {
+        let cookie = PREFS_COOKIE + '=' + encodePrefsValue(prefs)
+            + '; Path=/; SameSite=Lax; Max-Age=' + PREFS_COOKIE_MAX_AGE;
+        if (window.location.protocol === 'https:') {
+            cookie += '; Secure';
+        }
+        document.cookie = cookie;
+    } catch (e) {
+        // cookies unavailable -> the preference just will not persist
+    }
+}
+
+// prefsTouchKind finds-or-creates the entry for a plural and moves it to the
+// FRONT (most-recent-first -- the order tail eviction relies on).
+function prefsTouchKind(prefs, plural) {
+    for (let i = 0; i < prefs.kinds.length; i++) {
+        if (prefs.kinds[i].k === plural) {
+            const entry = prefs.kinds.splice(i, 1)[0];
+            prefs.kinds.unshift(entry);
+            return entry;
+        }
+    }
+    const fresh = { k: plural };
+    prefs.kinds.unshift(fresh);
+    return fresh;
+}
+
+// roPrefsSetSort persists a sort param ("Name", "Status:desc", ...) for a
+// plural. Called from the sort-header write hook below.
+function roPrefsSetSort(plural, sort) {
+    const prefs = readPrefs();
+    prefsTouchKind(prefs, plural).sort = sort;
+    writePrefs(prefs);
+}
+
+// roPrefsSetHiddenColumns is the COLUMN-VISIBILITY write surface (Unit 9's
+// popover writes through it; nothing calls it yet). names is the COMPLETE
+// hidden-column list for the plural as the user sees it -- an EMPTY array is
+// an explicit "hide nothing" that the server distinguishes from "no
+// preference" (it suppresses the DefaultHiddenColumns config default).
+function roPrefsSetHiddenColumns(plural, names) {
+    const prefs = readPrefs();
+    prefsTouchKind(prefs, plural).hide = Array.isArray(names) ? names : [];
+    writePrefs(prefs);
+}
+
+// roPrefsSetRefresh persists the auto-refresh mode ('Off', seconds-as-string,
+// future 'Live') -- the interval picker writes through it; Unit 27's Live mode
+// will too.
+function roPrefsSetRefresh(mode) {
+    const prefs = readPrefs();
+    prefs.refresh = mode;
+    writePrefs(prefs);
+}
+
+// roPrefsSetNamespace records the last-used namespace for a cluster ('_all'
+// included). Consumed server-side ONLY for cluster-entry href construction
+// (the clusters page rows + the palette cluster nav) -- never redirects.
+function roPrefsSetNamespace(cluster, namespace) {
+    if (!cluster || !namespace) {
+        return;
+    }
+    const prefs = readPrefs();
+    prefs.ns[cluster] = namespace;
+    writePrefs(prefs);
+}
+
+// Sort-click pref write: a USER-initiated sort rides the v2 loop as an hx-get
+// issued by a sort-header anchor (inside a <thead> th) targeting
+// #resource-list-content -- the SAME path that earns the canonical
+// HX-Push-Url. Hooked on htmx:beforeRequest (which fires AFTER every
+// configRequest listener, so the RO-No-Push programmatic marker is final):
+// ticks/retries are issued BY the container (and marked RO-No-Push -- treated
+// as do-not-write), preload warm-ups carry HX-Preloaded, filter-chip commits
+// are sourced from the editor input -- none of them match a thead ancestor.
+// A URL that merely ARRIVES with ?sort= (deep link, history restore) never
+// passes here at all: only the direct interaction writes (D9).
+document.addEventListener('htmx:beforeRequest', (event) => {
+    const detail = event.detail;
+    const cfg = detail && detail.requestConfig;
+    if (!cfg || !detail.elt || !detail.target || detail.target.id !== 'resource-list-content') {
+        return;
+    }
+    if (cfg.headers && (cfg.headers['RO-No-Push'] || cfg.headers['HX-Preloaded'] === 'true')) {
+        return; // programmatic / warm-up traffic never writes prefs
+    }
+    if (typeof detail.elt.closest !== 'function' || !detail.elt.closest('thead th')) {
+        return; // not a sort-header gesture
+    }
+    const pathMatch = /\/([^/]+)\/_table(?:[?#]|$)/.exec(cfg.path || '');
+    if (!pathMatch) {
+        return;
+    }
+    let sort = '';
+    try {
+        sort = new URL(cfg.path, window.location.href).searchParams.get('sort') || '';
+    } catch (e) {
+        return; // unparseable request URL -> nothing trustworthy to persist
+    }
+    const plural = decodeURIComponent(pathMatch[1]);
+    if (plural && sort) {
+        roPrefsSetSort(plural, sort);
+    }
+});
+
+// ---------------------------------------------------------------------------
 // Auto-refresh interval (live table morph-refresh)
 // ---------------------------------------------------------------------------
 // OFF by default -- the page is static. The user picks an interval in the navbar
-// (#refresh-dropdown: Off / 5 / 15 / 30 / 60s); the choice is a CLIENT preference
-// in localStorage (no server write -- the read-only floor stays intact, and it
-// persists across navigation). When an interval is set and a resource-list page
-// is showing (the #resource-list-content container exists), the tick re-fetches
-// the table fragment so it morphs in place.
+// (#refresh-dropdown: Off / 5 / 15 / 30 / 60s); the choice persists in the
+// ro_prefs cookie (D9 -- written by THIS script, no server write route: the
+// read-only floor stays intact; the server merely renders the persisted state
+// into the topbar at SSR). The legacy v1 home, the `roRefresh` localStorage
+// key, survives only as refreshMode()'s read-once migration fallback. When an
+// interval is set and a resource-list page is showing (the
+// #resource-list-content container exists), the tick re-fetches the table
+// fragment so it morphs in place.
 //
 // TWO container contracts (D1/D6):
 //   - v2 single-type pages mark the container data-live-url="location" and bake
@@ -1174,6 +1409,9 @@ function closePalette() {
 // in-flight tick -- never the other way around (bare hx-sync would let a tick
 // cancel the user's request). Polling PAUSES while the tab is hidden (no
 // background API hammering), and refreshes once immediately on return.
+// REFRESH_KEY is the LEGACY v1 localStorage home of the interval choice. It is
+// never written anymore -- refreshMode() reads it once as the migration
+// fallback into the ro_prefs cookie (D9).
 const REFRESH_KEY = 'roRefresh';
 let refreshTimerId = null;
 
@@ -1238,12 +1476,36 @@ document.addEventListener('htmx:afterRequest', (event) => {
     }
 });
 
-function refreshInterval() {
-    try {
-        return parseInt(window.localStorage.getItem(REFRESH_KEY) || '0', 10) || 0;
-    } catch (e) {
-        return 0; // localStorage unavailable (e.g. privacy mode) -> stay static
+// refreshMode returns the persisted auto-refresh mode ('Off', an interval in
+// seconds as a string, the future 'Live'; '' = no preference) from the
+// ro_prefs cookie. The legacy `roRefresh` localStorage key migrates here ONCE
+// (D9 -- the migration is OWNED by this unit; Unit 21 verifies, never
+// re-implements): it is a read-once fallback consulted only while the cookie
+// carries no refresh value, written through to the cookie immediately, after
+// which the cookie is canonical.
+function refreshMode() {
+    const stored = readPrefs().refresh;
+    if (stored) {
+        return stored;
     }
+    let legacy = null;
+    try {
+        legacy = window.localStorage.getItem(REFRESH_KEY);
+    } catch (e) {
+        return ''; // localStorage unavailable (e.g. privacy mode) -> no pref
+    }
+    if (legacy === null || legacy === '') {
+        return '';
+    }
+    const secs = parseInt(legacy, 10) || 0;
+    const mode = secs > 0 ? String(secs) : 'Off';
+    roPrefsSetRefresh(mode); // write-through: the cookie is canonical from here
+    return mode;
+}
+
+function refreshInterval() {
+    const secs = parseInt(refreshMode(), 10);
+    return Number.isFinite(secs) && secs > 0 ? secs : 0; // 'Off'/'Live'/junk -> 0
 }
 
 // listTableURL derives the `_table` partial URL from the LIVE document URL at

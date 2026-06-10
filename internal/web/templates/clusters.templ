@@ -32,9 +32,13 @@ type ClustersData struct {
 
 // ClusterRow is one in-cluster row: name + API URL + the label chips. Each chip
 // is a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3
-// colour law: the green app.kubernetes.io/* accent is retired).
+// colour law: the green app.kubernetes.io/* accent is retired). Href is the
+// resolved cluster-entry link (clusterEntryHref in package web): the plain
+// /clusters/<name> overview, or the persisted namespace's pods list when the
+// ro_prefs cookie carries one for this cluster (D9 -- link construction only).
 type ClusterRow struct {
 	Name  string
+	Href  string
 	URL   string
 	Chips []LabelChip
 }
@@ -54,7 +58,7 @@ templ Clusters(d ClustersData) {
 		}
 		<form action="/search" method="get"><div class="ro-table-wrap"><table class="ro-table ro-select-table"><thead><tr><th></th><th>Name</th><th>API URL</th><th>Labels</th></tr></thead><tbody>
 			for _, row := range d.Rows {
-				<tr><td><input class="ro-check" type="checkbox" name="cluster" value={ row.Name } data-toggle-button="search-clusters-button"></td><td class="cl-name"><a href={ templ.SafeURL(clusterHref(row.Name)) }>{ row.Name }</a></td><td class="ro-cell-url">{ row.URL }</td><td>
+				<tr><td><input class="ro-check" type="checkbox" name="cluster" value={ row.Name } data-toggle-button="search-clusters-button"></td><td class="cl-name"><a href={ templ.SafeURL(row.Href) }>{ row.Name }</a></td><td class="ro-cell-url">{ row.URL }</td><td>
 					if len(row.Chips) > 0 {
 						<div class="ro-chips">
 							for _, chip := range row.Chips {

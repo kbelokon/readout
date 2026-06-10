@@ -184,7 +184,20 @@ func (s *Server) unionNamespacedResourceTypes(r *http.Request, clusters []*kube.
 
 func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool) {
 	q := r.URL.Query()
-	hide := first(q.Get("hidecols"), q.Get("hide-columns"), s.cfg.DefaultHiddenColumns[table.Resource.Plural])
+	// D9 cookie fill: the ro_prefs colvis/sort prefs stand in for ABSENT URL
+	// params (URL always wins; single-type pages only; render-only -- r.URL is
+	// never mutated, so rebuilt hrefs and HX-Push-Url keep URL truth).
+	fill := prefsListFill(r)
+	hide := first(q.Get("hidecols"), q.Get("hide-columns"))
+	if hide == "" {
+		if fill.HasHide {
+			// An explicit cookie hide set -- possibly EMPTY ("show everything"),
+			// which must suppress the config default (user override wins, D8).
+			hide = fill.Hide
+		} else {
+			hide = s.cfg.DefaultHiddenColumns[table.Resource.Plural]
+		}
+	}
 	kube.RemoveColumns(table, hide)
 	labels := first(q.Get("labelcols"), q.Get("label-columns"), s.cfg.DefaultLabelColumns[table.Resource.Plural])
 	kube.AddLabelColumns(table, labels)
@@ -242,7 +255,7 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 			}
 		}
 	}
-	kube.SortTable(table, q.Get("sort"))
+	kube.SortTable(table, first(q.Get("sort"), fill.Sort))
 	if limit := q.Get("limit"); limit != "" {
 		if n, err := strconv.Atoi(limit); err == nil && n > 0 && n < len(table.Rows) {
 			table.Rows = table.Rows[:n]
@@ -543,6 +556,17 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	q := r.URL.Query()
 	sortValue := q.Get("sort")
 	joinValue := q.Get("join")
+	// D9 cookie fill: with no ?sort= in the URL the persisted sort drives the
+	// render (applyTableOptions sorted the rows with the same fill), so the
+	// th.sorted highlight, the sort icons, and the asc/desc header toggle must
+	// see the EFFECTIVE sort. The fill never touches r.URL: header hrefs SET
+	// sort explicitly, every other rebuilt href and the partial handler's
+	// HX-Push-Url keep carrying only what the user explicitly chose -- pushed
+	// URLs stay user-truth (back-button parity), and the cookie keeps filling
+	// them identically on reload.
+	if sortValue == "" {
+		sortValue = prefsListFill(r).Sort
+	}
 
 	// The D1 surface boundary: the v2 interaction loop (partial sort headers,
 	// row identity, location-derived ticks) applies to single-resource-type

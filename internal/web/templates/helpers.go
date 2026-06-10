@@ -72,6 +72,47 @@ func metaIcon(label string) string {
 	return string(icons.MetaGlyph(label))
 }
 
+// refreshSeconds maps a persisted ro_prefs refresh mode (D9 string vocabulary:
+// "Off", an interval in seconds, future "Live") to polling seconds. "" / "Off"
+// / "Live" / junk all yield 0 -- exactly what readout.js's refreshInterval()
+// derives from the same cookie, so the SSR'd topbar state and the JS init sync
+// always agree (Live gains its own rendering in Unit 27).
+func refreshSeconds(mode string) int {
+	n, err := strconv.Atoi(mode)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// refreshLabel is the topbar #refresh-label text for a persisted refresh mode:
+// "Ns" for an active interval, else "Off" (matching readout.js syncRefreshUI).
+func refreshLabel(mode string) string {
+	if secs := refreshSeconds(mode); secs > 0 {
+		return strconv.Itoa(secs) + "s"
+	}
+	return "Off"
+}
+
+// refreshOptionClass marks the interval option matching the persisted refresh
+// mode as is-active ("Off"/none activates the data-interval="0" option, like
+// the JS sync does).
+func refreshOptionClass(interval, mode string) string {
+	if interval == strconv.Itoa(refreshSeconds(mode)) {
+		return "refresh-option is-active"
+	}
+	return "refresh-option"
+}
+
+// refreshDropdownClass adds the refresh-on styling hook when a positive
+// interval is persisted (the spinning-icon state readout.js otherwise toggles).
+func refreshDropdownClass(mode string) string {
+	if refreshSeconds(mode) > 0 {
+		return "refresh-dropdown refresh-on"
+	}
+	return "refresh-dropdown"
+}
+
 // pluralSuffix returns "" for a count of 1, else "s", for the "N object(s)" /
 // "row(s)" / "cluster(s)" footer text.
 func pluralSuffix(count int) string {
