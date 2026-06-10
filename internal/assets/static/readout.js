@@ -551,11 +551,62 @@ document.addEventListener('focusin', (event) => {
 // ---------------------------------------------------------------------------
 // Delegated SUBMIT handlers
 // ---------------------------------------------------------------------------
+// popFormMergedHref builds the D8 popover form's submit URL by MERGING its
+// user-editable fields into the LIVE query instead of replacing the query
+// wholesale (which is what a native GET submit does). Every location.search
+// pair whose key the form does not own survives BYTE-EXACT -- above all the
+// `?f=` chips, whose raw OR-commas are wire-significant: the server splits
+// alternatives on raw commas BEFORE percent-decoding (filter.go), so the %2C
+// a form-urlencoded input would produce turns an OR into a literal comma.
+// Mirrors commitFilterChip's raw string-concatenation technique. The form's
+// hidden round-trip inputs are NOT owned: their values are snapshots of the
+// very pairs the merge already keeps byte-exact (they exist for the no-JS
+// fallback); only the visible inputs (labelcols / selector) replace their
+// pairs -- a cleared visible input drops its pair, exactly like the native
+// path's blank-empty-names trick.
+function popFormMergedHref(form) {
+    const owned = new Set();
+    const fields = [];
+    Array.prototype.slice.call(form.elements).forEach((el) => {
+        if (el.tagName !== 'INPUT' || el.type === 'hidden' || !el.name) {
+            return;
+        }
+        owned.add(el.name);
+        if (el.value) {
+            fields.push(el.name + '=' + encodeURIComponent(el.value));
+        }
+    });
+    const kept = [];
+    window.location.search.replace(/^\?/, '').split('&').forEach((pair) => {
+        if (pair && !owned.has(pair.split('=')[0])) {
+            kept.push(pair); // byte-exact survival (raw f= commas included)
+        }
+    });
+    const query = kept.concat(fields).join('&');
+    return window.location.pathname + (query ? '?' + query : '');
+}
+
 document.addEventListener('submit', (event) => {
-    // form.tools-form (the v1 multi-type tools form) and form.ro-pop-form (the
-    // D8 popover's labelcols/selector form): blank the `name` of empty inputs
-    // so they do not become empty query parameters in the resulting GET URL.
-    const form = event.target.closest('form.tools-form, form.ro-pop-form');
+    // form.ro-pop-form (the D8 popover's labelcols/selector form): intercept
+    // and MERGE into the live query, riding the v2 loop exactly like a chip
+    // commit (a user-initiated `_table` GET the server answers with the
+    // canonical HX-Push-Url; issueFilterNavigation falls back to a plain
+    // navigation when the loop is unavailable -- the merged href is correct
+    // either way). The native submit would rebuild the query from the
+    // round-trip hidden inputs alone and wipe every `?f=` chip (chips cannot
+    // ride hidden inputs -- see popFormMergedHref); it survives only as the
+    // no-JS fallback, where the hidden `filter` input still round-trips the
+    // legacy text filter and losing `f` is the accepted floor.
+    const popForm = event.target.closest('form.ro-pop-form');
+    if (popForm) {
+        event.preventDefault();
+        issueFilterNavigation(popFormMergedHref(popForm));
+        return;
+    }
+    // form.tools-form (the v1 multi-type tools form): blank the `name` of
+    // empty inputs so they do not become empty query parameters in the
+    // resulting GET URL.
+    const form = event.target.closest('form.tools-form');
     if (form) {
         Array.prototype.slice.call(form.getElementsByTagName('input')).forEach((input) => {
             if (input.name && !input.value) {
@@ -1249,6 +1300,13 @@ function prefsCookieValue() {
 // design (matching the server's decodePrefs): a missing/foreign-version/
 // corrupt cookie yields empty prefs, never a throw -- the next write simply
 // starts fresh.
+//
+// INNER fields are type-checked one by one, not passed through: the Go reader
+// (prefs.go decodePrefs) is all-or-nothing -- json.Unmarshal rejects the WHOLE
+// payload when one field is mistyped (e.g. {"kinds":[{"k":"pods","sort":5}]}),
+// so a passthrough here would keep perpetuating a cookie SSR can never apply.
+// Dropping just the mistyped field means the very next JS write re-encodes a
+// clean cookie and the two readers converge again (self-heal).
 function readPrefs() {
     const empty = { kinds: [], refresh: '', ns: {} };
     const value = prefsCookieValue();
@@ -1260,12 +1318,34 @@ function readPrefs() {
         if (!decoded || typeof decoded !== 'object') {
             return empty;
         }
+        const kinds = [];
+        if (Array.isArray(decoded.kinds)) {
+            decoded.kinds.forEach((e) => {
+                if (!e || typeof e !== 'object' || typeof e.k !== 'string') {
+                    return;
+                }
+                const entry = { k: e.k };
+                if (typeof e.sort === 'string') {
+                    entry.sort = e.sort;
+                }
+                if (Array.isArray(e.hide) && e.hide.every((name) => typeof name === 'string')) {
+                    entry.hide = e.hide;
+                }
+                kinds.push(entry);
+            });
+        }
+        const ns = {};
+        if (decoded.ns && typeof decoded.ns === 'object' && !Array.isArray(decoded.ns)) {
+            Object.keys(decoded.ns).forEach((cluster) => {
+                if (typeof decoded.ns[cluster] === 'string') {
+                    ns[cluster] = decoded.ns[cluster];
+                }
+            });
+        }
         return {
-            kinds: Array.isArray(decoded.kinds)
-                ? decoded.kinds.filter((e) => !!e && typeof e === 'object' && typeof e.k === 'string')
-                : [],
+            kinds: kinds,
             refresh: typeof decoded.refresh === 'string' ? decoded.refresh : '',
-            ns: (decoded.ns && typeof decoded.ns === 'object' && !Array.isArray(decoded.ns)) ? decoded.ns : {},
+            ns: ns,
         };
     } catch (e) {
         return empty;
@@ -1442,13 +1522,46 @@ document.addEventListener('htmx:beforeRequest', (event) => {
 const REFRESH_KEY = 'roRefresh';
 let refreshTimerId = null;
 
-// userListRequestsInFlight counts USER-initiated requests targeting
+// userListRequestsInFlight tracks USER-initiated requests targeting
 // #resource-list-content (requests from any element other than the container
-// itself, e.g. a sort-header hx-get). While > 0 the refresh tick is suppressed.
+// itself, e.g. a sort-header hx-get) by their XHR objects. While one is
+// unsettled the refresh tick is suppressed.
+//
+// A Set of xhrs, deliberately NOT a counter: htmx dispatches htmx:afterRequest
+// on the ISSUING element, and when a boosted navigation's body swap detaches
+// that element mid-request the event cannot bubble to the document (htmx never
+// aborts the in-flight xhrs of removed elements either) -- a counter would
+// stick >= 1 forever, leaving fireRefresh dead until a hard reload. The xhrs
+// themselves know when they settled, so the tick gate prunes settled entries
+// by readyState instead of trusting the event to arrive.
+//
 // Preload warm-ups (HX-Preloaded) are excluded: the preload extension hijacks
-// the XHR callbacks, so htmx:afterRequest never fires for them and counting one
-// would suppress ticks forever.
-let userListRequestsInFlight = 0;
+// the XHR callbacks (htmx:afterRequest never fires for them) and a warm-up
+// never swaps the table, so the tick gate must not wait on one.
+const userListRequestsInFlight = new Set();
+
+// containerListRequestsInFlight tracks the requests the container ITSELF
+// issues (the refresh tick, the stale retry, commitColumnVisibility's
+// re-render) the same xhr-Set way. fireRefresh skips while one is unsettled:
+// issuing a second container request while the first is in flight would make
+// htmx QUEUE it (the sync-less default queues "last" per element), and a
+// queued tick replays SYNCHRONOUSLY on the next htmx:abort -- carrying its
+// stale queue-time URL -- racing the very user request whose arrival triggered
+// that abort. If the stale response lands last, the table reverts until the
+// next tick. The fix is upstream: no queue may ever form.
+const containerListRequestsInFlight = new Set();
+
+// A settled xhr is DONE (4: the load/error/timeout callbacks ran) or UNSENT
+// (0: aborted -- the XHR abort steps reset readyState to 0 after firing).
+// Either way htmx is no longer waiting on it, so the entry is reclaimable
+// even when its htmx:afterRequest was dispatched on a detached element.
+function pruneSettledListRequests(requests) {
+    requests.forEach((xhr) => {
+        if (xhr.readyState === 4 || xhr.readyState === 0) {
+            requests.delete(xhr);
+        }
+    });
+}
 
 function isPreloadRequest(event) {
     const cfg = event.detail && event.detail.requestConfig;
@@ -1481,25 +1594,38 @@ document.addEventListener('htmx:configRequest', (event) => {
 });
 
 document.addEventListener('htmx:beforeRequest', (event) => {
+    const detail = event.detail;
+    if (detail && detail.xhr && detail.elt && detail.elt.id === 'resource-list-content') {
+        containerListRequestsInFlight.add(detail.xhr);
+        return; // container-issued (tick/retry/programmatic) -- tracked, never aborts anything
+    }
     if (!isUserListRequest(event)) {
         return;
     }
-    userListRequestsInFlight++;
+    if (detail && detail.xhr) {
+        userListRequestsInFlight.add(detail.xhr);
+    }
     // The user action wins: abort the container's own in-flight request (a
     // tick that started before the click). htmx aborts the request belonging
     // to the element htmx:abort is triggered on -- the user's request lives on
-    // its own element and is untouched. Inert when the container is idle.
+    // its own element and is untouched. Inert when the container is idle, and
+    // the container can never hold a QUEUED request for this abort to replay:
+    // fireRefresh refuses to issue while one is already in flight.
     const content = document.getElementById('resource-list-content');
     if (content && typeof htmx !== 'undefined') {
         htmx.trigger(content, 'htmx:abort');
     }
 });
 
-// htmx:afterRequest fires on load, error, abort, AND timeout, so the in-flight
-// count always returns to zero.
+// htmx:afterRequest fires on load, error, abort, AND timeout. When it reaches
+// the document the entry is removed here; when it does not (htmx dispatched it
+// on an element a boosted swap already detached, so it could not bubble), the
+// readyState pruning in fireRefresh reclaims the entry instead.
 document.addEventListener('htmx:afterRequest', (event) => {
-    if (isUserListRequest(event)) {
-        userListRequestsInFlight = Math.max(0, userListRequestsInFlight - 1);
+    const xhr = event.detail && event.detail.xhr;
+    if (xhr) {
+        userListRequestsInFlight.delete(xhr);
+        containerListRequestsInFlight.delete(xhr);
     }
 });
 
@@ -1573,8 +1699,17 @@ function fireRefresh() {
     if (document.hidden) {
         return; // paused while the tab is in the background
     }
-    if (userListRequestsInFlight > 0) {
+    pruneSettledListRequests(userListRequestsInFlight);
+    pruneSettledListRequests(containerListRequestsInFlight);
+    if (userListRequestsInFlight.size > 0) {
         return; // a user-initiated table request is in flight -- never stomp it
+    }
+    if (containerListRequestsInFlight.size > 0) {
+        // The previous container request has not settled (a response slower
+        // than the interval). Issuing another would QUEUE it inside htmx, and
+        // a queued tick replays on the next htmx:abort with its stale URL --
+        // skip this tick entirely; the next one re-checks.
+        return;
     }
     requestListRefresh();
 }

@@ -17,6 +17,8 @@ package web
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -150,4 +152,59 @@ func TestColsPopoverSingleTypeGate(t *testing.T) {
 	multi.wantAbsent("#ro-cols-pop")
 	multi.wantHas("form.tools-form")
 	multi.wantAttr("a.toggle-tools", "data-target", "tools-table-1")
+}
+
+// TestColsPopoverFilterRoundTrip pins the popover form's `?filter=` survival:
+// the popover absorbed the v1 tools form's labelcols + selector inputs but NOT
+// its visible filter input (the chips editor replaced it on single-type
+// pages), so an active legacy ?filter= must round-trip the popover's GET
+// submit as a HIDDEN input -- without it, applying a selector silently wiped
+// the filter. The v1 multi-type tools form must NOT gain that hidden input:
+// it still renders the VISIBLE filter input, and a same-named hidden sibling
+// would precede it in form order and shadow every user edit (Go's q.Get
+// returns the first occurrence).
+//
+// The `?f=` chips deliberately have NO hidden input on either form: their
+// OR-commas are raw-comma-significant (filter.go splits alternatives on raw
+// commas BEFORE percent-decoding), and form urlencoding would rewrite them
+// into literal %2C commas. readout.js intercepts the popover submit and
+// merges the form into location.search keeping every f= pair byte-exact; the
+// interception needles are pinned below e2e-style (no JS runtime here).
+func TestColsPopoverFilterRoundTrip(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+
+	// Active ?filter= -> the popover form carries it as a hidden input.
+	p := get(t, app, "/clusters/test/namespaces/default/pods?filter=ngi", http.StatusOK)
+	p.wantHas(`#ro-cols-pop form.ro-pop-form input[type="hidden"][name="filter"][value="ngi"]`)
+
+	// No ?filter= -> no hidden filter input (an empty pair must never appear).
+	p = get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
+	p.wantAbsent(`#ro-cols-pop form.ro-pop-form input[name="filter"]`)
+
+	// The v1 multi-type tools form keeps filter VISIBLE-only: no hidden twin.
+	p = get(t, app, "/clusters/test/namespaces/default/pods,services?filter=ngi", http.StatusOK)
+	p.wantAbsent(`form.tools-form input[type="hidden"][name="filter"]`)
+	p.wantHas(`form.tools-form input.ro-input[name="filter"][value="ngi"]`)
+}
+
+// TestColsPopoverSubmitMergeJSContract pins the readout.js half of the D8
+// popover submit (needle-style -- the e2e suite drives the runtime): the
+// submit is intercepted and MERGED into the live query so active `?f=` chips
+// survive a labelcols/selector apply byte-exact.
+func TestColsPopoverSubmitMergeJSContract(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
+	if err != nil {
+		t.Fatalf("read readout.js: %v", err)
+	}
+	js := string(src)
+	for _, needle := range []string{
+		"popFormMergedHref", // the merge builder (keeps un-owned pairs byte-exact)
+		"form.ro-pop-form",  // the intercepted form
+		// the wiring: native submit suppressed, merged href rides the loop
+		"issueFilterNavigation(popFormMergedHref(popForm))",
+	} {
+		if !strings.Contains(js, needle) {
+			t.Fatalf("readout.js popover-submit contract missing %q", needle)
+		}
+	}
 }

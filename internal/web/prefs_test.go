@@ -12,6 +12,7 @@ package web
 // (no headless JS runner in this suite).
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -158,6 +159,21 @@ func TestPrefsEvictionDropsTailKinds(t *testing.T) {
 	// Tail eviction ONLY: the surviving entries are exactly the original head.
 	if !reflect.DeepEqual(out.Kinds, in.Kinds[:len(out.Kinds)]) {
 		t.Fatalf("survivors are not the head prefix; eviction must drop from the tail only")
+	}
+	// MINIMALITY: keeping even one more kind must overflow the cap, or the loop
+	// over-evicted (a head prefix passing the checks above could still be the
+	// result of dropping half the entries). Marshal the would-be payload
+	// directly -- never through encodePrefs, whose eviction loop is the very
+	// code under test.
+	oneMore := in
+	oneMore.Kinds = in.Kinds[:len(out.Kinds)+1]
+	raw, err := json.Marshal(&oneMore)
+	if err != nil {
+		t.Fatalf("marshal the one-more-kind payload: %v", err)
+	}
+	if got := len(prefsVersionPrefix + base64.RawURLEncoding.EncodeToString(raw)); got <= prefsMaxEncoded {
+		t.Fatalf("over-eviction: %d kinds encode to %d bytes (<= %d cap), so dropping down to %d was not necessary",
+			len(out.Kinds)+1, got, prefsMaxEncoded, len(out.Kinds))
 	}
 	if out.Refresh != "5" || out.Namespaces["test"] != "default" {
 		t.Fatalf("refresh/namespaces lost in eviction: %+v", out)
@@ -427,6 +443,14 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 		"#namespace-dropdown .namespace-item", // the namespace-switch surface
 		"localStorage.getItem(REFRESH_KEY)",   // the read-once roRefresh migration
 		"refreshMode",                         // cookie-canonical mode reader
+		// readPrefs drops wrongly-typed INNER fields instead of perpetuating
+		// them: Go's decodePrefs rejects the whole payload on one mistyped
+		// field (json.Unmarshal is all-or-nothing), so a passthrough JS reader
+		// would keep rewriting a cookie SSR can never apply. Field-level type
+		// guards make the next JS write self-heal the cookie.
+		"typeof e.sort === 'string'",              // kind sort kept only as a string
+		"Array.isArray(e.hide) && e.hide.every",   // hide kept only as an all-string array
+		"typeof decoded.ns[cluster] === 'string'", // ns map rebuilt from string values only
 	} {
 		if !strings.Contains(js, needle) {
 			t.Fatalf("readout.js prefs contract missing %q", needle)

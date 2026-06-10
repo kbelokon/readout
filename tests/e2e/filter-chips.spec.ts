@@ -133,12 +133,17 @@ test('free text narrows rows live with no network request', async ({ page }) => 
   ).toHaveClass(/ro-row-filtered/);
 
   // And NOT ONE request was made: the matcher ran on the client row model.
-  await page.waitForTimeout(400);
+  // The negative window must outlast the canonical htmx active-search debounce
+  // (500ms) -- a shorter settle would pass even if typing armed a debounced
+  // request that had not fired yet.
+  await page.waitForTimeout(750);
   expect(requests).toEqual([]);
 
-  // Clearing the draft restores every row -- still without a request.
+  // Clearing the draft restores every row -- still without a request (same
+  // post-debounce settle before the recheck, for the same reason).
   await filterInput(page).fill('');
   await expect(visibleNames(page)).toHaveText(['nginx', 'my-app', 'api-server']);
+  await page.waitForTimeout(750);
   expect(requests).toEqual([]);
 });
 

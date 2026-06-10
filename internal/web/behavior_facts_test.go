@@ -522,9 +522,10 @@ func TestBehaviorPodListFacts(t *testing.T) {
 	p.wantAttr(`a[href="/clusters/test/namespaces/default/pods?join=metrics"]`, "href", "/clusters/test/namespaces/default/pods?join=metrics")
 
 	// The labelcols / selector inputs live in the D8 columns popover on
-	// single-type pages (the delegated submit handler blanks-when-empty matches
-	// form.ro-pop-form too); the filter input's home is the chips editor (D7),
-	// so the v1 tools form is fully retired here.
+	// single-type pages (the delegated submit handler intercepts form.ro-pop-form
+	// and MERGES it into the live query, keeping `?f=` chips byte-exact); the
+	// filter input's home is the chips editor (D7), so the v1 tools form is
+	// fully retired here.
 	p.wantHas(`form.ro-pop-form .ro-input[name="labelcols"]`)
 	p.wantHas(`form.ro-pop-form .ro-input[name="selector"]`)
 	p.wantHas(`form.ro-pop-form .ro-field-icon`)
@@ -636,8 +637,12 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 			t.Fatalf("filter=nginx rows = %v, want [nginx]", got)
 		}
 		p.wantText(".ro-phase-strip .ro-phase-tally .ro-phase-count", "1")
-		// The filter input's new home is the chips editor (D7); no legacy input.
-		p.wantAbsent(`input[name="filter"]`)
+		// The filter input's new home is the chips editor (D7); no legacy TYPED
+		// input. The popover form still round-trips the ACTIVE ?filter= as a
+		// hidden input -- its GET submit must not wipe the param (pinned in
+		// TestColsPopoverFilterRoundTrip).
+		p.wantAbsent(`input[type="text"][name="filter"]`)
+		p.wantHas(`form.ro-pop-form input[type="hidden"][name="filter"]`)
 		p.wantHas("#ro-filter-input")
 	})
 

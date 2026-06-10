@@ -22,6 +22,7 @@ import { controlURL } from './playwright.config';
 // context, so cookie state never bleeds between tests.
 
 const NODES = '/clusters/e2e/nodes';
+const PODS = '/clusters/e2e/namespaces/default/pods';
 
 async function control(path: string): Promise<void> {
   const res = await fetch(controlURL + path);
@@ -34,6 +35,17 @@ async function control(path: string): Promise<void> {
 // marked RO-No-Push (so the server never answers with HX-Push-Url).
 function isNoPushTableResponse(r: Response): boolean {
   return r.url().includes('/_table') && r.request().headers()['ro-no-push'] === 'true';
+}
+
+// A user-initiated table request (a chip commit, the popover form submit):
+// no RO-No-Push marker, no preload warm-up.
+function isUserTableResponse(r: Response): boolean {
+  const headers = r.request().headers();
+  return (
+    r.url().includes('/_table') &&
+    headers['ro-no-push'] !== 'true' &&
+    headers['hx-preloaded'] !== 'true'
+  );
 }
 
 function headers(page: Page) {
@@ -153,6 +165,43 @@ test('title-row survivors: TSV + search buttons stay, labelcols/selector live in
   await expect(page.locator('#ro-cols-labelcols')).toBeVisible();
   await expect(page.locator('#ro-cols-selector')).toBeVisible();
   await expect(page.locator('form.tools-form')).toHaveCount(0);
+});
+
+test('a popover selector submit keeps the active filter chip (f= merge)', async ({ page }) => {
+  await page.goto(PODS);
+
+  // Commit a status chip through the editor: the URL gains the encoded f= pair.
+  const input = page.locator('#ro-filter-input');
+  await input.click();
+  await input.pressSequentially('status:Running');
+  const chipSwap = page.waitForResponse(isUserTableResponse);
+  await input.press('Enter');
+  await chipSwap;
+  await expect(page).toHaveURL(/f=status%3ARunning/);
+  await expect(page.locator('#ro-filter-field .ro-scope-chip')).toHaveCount(1);
+
+  // Submit a selector from the popover's absorbed form. The intercepted
+  // submit must MERGE into the live query -- the regression was a native GET
+  // rebuilt from the round-trip hidden inputs, which wiped the f= chip.
+  await openColsPopover(page);
+  await page.locator('#ro-cols-selector').fill('app=nginx');
+  const submitSwap = page.waitForResponse(isUserTableResponse);
+  await page.locator('#ro-cols-pop form.ro-pop-form button[type="submit"]').click();
+  await submitSwap;
+
+  // The chip survived in the URL (byte-exact) AND in the editor UI, with the
+  // selector applied alongside it -- and no full navigation happened (the
+  // canonical URL came from HX-Push-Url, the document path stayed the list).
+  await expect(page).toHaveURL(/f=status%3ARunning/);
+  await expect(page).toHaveURL(/selector=app%3Dnginx/);
+  expect(new URL(page.url()).pathname).not.toContain('_table');
+  const chip = page.locator('#ro-filter-field .ro-scope-chip');
+  await expect(chip).toHaveCount(1);
+  await expect(chip.first()).toContainText('status');
+  await expect(chip.first()).toContainText('Running');
+  // The server echoed the selector back into the re-rendered popover form --
+  // it SAW the param (the merge reached SSR, not just the address bar).
+  await expect(page.locator('#ro-cols-selector')).toHaveValue('app=nginx');
 });
 
 test('a pasted ?sort= deep link does not write the ro_prefs cookie', async ({ page }) => {

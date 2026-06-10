@@ -230,6 +230,21 @@ func toTableData(t *tableView) templates.TableData {
 			Icon:   icon("columns-3"),
 			Tools:  toTableTools(&t.Tools),
 		}
+		// The popover did NOT absorb the v1 visible filter input (the chips
+		// editor replaced it on single-type pages), so an active legacy
+		// ?filter= must round-trip its GET submit as a hidden input here --
+		// without it, applying a selector wipes the filter. POPOVER-ONLY by
+		// construction: buildToolsView's shared round-trip key list must not
+		// gain "filter", because the v1 multi-type tools form still renders
+		// the visible same-named input, and a hidden twin would precede it in
+		// form order and shadow every user edit (q.Get returns the first
+		// occurrence). The `?f=` chips have no hidden input at all: their raw
+		// OR-commas cannot survive form urlencoding (filter.go splits on raw
+		// commas) -- readout.js merges them into the submit URL byte-exact.
+		if t.Tools.FilterVal != "" {
+			pop.Tools.HiddenInputs = append(pop.Tools.HiddenInputs,
+				templates.HiddenInput{Name: "filter", Value: t.Tools.FilterVal})
+		}
 		for _, entry := range t.ColumnVis {
 			pop.Entries = append(pop.Entries, templates.ColsEntry{Name: entry.Name, Hidden: entry.Hidden, Identity: entry.Identity})
 		}

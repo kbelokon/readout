@@ -75,6 +75,13 @@ type kindPrefs struct {
 // version tag, broken base64, or non-JSON payload yields zero prefs (and
 // ok=false), never an error -- the page must render as if no preferences
 // existed, exactly like the JS reader.
+//
+// NOTE the all-or-nothing grain: json.Unmarshal rejects the WHOLE payload when
+// any single field is mistyped (e.g. {"kinds":[{"k":"pods","sort":5}]}), so
+// one bad field silently disables every preference at SSR. The JS reader
+// (readout.js readPrefs) mirrors this by type-checking each inner field and
+// DROPPING the mistyped ones -- the next JS write re-encodes a clean cookie,
+// which is what keeps such a cookie from staying SSR-invisible forever.
 func decodePrefs(value string) (prefs, bool) {
 	payload, found := strings.CutPrefix(value, prefsVersionPrefix)
 	if !found || payload == "" {

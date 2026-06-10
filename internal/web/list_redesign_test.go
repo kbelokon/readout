@@ -848,10 +848,18 @@ func TestListLoopReadoutJSContract(t *testing.T) {
 		"'/_table'",                       // the tick derives the partial URL from location
 		"RO-No-Push",                      // programmatic requests opt out of history push
 		"userListRequestsInFlight",        // tick suppression while a user request runs
-		"htmx:abort",                      // a user action aborts an in-flight tick
-		"reapplyRowState",                 // identity-keyed state re-applied after swaps
-		"roRowState",                      // the Unit-16 selection-gesture seam
-		"tr[data-key]",                    // state re-keys onto rows by object identity
+		"containerListRequestsInFlight",   // no second container request while one runs (no htmx queue)
+		// In-flight tracking is xhr-Set based, NOT a counter: htmx dispatches
+		// htmx:afterRequest on the issuing element, so a boosted swap that
+		// detaches that element mid-request swallows the event (no document
+		// bubble) -- a counter would stick and kill auto-refresh until a hard
+		// reload. Settled xhrs (DONE, or UNSENT after abort) are pruned by
+		// readyState at every tick gate instead.
+		"xhr.readyState === 4 || xhr.readyState === 0",
+		"htmx:abort",      // a user action aborts an in-flight tick
+		"reapplyRowState", // identity-keyed state re-applied after swaps
+		"roRowState",      // the Unit-16 selection-gesture seam
+		"tr[data-key]",    // state re-keys onto rows by object identity
 	} {
 		if !strings.Contains(js, needle) {
 			t.Fatalf("readout.js v2 loop missing %q", needle)
