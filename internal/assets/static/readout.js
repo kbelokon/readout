@@ -450,8 +450,8 @@ document.addEventListener('change', (event) => {
 // Delegated INPUT handlers
 // ---------------------------------------------------------------------------
 document.addEventListener('input', (event) => {
-    // ⌘K palette query box: re-render the grouped rows filtered by a
-    // case-insensitive substring of the label, re-seating the active row.
+    // ⌘K palette query box: re-render the grouped rows fuzzy-matched + ranked
+    // against the label (roFuzzyScore, SPEC §8.7), re-seating the active row.
     const paletteInput = event.target.closest('#ro-palette-input');
     if (paletteInput) {
         renderPalette(paletteInput.value);
@@ -889,13 +889,21 @@ function injectFoldControls(lineSpan, bodyCount, itemCount) {
 }
 
 // ---------------------------------------------------------------------------
-// ⌘K jump-to command palette -- data-driven, grouped, CSP-clean, GET-only (D10).
+// ⌘K jump-to command palette v2 -- data-driven, grouped, CSP-clean, GET-only
+// (D10/D21/D12, SPEC §6.3 + §8.7).
 // ---------------------------------------------------------------------------
-// A keyboard launcher that JUMPS to navigation targets. It owns NO live DOM
-// harvest: it reads the server-built JSON blob in #ro-palette-data (emitted by
-// the layout from the same context the sidebar/navbar already have) and builds
-// grouped rows -- Clusters / Namespaces / Resource types / Actions. Selecting a
-// row navigates to its server-built absolute href (a plain GET permalink, never
+// A keyboard launcher that JUMPS to navigation targets. The feed-built groups
+// come from the server JSON blob in #ro-palette-data (emitted by the layout
+// from the same context the sidebar/navbar already have); the "On this page"
+// group is harvested from the rendered list table. Group order while TYPING:
+// Everywhere (`Search all clusters for "q"` -> /search?q=, pinned first per
+// D12) -> On this page (objects with status) -> Resource types (kind icon +
+// scope badge + API group) -> Namespaces -> Clusters -> Actions. On an EMPTY
+// query the persisted Recents group (last 5 chosen entries, localStorage
+// 'ro-pref-recents') leads instead -- Everywhere exists only while typing, so
+// the two slots never clash. Matching is the roFuzzyScore SUBSEQUENCE ranker
+// (prefix > word-start > scattered), not a substring test. Selecting a row
+// navigates to its server-built absolute href (a plain GET permalink, never
 // the POST theme form, so the read-only floor is untouched) or runs a named
 // client action (e.g. theme). The blob is parsed with JSON.parse (NEVER eval);
 // names are written via textContent (defence in depth against a hostile
@@ -905,14 +913,90 @@ function injectFoldControls(lineSpan, bodyCount, itemCount) {
 // execution, no inline handler -> CSP-clean.
 const PALETTE_ID = 'ro-palette';
 
-// The render order + display titles of the four palette groups, keyed to the
-// blob fields. Empty groups are skipped at render time.
+// The render order + display titles of the FEED-built palette groups (the
+// SPEC §6.3 order after the synthesized Everywhere/Recents slot and the
+// page-objects group). Empty groups are skipped at render time.
 const PALETTE_GROUPS = [
-    { title: 'Clusters', key: 'clusters' },
-    { title: 'Namespaces', key: 'namespaces' },
     { title: 'Resource types', key: 'kinds' },
+    { title: 'Namespaces', key: 'namespaces' },
+    { title: 'Clusters', key: 'clusters' },
     { title: 'Actions', key: 'actions' },
 ];
+
+// roFuzzyScore is THE palette matcher (SPEC §8.7 / D21): a case-insensitive
+// SUBSEQUENCE match -- replacing the old substring test -- scored so a prefix
+// match always ranks above a word-start match, which always ranks above a
+// scattered one. Returns -1 when query is not a subsequence of text, else a
+// score where LOWER is better:
+//   tier*100000 + gaps*100 + min(first, 99)
+//     tier  0 = prefix      (contiguous from the first character)
+//           1 = word-start  (contiguous from a word boundary: after a space,
+//                            -, _, ., /, : separator or at a camelCase hump)
+//           2 = scattered   (any other subsequence; within the tier a tighter
+//                            and earlier match still wins -- "dply" lands
+//                            Deployments above wide scatters)
+//     gaps  = matched span minus query length (tighter matches first)
+//     first = index of the first matched character (earlier matches first)
+// Greedy leftmost matching keeps it linear in the text. The function is PURE
+// (no DOM, no module state) and exported as window.roFuzzy -- the e2e suite
+// unit-tests the ranking in isolation through that seam.
+function roFuzzyScore(query, text) {
+    const source = String(text || '');
+    const q = String(query || '').toLowerCase();
+    const t = source.toLowerCase();
+    if (!q) {
+        return 0; // empty query matches everything, rank-neutral
+    }
+    let from = 0;
+    let first = -1;
+    let last = -1;
+    for (let i = 0; i < q.length; i++) {
+        const at = t.indexOf(q[i], from);
+        if (at === -1) {
+            return -1; // not a subsequence
+        }
+        if (first === -1) {
+            first = at;
+        }
+        last = at;
+        from = at + 1;
+    }
+    const gaps = (last - first + 1) - q.length;
+    const camelHump = source[first] >= 'A' && source[first] <= 'Z'
+        && !(source[first - 1] >= 'A' && source[first - 1] <= 'Z');
+    const wordStart = first === 0
+        || ' -_./:'.indexOf(t[first - 1]) !== -1
+        || camelHump;
+    let tier = 2;
+    if (gaps === 0 && first === 0) {
+        tier = 0;
+    } else if (gaps === 0 && wordStart) {
+        tier = 1;
+    }
+    return tier * 100000 + gaps * 100 + Math.min(first, 99);
+}
+// The deliberate isolation seam (like window.roRowState): pure ranking,
+// callable without any palette DOM.
+window.roFuzzy = roFuzzyScore;
+
+// rankPaletteEntries filters a group's entries to the fuzzy matches of query
+// (against the label labelOf extracts) and orders them best-score-first;
+// equal scores keep feed order (Array.sort is stable). An empty query keeps
+// the whole group in feed order.
+function rankPaletteEntries(list, query, labelOf) {
+    if (!query) {
+        return list.slice();
+    }
+    const scored = [];
+    list.forEach((entry) => {
+        const score = roFuzzyScore(query, labelOf(entry));
+        if (score >= 0) {
+            scored.push({ entry: entry, score: score });
+        }
+    });
+    scored.sort((a, b) => a.score - b.score);
+    return scored.map((it) => it.entry);
+}
 
 // Parse the #ro-palette-data JSON blob into the grouped feed. Guarded end to
 // end: a missing/empty/malformed blob yields an all-empty feed (the palette still
@@ -965,6 +1049,75 @@ function paletteHrefSafe(href) {
     return trimmed;
 }
 
+// ---------------------------------------------------------------------------
+// Palette Recents (D21 / SPEC §8.7 + §8.4): the last 5 CHOSEN palette entries,
+// persisted in localStorage under the `ro-pref-*` family key 'ro-pref-recents'.
+// Recorded on EVERY palette activation (click and ⏎ both land in
+// choosePaletteRow), deduped by destination (href, or the named client
+// action), newest first. Rendered as the FIRST group on an EMPTY query only;
+// the Everywhere row exists only while typing, so the two slots never clash.
+// Reads are guarded end to end: a missing/corrupt/unavailable store yields no
+// Recents group, never a throw, and the next record rewrites it clean.
+// ---------------------------------------------------------------------------
+const PALETTE_RECENTS_KEY = 'ro-pref-recents';
+const PALETTE_RECENTS_MAX = 5;
+
+// The dedupe identity of a recents entry: its navigation target.
+function paletteRecentTarget(entry) {
+    return entry.href ? 'href:' + entry.href : 'action:' + entry.action;
+}
+
+function readPaletteRecents() {
+    let raw = null;
+    try {
+        raw = window.localStorage.getItem(PALETTE_RECENTS_KEY);
+    } catch (e) {
+        return []; // localStorage unavailable (privacy mode) -> no recents
+    }
+    if (!raw) {
+        return [];
+    }
+    try {
+        const list = JSON.parse(raw);
+        if (!Array.isArray(list)) {
+            return [];
+        }
+        // Shape-check every entry: a label plus a SAFE href or a named action.
+        return list.filter((entry) => entry && typeof entry === 'object'
+            && typeof entry.label === 'string' && entry.label !== ''
+            && ((typeof entry.href === 'string' && paletteHrefSafe(entry.href) !== '')
+                || (typeof entry.action === 'string' && entry.action !== '')))
+            .slice(0, PALETTE_RECENTS_MAX);
+    } catch (e) {
+        return []; // corrupt store -> ignored (next record starts fresh)
+    }
+}
+
+function recordPaletteRecent(label, href, action) {
+    if (!label || (!href && !action)) {
+        return; // not a navigable choice -> never recorded
+    }
+    const entry = { label: label };
+    if (href) {
+        entry.href = href;
+    }
+    if (action) {
+        entry.action = action;
+    }
+    const kept = readPaletteRecents().filter(
+        (prior) => paletteRecentTarget(prior) !== paletteRecentTarget(entry)
+    );
+    kept.unshift(entry);
+    try {
+        window.localStorage.setItem(
+            PALETTE_RECENTS_KEY,
+            JSON.stringify(kept.slice(0, PALETTE_RECENTS_MAX))
+        );
+    } catch (e) {
+        // localStorage unavailable -> the recent just will not persist
+    }
+}
+
 // The flat list of currently-rendered rows ({ el, item }) in visual order, and
 // the index of the active one -- the model the arrows + Enter drive.
 let paletteRows = [];
@@ -993,12 +1146,21 @@ function buildPaletteRow(entry, key) {
     }
 
     // The visible label: kinds use `kind`, every other group uses `name`/`label`.
+    // A long name arrives with a server-side middle-truncated `display` form
+    // (D5/D21 -- the feed builder applies the shared MiddleTruncate); the FULL
+    // name then rides the row title, per the SPEC §1.4 always-recoverable rule.
     const labelText = key === 'kinds'
         ? (entry.kind || entry.plural || '')
         : (entry.name || entry.label || '');
+    const display = (typeof entry.display === 'string' && entry.display !== '')
+        ? entry.display
+        : labelText;
     const label = document.createElement('span');
     label.className = 'pal-label';
-    label.textContent = labelText; // textContent -> a hostile name cannot inject
+    label.textContent = display; // textContent -> a hostile name cannot inject
+    if (display !== labelText) {
+        row.title = labelText; // truncated -> full name in the tooltip
+    }
 
     // The "current" scope marker (the cluster/namespace in scope) rides as a
     // .pal-ctx chip after the label, also via textContent.
@@ -1012,8 +1174,10 @@ function buildPaletteRow(entry, key) {
     }
     row.appendChild(label);
 
-    // Resource-type rows show the api group (faint) + a compact namespaced/cluster
-    // scope badge, so a kind reads as e.g. "Certificates  cert-manager.io  NS".
+    // Resource-type rows show the api group (faint) + the quiet namespaced/
+    // cluster scope badge, so a kind reads as e.g. "Certificates
+    // cert-manager.io  namespaced". The badge wording + neutral tone follow the
+    // Unit 3 resource-types `.scope-badge` vocabulary (D3 colour law).
     if (key === 'kinds') {
         const meta = document.createElement('span');
         meta.className = 'pal-meta';
@@ -1021,13 +1185,14 @@ function buildPaletteRow(entry, key) {
         row.appendChild(meta);
         const scope = document.createElement('span');
         scope.className = 'pal-scope ' + (entry.namespaced ? 'ns' : 'cluster');
-        scope.textContent = entry.namespaced ? 'NS' : 'CL';
-        scope.title = entry.namespaced ? 'namespaced' : 'cluster-scoped';
+        scope.textContent = entry.namespaced ? 'namespaced' : 'cluster';
         row.appendChild(scope);
     }
 
     // Destination: a navigable href (server-built absolute path) and/or a named
     // client action. Stored in the dataset; the click/Enter path reads it back.
+    // The FULL label rides the dataset too -- the Recents recorder reads it
+    // (the .pal-label node may carry the truncated display + the ctx chip).
     const href = paletteHrefSafe(entry.href);
     if (href) {
         row.dataset.href = href;
@@ -1035,6 +1200,53 @@ function buildPaletteRow(entry, key) {
     if (entry.action) {
         row.dataset.action = entry.action;
     }
+    row.dataset.label = labelText;
+    return row;
+}
+
+// buildEverywhereRow is the D12 pinned-first search row, present ONLY while a
+// query exists: `Search all clusters for "q"` -> a plain GET /search?q=. The
+// leading glyph is a CLONE of the palette's own server-rendered search icon
+// (never client-built SVG markup), the label goes in via textContent.
+function buildEverywhereRow(query) {
+    const row = document.createElement('div');
+    row.className = 'ro-pal-item';
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', 'false');
+    const glyph = document.querySelector('#' + PALETTE_ID + ' .ro-pal-search .ico');
+    if (glyph) {
+        row.appendChild(glyph.cloneNode(true));
+    }
+    const label = document.createElement('span');
+    label.className = 'pal-label';
+    label.textContent = 'Search all clusters for “' + query + '”';
+    row.appendChild(label);
+    row.dataset.href = '/search?q=' + encodeURIComponent(query);
+    row.dataset.label = label.textContent;
+    return row;
+}
+
+// buildRecentRow renders one persisted recent: label-led (textContent -- the
+// stored label is data, never markup), with the destination re-vetted through
+// paletteHrefSafe before it lands in the dataset (defence in depth against a
+// tampered localStorage value).
+function buildRecentRow(entry) {
+    const row = document.createElement('div');
+    row.className = 'ro-pal-item';
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', 'false');
+    const label = document.createElement('span');
+    label.className = 'pal-label';
+    label.textContent = entry.label;
+    row.appendChild(label);
+    const href = paletteHrefSafe(entry.href);
+    if (href) {
+        row.dataset.href = href;
+    }
+    if (entry.action) {
+        row.dataset.action = entry.action;
+    }
+    row.dataset.label = entry.label;
     return row;
 }
 
@@ -1095,13 +1307,19 @@ function buildObjectRow(o) {
         row.appendChild(st);
     }
     row.dataset.href = o.href;
+    row.dataset.label = o.name;
     return row;
 }
 
-// (Re)render the grouped rows into #ro-palette-list, filtered by a
-// case-insensitive substring of the label. Empty groups (and groups with no
-// match) are skipped; when nothing matches at all we show a "no targets" line so
-// the palette never looks broken. Rebuilds paletteRows + seats the active row.
+// (Re)render the grouped rows into #ro-palette-list, fuzzy-matched + ranked by
+// roFuzzyScore against each entry's label (SPEC §8.7 -- subsequence, prefix >
+// word-start > scattered; an empty query keeps feed order). Group order is the
+// SPEC §6.3 + D21 contract: with a query, Everywhere -> On this page ->
+// Resource types -> Namespaces -> Clusters -> Actions; with an empty query the
+// persisted Recents group leads and Everywhere is absent. Empty groups (and
+// groups with no match) are skipped; when nothing matches at all we show a "no
+// targets" line so the palette never looks broken. Rebuilds paletteRows +
+// seats the active row.
 function renderPalette(query) {
     const list = document.getElementById('ro-palette-list');
     if (!list) {
@@ -1119,7 +1337,7 @@ function renderPalette(query) {
         scope.hidden = scopeText === '';
     }
 
-    const q = (query || '').toLowerCase().trim();
+    const q = (query || '').trim();
     list.textContent = '';
     paletteRows = [];
 
@@ -1140,22 +1358,28 @@ function renderPalette(query) {
         });
     };
 
+    // The first slot: while typing, the D12 Everywhere search row (pinned
+    // first, so ⏎ on a fresh query searches all clusters); on an empty query,
+    // the persisted Recents (last 5 chosen entries, newest first).
+    if (q) {
+        appendGroup('Everywhere', [{ el: buildEverywhereRow(q), item: { query: q }, key: 'everywhere' }]);
+    } else {
+        appendGroup('Recents', readPaletteRecents().map(
+            (entry) => ({ el: buildRecentRow(entry), item: entry, key: 'recents' })
+        ));
+    }
+
     // Objects on THIS list page, harvested from the rendered table so ⌘K filters
     // the very rows you are looking at (with a short status), no server round-trip.
-    // First group -- the most relevant target on a list page.
-    const pageObjects = harvestPageObjects().filter((o) => !q || o.name.toLowerCase().indexOf(q) !== -1);
+    const pageObjects = rankPaletteEntries(harvestPageObjects(), q, (o) => o.name);
     appendGroup('On this page', pageObjects.map((o) => ({ el: buildObjectRow(o), item: o, key: 'objects' })));
 
     PALETTE_GROUPS.forEach((group) => {
-        const entries = (data[group.key] || []).filter((entry) => {
-            if (!q) {
-                return true;
-            }
-            const label = group.key === 'kinds'
+        const entries = rankPaletteEntries(data[group.key] || [], q, (entry) => (
+            group.key === 'kinds'
                 ? (entry.kind || entry.plural || '')
-                : (entry.name || entry.label || '');
-            return label.toLowerCase().indexOf(q) !== -1;
-        });
+                : (entry.name || entry.label || '')
+        ));
         appendGroup(group.title, entries.map((entry) => ({ el: buildPaletteRow(entry, group.key), item: entry, key: group.key })));
     });
 
@@ -1207,13 +1431,15 @@ function movePaletteActive(delta) {
 // Act on a chosen row: run its named client action (only `theme` is wired today,
 // clicking the server-POST theme toggle) and/or navigate to its server-built
 // href, then close. Navigation reads ONLY dataset.href (a vetted same-origin
-// path) -- never innerHTML, never a javascript: scheme.
+// path) -- never innerHTML, never a javascript: scheme. EVERY choice is first
+// recorded into the persisted Recents (D21) -- click and ⏎ both land here.
 function choosePaletteRow(rowEl) {
     if (!rowEl) {
         return;
     }
     const action = rowEl.dataset.action;
     const href = rowEl.dataset.href;
+    recordPaletteRecent(rowEl.dataset.label || '', href || '', action || '');
     closePalette();
     if (action === 'theme') {
         const toggle = document.getElementById('btn-theme-toggle');
@@ -1240,10 +1466,12 @@ function activatePaletteSelection() {
 let palettePriorFocus = null;
 
 // Open the palette: reveal the overlay (the `open` class -- never inline style),
-// build the grouped rows from the blob, clear + focus the query box, and seat the
+// build the grouped rows from the blob, seed + focus the query box, and seat the
 // first row active. Idempotent: re-opening just rebuilds from the (possibly
-// hx-boost-swapped) blob.
-function openPalette() {
+// hx-boost-swapped) blob. `prefill` (optional) opens the palette mid-query --
+// the Unit 20 Refine·⌘K entry point hands the current search q here; every
+// internal caller passes nothing and gets the usual empty box.
+function openPalette(prefill) {
     const palette = document.getElementById(PALETTE_ID);
     const input = document.getElementById('ro-palette-input');
     if (!palette || !input) {
@@ -1252,10 +1480,13 @@ function openPalette() {
     palettePriorFocus = document.activeElement;
     palette.classList.add('open');
     palette.setAttribute('aria-hidden', 'false');
-    input.value = '';
-    renderPalette('');
+    input.value = typeof prefill === 'string' ? prefill : '';
+    renderPalette(input.value);
     input.focus(); // focus after it is shown so the caret lands in the box
 }
+// The deliberate external seam: the search page's Refine·⌘K affordance (Unit
+// 20) opens the palette prefilled with its query.
+window.roOpenPalette = openPalette;
 
 // Close the palette: drop the `open` class and restore focus to wherever it was
 // before opening (if that element is still in the document).

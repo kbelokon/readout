@@ -53,12 +53,19 @@ func iconC(name string) templ.Component {
 // CommandPalette is the ⌘K jump-to overlay, included once per page in the
 // layout. It owns no data: readout.js reads the server-built #ro-palette-data
 // JSON blob (D10) and builds the grouped rows into #ro-palette-list at open
-// time. The overlay ROOT carries BOTH `ro-rd` AND `ro-palette-backdrop` (D13:
-// the redesign palette container rules are gated by the `ro-rd` marker ON the
-// backdrop root, since the overlay lives OUTSIDE the `.ro-rd` content subtree);
-// readout.js toggles the `open` class to reveal it. The ids/classes/roles here
-// are a hard JS contract -- the search input, the list container, and the
-// `.ro-pal-*` row vocabulary the JS writes into must match base.css + the JS.
+// time, in the SPEC §6.3 + D21 group order -- while typing: Everywhere (the
+// pinned /search?q= row) / On this page / Resource types / Namespaces /
+// Clusters / Actions; on an empty query the persisted Recents group leads
+// instead. The overlay ROOT carries BOTH `ro-rd` AND `ro-palette-backdrop`
+// (D13: the redesign palette container rules are gated by the `ro-rd` marker
+// ON the backdrop root, since the overlay lives OUTSIDE the `.ro-rd` content
+// subtree); readout.js toggles the `open` class to reveal it. The ids/classes/
+// roles here are a hard JS contract -- the search input, the list container,
+// and the `.ro-pal-*` row vocabulary the JS writes into (the `pal-label` text,
+// the `pal-status` tone on page objects, the `pal-meta` API group and the
+// quiet `pal-scope` namespaced/cluster badge on resource types -- the Unit 3
+// `.scope-badge` wording, per the D3 colour law) must match readout.css + the
+// JS. The footer keeps the D21 key hints (↑↓ / ⏎ / esc).
 func CommandPalette() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -88,7 +95,7 @@ func CommandPalette() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</span><input id=\"ro-palette-input\" type=\"text\" placeholder=\"Jump to a cluster, namespace, resource type, or action…\" autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"off\" spellcheck=\"false\" role=\"combobox\" aria-expanded=\"true\" aria-controls=\"ro-palette-list\" aria-autocomplete=\"list\" aria-label=\"Jump to\"><span id=\"ro-palette-scope\" class=\"ro-pal-scope\" aria-hidden=\"true\" hidden></span></div><div id=\"ro-palette-list\" class=\"ro-pal-list\" role=\"listbox\" aria-label=\"Jump targets\"></div><div class=\"ro-pal-foot\"><span class=\"hint\"><kbd class=\"ro-kbd\">&#8593;</kbd><kbd class=\"ro-kbd\">&#8595;</kbd> navigate</span><span class=\"hint\"><kbd class=\"ro-kbd\">&#8629;</kbd> open</span><span class=\"hint\"><kbd class=\"ro-kbd\">esc</kbd> close</span><span class=\"spacer\"></span><span class=\"hint\">readout</span></div></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</span><input id=\"ro-palette-input\" type=\"text\" placeholder=\"Jump to an object, kind, namespace, cluster… or search everywhere\" autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"off\" spellcheck=\"false\" role=\"combobox\" aria-expanded=\"true\" aria-controls=\"ro-palette-list\" aria-autocomplete=\"list\" aria-label=\"Jump to\"><span id=\"ro-palette-scope\" class=\"ro-pal-scope\" aria-hidden=\"true\" hidden></span></div><div id=\"ro-palette-list\" class=\"ro-pal-list\" role=\"listbox\" aria-label=\"Jump targets\"></div><div class=\"ro-pal-foot\"><span class=\"hint\"><kbd class=\"ro-kbd\">&#8593;</kbd><kbd class=\"ro-kbd\">&#8595;</kbd> navigate</span><span class=\"hint\"><kbd class=\"ro-kbd\">&#8629;</kbd> open</span><span class=\"hint\"><kbd class=\"ro-kbd\">esc</kbd> close</span><span class=\"spacer\"></span><span class=\"hint\">readout</span></div></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -127,7 +134,7 @@ func defaultFooter() templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(version.Version)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/components.templ`, Line: 37, Col: 113}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/components.templ`, Line: 44, Col: 113}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {

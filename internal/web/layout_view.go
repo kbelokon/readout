@@ -150,14 +150,20 @@ type paletteFeedView struct {
 }
 
 // paletteLinkFeed is a {name, href} jump target (a cluster or a namespace).
+// Display carries the SPEC §4.2 middle-truncated form when -- and only when --
+// the name overruns the 42-rune identifier budget (D5/D21: truncation is
+// SERVER-side, in this feed builder, via the shared MiddleTruncate); the JS
+// renders Display and keeps the full Name in the row title.
 type paletteLinkFeed struct {
-	Name string `json:"name"`
-	Href string `json:"href"`
+	Name    string `json:"name"`
+	Href    string `json:"href"`
+	Display string `json:"display,omitempty"`
 }
 
 // paletteKindFeed is a resource-type jump target: the kind label + plural +
-// API group + the list href + the pre-rendered (HTML-escaped via JSON encoding)
-// icon markup from the Unit-1 resolver.
+// API group + the namespaced/cluster scope + the list href + the pre-rendered
+// (HTML-escaped via JSON encoding) icon markup from the Unit-1 resolver.
+// Display is the truncated label form, exactly as on paletteLinkFeed.
 type paletteKindFeed struct {
 	Kind       string `json:"kind"`
 	Plural     string `json:"plural"`
@@ -165,6 +171,7 @@ type paletteKindFeed struct {
 	Namespaced bool   `json:"namespaced"`
 	Href       string `json:"href"`
 	Icon       string `json:"icon"`
+	Display    string `json:"display,omitempty"`
 }
 
 // paletteActionFeed is a labelled action: an href (navigate) or a named client
@@ -246,15 +253,20 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, cl
 		nsPrefs := prefsFromRequest(r).Namespaces
 		for _, c := range s.manager.Clusters() {
 			feed.Clusters = append(feed.Clusters, paletteLinkFeed{
-				Name: c.Name,
-				Href: clusterEntryHref(c.Name, nsPrefs[c.Name]),
+				Name:    c.Name,
+				Href:    clusterEntryHref(c.Name, nsPrefs[c.Name]),
+				Display: paletteDisplayName(c.Name),
 			})
 		}
 	}
 
 	for i := range navbar.NamespaceLinks {
 		ns := &navbar.NamespaceLinks[i]
-		feed.Namespaces = append(feed.Namespaces, paletteLinkFeed{Name: ns.Text, Href: ns.Href})
+		feed.Namespaces = append(feed.Namespaces, paletteLinkFeed{
+			Name:    ns.Text,
+			Href:    ns.Href,
+			Display: paletteDisplayName(ns.Text),
+		})
 	}
 
 	// Resource-type group: ALL discovered types (built-ins + CRDs) so ⌘K jumps to
@@ -365,14 +377,29 @@ func (s *Server) paletteKindEntry(cluster, namespace string, rt *kube.ResourceTy
 		href = fmt.Sprintf("/clusters/%s/%s", url.PathEscape(cluster), url.PathEscape(rt.Plural))
 	}
 	override := s.cfg.ResourceIcons[config.ResourceIconKey{Kind: rt.Kind, Group: rt.Group}]
+	kindLabel := pluralizeKind(rt.Kind)
 	return paletteKindFeed{
-		Kind:       pluralizeKind(rt.Kind),
+		Kind:       kindLabel,
 		Plural:     rt.Plural,
 		Group:      rt.Group,
 		Namespaced: rt.Namespaced,
 		Href:       href,
 		Icon:       string(icons.KindIcon(rt.Kind, rt.Group, isCRD(rt.APIVersion), override)),
+		Display:    paletteDisplayName(kindLabel),
 	}
+}
+
+// paletteDisplayName applies the D5/D21 server-side truncation to a palette
+// label: the SPEC §4.2 identifier budget (>42 runes -> first 26 + "…" + last
+// 12) through the shared MiddleTruncate. Returns "" when the name fits -- the
+// omitempty Display field then stays off the wire and the palette JS renders
+// the full Name itself.
+func paletteDisplayName(name string) string {
+	display, truncated := MiddleTruncate(name, nameHeadMax, nameHeadLead, nameHeadTrail)
+	if !truncated {
+		return ""
+	}
+	return display
 }
 
 func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName string, explicit bool, clients requestKubeClients) navbarView {

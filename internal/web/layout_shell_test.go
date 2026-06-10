@@ -13,6 +13,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -367,19 +368,78 @@ func TestPaletteFeedDetailTabActions(t *testing.T) {
 	check(base + "/logs")
 }
 
+// TestPaletteFeedServerSideTruncation pins the D5/D21 truncation seat: LONG
+// palette labels are middle-truncated SERVER-side, in the feed builder, via the
+// shared MiddleTruncate (SPEC §4.2: >42 runes -> first 26 + "…" + last 12),
+// carried as the omitempty `display` field next to the untouched full `name`
+// (the JS renders display and keeps name in the row title). Short names emit
+// no display at all -- the wire stays byte-compatible for them.
+func TestPaletteFeedServerSideTruncation(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+
+	long := strings.Repeat("a", 30) + "-" + strings.Repeat("b", 30) // 61 runes
+	wantDisplay, truncated := MiddleTruncate(long, nameHeadMax, nameHeadLead, nameHeadTrail)
+	if !truncated {
+		t.Fatalf("fixture name %q should exceed the truncation budget", long)
+	}
+
+	// paletteDisplayName is the single truncation seat: long -> the §4.2 form,
+	// short / exactly-at-budget -> "" (the omitempty field stays off the wire).
+	if got := paletteDisplayName(long); got != wantDisplay {
+		t.Fatalf("paletteDisplayName(long) = %q, want %q", got, wantDisplay)
+	}
+	if got := paletteDisplayName("pods"); got != "" {
+		t.Fatalf("paletteDisplayName(short) = %q, want \"\"", got)
+	}
+	if got := paletteDisplayName(strings.Repeat("x", nameHeadMax)); got != "" {
+		t.Fatalf("paletteDisplayName(at-budget) = %q, want \"\" (42 runes fit)", got)
+	}
+
+	// Feed-level: a long namespace link flows through buildPaletteFeed with the
+	// full name intact and the truncated display alongside.
+	r := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods", nil)
+	navbar := navbarView{NamespaceLinks: []navItem{{Text: long, Href: "/clusters/test/namespaces/" + long + "/pods"}}}
+	sidebar := sidebarView{}
+	feed := app.buildPaletteFeed(r, "test", "default", requestKubeClients{}, &navbar, &sidebar)
+
+	if len(feed.Namespaces) != 1 {
+		t.Fatalf("namespaces feed length = %d, want 1", len(feed.Namespaces))
+	}
+	ns := feed.Namespaces[0]
+	if ns.Name != long {
+		t.Fatalf("namespace feed name = %q, want the FULL name (truncation must not destroy identity)", ns.Name)
+	}
+	if ns.Display != wantDisplay {
+		t.Fatalf("namespace feed display = %q, want %q", ns.Display, wantDisplay)
+	}
+
+	// Short labels (the fixture cluster + every fixture kind) carry NO display.
+	if len(feed.Clusters) != 1 || feed.Clusters[0].Display != "" {
+		t.Fatalf("short cluster name must emit no display, got %+v", feed.Clusters)
+	}
+	for _, k := range feed.Kinds {
+		if k.Display != "" {
+			t.Fatalf("short kind label %q must emit no display, got %q", k.Kind, k.Display)
+		}
+	}
+}
+
 // paletteFeedJSON mirrors the pinned palette-feed wire shape so the test parses
 // the emitted blob structurally (the camelCase keys are the public contract Unit
-// 4's JS reads).
+// 4's JS reads). `display` is the Unit 19 extension: the server-truncated
+// label form, present only when the name overruns the SPEC §4.2 budget.
 type paletteFeedJSON struct {
 	CurrentCluster   *string `json:"currentCluster"`
 	CurrentNamespace *string `json:"currentNamespace"`
 	Clusters         []struct {
-		Name string `json:"name"`
-		Href string `json:"href"`
+		Name    string `json:"name"`
+		Href    string `json:"href"`
+		Display string `json:"display"`
 	} `json:"clusters"`
 	Namespaces []struct {
-		Name string `json:"name"`
-		Href string `json:"href"`
+		Name    string `json:"name"`
+		Href    string `json:"href"`
+		Display string `json:"display"`
 	} `json:"namespaces"`
 	Kinds []struct {
 		Kind       string `json:"kind"`
@@ -388,6 +448,7 @@ type paletteFeedJSON struct {
 		Namespaced bool   `json:"namespaced"`
 		Href       string `json:"href"`
 		Icon       string `json:"icon"`
+		Display    string `json:"display"`
 	} `json:"kinds"`
 	Actions []struct {
 		Label  string `json:"label"`

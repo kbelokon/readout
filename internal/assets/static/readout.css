@@ -2769,13 +2769,19 @@
     .ro-pal-item { display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 8px;
         cursor: pointer; color: var(--text); }
     .ro-pal-item .ico, .ro-pal-item .ico svg { width: 16px; height: 16px; color: var(--text-muted); }
-    .ro-pal-item .pal-label { font-size: 13.5px; flex: 1; }
+    .ro-pal-item .pal-label { font-size: 13.5px; flex: 1; min-width: 0; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; }
     .ro-pal-item .pal-label .pal-ctx { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; margin-left: 8px; }
     .ro-pal-item .pal-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
-    /* compact namespaced/cluster scope badge on resource-type rows */
+    /* compact namespaced/cluster scope badge on resource-type rows -- the Unit 3
+       `.scope-badge` vocabulary (D3 colour law: a categorical scope stays a
+       quiet neutral badge; only the cluster variant earns the amber-mixed
+       border, matching resource_types.templ). The prototype's info-tinted `ns`
+       variant is deliberately NOT carried -- D3 takes precedence over the demo
+       CSS. */
     .ro-pal-item .pal-scope { font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em;
-        padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-faint); }
-    .ro-pal-item .pal-scope.ns { color: var(--st-info); border-color: color-mix(in oklab, var(--st-info) 35%, var(--border)); }
+        padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-faint);
+        white-space: nowrap; }
     .ro-pal-item .pal-scope.cluster { color: var(--st-warn); border-color: color-mix(in oklab, var(--st-warn) 35%, var(--border)); }
     /* short status on a harvested page-object row, tinted by tone */
     .ro-pal-item .pal-status { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
