@@ -526,6 +526,23 @@ func parseAgeToken(s string) (float64, bool) {
 	return total, true
 }
 
+// addFilterChipHref returns u with one `f=<chip>` pair APPENDED to RawQuery.
+// The chip text is percent-encoded whole (url.QueryEscape), so a comma inside
+// a label value arrives as %2C -- a literal comma inside one alternative, never
+// an OR split -- and the append is raw string concatenation, so every sibling
+// param (other raw `?f=` chips included) keeps its exact wire encoding. Used by
+// the label-chip click-to-filter hrefs (SPEC §8.1).
+func addFilterChipHref(u *url.URL, chip string) string {
+	clone := *u
+	pair := "f=" + url.QueryEscape(chip)
+	if clone.RawQuery == "" {
+		clone.RawQuery = pair
+	} else {
+		clone.RawQuery += "&" + pair
+	}
+	return clone.String()
+}
+
 // delQueryRawValue returns u with ONE raw occurrence of key=rawValue removed,
 // operating on RawQuery directly so every other param keeps its exact raw
 // encoding (a sibling chip's raw OR-commas must not be re-encoded by the

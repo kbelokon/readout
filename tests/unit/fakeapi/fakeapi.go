@@ -455,7 +455,11 @@ func seedStore() (*store, error) {
 	}
 	st.lists["/api/v1/namespaces/default/secrets"] = secrets
 
-	namespaces, err := newListState("", "data/render_namespaces_list.json")
+	// Namespaces carry BOTH forms: the Table form (rows with labels -- the
+	// resource-list page negotiates as=Table, and the label-chip click-to-filter
+	// e2e spec needs labelled rows) and the List form (the namespace dropdown /
+	// palette feed). The Table rows mirror the List items one to one.
+	namespaces, err := newListState("data/namespaces_table.json", "data/render_namespaces_list.json")
 	if err != nil {
 		return nil, err
 	}

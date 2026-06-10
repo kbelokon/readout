@@ -103,6 +103,15 @@ if (typeof htmx !== 'undefined' && typeof Idiomorph !== 'undefined') {
             if (swapStyle !== 'morph') {
                 return false; // not ours -> htmx falls through to its native swaps
             }
+            // Filters v2 (D7/D20): capture the FULL row model from the incoming
+            // SERVER fragment before the morph. The server always renders the
+            // complete list (no pagination), so the fragment is the full dataset
+            // even when a client-side windowing layer (Unit 24) keeps only a
+            // window of rows in the live DOM -- the free-text matcher and the
+            // value-frequency autocomplete must never read the windowed DOM.
+            if (target && target.id === 'resource-list-content') {
+                captureRowModel(fragment);
+            }
             return Idiomorph.morph(target, fragment.children, {
                 morphStyle: 'innerHTML',
                 ignoreActiveValue: true,
@@ -154,6 +163,41 @@ document.addEventListener('click', (event) => {
     if (staleRetry) {
         event.preventDefault();
         requestListRefresh();
+        return;
+    }
+    // Chips editor (D7): a chip's ✕ is a real link (no-JS fallback) whose href
+    // is the server-built removal URL; intercept it to ride the v2 partial loop
+    // (morph + canonical push) instead of a full navigation.
+    const chipRemove = target.closest('#ro-filter-field .chip-x');
+    if (chipRemove) {
+        event.preventDefault();
+        const href = chipRemove.getAttribute('href');
+        if (href) {
+            issueFilterNavigation(href);
+        }
+        return;
+    }
+    // Autocomplete row: clicking accepts it (a complete value commits the chip,
+    // a field fills `field:` and opens the value suggestions).
+    const acItem = target.closest('#ro-filter-ac .ro-ac-item');
+    if (acItem) {
+        event.preventDefault();
+        setFilterACActive(Number(acItem.dataset.acIndex) || 0);
+        acceptFilterAC(true);
+        const input = document.getElementById('ro-filter-input');
+        if (input) {
+            input.focus();
+        }
+        return;
+    }
+    // Clicking the editor field anywhere (the padding, a chip's text) lands the
+    // caret in the input -- the whole field reads as one input.
+    const filterField = target.closest('#ro-filter-field');
+    if (filterField) {
+        const input = document.getElementById('ro-filter-input');
+        if (input && target !== input) {
+            input.focus();
+        }
         return;
     }
     // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
@@ -338,6 +382,17 @@ document.addEventListener('input', (event) => {
         return;
     }
 
+    // Chips editor (D7): every keystroke re-runs the live name match (model-
+    // driven, NO request) and the autocomplete; a fresh draft clears any
+    // unknown-field hint.
+    const filterInput = event.target.closest('#ro-filter-input');
+    if (filterInput) {
+        hideFilterFieldHint();
+        applyLiveNameFilter();
+        updateFilterAC();
+        return;
+    }
+
     // #namespace-searchbox: filter the .namespace-item links by case-insensitive substring.
     const searchbox = event.target.closest('#namespace-searchbox');
     if (searchbox) {
@@ -388,6 +443,13 @@ document.addEventListener('keydown', (event) => {
         && (event.key === 'k' || event.key === 'K')) {
         event.preventDefault();
         openPalette();
+        return;
+    }
+    // Chips editor (D7): the filter input owns its keyboard protocol (⏎ commit/
+    // accept, Tab accept, esc dismiss, arrows, ⌫-on-empty pop). The palette
+    // never has focus here (its own input would be the target when open).
+    if (event.target && event.target.id === 'ro-filter-input') {
+        handleFilterInputKeydown(event);
         return;
     }
     // Everything else here only matters while the palette is open. The redesign
@@ -1346,6 +1408,16 @@ document.addEventListener('htmx:afterSwap', (event) => {
     if (isListRefreshEvent(event)) {
         clearListStale();
         reapplyRowState();
+        // The morph synced server HTML over the client-added filter classes and
+        // emptied the JS-owned autocomplete mount; re-apply the live name match
+        // from the surviving draft (ignoreActiveValue kept it) and re-open the
+        // dropdown when the user is mid-draft. The row model itself was already
+        // re-captured from the fragment in the ro-morph handleSwap.
+        applyLiveNameFilter();
+        const filterInput = document.getElementById('ro-filter-input');
+        if (filterInput && document.activeElement === filterInput && filterInput.value) {
+            updateFilterAC();
+        }
     }
 });
 
@@ -1400,6 +1472,491 @@ window.roRowState = {
         return Array.from(rowSelection);
     },
 };
+
+// ---------------------------------------------------------------------------
+// Filters v2 chips editor (D7, client half) -- free-text live match, operator
+// chips, autocomplete, ⌫ pop, unknown-field hint. CSP-clean, GET-only.
+// ---------------------------------------------------------------------------
+// The editor lives INSIDE the morphed fragment (server renders the chips + the
+// #ro-filter-input with a stable id), so a shareable URL lands with chips
+// visible and the ignoreActiveValue morph keeps a focused draft + caret across
+// refresh ticks. The client owns: the live name match (NO request until an
+// operator chip commits), the chip-commit/pop requests (riding the v2 loop --
+// user-initiated `_table` GETs that the server answers with the canonical
+// HX-Push-Url), and the schema/value autocomplete.
+//
+// THE FULL ROW MODEL (D20): every matcher/frequency scan reads roRowModel, a
+// capture of the COMPLETE server-rendered table -- taken from the incoming
+// server fragment in the ro-morph handleSwap (before the morph, and before any
+// client windowing layer touches the DOM) and from the full server-rendered
+// document at init. Unit 24's windowing must either run AFTER the init capture
+// (runInit order below) or feed this model itself; the matcher computes a
+// visible-key SET from the model (roRowModel.visibleKeys), and only the
+// APPLICATION step touches whatever rows happen to be in the DOM.
+const roRowModel = {
+    fields: [],      // [{ label, name, hint }] -- hint '' = not filterable
+    rows: [],        // [{ key, name, cells: [string] }] -- cells align with fields
+    visibleKeys: null, // Set of keys passing the live name match; null = no live filter
+};
+window.roRowModel = roRowModel;
+
+// Field-name normalization mirror of the server's resolveFilterColumn: typed
+// fields resolve case-insensitively with dashes and spaces interchangeable.
+function normalizeFieldName(s) {
+    return (s || '').toLowerCase().replace(/-/g, ' ').trim();
+}
+
+// The suggestion text for a column label ("Nominated Node" -> nominated-node):
+// the dashed lowercase form the server resolves via its normalized match.
+function fieldSuggestionText(label) {
+    return (label || '').toLowerCase().trim().replace(/\s+/g, '-');
+}
+
+// captureRowModel reads the chips-editor model from `root` -- the incoming
+// server fragment (a DocumentFragment) or the live container at init. The
+// header cells carry data-hint ONLY on filterable columns (server-resolved
+// Table columns), so synthetic headers (Created, Cluster, Namespace) are
+// captured as alignment-only fields with hint ''.
+function captureRowModel(root) {
+    const table = root.querySelector('table.ro-table');
+    if (!table) {
+        roRowModel.fields = [];
+        roRowModel.rows = [];
+        return;
+    }
+    const fields = [];
+    table.querySelectorAll('thead th').forEach((th) => {
+        const label = (th.textContent || '').trim();
+        fields.push({ label: label, name: fieldSuggestionText(label), hint: th.dataset.hint || '' });
+    });
+    const rows = [];
+    table.querySelectorAll('tbody tr[data-key]').forEach((tr) => {
+        const cells = [];
+        tr.querySelectorAll('td').forEach((td) => {
+            cells.push((td.textContent || '').trim());
+        });
+        const nameLink = tr.querySelector('td.cell-name a');
+        rows.push({
+            key: tr.dataset.key,
+            name: nameLink ? (nameLink.textContent || '').trim() : (cells[0] || ''),
+            cells: cells,
+        });
+    });
+    roRowModel.fields = fields;
+    roRowModel.rows = rows;
+}
+
+// Init-time capture: the first paint is the full server-rendered list, so the
+// live DOM IS the complete model here. Must run before any future windowing
+// init step (Unit 24) prunes rows.
+function captureRowModelFromDocument() {
+    const content = document.getElementById('resource-list-content');
+    if (content && document.getElementById('ro-filter-input')) {
+        captureRowModel(content);
+    }
+}
+
+// splitFilterDraft mirrors the server's splitFilterOperator: the FIRST operator
+// occurrence (`!=` / `:` / `>` / `<`) splits field from value; null = free text.
+function splitFilterDraft(s) {
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (c === '!' && s[i + 1] === '=') {
+            return { field: s.slice(0, i).trim(), op: '!=', value: s.slice(i + 2) };
+        }
+        if (c === ':' || c === '>' || c === '<') {
+            return { field: s.slice(0, i).trim(), op: c, value: s.slice(i + 1) };
+        }
+    }
+    return null;
+}
+
+// The filterable fields offered by autocomplete: every data-hint column EXCEPT
+// the bare cpu/memory capacity columns (the server's cpu/memory ALIASES bind
+// only the joined usage columns -- suggesting the capacity column under those
+// names would commit chips that match zero rows), plus the virtual fields: the
+// `label` grammar always, the cpu/memory aliases when the metrics join is on.
+function filterSuggestionFields() {
+    const out = [];
+    roRowModel.fields.forEach((f) => {
+        if (!f.hint) {
+            return;
+        }
+        const norm = normalizeFieldName(f.label);
+        if (norm === 'cpu' || norm === 'memory') {
+            return; // capacity columns: the alias never binds them (filter.go)
+        }
+        out.push({ text: f.name, hint: f.hint });
+    });
+    out.push({ text: 'label', hint: 'key=value' });
+    if (hasModelColumn('cpu usage')) {
+        out.push({ text: 'cpu', hint: 'quantity' });
+    }
+    if (hasModelColumn('memory usage')) {
+        out.push({ text: 'memory', hint: 'quantity' });
+    }
+    return out;
+}
+
+function hasModelColumn(normName) {
+    return roRowModel.fields.some((f) => f.hint && normalizeFieldName(f.label) === normName);
+}
+
+// filterFieldKnown mirrors the server's field resolution: `label` always
+// resolves; `cpu`/`memory` resolve ONLY via the joined usage columns (never the
+// capacity columns); everything else resolves against the data-hint headers.
+function filterFieldKnown(field) {
+    const want = normalizeFieldName(field);
+    if (!want) {
+        return false;
+    }
+    if (want === 'label') {
+        return true;
+    }
+    if (want === 'cpu' || want === 'memory') {
+        return hasModelColumn(want + ' usage');
+    }
+    return roRowModel.fields.some((f) => f.hint && normalizeFieldName(f.label) === want);
+}
+
+// fieldColumnIndex resolves a typed field to its model column (for the value
+// autocomplete), applying the same cpu/memory aliasing the server does.
+function fieldColumnIndex(field) {
+    let want = normalizeFieldName(field);
+    if (want === 'cpu' || want === 'memory') {
+        want += ' usage';
+    }
+    for (let i = 0; i < roRowModel.fields.length; i++) {
+        const f = roRowModel.fields[i];
+        if (f.hint && normalizeFieldName(f.label) === want) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// ---- live free-text name match (NO request, D7) ----------------------------
+const FILTER_HIDE_CLASS = 'ro-row-filtered';
+
+// applyLiveNameFilter narrows the rows to the names containing the draft text,
+// entirely client-side. The MATCH runs on the full row model (never the DOM
+// window); only the application toggles classes on whatever rows are rendered.
+// A draft containing an operator is a chip in progress -- no live narrowing.
+function applyLiveNameFilter() {
+    const content = document.getElementById('resource-list-content');
+    if (!content) {
+        return;
+    }
+    const input = document.getElementById('ro-filter-input');
+    const draft = input ? input.value : '';
+    const text = (!draft || splitFilterDraft(draft)) ? '' : draft.trim().toLowerCase();
+    let visible = null;
+    if (text) {
+        visible = new Set();
+        roRowModel.rows.forEach((row) => {
+            if (row.name.toLowerCase().indexOf(text) !== -1) {
+                visible.add(row.key);
+            }
+        });
+    }
+    roRowModel.visibleKeys = visible;
+    content.querySelectorAll('tbody tr[data-key]').forEach((tr) => {
+        tr.classList.toggle(FILTER_HIDE_CLASS, !!visible && !visible.has(tr.dataset.key));
+    });
+}
+
+// ---- chip commit / pop: ride the v2 loop ------------------------------------
+// issueFilterNavigation GETs the `_table` partial for a CANONICAL list href,
+// sourced from the editor input -- a USER-initiated request (no RO-No-Push), so
+// the in-flight guard counts it, an in-flight tick is aborted, and the server
+// answers with the canonical HX-Push-Url. Falls back to a plain navigation when
+// the loop is unavailable.
+function issueFilterNavigation(href) {
+    const content = document.getElementById('resource-list-content');
+    const input = document.getElementById('ro-filter-input');
+    if (!content || !input || typeof htmx === 'undefined') {
+        window.location.assign(href);
+        return;
+    }
+    const u = new URL(href, window.location.href);
+    const partial = u.pathname.replace(/\/+$/, '') + '/_table' + u.search;
+    const request = htmx.ajax('GET', partial, {
+        source: input,
+        target: '#resource-list-content',
+        swap: 'morph',
+    });
+    if (request && typeof request.catch === 'function') {
+        request.catch(() => {}); // failures surface via the stale banner path
+    }
+}
+
+// commitFilterChip materializes the draft as a `?f=` chip. The raw value is
+// encodeURIComponent with the OR-commas RESTORED raw -- typed input treats
+// every comma as OR (filter.go parses alternatives on raw commas), and the
+// `?f=` pair is appended by STRING CONCATENATION so sibling raw params keep
+// their exact wire encoding (never URLSearchParams over the whole query).
+function commitFilterChip(draft) {
+    const text = draft.trim();
+    const parsed = splitFilterDraft(text);
+    if (!parsed) {
+        return; // free text never commits -- it live-matches only
+    }
+    if (!filterFieldKnown(parsed.field)) {
+        showFilterFieldHint();
+        return;
+    }
+    const raw = encodeURIComponent(text).replace(/%2C/gi, ',');
+    const search = window.location.search;
+    const href = window.location.pathname + (search ? search + '&' : '?') + 'f=' + raw;
+    clearFilterDraft();
+    issueFilterNavigation(href);
+}
+
+// popLastFilterChip (⌫ on empty input) removes the LAST chip by riding its
+// server-built removal href (delQueryRawValue keeps sibling chips byte-exact).
+function popLastFilterChip() {
+    const removers = document.querySelectorAll('#ro-filter-field .ro-scope-chip .chip-x');
+    if (removers.length === 0) {
+        return;
+    }
+    const href = removers[removers.length - 1].getAttribute('href');
+    if (href) {
+        issueFilterNavigation(href);
+    }
+}
+
+function clearFilterDraft() {
+    const input = document.getElementById('ro-filter-input');
+    if (input) {
+        input.value = '';
+    }
+    closeFilterAC();
+    applyLiveNameFilter();
+}
+
+// ---- unknown-field hint ------------------------------------------------------
+// "no such field — try status, node, age…" -- the suggestion list is built from
+// the ACTUAL schema (first three filterable fields) so the hint is never a lie.
+function showFilterFieldHint() {
+    const el = document.getElementById('ro-filter-error');
+    if (!el) {
+        return;
+    }
+    const names = filterSuggestionFields().slice(0, 3).map((f) => f.text);
+    el.textContent = 'no such field — try ' + (names.length ? names.join(', ') : 'status, node, age') + '…';
+    el.hidden = false;
+}
+
+function hideFilterFieldHint() {
+    const el = document.getElementById('ro-filter-error');
+    if (el) {
+        el.hidden = true;
+    }
+}
+
+// ---- autocomplete -------------------------------------------------------------
+// Client-side only (D7): field names (with type hints) while the draft has no
+// operator; after `field:` (the equality form, on a known real column) the top 8
+// distinct values by frequency computed from the FULL row model. The operator
+// forms (!= > <) autocomplete the field then leave the value free. Tab/⏎
+// accepts, esc dismisses. All nodes are built with createElement/textContent.
+let filterACItems = []; // [{ label, hint, insert, kind: 'field'|'value' }]
+let filterACActive = -1;
+
+function filterACOpen() {
+    const ac = document.getElementById('ro-filter-ac');
+    return !!ac && !ac.hidden;
+}
+
+function closeFilterAC() {
+    const ac = document.getElementById('ro-filter-ac');
+    if (ac) {
+        ac.hidden = true;
+        ac.textContent = '';
+    }
+    filterACItems = [];
+    filterACActive = -1;
+}
+
+function openFilterAC(items) {
+    const ac = document.getElementById('ro-filter-ac');
+    if (!ac || items.length === 0) {
+        closeFilterAC();
+        return;
+    }
+    ac.textContent = '';
+    ac.setAttribute('role', 'listbox');
+    filterACItems = items;
+    filterACActive = 0;
+    items.forEach((item, idx) => {
+        const row = document.createElement('div');
+        row.className = 'ro-ac-item' + (idx === 0 ? ' active' : '');
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', idx === 0 ? 'true' : 'false');
+        row.dataset.acIndex = String(idx);
+        const name = document.createElement('span');
+        name.className = 'ac-name';
+        name.textContent = item.label; // textContent -> hostile cell values cannot inject
+        row.appendChild(name);
+        if (item.hint) {
+            const hint = document.createElement('span');
+            hint.className = 'ac-hint';
+            hint.textContent = item.hint;
+            row.appendChild(hint);
+        }
+        row.addEventListener('mousemove', () => setFilterACActive(idx));
+        ac.appendChild(row);
+    });
+    ac.hidden = false;
+}
+
+function setFilterACActive(index) {
+    if (filterACItems.length === 0) {
+        return;
+    }
+    filterACActive = Math.max(0, Math.min(filterACItems.length - 1, index));
+    const ac = document.getElementById('ro-filter-ac');
+    if (!ac) {
+        return;
+    }
+    ac.querySelectorAll('.ro-ac-item').forEach((el) => {
+        const on = Number(el.dataset.acIndex) === filterACActive;
+        el.classList.toggle('active', on);
+        el.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+}
+
+function moveFilterACActive(delta) {
+    if (filterACItems.length === 0) {
+        return;
+    }
+    setFilterACActive((filterACActive + delta + filterACItems.length) % filterACItems.length);
+}
+
+// updateFilterAC re-derives the dropdown from the current draft.
+function updateFilterAC() {
+    const input = document.getElementById('ro-filter-input');
+    if (!input) {
+        return;
+    }
+    const draft = input.value;
+    if (!draft.trim()) {
+        closeFilterAC();
+        return;
+    }
+    const parsed = splitFilterDraft(draft);
+    if (!parsed) {
+        // Field-name suggestions: substring match, prefix matches ranked first.
+        const q = normalizeFieldName(draft);
+        const fields = filterSuggestionFields().filter(
+            (f) => normalizeFieldName(f.text).indexOf(q) !== -1
+        );
+        fields.sort((a, b) => {
+            const ap = normalizeFieldName(a.text).indexOf(q) === 0 ? 0 : 1;
+            const bp = normalizeFieldName(b.text).indexOf(q) === 0 ? 0 : 1;
+            return ap - bp;
+        });
+        openFilterAC(fields.map((f) => ({
+            label: f.text, hint: f.hint, insert: f.text + ':', kind: 'field',
+        })));
+        return;
+    }
+    const isLabel = normalizeFieldName(parsed.field) === 'label';
+    if (parsed.op !== ':' || isLabel || !filterFieldKnown(parsed.field)) {
+        // Operator forms leave the value free; `label` values are not in the row
+        // model (metadata.labels never renders for most kinds); unknown fields
+        // get the ⏎ hint, not suggestions.
+        closeFilterAC();
+        return;
+    }
+    const idx = fieldColumnIndex(parsed.field);
+    if (idx < 0) {
+        closeFilterAC();
+        return;
+    }
+    // Top 8 distinct values by frequency, computed from the FULL row model.
+    const freq = new Map();
+    roRowModel.rows.forEach((row) => {
+        const v = row.cells[idx];
+        if (v) {
+            freq.set(v, (freq.get(v) || 0) + 1);
+        }
+    });
+    const typed = parsed.value.trim().toLowerCase();
+    let entries = Array.from(freq.entries());
+    if (typed) {
+        entries = entries.filter(([v]) => v.toLowerCase().indexOf(typed) !== -1);
+    }
+    entries.sort((a, b) => b[1] - a[1]);
+    openFilterAC(entries.slice(0, 8).map(([v, n]) => ({
+        label: v, hint: '×' + n, insert: parsed.field.trim() + ':' + v, kind: 'value',
+    })));
+}
+
+// acceptFilterAC fills the input with the active suggestion. Accepting a FIELD
+// readies the value (`field:` + value suggestions open); accepting a complete
+// VALUE is a finished chip -- ⏎ commits it directly (Tab only fills).
+function acceptFilterAC(commitValues) {
+    const input = document.getElementById('ro-filter-input');
+    const item = filterACItems[filterACActive];
+    if (!input || !item) {
+        return;
+    }
+    input.value = item.insert;
+    closeFilterAC();
+    if (item.kind === 'value' && commitValues) {
+        commitFilterChip(input.value);
+    } else {
+        applyLiveNameFilter();
+        updateFilterAC();
+    }
+}
+
+// handleFilterInputKeydown is the editor's keyboard protocol, dispatched from
+// the delegated document keydown handler.
+function handleFilterInputKeydown(event) {
+    const input = event.target;
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        if (filterACOpen() && filterACActive >= 0) {
+            acceptFilterAC(true);
+            return;
+        }
+        commitFilterChip(input.value);
+        return;
+    }
+    if (event.key === 'Tab' && filterACOpen()) {
+        event.preventDefault();
+        acceptFilterAC(false);
+        return;
+    }
+    if (event.key === 'Escape' && filterACOpen()) {
+        event.preventDefault();
+        closeFilterAC();
+        return;
+    }
+    if (event.key === 'ArrowDown' && filterACOpen()) {
+        event.preventDefault();
+        moveFilterACActive(1);
+        return;
+    }
+    if (event.key === 'ArrowUp' && filterACOpen()) {
+        event.preventDefault();
+        moveFilterACActive(-1);
+        return;
+    }
+    if (event.key === 'Backspace' && input.value === '') {
+        event.preventDefault();
+        popLastFilterChip();
+    }
+}
+
+// A click anywhere outside the editor dismisses the dropdown (esc-equivalent).
+document.addEventListener('click', (event) => {
+    if (!event.target.closest('#ro-filter-field')) {
+        closeFilterAC();
+    }
+});
 
 // ---------------------------------------------------------------------------
 // Theme-toggle POST target (prefers-aware, cookieless-safe)
@@ -1483,6 +2040,11 @@ function runInit() {
         highlightYamlLine,
         syncThemeTogglePostTarget,
         setupStickyNamespace,
+        // Chips-editor row model (D7/D20): captured from the full server-rendered
+        // document. ORDER CONTRACT: this step must stay BEFORE any future
+        // windowing init (Unit 24) that prunes rows from the DOM -- at this point
+        // the DOM still IS the complete dataset.
+        captureRowModelFromDocument,
         // Row state is keyed by OBJECT identity and survives boosted body swaps
         // (script state persists); re-paint it on every init pass so a return
         // to a list re-decorates the same objects immediately, not only on the

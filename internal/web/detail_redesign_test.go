@@ -150,7 +150,9 @@ func TestResourceViewTabsPodVsNonPod(t *testing.T) {
 // app.kubernetes.io/* label renders as a PLAIN neutral .ro-chip anchor exactly
 // like any other label -- the retired green .app accent never appears -- and
 // every chip splits its key (.ck), ghost separator (.cs), and value (.cv) so
-// ink weight, not hue, differentiates them. The selector href stays literal.
+// ink weight, not hue, differentiates them. The href is the click-to-filter
+// chip link (D7/SPEC §8.1): this kind's list with `?f=label:key=value`, the
+// chip text QueryEscape'd whole so '/' and '=' survive literally.
 func TestDetailLabelChipsNeutral(t *testing.T) {
 	obj := detailObject("deployments", "Deployment", true, map[string]any{
 		"app.kubernetes.io/component": "master",
@@ -165,10 +167,11 @@ func TestDetailLabelChipsNeutral(t *testing.T) {
 	}
 
 	// The app.kubernetes.io/* label is an ordinary neutral chip: addressed by its
-	// selector href, carrying the .ck/.cs/.cv ink-weight split.
-	appChip := doc.Find(`.ro-chips a.ro-chip[href="/clusters/test/namespaces/default/deployments?selector=app.kubernetes.io/component=master"]`)
+	// `?f=label:key=value` chip href, carrying the .ck/.cs/.cv ink-weight split.
+	appChip := doc.Find(`.ro-chips a.ro-chip[href="/clusters/test/namespaces/default/deployments?f=label%3Aapp.kubernetes.io%2Fcomponent%3Dmaster"]`)
 	if appChip.Length() != 1 {
-		t.Fatalf("expected the app.kubernetes.io/component label as one plain .ro-chip anchor, got %d", appChip.Length())
+		t.Fatalf("expected the app.kubernetes.io/component label as one plain .ro-chip anchor, got %d; hrefs=%v",
+			appChip.Length(), attrsOf(doc, ".ro-chips a.ro-chip", "href"))
 	}
 	if k, v := normSpace(appChip.Find(".ck").Text()), normSpace(appChip.Find(".cv").Text()); k != "app.kubernetes.io/component" || v != "master" {
 		t.Fatalf("chip ck/cv = %q/%q, want app.kubernetes.io/component/master", k, v)

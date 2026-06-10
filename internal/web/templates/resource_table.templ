@@ -54,6 +54,31 @@ type ListData struct {
 	// hidden hook; it lives on the FULL page only (the partial fragment is what
 	// gets dimmed, it does not re-emit the banner).
 	ShowStaleBanner bool
+
+	// FilterBar is the Filters v2 chips editor (D7): rendered in the tools row of
+	// the FIRST (only) table on single-type pages, inside the morphed fragment so
+	// a chip-committing partial request re-renders the chips and a shareable URL
+	// lands with them visible. nil on multi-type pages (D1: `?f=` ignored there).
+	FilterBar *FilterBarData
+}
+
+// FilterBarData is the chips editor: the plural (placeholder copy), the icon,
+// and the active `?f=` chips rendered server-side.
+type FilterBarData struct {
+	Plural     string
+	FilterIcon string
+	Chips      []EditorChip
+}
+
+// EditorChip is one `.ro-scope-chip` in the editor. Field/Op/Value carry the
+// display split of a well-formed chip; a malformed chip (Field == "") renders
+// its whole Label instead. RemoveHref drops exactly this raw occurrence.
+type EditorChip struct {
+	Field      string
+	Op         string
+	Value      string
+	Label      string
+	RemoveHref string
 }
 
 // ListState is the resolved whole-list failure state. Kind is "" (no state),
@@ -145,6 +170,13 @@ type TableColumn struct {
 	SortIcon    string
 	Sorted      bool
 	PartialHref string
+
+	// Hint is the chips-editor autocomplete type hint (text/number/duration),
+	// emitted as data-hint on the <th>. Its presence marks the column
+	// FILTERABLE: the editor builds field suggestions only from data-hint
+	// headers, so the synthetic Created / leading Cluster/Namespace headers
+	// (which the server-side filter cannot bind) are never suggested.
+	Hint string
 }
 
 // TableTools is the per-table tools form (label columns / selector / filter).
@@ -220,9 +252,13 @@ type TableCell struct {
 // RowChip is one namespace label chip: the label key and value, rendered as a
 // NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3 colour
 // law: every label chip is neutral; the green `.app` accent is retired).
+// A non-empty Href (single-type pages, D7/SPEC §8.1) renders the chip as a
+// click-to-filter anchor: the same list with `label:key=value` appended to
+// `?f=`.
 type RowChip struct {
-	Key string
-	Val string
+	Key  string
+	Val  string
+	Href string
 }
 
 // Cond is one abnormal node condition pill (name + redesign tone warn/err/ok).
@@ -284,6 +320,9 @@ templ resourceTables(d ListData) {
 			</div>
 		</div>
 		@toolsForm(table.Tools, i)
+		if i == 0 && d.FilterBar != nil {
+			@filterBar(*d.FilterBar)
+		}
 		if table.ShowMetricsHref != "" {
 			<div class="section"><a href={ templ.SafeURL(table.ShowMetricsHref) }>Show CPU/Memory Usage</a></div>
 		}
@@ -302,7 +341,13 @@ templ resourceTables(d ListData) {
 				<th>Namespace</th>
 			}
 			for _, col := range table.Columns {
-				<th title={ col.Description } class={ thClass(col.Class, col.Sorted) }><a
+				<th
+					title={ col.Description }
+					class={ thClass(col.Class, col.Sorted) }
+					if col.Hint != "" {
+						data-hint={ col.Hint }
+					}
+				><a
 					href={ templ.SafeURL(col.SortHref) }
 					if col.PartialHref != "" {
 						hx-get={ col.PartialHref }
@@ -435,7 +480,7 @@ templ tableCell(cell TableCell) {
 			} else {
 				<div class="ro-chips">
 					for _, chip := range cell.Chips {
-						<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+						@rowChip(chip)
 					}
 				</div>
 			}
@@ -596,7 +641,7 @@ templ pcardCell(cell TableCell) {
 			} else {
 				<div class="ro-chips">
 					for _, chip := range cell.Chips {
-						<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+						@rowChip(chip)
 					}
 				</div>
 			}
@@ -637,4 +682,55 @@ templ toolsForm(t TableTools, tableIndex int) {
 
 func toolsTableID(tableIndex int) string {
 	return "tools-table-" + itoa(tableIndex+1)
+}
+
+// rowChip renders one label chip in a table cell (and its mobile-card mirror):
+// a click-to-filter anchor when Href is set (single-type pages, D7/SPEC §8.1),
+// an inert span otherwise. Both keep the NEUTRAL `.ck`/`.cs`/`.cv` split (D3).
+templ rowChip(chip RowChip) {
+	if chip.Href != "" {
+		<a class="ro-chip" href={ templ.SafeURL(chip.Href) } title={ "Filter by " + chip.Key + "=" + chip.Val }><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></a>
+	} else {
+		<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+	}
+}
+
+// filterBar renders the Filters v2 chips editor (D7): the `.ro-tools-filter`
+// field with the active `?f=` chips (server-rendered, so shareable URLs land
+// with chips visible), the free-text/autocomplete input readout.js drives, the
+// inline unknown-field hint mount, and the filter-hint legend. The input
+// carries a STABLE id so idiomorph matches it across morphs (the v2 loop runs
+// ignoreActiveValue:true -- a focused draft and its caret survive every tick).
+// Each chip's ✕ is a real link (no-JS fallback); readout.js intercepts it to
+// ride the partial loop. The `.ro-filter-ac` mount is the JS-owned autocomplete
+// dropdown (rendered empty + hidden here so morphs keep a stable anchor).
+templ filterBar(fb FilterBarData) {
+	<div class="tools-row ro-filterbar">
+		<div class="ro-tools-filter" id="ro-filter-field">
+			<span class="ico sm" aria-hidden="true">@templ.Raw(fb.FilterIcon)</span>
+			for _, chip := range fb.Chips {
+				<span class="ro-scope-chip">
+					if chip.Field != "" {
+						<span class="ck">{ chip.Field }</span><b>{ chip.Op }</b><span class="v">{ chip.Value }</span>
+					} else {
+						<span class="v">{ chip.Label }</span>
+					}
+					<a class="chip-x" href={ templ.SafeURL(chip.RemoveHref) } title="remove" aria-label={ "Remove filter " + chip.Label }>✕</a>
+				</span>
+			}
+			<input id="ro-filter-input" type="text" autocomplete="off" spellcheck="false" placeholder={ filterPlaceholder(fb) } aria-label="Filter">
+			<div class="ro-filter-ac" id="ro-filter-ac" hidden></div>
+		</div>
+	</div>
+	<div class="ro-filter-error" id="ro-filter-error" hidden></div>
+	<div class="filter-hint"><span><b>filter</b>{ " free text matches the name" }</span> <span><b>field:value</b>{ " ⏎ adds a removable chip" }</span> <span><b>⌫</b>{ " on empty input removes the last chip" }</span></div>
+}
+
+// filterPlaceholder is the editor input's placeholder: the worked-example copy
+// when no chips are active, empty once chips exist (the prototype contract).
+func filterPlaceholder(fb FilterBarData) string {
+	if len(fb.Chips) > 0 {
+		return ""
+	}
+	return "Filter " + fb.Plural + "…   status:Running   node:worker   ⏎ makes a chip"
 }

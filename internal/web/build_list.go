@@ -586,6 +586,12 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	if len(filterChips) > 0 {
 		clearHref = delQuery(r.URL, "filter", "selector", "labelcols", "label-columns", "f")
 	}
+	// The chips editor (D7): single-type pages only, mirroring the `?f=` gate in
+	// applyTableOptions. The chips ride the morphed fragment, so a shareable URL
+	// lands with its chips visible and a chip-committing partial re-renders them.
+	if single {
+		v.FilterBar = &filterBarView{Plural: lc.Plural, Chips: buildFilterBarChips(r)}
+	}
 
 	for ti := range lc.Tables {
 		table := &lc.Tables[ti]
@@ -611,6 +617,9 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 			}
 			if partialSortURL != nil {
 				cv.PartialHref = addQuery(partialSortURL, "sort", sortParam)
+				// Filterable-field marker for the chips editor (single-type only,
+				// same gate as the loop): the autocomplete reads these headers.
+				cv.Hint = filterFieldHint(&col)
 			}
 			tv.Columns = append(tv.Columns, cv)
 		}
@@ -722,11 +731,49 @@ func buildFilterChips(r *http.Request) []filterChipView {
 	// removes exactly that raw occurrence so sibling chips keep their raw
 	// OR-comma encoding byte-for-byte.
 	if isSingleListType(r.PathValue("plural")) {
-		for _, chip := range parseFilterParams(r.URL.RawQuery) {
-			chips = append(chips, filterChipView{Label: chip.display(), RemoveHref: delQueryRawValue(r.URL, "f", chip.Raw)})
-		}
+		chips = append(chips, buildFilterBarChips(r)...)
 	}
 	return chips
+}
+
+// buildFilterBarChips resolves the `?f=` chips for the chips editor (and the
+// f-leg of the empty-filtered state): one chip per raw occurrence, with the
+// editor's Field/Op/Value display split and a ✕ href that removes exactly that
+// raw occurrence (sibling chips keep their wire encoding byte-for-byte). A
+// malformed chip (no operator) keeps Field empty so it renders whole -- it can
+// still be removed even though it matches no row.
+func buildFilterBarChips(r *http.Request) []filterChipView {
+	var chips []filterChipView
+	for _, chip := range parseFilterParams(r.URL.RawQuery) {
+		chips = append(chips, filterChipView{
+			Label:      chip.display(),
+			RemoveHref: delQueryRawValue(r.URL, "f", chip.Raw),
+			Field:      chip.Field,
+			Op:         string(chip.Op),
+			Value:      strings.Join(chip.Values, ","),
+		})
+	}
+	return chips
+}
+
+// filterFieldHint maps a column to its chips-editor autocomplete type hint.
+// Every real Table column is filterable (resolveFilterColumn binds any of
+// them); the hint only describes which `>`/`<` mode the value compares in:
+// kubectl-age columns as durations, numeric columns (incl. the decorated
+// restarts "3 (4m ago)" cells, whose leading token is numeric) as numbers,
+// everything else as text.
+func filterFieldHint(col *kube.Column) string {
+	switch col.Name {
+	case "Age", "First Seen", "Last Seen", "Duration", "Last Schedule":
+		return "duration"
+	case "Restarts":
+		return "number"
+	}
+	switch col.Type {
+	case "integer", "number":
+		return "number"
+	}
+	return "text"
 }
 
 // buildListState classifies a single-cluster whole-list failure into the
@@ -835,6 +882,15 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		// "Labels" column (which carries a Label tag) on the generic path instead.
 		cv.Kind = cellChips
 		cv.Chips = namespaceLabelChips(row.Object)
+		// Label-chip click-to-filter (D7 / SPEC §8.1): on a single-type page each
+		// chip links to THIS list with the `label:key=value` chip appended to its
+		// `?f=` set (the same gate the filter engine applies under -- a multi-type
+		// page ignores `f`, so its chips stay inert spans).
+		if isSingleListType(r.PathValue("plural")) {
+			for ci := range cv.Chips {
+				cv.Chips[ci].Href = addFilterChipHref(r.URL, "label:"+cv.Chips[ci].Key+"="+cv.Chips[ci].Val)
+			}
+		}
 	case colName == "CPU Usage":
 		cv.Kind = cellCPU
 		cv.Value = cpuFormat(cell)

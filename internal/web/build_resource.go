@@ -190,15 +190,18 @@ func buildLabelChips(cluster, namespace string, object *kube.Object) []labelChip
 	out := make([]labelChipView, 0, len(keys))
 	for _, key := range keys {
 		val := labels[key]
-		// The selector value is emitted literally (key=value), matching the former
-		// renderObjectSummary which only html-escaped it -- it did NOT url-encode
-		// the '=' or '/'. templ's attribute escaping reproduces that html-escape.
-		selector := key + "=" + val
+		// Label-chip click-to-filter (D7 / SPEC §8.1): the chip navigates to this
+		// KIND's list in the same cluster/namespace with the `label:key=value`
+		// chip applied (`?f=`), riding the same grammar the list filter engine
+		// parses. The chip text is QueryEscape'd whole, so '/', '=' and any comma
+		// in the value survive as literal characters (a %2C is a literal comma
+		// inside one alternative, never an OR split).
+		chip := url.QueryEscape("label:" + key + "=" + val)
 		var href string
 		if namespace != "" {
-			href = fmt.Sprintf("/clusters/%s/namespaces/%s/%s?selector=%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(object.Resource.Endpoint()), selector)
+			href = fmt.Sprintf("/clusters/%s/namespaces/%s/%s?f=%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(object.Resource.Endpoint()), chip)
 		} else {
-			href = fmt.Sprintf("/clusters/%s/%s?selector=%s", url.PathEscape(cluster), url.PathEscape(object.Resource.Endpoint()), selector)
+			href = fmt.Sprintf("/clusters/%s/%s?f=%s", url.PathEscape(cluster), url.PathEscape(object.Resource.Endpoint()), chip)
 		}
 		out = append(out, labelChipView{
 			Href: href,

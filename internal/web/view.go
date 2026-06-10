@@ -58,6 +58,21 @@ type listView struct {
 	// "stale" (there is no last-good cache) -- only the client does, on a refresh
 	// error that keeps the existing rows.
 	StaleBanner bool
+
+	// FilterBar is the Filters v2 chips editor (D7): the active `?f=` chips
+	// rendered server-side in the tools row (a shareable URL lands with its
+	// chips visible) plus the free-text/autocomplete input readout.js drives.
+	// nil on multi-type pages (the D1 boundary -- `?f=` is ignored there, so no
+	// editor may suggest it works).
+	FilterBar *filterBarView
+}
+
+// filterBarView is the resolved chips-editor state: the list's plural (the
+// input placeholder copy) and the active `?f=` chips. Chips render inside the
+// morphed fragment, so a chip-committing partial request re-renders them.
+type filterBarView struct {
+	Plural string
+	Chips  []filterChipView
 }
 
 // listKind enumerates the whole-list failure/empty states. emptyState /
@@ -141,12 +156,19 @@ type emptyActionView struct {
 	Label string
 }
 
-// filterChipView is one removable active-filter chip on the empty-filtered
-// state: Label is the human "key = value" text, RemoveHref drops just that one
-// filter (a read-only GET) so the ✕ removes it.
+// filterChipView is one removable active-filter chip, shared by the
+// empty-filtered state and the chips editor (D7): Label is the human chip text,
+// RemoveHref drops just that one filter (a read-only GET) so the ✕ removes it.
+// Field/Op/Value carry the editor's display split (`.ck` key, accent operator,
+// `.v` value) for a well-formed `?f=` chip; they stay empty for the legacy
+// filter/selector/labels chips and for a malformed chip (Label then renders
+// whole).
 type filterChipView struct {
 	Label      string
 	RemoveHref string
+	Field      string
+	Op         string
+	Value      string
 }
 
 // columnView precomputes a column header's sort link and indicator. SortHref is
@@ -157,6 +179,14 @@ type columnView struct {
 	SortHref    string
 	SortIcon    string
 	PartialHref string
+
+	// Hint is the filter-autocomplete type hint for this column (text / number /
+	// duration), emitted as the header's data-hint. Its PRESENCE marks the
+	// column filterable: the chips editor builds its field-name suggestions from
+	// the data-hint headers, so synthetic non-Column headers (Created, the
+	// leading Cluster/Namespace columns) never get suggested -- exactly the set
+	// resolveFilterColumn can bind. Empty on multi-type pages (no editor).
+	Hint string
 }
 
 // toolsView precomputes the resource-list tools form (label columns, selector,
@@ -266,10 +296,13 @@ type cellView struct {
 
 // chipView is one namespace label chip: the label key and value, rendered as a
 // NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3 colour law:
-// every label chip is neutral; the green `.app` accent is retired).
+// every label chip is neutral; the green `.app` accent is retired). Href, when
+// non-empty (single-type pages, D7/SPEC §8.1), is the click-to-filter target:
+// the SAME list URL with the `label:key=value` chip appended to `?f=`.
 type chipView struct {
-	Key string
-	Val string
+	Key  string
+	Val  string
+	Href string
 }
 
 // repSegment is one deployment replica-track segment. State is "" for a filled

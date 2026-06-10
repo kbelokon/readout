@@ -891,10 +891,11 @@ func TestBehaviorNodeDetailFacts(t *testing.T) {
 
 // TestBehaviorDetailLabelChips pins the resource-view label/annotation chips in
 // the v2 vocabulary (D3: chips are NEUTRAL; key and value differ by ink weight
-// through the .ck/.cs/.cv spans, never by hue): each label is an anchor to the
-// selector-filtered list carrying the bare .ro-chip class, the selector value
-// kept literal (key=value, NOT url-encoded). The annotations render as non-link
-// .ro-chip.anno pills that truncate with a title= tooltip.
+// through the .ck/.cs/.cv spans, never by hue): each label is a click-to-filter
+// anchor (D7/SPEC §8.1) to this kind's list in the same cluster/namespace with
+// the `label:key=value` chip applied via `?f=` (the chip text QueryEscape'd
+// whole). The annotations render as non-link .ro-chip.anno pills that truncate
+// with a title= tooltip.
 func TestBehaviorDetailLabelChips(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
@@ -906,18 +907,17 @@ func TestBehaviorDetailLabelChips(t *testing.T) {
 		t.Fatalf("expected a label chip anchor on the pod detail page")
 	}
 	href, _ := chip.Attr("href")
-	// The chip links to the namespaced list filtered by selector=key=value, with
-	// the '=' kept literal (goquery decodes the attribute; a %3D here would be the
-	// double-encoding regression this fact guards against).
-	if !strings.HasPrefix(href, "/clusters/test/namespaces/default/pods?selector=") || strings.Contains(href, "%3D") {
-		t.Fatalf("label chip href = %q, want a literal selector=key=value link", href)
+	// The chip links to the namespaced list with a `?f=label:key=value` chip
+	// (Filters v2 click-to-filter), never the legacy selector= form.
+	if !strings.HasPrefix(href, "/clusters/test/namespaces/default/pods?f=label%3A") {
+		t.Fatalf("label chip href = %q, want a ?f=label:key=value chip link", href)
 	}
-	// The nginx pod fixture carries app=nginx; that chip's exact selector href +
+	// The nginx pod fixture carries app=nginx; that chip's exact `?f=` href +
 	// the ink-weight key/value split: the key sits in .ck, the ghost colon in
 	// .cs, the firm value in .cv (D3 -- weight, not hue, separates key from value).
-	appChip := p.doc.Find(`.ro-chips a[href="/clusters/test/namespaces/default/pods?selector=app=nginx"]`)
+	appChip := p.doc.Find(`.ro-chips a[href="/clusters/test/namespaces/default/pods?f=label%3Aapp%3Dnginx"]`)
 	if appChip.Length() != 1 {
-		t.Fatalf("expected the app=nginx label chip with a literal selector href, hrefs=%v", p.attrs(".ro-chips a.ro-chip", "href"))
+		t.Fatalf("expected the app=nginx label chip with a ?f= chip href, hrefs=%v", p.attrs(".ro-chips a.ro-chip", "href"))
 	}
 	if k, v := normSpace(appChip.Find(".ck").Text()), normSpace(appChip.Find(".cv").Text()); k != "app" || v != "nginx" {
 		t.Fatalf("label chip ck/cv = %q/%q, want app/nginx", k, v)

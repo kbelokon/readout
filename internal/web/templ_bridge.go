@@ -154,6 +154,19 @@ func toListData(v *listView) templates.ListData {
 	if v.State != nil {
 		d.State = toListState(v.State)
 	}
+	if v.FilterBar != nil {
+		fb := &templates.FilterBarData{Plural: v.FilterBar.Plural, FilterIcon: icon("filter")}
+		for _, chip := range v.FilterBar.Chips {
+			fb.Chips = append(fb.Chips, templates.EditorChip{
+				Field:      chip.Field,
+				Op:         chip.Op,
+				Value:      chip.Value,
+				Label:      chip.Label,
+				RemoveHref: chip.RemoveHref,
+			})
+		}
+		d.FilterBar = fb
+	}
 	return d
 }
 
@@ -228,6 +241,7 @@ func toTableData(t *tableView) templates.TableData {
 			SortIcon:    t.Columns[i].SortIcon,
 			Sorted:      t.Columns[i].SortIcon != "",
 			PartialHref: t.Columns[i].PartialHref,
+			Hint:        t.Columns[i].Hint,
 		})
 	}
 	for i := range t.Rows {
@@ -276,7 +290,7 @@ func toTableData(t *tableView) templates.TableData {
 				tc.RepSegments = append(tc.RepSegments, templates.RepSegment{State: seg.State})
 			}
 			for _, chip := range cell.Chips {
-				tc.Chips = append(tc.Chips, templates.RowChip{Key: chip.Key, Val: chip.Val})
+				tc.Chips = append(tc.Chips, templates.RowChip{Key: chip.Key, Val: chip.Val, Href: chip.Href})
 			}
 			if cell.Kind == cellRollout {
 				tc.RolloutIcon = icon(rolloutIconName(cell.RolloutState))
