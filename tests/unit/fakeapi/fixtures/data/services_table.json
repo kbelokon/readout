@@ -15,8 +15,8 @@
     {
       "cells": ["frontend", "ClusterIP", "10.96.0.10", "80/TCP", "12d"],
       "object": {
-        "kind": "PartialObjectMetadata",
-        "apiVersion": "meta.k8s.io/v1",
+        "kind": "Service",
+        "apiVersion": "v1",
         "metadata": {
           "name": "frontend",
           "namespace": "default",
@@ -24,14 +24,21 @@
           "resourceVersion": "33340",
           "creationTimestamp": "2026-05-23T12:00:00Z",
           "labels": {"app": "frontend"}
-        }
+        },
+        "spec": {
+          "type": "ClusterIP",
+          "clusterIP": "10.96.0.10",
+          "selector": {"app": "frontend"},
+          "ports": [{"port": 80, "protocol": "TCP", "targetPort": 8080}]
+        },
+        "status": {"loadBalancer": {}}
       }
     },
     {
       "cells": ["kubernetes", "ClusterIP", "10.96.0.1", "443/TCP", "30d"],
       "object": {
-        "kind": "PartialObjectMetadata",
-        "apiVersion": "meta.k8s.io/v1",
+        "kind": "Service",
+        "apiVersion": "v1",
         "metadata": {
           "name": "kubernetes",
           "namespace": "default",
@@ -39,7 +46,13 @@
           "resourceVersion": "33341",
           "creationTimestamp": "2026-05-05T12:00:00Z",
           "labels": {"component": "apiserver"}
-        }
+        },
+        "spec": {
+          "type": "ClusterIP",
+          "clusterIP": "10.96.0.1",
+          "ports": [{"port": 443, "protocol": "TCP", "targetPort": 6443}]
+        },
+        "status": {"loadBalancer": {}}
       }
     }
   ]

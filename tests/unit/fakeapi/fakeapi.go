@@ -358,6 +358,7 @@ func seedStore() (*store, error) {
 		"/apis/gateway.networking.k8s.io/v1": "discovery/apis__gateway.networking.k8s.io__v1.json",
 		"/apis/gateway.networking.k8s.io/v1beta1": "discovery/apis__gateway.networking.k8s.io__v1beta1.json",
 		"/apis/metrics.k8s.io/v1beta1":            "discovery/apis__metrics.k8s.io__v1beta1.json",
+		"/apis/networking.k8s.io/v1":              "discovery/apis__networking.k8s.io__v1.json",
 		"/apis/storage.k8s.io/v1":                 "discovery/apis__storage.k8s.io__v1.json",
 		"/version":                                "discovery/version.json",
 	} {
@@ -454,6 +455,25 @@ func seedStore() (*store, error) {
 		return nil, err
 	}
 	st.lists["/api/v1/namespaces/default/secrets"] = secrets
+
+	// ConfigMaps in "default" exercise the keys chips (SPEC §4.10): the rows
+	// carry FULL ConfigMap objects (data + binaryData) so the `name · size`
+	// chips and the +N-keys in-cell expand have real key/size material -- the
+	// e2e expand spec clicks the app-config row's +2 keys button.
+	configmaps, err := newListState("data/configmaps_table.json", "")
+	if err != nil {
+		return nil, err
+	}
+	st.lists["/api/v1/namespaces/default/configmaps"] = configmaps
+
+	// Ingresses in "default" exercise the hosts/+N, pending-address, and TLS
+	// cells: full Ingress objects ride each row (spec.tls drives the synthetic
+	// TLS column) and the preview-env row carries the literal <pending> address.
+	ingresses, err := newListState("data/ingresses_table.json", "")
+	if err != nil {
+		return nil, err
+	}
+	st.lists["/apis/networking.k8s.io/v1/namespaces/default/ingresses"] = ingresses
 
 	// Namespaces carry BOTH forms: the Table form (rows with labels -- the
 	// resource-list page negotiates as=Table, and the label-chip click-to-filter

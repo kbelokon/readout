@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/kbelokon/readout/internal/kube"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/util/jsonpath"
 )
 
@@ -236,6 +238,17 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 		// has no per-namespace pod-count seam.
 		decorateNamespaceColumns(table)
 	}
+	if table.Resource.Plural == "services" {
+		// Services get the External-IP / Selector columns GUARANTEED (appended from
+		// each row's spec/status when a server-side Table omits them); the rich
+		// pending/ports/selector-chips cells land in buildCellView.
+		decorateServiceColumns(table)
+	}
+	if table.Resource.Plural == "ingresses" {
+		// Ingresses get a synthetic TLS column derived from each row's spec.tls
+		// (the server-side Table has no TLS column, SPEC §7.10).
+		decorateIngressColumns(table)
+	}
 	if q.Get("join") == "metrics" && (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") {
 		s.joinMetrics(r.Context(), client, table, namespace, allNamespaces, q.Get("selector"))
 	}
@@ -278,6 +291,17 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 				table.Columns[i].Class = ""
 			}
 		}
+	}
+	// The configmap/secret Data decorators run AFTER GuessColumnClasses for the
+	// same header/cell alignment reason: their curation is dropping the numeric
+	// class the guesser infers from the server's integer key-count cells (the
+	// keys-chips strip is left-aligned; the count cell itself stays untouched as
+	// the sort/TSV/filter truth).
+	if table.Resource.Plural == "configmaps" {
+		decorateConfigMapColumns(table)
+	}
+	if table.Resource.Plural == "secrets" {
+		decorateSecretColumns(table)
 	}
 	kube.SortTable(table, first(q.Get("sort"), fill.Sort))
 	if limit := q.Get("limit"); limit != "" {
@@ -481,6 +505,244 @@ func decorateNamespaceColumns(table *kube.Table) {
 	for i := range table.Rows {
 		table.Rows[i].Cells = append(table.Rows[i].Cells, namespaceLabelsText(table.Rows[i].Object))
 	}
+}
+
+// decorateServiceColumns guarantees the v2 services schema surface (SPEC §7.8):
+// the External-IP and Selector columns are appended -- read from each row's
+// spec/status with the SAME value encoding the upstream printer uses
+// (`<none>`/`<pending>`/ExternalName target; sorted comma-joined `k=v`) -- when
+// a server-side Table omits them. A standard apiserver provides both (Selector
+// at priority 1, which readout keeps), so there the columnIndex guards make
+// this a no-op; the append covers trimmed-down printers and keeps the rich
+// External-IP/Selector cells kind-invariant. Cells are appended for EVERY row
+// in lockstep with the columns, so the table never goes ragged.
+func decorateServiceColumns(table *kube.Table) {
+	type svcCol struct {
+		name string
+		cell func(obj map[string]any) any
+	}
+	cols := []svcCol{
+		{"External-IP", func(obj map[string]any) any { return serviceExternalIPText(obj) }},
+		{"Selector", func(obj map[string]any) any { return serviceSelectorText(obj) }},
+	}
+	for _, col := range cols {
+		if columnIndex(table.Columns, col.name) >= 0 {
+			continue // never duplicate a column the server-side Table already had
+		}
+		table.Columns = append(table.Columns, kube.Column{Name: col.name})
+		for i := range table.Rows {
+			table.Rows[i].Cells = append(table.Rows[i].Cells, col.cell(table.Rows[i].Object))
+		}
+	}
+}
+
+// decorateIngressColumns appends the synthetic TLS column and fills each row's
+// cell with the plain DISPLAY value ("tls" when spec.tls terminates at least
+// one host, "—" otherwise) so sort, TSV, filter, and the generic fallback see
+// a sensible value; the rich tlsCellView renderer re-reads the row object for
+// the earned-green lock (SPEC §4.13). The cell is appended for EVERY row in
+// lockstep with the column, so the table never goes ragged. A TLS column the
+// server-side Table already provided (it does not today) is never duplicated.
+func decorateIngressColumns(table *kube.Table) {
+	if columnIndex(table.Columns, "TLS") >= 0 {
+		return
+	}
+	table.Columns = append(table.Columns, kube.Column{Name: "TLS"})
+	for i := range table.Rows {
+		table.Rows[i].Cells = append(table.Rows[i].Cells, ingressTLSText(table.Rows[i].Object))
+	}
+}
+
+// decorateConfigMapColumns curates the configmaps Data column for the keys
+// cell (SPEC §4.10). NO synthetic column is needed -- the server's integer
+// key-count cell stays in place as the sort/TSV/filter truth and the
+// `name · size` chips re-read the row object at cell-build time
+// (configMapKeyChips) -- but the count cell makes GuessColumnClasses
+// right-align the column, while the chips strip is left-aligned; the curation
+// here drops that alignment so the header never sits right of its cells (the
+// same mismatch the node capacity columns clear above).
+func decorateConfigMapColumns(table *kube.Table) {
+	clearDataColumnAlignment(table)
+}
+
+// decorateSecretColumns curates the secrets Data column exactly like
+// decorateConfigMapColumns (the secret key chips decode from `data` with
+// DECODED byte sizes in secretKeyChips; the count cell stays the plain truth):
+// the only table-level curation is dropping the guessed numeric alignment.
+func decorateSecretColumns(table *kube.Table) {
+	clearDataColumnAlignment(table)
+}
+
+// clearDataColumnAlignment drops the numeric right-alignment from a Data
+// column (shared by the configmap/secret decorators).
+func clearDataColumnAlignment(table *kube.Table) {
+	for i := range table.Columns {
+		if table.Columns[i].Name == "Data" {
+			table.Columns[i].Class = ""
+		}
+	}
+}
+
+// serviceExternalIPText reconstructs the services External-IP printer column
+// from a Service object, mirroring the upstream printer's encoding:
+// ExternalName -> the spec.externalName target; LoadBalancer -> the
+// status.loadBalancer ingress IPs/hostnames + any spec.externalIPs, or the
+// literal `<pending>` while unprovisioned; every other type -> spec.externalIPs
+// or the literal `<none>`.
+func serviceExternalIPText(obj map[string]any) string {
+	svcType := nestedString(obj, "spec", "type")
+	if svcType == "ExternalName" {
+		return nestedString(obj, "spec", "externalName")
+	}
+	externalIPs, _, _ := unstructured.NestedStringSlice(obj, "spec", "externalIPs")
+	if svcType == "LoadBalancer" {
+		var ips []string
+		ingress, _, _ := unstructured.NestedSlice(obj, "status", "loadBalancer", "ingress")
+		for _, item := range ingress {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if ip := first(nestedString(entry, "ip"), nestedString(entry, "hostname")); ip != "" {
+				ips = append(ips, ip)
+			}
+		}
+		ips = append(ips, externalIPs...)
+		if len(ips) > 0 {
+			return strings.Join(ips, ",")
+		}
+		return "<pending>"
+	}
+	if len(externalIPs) > 0 {
+		return strings.Join(externalIPs, ",")
+	}
+	return "<none>"
+}
+
+// serviceSelectorText is the plain Selector DISPLAY value (the printer's
+// sorted comma-joined `k=v` encoding, `<none>` for a selectorless service);
+// the rich chips re-read spec.selector via selectorChips.
+func serviceSelectorText(obj map[string]any) string {
+	selector, _, _ := unstructured.NestedStringMap(obj, "spec", "selector")
+	if len(selector) == 0 {
+		return "<none>"
+	}
+	return formatLabels(selector)
+}
+
+// selectorChips builds the service Selector chips from spec.selector (sorted
+// by key for a stable order). The chips are NEUTRAL and deliberately carry NO
+// click-to-filter href: a `label:key=value` chip filters by the SERVICES' OWN
+// metadata.labels, while a selector names the labels of the pods the service
+// selects -- linking the two would filter on the wrong object's labels.
+func selectorChips(obj map[string]any) []chipView {
+	selector, _, _ := unstructured.NestedStringMap(obj, "spec", "selector")
+	if len(selector) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(selector))
+	for key := range selector {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	chips := make([]chipView, 0, len(keys))
+	for _, key := range keys {
+		chips = append(chips, chipView{Key: key, Val: selector[key]})
+	}
+	return chips
+}
+
+// ingressTLSTerminated reports whether an Ingress terminates TLS: spec.tls
+// lists at least one entry (SPEC §7.10 "ingress TLS from spec.tls").
+func ingressTLSTerminated(obj map[string]any) bool {
+	tls, _, _ := unstructured.NestedSlice(obj, "spec", "tls")
+	return len(tls) > 0
+}
+
+// ingressTLSText is the plain DISPLAY value for the synthetic TLS column
+// ("tls" / "—"), matching what the rich lock cell shows so the generic
+// fallback / TSV / sort / filter see the same truth.
+func ingressTLSText(obj map[string]any) string {
+	if ingressTLSTerminated(obj) {
+		return "tls"
+	}
+	return "—"
+}
+
+// commaListValues splits a printer's comma-joined list cell (service ports
+// "80/TCP,443/TCP", ingress hosts "a.com,b.com") into its values, dropping
+// the literal `<none>` a portless service prints. nil means an empty list
+// (the ports/hosts cells render the muted "—").
+func commaListValues(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" && part != "<none>" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// configMapKeyChips builds the configmap Data key chips from the row object:
+// `data` key names sized by their value's byte length, `binaryData` key names
+// sized by the DECODED byte length (the wire form is base64). Only key names
+// and sizes leave this function (SPEC §4.10).
+func configMapKeyChips(obj map[string]any) []keyChipView {
+	data, _, _ := unstructured.NestedStringMap(obj, "data")
+	binary, _, _ := unstructured.NestedStringMap(obj, "binaryData")
+	sizes := make(map[string]int64, len(data)+len(binary))
+	for key, value := range data {
+		sizes[key] = int64(len(value))
+	}
+	for key, value := range binary {
+		sizes[key] = base64DecodedLen(value)
+	}
+	return keyChips(sizes)
+}
+
+// secretKeyChips builds the secret Data key chips from the row object: `data`
+// key names with the DECODED byte size (base64 -> raw length). The secret
+// VALUE bytes never reach the view model -- only the length survives
+// base64DecodedLen, and keyChipView has no value field by construction.
+func secretKeyChips(obj map[string]any) []keyChipView {
+	data, _, _ := unstructured.NestedStringMap(obj, "data")
+	sizes := make(map[string]int64, len(data))
+	for key, value := range data {
+		sizes[key] = base64DecodedLen(value)
+	}
+	return keyChips(sizes)
+}
+
+// base64DecodedLen is the raw byte length of a base64 value. ONLY the length
+// escapes; the decoded bytes are dropped here so a secret value cannot travel
+// further than this stack frame. A value that fails to decode (never the case
+// for apiserver-encoded data) falls back to its encoded length -- still a
+// size, never content.
+func base64DecodedLen(encoded string) int64 {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return int64(len(encoded))
+	}
+	return int64(len(raw))
+}
+
+// keyChips renders a key->size map as sorted `name · size` chips (humanBytes
+// sizes), the shared tail of configMapKeyChips / secretKeyChips. nil for no
+// keys, so the renderer shows the muted "—".
+func keyChips(sizes map[string]int64) []keyChipView {
+	if len(sizes) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(sizes))
+	for key := range sizes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	chips := make([]keyChipView, 0, len(keys))
+	for _, key := range keys {
+		chips = append(chips, keyChipView{Name: key, Size: humanBytes(sizes[key])})
+	}
+	return chips
 }
 
 // columnIndex reports the index of a named column, or -1. A small local mirror of
@@ -1040,6 +1302,41 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 				cv.Chips[ci].Href = addFilterChipHref(r.URL, "label:"+cv.Chips[ci].Key+"="+cv.Chips[ci].Val)
 			}
 		}
+	case (table.Resource.Plural == "services" && colName == "External-IP") ||
+		(table.Resource.Plural == "ingresses" && colName == "Address"):
+		// SPEC §4.12 pending cell: the printer's `<none>` (or an empty address) is
+		// the faint none; the literal `<pending>` of an unprovisioned LB/ingress is
+		// the amber pulsing in-flight state; an ExternalName target / provisioned
+		// address renders verbatim.
+		cv = pendingCellView(value)
+	case table.Resource.Plural == "services" && colName == "Port(s)":
+		// SPEC §4.11 ports cell over the printer's comma-joined list: first 2 +
+		// faint "+N", the full list in the tooltip; portless (`<none>`) -> "—".
+		cv = portsCellView(commaListValues(value))
+	case table.Resource.Plural == "ingresses" && colName == "Hosts":
+		// SPEC §4.11 hosts cell: the first host + faint "+N hosts" with the full
+		// newline-joined list in the tooltip.
+		cv = hostsCellView(commaListValues(value))
+	case table.Resource.Plural == "services" && colName == "Selector" && table.Columns[i].Label == "":
+		// The services Selector column renders neutral chips read from
+		// spec.selector (SPEC §7.8). Deliberately NO click-to-filter href (see
+		// selectorChips); the Label=="" guard keeps a user-added labelcols
+		// "Selector" column on the label path.
+		cv.Kind = cellChips
+		cv.Chips = selectorChips(row.Object)
+	case table.Resource.Plural == "ingresses" && colName == "TLS":
+		// The synthetic TLS column (added by decorateIngressColumns) renders the
+		// earned-green lock only when spec.tls terminates (SPEC §4.13), else "—".
+		cv = tlsCellView(ingressTLSTerminated(row.Object))
+	case table.Resource.Plural == "configmaps" && colName == "Data":
+		// The configmap Data column renders `name · size` key chips decoded from
+		// the row object's data/binaryData (SPEC §4.10); the server's count cell
+		// stays in the kube.Table for sort/TSV/filter.
+		cv = keysCellView(configMapKeyChips(row.Object))
+	case table.Resource.Plural == "secrets" && colName == "Data":
+		// The secret Data column renders key chips with DECODED byte sizes; the
+		// VALUE bytes never reach the view model (SPEC §4.10, secretKeyChips).
+		cv = keysCellView(secretKeyChips(row.Object))
 	case colName == "CPU Usage":
 		cv.Kind = cellCPU
 		cv.Value = cpuFormat(cell)
@@ -1103,12 +1400,16 @@ const (
 )
 
 // pendingCellView resolves a service External-IP / ingress Address cell (SPEC
-// §4.12): empty -> the faint `<none>`, the literal `<pending>` -> an amber
-// PULSING dot + the word "pending" (an in-flight state, law §1.3), anything
-// else -> the plain address.
+// §4.12): empty -- including the printer's literal `<none>`, which IS the
+// empty case on the wire -- -> the faint `<none>`, the literal `<pending>` ->
+// an amber PULSING dot + the word "pending" (an in-flight state, law §1.3),
+// anything else -> the plain address.
 func pendingCellView(value string) cellView {
 	cv := cellView{Kind: cellPending, Value: value}
-	if value == "<pending>" {
+	switch value {
+	case "", "<none>":
+		cv.Value = ""
+	case "<pending>":
 		cv.Value = "pending"
 		cv.Tone = "warn"
 		cv.Pulse = true
