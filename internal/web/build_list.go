@@ -1095,6 +1095,14 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	if lc.Namespace != "" && lc.Plural != "namespaces" && !lc.IsAllNamespaces {
 		v.AllNamespacesHref = fmt.Sprintf("/clusters/%s/namespaces/_all/%s?%s", url.PathEscape(lc.Cluster), url.PathEscape(lc.Plural), r.URL.RawQuery)
 	}
+	// Bulk download surface (D11 / Unit 17): single-type AND single-cluster
+	// lists get the clean `?download=yaml` base href baked onto the bulk bar;
+	// multi-cluster scope leaves it empty, which renders the Download button
+	// disabled with the explanatory title (the names grammar carries no
+	// cluster segment, so a cross-cluster bulk URL would be ambiguous).
+	if single && !lc.IsAllClusters && lc.ClusterCount == 1 {
+		v.BulkDownloadHref = bulkDownloadHref(r.URL)
+	}
 	// The client-side stale path (D11) needs its markup hooks in the first server
 	// response: a hidden `.ro-banner.warn` readout.js reveals on an auto-refresh
 	// error, dimming the rows in #resource-list-content (the morph target) instead

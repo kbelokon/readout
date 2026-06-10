@@ -404,7 +404,12 @@ func toListPageData(v *listView, partialURL string) templates.ListPageData {
 		},
 		PartialURL: partialURL,
 		SingleType: v.SingleType,
-		List:       toListData(v),
+		Bulk: templates.BulkBar{
+			DownloadHref:  v.BulkDownloadHref,
+			Cluster:       v.Cluster,
+			AllNamespaces: v.IsAllNamespaces,
+		},
+		List: toListData(v),
 	}
 }
 

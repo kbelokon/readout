@@ -973,6 +973,17 @@ func downloadTSVHref(u *url.URL, plural string) string {
 	return clone.String()
 }
 
+// bulkDownloadHref builds the CLEAN bulk-download base for the current list
+// (D11): the canonical list path plus ONLY `download=yaml`. Unlike
+// downloadTSVHref it deliberately drops the carried query -- the selection
+// store may hold rows the active server-side filter hides, and the bulk
+// handler must find them in the unfiltered table.
+func bulkDownloadHref(u *url.URL) string {
+	clone := *resourceListBaseURL(u)
+	clone.RawQuery = "download=yaml"
+	return clone.String()
+}
+
 // delQuery returns u with the named query params removed (a read-only GET),
 // used by the empty-filtered state: the per-chip ✕ drops one filter param and
 // "Clear filters" drops the whole set. Removing params never changes the verb

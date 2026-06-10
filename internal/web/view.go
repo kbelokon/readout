@@ -43,6 +43,16 @@ type listView struct {
 	// not render.
 	AllNamespacesHref string
 
+	// BulkDownloadHref is the CLEAN bulk-download base for the bulk bar's
+	// Download YAML button (D11): the canonical list path + `?download=yaml`,
+	// to which readout.js appends `&names=`. Deliberately WITHOUT the current
+	// filter/sort params -- selection may include rows a server-side filter
+	// dropped (Unit 16 pinned: selection is explicit intent), so the bulk
+	// fetch must look names up in the UNFILTERED table. Set only on
+	// single-type, single-cluster lists; empty disables the button
+	// (multi-cluster scope renders it disabled with an explanatory title).
+	BulkDownloadHref string
+
 	// State is the resolved whole-list failure state for a SINGLE-cluster list
 	// that produced no tables at all (forbidden / unreachable). nil for the happy
 	// path, for an all-cluster list (which uses the partial-failure banner, D11),

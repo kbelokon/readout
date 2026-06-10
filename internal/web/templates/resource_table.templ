@@ -396,7 +396,12 @@ templ resourceTables(d ListData) {
 		<div class="ro-title-row">
 			<h1 class="title ro-title">{ table.Kind }</h1> <span class="ro-count">{ itoa(table.Count) }</span> <span style="flex:1"></span>
 			<div class="ro-title-actions">
-				<a href={ templ.SafeURL(table.DownloadTSVHref) } title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
+				// hx-boost="false": the body-level boost intercepts a plain
+				// anchor click and swaps the response into <body> -- for an
+				// attachment URL that pastes the raw TSV bytes over the page
+				// instead of downloading (htmx 2.0.4, verified live). Every
+				// download-serving anchor must opt out.
+				<a href={ templ.SafeURL(table.DownloadTSVHref) } hx-boost="false" title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
 				if table.Cols != nil {
 					<span class="rel">
 						<button type="button" id="ro-cols-btn" class="ro-iconbtn" data-cols-toggle title="Columns" aria-haspopup="true" aria-expanded="false"><span class="icon">@templ.Raw(table.Cols.Icon)</span></button>

@@ -136,6 +136,12 @@ templ layoutHead(d LayoutData) {
 // The #ro-palette-data JSON blob (D10) and the palette overlay (Unit 4) ride on
 // every page. Do NOT add the `ro-rd` content marker here -- content templates add
 // it when THEY migrate (D13).
+//
+// #ro-toasts is the toast host (D24 / SPEC §8.8): layout chrome OUTSIDE every
+// swap target (#resource-list-content morphs never touch it, so an active
+// toast survives refresh ticks; a boosted body swap replaces it, correctly --
+// a navigation is a screen change). readout.js appends one .ro-toast per
+// message, only for the two sanctioned detached-result triggers.
 templ layoutBody(d LayoutData, body templ.Component) {
 	<body class="has-ro-topbar" hx-boost="true" hx-indicator="#ro-progress" hx-ext="preload" preload="mouseover">
 		<div id="ro-progress" class="ro-progress htmx-indicator" aria-hidden="true"><span class="ro-progress-bar"></span></div>
@@ -149,6 +155,7 @@ templ layoutBody(d LayoutData, body templ.Component) {
 		<div id="ro-palette-data" hidden>{ d.PaletteJSON }</div>
 		@footerC(d.Footer)
 		@CommandPalette()
+		<div id="ro-toasts" class="ro-toasts" role="status" aria-live="polite"></div>
 	</body>
 }
 
@@ -265,6 +272,19 @@ templ rowCtxMenuC() {
 	</div>
 }
 
+// BulkBar is the bulk bar's server-resolved download wiring (Unit 17 / D11).
+// DownloadHref is the CLEAN bulk GET base (`<canonical list path>?download=yaml`,
+// no filter/sort params) readout.js appends `&names=` to; empty means the bulk
+// download is unavailable (multi-cluster scope) and the button renders disabled
+// with an explanatory title. Cluster is the list's cluster name -- on
+// AllNamespaces lists readout.js strips it off each selection key
+// (cluster/ns/name) to derive the `ns/name` names grammar.
+type BulkBar struct {
+	DownloadHref  string
+	Cluster       string
+	AllNamespaces bool
+}
+
 // bulkBarC is the bottom-center bulk-selection pill (Unit 16 / SPEC §6.4),
 // mounted by resource_list.templ OUTSIDE the #resource-list-content swap
 // target on single-type pages only, so selection chrome survives every morph
@@ -272,12 +292,29 @@ templ rowCtxMenuC() {
 // TestListLoopSurfaceBoundary). Closed = faded out (prototype `is-open`
 // opacity/transform transition) AND `inert`, so the invisible controls can
 // never take focus or clicks; readout.js toggles both at >=1 selected and
-// keeps #ro-bulk-count at "N selected". Download YAML ships DISABLED: Unit 17
-// wires the bulk download action (with its selection bounds) onto it.
-templ bulkBarC() {
-	<div class="ro-bulkbar" id="ro-bulkbar" inert>
+// keeps #ro-bulk-count at "N selected". The Download YAML button (Unit 17 /
+// D11) is live only when the bar carries data-bulk-href (single-cluster
+// lists); readout.js additionally disables it above the 100-name cap (with
+// the refusal toast -- the server rejects >100 with 400 either way).
+templ bulkBarC(b BulkBar) {
+	<div
+		class="ro-bulkbar"
+		id="ro-bulkbar"
+		inert
+		if b.DownloadHref != "" {
+			data-bulk-href={ b.DownloadHref }
+			data-bulk-cluster={ b.Cluster }
+		}
+		if b.AllNamespaces {
+			data-bulk-allns="true"
+		}
+	>
 		<span class="bulk-count mono" id="ro-bulk-count">0 selected</span>
-		<button type="button" class="ro-btn quiet sm" id="ro-bulk-download" disabled><span class="ico sm" aria-hidden="true">@iconC("download")</span><span>Download YAML</span></button>
+		if b.DownloadHref != "" {
+			<button type="button" class="ro-btn quiet sm" id="ro-bulk-download"><span class="ico sm" aria-hidden="true">@iconC("download")</span><span>Download YAML</span></button>
+		} else {
+			<button type="button" class="ro-btn quiet sm" id="ro-bulk-download" disabled title="Bulk YAML download is unavailable across clusters — open a single cluster's list"><span class="ico sm" aria-hidden="true">@iconC("download")</span><span>Download YAML</span></button>
+		}
 		<button type="button" class="ro-btn quiet sm" id="ro-bulk-copy"><span class="ico sm" aria-hidden="true">@iconC("copy")</span><span>Copy names</span></button>
 		<button type="button" class="bulk-x" id="ro-bulk-clear" title="Clear selection" aria-label="Clear selection"><span class="ico sm" aria-hidden="true">@iconC("x")</span></button>
 	</div>

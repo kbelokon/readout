@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -39,6 +40,13 @@ func hasLogTimestamp(line string) bool {
 }
 
 func (s *Server) resourceList(w http.ResponseWriter, r *http.Request) {
+	// Bulk YAML download (D11) branches BEFORE the table fan-out: its name
+	// bounds are validated first, so a rejected request (101+ names) never
+	// pays for a cluster round-trip.
+	if r.URL.Query().Get("download") == "yaml" {
+		s.downloadBulkYAML(w, r)
+		return
+	}
 	ctx, err := s.listContext(r)
 	if err != nil {
 		s.error(w, r, err)
@@ -138,6 +146,113 @@ func (s *Server) downloadTSV(w http.ResponseWriter, r *http.Request, table *kube
 		_ = writer.Write(rec)
 	}
 	writer.Flush()
+}
+
+// bulkNamesMax is the double-sided bulk-download bound (D11): the client
+// disables the bulk button above this many selected objects, and the server
+// rejects a larger `names` list with 400 -- so a hand-built GET URL stays
+// bounded exactly like a button-built one.
+const bulkNamesMax = 100
+
+// parseBulkNames splits every `names` query occurrence on commas and drops
+// empty segments. Kubernetes object names and namespaces are DNS-shaped (no
+// commas), so the comma join is unambiguous for both the bare-name and the
+// ns/name grammar.
+func parseBulkNames(query url.Values) []string {
+	var names []string
+	for _, raw := range query["names"] {
+		for _, name := range strings.Split(raw, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
+// downloadBulkYAML serves the list-level `?download=yaml&names=…` bulk export
+// (D11): ONE multi-document YAML, `---`-separated, one document per requested
+// name in request order. It extends the existing list download surface -- the
+// objects come from the same Table fan-out the page render uses (full objects
+// ride the rows via includeObject=Object), so the config namespace allow/deny
+// filtering applies identically and no per-name GET fan-out is introduced.
+//
+// Names grammar: bare `name` on single-namespace (and cluster-scoped) lists,
+// `ns/name` on _all-namespaces lists. A name absent from the table renders a
+// `# not found: <name>` comment document -- never a whole-download failure.
+// Bounds: >bulkNamesMax names, an empty names list, a multi-type plural, and
+// multi-cluster scope (the bulk button is single-cluster only) all reject
+// with 400.
+func (s *Server) downloadBulkYAML(w http.ResponseWriter, r *http.Request) {
+	if !isSingleListType(r.PathValue("plural")) {
+		s.error(w, r, statusError{status: http.StatusBadRequest, message: "bulk YAML download needs a single resource type"})
+		return
+	}
+	names := parseBulkNames(r.URL.Query())
+	if len(names) == 0 {
+		s.error(w, r, statusError{status: http.StatusBadRequest, message: "bulk YAML download needs a names parameter"})
+		return
+	}
+	if len(names) > bulkNamesMax {
+		s.error(w, r, statusError{status: http.StatusBadRequest, message: fmt.Sprintf("bulk YAML download is limited to %d names, got %d", bulkNamesMax, len(names))})
+		return
+	}
+	ctx, err := s.listContext(r)
+	if err != nil {
+		s.error(w, r, err)
+		return
+	}
+	if ctx.IsAllClusters || ctx.ClusterCount > 1 {
+		s.error(w, r, statusError{status: http.StatusBadRequest, message: "bulk YAML download works on single-cluster lists only"})
+		return
+	}
+	// A whole-list failure (unreachable / forbidden cluster) surfaces as the
+	// fetch error: rendering every name as not-found would misreport objects
+	// that merely could not be listed.
+	if len(ctx.Tables) == 0 && len(ctx.Errors) > 0 {
+		s.error(w, r, ctx.Errors[0])
+		return
+	}
+
+	// Index the rows by the grammar key: ns/name on _all-namespaces lists
+	// (a cluster-scoped row there keeps its bare name -- it has no namespace
+	// segment), bare name everywhere else.
+	objects := map[string]map[string]any{}
+	for ti := range ctx.Tables {
+		for _, row := range ctx.Tables[ti].Rows {
+			key := nestedString(row.Object, "metadata", "name")
+			if ns := nestedString(row.Object, "metadata", "namespace"); ctx.IsAllNamespaces && ns != "" {
+				key = ns + "/" + key
+			}
+			objects[key] = row.Object
+		}
+	}
+
+	var b strings.Builder
+	for i, name := range names {
+		if i > 0 {
+			b.WriteString("---\n")
+		}
+		obj, ok := objects[name]
+		if !ok {
+			// The echoed name is collapsed to one line so a crafted %0A can
+			// never break out of the YAML comment.
+			b.WriteString("# not found: " + strings.Join(strings.Fields(name), " ") + "\n")
+			continue
+		}
+		data, _ := yamlview.Marshal(obj)
+		b.Write(data)
+	}
+
+	filename := make([]string, 0, 3)
+	for _, part := range []string{ctx.Cluster, ctx.Namespace, ctx.Plural} {
+		if part != "" {
+			filename = append(filename, part)
+		}
+	}
+	w.Header().Set("Content-Type", "text/vnd.yaml; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.Join(filename, "_")+`_bulk.yaml"`)
+	_, _ = io.WriteString(w, b.String())
 }
 
 func (s *Server) resourceView(w http.ResponseWriter, r *http.Request) {

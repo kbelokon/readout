@@ -2047,9 +2047,49 @@ window.roRowState = {
 // palette pattern -- because htmx captures a boosted anchor's href at PROCESS
 // time, so runtime-bound anchor hrefs would navigate to stale targets.
 
+// ---------------------------------------------------------------------------
+// Toasts (D24 / SPEC §8.8): bottom-right, 3.5s, mono caption voice. A toast
+// exists ONLY for an async result detached from its trigger -- exactly two
+// sanctioned triggers: the bulk download refused over the selection cap
+// (below) and "refresh resumed" after a failed-then-recovered auto-refresh
+// (the polling layer calls window.roToast). Inline state changes (copy ->
+// "Copied") stay inline, and there is deliberately NO "download ready" toast:
+// the bulk download is a plain GET the browser handles, so no detached ready
+// moment exists. The #ro-toasts host is layout chrome OUTSIDE every swap
+// target, so an active toast survives list morphs.
+// ---------------------------------------------------------------------------
+const TOAST_VISIBLE_MS = 3500;
+const TOAST_LEAVE_MS = 200;
+
+function showToast(message) {
+    const host = document.getElementById('ro-toasts');
+    if (!host) {
+        return;
+    }
+    const toast = document.createElement('div');
+    toast.className = 'ro-toast';
+    toast.textContent = message;
+    host.appendChild(toast);
+    window.setTimeout(() => {
+        toast.classList.add('is-leaving');
+        window.setTimeout(() => toast.remove(), TOAST_LEAVE_MS);
+    }, TOAST_VISIBLE_MS);
+}
+window.roToast = showToast;
+
 // updateBulkBar paints the pill from the selection store: at >=1 selected it
 // reveals (`is-open`) with "N selected"; at 0 it fades out AND goes `inert`,
 // so the invisible buttons can never take focus or clicks.
+//
+// On bulk-capable bars (data-bulk-href -- single-cluster lists only, D11) it
+// also enforces the client half of the double-sided download bound: above
+// BULK_NAMES_MAX the Download button disables and ONE toast announces the
+// refusal per cap crossing (re-armed once the selection drops back under).
+// A server-disabled button (multi-cluster scope, no data-bulk-href) is never
+// touched, so it can never be re-enabled here.
+const BULK_NAMES_MAX = 100;
+let bulkOverCapToasted = false;
+
 function updateBulkBar() {
     const bar = document.getElementById('ro-bulkbar');
     if (!bar) {
@@ -2062,6 +2102,16 @@ function updateBulkBar() {
     }
     bar.classList.toggle('is-open', count > 0);
     bar.toggleAttribute('inert', count === 0);
+    const download = document.getElementById('ro-bulk-download');
+    if (download && bar.dataset.bulkHref) {
+        const over = count > BULK_NAMES_MAX;
+        download.disabled = over;
+        download.title = over ? 'Over the ' + BULK_NAMES_MAX + '-object bulk download cap' : '';
+        if (over && !bulkOverCapToasted) {
+            showToast('Download refused: ' + count + ' selected (max ' + BULK_NAMES_MAX + ')');
+        }
+        bulkOverCapToasted = over;
+    }
 }
 
 // roCopyText copies text via the async clipboard API with a hidden-textarea
@@ -2132,6 +2182,37 @@ function bulkCopyNames(button) {
             label.textContent = 'Copy names';
         }, 1100);
     });
+}
+
+// bulkDownloadYAML navigates to the bulk GET (D11): the CLEAN server-baked
+// base href (data-bulk-href, no filter/sort params -- the server looks names
+// up in the UNFILTERED table, so selected-but-filtered rows are included per
+// the Unit 16 pin) plus the comma-joined selected names. Grammar follows the
+// list scope: bare object names on single-namespace and cluster-scoped lists;
+// ns/name on _all-namespaces lists, derived by stripping the list's cluster
+// prefix (data-bulk-cluster) off each selection key (data-key identity
+// cluster/ns/name; a cluster-scoped row there has no ns segment and yields
+// its bare name -- matching the server's index). The URL serves a
+// Content-Disposition attachment, so location.assign downloads WITHOUT
+// leaving the page and the selection deliberately survives (a download is
+// not a screen change). No "ready" toast either way (D24): the browser owns
+// the plain GET.
+function bulkDownloadYAML(bar) {
+    if (!bar || !bar.dataset.bulkHref) {
+        return;
+    }
+    const entries = window.roRowState.selectedEntries();
+    if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
+        return; // the button is disabled in both states; belt for direct calls
+    }
+    const clusterPrefix = (bar.dataset.bulkCluster || '') + '/';
+    const names = entries.map((entry) => {
+        if (bar.dataset.bulkAllns === 'true' && entry.key.indexOf(clusterPrefix) === 0) {
+            return entry.key.slice(clusterPrefix.length);
+        }
+        return entry.name;
+    });
+    window.location.assign(bar.dataset.bulkHref + '&names=' + encodeURIComponent(names.join(',')));
 }
 
 // The context menu is ONE server-rendered popover (layout.templ rowCtxMenuC);
@@ -2218,8 +2299,14 @@ document.addEventListener('click', (event) => {
     //    click that happens to land on a row still toggles selection).
     closeRowMenu();
 
-    // 3. Bulk-bar actions. #ro-bulk-download is rendered disabled until
-    //    Unit 17 wires the bulk Download-YAML action (with its bounds).
+    // 3. Bulk-bar actions. A disabled #ro-bulk-download (multi-cluster scope
+    //    or over the selection cap) never dispatches a click, so reaching the
+    //    branch implies the action is allowed.
+    const bulkDownload = event.target.closest('#ro-bulk-download');
+    if (bulkDownload) {
+        bulkDownloadYAML(bulkDownload.closest('#ro-bulkbar'));
+        return;
+    }
     const bulkCopy = event.target.closest('#ro-bulk-copy');
     if (bulkCopy) {
         bulkCopyNames(bulkCopy);

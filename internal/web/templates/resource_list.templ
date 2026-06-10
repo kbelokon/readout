@@ -26,11 +26,13 @@ package templates
 // ListPageData is the full resource-list page input: the breadcrumb crumbs, the
 // `_table` partial URL for the v1 multi-type htmx container (unused on
 // single-type pages, which derive it from location at fire time -- D6), the
-// SingleType loop flag (D1), and the table fragment data.
+// SingleType loop flag (D1), the bulk bar's download wiring (Unit 17 / D11),
+// and the table fragment data.
 type ListPageData struct {
 	Breadcrumb ListBreadcrumb
 	PartialURL string
 	SingleType bool
+	Bulk       BulkBar
 	List       ListData
 }
 
@@ -69,7 +71,7 @@ templ ResourceList(d ListPageData) {
 			</div>
 			@listSkeleton(d.List)
 			@rowCtxMenuC()
-			@bulkBarC()
+			@bulkBarC(d.Bulk)
 		} else {
 			<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
 				@ResourceTable(d.List)

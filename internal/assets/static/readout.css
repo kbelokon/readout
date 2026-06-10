@@ -2819,6 +2819,24 @@
         width: 26px; height: 26px; border: 0; background: none; border-radius: 6px; color: var(--text-faint); }
     .ro-bulkbar .bulk-x:hover { background: var(--surface-2); color: var(--text); }
 
+    /* Toasts (D24 / SPEC §8.8): bottom-right, 3.5s, mono caption voice. Only
+       async results detached from their trigger toast (bulk download refused
+       over the cap, refresh resumed); inline feedback (copy -> "Copied")
+       never does. The #ro-toasts host is layout chrome outside the swap
+       targets; readout.js appends one .ro-toast per message and removes it
+       after 3.5s (.is-leaving fades it out first). pointer-events:none on the
+       host keeps the corner click-through; toasts are announcements, not
+       controls. */
+    .ro-toasts { position: fixed; right: 18px; bottom: 18px; z-index: 90; display: flex;
+        flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+    .ro-toast { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted);
+        background: var(--surface); border: 1px solid var(--border-strong);
+        border-radius: var(--radius); box-shadow: var(--shadow-pop); padding: 8px 12px;
+        max-width: 360px; animation: ro-toast-in var(--dur) ease-out;
+        transition: opacity .2s ease, transform .2s ease; }
+    .ro-toast.is-leaving { opacity: 0; transform: translateY(4px); }
+    @keyframes ro-toast-in { from { opacity: 0; transform: translateY(6px); } }
+
     /* ================================================================ LIST-SPECIFIC CELLS (redesign) */
     /* roles (nodes) -- redesign, canonical name under the .ro-rd content marker */
     .ro-rd .ro-role-chip { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
@@ -2925,6 +2943,7 @@
         .rep .rep-track i.updating { animation: none; }
         .ro-rd .ro-palette { transition: none; }
         .ro-bulkbar { transition: none; }
+        .ro-toast { animation: none; transition: none; }
         .skel { animation: none; }
     }
 }
