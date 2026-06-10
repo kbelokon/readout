@@ -103,6 +103,12 @@ type Table struct {
 	// the server does not paginate). The sidebar counts consume it as
 	// len(Rows) + RemainingItemCount.
 	RemainingItemCount *int64
+
+	// ResourceVersion mirrors the response's list metadata.resourceVersion —
+	// the consistency point of the list. A Live stream (D19) captures it from
+	// the initial Table list and starts its watch there; for a decoded watch
+	// event this is the EVENT's resourceVersion instead.
+	ResourceVersion string
 }
 
 type ListOptions struct {
@@ -114,6 +120,45 @@ type ListOptions struct {
 	// `?limit=N` parameter); 0 means no limit. A limited response carries
 	// metadata.remainingItemCount + continue, which Table surfaces.
 	Limit int64
+}
+
+// WatchOptions scope a Table watch (Client.WatchTable). ResourceVersion is
+// the captured list resourceVersion the watch resumes from
+// (Table.ResourceVersion of the initial list); empty starts at the server's
+// current state with no replay.
+type WatchOptions struct {
+	Namespace       string
+	LabelSelector   string
+	FieldSelector   string
+	ResourceVersion string
+}
+
+// WatchEventType is the Kubernetes watch wire vocabulary. ERROR frames never
+// surface as events: TableWatch.Next folds them into typed errors
+// (ErrWatchGone for 410/Expired, a StatusError otherwise).
+type WatchEventType string
+
+const (
+	WatchAdded    WatchEventType = "ADDED"
+	WatchModified WatchEventType = "MODIFIED"
+	WatchDeleted  WatchEventType = "DELETED"
+	WatchBookmark WatchEventType = "BOOKMARK"
+	WatchError    WatchEventType = "ERROR"
+)
+
+// WatchEvent is one decoded Table watch event. Data events carry a 1-row
+// Table whose columnDefinitions are populated only in the stream's FIRST
+// event — the consumer caches those columns for the rest of the stream.
+// Bookmarks carry no rows; they exist to advance ResourceVersion.
+type WatchEvent struct {
+	Type  WatchEventType
+	Table Table
+
+	// ResourceVersion is the event's resourceVersion (the payload Table's
+	// list metadata) — the consumer's last-seen RV for re-watching after a
+	// clean EOF. Every event type carries it; BOOKMARK events carry nothing
+	// else.
+	ResourceVersion string
 }
 
 type LogOptions struct {

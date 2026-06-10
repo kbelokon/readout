@@ -23,9 +23,10 @@
 //     metadata.remainingItemCount, mirroring the live-probed apiserver shape
 //     (sidebar counts consume this later).
 //
-// Watch requests (?watch=true) are accepted and held open so scripted events
-// have a stream to land on; actual watch STREAM playback is completed by the
-// kube watch unit (Unit 25). See watch.go.
+// Watch requests (?watch=true) stream scripted /__control/watch-script events
+// as Table watch frames (columnDefinitions only in a connection's first
+// frame), with scripted BOOKMARK/GONE/EOF stream controls and replay of
+// applied data events above the connection's ?resourceVersion. See watch.go.
 package fakeapi
 
 import (

@@ -31,6 +31,12 @@ const discoveryTTL = 60 * time.Second
 
 var ErrResourceTypeNotFound = errors.New("resource type not found")
 
+// ErrWatchGone is the typed 410: the watch's resourceVersion fell out of the
+// apiserver's history window — either an HTTP 410 response at connect time or
+// an in-stream ERROR event with reason Expired/Gone. The caller must relist
+// to capture a fresh resourceVersion and re-watch from it (D19).
+var ErrWatchGone = errors.New("watch resource version expired")
+
 type Client struct {
 	config         *rest.Config
 	httpClient     *http.Client
@@ -365,6 +371,14 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 	if resp.StatusCode >= 400 {
 		return Table{}, tableResponseError(resp.StatusCode, resp.Status, body)
 	}
+	return decodeTable(rt, body)
+}
+
+// decodeTable decodes a meta.k8s.io Table document — a LIST response body or a
+// watch event's object — into kube.Table. This is the single Table decode
+// seam: list metadata is captured here (resourceVersion for watch resumption,
+// D19; remainingItemCount for the sidebar counts).
+func decodeTable(rt *ResourceType, body []byte) (Table, error) {
 	var raw struct {
 		Metadata          metav1.ListMeta                `json:"metadata"`
 		ColumnDefinitions []metav1.TableColumnDefinition `json:"columnDefinitions"`
@@ -376,7 +390,12 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return Table{}, err
 	}
-	table := Table{Resource: *rt, Clusters: []string{}, RemainingItemCount: raw.Metadata.RemainingItemCount}
+	table := Table{
+		Resource:           *rt,
+		Clusters:           []string{},
+		RemainingItemCount: raw.Metadata.RemainingItemCount,
+		ResourceVersion:    raw.Metadata.ResourceVersion,
+	}
 	for _, col := range raw.ColumnDefinitions {
 		table.Columns = append(table.Columns, Column{
 			Name:        col.Name,
@@ -416,6 +435,131 @@ func tableResponseError(statusCode int, status string, body []byte) error {
 		return &kerrors.StatusError{ErrStatus: s}
 	}
 	return fmt.Errorf("kubernetes table request failed: %s: %s", status, strings.TrimSpace(string(body)))
+}
+
+// WatchTable opens a Table-format watch on rt: the same Table-Accept request
+// Table() builds, with `watch=true&resourceVersion=<rv>&allowWatchBookmarks=true`
+// (rv = the captured list Table.ResourceVersion). The returned stream yields
+// decoded events through Next. No client-go informer machinery: the Live list
+// screen consumes 1-row Table events, so raw REST against the Table endpoint
+// suffices (D19).
+func (c *Client) WatchTable(ctx context.Context, rt *ResourceType, opts WatchOptions) (*TableWatch, error) {
+	if c.denied != nil {
+		return nil, c.denied
+	}
+	u, err := c.tableURL(rt, opts.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("watch", "true")
+	q.Set("allowWatchBookmarks", "true")
+	q.Set("includeObject", "Object")
+	if opts.ResourceVersion != "" {
+		q.Set("resourceVersion", opts.ResourceVersion)
+	}
+	if opts.LabelSelector != "" {
+		q.Set("labelSelector", opts.LabelSelector)
+	}
+	if opts.FieldSelector != "" {
+		q.Set("fieldSelector", opts.FieldSelector)
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json;as=Table;g=meta.k8s.io;v=v1")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		// A 410 at connect time (resourceVersion already outside the history
+		// window) carries the same caller contract as the in-stream ERROR
+		// event: relist, then re-watch.
+		if resp.StatusCode == http.StatusGone {
+			return nil, fmt.Errorf("%w: %s", ErrWatchGone, strings.TrimSpace(string(body)))
+		}
+		return nil, tableResponseError(resp.StatusCode, resp.Status, body)
+	}
+	return &TableWatch{
+		resource: *rt,
+		ctx:      ctx,
+		body:     resp.Body,
+		dec:      json.NewDecoder(resp.Body),
+	}, nil
+}
+
+// TableWatch is one open Table-format watch stream. Next decodes events until
+// the stream ends; the ending error is typed so the consumer's lifecycle
+// (D19) can branch without string matching:
+//
+//   - io.EOF — the upstream closed the stream cleanly (re-watch from the last
+//     seen resourceVersion);
+//   - the context error (context.Canceled / DeadlineExceeded) — the CALLER
+//     ended the watch; never conflated with upstream EOF;
+//   - ErrWatchGone — the resourceVersion expired (relist, then re-watch);
+//   - a *StatusError — the apiserver sent a non-410 ERROR event.
+type TableWatch struct {
+	resource  ResourceType
+	ctx       context.Context
+	body      io.ReadCloser
+	dec       *json.Decoder
+	closeOnce sync.Once
+}
+
+// Next blocks for the next watch event. Data and bookmark events decode
+// through the same seam as list responses (decodeTable): watch frames carry
+// 1-row Tables whose columnDefinitions are populated only in the stream's
+// FIRST event — the consumer caches those columns for subsequent events.
+func (w *TableWatch) Next() (WatchEvent, error) {
+	var frame struct {
+		Type   string          `json:"type"`
+		Object json.RawMessage `json:"object"`
+	}
+	if err := w.dec.Decode(&frame); err != nil {
+		// The caller ending the watch (cancel/deadline) wins over whatever
+		// shape the aborted read takes; a clean upstream close under a live
+		// context is io.EOF — the two stream ends stay distinct.
+		if ctxErr := w.ctx.Err(); ctxErr != nil {
+			return WatchEvent{}, ctxErr
+		}
+		if errors.Is(err, io.EOF) {
+			return WatchEvent{}, io.EOF
+		}
+		return WatchEvent{}, fmt.Errorf("read watch stream: %w", err)
+	}
+	switch WatchEventType(frame.Type) {
+	case WatchError:
+		var s metav1.Status
+		if err := json.Unmarshal(frame.Object, &s); err != nil {
+			return WatchEvent{}, fmt.Errorf("decode watch ERROR status: %w", err)
+		}
+		if s.Code == http.StatusGone || s.Reason == metav1.StatusReasonExpired || s.Reason == metav1.StatusReasonGone {
+			return WatchEvent{}, fmt.Errorf("%w: %s", ErrWatchGone, s.Message)
+		}
+		return WatchEvent{}, &kerrors.StatusError{ErrStatus: s}
+	case WatchAdded, WatchModified, WatchDeleted, WatchBookmark:
+		table, err := decodeTable(&w.resource, frame.Object)
+		if err != nil {
+			return WatchEvent{}, fmt.Errorf("decode %s watch event: %w", frame.Type, err)
+		}
+		return WatchEvent{Type: WatchEventType(frame.Type), Table: table, ResourceVersion: table.ResourceVersion}, nil
+	default:
+		return WatchEvent{}, fmt.Errorf("unknown watch event type %q", frame.Type)
+	}
+}
+
+// Close releases the stream's HTTP body; a blocked Next unblocks with an
+// error. Safe to call more than once.
+func (w *TableWatch) Close() error {
+	var err error
+	w.closeOnce.Do(func() { err = w.body.Close() })
+	return err
 }
 
 func (c *Client) Logs(ctx context.Context, opts LogOptions) (string, error) {

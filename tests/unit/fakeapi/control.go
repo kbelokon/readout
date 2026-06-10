@@ -13,8 +13,9 @@ package fakeapi
 //	/__control/watch-script  (POST a {"events": [...]} script; GET dumps state)
 //	    Queues scripted watch events that mutate the in-memory list state --
 //	    subsequent LIST responses reflect them immediately (delayMs > 0 holds
-//	    the application for race tests). The queue additionally feeds watch
-//	    STREAM playback once Unit 25 lands it. See watch.go.
+//	    the application AND the stream emission for race tests). The queue
+//	    also streams to open ?watch=true connections as Table watch frames;
+//	    BOOKMARK/GONE/EOF entries drive stream controls. See watch.go.
 //	/__control/watch-401
 //	    Arms a one-shot 401: the next ?watch=true request returns an
 //	    Unauthorized Status, then the flag clears.
