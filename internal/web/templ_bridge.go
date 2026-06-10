@@ -293,6 +293,11 @@ func toTableData(t *tableView) templates.TableData {
 			CreatedText:  row.CreatedText,
 			Key:          row.Key,
 			DomID:        rowDomID(row.Key),
+			Name:         row.Name,
+			OpenHref:     row.OpenHref,
+			YAMLHref:     row.YAMLHref,
+			LogsHref:     row.LogsHref,
+			DownloadHref: row.DownloadHref,
 		}
 		if row.CreatedText != "" {
 			tr.CreatedTitle = "created " + row.CreatedText

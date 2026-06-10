@@ -237,6 +237,21 @@ type rowView struct {
 	// the same object across morphs. Empty on multi-type pages (D1), where rows
 	// stay identity-less v1 markup.
 	Key string
+
+	// Per-row gesture targets (Unit 16 / D10), emitted as <tr> data attributes
+	// on single-type pages only (set together with Key; all empty on multi-type
+	// pages). The context menu binds them at open time and the bulk actions read
+	// Name/DownloadHref off the selection store:
+	//   Name         full untruncated object name (data-name; the Copy targets)
+	//   OpenHref     the name-cell open target (data-href; namespaces drill down)
+	//   YAMLHref     detail ?view=yaml (data-yaml)
+	//   LogsHref     detail /logs, PODS ONLY -- empty hides the menu item (data-logs)
+	//   DownloadHref single-object detail ?download=yaml (data-download)
+	Name         string
+	OpenHref     string
+	YAMLHref     string
+	LogsHref     string
+	DownloadHref string
 }
 
 // cellView precomputes a single body cell. Kind selects the render branch; the

@@ -1184,6 +1184,25 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 			}
 			if single {
 				rv.Key = rowKey(row.Cluster, ns, name)
+				// Per-row gesture targets (Unit 16 / D10): server-resolved hrefs
+				// the context menu + bulk actions read off the <tr>. OpenHref
+				// mirrors the name-cell link exactly (buildCellView's cellName
+				// branch is the twin), including the namespaces drill-down to
+				// that namespace's pods list; YAML/download/logs always target
+				// the object's DETAIL route (a namespace row's YAML view is the
+				// namespace object, not the pods list). Logs are pods-only --
+				// every other kind leaves LogsHref empty and the menu item hides.
+				rv.Name = name
+				detail := resourceHref(row.Cluster, &table.Resource, ns, name)
+				rv.OpenHref = detail
+				if table.Resource.Plural == "namespaces" {
+					rv.OpenHref = fmt.Sprintf("/clusters/%s/namespaces/%s/pods", url.PathEscape(row.Cluster), url.PathEscape(name))
+				}
+				rv.YAMLHref = detail + "?view=yaml"
+				rv.DownloadHref = detail + "?download=yaml"
+				if table.Resource.Plural == "pods" {
+					rv.LogsHref = detail + "/logs"
+				}
 			}
 			if multiCluster {
 				rv.ClusterHref = "/clusters/" + url.PathEscape(row.Cluster)

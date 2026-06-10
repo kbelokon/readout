@@ -250,6 +250,17 @@ type TableRow struct {
 	CreatedTitle string
 	Key          string
 	DomID        string
+
+	// Per-row gesture targets (Unit 16 / D10), set together with Key on
+	// single-type pages: the full untruncated object name plus the
+	// server-resolved open / ?view=yaml / /logs (pods-only) / ?download=yaml
+	// hrefs, emitted as data-name/data-href/data-yaml/data-logs/data-download
+	// for the context menu + bulk actions in readout.js.
+	Name         string
+	OpenHref     string
+	YAMLHref     string
+	LogsHref     string
+	DownloadHref string
 }
 
 // TableCell is one body cell. Kind selects the render branch; Class is the full
@@ -453,6 +464,13 @@ templ resourceTables(d ListData) {
 					if row.Key != "" {
 						id={ row.DomID }
 						data-key={ row.Key }
+						data-name={ row.Name }
+						data-href={ row.OpenHref }
+						data-yaml={ row.YAMLHref }
+						data-download={ row.DownloadHref }
+					}
+					if row.LogsHref != "" {
+						data-logs={ row.LogsHref }
 					}
 				>
 					if table.MultiCluster {

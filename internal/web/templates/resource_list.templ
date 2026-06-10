@@ -13,9 +13,11 @@ package templates
 //     pushed into history is never reverted by a tick. Swaps go through the
 //     CSP-safe `ro-morph` extension (hx-swap="morph": idiomorph with an
 //     explicit JS config object -- attribute-spec morph config would be
-//     eval'd by the vendored extension and blocked by CSP). The bulk-bar
-//     mount (#ro-bulkbar, content lands in Unit 16) sits OUTSIDE the swap
-//     target so selection chrome survives every morph untouched.
+//     eval'd by the vendored extension and blocked by CSP). The gesture chrome
+//     (Unit 16: the #ro-bulkbar selection pill + the #ro-ctxmenu right-click
+//     menu, both defined in layout.templ) mounts HERE, OUTSIDE the swap
+//     target, so it survives every morph untouched -- and only on single-type
+//     pages, the D1 boundary the gestures share with the loop.
 //
 //   - Multi-type pages (plural=all / CSV / _all union) keep the v1 contract:
 //     the render-time-baked PartialURL hx-get re-fetched on the ro:refresh
@@ -66,7 +68,8 @@ templ ResourceList(d ListPageData) {
 				@ResourceTable(d.List)
 			</div>
 			@listSkeleton(d.List)
-			<div id="ro-bulkbar" hidden></div>
+			@rowCtxMenuC()
+			@bulkBarC()
 		} else {
 			<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
 				@ResourceTable(d.List)

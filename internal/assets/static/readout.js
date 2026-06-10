@@ -1950,16 +1950,20 @@ document.addEventListener('htmx:sendError', (event) => {
 // Single-type list rows carry data-key="cluster/ns/name" (and an id derived
 // from it, which idiomorph uses to match rows by OBJECT identity, never by
 // position). Row-level client state lives here, keyed by that identity:
-//   - rowSelection: the multi-select set (the bulk-bar feed, Unit 16)
-//   - rowFocusKey:  the single j/k keyboard-focus row (gesture lands in Unit 16)
+//   - rowSelection: the multi-select Map, key -> { name, download } -- the
+//     bulk-action payload (full untruncated name + the single-object
+//     ?download=yaml href) captured from the row at selection time, so Copy
+//     names / bulk download (Unit 17) can act on a selected object even after
+//     a server-side filter dropped its row from the DOM.
+//   - rowFocusKey:  the single j/k keyboard-focus row (gesture lands in Unit 18)
 // A morph syncs the server's class attribute over any client-added class (the
 // cell-flash WeakMap machinery proved this), so the classes are RE-APPLIED from
 // this store on htmx:afterSwap above. Because the keys are object identities,
 // a re-sorted or filtered fragment re-decorates the SAME objects wherever their
-// rows land. window.roRowState is the deliberate seam the selection gesture
-// (Unit 16) and the e2e suite drive; everything is pure DOM classList writes
-// (CSP-clean, read-only floor untouched).
-const rowSelection = new Set();
+// rows land. window.roRowState is the deliberate seam the gesture layer below
+// and the e2e suite drive; everything is pure DOM classList writes (CSP-clean,
+// read-only floor untouched).
+const rowSelection = new Map();
 let rowFocusKey = null;
 
 function reapplyRowState() {
@@ -1973,28 +1977,296 @@ function reapplyRowState() {
     });
 }
 
+// lastKeySegment falls back to the key's trailing segment as the object name
+// (k8s names cannot contain "/") when a caller selects a key whose row is not
+// in the DOM (the e2e seam); server-rendered rows always carry data-name.
+function lastKeySegment(key) {
+    const parts = (key || '').split('/');
+    return parts[parts.length - 1] || '';
+}
+
+// rowSelectionEntry captures the bulk-action payload for key from its row.
+function rowSelectionEntry(key) {
+    const content = document.getElementById('resource-list-content');
+    let entry = null;
+    if (content) {
+        content.querySelectorAll('tr[data-key]').forEach((tr) => {
+            if (tr.dataset.key === key) {
+                entry = { name: tr.dataset.name || lastKeySegment(key), download: tr.dataset.download || '' };
+            }
+        });
+    }
+    return entry || { name: lastKeySegment(key), download: '' };
+}
+
+function setRowSelected(key, on) {
+    if (on) {
+        rowSelection.set(key, rowSelectionEntry(key));
+    } else {
+        rowSelection.delete(key);
+    }
+    reapplyRowState();
+    updateBulkBar();
+}
+
+function clearRowState() {
+    rowSelection.clear();
+    rowFocusKey = null;
+    reapplyRowState();
+    updateBulkBar();
+}
+
 window.roRowState = {
-    setSelected(key, on) {
-        if (on) {
-            rowSelection.add(key);
-        } else {
-            rowSelection.delete(key);
-        }
-        reapplyRowState();
-    },
+    setSelected: setRowSelected,
     setFocus(key) {
         rowFocusKey = key || null;
         reapplyRowState();
     },
-    clear() {
-        rowSelection.clear();
-        rowFocusKey = null;
-        reapplyRowState();
-    },
+    clear: clearRowState,
     selectedKeys() {
-        return Array.from(rowSelection);
+        return Array.from(rowSelection.keys());
+    },
+    // selectedEntries feeds the bulk actions: Copy names reads .name here, and
+    // Unit 17's bulk Download-YAML reads the per-object .download hrefs.
+    selectedEntries() {
+        return Array.from(rowSelection, ([key, entry]) => ({ key: key, name: entry.name, download: entry.download }));
     },
 };
+
+// ---------------------------------------------------------------------------
+// Row gestures (Unit 16 / D10): row-click selection, right-click context menu,
+// and the bottom-center bulk bar -- single-type pages only (D1: the only pages
+// rendering tr[data-key] rows inside #resource-list-content, and the only
+// pages mounting the #ro-ctxmenu / #ro-bulkbar chrome next to the swap target)
+// ---------------------------------------------------------------------------
+// The three gestures stay distinct (SPEC §5): a NAME click keeps its anchor
+// (opens), a ROW click toggles selection in the identity-keyed store above,
+// and a RIGHT click opens the context menu bound to that row's data
+// attributes. Everything is delegated document listeners (CSP-clean, survive
+// every swap); menu navigation goes through window.location.assign -- the
+// palette pattern -- because htmx captures a boosted anchor's href at PROCESS
+// time, so runtime-bound anchor hrefs would navigate to stale targets.
+
+// updateBulkBar paints the pill from the selection store: at >=1 selected it
+// reveals (`is-open`) with "N selected"; at 0 it fades out AND goes `inert`,
+// so the invisible buttons can never take focus or clicks.
+function updateBulkBar() {
+    const bar = document.getElementById('ro-bulkbar');
+    if (!bar) {
+        return;
+    }
+    const count = rowSelection.size;
+    const label = document.getElementById('ro-bulk-count');
+    if (label && count > 0) {
+        label.textContent = count + ' selected';
+    }
+    bar.classList.toggle('is-open', count > 0);
+    bar.toggleAttribute('inert', count === 0);
+}
+
+// roCopyText copies text via the async clipboard API with a hidden-textarea
+// execCommand fallback: navigator.clipboard exists only in secure contexts,
+// and a plain-HTTP LAN deployment is a real readout topology. done(ok) runs
+// after the attempt either way.
+function roCopyText(text, done) {
+    const fallback = () => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        document.body.appendChild(ta);
+        ta.select();
+        let ok = false;
+        try {
+            ok = document.execCommand('copy');
+        } catch (err) {
+            ok = false;
+        }
+        ta.remove();
+        return ok;
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => done(true), () => done(fallback()));
+        return;
+    }
+    done(fallback());
+}
+
+// toggleRowSelection is the row-click gesture: flip this row's key in the
+// store and repaint. The payload (name, download href) is captured from the
+// clicked row itself.
+function toggleRowSelection(tr) {
+    const key = tr.dataset.key;
+    if (!key) {
+        return;
+    }
+    if (rowSelection.has(key)) {
+        rowSelection.delete(key);
+    } else {
+        rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key), download: tr.dataset.download || '' });
+    }
+    reapplyRowState();
+    updateBulkBar();
+}
+
+// bulkCopyNames copies the newline-joined FULL names of every selected row --
+// PINNED: including rows the live free-text filter is currently hiding and
+// rows a server-side filter dropped from the DOM (selection is explicit user
+// intent; the store, not the DOM, is the source). Feedback is the inline
+// "Copied" flip on the button itself -- deliberately NO toast (D10).
+let bulkCopyResetTimer = 0;
+function bulkCopyNames(button) {
+    const names = Array.from(rowSelection.values(), (entry) => entry.name).join('\n');
+    roCopyText(names, (ok) => {
+        if (!ok) {
+            return; // clipboard refused: no false "Copied"
+        }
+        const label = button.querySelector('span:last-child');
+        if (!label) {
+            return;
+        }
+        window.clearTimeout(bulkCopyResetTimer);
+        label.textContent = 'Copied';
+        bulkCopyResetTimer = window.setTimeout(() => {
+            label.textContent = 'Copy names';
+        }, 1100);
+    });
+}
+
+// The context menu is ONE server-rendered popover (layout.templ rowCtxMenuC);
+// opening binds the right-clicked row's server-resolved targets onto the
+// items' data-href and stashes the row name for Copy. Position is fixed and
+// viewport-clamped (the prototype's clamp values: menu min-width 200 + room,
+// five items tall).
+const CTX_CLAMP_W = 220;
+const CTX_CLAMP_H = 240;
+
+function closeRowMenu() {
+    const menu = document.getElementById('ro-ctxmenu');
+    if (menu) {
+        menu.classList.remove('is-open');
+        menu.setAttribute('aria-hidden', 'true');
+    }
+}
+
+function openRowMenu(tr, x, y) {
+    const menu = document.getElementById('ro-ctxmenu');
+    if (!menu) {
+        return;
+    }
+    const bind = (action, href) => {
+        const item = menu.querySelector('[data-ctx="' + action + '"]');
+        if (!item) {
+            return;
+        }
+        if (href) {
+            item.dataset.href = href;
+            item.hidden = false;
+        } else {
+            delete item.dataset.href;
+            item.hidden = true; // e.g. View logs on a non-pod row
+        }
+    };
+    bind('open', tr.dataset.href || '');
+    bind('yaml', tr.dataset.yaml || '');
+    bind('logs', tr.dataset.logs || '');
+    bind('download', tr.dataset.download || '');
+    menu.dataset.name = tr.dataset.name || lastKeySegment(tr.dataset.key);
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - CTX_CLAMP_H)) + 'px';
+    menu.classList.add('is-open');
+    menu.setAttribute('aria-hidden', 'false');
+}
+
+// Right-click on an identity row opens the menu; anywhere else closes ours
+// and yields to the native menu.
+document.addEventListener('contextmenu', (event) => {
+    const tr = event.target.closest('#resource-list-content tr[data-key]');
+    if (!tr) {
+        closeRowMenu();
+        return;
+    }
+    event.preventDefault();
+    openRowMenu(tr, event.clientX, event.clientY);
+});
+
+// One delegated click listener carries the whole gesture surface: menu item
+// activation, click-away dismissal, the bulk-bar buttons, and the row-click
+// selection toggle.
+document.addEventListener('click', (event) => {
+    // 1. Context-menu item: act, then close. Copy stays on the page; the
+    //    navigation items go through location.assign with the bound data-href.
+    //    Download YAML is a Content-Disposition attachment, so assigning it
+    //    downloads WITHOUT leaving the page (selection survives -- correct:
+    //    a download is not a screen change).
+    const item = event.target.closest('#ro-ctxmenu [data-ctx]');
+    if (item) {
+        event.preventDefault();
+        const menu = item.closest('#ro-ctxmenu');
+        const name = (menu && menu.dataset.name) || '';
+        const href = item.dataset.href || '';
+        closeRowMenu();
+        if (item.dataset.ctx === 'copy') {
+            roCopyText(name, () => {});
+        } else if (href) {
+            window.location.assign(href);
+        }
+        return;
+    }
+    // 2. Any other click dismisses an open menu (and falls through, so a
+    //    click that happens to land on a row still toggles selection).
+    closeRowMenu();
+
+    // 3. Bulk-bar actions. #ro-bulk-download is rendered disabled until
+    //    Unit 17 wires the bulk Download-YAML action (with its bounds).
+    const bulkCopy = event.target.closest('#ro-bulk-copy');
+    if (bulkCopy) {
+        bulkCopyNames(bulkCopy);
+        return;
+    }
+    if (event.target.closest('#ro-bulk-clear')) {
+        clearRowState();
+        return;
+    }
+
+    // 4. Row click toggles selection -- but interactive descendants keep
+    //    their own gesture (the NAME anchor opens, label chips filter, the
+    //    +N overflow expands; SPEC §5 keeps the gestures distinct).
+    const tr = event.target.closest('#resource-list-content tr[data-key]');
+    if (tr && !event.target.closest('a, button, input, select, textarea, label')) {
+        toggleRowSelection(tr);
+    }
+});
+
+// esc closes the context menu (its own listener: the palette/filter keydown
+// handler above returns early on unrelated states and never sees this).
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        closeRowMenu();
+    }
+});
+
+// Selection lifecycle: an hx-boost navigation swaps the <body> -- THE "screen
+// change" moment (SPEC §6.4) where selection clears. Content morphs target
+// #resource-list-content, never body, so sort/filter/refresh keep selection;
+// full-page navigations reset script state for free. The fresh body renders
+// its own closed menu + empty bar.
+document.addEventListener('htmx:beforeSwap', (event) => {
+    if (event.detail && event.detail.target === document.body) {
+        closeRowMenu();
+        clearRowState();
+    }
+});
+
+// A history restore (back/forward) re-paints a CACHED body whose rows may
+// carry stale is-selected classes and an is-open bulk-bar snapshot from
+// before the navigate-away clear; re-painting from the (cleared) store
+// scrubs both. Idempotent with the htmx:load init pass.
+document.addEventListener('htmx:historyRestore', () => {
+    reapplyRowState();
+    updateBulkBar();
+});
 
 // ---------------------------------------------------------------------------
 // Column-visibility popover (D8, client half) -- the ⊞ title-row popover on
@@ -2649,12 +2921,13 @@ function runInit() {
         // Columns-popover open flag (D8): re-derived from the fresh DOM so a
         // boosted body swap (rendered closed) never leaves a stale-open flag.
         syncColsPopState,
-        // Row state is keyed by OBJECT identity and survives boosted body swaps
-        // (script state persists); re-paint it on every init pass so a return
-        // to a list re-decorates the same objects immediately, not only on the
-        // next morph. Lifecycle policy (when to clear) lands with the selection
-        // gesture in Unit 16.
+        // Row state is keyed by OBJECT identity; the store clears when an
+        // hx-boost navigation swaps the body (the Unit-16 htmx:beforeSwap
+        // hook), so this init re-paint scrubs any stale is-selected classes a
+        // cached/boosted body carried in -- and the bulk bar re-syncs to the
+        // same store right after.
         reapplyRowState,
+        updateBulkBar,
     ].forEach(runInitStep);
 }
 

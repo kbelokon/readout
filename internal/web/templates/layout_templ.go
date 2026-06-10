@@ -1004,4 +1004,146 @@ func footerC(custom string) templ.Component {
 	})
 }
 
+// rowCtxMenuC is the right-click row context menu (Unit 16 / D10): ONE fixed,
+// viewport-clamped popover, mounted by resource_list.templ NEXT TO (never
+// inside) the #resource-list-content swap target on single-type pages only --
+// the D1 boundary; only those rows carry the data-key identity + per-row href
+// data attributes the menu binds. readout.js owns open/close (`is-open` +
+// aria-hidden), positioning, and writes each item's data-href from the
+// right-clicked row at open time; an item with no target for the row hides
+// (View logs is pods-only). Items are BUTTONS navigated via location.assign
+// (the palette pattern): htmx captures a boosted anchor's href at PROCESS
+// time, so runtime-bound anchor hrefs would go stale. Item order is the D10
+// contract: Open ⏎ · Copy name · View YAML · View logs · ── · Download YAML.
+func rowCtxMenuC() templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var41 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var41 == nil {
+			templ_7745c5c3_Var41 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "<div class=\"ro-ctxmenu\" id=\"ro-ctxmenu\" role=\"menu\" aria-label=\"Row actions\" aria-hidden=\"true\"><button type=\"button\" role=\"menuitem\" data-ctx=\"open\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = iconC("external-link").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "</span><span>Open</span><span class=\"ro-kbd\">&#9166;</span></button> <button type=\"button\" role=\"menuitem\" data-ctx=\"copy\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = iconC("copy").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "</span><span>Copy name</span></button> <button type=\"button\" role=\"menuitem\" data-ctx=\"yaml\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = iconC("file").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, "</span><span>View YAML</span></button> <button type=\"button\" role=\"menuitem\" data-ctx=\"logs\" hidden><span class=\"ico sm\" aria-hidden=\"true\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = iconC("terminal").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "</span><span>View logs</span></button><hr><button type=\"button\" role=\"menuitem\" data-ctx=\"download\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = iconC("download").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "</span><span>Download YAML</span></button></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
+// bulkBarC is the bottom-center bulk-selection pill (Unit 16 / SPEC §6.4),
+// mounted by resource_list.templ OUTSIDE the #resource-list-content swap
+// target on single-type pages only, so selection chrome survives every morph
+// untouched (multi-type pages render no bar -- pinned by
+// TestListLoopSurfaceBoundary). Closed = faded out (prototype `is-open`
+// opacity/transform transition) AND `inert`, so the invisible controls can
+// never take focus or clicks; readout.js toggles both at >=1 selected and
+// keeps #ro-bulk-count at "N selected". Download YAML ships DISABLED: Unit 17
+// wires the bulk download action (with its selection bounds) onto it.
+func bulkBarC() templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var42 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var42 == nil {
+			templ_7745c5c3_Var42 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 81, "<div class=\"ro-bulkbar\" id=\"ro-bulkbar\" inert><span class=\"bulk-count mono\" id=\"ro-bulk-count\">0 selected</span> <button type=\"button\" class=\"ro-btn quiet sm\" id=\"ro-bulk-download\" disabled><span class=\"ico sm\" aria-hidden=\"true\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = iconC("download").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 82, "</span><span>Download YAML</span></button> <button type=\"button\" class=\"ro-btn quiet sm\" id=\"ro-bulk-copy\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = iconC("copy").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, "</span><span>Copy names</span></button> <button type=\"button\" class=\"bulk-x\" id=\"ro-bulk-clear\" title=\"Clear selection\" aria-label=\"Clear selection\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = iconC("x").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "</span></button></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
 var _ = templruntime.GeneratedTemplate

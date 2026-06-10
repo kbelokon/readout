@@ -2784,6 +2784,41 @@
     .ro-pal-foot .hint { display: inline-flex; align-items: center; gap: 5px; }
     .ro-pal-foot .spacer { flex: 1; }
 
+    /* ================================================================ CONTEXT MENU + BULK BAR (Unit 16 / D10) */
+    /* Right-click row context menu -- lifted from the v2 prototype chrome.css
+       (.ro-ctxmenu), net-new class (no v1 collision, no .ro-rd marker needed).
+       Fixed and viewport-clamped by readout.js; `is-open` reveals. Items are
+       <button>s (the app reset keeps font/color but not background/border, so
+       both zero out here); a row-dependent item (View logs, pods only) hides
+       via [hidden], which must beat the display:flex item rule below. */
+    .ro-ctxmenu { position: fixed; z-index: 95; min-width: 200px; display: none;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+        box-shadow: var(--shadow-pop); padding: 5px; }
+    .ro-ctxmenu.is-open { display: block; }
+    .ro-ctxmenu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px;
+        border: 0; background: none; border-radius: var(--radius-sm); font-size: 12.5px;
+        color: var(--text); text-align: left; }
+    .ro-ctxmenu button[hidden] { display: none; }
+    .ro-ctxmenu button .ico { color: var(--text-muted); }
+    .ro-ctxmenu button:hover { background: var(--surface-2); }
+    .ro-ctxmenu hr { border: 0; border-top: 1px solid var(--border-soft); margin: 5px 0; }
+    .ro-ctxmenu .ro-kbd { margin-left: auto; }
+
+    /* Bottom-center bulk-selection pill -- lifted from the v2 prototype
+       data.css (.ro-bulkbar). Closed = faded out via the is-open transition
+       (the markup also goes `inert`, so the invisible controls drop out of
+       focus order and the a11y tree); the count is the accent voice (§6.4). */
+    .ro-bulkbar { position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 8px);
+        z-index: 80; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 16px;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: 11px;
+        box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none;
+        transition: opacity var(--dur), transform var(--dur); }
+    .ro-bulkbar.is-open { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+    .ro-bulkbar .bulk-count { font-size: 12px; font-weight: 550; color: var(--accent-text); padding-right: 6px; }
+    .ro-bulkbar .bulk-x { display: inline-flex; align-items: center; justify-content: center;
+        width: 26px; height: 26px; border: 0; background: none; border-radius: 6px; color: var(--text-faint); }
+    .ro-bulkbar .bulk-x:hover { background: var(--surface-2); color: var(--text); }
+
     /* ================================================================ LIST-SPECIFIC CELLS (redesign) */
     /* roles (nodes) -- redesign, canonical name under the .ro-rd content marker */
     .ro-rd .ro-role-chip { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
@@ -2889,6 +2924,7 @@
         .ro-dot.pulse { animation: none; }
         .rep .rep-track i.updating { animation: none; }
         .ro-rd .ro-palette { transition: none; }
+        .ro-bulkbar { transition: none; }
         .skel { animation: none; }
     }
 }
