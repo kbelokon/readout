@@ -215,6 +215,1111 @@
     });
   }
 
+  // internal/assets/src/js/row-selection.ts
+  var rowSelection = /* @__PURE__ */ new Map();
+  var rowFocusKey = null;
+  function reapplyRowState() {
+    const content = document.getElementById("resource-list-content");
+    if (!content) {
+      return;
+    }
+    let focusedRow = null;
+    content.querySelectorAll("tr[data-key]").forEach((tr) => {
+      const row = tr;
+      row.classList.toggle("is-selected", rowSelection.has(row.dataset.key));
+      const focused = row.dataset.key === rowFocusKey;
+      row.classList.toggle("kfocus", focused);
+      if (focused) {
+        focusedRow = row;
+      }
+    });
+    content.querySelectorAll(".ro-table-wrap").forEach((wrap) => {
+      const fr = focusedRow;
+      if (fr && fr.id && wrap.contains(fr)) {
+        wrap.setAttribute("aria-activedescendant", fr.id);
+      } else {
+        wrap.removeAttribute("aria-activedescendant");
+      }
+    });
+  }
+  function lastKeySegment(key) {
+    const parts = (key || "").split("/");
+    return parts[parts.length - 1] || "";
+  }
+  function rowSelectionEntry(key) {
+    const content = document.getElementById("resource-list-content");
+    let entry = null;
+    if (content) {
+      content.querySelectorAll("tr[data-key]").forEach((tr) => {
+        const row = tr;
+        if (row.dataset.key === key) {
+          entry = { name: row.dataset.name || lastKeySegment(key) };
+        }
+      });
+    }
+    return entry || { name: lastKeySegment(key) };
+  }
+  function setRowSelected(key, on) {
+    if (on) {
+      rowSelection.set(key, rowSelectionEntry(key));
+    } else {
+      rowSelection.delete(key);
+    }
+    reapplyRowState();
+    updateBulkBar();
+  }
+  function clearRowState() {
+    rowSelection.clear();
+    rowFocusKey = null;
+    reapplyRowState();
+    updateBulkBar();
+  }
+  window.roRowState = {
+    setSelected: setRowSelected,
+    setFocus(key) {
+      rowFocusKey = key || null;
+      reapplyRowState();
+    },
+    // focusedKey is the j/k focus seam the windowed walker (virtualizeMoveFocus,
+    // still in legacy.js) reads across the module boundary -- the focused row can
+    // be detached off-window, so the store (not the DOM kfocus class) is the
+    // truth there. Also a debug sim the console can poll.
+    focusedKey() {
+      return rowFocusKey;
+    },
+    clear: clearRowState,
+    selectedKeys() {
+      return Array.from(rowSelection.keys());
+    },
+    // selectedEntries feeds the bulk actions: Copy names reads .name, and the
+    // bulk Download-YAML builds its names list from .key/.name.
+    selectedEntries() {
+      return Array.from(rowSelection, ([key, entry]) => ({ key, name: entry.name }));
+    }
+  };
+  var BULK_NAMES_MAX = 100;
+  var bulkOverCapToasted = false;
+  function updateBulkBar() {
+    const bar = document.getElementById("ro-bulkbar");
+    if (!bar) {
+      return;
+    }
+    const count = rowSelection.size;
+    const label = document.getElementById("ro-bulk-count");
+    if (label && count > 0) {
+      label.textContent = count + " selected";
+    }
+    bar.classList.toggle("is-open", count > 0);
+    bar.toggleAttribute("inert", count === 0);
+    const download = document.getElementById("ro-bulk-download");
+    if (download && bar.dataset.bulkHref) {
+      const over = count > BULK_NAMES_MAX;
+      download.disabled = over;
+      download.title = over ? "Over the " + BULK_NAMES_MAX + "-object bulk download cap" : "";
+      if (over && !bulkOverCapToasted) {
+        roToast("Download refused: " + count + " selected (max " + BULK_NAMES_MAX + ")");
+      }
+      bulkOverCapToasted = over;
+    }
+  }
+  function roToast(message) {
+    const fn = window.roToast;
+    if (typeof fn === "function") {
+      fn(message);
+    }
+  }
+  function roCopyText(text, done) {
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch {
+        ok = false;
+      }
+      ta.remove();
+      return ok;
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => done(true), () => done(fallback()));
+      return;
+    }
+    done(fallback());
+  }
+  function toggleRowSelection(tr) {
+    const key = tr.dataset.key;
+    if (!key) {
+      return;
+    }
+    if (rowSelection.has(key)) {
+      rowSelection.delete(key);
+    } else {
+      rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key) });
+    }
+    reapplyRowState();
+    updateBulkBar();
+  }
+  var rowSelectionBindings = [
+    {
+      event: "click",
+      selector: "#resource-list-content tr[data-key]",
+      handler: (event, matched) => {
+        const target = event.target;
+        if (target && target.closest("a, button, input, select, textarea, label")) {
+          return;
+        }
+        toggleRowSelection(matched);
+      }
+    }
+  ];
+
+  // internal/assets/src/js/context-menu.ts
+  var CTX_CLAMP_W = 220;
+  var CTX_CLAMP_H = 240;
+  function closeRowMenu() {
+    const menu = document.getElementById("ro-ctxmenu");
+    if (menu) {
+      menu.classList.remove("is-open");
+      menu.setAttribute("aria-hidden", "true");
+    }
+  }
+  function openRowMenu(tr, x, y) {
+    const menu = document.getElementById("ro-ctxmenu");
+    if (!menu) {
+      return;
+    }
+    const bind = (action, href) => {
+      const item = menu.querySelector('[data-ctx="' + action + '"]');
+      if (!item) {
+        return;
+      }
+      if (href) {
+        item.dataset.href = href;
+        item.hidden = false;
+      } else {
+        delete item.dataset.href;
+        item.hidden = true;
+      }
+    };
+    bind("open", tr.dataset.href || "");
+    bind("yaml", tr.dataset.yaml || "");
+    bind("logs", tr.dataset.logs || "");
+    bind("download", tr.dataset.download || "");
+    menu.dataset.name = tr.dataset.name || lastKeySegment(tr.dataset.key || "");
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W)) + "px";
+    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - CTX_CLAMP_H)) + "px";
+    menu.classList.add("is-open");
+    menu.setAttribute("aria-hidden", "false");
+  }
+  var contextMenuBindings = [
+    // Right-click on an identity row opens the menu; anywhere else closes ours
+    // and yields to the native menu.
+    {
+      event: "contextmenu",
+      handler: (event) => {
+        const target = event.target;
+        const tr = target ? target.closest("#resource-list-content tr[data-key]") : null;
+        if (!tr) {
+          closeRowMenu();
+          return;
+        }
+        event.preventDefault();
+        const me = event;
+        openRowMenu(tr, me.clientX, me.clientY);
+      }
+    },
+    // C2 step 1: a context-menu item -> act, then close. Copy stays on the page;
+    // the navigation items go through location.assign with the bound data-href.
+    // Download YAML is a Content-Disposition attachment, so assigning it
+    // downloads WITHOUT leaving the page. Returned in the monolith -> stop:true.
+    {
+      event: "click",
+      selector: "#ro-ctxmenu [data-ctx]",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        const item = matched;
+        const menu = item.closest("#ro-ctxmenu");
+        const name = menu && menu.dataset.name || "";
+        const href = item.dataset.href || "";
+        closeRowMenu();
+        if (item.dataset.ctx === "copy") {
+          roCopyText(name, () => {
+          });
+        } else if (href) {
+          window.location.assign(href);
+        }
+        return true;
+      }
+    },
+    // C2 step 2: ANY other click dismisses an open menu. UNCONDITIONAL and
+    // NON-stopping -- the click then FALLS THROUGH to the bulk + row-select
+    // bindings (bulk-actions.ts / row-selection.ts), so a click that lands on a
+    // row both dismisses the menu AND toggles selection (compound case 1). No
+    // selector (it runs on every click, like the monolith's step 2); closeRowMenu
+    // on a closed menu is a no-op. NO stop: a stop here would silently drop the
+    // selection while still passing a "menu closed" check.
+    {
+      event: "click",
+      handler: () => {
+        closeRowMenu();
+      }
+    },
+    // K2: Esc closes the context menu. Its own keydown branch (NO preventDefault),
+    // idempotent (closeRowMenu on a closed menu is a no-op).
+    {
+      event: "keydown",
+      handler: (event) => {
+        if (event.key === "Escape") {
+          closeRowMenu();
+        }
+      }
+    }
+  ];
+
+  // internal/assets/src/js/bulk-actions.ts
+  var bulkCopyResetTimer = 0;
+  function bulkCopyNames(button) {
+    const entries = roRowState().selectedEntries();
+    const names = entries.map((entry) => entry.name).join("\n");
+    roCopyText(names, (ok) => {
+      if (!ok) {
+        return;
+      }
+      const label = button.querySelector("span:last-child");
+      if (!label) {
+        return;
+      }
+      window.clearTimeout(bulkCopyResetTimer);
+      label.textContent = "Copied";
+      bulkCopyResetTimer = window.setTimeout(() => {
+        label.textContent = "Copy names";
+      }, 1100);
+    });
+  }
+  function bulkDownloadYAML(bar) {
+    if (!bar || !bar.dataset.bulkHref) {
+      return;
+    }
+    const entries = roRowState().selectedEntries();
+    if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
+      return;
+    }
+    const clusterPrefix = (bar.dataset.bulkCluster || "") + "/";
+    const names = entries.map((entry) => {
+      if (bar.dataset.bulkAllns === "true" && entry.key.indexOf(clusterPrefix) === 0) {
+        return entry.key.slice(clusterPrefix.length);
+      }
+      return entry.name;
+    });
+    window.location.assign(bar.dataset.bulkHref + "&names=" + encodeURIComponent(names.join(",")));
+  }
+  function roRowState() {
+    return window.roRowState;
+  }
+  var bulkBindings = [
+    {
+      event: "click",
+      selector: "#ro-bulk-download",
+      stop: true,
+      handler: (_event, matched) => {
+        bulkDownloadYAML(matched.closest("#ro-bulkbar"));
+        return true;
+      }
+    },
+    {
+      event: "click",
+      selector: "#ro-bulk-copy",
+      stop: true,
+      handler: (_event, matched) => {
+        bulkCopyNames(matched);
+        return true;
+      }
+    },
+    {
+      event: "click",
+      selector: "#ro-bulk-clear",
+      stop: true,
+      handler: () => {
+        clearRowState();
+        return true;
+      }
+    }
+  ];
+
+  // internal/assets/src/js/palette-rank.ts
+  function roFuzzyScore(query, text) {
+    const source = String(text || "");
+    const q = String(query || "").toLowerCase();
+    const t = source.toLowerCase();
+    if (!q) {
+      return 0;
+    }
+    let from = 0;
+    let first = -1;
+    let last = -1;
+    for (let i = 0; i < q.length; i++) {
+      const at = t.indexOf(q[i], from);
+      if (at === -1) {
+        return -1;
+      }
+      if (first === -1) {
+        first = at;
+      }
+      last = at;
+      from = at + 1;
+    }
+    const gaps = last - first + 1 - q.length;
+    const camelHump = source[first] >= "A" && source[first] <= "Z" && !(source[first - 1] >= "A" && source[first - 1] <= "Z");
+    const wordStart = first === 0 || " -_./:".indexOf(t[first - 1]) !== -1 || camelHump;
+    let tier = 2;
+    if (gaps === 0 && first === 0) {
+      tier = 0;
+    } else if (gaps === 0 && wordStart) {
+      tier = 1;
+    }
+    return tier * 1e5 + gaps * 100 + Math.min(first, 99);
+  }
+  function rankPaletteEntries(list, query, labelOf) {
+    if (!query) {
+      return list.slice();
+    }
+    const scored = [];
+    list.forEach((entry) => {
+      const score = roFuzzyScore(query, labelOf(entry));
+      if (score >= 0) {
+        scored.push({ entry, score });
+      }
+    });
+    scored.sort((a, b) => a.score - b.score);
+    return scored.map((it) => it.entry);
+  }
+  function paletteRecentTarget(entry) {
+    return entry.href ? "href:" + entry.href : "action:" + entry.action;
+  }
+  function dedupeRecents(prior, entry, max) {
+    const kept = prior.filter(
+      (it) => paletteRecentTarget(it) !== paletteRecentTarget(entry)
+    );
+    kept.unshift(entry);
+    return kept.slice(0, max);
+  }
+  var FEED_GROUPS = [
+    { title: "Resource types", key: "kinds" },
+    { title: "Namespaces", key: "namespaces" },
+    { title: "Clusters", key: "clusters" },
+    { title: "Actions", key: "actions" }
+  ];
+  function feedEntryLabel(entry, key) {
+    if (key === "kinds") {
+      return String(entry.kind || entry.plural || "");
+    }
+    return String(entry.name || entry.label || "");
+  }
+  function buildPaletteGroups(query, feed, recents, pageObjects) {
+    const q = (query || "").trim();
+    const groups = [];
+    if (q) {
+      groups.push({ title: "Everywhere", key: "everywhere", entries: [{ query: q }] });
+    } else if (recents.length > 0) {
+      groups.push({ title: "Recents", key: "recents", entries: recents.slice() });
+    }
+    const objects = rankPaletteEntries(pageObjects, q, (o) => o.name);
+    if (objects.length > 0) {
+      groups.push({ title: "On this page", key: "objects", entries: objects });
+    }
+    FEED_GROUPS.forEach((group) => {
+      const list = feed[group.key] || [];
+      const ranked = rankPaletteEntries(list, q, (entry) => feedEntryLabel(entry, group.key));
+      if (ranked.length > 0) {
+        groups.push({ title: group.title, key: group.key, entries: ranked });
+      }
+    });
+    return groups;
+  }
+
+  // internal/assets/src/js/cluster-bridge.ts
+  function clusterBridge() {
+    return window.roClusterBridge;
+  }
+
+  // internal/assets/src/js/keyboard.ts
+  var PALETTE_ID = "ro-palette";
+  function roRowState2() {
+    return window.roRowState;
+  }
+  function keyboardTargetIsTextEntry(target) {
+    const el = target;
+    if (!el || el.nodeType !== 1) {
+      return false;
+    }
+    const tag = el.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!el.isContentEditable;
+  }
+  function keyboardSurfaceBusy() {
+    const palette = document.getElementById(PALETTE_ID);
+    if (palette && palette.classList.contains("open")) {
+      return true;
+    }
+    const menu = document.getElementById("ro-ctxmenu");
+    if (menu && menu.classList.contains("is-open")) {
+      return true;
+    }
+    const nsDropdown = document.getElementById("namespace-dropdown");
+    if (nsDropdown && nsDropdown.classList.contains("is-active")) {
+      return true;
+    }
+    return clusterBridge().colsPopOpen();
+  }
+  function visibleKeyRows() {
+    return Array.from(
+      document.querySelectorAll("#resource-list-content tbody tr[data-key]")
+    ).filter((tr) => !tr.classList.contains("ro-row-filtered"));
+  }
+  function moveRowFocus(delta) {
+    const bridge = clusterBridge();
+    if (bridge.virtualizerActive()) {
+      return bridge.virtMoveFocus(delta);
+    }
+    const rows = visibleKeyRows();
+    if (rows.length === 0) {
+      return false;
+    }
+    const focusKey = roRowState2().focusedKey();
+    const current = rows.findIndex((tr) => tr.dataset.key === focusKey);
+    const next = Math.max(0, Math.min(rows.length - 1, current + delta));
+    roRowState2().setFocus(rows[next].dataset.key);
+    rows[next].scrollIntoView({ block: "nearest" });
+    return true;
+  }
+  function openFocusedRow() {
+    const key = roRowState2().focusedKey();
+    if (!key) {
+      return false;
+    }
+    const bridge = clusterBridge();
+    let row = visibleKeyRows().find((tr) => tr.dataset.key === key) || null;
+    if (!row && bridge.virtualizerActive()) {
+      const tr = bridge.virtRowByKey(key);
+      if (tr && bridge.virtVisible().indexOf(tr) !== -1) {
+        row = tr;
+      }
+    }
+    if (!row || !row.dataset.href) {
+      return false;
+    }
+    window.location.assign(row.dataset.href);
+    return true;
+  }
+  var kbdPriorFocus = null;
+  function kbdOverlayEl() {
+    return document.getElementById("ro-kbd-overlay");
+  }
+  function kbdOverlayOpen() {
+    const overlay = kbdOverlayEl();
+    return !!overlay && overlay.classList.contains("open");
+  }
+  function openKbdOverlay() {
+    const overlay = kbdOverlayEl();
+    if (!overlay) {
+      return;
+    }
+    kbdPriorFocus = document.activeElement;
+    overlay.classList.add("open");
+    overlay.setAttribute("aria-hidden", "false");
+    const card = overlay.querySelector(".kbd-card");
+    if (card) {
+      card.focus();
+    }
+  }
+  function closeKbdOverlay() {
+    const overlay = kbdOverlayEl();
+    if (!overlay) {
+      return;
+    }
+    overlay.classList.remove("open");
+    overlay.setAttribute("aria-hidden", "true");
+    const prior = kbdPriorFocus;
+    if (prior && document.contains(prior) && typeof prior.focus === "function") {
+      prior.focus();
+    }
+    kbdPriorFocus = null;
+  }
+  var keyboardBindings = [
+    // C3: a click on the overlay backdrop ITSELF (outside the card) closes it --
+    // the palette's backdrop contract. Independent.
+    {
+      event: "click",
+      handler: (event) => {
+        if (event.target.id === "ro-kbd-overlay") {
+          closeKbdOverlay();
+        }
+      }
+    },
+    // K3: THE gesture keydown. The DOM guards (kbd overlay open, modifier chord,
+    // text-entry, surface-busy) keep it disjoint from the palette/filter keys --
+    // registration after the palette keydown is incidental; the busy guard does
+    // the real work (compound case 2). No selector (it keys off focus/state).
+    {
+      event: "keydown",
+      handler: (event) => {
+        const e = event;
+        if (kbdOverlayOpen()) {
+          if (e.key === "Escape" || e.key === "?") {
+            e.preventDefault();
+            closeKbdOverlay();
+          } else if (e.key === "Tab") {
+            e.preventDefault();
+          }
+          return;
+        }
+        if (e.metaKey || e.ctrlKey || e.altKey) {
+          return;
+        }
+        if (keyboardTargetIsTextEntry(e.target) || keyboardSurfaceBusy()) {
+          return;
+        }
+        if (e.key === "?") {
+          e.preventDefault();
+          openKbdOverlay();
+          return;
+        }
+        if (e.key === "j" || e.key === "k") {
+          if (moveRowFocus(e.key === "j" ? 1 : -1)) {
+            e.preventDefault();
+          }
+          return;
+        }
+        if (e.key === "Enter") {
+          const target = e.target;
+          if (target && target.closest && target.closest("a, button, summary")) {
+            return;
+          }
+          if (openFocusedRow()) {
+            e.preventDefault();
+          }
+        }
+      }
+    }
+  ];
+
+  // internal/assets/src/js/palette.ts
+  var PALETTE_ID2 = "ro-palette";
+  window.roFuzzy = roFuzzyScore;
+  function readPaletteData() {
+    const empty = {
+      currentCluster: null,
+      currentNamespace: null,
+      clusters: [],
+      namespaces: [],
+      kinds: [],
+      actions: []
+    };
+    const el = document.getElementById("ro-palette-data");
+    if (!el) {
+      return empty;
+    }
+    const raw = (el.textContent || "").trim();
+    if (!raw) {
+      return empty;
+    }
+    try {
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== "object") {
+        return empty;
+      }
+      ["clusters", "namespaces", "kinds", "actions"].forEach((k) => {
+        if (!Array.isArray(data[k])) {
+          data[k] = [];
+        }
+      });
+      return data;
+    } catch {
+      return empty;
+    }
+  }
+  function paletteHrefSafe(href) {
+    if (!href || typeof href !== "string") {
+      return "";
+    }
+    const trimmed = href.trim();
+    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
+      return "";
+    }
+    return trimmed;
+  }
+  var PALETTE_RECENTS_KEY = "ro-pref-recents";
+  var PALETTE_RECENTS_MAX = 5;
+  function readPaletteRecents() {
+    let raw = null;
+    try {
+      raw = window.localStorage.getItem(PALETTE_RECENTS_KEY);
+    } catch {
+      return [];
+    }
+    if (!raw) {
+      return [];
+    }
+    try {
+      const list = JSON.parse(raw);
+      if (!Array.isArray(list)) {
+        return [];
+      }
+      return list.filter((entry) => entry && typeof entry === "object" && typeof entry.label === "string" && entry.label !== "" && (typeof entry.href === "string" && paletteHrefSafe(entry.href) !== "" || typeof entry.action === "string" && entry.action !== "")).slice(0, PALETTE_RECENTS_MAX);
+    } catch {
+      return [];
+    }
+  }
+  function recordPaletteRecent(label, href, action) {
+    if (!label || !href && !action) {
+      return;
+    }
+    const entry = { label };
+    if (href) {
+      entry.href = href;
+    }
+    if (action) {
+      entry.action = action;
+    }
+    const kept = dedupeRecents(readPaletteRecents(), entry, PALETTE_RECENTS_MAX);
+    try {
+      window.localStorage.setItem(PALETTE_RECENTS_KEY, JSON.stringify(kept));
+    } catch {
+    }
+  }
+  var paletteRows = [];
+  var paletteActive = 0;
+  var paletteScope = {
+    cluster: null,
+    namespace: null
+  };
+  function buildPaletteRow(entry, key) {
+    const row = document.createElement("div");
+    row.className = "ro-pal-item";
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    if (key === "kinds" && entry.icon) {
+      const holder = document.createElement("template");
+      holder.innerHTML = String(entry.icon);
+      row.appendChild(holder.content);
+    }
+    const labelText = key === "kinds" ? String(entry.kind || entry.plural || "") : String(entry.name || entry.label || "");
+    const display = typeof entry.display === "string" && entry.display !== "" ? entry.display : labelText;
+    const label = document.createElement("span");
+    label.className = "pal-label";
+    label.textContent = display;
+    if (display !== labelText) {
+      row.title = labelText;
+    }
+    const isCurrent = key === "clusters" && entry.name && entry.name === paletteScope.cluster || key === "namespaces" && entry.name && entry.name === paletteScope.namespace;
+    if (isCurrent) {
+      const ctx = document.createElement("span");
+      ctx.className = "pal-ctx";
+      ctx.textContent = "current";
+      label.appendChild(ctx);
+    }
+    row.appendChild(label);
+    if (key === "kinds") {
+      const meta = document.createElement("span");
+      meta.className = "pal-meta";
+      meta.textContent = String(entry.group || "core");
+      row.appendChild(meta);
+      const scope = document.createElement("span");
+      scope.className = "pal-scope " + (entry.namespaced ? "ns" : "cluster");
+      scope.textContent = entry.namespaced ? "namespaced" : "cluster";
+      row.appendChild(scope);
+    }
+    const href = paletteHrefSafe(entry.href);
+    if (href) {
+      row.dataset.href = href;
+    }
+    if (entry.action) {
+      row.dataset.action = String(entry.action);
+    }
+    row.dataset.label = labelText;
+    return row;
+  }
+  function buildEverywhereRow(query) {
+    const row = document.createElement("div");
+    row.className = "ro-pal-item";
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    const glyph = document.querySelector("#" + PALETTE_ID2 + " .ro-pal-search .ico");
+    if (glyph) {
+      row.appendChild(glyph.cloneNode(true));
+    }
+    const label = document.createElement("span");
+    label.className = "pal-label";
+    label.textContent = "Search all clusters for “" + query + "”";
+    row.appendChild(label);
+    row.dataset.href = "/search?q=" + encodeURIComponent(query);
+    row.dataset.label = label.textContent;
+    return row;
+  }
+  function buildRecentRow(entry) {
+    const row = document.createElement("div");
+    row.className = "ro-pal-item";
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    const label = document.createElement("span");
+    label.className = "pal-label";
+    label.textContent = entry.label;
+    row.appendChild(label);
+    const href = paletteHrefSafe(entry.href);
+    if (href) {
+      row.dataset.href = href;
+    }
+    if (entry.action) {
+      row.dataset.action = entry.action;
+    }
+    row.dataset.label = entry.label;
+    return row;
+  }
+  function harvestPageObjects() {
+    const out = [];
+    const bridge = clusterBridge();
+    const rows = bridge.virtualizerActive() ? bridge.virtRows() : document.querySelectorAll("#resource-list-content table.ro-table tbody tr");
+    Array.prototype.forEach.call(rows, (tr) => {
+      const a = tr.querySelector("td.cell-name a");
+      if (!a) {
+        return;
+      }
+      const href = a.getAttribute("href");
+      const name = (a.textContent || "").trim();
+      if (!href || !name) {
+        return;
+      }
+      let status = "";
+      let tone = "";
+      const st = tr.querySelector(".cell-status");
+      if (st) {
+        status = (st.textContent || "").trim();
+        ["ok", "warn", "err", "info", "mute"].forEach((t) => {
+          if (!tone && st.classList.contains(t)) {
+            tone = t;
+          }
+        });
+      }
+      out.push({ name, href, status, tone });
+    });
+    return out;
+  }
+  function buildObjectRow(o) {
+    const row = document.createElement("div");
+    row.className = "ro-pal-item";
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    const label = document.createElement("span");
+    label.className = "pal-label";
+    label.textContent = o.name;
+    row.appendChild(label);
+    if (o.status) {
+      const st = document.createElement("span");
+      st.className = "pal-status" + (o.tone ? " " + String(o.tone) : "");
+      st.textContent = String(o.status);
+      row.appendChild(st);
+    }
+    row.dataset.href = String(o.href);
+    row.dataset.label = o.name;
+    return row;
+  }
+  function renderPalette(query) {
+    const list = document.getElementById("ro-palette-list");
+    if (!list) {
+      return;
+    }
+    const data = readPaletteData();
+    paletteScope.cluster = data.currentCluster || null;
+    paletteScope.namespace = data.currentNamespace || null;
+    const scope = document.getElementById("ro-palette-scope");
+    if (scope) {
+      const scopeText = paletteScope.namespace || paletteScope.cluster || "";
+      scope.textContent = scopeText;
+      scope.hidden = scopeText === "";
+    }
+    const q = (query || "").trim();
+    list.textContent = "";
+    paletteRows = [];
+    const rowFor = (item, key) => {
+      switch (key) {
+        case "everywhere":
+          return buildEverywhereRow(item.query);
+        case "recents":
+          return buildRecentRow(item);
+        case "objects":
+          return buildObjectRow(item);
+        default:
+          return buildPaletteRow(item, key);
+      }
+    };
+    const groups = buildPaletteGroups(
+      q,
+      { clusters: data.clusters, namespaces: data.namespaces, kinds: data.kinds, actions: data.actions },
+      readPaletteRecents(),
+      harvestPageObjects()
+    );
+    groups.forEach((group) => {
+      const heading = document.createElement("div");
+      heading.className = "ro-pal-group";
+      heading.textContent = group.title;
+      list.appendChild(heading);
+      group.entries.forEach((item) => {
+        const row = rowFor(item, group.key);
+        const idx = paletteRows.length;
+        row.addEventListener("mousemove", () => setPaletteActive(idx));
+        list.appendChild(row);
+        paletteRows.push({ el: row, item, key: group.key });
+      });
+    });
+    if (paletteRows.length === 0) {
+      const none = document.createElement("div");
+      none.className = "ro-pal-empty";
+      none.textContent = "No matching targets.";
+      list.appendChild(none);
+    }
+    paletteActive = 0;
+    paintPaletteActive();
+  }
+  function paintPaletteActive() {
+    paletteRows.forEach((r, i) => {
+      const on = i === paletteActive;
+      r.el.classList.toggle("active", on);
+      r.el.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    if (paletteRows[paletteActive]) {
+      paletteRows[paletteActive].el.scrollIntoView({ block: "nearest" });
+    }
+  }
+  function setPaletteActive(index) {
+    if (paletteRows.length === 0) {
+      return;
+    }
+    let i = index;
+    if (i < 0) {
+      i = 0;
+    }
+    if (i > paletteRows.length - 1) {
+      i = paletteRows.length - 1;
+    }
+    paletteActive = i;
+    paintPaletteActive();
+  }
+  function movePaletteActive(delta) {
+    if (paletteRows.length === 0) {
+      return;
+    }
+    paletteActive = (paletteActive + delta + paletteRows.length) % paletteRows.length;
+    paintPaletteActive();
+  }
+  function choosePaletteRow(rowEl) {
+    if (!rowEl) {
+      return;
+    }
+    const action = rowEl.dataset.action;
+    const href = rowEl.dataset.href;
+    recordPaletteRecent(rowEl.dataset.label || "", href || "", action || "");
+    closePalette();
+    if (action === "theme") {
+      const toggle = document.getElementById("btn-theme-toggle");
+      if (toggle) {
+        toggle.click();
+      }
+      return;
+    }
+    if (href) {
+      window.location.assign(href);
+    }
+  }
+  function activatePaletteSelection() {
+    const active = paletteRows[paletteActive];
+    if (active) {
+      choosePaletteRow(active.el);
+    }
+  }
+  var palettePriorFocus = null;
+  var paletteRestoringFocus = false;
+  function openPalette(prefill) {
+    const palette = document.getElementById(PALETTE_ID2);
+    const input = document.getElementById("ro-palette-input");
+    if (!palette || !input) {
+      return;
+    }
+    if (!palette.classList.contains("open")) {
+      palettePriorFocus = document.activeElement;
+    }
+    palette.classList.add("open");
+    palette.setAttribute("aria-hidden", "false");
+    input.value = typeof prefill === "string" ? prefill : "";
+    renderPalette(input.value);
+    input.focus();
+  }
+  window.roOpenPalette = openPalette;
+  function closePalette() {
+    const palette = document.getElementById(PALETTE_ID2);
+    if (!palette) {
+      return;
+    }
+    palette.classList.remove("open");
+    palette.setAttribute("aria-hidden", "true");
+    if (palettePriorFocus && document.contains(palettePriorFocus) && !palette.contains(palettePriorFocus) && typeof palettePriorFocus.focus === "function") {
+      paletteRestoringFocus = true;
+      palettePriorFocus.focus();
+      paletteRestoringFocus = false;
+    }
+    palettePriorFocus = null;
+  }
+  var paletteBindings = [
+    // ⌘K palette result row: a click on a result row activates it (navigate or
+    // run its named action, then close). FIRST so a click inside the open
+    // palette never falls through to a page handler. (C1 head, returned.)
+    {
+      event: "click",
+      selector: ".ro-pal-item",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        choosePaletteRow(matched);
+        return true;
+      }
+    },
+    // The read-only topbar search box ([data-palette-open]) opens the palette on
+    // click instead of typing inline. (C1, returned.)
+    {
+      event: "click",
+      selector: "[data-palette-open]",
+      stop: true,
+      handler: (event) => {
+        event.preventDefault();
+        openPalette();
+        return true;
+      }
+    },
+    // The search page's "Refine · ⌘K" button (D12): open the palette PREFILLED
+    // with the query the page searched (server-baked data-query). (C1, returned.)
+    {
+      event: "click",
+      selector: "[data-search-refine]",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        openPalette(matched.dataset.query || "");
+        return true;
+      }
+    },
+    // A click on the palette backdrop ITSELF (the dimmed area outside the panel)
+    // closes it, like Esc. A click inside the panel does not match. The selector
+    // is the backdrop root id; the handler still verifies target.id === PALETTE_ID
+    // so a click that bubbles from a descendant (closest matched the root) does
+    // NOT close it -- the monolith's exact `target.id === PALETTE_ID` test.
+    {
+      event: "click",
+      selector: "#" + PALETTE_ID2,
+      stop: true,
+      handler: (event) => {
+        if (event.target.id === PALETTE_ID2) {
+          closePalette();
+          return true;
+        }
+        return false;
+      }
+    },
+    // ⌘K palette query box: re-render the grouped rows fuzzy-matched + ranked
+    // against the label, re-seating the active row. (Monolith input head, returned.)
+    {
+      event: "input",
+      selector: "#ro-palette-input",
+      stop: true,
+      handler: (_event, matched) => {
+        renderPalette(matched.value);
+        return true;
+      }
+    },
+    // ⌘K / Ctrl+K chord opens the palette from anywhere (ignored with Alt/Shift,
+    // so an unrelated OS/browser shortcut is never hijacked). The palette is
+    // exclusive: an open "?" overlay or row menu closes FIRST so one Esc later
+    // closes exactly one surface. No selector (it keys off the chord, not a
+    // delegated target). Does NOT stop: the still-resident gesture keydown (K3)
+    // returns on the modifier chord on its own, and the filter editor's keydown
+    // is unaffected -- mirroring the monolith's separate listeners.
+    {
+      event: "keydown",
+      handler: (event) => {
+        const e = event;
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "k" || e.key === "K")) {
+          e.preventDefault();
+          closeKbdOverlay();
+          closeRowMenu();
+          openPalette();
+        }
+      }
+    },
+    // Palette-open keyboard model (Esc/Arrow/Enter/Tab). Acts ONLY while the
+    // palette is open AND the target is not the filter editor: in the monolith
+    // the filter-input keydown branch RETURNED before this palette branch, so an
+    // Escape with focus in #ro-filter-input routed to the filter handler and
+    // never reached closePalette (compound case 4). The still-resident filter
+    // keydown listener keeps owning #ro-filter-input keys; this binding excludes
+    // that target so the focus-routed Escape semantics are byte-identical. No
+    // stop: the gesture keydown (K3) is kept inert by keyboardSurfaceBusy()
+    // (palette `.open`), the real decoupler.
+    {
+      event: "keydown",
+      handler: (event) => {
+        const e = event;
+        const target = e.target;
+        if (target && target.id === "ro-filter-input") {
+          return;
+        }
+        const palette = document.getElementById(PALETTE_ID2);
+        if (!palette || !palette.classList.contains("open")) {
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closePalette();
+        } else if (e.key === "ArrowDown") {
+          e.preventDefault();
+          movePaletteActive(1);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          movePaletteActive(-1);
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          activatePaletteSelection();
+        } else if (e.key === "Tab") {
+          e.preventDefault();
+          movePaletteActive(e.shiftKey ? -1 : 1);
+        }
+      }
+    },
+    // The topbar search box also opens the palette on keyboard FOCUS (Tab-into /
+    // programmatic focus): focusin bubbles to document. openPalette runs FIRST
+    // (while the box still holds focus) so it captures the box as the Esc restore
+    // target; the blur after only matters when openPalette no-opped. The
+    // paletteRestoringFocus gate keeps the close-restore from re-opening: focusing
+    // the box FROM closePalette fires this very binding.
+    {
+      event: "focusin",
+      selector: "[data-palette-open]",
+      handler: (event) => {
+        if (paletteRestoringFocus) {
+          return;
+        }
+        openPalette();
+        const t = event.target;
+        if (typeof t.blur === "function") {
+          t.blur();
+        }
+      }
+    }
+  ];
+
   // internal/assets/src/js/yaml-folds.ts
   function yamlEffectiveIndent(text) {
     const stripped = text.replace(/^\n+/, "");
@@ -661,6 +1766,11 @@
 
   // internal/assets/src/js/bindings.ts
   var bindings = [
+    ...contextMenuBindings,
+    ...bulkBindings,
+    ...rowSelectionBindings,
+    ...paletteBindings,
+    ...keyboardBindings,
     ...foldBindings,
     ...logsBindings,
     // misc-ui's click bindings keep their relative monolith order: copy is
@@ -735,28 +1845,6 @@
   }
   document.addEventListener("click", (event) => {
     const target = event.target;
-    const paletteItem = target.closest(".ro-pal-item");
-    if (paletteItem) {
-      event.preventDefault();
-      choosePaletteRow(paletteItem);
-      return;
-    }
-    const paletteOpener = target.closest("[data-palette-open]");
-    if (paletteOpener) {
-      event.preventDefault();
-      openPalette();
-      return;
-    }
-    const searchRefine = target.closest("[data-search-refine]");
-    if (searchRefine) {
-      event.preventDefault();
-      openPalette(searchRefine.dataset.query || "");
-      return;
-    }
-    if (target.id === PALETTE_ID) {
-      closePalette();
-      return;
-    }
     const staleRetry = target.closest(".ro-stale-retry");
     if (staleRetry) {
       event.preventDefault();
@@ -875,11 +1963,6 @@
     }
   });
   document.addEventListener("input", (event) => {
-    const paletteInput = event.target.closest("#ro-palette-input");
-    if (paletteInput) {
-      renderPalette(paletteInput.value);
-      return;
-    }
     const filterInput = event.target.closest("#ro-filter-input");
     if (filterInput) {
       hideFilterFieldHint();
@@ -889,57 +1972,8 @@
     }
   });
   document.addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && (event.key === "k" || event.key === "K")) {
-      event.preventDefault();
-      closeKbdOverlay();
-      closeRowMenu();
-      openPalette();
-      return;
-    }
     if (event.target && event.target.id === "ro-filter-input") {
       handleFilterInputKeydown(event);
-      return;
-    }
-    const palette = document.getElementById(PALETTE_ID);
-    if (!palette || !palette.classList.contains("open")) {
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closePalette();
-      return;
-    }
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      movePaletteActive(1);
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      movePaletteActive(-1);
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      activatePaletteSelection();
-      return;
-    }
-    if (event.key === "Tab") {
-      event.preventDefault();
-      movePaletteActive(event.shiftKey ? -1 : 1);
-      return;
-    }
-  });
-  document.addEventListener("focusin", (event) => {
-    if (paletteRestoringFocus) {
-      return;
-    }
-    const opener = event.target.closest("[data-palette-open]");
-    if (opener) {
-      openPalette();
-      if (typeof event.target.blur === "function") {
-        event.target.blur();
-      }
     }
   });
   function popFormMergedHref(form) {
@@ -979,425 +2013,6 @@
       });
     }
   });
-  var PALETTE_ID = "ro-palette";
-  var PALETTE_GROUPS = [
-    { title: "Resource types", key: "kinds" },
-    { title: "Namespaces", key: "namespaces" },
-    { title: "Clusters", key: "clusters" },
-    { title: "Actions", key: "actions" }
-  ];
-  function roFuzzyScore(query, text) {
-    const source = String(text || "");
-    const q = String(query || "").toLowerCase();
-    const t = source.toLowerCase();
-    if (!q) {
-      return 0;
-    }
-    let from = 0;
-    let first = -1;
-    let last = -1;
-    for (let i = 0; i < q.length; i++) {
-      const at = t.indexOf(q[i], from);
-      if (at === -1) {
-        return -1;
-      }
-      if (first === -1) {
-        first = at;
-      }
-      last = at;
-      from = at + 1;
-    }
-    const gaps = last - first + 1 - q.length;
-    const camelHump = source[first] >= "A" && source[first] <= "Z" && !(source[first - 1] >= "A" && source[first - 1] <= "Z");
-    const wordStart = first === 0 || " -_./:".indexOf(t[first - 1]) !== -1 || camelHump;
-    let tier = 2;
-    if (gaps === 0 && first === 0) {
-      tier = 0;
-    } else if (gaps === 0 && wordStart) {
-      tier = 1;
-    }
-    return tier * 1e5 + gaps * 100 + Math.min(first, 99);
-  }
-  window.roFuzzy = roFuzzyScore;
-  function rankPaletteEntries(list, query, labelOf) {
-    if (!query) {
-      return list.slice();
-    }
-    const scored = [];
-    list.forEach((entry) => {
-      const score = roFuzzyScore(query, labelOf(entry));
-      if (score >= 0) {
-        scored.push({ entry, score });
-      }
-    });
-    scored.sort((a, b) => a.score - b.score);
-    return scored.map((it) => it.entry);
-  }
-  function readPaletteData() {
-    const empty = {
-      currentCluster: null,
-      currentNamespace: null,
-      clusters: [],
-      namespaces: [],
-      kinds: [],
-      actions: []
-    };
-    const el = document.getElementById("ro-palette-data");
-    if (!el) {
-      return empty;
-    }
-    const raw = (el.textContent || "").trim();
-    if (!raw) {
-      return empty;
-    }
-    try {
-      const data = JSON.parse(raw);
-      if (!data || typeof data !== "object") {
-        return empty;
-      }
-      ["clusters", "namespaces", "kinds", "actions"].forEach((k) => {
-        if (!Array.isArray(data[k])) {
-          data[k] = [];
-        }
-      });
-      return data;
-    } catch (e) {
-      return empty;
-    }
-  }
-  function paletteHrefSafe(href) {
-    if (!href || typeof href !== "string") {
-      return "";
-    }
-    const trimmed = href.trim();
-    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
-      return "";
-    }
-    return trimmed;
-  }
-  var PALETTE_RECENTS_KEY = "ro-pref-recents";
-  var PALETTE_RECENTS_MAX = 5;
-  function paletteRecentTarget(entry) {
-    return entry.href ? "href:" + entry.href : "action:" + entry.action;
-  }
-  function readPaletteRecents() {
-    let raw = null;
-    try {
-      raw = window.localStorage.getItem(PALETTE_RECENTS_KEY);
-    } catch (e) {
-      return [];
-    }
-    if (!raw) {
-      return [];
-    }
-    try {
-      const list = JSON.parse(raw);
-      if (!Array.isArray(list)) {
-        return [];
-      }
-      return list.filter((entry) => entry && typeof entry === "object" && typeof entry.label === "string" && entry.label !== "" && (typeof entry.href === "string" && paletteHrefSafe(entry.href) !== "" || typeof entry.action === "string" && entry.action !== "")).slice(0, PALETTE_RECENTS_MAX);
-    } catch (e) {
-      return [];
-    }
-  }
-  function recordPaletteRecent(label, href, action) {
-    if (!label || !href && !action) {
-      return;
-    }
-    const entry = { label };
-    if (href) {
-      entry.href = href;
-    }
-    if (action) {
-      entry.action = action;
-    }
-    const kept = readPaletteRecents().filter(
-      (prior) => paletteRecentTarget(prior) !== paletteRecentTarget(entry)
-    );
-    kept.unshift(entry);
-    try {
-      window.localStorage.setItem(
-        PALETTE_RECENTS_KEY,
-        JSON.stringify(kept.slice(0, PALETTE_RECENTS_MAX))
-      );
-    } catch (e) {
-    }
-  }
-  var paletteRows = [];
-  var paletteActive = 0;
-  function buildPaletteRow(entry, key) {
-    const row = document.createElement("div");
-    row.className = "ro-pal-item";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", "false");
-    if (key === "kinds" && entry.icon) {
-      const holder = document.createElement("template");
-      holder.innerHTML = entry.icon;
-      row.appendChild(holder.content);
-    }
-    const labelText = key === "kinds" ? entry.kind || entry.plural || "" : entry.name || entry.label || "";
-    const display = typeof entry.display === "string" && entry.display !== "" ? entry.display : labelText;
-    const label = document.createElement("span");
-    label.className = "pal-label";
-    label.textContent = display;
-    if (display !== labelText) {
-      row.title = labelText;
-    }
-    const isCurrent = key === "clusters" && entry.name && entry.name === paletteScope.cluster || key === "namespaces" && entry.name && entry.name === paletteScope.namespace;
-    if (isCurrent) {
-      const ctx = document.createElement("span");
-      ctx.className = "pal-ctx";
-      ctx.textContent = "current";
-      label.appendChild(ctx);
-    }
-    row.appendChild(label);
-    if (key === "kinds") {
-      const meta = document.createElement("span");
-      meta.className = "pal-meta";
-      meta.textContent = entry.group || "core";
-      row.appendChild(meta);
-      const scope = document.createElement("span");
-      scope.className = "pal-scope " + (entry.namespaced ? "ns" : "cluster");
-      scope.textContent = entry.namespaced ? "namespaced" : "cluster";
-      row.appendChild(scope);
-    }
-    const href = paletteHrefSafe(entry.href);
-    if (href) {
-      row.dataset.href = href;
-    }
-    if (entry.action) {
-      row.dataset.action = entry.action;
-    }
-    row.dataset.label = labelText;
-    return row;
-  }
-  function buildEverywhereRow(query) {
-    const row = document.createElement("div");
-    row.className = "ro-pal-item";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", "false");
-    const glyph = document.querySelector("#" + PALETTE_ID + " .ro-pal-search .ico");
-    if (glyph) {
-      row.appendChild(glyph.cloneNode(true));
-    }
-    const label = document.createElement("span");
-    label.className = "pal-label";
-    label.textContent = "Search all clusters for “" + query + "”";
-    row.appendChild(label);
-    row.dataset.href = "/search?q=" + encodeURIComponent(query);
-    row.dataset.label = label.textContent;
-    return row;
-  }
-  function buildRecentRow(entry) {
-    const row = document.createElement("div");
-    row.className = "ro-pal-item";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", "false");
-    const label = document.createElement("span");
-    label.className = "pal-label";
-    label.textContent = entry.label;
-    row.appendChild(label);
-    const href = paletteHrefSafe(entry.href);
-    if (href) {
-      row.dataset.href = href;
-    }
-    if (entry.action) {
-      row.dataset.action = entry.action;
-    }
-    row.dataset.label = entry.label;
-    return row;
-  }
-  var paletteScope = { cluster: null, namespace: null };
-  function harvestPageObjects() {
-    const out = [];
-    const rows = virtualizerActive() ? virtState.rows : document.querySelectorAll("#resource-list-content table.ro-table tbody tr");
-    rows.forEach((tr) => {
-      const a = tr.querySelector("td.cell-name a");
-      if (!a) {
-        return;
-      }
-      const href = a.getAttribute("href");
-      const name = (a.textContent || "").trim();
-      if (!href || !name) {
-        return;
-      }
-      let status = "";
-      let tone = "";
-      const st = tr.querySelector(".cell-status");
-      if (st) {
-        status = (st.textContent || "").trim();
-        ["ok", "warn", "err", "info", "mute"].forEach((t) => {
-          if (!tone && st.classList.contains(t)) {
-            tone = t;
-          }
-        });
-      }
-      out.push({ name, href, status, tone });
-    });
-    return out;
-  }
-  function buildObjectRow(o) {
-    const row = document.createElement("div");
-    row.className = "ro-pal-item";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", "false");
-    const label = document.createElement("span");
-    label.className = "pal-label";
-    label.textContent = o.name;
-    row.appendChild(label);
-    if (o.status) {
-      const st = document.createElement("span");
-      st.className = "pal-status" + (o.tone ? " " + o.tone : "");
-      st.textContent = o.status;
-      row.appendChild(st);
-    }
-    row.dataset.href = o.href;
-    row.dataset.label = o.name;
-    return row;
-  }
-  function renderPalette(query) {
-    const list = document.getElementById("ro-palette-list");
-    if (!list) {
-      return;
-    }
-    const data = readPaletteData();
-    paletteScope.cluster = data.currentCluster || null;
-    paletteScope.namespace = data.currentNamespace || null;
-    const scope = document.getElementById("ro-palette-scope");
-    if (scope) {
-      const scopeText = paletteScope.namespace || paletteScope.cluster || "";
-      scope.textContent = scopeText;
-      scope.hidden = scopeText === "";
-    }
-    const q = (query || "").trim();
-    list.textContent = "";
-    paletteRows = [];
-    const appendGroup = (title, rows) => {
-      if (rows.length === 0) {
-        return;
-      }
-      const heading = document.createElement("div");
-      heading.className = "ro-pal-group";
-      heading.textContent = title;
-      list.appendChild(heading);
-      rows.forEach((entry) => {
-        const row = entry.el;
-        const idx = paletteRows.length;
-        row.addEventListener("mousemove", () => setPaletteActive(idx));
-        list.appendChild(row);
-        paletteRows.push({ el: row, item: entry.item, key: entry.key });
-      });
-    };
-    if (q) {
-      appendGroup("Everywhere", [{ el: buildEverywhereRow(q), item: { query: q }, key: "everywhere" }]);
-    } else {
-      appendGroup("Recents", readPaletteRecents().map(
-        (entry) => ({ el: buildRecentRow(entry), item: entry, key: "recents" })
-      ));
-    }
-    const pageObjects = rankPaletteEntries(harvestPageObjects(), q, (o) => o.name);
-    appendGroup("On this page", pageObjects.map((o) => ({ el: buildObjectRow(o), item: o, key: "objects" })));
-    PALETTE_GROUPS.forEach((group) => {
-      const entries = rankPaletteEntries(data[group.key] || [], q, (entry) => group.key === "kinds" ? entry.kind || entry.plural || "" : entry.name || entry.label || "");
-      appendGroup(group.title, entries.map((entry) => ({ el: buildPaletteRow(entry, group.key), item: entry, key: group.key })));
-    });
-    if (paletteRows.length === 0) {
-      const none = document.createElement("div");
-      none.className = "ro-pal-empty";
-      none.textContent = "No matching targets.";
-      list.appendChild(none);
-    }
-    paletteActive = 0;
-    paintPaletteActive();
-  }
-  function paintPaletteActive() {
-    paletteRows.forEach((r, i) => {
-      const on = i === paletteActive;
-      r.el.classList.toggle("active", on);
-      r.el.setAttribute("aria-selected", on ? "true" : "false");
-    });
-    if (paletteRows[paletteActive]) {
-      paletteRows[paletteActive].el.scrollIntoView({ block: "nearest" });
-    }
-  }
-  function setPaletteActive(index) {
-    if (paletteRows.length === 0) {
-      return;
-    }
-    let i = index;
-    if (i < 0) {
-      i = 0;
-    }
-    if (i > paletteRows.length - 1) {
-      i = paletteRows.length - 1;
-    }
-    paletteActive = i;
-    paintPaletteActive();
-  }
-  function movePaletteActive(delta) {
-    if (paletteRows.length === 0) {
-      return;
-    }
-    paletteActive = (paletteActive + delta + paletteRows.length) % paletteRows.length;
-    paintPaletteActive();
-  }
-  function choosePaletteRow(rowEl) {
-    if (!rowEl) {
-      return;
-    }
-    const action = rowEl.dataset.action;
-    const href = rowEl.dataset.href;
-    recordPaletteRecent(rowEl.dataset.label || "", href || "", action || "");
-    closePalette();
-    if (action === "theme") {
-      const toggle = document.getElementById("btn-theme-toggle");
-      if (toggle) {
-        toggle.click();
-      }
-      return;
-    }
-    if (href) {
-      window.location.assign(href);
-    }
-  }
-  function activatePaletteSelection() {
-    const active = paletteRows[paletteActive];
-    if (active) {
-      choosePaletteRow(active.el);
-    }
-  }
-  var palettePriorFocus = null;
-  var paletteRestoringFocus = false;
-  function openPalette(prefill) {
-    const palette = document.getElementById(PALETTE_ID);
-    const input = document.getElementById("ro-palette-input");
-    if (!palette || !input) {
-      return;
-    }
-    if (!palette.classList.contains("open")) {
-      palettePriorFocus = document.activeElement;
-    }
-    palette.classList.add("open");
-    palette.setAttribute("aria-hidden", "false");
-    input.value = typeof prefill === "string" ? prefill : "";
-    renderPalette(input.value);
-    input.focus();
-  }
-  window.roOpenPalette = openPalette;
-  function closePalette() {
-    const palette = document.getElementById(PALETTE_ID);
-    if (!palette) {
-      return;
-    }
-    palette.classList.remove("open");
-    palette.setAttribute("aria-hidden", "true");
-    if (palettePriorFocus && document.contains(palettePriorFocus) && !palette.contains(palettePriorFocus) && typeof palettePriorFocus.focus === "function") {
-      paletteRestoringFocus = true;
-      palettePriorFocus.focus();
-      paletteRestoringFocus = false;
-    }
-    palettePriorFocus = null;
-  }
   document.addEventListener("htmx:beforeRequest", (event) => {
     const detail = event.detail;
     const cfg = detail && detail.requestConfig;
@@ -1954,264 +2569,7 @@ ${piece}`;
       return liveDiscards;
     }
   };
-  var rowSelection = /* @__PURE__ */ new Map();
-  var rowFocusKey = null;
-  function reapplyRowState() {
-    const content = document.getElementById("resource-list-content");
-    if (!content) {
-      return;
-    }
-    let focusedRow = null;
-    content.querySelectorAll("tr[data-key]").forEach((tr) => {
-      tr.classList.toggle("is-selected", rowSelection.has(tr.dataset.key));
-      const focused = tr.dataset.key === rowFocusKey;
-      tr.classList.toggle("kfocus", focused);
-      if (focused) {
-        focusedRow = tr;
-      }
-    });
-    content.querySelectorAll(".ro-table-wrap").forEach((wrap) => {
-      if (focusedRow && focusedRow.id && wrap.contains(focusedRow)) {
-        wrap.setAttribute("aria-activedescendant", focusedRow.id);
-      } else {
-        wrap.removeAttribute("aria-activedescendant");
-      }
-    });
-  }
-  function lastKeySegment(key) {
-    const parts = (key || "").split("/");
-    return parts[parts.length - 1] || "";
-  }
-  function rowSelectionEntry(key) {
-    const content = document.getElementById("resource-list-content");
-    let entry = null;
-    if (content) {
-      content.querySelectorAll("tr[data-key]").forEach((tr) => {
-        if (tr.dataset.key === key) {
-          entry = { name: tr.dataset.name || lastKeySegment(key) };
-        }
-      });
-    }
-    return entry || { name: lastKeySegment(key) };
-  }
-  function setRowSelected(key, on) {
-    if (on) {
-      rowSelection.set(key, rowSelectionEntry(key));
-    } else {
-      rowSelection.delete(key);
-    }
-    reapplyRowState();
-    updateBulkBar();
-  }
-  function clearRowState() {
-    rowSelection.clear();
-    rowFocusKey = null;
-    reapplyRowState();
-    updateBulkBar();
-  }
-  window.roRowState = {
-    setSelected: setRowSelected,
-    setFocus(key) {
-      rowFocusKey = key || null;
-      reapplyRowState();
-    },
-    clear: clearRowState,
-    selectedKeys() {
-      return Array.from(rowSelection.keys());
-    },
-    // selectedEntries feeds the bulk actions: Copy names reads .name, and the
-    // bulk Download-YAML builds its names list from .key/.name against the
-    // bar-level data-bulk-href base (bulkDownloadYAML) -- there is no
-    // per-object href in the store.
-    selectedEntries() {
-      return Array.from(rowSelection, ([key, entry]) => ({ key, name: entry.name }));
-    }
-  };
   window.roToast = showToast;
-  var BULK_NAMES_MAX = 100;
-  var bulkOverCapToasted = false;
-  function updateBulkBar() {
-    const bar = document.getElementById("ro-bulkbar");
-    if (!bar) {
-      return;
-    }
-    const count = rowSelection.size;
-    const label = document.getElementById("ro-bulk-count");
-    if (label && count > 0) {
-      label.textContent = count + " selected";
-    }
-    bar.classList.toggle("is-open", count > 0);
-    bar.toggleAttribute("inert", count === 0);
-    const download = document.getElementById("ro-bulk-download");
-    if (download && bar.dataset.bulkHref) {
-      const over = count > BULK_NAMES_MAX;
-      download.disabled = over;
-      download.title = over ? "Over the " + BULK_NAMES_MAX + "-object bulk download cap" : "";
-      if (over && !bulkOverCapToasted) {
-        showToast("Download refused: " + count + " selected (max " + BULK_NAMES_MAX + ")");
-      }
-      bulkOverCapToasted = over;
-    }
-  }
-  function roCopyText(text, done) {
-    const fallback = () => {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.top = "-1000px";
-      document.body.appendChild(ta);
-      ta.select();
-      let ok = false;
-      try {
-        ok = document.execCommand("copy");
-      } catch (err) {
-        ok = false;
-      }
-      ta.remove();
-      return ok;
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(() => done(true), () => done(fallback()));
-      return;
-    }
-    done(fallback());
-  }
-  function toggleRowSelection(tr) {
-    const key = tr.dataset.key;
-    if (!key) {
-      return;
-    }
-    if (rowSelection.has(key)) {
-      rowSelection.delete(key);
-    } else {
-      rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key) });
-    }
-    reapplyRowState();
-    updateBulkBar();
-  }
-  var bulkCopyResetTimer = 0;
-  function bulkCopyNames(button) {
-    const names = Array.from(rowSelection.values(), (entry) => entry.name).join("\n");
-    roCopyText(names, (ok) => {
-      if (!ok) {
-        return;
-      }
-      const label = button.querySelector("span:last-child");
-      if (!label) {
-        return;
-      }
-      window.clearTimeout(bulkCopyResetTimer);
-      label.textContent = "Copied";
-      bulkCopyResetTimer = window.setTimeout(() => {
-        label.textContent = "Copy names";
-      }, 1100);
-    });
-  }
-  function bulkDownloadYAML(bar) {
-    if (!bar || !bar.dataset.bulkHref) {
-      return;
-    }
-    const entries = window.roRowState.selectedEntries();
-    if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
-      return;
-    }
-    const clusterPrefix = (bar.dataset.bulkCluster || "") + "/";
-    const names = entries.map((entry) => {
-      if (bar.dataset.bulkAllns === "true" && entry.key.indexOf(clusterPrefix) === 0) {
-        return entry.key.slice(clusterPrefix.length);
-      }
-      return entry.name;
-    });
-    window.location.assign(bar.dataset.bulkHref + "&names=" + encodeURIComponent(names.join(",")));
-  }
-  var CTX_CLAMP_W = 220;
-  var CTX_CLAMP_H = 240;
-  function closeRowMenu() {
-    const menu = document.getElementById("ro-ctxmenu");
-    if (menu) {
-      menu.classList.remove("is-open");
-      menu.setAttribute("aria-hidden", "true");
-    }
-  }
-  function openRowMenu(tr, x, y) {
-    const menu = document.getElementById("ro-ctxmenu");
-    if (!menu) {
-      return;
-    }
-    const bind = (action, href) => {
-      const item = menu.querySelector('[data-ctx="' + action + '"]');
-      if (!item) {
-        return;
-      }
-      if (href) {
-        item.dataset.href = href;
-        item.hidden = false;
-      } else {
-        delete item.dataset.href;
-        item.hidden = true;
-      }
-    };
-    bind("open", tr.dataset.href || "");
-    bind("yaml", tr.dataset.yaml || "");
-    bind("logs", tr.dataset.logs || "");
-    bind("download", tr.dataset.download || "");
-    menu.dataset.name = tr.dataset.name || lastKeySegment(tr.dataset.key);
-    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W)) + "px";
-    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - CTX_CLAMP_H)) + "px";
-    menu.classList.add("is-open");
-    menu.setAttribute("aria-hidden", "false");
-  }
-  document.addEventListener("contextmenu", (event) => {
-    const tr = event.target.closest("#resource-list-content tr[data-key]");
-    if (!tr) {
-      closeRowMenu();
-      return;
-    }
-    event.preventDefault();
-    openRowMenu(tr, event.clientX, event.clientY);
-  });
-  document.addEventListener("click", (event) => {
-    const item = event.target.closest("#ro-ctxmenu [data-ctx]");
-    if (item) {
-      event.preventDefault();
-      const menu = item.closest("#ro-ctxmenu");
-      const name = menu && menu.dataset.name || "";
-      const href = item.dataset.href || "";
-      closeRowMenu();
-      if (item.dataset.ctx === "copy") {
-        roCopyText(name, () => {
-        });
-      } else if (href) {
-        window.location.assign(href);
-      }
-      return;
-    }
-    closeRowMenu();
-    const bulkDownload = event.target.closest("#ro-bulk-download");
-    if (bulkDownload) {
-      bulkDownloadYAML(bulkDownload.closest("#ro-bulkbar"));
-      return;
-    }
-    const bulkCopy = event.target.closest("#ro-bulk-copy");
-    if (bulkCopy) {
-      bulkCopyNames(bulkCopy);
-      return;
-    }
-    if (event.target.closest("#ro-bulk-clear")) {
-      clearRowState();
-      return;
-    }
-    const tr = event.target.closest("#resource-list-content tr[data-key]");
-    if (tr && !event.target.closest("a, button, input, select, textarea, label")) {
-      toggleRowSelection(tr);
-    }
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      closeRowMenu();
-    }
-  });
   document.addEventListener("htmx:beforeSwap", (event) => {
     if (event.detail && event.detail.target === document.body) {
       closeRowMenu();
@@ -2226,138 +2584,6 @@ ${piece}`;
   document.addEventListener("htmx:historyRestore", () => {
     reapplyRowState();
     updateBulkBar();
-  });
-  function keyboardTargetIsTextEntry(target) {
-    if (!target || target.nodeType !== 1) {
-      return false;
-    }
-    const tag = target.tagName;
-    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
-  }
-  function keyboardSurfaceBusy() {
-    const palette = document.getElementById(PALETTE_ID);
-    if (palette && palette.classList.contains("open")) {
-      return true;
-    }
-    const menu = document.getElementById("ro-ctxmenu");
-    if (menu && menu.classList.contains("is-open")) {
-      return true;
-    }
-    const nsDropdown = document.getElementById("namespace-dropdown");
-    if (nsDropdown && nsDropdown.classList.contains("is-active")) {
-      return true;
-    }
-    return colsPopOpen;
-  }
-  function visibleKeyRows() {
-    return Array.from(
-      document.querySelectorAll("#resource-list-content tbody tr[data-key]")
-    ).filter((tr) => !tr.classList.contains("ro-row-filtered"));
-  }
-  function moveRowFocus(delta) {
-    if (virtualizerActive()) {
-      return virtualizeMoveFocus(delta);
-    }
-    const rows = visibleKeyRows();
-    if (rows.length === 0) {
-      return false;
-    }
-    const current = rows.findIndex((tr) => tr.dataset.key === rowFocusKey);
-    const next = Math.max(0, Math.min(rows.length - 1, current + delta));
-    window.roRowState.setFocus(rows[next].dataset.key);
-    rows[next].scrollIntoView({ block: "nearest" });
-    return true;
-  }
-  function openFocusedRow() {
-    if (!rowFocusKey) {
-      return false;
-    }
-    let row = visibleKeyRows().find((tr) => tr.dataset.key === rowFocusKey);
-    if (!row && virtualizerActive()) {
-      const tr = virtState.byKey.get(rowFocusKey);
-      if (tr && virtState.visible.indexOf(tr) !== -1) {
-        row = tr;
-      }
-    }
-    if (!row || !row.dataset.href) {
-      return false;
-    }
-    window.location.assign(row.dataset.href);
-    return true;
-  }
-  var kbdPriorFocus = null;
-  function kbdOverlayEl() {
-    return document.getElementById("ro-kbd-overlay");
-  }
-  function kbdOverlayOpen() {
-    const overlay = kbdOverlayEl();
-    return !!overlay && overlay.classList.contains("open");
-  }
-  function openKbdOverlay() {
-    const overlay = kbdOverlayEl();
-    if (!overlay) {
-      return;
-    }
-    kbdPriorFocus = document.activeElement;
-    overlay.classList.add("open");
-    overlay.setAttribute("aria-hidden", "false");
-    const card = overlay.querySelector(".kbd-card");
-    if (card) {
-      card.focus();
-    }
-  }
-  function closeKbdOverlay() {
-    const overlay = kbdOverlayEl();
-    if (!overlay) {
-      return;
-    }
-    overlay.classList.remove("open");
-    overlay.setAttribute("aria-hidden", "true");
-    if (kbdPriorFocus && document.contains(kbdPriorFocus) && typeof kbdPriorFocus.focus === "function") {
-      kbdPriorFocus.focus();
-    }
-    kbdPriorFocus = null;
-  }
-  document.addEventListener("click", (event) => {
-    if (event.target.id === "ro-kbd-overlay") {
-      closeKbdOverlay();
-    }
-  });
-  document.addEventListener("keydown", (event) => {
-    if (kbdOverlayOpen()) {
-      if (event.key === "Escape" || event.key === "?") {
-        event.preventDefault();
-        closeKbdOverlay();
-      } else if (event.key === "Tab") {
-        event.preventDefault();
-      }
-      return;
-    }
-    if (event.metaKey || event.ctrlKey || event.altKey) {
-      return;
-    }
-    if (keyboardTargetIsTextEntry(event.target) || keyboardSurfaceBusy()) {
-      return;
-    }
-    if (event.key === "?") {
-      event.preventDefault();
-      openKbdOverlay();
-      return;
-    }
-    if (event.key === "j" || event.key === "k") {
-      if (moveRowFocus(event.key === "j" ? 1 : -1)) {
-        event.preventDefault();
-      }
-      return;
-    }
-    if (event.key === "Enter") {
-      if (event.target.closest && event.target.closest("a, button, summary")) {
-        return;
-      }
-      if (openFocusedRow()) {
-        event.preventDefault();
-      }
-    }
   });
   var VIRT_BUFFER_ROWS = 12;
   var virtState = {
@@ -2643,8 +2869,9 @@ ${piece}`;
       return false;
     }
     let current = -1;
+    const focusKey = window.roRowState.focusedKey();
     for (let i = 0; i < list.length; i++) {
-      if (list[i].dataset.key === rowFocusKey) {
+      if (list[i].dataset.key === focusKey) {
         current = i;
         break;
       }
@@ -2734,6 +2961,24 @@ ${piece}`;
     const pop = document.getElementById("ro-cols-pop");
     colsPopOpen = !!pop && pop.classList.contains("is-open");
   }
+  window.roClusterBridge = {
+    virtualizerActive,
+    virtRows() {
+      return virtState.rows;
+    },
+    virtVisible() {
+      return virtState.visible;
+    },
+    virtRowByKey(key) {
+      return virtState.byKey.get(key) || null;
+    },
+    virtMoveFocus(delta) {
+      return virtualizeMoveFocus(delta);
+    },
+    colsPopOpen() {
+      return colsPopOpen;
+    }
+  };
   function commitColumnVisibility(pop) {
     if (!pop) {
       return;

@@ -51,10 +51,9 @@ import { syncThemeTogglePostTarget } from './theme.js';
 import { showToast } from './toasts.js';
 
 // YAML folds + line-highlight (Unit 9 leaf): buildYamlFolds + highlightYamlLine
-// are runInit steps; yamlCodeText is still used by the not-yet-migrated
-// per-section copy branch in the big click listener. The .ro-fold-toggle and
-// .linenos a click branches now live as dispatcher bindings (bindings.ts).
-import { buildYamlFolds, highlightYamlLine, yamlCodeText } from './yaml-folds.js';
+// are runInit steps. The .ro-fold-toggle and .linenos a click branches live as
+// dispatcher bindings (bindings.ts).
+import { buildYamlFolds, highlightYamlLine } from './yaml-folds.js';
 
 // Logs page leaf (Unit 9): initLogsFollow is a runInit step; the Follow toggle
 // and ts/wrap display toggles are dispatcher bindings (bindings.ts).
@@ -64,6 +63,15 @@ import { initLogsFollow } from './logs.js';
 // sidebar / copy / section-fold / namespace-dropdown branches are dispatcher
 // bindings (bindings.ts). roPrefsSetNamespace now rides misc-ui directly.
 import { collapseSectionsFromHash } from './misc-ui.js';
+
+// Cluster cluster (Unit 10): the ⌘K palette, keyboard nav, row selection, the
+// context menu, and the bulk bar now live in dedicated modules; their dispatcher
+// bindings ride bindings.ts. legacy.js keeps the htmx-lifecycle hooks (afterSwap
+// row-state re-apply, the body-swap clear, history-restore repaint) and the
+// virtualizer/columns popover (Unit 24/12, not migrated), so it imports the few
+// functions those hooks call across the new boundary.
+import { closeRowMenu } from './context-menu.js';
+import { reapplyRowState, clearRowState, updateBulkBar } from './row-selection.js';
 
 // ---------------------------------------------------------------------------
 // HTMX config: native View Transitions, reduced-motion-aware
@@ -181,41 +189,11 @@ if (typeof htmx !== 'undefined' && typeof Idiomorph !== 'undefined') {
 document.addEventListener('click', (event) => {
     const target = event.target;
 
-    // ⌘K palette: a click on a result row activates that row (navigates to its
-    // server-built href or runs its named action, then closes). Matched before
-    // everything else so a click inside the open palette never falls through to a
-    // page handler. The row carries no <a> -- navigation goes through the dataset
-    // href in choosePaletteRow (defends against a javascript: scheme).
-    const paletteItem = target.closest('.ro-pal-item');
-    if (paletteItem) {
-        event.preventDefault();
-        choosePaletteRow(paletteItem);
-        return;
-    }
-    // The read-only topbar search box (data-palette-open) opens the palette on
-    // click, instead of typing inline. (Keyboard focus is handled in focusin.)
-    const paletteOpener = target.closest('[data-palette-open]');
-    if (paletteOpener) {
-        event.preventDefault();
-        openPalette();
-        return;
-    }
-    // The search page's "Refine · ⌘K" button (Unit 20/D12): open the palette
-    // PREFILLED with the query the page searched (baked server-side into
-    // data-query), so refining is one keystroke away from the grouped results.
-    const searchRefine = target.closest('[data-search-refine]');
-    if (searchRefine) {
-        event.preventDefault();
-        openPalette(searchRefine.dataset.query || '');
-        return;
-    }
-    // A click on the palette backdrop ITSELF (the dimmed area outside the panel)
-    // closes it, like Esc. A click inside the panel does not match (the panel is a
-    // descendant, so target.closest stops at the panel, not the backdrop root).
-    if (target.id === PALETTE_ID) {
-        closePalette();
-        return;
-    }
+    // ⌘K palette click branches (result row / [data-palette-open] / Refine·⌘K
+    // [data-search-refine] / backdrop) migrated to palette.ts (Unit 10): they
+    // were the HEAD of this listener and now ride dispatcher click bindings
+    // registered ahead of it (bindings.ts).
+
     // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
     // #resource-list-content through the shared refresh path (the v2 loop
     // derives the `_table` URL from location.href at click time; the v1
@@ -433,13 +411,9 @@ document.addEventListener('change', (event) => {
 // Delegated INPUT handlers
 // ---------------------------------------------------------------------------
 document.addEventListener('input', (event) => {
-    // ⌘K palette query box: re-render the grouped rows fuzzy-matched + ranked
-    // against the label (roFuzzyScore, SPEC §8.7), re-seating the active row.
-    const paletteInput = event.target.closest('#ro-palette-input');
-    if (paletteInput) {
-        renderPalette(paletteInput.value);
-        return;
-    }
+    // ⌘K palette query box (#ro-palette-input) migrated to palette.ts (Unit 10):
+    // it was the HEAD of this listener and now rides a stop:true dispatcher
+    // input-binding registered ahead of it (bindings.ts).
 
     // Chips editor (D7): every keystroke re-runs the live name match (model-
     // driven, NO request) and the autocomplete; a fresh draft clears any
@@ -462,95 +436,21 @@ document.addEventListener('input', (event) => {
 // dispatcher keyup-binding, so this listener is retired entirely.
 
 // ---------------------------------------------------------------------------
-// Delegated KEYDOWN handlers (⌘K / Ctrl-K palette open + in-palette navigation)
+// Delegated KEYDOWN handler -- the chips-editor protocol (filters, Unit 12)
 // ---------------------------------------------------------------------------
-// keydown (not keyup) so we can preventDefault BEFORE the browser acts on the
-// chord (e.g. Firefox's quick-find on a bare key, or a stray default for
-// Ctrl/Cmd-K). One delegated listener on document covers both opening the
-// palette from anywhere and driving it once open; it survives hx-boost swaps
-// because document is never replaced. CSP-clean: pure DOM, no eval/inline.
+// The ⌘K palette-open chord, the in-palette Arrow/Enter/Tab/Escape model, and
+// the topbar-search focusin opener all migrated to palette.ts (Unit 10) as
+// dispatcher keydown/focusin bindings registered ahead of this listener. What
+// remains is the FILTER editor's own keyboard protocol (still resident, Unit 12):
+// #ro-filter-input owns ⏎ commit/accept, Tab accept, esc dismiss, arrows, and
+// ⌫-on-empty pop. This is the focus-routed half of compound case 4 -- an Escape
+// with focus in #ro-filter-input reaches handleFilterInputKeydown here (a no-op
+// with the autocomplete closed), and the migrated palette-open keydown binding
+// excludes #ro-filter-input precisely so it never closes the palette first.
+// keydown (not keyup) so we can preventDefault before the browser acts.
 document.addEventListener('keydown', (event) => {
-    // Open on Meta+K (mac ⌘K) OR Ctrl+K (the decorative navbar <kbd>⌘K</kbd> is
-    // the advertised hook). Ignore when a modifier combo also carries Alt/Shift
-    // so we never hijack an unrelated browser/OS shortcut. The palette is
-    // exclusive among the overlay surfaces: an open "?" keyboard map or row
-    // context menu closes FIRST (closeKbdOverlay restores ITS prior focus
-    // before openPalette captures the restore target), so one Esc afterwards
-    // closes exactly one surface.
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey
-        && (event.key === 'k' || event.key === 'K')) {
-        event.preventDefault();
-        closeKbdOverlay();
-        closeRowMenu();
-        openPalette();
-        return;
-    }
-    // Chips editor (D7): the filter input owns its keyboard protocol (⏎ commit/
-    // accept, Tab accept, esc dismiss, arrows, ⌫-on-empty pop). The palette
-    // never has focus here (its own input would be the target when open).
     if (event.target && event.target.id === 'ro-filter-input') {
         handleFilterInputKeydown(event);
-        return;
-    }
-    // Everything else here only matters while the palette is open. The redesign
-    // overlay reveals via the `open` class on the backdrop root (opacity +
-    // pointer-events), not the old is-active/is-hidden pair.
-    const palette = document.getElementById(PALETTE_ID);
-    if (!palette || !palette.classList.contains('open')) {
-        return;
-    }
-    if (event.key === 'Escape') {
-        event.preventDefault();
-        closePalette();
-        return;
-    }
-    if (event.key === 'ArrowDown') {
-        event.preventDefault();
-        movePaletteActive(1);
-        return;
-    }
-    if (event.key === 'ArrowUp') {
-        event.preventDefault();
-        movePaletteActive(-1);
-        return;
-    }
-    if (event.key === 'Enter') {
-        // Activate the currently-highlighted target (GET via its dataset href, or
-        // its named client action). No-op when no row is active.
-        event.preventDefault();
-        activatePaletteSelection();
-        return;
-    }
-    if (event.key === 'Tab') {
-        // Trap focus inside the panel: with one text input + the (non-focusable)
-        // rows, steer Tab/Shift-Tab through the visible rows via the same
-        // active-row model the arrows use, so focus can never escape to the page
-        // behind the modal.
-        event.preventDefault();
-        movePaletteActive(event.shiftKey ? -1 : 1);
-        return;
-    }
-});
-
-// The read-only topbar search box also opens the palette on keyboard FOCUS
-// (Tab-into / programmatic focus): focusin bubbles to document, so one delegated
-// listener covers it without a per-element handler that an hx-boost swap would
-// drop. openPalette runs FIRST, while the box still holds focus, so it captures
-// the box as the Esc restore target (blurring first would make Esc restore to
-// <body>); the blur after it only matters when openPalette no-opped (overlay
-// missing) -- otherwise focus already moved to the palette's query box. The
-// paletteRestoringFocus gate keeps the close-restore from re-opening: focusing
-// the box FROM closePalette fires this very listener.
-document.addEventListener('focusin', (event) => {
-    if (paletteRestoringFocus) {
-        return;
-    }
-    const opener = event.target.closest('[data-palette-open]');
-    if (opener) {
-        openPalette();
-        if (typeof event.target.blur === 'function') {
-            event.target.blur();
-        }
     }
 });
 
@@ -642,641 +542,15 @@ document.addEventListener('submit', (event) => {
 // the runInit chain.
 
 // ---------------------------------------------------------------------------
-// ⌘K jump-to command palette v2 -- data-driven, grouped, CSP-clean, GET-only
-// (D10/D21/D12, SPEC §6.3 + §8.7).
+// ⌘K jump-to command palette v2 migrated to palette.ts + palette-rank.ts
+// (Unit 10). The PURE ranker (roFuzzyScore -> window.roFuzzy) + group order
+// live in palette-rank.ts (node-tested); the DOM (feed read, recents, row
+// build, active model, open/close + focus restore) and the dispatcher
+// bindings (click/input/keydown/focusin) live in palette.ts. window.roFuzzy /
+// window.roOpenPalette are re-exposed there. PALETTE_ID is now a palette.ts
+// constant; keyboardSurfaceBusy (keyboard.ts) reads the same '#ro-palette.open'
+// from the live DOM.
 // ---------------------------------------------------------------------------
-// A keyboard launcher that JUMPS to navigation targets. The feed-built groups
-// come from the server JSON blob in #ro-palette-data (emitted by the layout
-// from the same context the sidebar/navbar already have); the "On this page"
-// group is harvested from the rendered list table. Group order while TYPING:
-// Everywhere (`Search all clusters for "q"` -> /search?q=, pinned first per
-// D12) -> On this page (objects with status) -> Resource types (kind icon +
-// scope badge + API group) -> Namespaces -> Clusters -> Actions. On an EMPTY
-// query the persisted Recents group (last 5 chosen entries, localStorage
-// 'ro-pref-recents') leads instead -- Everywhere exists only while typing, so
-// the two slots never clash. Matching is the roFuzzyScore SUBSEQUENCE ranker
-// (prefix > word-start > scattered), not a substring test. Selecting a row
-// navigates to its server-built absolute href (a plain GET permalink, never
-// the POST theme form, so the read-only floor is untouched) or runs a named
-// client action (e.g. theme). The blob is parsed with JSON.parse (NEVER eval);
-// names are written via textContent (defence in depth against a hostile
-// cluster/namespace/CRD name) and the ONLY field set via innerHTML is the
-// server-escaped kind `icon` markup. The overlay reveals via the `open` class on
-// the backdrop root (opacity + pointer-events). Pure DOM -> no dynamic-code
-// execution, no inline handler -> CSP-clean.
-const PALETTE_ID = 'ro-palette';
-
-// The render order + display titles of the FEED-built palette groups (the
-// SPEC §6.3 order after the synthesized Everywhere/Recents slot and the
-// page-objects group). Empty groups are skipped at render time.
-const PALETTE_GROUPS = [
-    { title: 'Resource types', key: 'kinds' },
-    { title: 'Namespaces', key: 'namespaces' },
-    { title: 'Clusters', key: 'clusters' },
-    { title: 'Actions', key: 'actions' },
-];
-
-// roFuzzyScore is THE palette matcher (SPEC §8.7 / D21): a case-insensitive
-// SUBSEQUENCE match -- replacing the old substring test -- scored so a prefix
-// match always ranks above a word-start match, which always ranks above a
-// scattered one. Returns -1 when query is not a subsequence of text, else a
-// score where LOWER is better:
-//   tier*100000 + gaps*100 + min(first, 99)
-//     tier  0 = prefix      (contiguous from the first character)
-//           1 = word-start  (contiguous from a word boundary: after a space,
-//                            -, _, ., /, : separator or at a camelCase hump)
-//           2 = scattered   (any other subsequence; within the tier a tighter
-//                            and earlier match still wins -- "dply" lands
-//                            Deployments above wide scatters)
-//     gaps  = matched span minus query length (tighter matches first)
-//     first = index of the first matched character (earlier matches first)
-// Greedy leftmost matching keeps it linear in the text. The function is PURE
-// (no DOM, no module state) and exported as window.roFuzzy -- the e2e suite
-// unit-tests the ranking in isolation through that seam.
-function roFuzzyScore(query, text) {
-    const source = String(text || '');
-    const q = String(query || '').toLowerCase();
-    const t = source.toLowerCase();
-    if (!q) {
-        return 0; // empty query matches everything, rank-neutral
-    }
-    let from = 0;
-    let first = -1;
-    let last = -1;
-    for (let i = 0; i < q.length; i++) {
-        const at = t.indexOf(q[i], from);
-        if (at === -1) {
-            return -1; // not a subsequence
-        }
-        if (first === -1) {
-            first = at;
-        }
-        last = at;
-        from = at + 1;
-    }
-    const gaps = (last - first + 1) - q.length;
-    const camelHump = source[first] >= 'A' && source[first] <= 'Z'
-        && !(source[first - 1] >= 'A' && source[first - 1] <= 'Z');
-    const wordStart = first === 0
-        || ' -_./:'.indexOf(t[first - 1]) !== -1
-        || camelHump;
-    let tier = 2;
-    if (gaps === 0 && first === 0) {
-        tier = 0;
-    } else if (gaps === 0 && wordStart) {
-        tier = 1;
-    }
-    return tier * 100000 + gaps * 100 + Math.min(first, 99);
-}
-// The deliberate isolation seam (like window.roRowState): pure ranking,
-// callable without any palette DOM.
-window.roFuzzy = roFuzzyScore;
-
-// rankPaletteEntries filters a group's entries to the fuzzy matches of query
-// (against the label labelOf extracts) and orders them best-score-first;
-// equal scores keep feed order (Array.sort is stable). An empty query keeps
-// the whole group in feed order.
-function rankPaletteEntries(list, query, labelOf) {
-    if (!query) {
-        return list.slice();
-    }
-    const scored = [];
-    list.forEach((entry) => {
-        const score = roFuzzyScore(query, labelOf(entry));
-        if (score >= 0) {
-            scored.push({ entry: entry, score: score });
-        }
-    });
-    scored.sort((a, b) => a.score - b.score);
-    return scored.map((it) => it.entry);
-}
-
-// Parse the #ro-palette-data JSON blob into the grouped feed. Guarded end to
-// end: a missing/empty/malformed blob yields an all-empty feed (the palette still
-// opens with a "no targets" state) and NEVER throws. We re-read on every open so
-// an hx-boost navigation that swapped the blob is picked up. JSON.parse only --
-// never eval -- so the blob can carry arbitrary cluster/namespace/CRD names
-// safely.
-function readPaletteData() {
-    const empty = { currentCluster: null, currentNamespace: null,
-        clusters: [], namespaces: [], kinds: [], actions: [] };
-    const el = document.getElementById('ro-palette-data');
-    if (!el) {
-        return empty;
-    }
-    const raw = (el.textContent || '').trim();
-    if (!raw) {
-        return empty;
-    }
-    try {
-        const data = JSON.parse(raw);
-        if (!data || typeof data !== 'object') {
-            return empty;
-        }
-        // Normalise: every group is an array even if the blob omitted/nulled it.
-        ['clusters', 'namespaces', 'kinds', 'actions'].forEach((k) => {
-            if (!Array.isArray(data[k])) {
-                data[k] = [];
-            }
-        });
-        return data;
-    } catch (e) {
-        return empty; // malformed blob -> empty palette, no throw
-    }
-}
-
-// A jump target's destination href is ONLY ever read from the server-built blob
-// (never user-typed), but as defence in depth we still refuse anything that is
-// not a same-origin path / http(s) URL before navigating -- a javascript:,
-// data:, or vbscript: scheme is never navigated.
-function paletteHrefSafe(href) {
-    if (!href || typeof href !== 'string') {
-        return '';
-    }
-    const trimmed = href.trim();
-    // A scheme-relative or absolute URL with a non-http(s) scheme is rejected;
-    // a path (starting "/") or an http(s) URL is allowed.
-    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
-        return '';
-    }
-    return trimmed;
-}
-
-// ---------------------------------------------------------------------------
-// Palette Recents (D21 / SPEC §8.7 + §8.4): the last 5 CHOSEN palette entries,
-// persisted in localStorage under the `ro-pref-*` family key 'ro-pref-recents'.
-// Recorded on EVERY palette activation (click and ⏎ both land in
-// choosePaletteRow), deduped by destination (href, or the named client
-// action), newest first. Rendered as the FIRST group on an EMPTY query only;
-// the Everywhere row exists only while typing, so the two slots never clash.
-// Reads are guarded end to end: a missing/corrupt/unavailable store yields no
-// Recents group, never a throw, and the next record rewrites it clean.
-// ---------------------------------------------------------------------------
-const PALETTE_RECENTS_KEY = 'ro-pref-recents';
-const PALETTE_RECENTS_MAX = 5;
-
-// The dedupe identity of a recents entry: its navigation target.
-function paletteRecentTarget(entry) {
-    return entry.href ? 'href:' + entry.href : 'action:' + entry.action;
-}
-
-function readPaletteRecents() {
-    let raw = null;
-    try {
-        raw = window.localStorage.getItem(PALETTE_RECENTS_KEY);
-    } catch (e) {
-        return []; // localStorage unavailable (privacy mode) -> no recents
-    }
-    if (!raw) {
-        return [];
-    }
-    try {
-        const list = JSON.parse(raw);
-        if (!Array.isArray(list)) {
-            return [];
-        }
-        // Shape-check every entry: a label plus a SAFE href or a named action.
-        return list.filter((entry) => entry && typeof entry === 'object'
-            && typeof entry.label === 'string' && entry.label !== ''
-            && ((typeof entry.href === 'string' && paletteHrefSafe(entry.href) !== '')
-                || (typeof entry.action === 'string' && entry.action !== '')))
-            .slice(0, PALETTE_RECENTS_MAX);
-    } catch (e) {
-        return []; // corrupt store -> ignored (next record starts fresh)
-    }
-}
-
-function recordPaletteRecent(label, href, action) {
-    if (!label || (!href && !action)) {
-        return; // not a navigable choice -> never recorded
-    }
-    const entry = { label: label };
-    if (href) {
-        entry.href = href;
-    }
-    if (action) {
-        entry.action = action;
-    }
-    const kept = readPaletteRecents().filter(
-        (prior) => paletteRecentTarget(prior) !== paletteRecentTarget(entry)
-    );
-    kept.unshift(entry);
-    try {
-        window.localStorage.setItem(
-            PALETTE_RECENTS_KEY,
-            JSON.stringify(kept.slice(0, PALETTE_RECENTS_MAX))
-        );
-    } catch (e) {
-        // localStorage unavailable -> the recent just will not persist
-    }
-}
-
-// The flat list of currently-rendered rows ({ el, item }) in visual order, and
-// the index of the active one -- the model the arrows + Enter drive.
-let paletteRows = [];
-let paletteActive = 0;
-
-// Build one row element for a blob entry in group `key`. Names go in via
-// textContent; the kind `icon` (server-escaped markup) is the ONLY innerHTML.
-// The destination (href) and optional client action are stashed in the dataset,
-// read back by choosePaletteRow -- navigation never touches innerHTML.
-function buildPaletteRow(entry, key) {
-    const row = document.createElement('div');
-    row.className = 'ro-pal-item';
-    row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', 'false');
-
-    // Resource types carry a server-rendered icon (already a `<span class="ico
-    // sm">…</span>` string, HTML-escaped by the server). This is the SOLE field
-    // assigned via innerHTML; all other groups lead with the label (no icon). We
-    // parse the markup in a throwaway container and move its nodes in, so the
-    // `.ico` span becomes a DIRECT child of the row (the `.ro-pal-item .ico` flex
-    // sizing applies) rather than nesting under an extra wrapper.
-    if (key === 'kinds' && entry.icon) {
-        const holder = document.createElement('template');
-        holder.innerHTML = entry.icon; // server-escaped markup -- the only innerHTML
-        row.appendChild(holder.content);
-    }
-
-    // The visible label: kinds use `kind`, every other group uses `name`/`label`.
-    // A long name arrives with a server-side middle-truncated `display` form
-    // (D5/D21 -- the feed builder applies the shared MiddleTruncate); the FULL
-    // name then rides the row title, per the SPEC §1.4 always-recoverable rule.
-    const labelText = key === 'kinds'
-        ? (entry.kind || entry.plural || '')
-        : (entry.name || entry.label || '');
-    const display = (typeof entry.display === 'string' && entry.display !== '')
-        ? entry.display
-        : labelText;
-    const label = document.createElement('span');
-    label.className = 'pal-label';
-    label.textContent = display; // textContent -> a hostile name cannot inject
-    if (display !== labelText) {
-        row.title = labelText; // truncated -> full name in the tooltip
-    }
-
-    // The "current" scope marker (the cluster/namespace in scope) rides as a
-    // .pal-ctx chip after the label, also via textContent.
-    const isCurrent = (key === 'clusters' && entry.name && entry.name === paletteScope.cluster)
-        || (key === 'namespaces' && entry.name && entry.name === paletteScope.namespace);
-    if (isCurrent) {
-        const ctx = document.createElement('span');
-        ctx.className = 'pal-ctx';
-        ctx.textContent = 'current';
-        label.appendChild(ctx);
-    }
-    row.appendChild(label);
-
-    // Resource-type rows show the api group (faint) + the quiet namespaced/
-    // cluster scope badge, so a kind reads as e.g. "Certificates
-    // cert-manager.io  namespaced". The badge wording + neutral tone follow the
-    // Unit 3 resource-types `.scope-badge` vocabulary (D3 colour law).
-    if (key === 'kinds') {
-        const meta = document.createElement('span');
-        meta.className = 'pal-meta';
-        meta.textContent = entry.group || 'core'; // textContent -> hostile group cannot inject
-        row.appendChild(meta);
-        const scope = document.createElement('span');
-        scope.className = 'pal-scope ' + (entry.namespaced ? 'ns' : 'cluster');
-        scope.textContent = entry.namespaced ? 'namespaced' : 'cluster';
-        row.appendChild(scope);
-    }
-
-    // Destination: a navigable href (server-built absolute path) and/or a named
-    // client action. Stored in the dataset; the click/Enter path reads it back.
-    // The FULL label rides the dataset too -- the Recents recorder reads it
-    // (the .pal-label node may carry the truncated display + the ctx chip).
-    const href = paletteHrefSafe(entry.href);
-    if (href) {
-        row.dataset.href = href;
-    }
-    if (entry.action) {
-        row.dataset.action = entry.action;
-    }
-    row.dataset.label = labelText;
-    return row;
-}
-
-// buildEverywhereRow is the D12 pinned-first search row, present ONLY while a
-// query exists: `Search all clusters for "q"` -> a plain GET /search?q=. The
-// leading glyph is a CLONE of the palette's own server-rendered search icon
-// (never client-built SVG markup), the label goes in via textContent.
-function buildEverywhereRow(query) {
-    const row = document.createElement('div');
-    row.className = 'ro-pal-item';
-    row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', 'false');
-    const glyph = document.querySelector('#' + PALETTE_ID + ' .ro-pal-search .ico');
-    if (glyph) {
-        row.appendChild(glyph.cloneNode(true));
-    }
-    const label = document.createElement('span');
-    label.className = 'pal-label';
-    label.textContent = 'Search all clusters for “' + query + '”';
-    row.appendChild(label);
-    row.dataset.href = '/search?q=' + encodeURIComponent(query);
-    row.dataset.label = label.textContent;
-    return row;
-}
-
-// buildRecentRow renders one persisted recent: label-led (textContent -- the
-// stored label is data, never markup), with the destination re-vetted through
-// paletteHrefSafe before it lands in the dataset (defence in depth against a
-// tampered localStorage value).
-function buildRecentRow(entry) {
-    const row = document.createElement('div');
-    row.className = 'ro-pal-item';
-    row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', 'false');
-    const label = document.createElement('span');
-    label.className = 'pal-label';
-    label.textContent = entry.label;
-    row.appendChild(label);
-    const href = paletteHrefSafe(entry.href);
-    if (href) {
-        row.dataset.href = href;
-    }
-    if (entry.action) {
-        row.dataset.action = entry.action;
-    }
-    row.dataset.label = entry.label;
-    return row;
-}
-
-// The current scope (cluster/namespace) of the page, set by readPaletteData via
-// renderPalette so buildPaletteRow can flag the in-scope rows.
-const paletteScope = { cluster: null, namespace: null };
-
-// harvestPageObjects reads the rows of the rendered list table (desktop
-// `.ro-table`, not the mobile card projection) into {name, href, status, tone}
-// so the palette can filter the objects ALREADY on the page -- no server call.
-// The status (+ tone) comes from the row's `.cell-status` when the kind has one
-// (pods, namespaces, ...); kinds with no status cell just yield an empty status.
-function harvestPageObjects() {
-    const out = [];
-    // While the Unit-24 virtualizer is engaged the DOM holds only a window of
-    // the rows -- harvest from its full row set instead, so ⌘K filters every
-    // object on the page, not just the rendered slice.
-    const rows = virtualizerActive()
-        ? virtState.rows
-        : document.querySelectorAll('#resource-list-content table.ro-table tbody tr');
-    rows.forEach((tr) => {
-        const a = tr.querySelector('td.cell-name a');
-        if (!a) {
-            return;
-        }
-        const href = a.getAttribute('href');
-        const name = (a.textContent || '').trim();
-        if (!href || !name) {
-            return;
-        }
-        let status = '';
-        let tone = '';
-        const st = tr.querySelector('.cell-status');
-        if (st) {
-            status = (st.textContent || '').trim();
-            ['ok', 'warn', 'err', 'info', 'mute'].forEach((t) => {
-                if (!tone && st.classList.contains(t)) {
-                    tone = t;
-                }
-            });
-        }
-        out.push({ name: name, href: href, status: status, tone: tone });
-    });
-    return out;
-}
-
-// buildObjectRow renders one harvested page object: its name (textContent, never
-// innerHTML) + a tone-coloured short status. The detail href rides in the dataset
-// like every other palette row, so choosePaletteRow navigates it identically.
-function buildObjectRow(o) {
-    const row = document.createElement('div');
-    row.className = 'ro-pal-item';
-    row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', 'false');
-    const label = document.createElement('span');
-    label.className = 'pal-label';
-    label.textContent = o.name;
-    row.appendChild(label);
-    if (o.status) {
-        const st = document.createElement('span');
-        st.className = 'pal-status' + (o.tone ? ' ' + o.tone : '');
-        st.textContent = o.status;
-        row.appendChild(st);
-    }
-    row.dataset.href = o.href;
-    row.dataset.label = o.name;
-    return row;
-}
-
-// (Re)render the grouped rows into #ro-palette-list, fuzzy-matched + ranked by
-// roFuzzyScore against each entry's label (SPEC §8.7 -- subsequence, prefix >
-// word-start > scattered; an empty query keeps feed order). Group order is the
-// SPEC §6.3 + D21 contract: with a query, Everywhere -> On this page ->
-// Resource types -> Namespaces -> Clusters -> Actions; with an empty query the
-// persisted Recents group leads and Everywhere is absent. Empty groups (and
-// groups with no match) are skipped; when nothing matches at all we show a "no
-// targets" line so the palette never looks broken. Rebuilds paletteRows +
-// seats the active row.
-function renderPalette(query) {
-    const list = document.getElementById('ro-palette-list');
-    if (!list) {
-        return;
-    }
-    const data = readPaletteData();
-    paletteScope.cluster = data.currentCluster || null;
-    paletteScope.namespace = data.currentNamespace || null;
-
-    // Reflect the scope chip in the search row (textContent -- never innerHTML).
-    const scope = document.getElementById('ro-palette-scope');
-    if (scope) {
-        const scopeText = paletteScope.namespace || paletteScope.cluster || '';
-        scope.textContent = scopeText;
-        scope.hidden = scopeText === '';
-    }
-
-    const q = (query || '').trim();
-    list.textContent = '';
-    paletteRows = [];
-
-    const appendGroup = (title, rows) => {
-        if (rows.length === 0) {
-            return;
-        }
-        const heading = document.createElement('div');
-        heading.className = 'ro-pal-group';
-        heading.textContent = title;
-        list.appendChild(heading);
-        rows.forEach((entry) => {
-            const row = entry.el;
-            const idx = paletteRows.length;
-            row.addEventListener('mousemove', () => setPaletteActive(idx));
-            list.appendChild(row);
-            paletteRows.push({ el: row, item: entry.item, key: entry.key });
-        });
-    };
-
-    // The first slot: while typing, the D12 Everywhere search row (pinned
-    // first, so ⏎ on a fresh query searches all clusters); on an empty query,
-    // the persisted Recents (last 5 chosen entries, newest first).
-    if (q) {
-        appendGroup('Everywhere', [{ el: buildEverywhereRow(q), item: { query: q }, key: 'everywhere' }]);
-    } else {
-        appendGroup('Recents', readPaletteRecents().map(
-            (entry) => ({ el: buildRecentRow(entry), item: entry, key: 'recents' })
-        ));
-    }
-
-    // Objects on THIS list page, harvested from the rendered table so ⌘K filters
-    // the very rows you are looking at (with a short status), no server round-trip.
-    const pageObjects = rankPaletteEntries(harvestPageObjects(), q, (o) => o.name);
-    appendGroup('On this page', pageObjects.map((o) => ({ el: buildObjectRow(o), item: o, key: 'objects' })));
-
-    PALETTE_GROUPS.forEach((group) => {
-        const entries = rankPaletteEntries(data[group.key] || [], q, (entry) => (
-            group.key === 'kinds'
-                ? (entry.kind || entry.plural || '')
-                : (entry.name || entry.label || '')
-        ));
-        appendGroup(group.title, entries.map((entry) => ({ el: buildPaletteRow(entry, group.key), item: entry, key: group.key })));
-    });
-
-    if (paletteRows.length === 0) {
-        const none = document.createElement('div');
-        none.className = 'ro-pal-empty';
-        none.textContent = 'No matching targets.';
-        list.appendChild(none);
-    }
-    paletteActive = 0;
-    paintPaletteActive();
-}
-
-// Paint exactly the active row with `.active` (+ aria-selected) and scroll it
-// into view; a no-op when the list is empty.
-function paintPaletteActive() {
-    paletteRows.forEach((r, i) => {
-        const on = i === paletteActive;
-        r.el.classList.toggle('active', on);
-        r.el.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    if (paletteRows[paletteActive]) {
-        paletteRows[paletteActive].el.scrollIntoView({ block: 'nearest' });
-    }
-}
-
-// Seat the active row at a clamped index (guards empty + out-of-range).
-function setPaletteActive(index) {
-    if (paletteRows.length === 0) {
-        return;
-    }
-    let i = index;
-    if (i < 0) { i = 0; }
-    if (i > paletteRows.length - 1) { i = paletteRows.length - 1; }
-    paletteActive = i;
-    paintPaletteActive();
-}
-
-// Move the active row by delta, wrapping at the ends (ArrowDown past the last
-// lands on the first, ArrowUp past the first lands on the last). Guards empty.
-function movePaletteActive(delta) {
-    if (paletteRows.length === 0) {
-        return;
-    }
-    paletteActive = (paletteActive + delta + paletteRows.length) % paletteRows.length;
-    paintPaletteActive();
-}
-
-// Act on a chosen row: run its named client action (only `theme` is wired today,
-// clicking the server-POST theme toggle) and/or navigate to its server-built
-// href, then close. Navigation reads ONLY dataset.href (a vetted same-origin
-// path) -- never innerHTML, never a javascript: scheme. EVERY choice is first
-// recorded into the persisted Recents (D21) -- click and ⏎ both land here.
-function choosePaletteRow(rowEl) {
-    if (!rowEl) {
-        return;
-    }
-    const action = rowEl.dataset.action;
-    const href = rowEl.dataset.href;
-    recordPaletteRecent(rowEl.dataset.label || '', href || '', action || '');
-    closePalette();
-    if (action === 'theme') {
-        const toggle = document.getElementById('btn-theme-toggle');
-        if (toggle) {
-            toggle.click(); // the server POST /preferences toggle (read-only-safe)
-        }
-        return;
-    }
-    if (href) {
-        window.location.assign(href); // plain GET to a server permalink
-    }
-}
-
-// Activate the currently-highlighted row (Enter). No-op when no row is active.
-function activatePaletteSelection() {
-    const active = paletteRows[paletteActive];
-    if (active) {
-        choosePaletteRow(active.el);
-    }
-}
-
-// Remember what had focus before the palette opened so Esc/close can restore it
-// (keyboard users land back where they were instead of on <body>).
-let palettePriorFocus = null;
-
-// True only while closePalette is handing focus back to the prior element:
-// when that element is the topbar [data-palette-open] box, the focus restore
-// itself fires focusin, which would re-open the palette the user just closed.
-let paletteRestoringFocus = false;
-
-// Open the palette: reveal the overlay (the `open` class -- never inline style),
-// build the grouped rows from the blob, seed + focus the query box, and seat the
-// first row active. Idempotent: re-opening just rebuilds from the (possibly
-// hx-boost-swapped) blob. `prefill` (optional) opens the palette mid-query --
-// the Unit 20 Refine·⌘K entry point hands the current search q here; every
-// internal caller passes nothing and gets the usual empty box.
-function openPalette(prefill) {
-    const palette = document.getElementById(PALETTE_ID);
-    const input = document.getElementById('ro-palette-input');
-    if (!palette || !input) {
-        return; // overlay not present (defensive) -> no-op
-    }
-    // Capture the restore target only on a CLOSED->open transition: a second
-    // ⌘K while open would otherwise capture the palette's own (focused) query
-    // box, and Esc would then focus a hidden input that swallows typing.
-    if (!palette.classList.contains('open')) {
-        palettePriorFocus = document.activeElement;
-    }
-    palette.classList.add('open');
-    palette.setAttribute('aria-hidden', 'false');
-    input.value = typeof prefill === 'string' ? prefill : '';
-    renderPalette(input.value);
-    input.focus(); // focus after it is shown so the caret lands in the box
-}
-// The deliberate external seam (e2e / console): programmatic palette opening,
-// optionally prefilled. No in-app caller goes through it -- the search page's
-// Refine·⌘K affordance rides the delegated [data-search-refine] click path.
-window.roOpenPalette = openPalette;
-
-// Close the palette: drop the `open` class and restore focus to wherever it was
-// before opening (if that element is still in the document). A restore target
-// INSIDE the palette is refused -- focusing the now-hidden query box would
-// swallow subsequent typing.
-function closePalette() {
-    const palette = document.getElementById(PALETTE_ID);
-    if (!palette) {
-        return;
-    }
-    palette.classList.remove('open');
-    palette.setAttribute('aria-hidden', 'true');
-    if (palettePriorFocus && document.contains(palettePriorFocus)
-        && !palette.contains(palettePriorFocus)
-        && typeof palettePriorFocus.focus === 'function') {
-        paletteRestoringFocus = true;
-        palettePriorFocus.focus();
-        paletteRestoringFocus = false;
-    }
-    palettePriorFocus = null;
-}
 
 // ---------------------------------------------------------------------------
 // ro_prefs preference cookie (D9) -- THE pref write path (the server only reads)
@@ -2286,129 +1560,15 @@ window.roLive = {
 };
 
 // ---------------------------------------------------------------------------
-// Identity-keyed row state (D6): selection + j/k focus survive every morph
+// Identity-keyed row state (D6) + row gestures migrated to row-selection.ts /
+// bulk-actions.ts / context-menu.ts / keyboard.ts (Unit 10). The selection
+// store + j/k focus + the window.roRowState seam + reapplyRowState +
+// updateBulkBar live in row-selection.ts (the needle contract still finds
+// reapplyRowState / roRowState / tr[data-key] in the bundle); the bulk Copy /
+// Download actions in bulk-actions.ts; the right-click context menu in
+// context-menu.ts. legacy.js imports closeRowMenu / clearRowState /
+// reapplyRowState / updateBulkBar for the htmx-lifecycle hooks below.
 // ---------------------------------------------------------------------------
-// Single-type list rows carry data-key="cluster/ns/name" (and an id derived
-// from it, which idiomorph uses to match rows by OBJECT identity, never by
-// position). Row-level client state lives here, keyed by that identity:
-//   - rowSelection: the multi-select Map, key -> { name } -- the bulk-action
-//     payload (the full untruncated object name) captured from the row at
-//     selection time, so Copy names / bulk download (Unit 17, which builds
-//     its names list from key/name against the bar-level data-bulk-href) can
-//     act on a selected object even after a server-side filter dropped its
-//     row from the DOM.
-//   - rowFocusKey:  the single j/k keyboard-focus row (gesture lands in Unit 18)
-// A morph syncs the server's class attribute over any client-added class (the
-// cell-flash WeakMap machinery proved this), so the classes are RE-APPLIED from
-// this store on htmx:afterSwap above. Because the keys are object identities,
-// a re-sorted or filtered fragment re-decorates the SAME objects wherever their
-// rows land. window.roRowState is the deliberate seam the gesture layer below
-// and the e2e suite drive; everything is pure DOM classList writes (CSP-clean,
-// read-only floor untouched).
-const rowSelection = new Map();
-let rowFocusKey = null;
-
-function reapplyRowState() {
-    const content = document.getElementById('resource-list-content');
-    if (!content) {
-        return;
-    }
-    let focusedRow = null;
-    content.querySelectorAll('tr[data-key]').forEach((tr) => {
-        tr.classList.toggle('is-selected', rowSelection.has(tr.dataset.key));
-        const focused = tr.dataset.key === rowFocusKey;
-        tr.classList.toggle('kfocus', focused);
-        if (focused) {
-            focusedRow = tr;
-        }
-    });
-    // a11y (D23/SPEC §8.6): the table wrap mirrors the focused row's id as
-    // aria-activedescendant (the wrap is the focusable role="group" container
-    // the template renders). Synced HERE -- the single place row state lands in
-    // the DOM -- so the attribute survives every morph exactly like kfocus
-    // does, and clears when the focused row left the fragment.
-    content.querySelectorAll('.ro-table-wrap').forEach((wrap) => {
-        if (focusedRow && focusedRow.id && wrap.contains(focusedRow)) {
-            wrap.setAttribute('aria-activedescendant', focusedRow.id);
-        } else {
-            wrap.removeAttribute('aria-activedescendant');
-        }
-    });
-}
-
-// lastKeySegment falls back to the key's trailing segment as the object name
-// (k8s names cannot contain "/") when a caller selects a key whose row is not
-// in the DOM (the e2e seam); server-rendered rows always carry data-name.
-function lastKeySegment(key) {
-    const parts = (key || '').split('/');
-    return parts[parts.length - 1] || '';
-}
-
-// rowSelectionEntry captures the bulk-action payload for key from its row:
-// the object NAME (the bulk download derives its names list from key/name;
-// per-row download hrefs stay on the row dataset for the context menu).
-function rowSelectionEntry(key) {
-    const content = document.getElementById('resource-list-content');
-    let entry = null;
-    if (content) {
-        content.querySelectorAll('tr[data-key]').forEach((tr) => {
-            if (tr.dataset.key === key) {
-                entry = { name: tr.dataset.name || lastKeySegment(key) };
-            }
-        });
-    }
-    return entry || { name: lastKeySegment(key) };
-}
-
-function setRowSelected(key, on) {
-    if (on) {
-        rowSelection.set(key, rowSelectionEntry(key));
-    } else {
-        rowSelection.delete(key);
-    }
-    reapplyRowState();
-    updateBulkBar();
-}
-
-function clearRowState() {
-    rowSelection.clear();
-    rowFocusKey = null;
-    reapplyRowState();
-    updateBulkBar();
-}
-
-window.roRowState = {
-    setSelected: setRowSelected,
-    setFocus(key) {
-        rowFocusKey = key || null;
-        reapplyRowState();
-    },
-    clear: clearRowState,
-    selectedKeys() {
-        return Array.from(rowSelection.keys());
-    },
-    // selectedEntries feeds the bulk actions: Copy names reads .name, and the
-    // bulk Download-YAML builds its names list from .key/.name against the
-    // bar-level data-bulk-href base (bulkDownloadYAML) -- there is no
-    // per-object href in the store.
-    selectedEntries() {
-        return Array.from(rowSelection, ([key, entry]) => ({ key: key, name: entry.name }));
-    },
-};
-
-// ---------------------------------------------------------------------------
-// Row gestures (Unit 16 / D10): row-click selection, right-click context menu,
-// and the bottom-center bulk bar -- single-type pages only (D1: the only pages
-// rendering tr[data-key] rows inside #resource-list-content, and the only
-// pages mounting the #ro-ctxmenu / #ro-bulkbar chrome next to the swap target)
-// ---------------------------------------------------------------------------
-// The three gestures stay distinct (SPEC §5): a NAME click keeps its anchor
-// (opens), a ROW click toggles selection in the identity-keyed store above,
-// and a RIGHT click opens the context menu bound to that row's data
-// attributes. Everything is delegated document listeners (CSP-clean, survive
-// every swap); menu navigation goes through window.location.assign -- the
-// palette pattern -- because htmx captures a boosted anchor's href at PROCESS
-// time, so runtime-bound anchor hrefs would navigate to stale targets.
 
 // ---------------------------------------------------------------------------
 // Toasts (D24 / SPEC §8.8): bottom-right, 3.5s, mono caption voice. A toast
@@ -2426,262 +1586,14 @@ window.roRowState = {
 // ---------------------------------------------------------------------------
 window.roToast = showToast;
 
-// updateBulkBar paints the pill from the selection store: at >=1 selected it
-// reveals (`is-open`) with "N selected"; at 0 it fades out AND goes `inert`,
-// so the invisible buttons can never take focus or clicks.
-//
-// On bulk-capable bars (data-bulk-href -- single-cluster lists only, D11) it
-// also enforces the client half of the double-sided download bound: above
-// BULK_NAMES_MAX the Download button disables and ONE toast announces the
-// refusal per cap crossing (re-armed once the selection drops back under).
-// A server-disabled button (multi-cluster scope, no data-bulk-href) is never
-// touched, so it can never be re-enabled here.
-const BULK_NAMES_MAX = 100;
-let bulkOverCapToasted = false;
-
-function updateBulkBar() {
-    const bar = document.getElementById('ro-bulkbar');
-    if (!bar) {
-        return;
-    }
-    const count = rowSelection.size;
-    const label = document.getElementById('ro-bulk-count');
-    if (label && count > 0) {
-        label.textContent = count + ' selected';
-    }
-    bar.classList.toggle('is-open', count > 0);
-    bar.toggleAttribute('inert', count === 0);
-    const download = document.getElementById('ro-bulk-download');
-    if (download && bar.dataset.bulkHref) {
-        const over = count > BULK_NAMES_MAX;
-        download.disabled = over;
-        download.title = over ? 'Over the ' + BULK_NAMES_MAX + '-object bulk download cap' : '';
-        if (over && !bulkOverCapToasted) {
-            showToast('Download refused: ' + count + ' selected (max ' + BULK_NAMES_MAX + ')');
-        }
-        bulkOverCapToasted = over;
-    }
-}
-
-// roCopyText copies text via the async clipboard API with a hidden-textarea
-// execCommand fallback: navigator.clipboard exists only in secure contexts,
-// and a plain-HTTP LAN deployment is a real readout topology. done(ok) runs
-// after the attempt either way.
-function roCopyText(text, done) {
-    const fallback = () => {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.setAttribute('readonly', '');
-        ta.style.position = 'fixed';
-        ta.style.top = '-1000px';
-        document.body.appendChild(ta);
-        ta.select();
-        let ok = false;
-        try {
-            ok = document.execCommand('copy');
-        } catch (err) {
-            ok = false;
-        }
-        ta.remove();
-        return ok;
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(() => done(true), () => done(fallback()));
-        return;
-    }
-    done(fallback());
-}
-
-// toggleRowSelection is the row-click gesture: flip this row's key in the
-// store and repaint. The payload (the object name) is captured from the
-// clicked row itself.
-function toggleRowSelection(tr) {
-    const key = tr.dataset.key;
-    if (!key) {
-        return;
-    }
-    if (rowSelection.has(key)) {
-        rowSelection.delete(key);
-    } else {
-        rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key) });
-    }
-    reapplyRowState();
-    updateBulkBar();
-}
-
-// bulkCopyNames copies the newline-joined FULL names of every selected row --
-// PINNED: including rows the live free-text filter is currently hiding and
-// rows a server-side filter dropped from the DOM (selection is explicit user
-// intent; the store, not the DOM, is the source). Feedback is the inline
-// "Copied" flip on the button itself -- deliberately NO toast (D10).
-let bulkCopyResetTimer = 0;
-function bulkCopyNames(button) {
-    const names = Array.from(rowSelection.values(), (entry) => entry.name).join('\n');
-    roCopyText(names, (ok) => {
-        if (!ok) {
-            return; // clipboard refused: no false "Copied"
-        }
-        const label = button.querySelector('span:last-child');
-        if (!label) {
-            return;
-        }
-        window.clearTimeout(bulkCopyResetTimer);
-        label.textContent = 'Copied';
-        bulkCopyResetTimer = window.setTimeout(() => {
-            label.textContent = 'Copy names';
-        }, 1100);
-    });
-}
-
-// bulkDownloadYAML navigates to the bulk GET (D11): the CLEAN server-baked
-// base href (data-bulk-href, no filter/sort params -- the server looks names
-// up in the UNFILTERED table, so selected-but-filtered rows are included per
-// the Unit 16 pin) plus the comma-joined selected names. Grammar follows the
-// list scope: bare object names on single-namespace and cluster-scoped lists;
-// ns/name on _all-namespaces lists, derived by stripping the list's cluster
-// prefix (data-bulk-cluster) off each selection key (data-key identity
-// cluster/ns/name; a cluster-scoped row there has no ns segment and yields
-// its bare name -- matching the server's index). The URL serves a
-// Content-Disposition attachment, so location.assign downloads WITHOUT
-// leaving the page and the selection deliberately survives (a download is
-// not a screen change). No "ready" toast either way (D24): the browser owns
-// the plain GET.
-function bulkDownloadYAML(bar) {
-    if (!bar || !bar.dataset.bulkHref) {
-        return;
-    }
-    const entries = window.roRowState.selectedEntries();
-    if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
-        return; // the button is disabled in both states; belt for direct calls
-    }
-    const clusterPrefix = (bar.dataset.bulkCluster || '') + '/';
-    const names = entries.map((entry) => {
-        if (bar.dataset.bulkAllns === 'true' && entry.key.indexOf(clusterPrefix) === 0) {
-            return entry.key.slice(clusterPrefix.length);
-        }
-        return entry.name;
-    });
-    window.location.assign(bar.dataset.bulkHref + '&names=' + encodeURIComponent(names.join(',')));
-}
-
-// The context menu is ONE server-rendered popover (layout.templ rowCtxMenuC);
-// opening binds the right-clicked row's server-resolved targets onto the
-// items' data-href and stashes the row name for Copy. Position is fixed and
-// viewport-clamped (the prototype's clamp values: menu min-width 200 + room,
-// five items tall).
-const CTX_CLAMP_W = 220;
-const CTX_CLAMP_H = 240;
-
-function closeRowMenu() {
-    const menu = document.getElementById('ro-ctxmenu');
-    if (menu) {
-        menu.classList.remove('is-open');
-        menu.setAttribute('aria-hidden', 'true');
-    }
-}
-
-function openRowMenu(tr, x, y) {
-    const menu = document.getElementById('ro-ctxmenu');
-    if (!menu) {
-        return;
-    }
-    const bind = (action, href) => {
-        const item = menu.querySelector('[data-ctx="' + action + '"]');
-        if (!item) {
-            return;
-        }
-        if (href) {
-            item.dataset.href = href;
-            item.hidden = false;
-        } else {
-            delete item.dataset.href;
-            item.hidden = true; // e.g. View logs on a non-pod row
-        }
-    };
-    bind('open', tr.dataset.href || '');
-    bind('yaml', tr.dataset.yaml || '');
-    bind('logs', tr.dataset.logs || '');
-    bind('download', tr.dataset.download || '');
-    menu.dataset.name = tr.dataset.name || lastKeySegment(tr.dataset.key);
-    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W)) + 'px';
-    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - CTX_CLAMP_H)) + 'px';
-    menu.classList.add('is-open');
-    menu.setAttribute('aria-hidden', 'false');
-}
-
-// Right-click on an identity row opens the menu; anywhere else closes ours
-// and yields to the native menu.
-document.addEventListener('contextmenu', (event) => {
-    const tr = event.target.closest('#resource-list-content tr[data-key]');
-    if (!tr) {
-        closeRowMenu();
-        return;
-    }
-    event.preventDefault();
-    openRowMenu(tr, event.clientX, event.clientY);
-});
-
-// One delegated click listener carries the whole gesture surface: menu item
-// activation, click-away dismissal, the bulk-bar buttons, and the row-click
-// selection toggle.
-document.addEventListener('click', (event) => {
-    // 1. Context-menu item: act, then close. Copy stays on the page; the
-    //    navigation items go through location.assign with the bound data-href.
-    //    Download YAML is a Content-Disposition attachment, so assigning it
-    //    downloads WITHOUT leaving the page (selection survives -- correct:
-    //    a download is not a screen change).
-    const item = event.target.closest('#ro-ctxmenu [data-ctx]');
-    if (item) {
-        event.preventDefault();
-        const menu = item.closest('#ro-ctxmenu');
-        const name = (menu && menu.dataset.name) || '';
-        const href = item.dataset.href || '';
-        closeRowMenu();
-        if (item.dataset.ctx === 'copy') {
-            roCopyText(name, () => {});
-        } else if (href) {
-            window.location.assign(href);
-        }
-        return;
-    }
-    // 2. Any other click dismisses an open menu (and falls through, so a
-    //    click that happens to land on a row still toggles selection).
-    closeRowMenu();
-
-    // 3. Bulk-bar actions. A disabled #ro-bulk-download (multi-cluster scope
-    //    or over the selection cap) never dispatches a click, so reaching the
-    //    branch implies the action is allowed.
-    const bulkDownload = event.target.closest('#ro-bulk-download');
-    if (bulkDownload) {
-        bulkDownloadYAML(bulkDownload.closest('#ro-bulkbar'));
-        return;
-    }
-    const bulkCopy = event.target.closest('#ro-bulk-copy');
-    if (bulkCopy) {
-        bulkCopyNames(bulkCopy);
-        return;
-    }
-    if (event.target.closest('#ro-bulk-clear')) {
-        clearRowState();
-        return;
-    }
-
-    // 4. Row click toggles selection -- but interactive descendants keep
-    //    their own gesture (the NAME anchor opens, label chips filter, the
-    //    +N overflow expands; SPEC §5 keeps the gestures distinct).
-    const tr = event.target.closest('#resource-list-content tr[data-key]');
-    if (tr && !event.target.closest('a, button, input, select, textarea, label')) {
-        toggleRowSelection(tr);
-    }
-});
-
-// esc closes the context menu (its own listener: the palette/filter keydown
-// handler above returns early on unrelated states and never sees this).
-document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-        closeRowMenu();
-    }
-});
+// updateBulkBar / roCopyText / toggleRowSelection migrated to row-selection.ts;
+// bulkCopyNames / bulkDownloadYAML to bulk-actions.ts; the context menu
+// (closeRowMenu / openRowMenu) + the row-gesture click listener (C2: menu-item
+// activation, the UNCONDITIONAL dismiss, bulk buttons, row-select) + the
+// Esc-closes-menu keydown (K2) to context-menu.ts / bulk-actions.ts /
+// row-selection.ts dispatcher bindings (bindings.ts). The intra-listener
+// close-menu-then-select sequence (compound case 1) is reproduced as ordered
+// bindings with NO stop between the dismiss and the row-select.
 
 // Selection lifecycle: an hx-boost navigation swaps the <body> -- THE "screen
 // change" moment (SPEC §6.4) where selection clears. Content morphs target
@@ -2721,214 +1633,14 @@ document.addEventListener('htmx:historyRestore', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Keyboard row navigation + the "?" keyboard-map overlay (Unit 18 / D10/D23)
+// Keyboard row navigation + the "?" overlay (Unit 18) migrated to keyboard.ts
+// (Unit 10). keyboardTargetIsTextEntry / keyboardSurfaceBusy / visibleKeyRows /
+// moveRowFocus / openFocusedRow + the kbd overlay + the kbd-backdrop click (C3)
+// + the gesture keydown (K3) ride dispatcher bindings (bindings.ts). The
+// surface-busy DOM guard (palette .open, ctxmenu .is-open, ns-dropdown
+// .is-active, columns popover) is the real decoupler; the columns popover flag
+// (Unit 12, still resident) is read through the window.roClusterBridge seam.
 // ---------------------------------------------------------------------------
-// j/k move a single keyboard row focus through the VISIBLE identity rows of
-// the list (single-type pages only by construction: only those rows carry
-// data-key, D1), ⏎ opens the focused row's detail href, "?" toggles the
-// keyboard-map card. Focus is keyed by data-key through the identity store
-// above (window.roRowState.setFocus -> rowFocusKey), so it survives every
-// morph: reapplyRowState re-paints `kfocus` AND mirrors the focused row id
-// into the table wrap's aria-activedescendant after each swap.
-//
-// The gesture keys are INERT while any text-entry surface or overlay owns the
-// keyboard: a focused input/textarea/select (the chips editor's ⏎-commits-a-
-// chip protocol above all -- it must never double as ⏎-opens-a-row), the ⌘K
-// palette, the row context menu, the namespace dropdown, the ⊞ columns
-// popover, and the kbd overlay itself (where only esc/"?" act, and Tab is
-// trapped: the card is the dialog's only stop, so focus cannot escape to the
-// page behind it). Pure delegated DOM listeners -- CSP-clean, survives every
-// swap, read-only floor untouched (⏎ issues a plain GET navigation, the
-// palette/ctxmenu pattern).
-
-// keyboardTargetIsTextEntry: the focused element owns typed characters, so
-// the gesture keys must pass through untouched (j in the filter editor is the
-// letter j, ⏎ commits a chip -- handleFilterInputKeydown owns that protocol).
-function keyboardTargetIsTextEntry(target) {
-    if (!target || target.nodeType !== 1) {
-        return false;
-    }
-    const tag = target.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
-}
-
-// keyboardSurfaceBusy: an open palette / context menu / namespace dropdown /
-// columns popover owns the keys (SPEC §8.6: menus and overlays are modal to
-// the keyboard).
-function keyboardSurfaceBusy() {
-    const palette = document.getElementById(PALETTE_ID);
-    if (palette && palette.classList.contains('open')) {
-        return true;
-    }
-    const menu = document.getElementById('ro-ctxmenu');
-    if (menu && menu.classList.contains('is-open')) {
-        return true;
-    }
-    const nsDropdown = document.getElementById('namespace-dropdown');
-    if (nsDropdown && nsDropdown.classList.contains('is-active')) {
-        return true;
-    }
-    return colsPopOpen;
-}
-
-// visibleKeyRows: the identity rows j/k walk, in DOM order, with rows the
-// live free-text filter is hiding excluded (focus lands only on rows the user
-// can see). Reads the DOM (not the row model) deliberately: the rows in the
-// document ARE the navigable surface.
-function visibleKeyRows() {
-    return Array.from(
-        document.querySelectorAll('#resource-list-content tbody tr[data-key]')
-    ).filter((tr) => !tr.classList.contains('ro-row-filtered'));
-}
-
-// moveRowFocus steps the focus key by delta through the visible rows,
-// clamping at both ends (the prototype's j/k semantics: the first j lands on
-// the first row; k at the top stays at the top). Returns true when a row took
-// focus (the caller preventDefaults only then, so j/k on a page with no
-// identity rows keeps every browser default, e.g. Firefox quick-find).
-//
-// While the Unit-24 virtualizer is engaged the DOM holds only a window of the
-// rows, so the walker is fed from the virtualizer's full visible list instead
-// (D20: the focus jump scrolls the window).
-function moveRowFocus(delta) {
-    if (virtualizerActive()) {
-        return virtualizeMoveFocus(delta);
-    }
-    const rows = visibleKeyRows();
-    if (rows.length === 0) {
-        return false;
-    }
-    const current = rows.findIndex((tr) => tr.dataset.key === rowFocusKey);
-    const next = Math.max(0, Math.min(rows.length - 1, current + delta));
-    window.roRowState.setFocus(rows[next].dataset.key);
-    rows[next].scrollIntoView({ block: 'nearest' });
-    return true;
-}
-
-// openFocusedRow (⏎): navigate to the focused row's server-resolved open
-// href -- the same data-href the context menu's Open binds (it mirrors the
-// name anchor exactly, namespaces drill-down included). Only acts when the
-// focused row is still present AND visible.
-function openFocusedRow() {
-    if (!rowFocusKey) {
-        return false;
-    }
-    let row = visibleKeyRows().find((tr) => tr.dataset.key === rowFocusKey);
-    if (!row && virtualizerActive()) {
-        // Windowed (Unit 24): the focused row may have scrolled out of the
-        // rendered window -- it is still logically visible, and the detached
-        // row carries the same server-resolved open href.
-        const tr = virtState.byKey.get(rowFocusKey);
-        if (tr && virtState.visible.indexOf(tr) !== -1) {
-            row = tr;
-        }
-    }
-    if (!row || !row.dataset.href) {
-        return false;
-    }
-    window.location.assign(row.dataset.href);
-    return true;
-}
-
-// --- the "?" keyboard-map overlay (layout chrome, kbdOverlayC) --------------
-// Open/close follow the palette pattern: the `open` class + aria-hidden, with
-// the prior focus remembered so esc lands the keyboard user back where they
-// were. The card (tabindex="-1") takes focus on open; it is the dialog's only
-// focus stop, so the Tab trap in the keydown handler below completes the
-// focus trap.
-let kbdPriorFocus = null;
-
-function kbdOverlayEl() {
-    return document.getElementById('ro-kbd-overlay');
-}
-
-function kbdOverlayOpen() {
-    const overlay = kbdOverlayEl();
-    return !!overlay && overlay.classList.contains('open');
-}
-
-function openKbdOverlay() {
-    const overlay = kbdOverlayEl();
-    if (!overlay) {
-        return;
-    }
-    kbdPriorFocus = document.activeElement;
-    overlay.classList.add('open');
-    overlay.setAttribute('aria-hidden', 'false');
-    const card = overlay.querySelector('.kbd-card');
-    if (card) {
-        card.focus();
-    }
-}
-
-function closeKbdOverlay() {
-    const overlay = kbdOverlayEl();
-    if (!overlay) {
-        return;
-    }
-    overlay.classList.remove('open');
-    overlay.setAttribute('aria-hidden', 'true');
-    if (kbdPriorFocus && document.contains(kbdPriorFocus)
-        && typeof kbdPriorFocus.focus === 'function') {
-        kbdPriorFocus.focus();
-    }
-    kbdPriorFocus = null;
-}
-
-// A click on the overlay backdrop ITSELF (outside the card) closes it -- the
-// palette's backdrop contract.
-document.addEventListener('click', (event) => {
-    if (event.target.id === 'ro-kbd-overlay') {
-        closeKbdOverlay();
-    }
-});
-
-// THE gesture keydown listener. Runs after the palette listener (registration
-// order) -- that one returns without preventDefault for every key handled
-// here, and the gates below keep the two surfaces disjoint (palette open ->
-// inert here; its input focused -> text-entry gate).
-document.addEventListener('keydown', (event) => {
-    // The kbd overlay is modal: esc and "?" close it, Tab is trapped on the
-    // card (its only focus stop), everything else is inert while open.
-    if (kbdOverlayOpen()) {
-        if (event.key === 'Escape' || event.key === '?') {
-            event.preventDefault();
-            closeKbdOverlay();
-        } else if (event.key === 'Tab') {
-            event.preventDefault();
-        }
-        return;
-    }
-    if (event.metaKey || event.ctrlKey || event.altKey) {
-        return; // never hijack a chorded shortcut
-    }
-    if (keyboardTargetIsTextEntry(event.target) || keyboardSurfaceBusy()) {
-        return;
-    }
-    if (event.key === '?') {
-        event.preventDefault();
-        openKbdOverlay();
-        return;
-    }
-    if (event.key === 'j' || event.key === 'k') {
-        if (moveRowFocus(event.key === 'j' ? 1 : -1)) {
-            event.preventDefault();
-        }
-        return;
-    }
-    if (event.key === 'Enter') {
-        // ⏎ opens the focused row -- but never steals the key from a real
-        // control (a focused sort-header link, button, or summary keeps its
-        // native activation; the focusable table wrap is intentionally NOT
-        // excluded -- ⏎ there is the aria-activedescendant pattern).
-        if (event.target.closest && event.target.closest('a, button, summary')) {
-            return;
-        }
-        if (openFocusedRow()) {
-            event.preventDefault();
-        }
-    }
-});
 
 // ---------------------------------------------------------------------------
 // Virtualization (Unit 24 / D20): client-side row windowing above ~500 rows
@@ -3333,8 +2045,9 @@ function virtualizeMoveFocus(delta) {
         return false;
     }
     let current = -1;
+    const focusKey = window.roRowState.focusedKey();
     for (let i = 0; i < list.length; i++) {
-        if (list[i].dataset.key === rowFocusKey) {
+        if (list[i].dataset.key === focusKey) {
             current = i;
             break;
         }
@@ -3463,6 +2176,33 @@ function syncColsPopState() {
     const pop = document.getElementById('ro-cols-pop');
     colsPopOpen = !!pop && pop.classList.contains('is-open');
 }
+
+// window.roClusterBridge -- the seam the migrated Unit-10 cluster reads for the
+// pieces that still live in this monolith (the roRowState/roVirtual/roFuzzy
+// seam pattern): the Unit-24 virtualizer internals (the windowed j/k walk +
+// harvest's full row set) and the Unit-12 columns popover open flag (the
+// keyboardSurfaceBusy guard). Assigned at module load -- before any dispatcher
+// binding can fire (bindings run only inside user events). keyboard.ts /
+// palette.ts read it at call time, so the bundle's evaluation order is
+// irrelevant. Type: ./cluster-bridge.ts (ClusterBridge).
+window.roClusterBridge = {
+    virtualizerActive: virtualizerActive,
+    virtRows() {
+        return virtState.rows;
+    },
+    virtVisible() {
+        return virtState.visible;
+    },
+    virtRowByKey(key) {
+        return virtState.byKey.get(key) || null;
+    },
+    virtMoveFocus(delta) {
+        return virtualizeMoveFocus(delta);
+    },
+    colsPopOpen() {
+        return colsPopOpen;
+    },
+};
 
 // commitColumnVisibility reads the popover's checkbox state into the complete
 // hidden-column list, persists it, and re-renders the fragment. The identity
