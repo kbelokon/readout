@@ -515,11 +515,7 @@ func TestLoadingSkeletonStateHooks(t *testing.T) {
 	// request clears it. There is no headless JS runner in this suite, so pin
 	// the source wiring exactly like the stale-handler test does; the behavior
 	// itself is driven end to end by the designed-states e2e skeleton case.
-	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
-	if err != nil {
-		t.Fatalf("read readout.js: %v", err)
-	}
-	js := string(src)
+	js := readoutJS(t)
 	for _, needle := range []string{
 		"ro-skel-template",        // the inert source template
 		"listRegionIsEmpty",       // the empty-target gate
@@ -582,11 +578,7 @@ func TestStatesStaleMarkupHooks(t *testing.T) {
 // read-only retry trigger. There is no headless JS runner in this suite, so this
 // asserts the source wires the exact hooks the rendered markup exposes.
 func TestStatesStaleHandlerInReadoutJS(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
-	if err != nil {
-		t.Fatalf("read readout.js: %v", err)
-	}
-	js := string(src)
+	js := readoutJS(t)
 	for _, needle := range []string{
 		"htmx:responseError",    // a non-2xx refresh reply -> stale
 		"htmx:sendError",        // a transport failure on refresh -> stale

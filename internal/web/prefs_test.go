@@ -17,8 +17,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -466,17 +464,13 @@ func TestLiveOptionScopeGate(t *testing.T) {
 // switch), the programmatic do-not-write guards, and the roRefresh migration
 // (read-once fallback only -- the legacy localStorage WRITE is retired).
 func TestPrefsReadoutJSContract(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
-	if err != nil {
-		t.Fatalf("read readout.js: %v", err)
-	}
-	js := string(src)
+	js := readoutJS(t)
 	for _, needle := range []string{
 		"'ro_prefs'",                            // the cookie name
 		"'v1.'",                                 // the pinned version prefix
 		"PREFS_MAX_ENCODED = 3072",              // the eviction cap
 		"Path=/; SameSite=Lax; Max-Age=",        // the pinned attributes
-		"PREFS_COOKIE_MAX_AGE = 31536000",       // one-year Max-Age
+		"PREFS_COOKIE_MAX_AGE = 31536e3",        // one-year Max-Age (esbuild emits the shortest numeric form)
 		"window.location.protocol === 'https:'", // Secure on https only
 		"'; Secure'",
 		"roPrefsSetSort",                      // sort-click write
@@ -501,24 +495,16 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 		}
 	}
 	// The sort-write hook treats programmatic traffic as do-not-write: the
-	// RO-No-Push marker and preload warm-ups are both guarded in the same
-	// beforeRequest hook that discriminates on the thead ancestor.
-	start := strings.Index(js, "Sort-click pref write")
-	if start < 0 {
-		t.Fatalf("readout.js lost the sort-write hook section marker")
+	// RO-No-Push marker and preload warm-ups are guarded in the SAME
+	// beforeRequest gate (one expression) that then discriminates on the
+	// thead ancestor before writing. The generated bundle strips section
+	// comments, so pin the guard expression and the write call themselves
+	// rather than comment anchors.
+	if !strings.Contains(js, "cfg.headers['RO-No-Push'] || cfg.headers['HX-Preloaded'] === 'true'") {
+		t.Fatalf("sort-write hook lost its combined RO-No-Push/HX-Preloaded do-not-write guard")
 	}
-	// The closing marker is the NEXT section header after the hook ("Auto-
-	// refresh interval" also names an earlier click-handler comment, so the
-	// search must begin at the hook).
-	length := strings.Index(js[start:], "Auto-refresh interval")
-	if length < 0 {
-		t.Fatalf("readout.js lost the section header after the sort-write hook")
-	}
-	hook := js[start : start+length]
-	for _, guard := range []string{"RO-No-Push", "HX-Preloaded"} {
-		if !strings.Contains(hook, guard) {
-			t.Fatalf("sort-write hook lost its %q do-not-write guard", guard)
-		}
+	if !strings.Contains(js, "roPrefsSetSort(plural, sort)") {
+		t.Fatalf("sort-write hook lost its roPrefsSetSort write")
 	}
 	// The legacy roRefresh localStorage WRITE is gone: the cookie is canonical
 	// (the key survives only as refreshMode()'s migration read).
