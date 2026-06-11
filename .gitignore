@@ -2,6 +2,8 @@
 /dist/
 /out/
 /tmp/
+# cross-compiled linux/amd64 binaries for the containerized e2e run (make e2e-docker)
+.build/
 # root-anchored: the compiled binary at the repo root, NOT the cmd/readout/ package
 /readout
 *.out

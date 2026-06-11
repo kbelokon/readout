@@ -42,7 +42,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'go run ./harness',
+    // Host flow runs the harness via `go run`; the containerized flow has no Go
+    // toolchain, so HARNESS_BIN points at a prebuilt linux/amd64 binary.
+    command: process.env.HARNESS_BIN ?? 'go run ./harness',
     url: `${baseURL}/clusters`,
     // Never reuse a stray server: stale fixture state would make runs
     // nondeterministic, which is the whole point of the harness.
