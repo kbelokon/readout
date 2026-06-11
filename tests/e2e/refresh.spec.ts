@@ -205,6 +205,33 @@ test('the interval choice (the new 10s option) survives reload via the prefs coo
   await expect(page.locator('.refresh-option[data-interval="10"]')).toHaveClass(/is-active/);
 });
 
+test('the refresh menu opens on hover and survives the pointer travelling into it', async ({
+  page,
+}) => {
+  await page.goto(PODS);
+  const trigger = page.locator('#refresh-dropdown .refresh-trigger');
+  const menu = page.locator('.refresh-menu');
+  const option = page.locator('.refresh-option[data-interval="30"]');
+
+  // Hover alone reveals the menu -- no click required.
+  await trigger.hover();
+  await expect(menu).toBeVisible();
+
+  // The pointer must be able to TRAVEL from the trigger into the menu: walk
+  // the real path in small steps (crossing the visual gap under the trigger).
+  // Without a hover bridge over that gap the menu closes mid-travel.
+  const from = (await trigger.boundingBox())!;
+  const to = (await option.boundingBox())!;
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 25 });
+  await expect(menu).toBeVisible();
+  await expect(option).toBeVisible();
+
+  // And the option is directly clickable from the hover-opened state.
+  await option.click();
+  await expect(page.locator('#refresh-label')).toHaveText('30s');
+});
+
 test('the livedot pulses brand while an interval is active and is static ghost at Off', async ({
   page,
 }) => {

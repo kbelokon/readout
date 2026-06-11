@@ -1978,6 +1978,19 @@
     }
     /* refresh menu is right-aligned (it sits at the end of the bar) */
     .refresh-menu { right: 0; min-width: 150px; }
+    /* Hover bridge: the menu floats 6px below the trigger, and that gap lies
+       OUTSIDE #refresh-dropdown -- a pointer travelling from the trigger into
+       the menu would drop :hover mid-way and the menu would slam shut (the
+       click-first behavior users hit before this strip existed). The invisible
+       strip keeps the container hovered across the gap. */
+    .refresh-menu::before {
+        content: "";
+        position: absolute;
+        top: -8px;
+        left: 0;
+        right: 0;
+        height: 8px;
+    }
     .ctx-menu { left: 0; max-height: 60vh; overflow-y: auto; }
 
     /* OPEN contracts: closed by default above, shown only on the open state. */
