@@ -18,6 +18,7 @@
 // and guards itself in the handler.
 import type { Binding } from './events.js';
 import { foldBindings } from './yaml-folds.js';
+import { logsBindings } from './logs.js';
 
 // Leaf feature modules contribute their bindings here. theme.ts + toasts.ts are
 // leaves with NO delegated document binding (theme's only hook is a matchMedia
@@ -29,4 +30,5 @@ import { foldBindings } from './yaml-folds.js';
 // reproducing their position ahead of the section-fold / gutter-anchor branches.
 export const bindings: Binding[] = [
     ...foldBindings,
+    ...logsBindings,
 ];

@@ -57,6 +57,10 @@ import { showToast } from './toasts.js';
 // .linenos a click branches now live as dispatcher bindings (bindings.ts).
 import { buildYamlFolds, highlightYamlLine, yamlCodeText } from './yaml-folds.js';
 
+// Logs page leaf (Unit 9): initLogsFollow is a runInit step; the Follow toggle
+// and ts/wrap display toggles are dispatcher bindings (bindings.ts).
+import { initLogsFollow } from './logs.js';
+
 // ---------------------------------------------------------------------------
 // HTMX config: native View Transitions, reduced-motion-aware
 // ---------------------------------------------------------------------------
@@ -230,23 +234,8 @@ document.addEventListener('click', (event) => {
         requestListRefresh();
         return;
     }
-    // Logs Follow toggle (D25): the active accent "Following" sticks the
-    // stream to its tail; clicking flips to the quiet "Follow" (and back).
-    // Re-activating snaps the stream to the tail immediately. Pure class +
-    // label flips -- no request, the read-only floor is untouched.
-    const logFollow = target.closest('#logFollow');
-    if (logFollow) {
-        const following = !logFollow.classList.toggle('quiet');
-        logFollow.setAttribute('aria-pressed', following ? 'true' : 'false');
-        const label = logFollow.querySelector('.follow-label');
-        if (label) {
-            label.textContent = following ? 'Following' : 'Follow';
-        }
-        if (following) {
-            logsScrollToTail();
-        }
-        return;
-    }
+    // Logs Follow toggle (D25) migrated to logs.ts (Unit 9 leaf): handled by a
+    // stop:true dispatcher binding registered ahead of this listener.
     // Chips editor (D7): a chip's ✕ is a real link (no-JS fallback) whose href
     // is the server-built removal URL; intercept it to ride the v2 partial loop
     // (morph + canonical push) instead of a full navigation.
@@ -518,29 +507,9 @@ document.addEventListener('change', (event) => {
         return;
     }
 
-    // Logs display toggles (D25): CLIENT-SIDE only, no refetch. The timestamps
-    // checkbox shows/hides the .log-ts spans via the stream's `hide-ts` class;
-    // the wrap checkbox toggles `wrap` (pre-wrap + break-word). The server
-    // already rendered every span -- these are pure presentation flips. Both
-    // flips reflow the stream, so while Following is active the tail is
-    // re-pinned afterwards (a followed stream must stay at its tail).
-    const logTs = event.target.closest('#logTs');
-    if (logTs) {
-        const pre = document.querySelector('pre.ro-logpre');
-        if (pre) {
-            pre.classList.toggle('hide-ts', !logTs.checked);
-            logsPinTailIfFollowing();
-        }
-        return;
-    }
-    const logWrap = event.target.closest('#logWrap');
-    if (logWrap) {
-        const pre = document.querySelector('pre.ro-logpre');
-        if (pre) {
-            pre.classList.toggle('wrap', logWrap.checked);
-            logsPinTailIfFollowing();
-        }
-    }
+    // Logs display toggles (D25) #logTs / #logWrap migrated to logs.ts (Unit 9
+    // leaf): handled by stop:true dispatcher change-bindings registered ahead of
+    // this listener.
 });
 
 // ---------------------------------------------------------------------------
@@ -794,42 +763,9 @@ function collapseSectionsFromHash() {
 // injectFoldControls. legacy imports buildYamlFolds (runInit step) and
 // yamlCodeText (the still-resident per-section copy branch).
 
-// ---------------------------------------------------------------------------
-// Logs page Follow (D25) -- stick the stream to its tail.
-// ---------------------------------------------------------------------------
-// The .ro-logpre stream is its own scroll container (max-height + overflow in
-// CSS) with the newest entries at the bottom. While the Follow toggle is
-// active (the default "Following" state) the view pins to the tail: on page
-// load and whenever the user re-activates the toggle. There is no client
-// streaming -- the page refreshes via the form GET -- so "follow" means
-// "start at, and snap back to, the tail".
-
-// logsScrollToTail pins the log stream to its tail.
-function logsScrollToTail() {
-    const pre = document.querySelector('pre.ro-logpre');
-    if (pre) {
-        pre.scrollTop = pre.scrollHeight;
-    }
-}
-
-// logsPinTailIfFollowing re-pins the stream to its tail when the Follow
-// toggle is active. Beyond page init, the wrap/timestamps display toggles
-// call it after their class flips: both reflow the stream (line heights and
-// widths change), which would otherwise drift a followed tail mid-stream.
-// Idempotent: re-pinning an already-pinned stream is a no-op, and pages
-// without #logFollow bail.
-function logsPinTailIfFollowing() {
-    const follow = document.getElementById('logFollow');
-    if (follow && !follow.classList.contains('quiet')) {
-        logsScrollToTail();
-    }
-}
-
-// initLogsFollow starts a logs page at the stream tail when the Follow toggle
-// is active (it renders active by default).
-function initLogsFollow() {
-    logsPinTailIfFollowing();
-}
+// Logs page Follow (D25) migrated to logs.ts (Unit 9 leaf): logsScrollToTail /
+// logsPinTailIfFollowing / initLogsFollow. legacy imports initLogsFollow for
+// the runInit chain.
 
 // ---------------------------------------------------------------------------
 // ⌘K jump-to command palette v2 -- data-driven, grouped, CSP-clean, GET-only

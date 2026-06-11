@@ -388,9 +388,87 @@
     }
   ];
 
+  // internal/assets/src/js/logs.ts
+  function logsScrollToTail() {
+    const pre = document.querySelector("pre.ro-logpre");
+    if (pre) {
+      pre.scrollTop = pre.scrollHeight;
+    }
+  }
+  function logsPinTailIfFollowing() {
+    const follow = document.getElementById("logFollow");
+    if (follow && !follow.classList.contains("quiet")) {
+      logsScrollToTail();
+    }
+  }
+  function initLogsFollow() {
+    logsPinTailIfFollowing();
+  }
+  var logsBindings = [
+    // Logs Follow toggle (D25): the active accent "Following" sticks the stream
+    // to its tail; clicking flips to the quiet "Follow" (and back). Re-activating
+    // snaps the stream to the tail immediately. Pure class + label flips -- no
+    // request, the read-only floor is untouched. Kept its monolith early-return
+    // (stop:true).
+    {
+      event: "click",
+      selector: "#logFollow",
+      stop: true,
+      handler: (_event, matched) => {
+        const logFollow = matched;
+        const following = !logFollow.classList.toggle("quiet");
+        logFollow.setAttribute("aria-pressed", following ? "true" : "false");
+        const label = logFollow.querySelector(".follow-label");
+        if (label) {
+          label.textContent = following ? "Following" : "Follow";
+        }
+        if (following) {
+          logsScrollToTail();
+        }
+        return true;
+      }
+    },
+    // Logs display toggles (D25): CLIENT-SIDE only, no refetch. The timestamps
+    // checkbox shows/hides the .log-ts spans via the stream's `hide-ts` class.
+    // Both flips reflow the stream, so while Following is active the tail is
+    // re-pinned afterwards. The monolith #logTs branch early-returned (stop:true).
+    {
+      event: "change",
+      selector: "#logTs",
+      stop: true,
+      handler: (_event, matched) => {
+        const logTs = matched;
+        const pre = document.querySelector("pre.ro-logpre");
+        if (pre) {
+          pre.classList.toggle("hide-ts", !logTs.checked);
+          logsPinTailIfFollowing();
+        }
+        return true;
+      }
+    },
+    // The wrap checkbox toggles `wrap` (pre-wrap + break-word). In the monolith
+    // this was the LAST change branch (no branch follows it), so stop:true is the
+    // faithful mirror.
+    {
+      event: "change",
+      selector: "#logWrap",
+      stop: true,
+      handler: (_event, matched) => {
+        const logWrap = matched;
+        const pre = document.querySelector("pre.ro-logpre");
+        if (pre) {
+          pre.classList.toggle("wrap", logWrap.checked);
+          logsPinTailIfFollowing();
+        }
+        return true;
+      }
+    }
+  ];
+
   // internal/assets/src/js/bindings.ts
   var bindings = [
-    ...foldBindings
+    ...foldBindings,
+    ...logsBindings
   ];
 
   // internal/assets/src/js/toasts.ts
@@ -489,19 +567,6 @@
         htmx.trigger(content, "htmx:abort");
       }
       requestListRefresh();
-      return;
-    }
-    const logFollow = target.closest("#logFollow");
-    if (logFollow) {
-      const following = !logFollow.classList.toggle("quiet");
-      logFollow.setAttribute("aria-pressed", following ? "true" : "false");
-      const label = logFollow.querySelector(".follow-label");
-      if (label) {
-        label.textContent = following ? "Following" : "Follow";
-      }
-      if (following) {
-        logsScrollToTail();
-      }
       return;
     }
     const chipRemove = target.closest("#ro-filter-field .chip-x");
@@ -677,23 +742,6 @@
       }
       return;
     }
-    const logTs = event.target.closest("#logTs");
-    if (logTs) {
-      const pre = document.querySelector("pre.ro-logpre");
-      if (pre) {
-        pre.classList.toggle("hide-ts", !logTs.checked);
-        logsPinTailIfFollowing();
-      }
-      return;
-    }
-    const logWrap = event.target.closest("#logWrap");
-    if (logWrap) {
-      const pre = document.querySelector("pre.ro-logpre");
-      if (pre) {
-        pre.classList.toggle("wrap", logWrap.checked);
-        logsPinTailIfFollowing();
-      }
-    }
   });
   document.addEventListener("input", (event) => {
     const paletteInput = event.target.closest("#ro-palette-input");
@@ -841,21 +889,6 @@
         });
       }
     });
-  }
-  function logsScrollToTail() {
-    const pre = document.querySelector("pre.ro-logpre");
-    if (pre) {
-      pre.scrollTop = pre.scrollHeight;
-    }
-  }
-  function logsPinTailIfFollowing() {
-    const follow = document.getElementById("logFollow");
-    if (follow && !follow.classList.contains("quiet")) {
-      logsScrollToTail();
-    }
-  }
-  function initLogsFollow() {
-    logsPinTailIfFollowing();
   }
   var PALETTE_ID = "ro-palette";
   var PALETTE_GROUPS = [
