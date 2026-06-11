@@ -47,6 +47,10 @@ registerBindings(bindings);
 // its one-time matchMedia change listener.
 import { syncThemeTogglePostTarget } from './theme.js';
 
+// Toasts (Unit 9 leaf): showToast is the detached-result notification surface;
+// legacy calls it directly (bulk over-cap) and bridges it to window.roToast.
+import { showToast } from './toasts.js';
+
 // ---------------------------------------------------------------------------
 // HTMX config: native View Transitions, reduced-motion-aware
 // ---------------------------------------------------------------------------
@@ -2813,24 +2817,10 @@ window.roRowState = {
 // the bulk download is a plain GET the browser handles, so no detached ready
 // moment exists. The #ro-toasts host is layout chrome OUTSIDE every swap
 // target, so an active toast survives list morphs.
+// showToast lives in toasts.ts (Unit 9 leaf migration); legacy keeps the
+// window.roToast bridge so the polling layer's detached "Refresh resumed"
+// trigger (and any non-module caller) still reaches it by the documented name.
 // ---------------------------------------------------------------------------
-const TOAST_VISIBLE_MS = 3500;
-const TOAST_LEAVE_MS = 200;
-
-function showToast(message) {
-    const host = document.getElementById('ro-toasts');
-    if (!host) {
-        return;
-    }
-    const toast = document.createElement('div');
-    toast.className = 'ro-toast';
-    toast.textContent = message;
-    host.appendChild(toast);
-    window.setTimeout(() => {
-        toast.classList.add('is-leaving');
-        window.setTimeout(() => toast.remove(), TOAST_LEAVE_MS);
-    }, TOAST_VISIBLE_MS);
-}
 window.roToast = showToast;
 
 // updateBulkBar paints the pill from the selection store: at >=1 selected it

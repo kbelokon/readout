@@ -218,6 +218,24 @@
   // internal/assets/src/js/bindings.ts
   var bindings = [];
 
+  // internal/assets/src/js/toasts.ts
+  var TOAST_VISIBLE_MS = 3500;
+  var TOAST_LEAVE_MS = 200;
+  function showToast(message) {
+    const host = document.getElementById("ro-toasts");
+    if (!host) {
+      return;
+    }
+    const toast = document.createElement("div");
+    toast.className = "ro-toast";
+    toast.textContent = message;
+    host.appendChild(toast);
+    window.setTimeout(() => {
+      toast.classList.add("is-leaving");
+      window.setTimeout(() => toast.remove(), TOAST_LEAVE_MS);
+    }, TOAST_VISIBLE_MS);
+  }
+
   // internal/assets/src/js/legacy.js
   registerBindings(bindings);
   if (typeof htmx !== "undefined") {
@@ -1858,22 +1876,6 @@ ${piece}`;
       return Array.from(rowSelection, ([key, entry]) => ({ key, name: entry.name }));
     }
   };
-  var TOAST_VISIBLE_MS = 3500;
-  var TOAST_LEAVE_MS = 200;
-  function showToast(message) {
-    const host = document.getElementById("ro-toasts");
-    if (!host) {
-      return;
-    }
-    const toast = document.createElement("div");
-    toast.className = "ro-toast";
-    toast.textContent = message;
-    host.appendChild(toast);
-    window.setTimeout(() => {
-      toast.classList.add("is-leaving");
-      window.setTimeout(() => toast.remove(), TOAST_LEAVE_MS);
-    }, TOAST_VISIBLE_MS);
-  }
   window.roToast = showToast;
   var BULK_NAMES_MAX = 100;
   var bulkOverCapToasted = false;
