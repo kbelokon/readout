@@ -33,7 +33,7 @@ import {
     type PageObject,
     type PaletteGroup,
 } from './palette-rank.js';
-import { clusterBridge } from './cluster-bridge.js';
+import { virtualizerActive, virtRows } from './virtualizer.js';
 import { closeRowMenu } from './context-menu.js';
 import { closeKbdOverlay } from './keyboard.js';
 
@@ -275,13 +275,12 @@ function buildRecentRow(entry: RecentEntry): HTMLElement {
 
 // harvestPageObjects reads the rows of the rendered list table into
 // {name, href, status, tone}. While the Unit-24 virtualizer is engaged the DOM
-// holds only a window of the rows -- harvest from the full row set (via the
-// bridge) so ⌘K filters every object on the page.
+// holds only a window of the rows -- harvest from the full row set (the
+// virtualizer module, imported directly) so ⌘K filters every object on the page.
 function harvestPageObjects(): PageObject[] {
     const out: PageObject[] = [];
-    const bridge = clusterBridge();
-    const rows: ArrayLike<Element> = bridge.virtualizerActive()
-        ? bridge.virtRows()
+    const rows: ArrayLike<Element> = virtualizerActive()
+        ? virtRows()
         : document.querySelectorAll('#resource-list-content table.ro-table tbody tr');
     Array.prototype.forEach.call(rows, (tr: Element) => {
         const a = tr.querySelector('td.cell-name a');

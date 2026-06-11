@@ -14,12 +14,19 @@
 // keys; here we return inert). These guards are transcribed LITERALLY; the
 // dispatch order vs the palette keydown is belt-and-suspenders.
 //
-// The Unit-24 virtualizer and the Unit-12 columns popover are NOT migrated yet,
-// so the windowed j/k walk and the colsPopOpen guard reach them through the
-// window.roClusterBridge seam (cluster-bridge.ts).
+// The Unit-24 virtualizer and the Unit-12 columns popover are now MODULES
+// (virtualizer.ts / columns.ts, Unit 12): the windowed j/k walk and the
+// colsPopOpen guard import them DIRECTLY (the window.roClusterBridge seam this
+// file used is dismantled).
 
 import type { Binding } from './events.js';
-import { clusterBridge } from './cluster-bridge.js';
+import {
+    virtualizerActive,
+    virtMoveFocus,
+    virtRowByKey,
+    virtVisible,
+} from './virtualizer.js';
+import { colsPopOpen } from './columns.js';
 
 const PALETTE_ID = 'ro-palette';
 
@@ -58,7 +65,7 @@ function keyboardSurfaceBusy(): boolean {
     if (nsDropdown && nsDropdown.classList.contains('is-active')) {
         return true;
     }
-    return clusterBridge().colsPopOpen();
+    return colsPopOpen();
 }
 
 // visibleKeyRows: the identity rows j/k walk, in DOM order, with rows the live
@@ -75,9 +82,8 @@ function visibleKeyRows(): HTMLElement[] {
 // only then). While the Unit-24 virtualizer is engaged the walker is fed from
 // the virtualizer's full visible list (via the bridge; D20).
 function moveRowFocus(delta: number): boolean {
-    const bridge = clusterBridge();
-    if (bridge.virtualizerActive()) {
-        return bridge.virtMoveFocus(delta);
+    if (virtualizerActive()) {
+        return virtMoveFocus(delta);
     }
     const rows = visibleKeyRows();
     if (rows.length === 0) {
@@ -98,13 +104,12 @@ function openFocusedRow(): boolean {
     if (!key) {
         return false;
     }
-    const bridge = clusterBridge();
     let row: HTMLElement | null = visibleKeyRows().find((tr) => tr.dataset.key === key) || null;
-    if (!row && bridge.virtualizerActive()) {
+    if (!row && virtualizerActive()) {
         // Windowed (Unit 24): the focused row may have scrolled out of the
         // rendered window -- it is still logically visible.
-        const tr = bridge.virtRowByKey(key) as HTMLElement | null;
-        if (tr && bridge.virtVisible().indexOf(tr) !== -1) {
+        const tr = virtRowByKey(key);
+        if (tr && virtVisible().indexOf(tr) !== -1) {
             row = tr;
         }
     }

@@ -644,14 +644,1582 @@
     return groups;
   }
 
-  // internal/assets/src/js/cluster-bridge.ts
-  function clusterBridge() {
-    return window.roClusterBridge;
+  // internal/assets/src/js/virtualizer-math.ts
+  var VIRT_BUFFER_ROWS = 12;
+  function windowBounds(tbodyTop, innerHeight, rowH, visibleCount, buffer = VIRT_BUFFER_ROWS) {
+    const pitch = rowH || 1;
+    const n = visibleCount;
+    const first = Math.floor((0 - tbodyTop) / pitch);
+    const last = Math.ceil((innerHeight - tbodyTop) / pitch);
+    let start = Math.max(0, first - buffer);
+    let end = Math.min(n, last + buffer);
+    if (start > n) {
+      start = n;
+    }
+    if (end < start) {
+      end = start;
+    }
+    return { start, end };
   }
+  function spacerHeights(start, end, visibleCount, rowH) {
+    return {
+      top: start * rowH,
+      bottom: Math.max(0, visibleCount - end) * rowH
+    };
+  }
+  function prepareSwapSpacers(priorStart, incomingRowCount, rowH) {
+    const start = Math.min(priorStart, incomingRowCount);
+    return {
+      top: start * rowH,
+      bottom: Math.max(0, incomingRowCount - start) * rowH
+    };
+  }
+  function rowOffsetTop(tbodyTop, index, rowH) {
+    return tbodyTop + index * rowH;
+  }
+  function scrollAdjustToReveal(rowTop, rowH, topMin, innerHeight) {
+    const rowBottom = rowTop + rowH;
+    if (rowTop < topMin) {
+      return rowTop - topMin;
+    }
+    if (rowBottom > innerHeight) {
+      return rowBottom - innerHeight;
+    }
+    return 0;
+  }
+  function clampFocusIndex(current, delta, visibleCount) {
+    return Math.max(0, Math.min(visibleCount - 1, current + delta));
+  }
+
+  // internal/assets/src/js/stale.ts
+  var STALE_DIM_CLASS = "ro-stale";
+  var staleCountdownId = null;
+  function updateStaleCountdown() {
+    const span = document.querySelector(".ro-stale-banner [data-stale-countdown]");
+    if (!span) {
+      return;
+    }
+    const nextAt = refreshNextAtMs();
+    if (!nextAt) {
+      span.textContent = "…";
+      return;
+    }
+    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
+    span.textContent = remaining + "s";
+  }
+  function isListRefreshEvent(event) {
+    const detail = event.detail;
+    if (!detail || isPreloadRequest(event)) {
+      return false;
+    }
+    const elt = detail.elt;
+    if (!!elt && elt.id === "resource-list-content") {
+      return true;
+    }
+    const target = detail.target;
+    return !!target && target.id === "resource-list-content";
+  }
+  function markListStale() {
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.add(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector(".ro-stale-banner");
+    if (banner) {
+      banner.hidden = false;
+    }
+    if (staleCountdownId === null) {
+      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
+    }
+    updateStaleCountdown();
+  }
+  function clearListStale() {
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.remove(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector(".ro-stale-banner");
+    if (banner) {
+      banner.hidden = true;
+    }
+    if (staleCountdownId !== null) {
+      window.clearInterval(staleCountdownId);
+      staleCountdownId = null;
+    }
+  }
+  document.addEventListener("htmx:responseError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+  document.addEventListener("htmx:sendError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+
+  // internal/assets/src/js/live-policy.ts
+  function effectivePollSeconds(mode, intervalSeconds, liveFallbackSeconds2) {
+    if (intervalSeconds > 0) {
+      return intervalSeconds;
+    }
+    return mode === "Live" ? liveFallbackSeconds2 : 0;
+  }
+  function refreshDelaySeconds(effectiveSeconds, failureStage) {
+    if (effectiveSeconds <= 0) {
+      return 0;
+    }
+    if (failureStage <= 1) {
+      return effectiveSeconds;
+    }
+    const factor = failureStage === 2 ? 2 : 4;
+    return Math.min(effectiveSeconds * factor, 60);
+  }
+  function nextFailureStage(stage) {
+    return Math.min(stage + 1, 3);
+  }
+  function classifyStreamClose(facts) {
+    if (facts.superseded) {
+      return { kind: "ignore" };
+    }
+    switch (facts.cause) {
+      case "connect-error":
+      case "bad-status":
+        return { kind: "fallback", banner: false, terminal: false };
+      case "read-error":
+      case "eof":
+        return { kind: "fallback", banner: true, terminal: false };
+      case "terminal-frame":
+        return { kind: "fallback", banner: true, terminal: true };
+    }
+  }
+  function shouldDiscardPush(facts) {
+    if (facts.frameGeneration !== facts.currentGeneration) {
+      return "stale-generation";
+    }
+    if (facts.liveStreamBase !== facts.openedStreamBase) {
+      return "wrong-page";
+    }
+    if (facts.requestInFlight) {
+      return "request-in-flight";
+    }
+    return "none";
+  }
+
+  // internal/assets/src/js/live.ts
+  function getHtmx() {
+    return window.htmx;
+  }
+  var liveState = {
+    status: "idle",
+    // 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden'
+    abort: null,
+    // AbortController of the current stream fetch
+    gen: "",
+    // the minted generation every frame must echo (string compare)
+    streamPath: ""
+    // the stream URL sans ?g= -- the page/params identity
+  };
+  var liveGenSeq = 0;
+  var liveDiscards = 0;
+  var liveFallbackSecs = 0;
+  function liveFallbackSeconds() {
+    return liveFallbackSecs;
+  }
+  function liveSupported() {
+    const content = document.getElementById("resource-list-content");
+    if (!content || content.dataset.liveUrl !== "location") {
+      return false;
+    }
+    const option = document.querySelector(
+      '.refresh-option[data-interval="Live"]'
+    );
+    return !!option && !option.disabled;
+  }
+  function liveStreamBase() {
+    const u = new URL(window.location.href);
+    return u.pathname.replace(/\/+$/, "") + "/_stream" + u.search;
+  }
+  function liveTeardown() {
+    const ctrl = liveState.abort;
+    liveState.abort = null;
+    liveFallbackSecs = 0;
+    if (ctrl) {
+      try {
+        ctrl.abort();
+      } catch {
+      }
+    }
+  }
+  function liveEngageFallback(banner) {
+    liveTeardown();
+    liveState.status = "fallback";
+    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
+    scheduleRefreshTick();
+    if (banner) {
+      markListStale();
+    }
+  }
+  function liveOpen(base) {
+    liveTeardown();
+    liveFallbackSecs = 0;
+    liveState.streamPath = base;
+    if (!base) {
+      liveEngageFallback(false);
+      return;
+    }
+    liveState.status = "connecting";
+    liveGenSeq += 1;
+    liveState.gen = Date.now().toString(36) + "." + liveGenSeq;
+    const ctrl = new AbortController();
+    liveState.abort = ctrl;
+    const url = base + (base.indexOf("?") === -1 ? "?" : "&") + "g=" + encodeURIComponent(liveState.gen);
+    scheduleRefreshTick();
+    void liveConnect(url, ctrl);
+  }
+  async function liveConnect(url, ctrl) {
+    let res;
+    try {
+      res = await fetch(url, { signal: ctrl.signal });
+    } catch {
+      applyClose({ superseded: liveState.abort !== ctrl, cause: "connect-error" });
+      return;
+    }
+    if (liveState.abort !== ctrl) {
+      return;
+    }
+    if (res.status !== 200 || !res.body) {
+      applyClose({ superseded: false, cause: "bad-status" });
+      return;
+    }
+    liveState.status = "open";
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    let eventName = "";
+    let dataText = "";
+    try {
+      for (; ; ) {
+        const chunk = await reader.read();
+        if (liveState.abort !== ctrl) {
+          return;
+        }
+        if (chunk.done) {
+          break;
+        }
+        buffered += decoder.decode(chunk.value, { stream: true });
+        let nl = buffered.indexOf("\n");
+        while (nl !== -1) {
+          const line = buffered.slice(0, nl).replace(/\r$/, "");
+          buffered = buffered.slice(nl + 1);
+          if (line === "") {
+            const ended = liveHandleFrame(eventName, dataText, ctrl);
+            eventName = "";
+            dataText = "";
+            if (ended || liveState.abort !== ctrl) {
+              return;
+            }
+          } else if (line.indexOf("event:") === 0) {
+            eventName = line.slice(6).trim();
+          } else if (line.indexOf("data:") === 0) {
+            const piece = line.slice(5).replace(/^ /, "");
+            dataText = dataText === "" ? piece : `${dataText}
+${piece}`;
+          }
+          nl = buffered.indexOf("\n");
+        }
+      }
+    } catch {
+      applyClose({ superseded: liveState.abort !== ctrl, cause: "read-error" });
+      return;
+    }
+    if (liveState.abort !== ctrl) {
+      return;
+    }
+    applyClose({ superseded: false, cause: "eof" });
+  }
+  function applyClose(facts) {
+    const action = classifyStreamClose(facts);
+    if (action.kind === "ignore") {
+      return;
+    }
+    liveEngageFallback(action.banner);
+  }
+  function liveHandleFrame(name, text, ctrl) {
+    if (liveState.abort !== ctrl || text === "") {
+      return false;
+    }
+    let payload = null;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      return false;
+    }
+    if (!payload || typeof payload !== "object") {
+      return false;
+    }
+    if (name === "ro-terminal") {
+      applyClose({ superseded: false, cause: "terminal-frame" });
+      return true;
+    }
+    if (name !== "ro-table") {
+      return false;
+    }
+    pruneSettledListRequests(userListRequestsInFlight);
+    pruneSettledListRequests(containerListRequestsInFlight);
+    const reason = shouldDiscardPush({
+      frameGeneration: String(payload.g),
+      currentGeneration: liveState.gen,
+      liveStreamBase: liveStreamBase(),
+      openedStreamBase: liveState.streamPath,
+      requestInFlight: userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0
+    });
+    if (reason !== "none" || liveStreamBase() !== liveState.streamPath) {
+      liveDiscards += 1;
+      return false;
+    }
+    liveMorph(String(payload.html));
+    return false;
+  }
+  function liveMorph(html) {
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx();
+    if (!content || !htmx2 || typeof htmx2.swap !== "function") {
+      return;
+    }
+    htmx2.swap(content, html, { swapStyle: "morph" }, {
+      contextElement: content,
+      eventInfo: { target: content, roLivePush: true }
+    });
+  }
+  function liveOnListSwap(event) {
+    const detail = event.detail;
+    if (detail && detail.roLivePush) {
+      return;
+    }
+    if (liveState.status !== "open" && liveState.status !== "connecting") {
+      return;
+    }
+    let base = liveStreamBase();
+    const pathInfo = detail && detail.pathInfo;
+    const requestPath = pathInfo && (pathInfo.finalRequestPath || pathInfo.requestPath);
+    if (requestPath && requestPath.indexOf("/_table") !== -1) {
+      base = requestPath.replace("/_table", "/_stream");
+    }
+    liveOpen(base);
+  }
+  function liveApply(force) {
+    if (refreshMode() !== "Live") {
+      if (liveState.status !== "idle") {
+        liveTeardown();
+        liveState.status = "idle";
+        liveState.streamPath = "";
+        liveFallbackSecs = 0;
+      }
+      return;
+    }
+    const base = liveSupported() ? liveStreamBase() : "";
+    if (!force && base === liveState.streamPath && liveState.status !== "idle") {
+      return;
+    }
+    liveOpen(base);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (liveState.status === "open" || liveState.status === "connecting") {
+        liveTeardown();
+        liveState.status = "hidden";
+      }
+      return;
+    }
+    if (liveState.status === "hidden" && refreshMode() === "Live") {
+      liveOpen(liveSupported() ? liveStreamBase() : "");
+    }
+  });
+  window.roLive = {
+    discards() {
+      return liveDiscards;
+    }
+  };
+
+  // internal/assets/src/js/refresh.ts
+  function getHtmx2() {
+    return window.htmx;
+  }
+  var refreshTimerId = null;
+  var refreshNextAt = 0;
+  var refreshFailureStage = 0;
+  function refreshNextAtMs() {
+    return refreshNextAt;
+  }
+  var userListRequestsInFlight = /* @__PURE__ */ new Set();
+  var containerListRequestsInFlight = /* @__PURE__ */ new Set();
+  function pruneSettledListRequests(requests) {
+    requests.forEach((xhr) => {
+      if (xhr.readyState === 4 || xhr.readyState === 0) {
+        requests.delete(xhr);
+      }
+    });
+  }
+  function isPreloadRequest(event) {
+    const cfg = event.detail && event.detail.requestConfig;
+    return !!cfg && !!cfg.headers && cfg.headers["HX-Preloaded"] === "true";
+  }
+  function isUserListRequest(event) {
+    const detail = event.detail;
+    if (!detail || !detail.elt || !detail.target) {
+      return false;
+    }
+    if (detail.elt.id === "resource-list-content") {
+      return false;
+    }
+    return detail.target.id === "resource-list-content" && !isPreloadRequest(event);
+  }
+  document.addEventListener("htmx:configRequest", (event) => {
+    const elt = event.detail && event.detail.elt;
+    if (elt && elt.id === "resource-list-content") {
+      event.detail.headers["RO-No-Push"] = "true";
+    }
+  });
+  document.addEventListener("htmx:beforeRequest", (event) => {
+    const detail = event.detail;
+    if (detail && detail.xhr && detail.elt && detail.elt.id === "resource-list-content") {
+      containerListRequestsInFlight.add(detail.xhr);
+      return;
+    }
+    if (!isUserListRequest(event)) {
+      return;
+    }
+    if (detail && detail.xhr) {
+      userListRequestsInFlight.add(detail.xhr);
+    }
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx2();
+    if (content && htmx2) {
+      htmx2.trigger(content, "htmx:abort");
+    }
+  });
+  document.addEventListener("htmx:afterRequest", (event) => {
+    const xhr = event.detail && event.detail.xhr;
+    if (xhr) {
+      userListRequestsInFlight.delete(xhr);
+      containerListRequestsInFlight.delete(xhr);
+    }
+  });
+  function refreshMode() {
+    const stored = readPrefs().refresh;
+    if (stored) {
+      return stored;
+    }
+    let legacy = null;
+    try {
+      legacy = window.localStorage.getItem(REFRESH_KEY);
+    } catch {
+      return "";
+    }
+    if (legacy === null || legacy === "") {
+      return "";
+    }
+    const secs = parseInt(legacy, 10) || 0;
+    const mode = secs > 0 ? String(secs) : "Off";
+    roPrefsSetRefresh(mode);
+    return mode;
+  }
+  function refreshInterval() {
+    const secs = parseInt(refreshMode(), 10);
+    return Number.isFinite(secs) && secs > 0 ? secs : 0;
+  }
+  function listTableURL() {
+    const u = new URL(window.location.href);
+    return u.pathname.replace(/\/+$/, "") + "/_table" + u.search;
+  }
+  function requestListRefresh() {
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx2();
+    if (!content || !htmx2) {
+      return;
+    }
+    if (content.dataset.liveUrl === "location") {
+      const request = htmx2.ajax("GET", listTableURL(), { source: content });
+      if (request && typeof request.catch === "function") {
+        request.catch(() => {
+        });
+      }
+    } else {
+      htmx2.trigger(content, "ro:refresh");
+    }
+  }
+  window.requestListRefresh = requestListRefresh;
+  function fireRefresh() {
+    if (document.hidden) {
+      return;
+    }
+    pruneSettledListRequests(userListRequestsInFlight);
+    pruneSettledListRequests(containerListRequestsInFlight);
+    if (userListRequestsInFlight.size > 0) {
+      return;
+    }
+    if (containerListRequestsInFlight.size > 0) {
+      return;
+    }
+    requestListRefresh();
+  }
+  function effectivePollSeconds2() {
+    return effectivePollSeconds(refreshMode(), refreshInterval(), liveFallbackSeconds());
+  }
+  function refreshDelaySeconds2() {
+    return refreshDelaySeconds(effectivePollSeconds2(), refreshFailureStage);
+  }
+  function scheduleRefreshTick() {
+    if (refreshTimerId !== null) {
+      window.clearTimeout(refreshTimerId);
+      refreshTimerId = null;
+    }
+    const delay = refreshDelaySeconds2();
+    if (delay <= 0) {
+      refreshNextAt = 0;
+      updateStaleCountdown();
+      return;
+    }
+    refreshNextAt = Date.now() + delay * 1e3;
+    refreshTimerId = window.setTimeout(() => {
+      refreshTimerId = null;
+      scheduleRefreshTick();
+      fireRefresh();
+    }, delay * 1e3);
+    updateStaleCountdown();
+  }
+  function applyRefresh() {
+    refreshFailureStage = 0;
+    scheduleRefreshTick();
+  }
+  function syncRefreshUI() {
+    const live = refreshMode() === "Live";
+    const secs = refreshInterval();
+    const label = document.getElementById("refresh-label");
+    if (label) {
+      label.textContent = live ? "Live" : secs > 0 ? `${secs}s` : "Off";
+    }
+    document.querySelectorAll(".refresh-option").forEach((opt) => {
+      const value = opt.dataset.interval ?? "";
+      opt.classList.toggle("is-active", live ? value === "Live" : value !== "Live" && (parseInt(value, 10) || 0) === secs);
+    });
+    const dropdown = document.getElementById("refresh-dropdown");
+    if (dropdown) {
+      dropdown.classList.toggle("refresh-on", live || secs > 0);
+    }
+  }
+  function noteRefreshFailure() {
+    refreshFailureStage = nextFailureStage(refreshFailureStage);
+    scheduleRefreshTick();
+  }
+  function noteRefreshRecovery() {
+    if (refreshFailureStage === 0) {
+      return;
+    }
+    refreshFailureStage = 0;
+    scheduleRefreshTick();
+    const toast = window.roToast;
+    if (typeof toast === "function") {
+      toast("Refresh resumed");
+    }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && effectivePollSeconds2() > 0) {
+      fireRefresh();
+    }
+  });
+
+  // internal/assets/src/js/virtualizer.ts
+  var FILTER_HIDE_CLASS = "ro-row-filtered";
+  function roRowModel() {
+    return window.roRowModel;
+  }
+  function roRowState2() {
+    return window.roRowState;
+  }
+  var virtState = {
+    active: false,
+    rows: [],
+    byKey: /* @__PURE__ */ new Map(),
+    visible: [],
+    rowH: 0,
+    start: 0,
+    end: 0,
+    table: null,
+    tbody: null,
+    topSpacer: null,
+    bottomSpacer: null,
+    pinnedWidths: [],
+    pendingRows: null,
+    pendingScrollY: null
+  };
+  function virtualizerActive() {
+    return virtState.active && !!virtState.tbody && virtState.tbody.isConnected;
+  }
+  function virtReset() {
+    virtState.active = false;
+    virtState.rows = [];
+    virtState.byKey = /* @__PURE__ */ new Map();
+    virtState.visible = [];
+    virtState.rowH = 0;
+    virtState.start = 0;
+    virtState.end = 0;
+    virtState.table = null;
+    virtState.tbody = null;
+    virtState.topSpacer = null;
+    virtState.bottomSpacer = null;
+    virtState.pinnedWidths = [];
+    virtState.pendingRows = null;
+    virtState.pendingScrollY = null;
+  }
+  function virtMakeSpacer() {
+    const tr = document.createElement("tr");
+    tr.className = "ro-vspacer";
+    tr.setAttribute("aria-hidden", "true");
+    tr.appendChild(document.createElement("td"));
+    return tr;
+  }
+  function virtSetSpacerColspan() {
+    const cols = virtState.table.querySelectorAll("thead th").length || 1;
+    virtState.topSpacer.firstElementChild.colSpan = cols;
+    virtState.bottomSpacer.firstElementChild.colSpan = cols;
+  }
+  function virtMeasureRowHeight() {
+    const rendered = virtState.tbody.querySelectorAll(":scope > tr[data-key]");
+    if (rendered.length === 0) {
+      return 0;
+    }
+    const first = rendered[0].getBoundingClientRect();
+    const last = rendered[rendered.length - 1].getBoundingClientRect();
+    const pitch = (last.bottom - first.top) / rendered.length;
+    return pitch > 0 ? pitch : 0;
+  }
+  function virtFallbackRowHeight() {
+    let py = 9;
+    let lh = 18;
+    try {
+      const cs = window.getComputedStyle(document.documentElement);
+      py = parseFloat(cs.getPropertyValue("--row-py")) || py;
+      const cell = virtState.tbody && virtState.tbody.querySelector("td");
+      if (cell) {
+        lh = parseFloat(window.getComputedStyle(cell).lineHeight) || lh;
+      }
+    } catch {
+    }
+    return py * 2 + lh + 1;
+  }
+  function virtApplyPins() {
+    const ths = virtState.table.querySelectorAll("thead th");
+    if (virtState.pinnedWidths.length !== ths.length) {
+      return false;
+    }
+    ths.forEach((th, i) => {
+      th.style.width = virtState.pinnedWidths[i] + "px";
+    });
+    virtState.table.classList.add("ro-virtualized");
+    return true;
+  }
+  function virtPinColumns() {
+    const ths = Array.from(virtState.table.querySelectorAll("thead th"));
+    virtState.pinnedWidths = ths.map((th) => th.getBoundingClientRect().width);
+    virtApplyPins();
+  }
+  function virtComputeVisible() {
+    const keys = roRowModel().visibleKeys;
+    virtState.visible = keys ? virtState.rows.filter((tr) => keys.has(tr.dataset.key)) : virtState.rows.slice();
+  }
+  function virtRenderWindow() {
+    const s = virtState;
+    const tbody = s.tbody;
+    const rect = tbody.getBoundingClientRect();
+    const bounds = windowBounds(rect.top, window.innerHeight, s.rowH, s.visible.length);
+    s.start = bounds.start;
+    s.end = bounds.end;
+    const heights = spacerHeights(s.start, s.end, s.visible.length, s.rowH);
+    s.topSpacer.firstElementChild.style.height = heights.top + "px";
+    s.bottomSpacer.firstElementChild.style.height = heights.bottom + "px";
+    const slice = s.visible.slice(s.start, s.end);
+    slice.forEach((tr) => tr.classList.remove(FILTER_HIDE_CLASS));
+    tbody.replaceChildren(s.topSpacer, ...slice, s.bottomSpacer);
+    reapplyRowState();
+  }
+  function virtBindMounts() {
+    const content = document.getElementById("resource-list-content");
+    const wrap = content && content.querySelector(".ro-table-wrap.ro-windowed");
+    const table = wrap && wrap.querySelector("table.ro-table");
+    const tbody = table && table.tBodies.length > 0 ? table.tBodies[0] : null;
+    virtState.table = table || null;
+    virtState.tbody = tbody || null;
+    return !!tbody;
+  }
+  function virtualizeInit() {
+    const content = document.getElementById("resource-list-content");
+    const wrap = content && content.querySelector(".ro-table-wrap.ro-windowed");
+    if (!wrap) {
+      virtReset();
+      return;
+    }
+    const table = wrap.querySelector("table.ro-table");
+    const tbody = table && table.tBodies.length > 0 ? table.tBodies[0] : null;
+    if (!tbody) {
+      virtReset();
+      return;
+    }
+    if (tbody.querySelector(":scope > tr.ro-vspacer")) {
+      if (virtState.active && virtState.tbody === tbody) {
+        return;
+      }
+      virtReset();
+      requestListRefresh();
+      return;
+    }
+    const rows = Array.from(tbody.querySelectorAll(":scope > tr[data-key]"));
+    if (rows.length === 0) {
+      virtReset();
+      return;
+    }
+    virtReset();
+    virtState.table = table;
+    virtState.tbody = tbody;
+    virtState.rows = rows;
+    virtState.byKey = new Map(rows.map((tr) => [tr.dataset.key, tr]));
+    virtState.topSpacer = virtMakeSpacer();
+    virtState.bottomSpacer = virtMakeSpacer();
+    virtSetSpacerColspan();
+    virtState.rowH = virtMeasureRowHeight() || virtFallbackRowHeight();
+    virtPinColumns();
+    virtState.active = true;
+    virtComputeVisible();
+    virtRenderWindow();
+  }
+  function virtualizePrepareSwap(fragment) {
+    virtState.pendingRows = null;
+    virtState.pendingScrollY = null;
+    const wrap = fragment.querySelector(".ro-table-wrap.ro-windowed");
+    const tbody = wrap ? wrap.querySelector("table.ro-table tbody") : null;
+    if (!tbody) {
+      return;
+    }
+    const rows = [];
+    Array.prototype.forEach.call(tbody.children, (el) => {
+      if (el.tagName === "TR" && el.dataset.key) {
+        rows.push(el);
+      }
+    });
+    if (rows.length === 0) {
+      return;
+    }
+    virtState.pendingRows = rows;
+    virtState.pendingScrollY = window.scrollY;
+    const rowH = virtState.rowH || virtFallbackRowHeight();
+    const priorStart = virtState.active ? virtState.start : 0;
+    const heights = prepareSwapSpacers(priorStart, rows.length, rowH);
+    const topSpacer = virtMakeSpacer();
+    const bottomSpacer = virtMakeSpacer();
+    topSpacer.firstElementChild.style.height = heights.top + "px";
+    bottomSpacer.firstElementChild.style.height = heights.bottom + "px";
+    tbody.replaceChildren(topSpacer, bottomSpacer);
+  }
+  function virtualizeAfterSwap() {
+    const pending = virtState.pendingRows;
+    virtState.pendingRows = null;
+    if (!pending) {
+      if (virtState.active) {
+        virtReset();
+      }
+      return;
+    }
+    const prior = virtState.byKey;
+    const wasActive = virtState.active;
+    if (!virtBindMounts()) {
+      virtReset();
+      return;
+    }
+    virtState.rows = pending;
+    virtState.byKey = new Map(pending.map((tr) => [tr.dataset.key, tr]));
+    if (!virtState.topSpacer) {
+      virtState.topSpacer = virtMakeSpacer();
+      virtState.bottomSpacer = virtMakeSpacer();
+    }
+    virtSetSpacerColspan();
+    virtState.active = true;
+    if (!virtState.rowH) {
+      virtState.rowH = virtFallbackRowHeight();
+    }
+    virtComputeVisible();
+    virtRenderWindow();
+    if (!wasActive) {
+      const measured = virtMeasureRowHeight();
+      if (measured && Math.abs(measured - virtState.rowH) > 0.5) {
+        virtState.rowH = measured;
+        virtRenderWindow();
+      }
+    }
+    if (!virtApplyPins()) {
+      virtPinColumns();
+    }
+    if (virtState.pendingScrollY !== null && window.scrollY !== virtState.pendingScrollY) {
+      window.scrollTo(0, virtState.pendingScrollY);
+      virtRenderWindow();
+    }
+    virtState.pendingScrollY = null;
+    virtFlashChangedCells(prior);
+  }
+  function virtFlashChangedCells(prior) {
+    if (!prior || prior.size === 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    virtState.tbody.querySelectorAll(":scope > tr[data-key]").forEach((tr) => {
+      const old = prior.get(tr.dataset.key);
+      if (!old) {
+        return;
+      }
+      const oldCells = old.children;
+      const newCells = tr.children;
+      for (let i = 0; i < newCells.length; i++) {
+        const o = oldCells[i];
+        const nd = newCells[i];
+        if (o && nd && nd.tagName === "TD" && o.textContent !== nd.textContent) {
+          nd.classList.remove("ro-cell-changed");
+          void nd.offsetWidth;
+          nd.classList.add("ro-cell-changed");
+        }
+      }
+    });
+  }
+  function virtualizeOnFilterChange() {
+    if (!virtualizerActive() || virtState.pendingRows) {
+      return;
+    }
+    virtComputeVisible();
+    virtRenderWindow();
+  }
+  function virtMoveFocus(delta) {
+    const list = virtState.visible;
+    if (list.length === 0) {
+      return false;
+    }
+    let current = -1;
+    const focusKey = roRowState2().focusedKey();
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].dataset.key === focusKey) {
+        current = i;
+        break;
+      }
+    }
+    const next = clampFocusIndex(current, delta, list.length);
+    virtualizeScrollToIndex(next);
+    roRowState2().setFocus(list[next].dataset.key);
+    return true;
+  }
+  function virtualizeScrollToIndex(index) {
+    const rect = virtState.tbody.getBoundingClientRect();
+    const rowTop = rowOffsetTop(rect.top, index, virtState.rowH);
+    const topbar = document.querySelector("header.ro-topbar");
+    const topMin = topbar ? topbar.getBoundingClientRect().bottom : 0;
+    const delta = scrollAdjustToReveal(rowTop, virtState.rowH, topMin, window.innerHeight);
+    if (delta !== 0) {
+      window.scrollBy(0, delta);
+    }
+    virtRenderWindow();
+  }
+  function virtRows() {
+    return virtState.rows;
+  }
+  function virtVisible() {
+    return virtState.visible;
+  }
+  function virtRowByKey(key) {
+    return virtState.byKey.get(key) || null;
+  }
+  var virtScrollScheduled = false;
+  function virtOnScroll() {
+    if (!virtualizerActive()) {
+      return;
+    }
+    const rect = virtState.tbody.getBoundingClientRect();
+    const bounds = windowBounds(rect.top, window.innerHeight, virtState.rowH, virtState.visible.length);
+    if (bounds.start !== virtState.start || bounds.end !== virtState.end) {
+      virtRenderWindow();
+    }
+  }
+  window.addEventListener("scroll", () => {
+    if (!virtState.active || virtScrollScheduled) {
+      return;
+    }
+    virtScrollScheduled = true;
+    window.requestAnimationFrame(() => {
+      virtScrollScheduled = false;
+      virtOnScroll();
+    });
+  }, { passive: true });
+  window.addEventListener("resize", virtOnScroll);
+  if (document.fonts && document.fonts.ready && typeof document.fonts.ready.then === "function") {
+    document.fonts.ready.then(() => {
+      if (!virtualizerActive()) {
+        return;
+      }
+      const measured = virtMeasureRowHeight();
+      if (measured && Math.abs(measured - virtState.rowH) > 0.5) {
+        virtState.rowH = measured;
+        virtRenderWindow();
+      }
+    });
+  }
+  window.roVirtual = {
+    active: virtualizerActive,
+    renderedBounds() {
+      return { start: virtState.start, end: virtState.end, total: virtState.visible.length };
+    },
+    scrollToKey(key) {
+      if (!virtualizerActive()) {
+        return false;
+      }
+      const tr = virtState.byKey.get(key);
+      const index = tr ? virtState.visible.indexOf(tr) : -1;
+      if (index === -1) {
+        return false;
+      }
+      virtualizeScrollToIndex(index);
+      return true;
+    }
+  };
+
+  // internal/assets/src/js/filters-parse.ts
+  function normalizeFieldName(s) {
+    return (s || "").toLowerCase().replace(/-/g, " ").trim();
+  }
+  function fieldSuggestionText(label) {
+    return (label || "").toLowerCase().trim().replace(/\s+/g, "-");
+  }
+  function splitFilterDraft(s) {
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (c === "!" && s[i + 1] === "=") {
+        return { field: s.slice(0, i).trim(), op: "!=", value: s.slice(i + 2) };
+      }
+      if (c === ":" || c === ">" || c === "<") {
+        return { field: s.slice(0, i).trim(), op: c, value: s.slice(i + 1) };
+      }
+    }
+    return null;
+  }
+  function hasModelColumn(fields, normName) {
+    return fields.some((f) => !!f.hint && normalizeFieldName(f.label) === normName);
+  }
+  function filterSuggestionFields(fields) {
+    const out = [];
+    fields.forEach((f) => {
+      if (!f.hint) {
+        return;
+      }
+      const norm = normalizeFieldName(f.label);
+      if (norm === "cpu" || norm === "memory") {
+        return;
+      }
+      out.push({ text: f.name, hint: f.hint });
+    });
+    out.push({ text: "label", hint: "key=value" });
+    if (hasModelColumn(fields, "cpu usage")) {
+      out.push({ text: "cpu", hint: "quantity" });
+    }
+    if (hasModelColumn(fields, "memory usage")) {
+      out.push({ text: "memory", hint: "quantity" });
+    }
+    return out;
+  }
+  function filterFieldKnown(fields, field) {
+    const want = normalizeFieldName(field);
+    if (!want) {
+      return false;
+    }
+    if (want === "label") {
+      return true;
+    }
+    if (want === "cpu" || want === "memory") {
+      return hasModelColumn(fields, want + " usage");
+    }
+    return fields.some((f) => !!f.hint && normalizeFieldName(f.label) === want);
+  }
+  function fieldColumnIndex(fields, field) {
+    let want = normalizeFieldName(field);
+    if (want === "cpu" || want === "memory") {
+      want += " usage";
+    }
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      if (f.hint && normalizeFieldName(f.label) === want) {
+        return i;
+      }
+    }
+    return -1;
+  }
+  function rankFieldSuggestions(fields, draft) {
+    const q = normalizeFieldName(draft);
+    const matched = filterSuggestionFields(fields).filter(
+      (f) => normalizeFieldName(f.text).indexOf(q) !== -1
+    );
+    matched.sort((a, b) => {
+      const ap = normalizeFieldName(a.text).indexOf(q) === 0 ? 0 : 1;
+      const bp = normalizeFieldName(b.text).indexOf(q) === 0 ? 0 : 1;
+      return ap - bp;
+    });
+    return matched.map((f) => ({
+      label: f.text,
+      hint: f.hint,
+      insert: f.text + ":",
+      kind: "field"
+    }));
+  }
+  function rankValueSuggestions(fields, rows, split) {
+    const idx = fieldColumnIndex(fields, split.field);
+    if (idx < 0) {
+      return [];
+    }
+    const freq = /* @__PURE__ */ new Map();
+    rows.forEach((row) => {
+      const v = row.cells[idx];
+      if (v) {
+        freq.set(v, (freq.get(v) || 0) + 1);
+      }
+    });
+    const typed = split.value.trim().toLowerCase();
+    let entries = Array.from(freq.entries());
+    if (typed) {
+      entries = entries.filter(([v]) => v.toLowerCase().indexOf(typed) !== -1);
+    }
+    entries.sort((a, b) => b[1] - a[1]);
+    return entries.slice(0, 8).map(([v, n]) => ({
+      label: v,
+      hint: "×" + n,
+      insert: split.field.trim() + ":" + v,
+      kind: "value"
+    }));
+  }
+  function liveNameMatchKeys(rows, draft) {
+    const text = !draft || splitFilterDraft(draft) ? "" : draft.trim().toLowerCase();
+    if (!text) {
+      return null;
+    }
+    const visible = /* @__PURE__ */ new Set();
+    rows.forEach((row) => {
+      if (row.name.toLowerCase().indexOf(text) !== -1) {
+        visible.add(row.key);
+      }
+    });
+    return visible;
+  }
+  function mergeColParams(pathname, search, owned, fields) {
+    const kept = [];
+    search.replace(/^\?/, "").split("&").forEach((pair) => {
+      if (pair && !owned.has(pair.split("=")[0])) {
+        kept.push(pair);
+      }
+    });
+    const query = kept.concat(fields).join("&");
+    return pathname + (query ? "?" + query : "");
+  }
+
+  // internal/assets/src/js/filters.ts
+  function getHtmx3() {
+    return window.htmx;
+  }
+  var roRowModel2 = {
+    fields: [],
+    rows: [],
+    visibleKeys: null
+  };
+  window.roRowModel = roRowModel2;
+  function captureRowModel(root) {
+    const table = root.querySelector("table.ro-table");
+    if (!table) {
+      roRowModel2.fields = [];
+      roRowModel2.rows = [];
+      return;
+    }
+    const fields = [];
+    table.querySelectorAll("thead th").forEach((th) => {
+      const label = (th.textContent || "").trim();
+      fields.push({ label, name: fieldSuggestionText(label), hint: th.dataset.hint || "" });
+    });
+    const rows = [];
+    table.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
+      const cells = [];
+      tr.querySelectorAll("td").forEach((td) => {
+        cells.push((td.textContent || "").trim());
+      });
+      const nameLink = tr.querySelector("td.cell-name a");
+      rows.push({
+        key: tr.dataset.key,
+        name: nameLink ? (nameLink.textContent || "").trim() : cells[0] || "",
+        cells
+      });
+    });
+    roRowModel2.fields = fields;
+    roRowModel2.rows = rows;
+  }
+  function captureRowModelFromDocument() {
+    const content = document.getElementById("resource-list-content");
+    if (content && document.getElementById("ro-filter-input") && !virtualizerActive()) {
+      captureRowModel(content);
+    }
+  }
+  var FILTER_HIDE_CLASS2 = "ro-row-filtered";
+  function applyLiveNameFilter() {
+    const content = document.getElementById("resource-list-content");
+    if (!content) {
+      return;
+    }
+    const input = document.getElementById("ro-filter-input");
+    const draft = input ? input.value : "";
+    const visible = liveNameMatchKeys(roRowModel2.rows, draft);
+    roRowModel2.visibleKeys = visible;
+    content.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
+      tr.classList.toggle(FILTER_HIDE_CLASS2, !!visible && !visible.has(tr.dataset.key));
+    });
+    virtualizeOnFilterChange();
+  }
+  function issueFilterNavigation(href) {
+    const content = document.getElementById("resource-list-content");
+    const input = document.getElementById("ro-filter-input");
+    const htmx2 = getHtmx3();
+    if (!content || !input || !htmx2) {
+      window.location.assign(href);
+      return;
+    }
+    const u = new URL(href, window.location.href);
+    const partial = u.pathname.replace(/\/+$/, "") + "/_table" + u.search;
+    const request = htmx2.ajax("GET", partial, {
+      source: input,
+      target: "#resource-list-content",
+      swap: "morph"
+    });
+    if (request && typeof request.catch === "function") {
+      request.catch(() => {
+      });
+    }
+  }
+  function commitFilterChip(draft) {
+    const text = draft.trim();
+    const parsed = splitFilterDraft(text);
+    if (!parsed) {
+      return;
+    }
+    if (!filterFieldKnown(roRowModel2.fields, parsed.field)) {
+      showFilterFieldHint();
+      return;
+    }
+    const raw = encodeURIComponent(text).replace(/%2C/gi, ",");
+    const search = window.location.search;
+    const href = window.location.pathname + (search ? search + "&" : "?") + "f=" + raw;
+    clearFilterDraft();
+    issueFilterNavigation(href);
+  }
+  function popLastFilterChip() {
+    const removers = document.querySelectorAll("#ro-filter-field .ro-scope-chip .chip-x");
+    if (removers.length === 0) {
+      return;
+    }
+    const href = removers[removers.length - 1].getAttribute("href");
+    if (href) {
+      issueFilterNavigation(href);
+    }
+  }
+  function clearFilterDraft() {
+    const input = document.getElementById("ro-filter-input");
+    if (input) {
+      input.value = "";
+    }
+    closeFilterAC();
+    applyLiveNameFilter();
+  }
+  function showFilterFieldHint() {
+    const el = document.getElementById("ro-filter-error");
+    if (!el) {
+      return;
+    }
+    const names = filterSuggestionFields(roRowModel2.fields).slice(0, 3).map((f) => f.text);
+    el.textContent = "no such field — try " + (names.length ? names.join(", ") : "status, node, age") + "…";
+    el.hidden = false;
+  }
+  function hideFilterFieldHint() {
+    const el = document.getElementById("ro-filter-error");
+    if (el) {
+      el.hidden = true;
+    }
+  }
+  var filterACItems = [];
+  var filterACActive = -1;
+  function filterACOpen() {
+    const ac = document.getElementById("ro-filter-ac");
+    return !!ac && !ac.hidden;
+  }
+  function closeFilterAC() {
+    const ac = document.getElementById("ro-filter-ac");
+    if (ac) {
+      ac.hidden = true;
+      ac.textContent = "";
+    }
+    filterACItems = [];
+    filterACActive = -1;
+  }
+  function openFilterAC(items) {
+    const ac = document.getElementById("ro-filter-ac");
+    if (!ac || items.length === 0) {
+      closeFilterAC();
+      return;
+    }
+    ac.textContent = "";
+    ac.setAttribute("role", "listbox");
+    filterACItems = items;
+    filterACActive = 0;
+    items.forEach((item, idx) => {
+      const row = document.createElement("div");
+      row.className = "ro-ac-item" + (idx === 0 ? " active" : "");
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", idx === 0 ? "true" : "false");
+      row.dataset.acIndex = String(idx);
+      const name = document.createElement("span");
+      name.className = "ac-name";
+      name.textContent = item.label;
+      row.appendChild(name);
+      if (item.hint) {
+        const hint = document.createElement("span");
+        hint.className = "ac-hint";
+        hint.textContent = item.hint;
+        row.appendChild(hint);
+      }
+      row.addEventListener("mousemove", () => setFilterACActive(idx));
+      ac.appendChild(row);
+    });
+    ac.hidden = false;
+  }
+  function setFilterACActive(index) {
+    if (filterACItems.length === 0) {
+      return;
+    }
+    filterACActive = Math.max(0, Math.min(filterACItems.length - 1, index));
+    const ac = document.getElementById("ro-filter-ac");
+    if (!ac) {
+      return;
+    }
+    ac.querySelectorAll(".ro-ac-item").forEach((el) => {
+      const on = Number(el.dataset.acIndex) === filterACActive;
+      el.classList.toggle("active", on);
+      el.setAttribute("aria-selected", on ? "true" : "false");
+    });
+  }
+  function moveFilterACActive(delta) {
+    if (filterACItems.length === 0) {
+      return;
+    }
+    setFilterACActive((filterACActive + delta + filterACItems.length) % filterACItems.length);
+  }
+  function updateFilterAC() {
+    const input = document.getElementById("ro-filter-input");
+    if (!input) {
+      return;
+    }
+    const draft = input.value;
+    if (!draft.trim()) {
+      closeFilterAC();
+      return;
+    }
+    const parsed = splitFilterDraft(draft);
+    if (!parsed) {
+      openFilterAC(rankFieldSuggestions(roRowModel2.fields, draft));
+      return;
+    }
+    const isLabel = normalizeFieldName(parsed.field) === "label";
+    if (parsed.op !== ":" || isLabel || !filterFieldKnown(roRowModel2.fields, parsed.field)) {
+      closeFilterAC();
+      return;
+    }
+    const items = rankValueSuggestions(roRowModel2.fields, roRowModel2.rows, parsed);
+    if (items.length === 0) {
+      closeFilterAC();
+      return;
+    }
+    openFilterAC(items);
+  }
+  function acceptFilterAC(commitValues) {
+    const input = document.getElementById("ro-filter-input");
+    const item = filterACItems[filterACActive];
+    if (!input || !item) {
+      return;
+    }
+    input.value = item.insert;
+    closeFilterAC();
+    if (item.kind === "value" && commitValues) {
+      commitFilterChip(input.value);
+    } else {
+      applyLiveNameFilter();
+      updateFilterAC();
+    }
+  }
+  function handleFilterInputKeydown(event) {
+    const input = event.target;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (filterACOpen() && filterACActive >= 0) {
+        acceptFilterAC(true);
+        return;
+      }
+      commitFilterChip(input.value);
+      return;
+    }
+    if (event.key === "Tab" && filterACOpen()) {
+      event.preventDefault();
+      acceptFilterAC(false);
+      return;
+    }
+    if (event.key === "Escape" && filterACOpen()) {
+      event.preventDefault();
+      closeFilterAC();
+      return;
+    }
+    if (event.key === "ArrowDown" && filterACOpen()) {
+      event.preventDefault();
+      moveFilterACActive(1);
+      return;
+    }
+    if (event.key === "ArrowUp" && filterACOpen()) {
+      event.preventDefault();
+      moveFilterACActive(-1);
+      return;
+    }
+    if (event.key === "Backspace" && input.value === "") {
+      event.preventDefault();
+      popLastFilterChip();
+    }
+  }
+  var filtersBindings = [
+    // Chips editor (D7): a chip's ✕ is a real link (no-JS fallback) whose href is
+    // the server-built removal URL; intercept it to ride the v2 partial loop
+    // (morph + canonical push) instead of a full navigation.
+    {
+      event: "click",
+      selector: "#ro-filter-field .chip-x",
+      handler: (event, matched) => {
+        event.preventDefault();
+        const href = matched.getAttribute("href");
+        if (href) {
+          issueFilterNavigation(href);
+        }
+        return true;
+      },
+      stop: true
+    },
+    // Autocomplete row: clicking accepts it (a complete value commits the chip, a
+    // field fills `field:` and opens the value suggestions).
+    {
+      event: "click",
+      selector: "#ro-filter-ac .ro-ac-item",
+      handler: (event, matched) => {
+        event.preventDefault();
+        setFilterACActive(Number(matched.dataset.acIndex) || 0);
+        acceptFilterAC(true);
+        const input = document.getElementById("ro-filter-input");
+        if (input) {
+          input.focus();
+        }
+        return true;
+      },
+      stop: true
+    },
+    // Clicking the editor field anywhere (the padding, a chip's text) lands the
+    // caret in the input -- the whole field reads as one input.
+    {
+      event: "click",
+      selector: "#ro-filter-field",
+      handler: (event, matched) => {
+        const input = document.getElementById("ro-filter-input");
+        if (input && event.target !== input) {
+          input.focus();
+        }
+        void matched;
+        return true;
+      },
+      stop: true
+    },
+    // C5: a click anywhere outside the editor dismisses the dropdown
+    // (esc-equivalent). Independent of the others (listener-inventory C5). No
+    // selector (it keys off the closest() escape).
+    {
+      event: "click",
+      handler: (event) => {
+        if (!event.target.closest("#ro-filter-field")) {
+          closeFilterAC();
+        }
+      }
+    },
+    // Chips editor (D7): every keystroke re-runs the live name match (model-
+    // driven, NO request) and the autocomplete; a fresh draft clears any
+    // unknown-field hint.
+    {
+      event: "input",
+      selector: "#ro-filter-input",
+      handler: () => {
+        hideFilterFieldHint();
+        applyLiveNameFilter();
+        updateFilterAC();
+        return true;
+      },
+      stop: true
+    },
+    // The editor keydown protocol (the focus-routed half of compound case 4):
+    // #ro-filter-input owns ⏎ commit/accept, Tab accept, esc dismiss, arrows, and
+    // ⌫-on-empty pop. No selector -- it keys off the focused target id, exactly
+    // like the still-resident monolith keydown listener it replaces.
+    {
+      event: "keydown",
+      handler: (event) => {
+        if (event.target.id === "ro-filter-input") {
+          handleFilterInputKeydown(event);
+        }
+      }
+    }
+  ];
+
+  // internal/assets/src/js/columns.ts
+  function getHtmx4() {
+    return window.htmx;
+  }
+  var colsPopOpenFlag = false;
+  function colsPopOpen() {
+    return colsPopOpenFlag;
+  }
+  function setColsPopOpen(open) {
+    colsPopOpenFlag = open;
+    const pop = document.getElementById("ro-cols-pop");
+    if (pop) {
+      pop.classList.toggle("is-open", open);
+    }
+    const btn = document.getElementById("ro-cols-btn");
+    if (btn) {
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+  }
+  function syncColsPopState() {
+    const pop = document.getElementById("ro-cols-pop");
+    colsPopOpenFlag = !!pop && pop.classList.contains("is-open");
+  }
+  function commitColumnVisibility(pop) {
+    if (!pop) {
+      return;
+    }
+    const plural = pop.dataset.plural || "";
+    if (!plural) {
+      return;
+    }
+    const hidden = [];
+    pop.querySelectorAll(".col-toggle").forEach((toggle) => {
+      const check = toggle.querySelector(".ro-check");
+      if (!toggle.disabled && check && !check.checked && toggle.dataset.col) {
+        hidden.push(toggle.dataset.col);
+      }
+    });
+    roPrefsSetHiddenColumns(plural, hidden);
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx4();
+    if (content && htmx2) {
+      htmx2.trigger(content, "htmx:abort");
+    }
+    requestListRefresh();
+  }
+  function popFormMergedHref(form) {
+    const owned = /* @__PURE__ */ new Set();
+    const fields = [];
+    Array.prototype.slice.call(form.elements).forEach((el) => {
+      if (el.tagName !== "INPUT" || el.type === "hidden" || !el.name) {
+        return;
+      }
+      owned.add(el.name);
+      if (el.value) {
+        fields.push(el.name + "=" + encodeURIComponent(el.value));
+      }
+    });
+    return mergeColParams(window.location.pathname, window.location.search, owned, fields);
+  }
+  var columnsBindings = [
+    // Column-visibility popover (D8): the ⊞ title-row button toggles the popover
+    // open/closed. Open state is derived from the DOM (a boosted body swap
+    // renders it closed). NOT stop:true -- C4's own [data-cols-toggle] guard
+    // (the outside-click binding below) keeps the double-fire single, not a stop
+    // signal (listener-inventory C1/C4: both see the same click, no propagation
+    // stop between them).
+    {
+      event: "click",
+      selector: "[data-cols-toggle]",
+      handler: (event) => {
+        event.preventDefault();
+        const pop = document.getElementById("ro-cols-pop");
+        setColsPopOpen(!!pop && !pop.classList.contains("is-open"));
+      }
+    },
+    // A column checkbox row: flip the checkbox optimistically, then commit the
+    // COMPLETE hidden set (as the user now sees it) to the ro_prefs cookie and
+    // re-render through the container's own programmatic path -- cookie-state,
+    // not URL-state: RO-No-Push, zero history entries (D6/D9). The identity row
+    // is a disabled <button>, so its clicks never fire.
+    {
+      event: "click",
+      selector: ".col-toggle",
+      handler: (event, matched) => {
+        event.preventDefault();
+        const toggle = matched;
+        const check = toggle.querySelector(".ro-check");
+        if (check) {
+          check.checked = !check.checked;
+        }
+        commitColumnVisibility(toggle.closest(".ro-pop"));
+        return true;
+      },
+      stop: true
+    },
+    // C4: a click outside the popover (and not on its ⊞ opener) closes it -- the
+    // same dismissal contract the autocomplete dropdown uses. The
+    // [data-cols-toggle] escape: when the ⊞ toggle is clicked WHILE open, the
+    // toggle binding above already set colsPopOpen=false (closed), and this
+    // guard makes this binding a no-op so it does NOT re-toggle (no double-fire /
+    // no reopen). No selector (it keys off the flag + the closest() escapes).
+    {
+      event: "click",
+      handler: (event) => {
+        if (!colsPopOpenFlag) {
+          return;
+        }
+        const t = event.target;
+        if (t.closest("#ro-cols-pop") || t.closest("[data-cols-toggle]")) {
+          return;
+        }
+        setColsPopOpen(false);
+      }
+    },
+    // form.ro-pop-form (the D8 popover's labelcols/selector form): intercept and
+    // MERGE into the live query, riding the v2 loop exactly like a chip commit
+    // (issueFilterNavigation falls back to a plain navigation when the loop is
+    // unavailable). The native submit would rebuild the query from the round-trip
+    // hidden inputs alone and wipe every `?f=` chip.
+    {
+      event: "submit",
+      selector: "form.ro-pop-form",
+      handler: (event, matched) => {
+        event.preventDefault();
+        const popForm = matched;
+        issueFilterNavigation(popFormMergedHref(popForm));
+        return true;
+      },
+      stop: true
+    }
+  ];
 
   // internal/assets/src/js/keyboard.ts
   var PALETTE_ID = "ro-palette";
-  function roRowState2() {
+  function roRowState3() {
     return window.roRowState;
   }
   function keyboardTargetIsTextEntry(target) {
@@ -675,7 +2243,7 @@
     if (nsDropdown && nsDropdown.classList.contains("is-active")) {
       return true;
     }
-    return clusterBridge().colsPopOpen();
+    return colsPopOpen();
   }
   function visibleKeyRows() {
     return Array.from(
@@ -683,31 +2251,29 @@
     ).filter((tr) => !tr.classList.contains("ro-row-filtered"));
   }
   function moveRowFocus(delta) {
-    const bridge = clusterBridge();
-    if (bridge.virtualizerActive()) {
-      return bridge.virtMoveFocus(delta);
+    if (virtualizerActive()) {
+      return virtMoveFocus(delta);
     }
     const rows = visibleKeyRows();
     if (rows.length === 0) {
       return false;
     }
-    const focusKey = roRowState2().focusedKey();
+    const focusKey = roRowState3().focusedKey();
     const current = rows.findIndex((tr) => tr.dataset.key === focusKey);
     const next = Math.max(0, Math.min(rows.length - 1, current + delta));
-    roRowState2().setFocus(rows[next].dataset.key);
+    roRowState3().setFocus(rows[next].dataset.key);
     rows[next].scrollIntoView({ block: "nearest" });
     return true;
   }
   function openFocusedRow() {
-    const key = roRowState2().focusedKey();
+    const key = roRowState3().focusedKey();
     if (!key) {
       return false;
     }
-    const bridge = clusterBridge();
     let row = visibleKeyRows().find((tr) => tr.dataset.key === key) || null;
-    if (!row && bridge.virtualizerActive()) {
-      const tr = bridge.virtRowByKey(key);
-      if (tr && bridge.virtVisible().indexOf(tr) !== -1) {
+    if (!row && virtualizerActive()) {
+      const tr = virtRowByKey(key);
+      if (tr && virtVisible().indexOf(tr) !== -1) {
         row = tr;
       }
     }
@@ -983,8 +2549,7 @@
   }
   function harvestPageObjects() {
     const out = [];
-    const bridge = clusterBridge();
-    const rows = bridge.virtualizerActive() ? bridge.virtRows() : document.querySelectorAll("#resource-list-content table.ro-table tbody tr");
+    const rows = virtualizerActive() ? virtRows() : document.querySelectorAll("#resource-list-content table.ro-table tbody tr");
     Array.prototype.forEach.call(rows, (tr) => {
       const a = tr.querySelector("td.cell-name a");
       if (!a) {
@@ -1769,6 +3334,8 @@
     ...contextMenuBindings,
     ...bulkBindings,
     ...rowSelectionBindings,
+    ...columnsBindings,
+    ...filtersBindings,
     ...paletteBindings,
     ...keyboardBindings,
     ...foldBindings,
@@ -1796,547 +3363,6 @@
       window.setTimeout(() => toast.remove(), TOAST_LEAVE_MS);
     }, TOAST_VISIBLE_MS);
   }
-
-  // internal/assets/src/js/stale.ts
-  var STALE_DIM_CLASS = "ro-stale";
-  var staleCountdownId = null;
-  function updateStaleCountdown() {
-    const span = document.querySelector(".ro-stale-banner [data-stale-countdown]");
-    if (!span) {
-      return;
-    }
-    const nextAt = refreshNextAtMs();
-    if (!nextAt) {
-      span.textContent = "…";
-      return;
-    }
-    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
-    span.textContent = remaining + "s";
-  }
-  function isListRefreshEvent(event) {
-    const detail = event.detail;
-    if (!detail || isPreloadRequest(event)) {
-      return false;
-    }
-    const elt = detail.elt;
-    if (!!elt && elt.id === "resource-list-content") {
-      return true;
-    }
-    const target = detail.target;
-    return !!target && target.id === "resource-list-content";
-  }
-  function markListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.add(STALE_DIM_CLASS);
-    }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (banner) {
-      banner.hidden = false;
-    }
-    if (staleCountdownId === null) {
-      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
-    }
-    updateStaleCountdown();
-  }
-  function clearListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.remove(STALE_DIM_CLASS);
-    }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (banner) {
-      banner.hidden = true;
-    }
-    if (staleCountdownId !== null) {
-      window.clearInterval(staleCountdownId);
-      staleCountdownId = null;
-    }
-  }
-  document.addEventListener("htmx:responseError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
-    }
-  });
-  document.addEventListener("htmx:sendError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
-    }
-  });
-
-  // internal/assets/src/js/live-policy.ts
-  function effectivePollSeconds(mode, intervalSeconds, liveFallbackSeconds2) {
-    if (intervalSeconds > 0) {
-      return intervalSeconds;
-    }
-    return mode === "Live" ? liveFallbackSeconds2 : 0;
-  }
-  function refreshDelaySeconds(effectiveSeconds, failureStage) {
-    if (effectiveSeconds <= 0) {
-      return 0;
-    }
-    if (failureStage <= 1) {
-      return effectiveSeconds;
-    }
-    const factor = failureStage === 2 ? 2 : 4;
-    return Math.min(effectiveSeconds * factor, 60);
-  }
-  function nextFailureStage(stage) {
-    return Math.min(stage + 1, 3);
-  }
-  function classifyStreamClose(facts) {
-    if (facts.superseded) {
-      return { kind: "ignore" };
-    }
-    switch (facts.cause) {
-      case "connect-error":
-      case "bad-status":
-        return { kind: "fallback", banner: false, terminal: false };
-      case "read-error":
-      case "eof":
-        return { kind: "fallback", banner: true, terminal: false };
-      case "terminal-frame":
-        return { kind: "fallback", banner: true, terminal: true };
-    }
-  }
-  function shouldDiscardPush(facts) {
-    if (facts.frameGeneration !== facts.currentGeneration) {
-      return "stale-generation";
-    }
-    if (facts.liveStreamBase !== facts.openedStreamBase) {
-      return "wrong-page";
-    }
-    if (facts.requestInFlight) {
-      return "request-in-flight";
-    }
-    return "none";
-  }
-
-  // internal/assets/src/js/live.ts
-  function getHtmx() {
-    return window.htmx;
-  }
-  var liveState = {
-    status: "idle",
-    // 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden'
-    abort: null,
-    // AbortController of the current stream fetch
-    gen: "",
-    // the minted generation every frame must echo (string compare)
-    streamPath: ""
-    // the stream URL sans ?g= -- the page/params identity
-  };
-  var liveGenSeq = 0;
-  var liveDiscards = 0;
-  var liveFallbackSecs = 0;
-  function liveFallbackSeconds() {
-    return liveFallbackSecs;
-  }
-  function liveSupported() {
-    const content = document.getElementById("resource-list-content");
-    if (!content || content.dataset.liveUrl !== "location") {
-      return false;
-    }
-    const option = document.querySelector(
-      '.refresh-option[data-interval="Live"]'
-    );
-    return !!option && !option.disabled;
-  }
-  function liveStreamBase() {
-    const u = new URL(window.location.href);
-    return u.pathname.replace(/\/+$/, "") + "/_stream" + u.search;
-  }
-  function liveTeardown() {
-    const ctrl = liveState.abort;
-    liveState.abort = null;
-    liveFallbackSecs = 0;
-    if (ctrl) {
-      try {
-        ctrl.abort();
-      } catch {
-      }
-    }
-  }
-  function liveEngageFallback(banner) {
-    liveTeardown();
-    liveState.status = "fallback";
-    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
-    scheduleRefreshTick();
-    if (banner) {
-      markListStale();
-    }
-  }
-  function liveOpen(base) {
-    liveTeardown();
-    liveFallbackSecs = 0;
-    liveState.streamPath = base;
-    if (!base) {
-      liveEngageFallback(false);
-      return;
-    }
-    liveState.status = "connecting";
-    liveGenSeq += 1;
-    liveState.gen = Date.now().toString(36) + "." + liveGenSeq;
-    const ctrl = new AbortController();
-    liveState.abort = ctrl;
-    const url = base + (base.indexOf("?") === -1 ? "?" : "&") + "g=" + encodeURIComponent(liveState.gen);
-    scheduleRefreshTick();
-    void liveConnect(url, ctrl);
-  }
-  async function liveConnect(url, ctrl) {
-    let res;
-    try {
-      res = await fetch(url, { signal: ctrl.signal });
-    } catch {
-      applyClose({ superseded: liveState.abort !== ctrl, cause: "connect-error" });
-      return;
-    }
-    if (liveState.abort !== ctrl) {
-      return;
-    }
-    if (res.status !== 200 || !res.body) {
-      applyClose({ superseded: false, cause: "bad-status" });
-      return;
-    }
-    liveState.status = "open";
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffered = "";
-    let eventName = "";
-    let dataText = "";
-    try {
-      for (; ; ) {
-        const chunk = await reader.read();
-        if (liveState.abort !== ctrl) {
-          return;
-        }
-        if (chunk.done) {
-          break;
-        }
-        buffered += decoder.decode(chunk.value, { stream: true });
-        let nl = buffered.indexOf("\n");
-        while (nl !== -1) {
-          const line = buffered.slice(0, nl).replace(/\r$/, "");
-          buffered = buffered.slice(nl + 1);
-          if (line === "") {
-            const ended = liveHandleFrame(eventName, dataText, ctrl);
-            eventName = "";
-            dataText = "";
-            if (ended || liveState.abort !== ctrl) {
-              return;
-            }
-          } else if (line.indexOf("event:") === 0) {
-            eventName = line.slice(6).trim();
-          } else if (line.indexOf("data:") === 0) {
-            const piece = line.slice(5).replace(/^ /, "");
-            dataText = dataText === "" ? piece : `${dataText}
-${piece}`;
-          }
-          nl = buffered.indexOf("\n");
-        }
-      }
-    } catch {
-      applyClose({ superseded: liveState.abort !== ctrl, cause: "read-error" });
-      return;
-    }
-    if (liveState.abort !== ctrl) {
-      return;
-    }
-    applyClose({ superseded: false, cause: "eof" });
-  }
-  function applyClose(facts) {
-    const action = classifyStreamClose(facts);
-    if (action.kind === "ignore") {
-      return;
-    }
-    liveEngageFallback(action.banner);
-  }
-  function liveHandleFrame(name, text, ctrl) {
-    if (liveState.abort !== ctrl || text === "") {
-      return false;
-    }
-    let payload = null;
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      return false;
-    }
-    if (!payload || typeof payload !== "object") {
-      return false;
-    }
-    if (name === "ro-terminal") {
-      applyClose({ superseded: false, cause: "terminal-frame" });
-      return true;
-    }
-    if (name !== "ro-table") {
-      return false;
-    }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    const reason = shouldDiscardPush({
-      frameGeneration: String(payload.g),
-      currentGeneration: liveState.gen,
-      liveStreamBase: liveStreamBase(),
-      openedStreamBase: liveState.streamPath,
-      requestInFlight: userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0
-    });
-    if (reason !== "none" || liveStreamBase() !== liveState.streamPath) {
-      liveDiscards += 1;
-      return false;
-    }
-    liveMorph(String(payload.html));
-    return false;
-  }
-  function liveMorph(html) {
-    const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx();
-    if (!content || !htmx2 || typeof htmx2.swap !== "function") {
-      return;
-    }
-    htmx2.swap(content, html, { swapStyle: "morph" }, {
-      contextElement: content,
-      eventInfo: { target: content, roLivePush: true }
-    });
-  }
-  function liveOnListSwap(event) {
-    const detail = event.detail;
-    if (detail && detail.roLivePush) {
-      return;
-    }
-    if (liveState.status !== "open" && liveState.status !== "connecting") {
-      return;
-    }
-    let base = liveStreamBase();
-    const pathInfo = detail && detail.pathInfo;
-    const requestPath = pathInfo && (pathInfo.finalRequestPath || pathInfo.requestPath);
-    if (requestPath && requestPath.indexOf("/_table") !== -1) {
-      base = requestPath.replace("/_table", "/_stream");
-    }
-    liveOpen(base);
-  }
-  function liveApply(force) {
-    if (refreshMode() !== "Live") {
-      if (liveState.status !== "idle") {
-        liveTeardown();
-        liveState.status = "idle";
-        liveState.streamPath = "";
-        liveFallbackSecs = 0;
-      }
-      return;
-    }
-    const base = liveSupported() ? liveStreamBase() : "";
-    if (!force && base === liveState.streamPath && liveState.status !== "idle") {
-      return;
-    }
-    liveOpen(base);
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      if (liveState.status === "open" || liveState.status === "connecting") {
-        liveTeardown();
-        liveState.status = "hidden";
-      }
-      return;
-    }
-    if (liveState.status === "hidden" && refreshMode() === "Live") {
-      liveOpen(liveSupported() ? liveStreamBase() : "");
-    }
-  });
-  window.roLive = {
-    discards() {
-      return liveDiscards;
-    }
-  };
-
-  // internal/assets/src/js/refresh.ts
-  function getHtmx2() {
-    return window.htmx;
-  }
-  var refreshTimerId = null;
-  var refreshNextAt = 0;
-  var refreshFailureStage = 0;
-  function refreshNextAtMs() {
-    return refreshNextAt;
-  }
-  var userListRequestsInFlight = /* @__PURE__ */ new Set();
-  var containerListRequestsInFlight = /* @__PURE__ */ new Set();
-  function pruneSettledListRequests(requests) {
-    requests.forEach((xhr) => {
-      if (xhr.readyState === 4 || xhr.readyState === 0) {
-        requests.delete(xhr);
-      }
-    });
-  }
-  function isPreloadRequest(event) {
-    const cfg = event.detail && event.detail.requestConfig;
-    return !!cfg && !!cfg.headers && cfg.headers["HX-Preloaded"] === "true";
-  }
-  function isUserListRequest(event) {
-    const detail = event.detail;
-    if (!detail || !detail.elt || !detail.target) {
-      return false;
-    }
-    if (detail.elt.id === "resource-list-content") {
-      return false;
-    }
-    return detail.target.id === "resource-list-content" && !isPreloadRequest(event);
-  }
-  document.addEventListener("htmx:configRequest", (event) => {
-    const elt = event.detail && event.detail.elt;
-    if (elt && elt.id === "resource-list-content") {
-      event.detail.headers["RO-No-Push"] = "true";
-    }
-  });
-  document.addEventListener("htmx:beforeRequest", (event) => {
-    const detail = event.detail;
-    if (detail && detail.xhr && detail.elt && detail.elt.id === "resource-list-content") {
-      containerListRequestsInFlight.add(detail.xhr);
-      return;
-    }
-    if (!isUserListRequest(event)) {
-      return;
-    }
-    if (detail && detail.xhr) {
-      userListRequestsInFlight.add(detail.xhr);
-    }
-    const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx2();
-    if (content && htmx2) {
-      htmx2.trigger(content, "htmx:abort");
-    }
-  });
-  document.addEventListener("htmx:afterRequest", (event) => {
-    const xhr = event.detail && event.detail.xhr;
-    if (xhr) {
-      userListRequestsInFlight.delete(xhr);
-      containerListRequestsInFlight.delete(xhr);
-    }
-  });
-  function refreshMode() {
-    const stored = readPrefs().refresh;
-    if (stored) {
-      return stored;
-    }
-    let legacy = null;
-    try {
-      legacy = window.localStorage.getItem(REFRESH_KEY);
-    } catch {
-      return "";
-    }
-    if (legacy === null || legacy === "") {
-      return "";
-    }
-    const secs = parseInt(legacy, 10) || 0;
-    const mode = secs > 0 ? String(secs) : "Off";
-    roPrefsSetRefresh(mode);
-    return mode;
-  }
-  function refreshInterval() {
-    const secs = parseInt(refreshMode(), 10);
-    return Number.isFinite(secs) && secs > 0 ? secs : 0;
-  }
-  function listTableURL() {
-    const u = new URL(window.location.href);
-    return u.pathname.replace(/\/+$/, "") + "/_table" + u.search;
-  }
-  function requestListRefresh() {
-    const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx2();
-    if (!content || !htmx2) {
-      return;
-    }
-    if (content.dataset.liveUrl === "location") {
-      const request = htmx2.ajax("GET", listTableURL(), { source: content });
-      if (request && typeof request.catch === "function") {
-        request.catch(() => {
-        });
-      }
-    } else {
-      htmx2.trigger(content, "ro:refresh");
-    }
-  }
-  window.requestListRefresh = requestListRefresh;
-  function fireRefresh() {
-    if (document.hidden) {
-      return;
-    }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    if (userListRequestsInFlight.size > 0) {
-      return;
-    }
-    if (containerListRequestsInFlight.size > 0) {
-      return;
-    }
-    requestListRefresh();
-  }
-  function effectivePollSeconds2() {
-    return effectivePollSeconds(refreshMode(), refreshInterval(), liveFallbackSeconds());
-  }
-  function refreshDelaySeconds2() {
-    return refreshDelaySeconds(effectivePollSeconds2(), refreshFailureStage);
-  }
-  function scheduleRefreshTick() {
-    if (refreshTimerId !== null) {
-      window.clearTimeout(refreshTimerId);
-      refreshTimerId = null;
-    }
-    const delay = refreshDelaySeconds2();
-    if (delay <= 0) {
-      refreshNextAt = 0;
-      updateStaleCountdown();
-      return;
-    }
-    refreshNextAt = Date.now() + delay * 1e3;
-    refreshTimerId = window.setTimeout(() => {
-      refreshTimerId = null;
-      scheduleRefreshTick();
-      fireRefresh();
-    }, delay * 1e3);
-    updateStaleCountdown();
-  }
-  function applyRefresh() {
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-  }
-  function syncRefreshUI() {
-    const live = refreshMode() === "Live";
-    const secs = refreshInterval();
-    const label = document.getElementById("refresh-label");
-    if (label) {
-      label.textContent = live ? "Live" : secs > 0 ? `${secs}s` : "Off";
-    }
-    document.querySelectorAll(".refresh-option").forEach((opt) => {
-      const value = opt.dataset.interval ?? "";
-      opt.classList.toggle("is-active", live ? value === "Live" : value !== "Live" && (parseInt(value, 10) || 0) === secs);
-    });
-    const dropdown = document.getElementById("refresh-dropdown");
-    if (dropdown) {
-      dropdown.classList.toggle("refresh-on", live || secs > 0);
-    }
-  }
-  function noteRefreshFailure() {
-    refreshFailureStage = nextFailureStage(refreshFailureStage);
-    scheduleRefreshTick();
-  }
-  function noteRefreshRecovery() {
-    if (refreshFailureStage === 0) {
-      return;
-    }
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-    const toast = window.roToast;
-    if (typeof toast === "function") {
-      toast("Refresh resumed");
-    }
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && effectivePollSeconds2() > 0) {
-      fireRefresh();
-    }
-  });
 
   // internal/assets/src/js/skeleton.ts
   function listRegionIsEmpty(content) {
@@ -2431,51 +3457,6 @@ ${piece}`;
       requestListRefresh();
       return;
     }
-    const chipRemove = target.closest("#ro-filter-field .chip-x");
-    if (chipRemove) {
-      event.preventDefault();
-      const href = chipRemove.getAttribute("href");
-      if (href) {
-        issueFilterNavigation(href);
-      }
-      return;
-    }
-    const acItem = target.closest("#ro-filter-ac .ro-ac-item");
-    if (acItem) {
-      event.preventDefault();
-      setFilterACActive(Number(acItem.dataset.acIndex) || 0);
-      acceptFilterAC(true);
-      const input = document.getElementById("ro-filter-input");
-      if (input) {
-        input.focus();
-      }
-      return;
-    }
-    const filterField = target.closest("#ro-filter-field");
-    if (filterField) {
-      const input = document.getElementById("ro-filter-input");
-      if (input && target !== input) {
-        input.focus();
-      }
-      return;
-    }
-    const colsBtn = target.closest("[data-cols-toggle]");
-    if (colsBtn) {
-      event.preventDefault();
-      const pop = document.getElementById("ro-cols-pop");
-      setColsPopOpen(!!pop && !pop.classList.contains("is-open"));
-      return;
-    }
-    const colToggle = target.closest(".col-toggle");
-    if (colToggle) {
-      event.preventDefault();
-      const check = colToggle.querySelector(".ro-check");
-      if (check) {
-        check.checked = !check.checked;
-      }
-      commitColumnVisibility(colToggle.closest(".ro-pop"));
-      return;
-    }
     const moreChips = target.closest("[data-more]");
     if (moreChips) {
       event.preventDefault();
@@ -2539,47 +3520,8 @@ ${piece}`;
     }
   });
   document.addEventListener("input", (event) => {
-    const filterInput = event.target.closest("#ro-filter-input");
-    if (filterInput) {
-      hideFilterFieldHint();
-      applyLiveNameFilter();
-      updateFilterAC();
-      return;
-    }
   });
-  document.addEventListener("keydown", (event) => {
-    if (event.target && event.target.id === "ro-filter-input") {
-      handleFilterInputKeydown(event);
-    }
-  });
-  function popFormMergedHref(form) {
-    const owned = /* @__PURE__ */ new Set();
-    const fields = [];
-    Array.prototype.slice.call(form.elements).forEach((el) => {
-      if (el.tagName !== "INPUT" || el.type === "hidden" || !el.name) {
-        return;
-      }
-      owned.add(el.name);
-      if (el.value) {
-        fields.push(el.name + "=" + encodeURIComponent(el.value));
-      }
-    });
-    const kept = [];
-    window.location.search.replace(/^\?/, "").split("&").forEach((pair) => {
-      if (pair && !owned.has(pair.split("=")[0])) {
-        kept.push(pair);
-      }
-    });
-    const query = kept.concat(fields).join("&");
-    return window.location.pathname + (query ? "?" + query : "");
-  }
   document.addEventListener("submit", (event) => {
-    const popForm = event.target.closest("form.ro-pop-form");
-    if (popForm) {
-      event.preventDefault();
-      issueFilterNavigation(popFormMergedHref(popForm));
-      return;
-    }
     const form = event.target.closest("form.tools-form");
     if (form) {
       Array.prototype.slice.call(form.getElementsByTagName("input")).forEach((input) => {
@@ -2626,7 +3568,7 @@ ${piece}`;
       if (filterInput && document.activeElement === filterInput && filterInput.value) {
         updateFilterAC();
       }
-      if (colsPopOpen) {
+      if (colsPopOpen()) {
         setColsPopOpen(true);
       }
       virtualizeAfterSwap();
@@ -2647,816 +3589,6 @@ ${piece}`;
   document.addEventListener("htmx:historyRestore", () => {
     reapplyRowState();
     updateBulkBar();
-  });
-  var VIRT_BUFFER_ROWS = 12;
-  var virtState = {
-    active: false,
-    rows: [],
-    // the FULL identity row set, server order
-    byKey: /* @__PURE__ */ new Map(),
-    // key -> tr over `rows` (rendered or detached)
-    visible: [],
-    // rows passing the live free-text filter, in order
-    rowH: 0,
-    // the measured fixed row pitch (px)
-    start: 0,
-    // rendered slice bounds over `visible`
-    end: 0,
-    table: null,
-    tbody: null,
-    topSpacer: null,
-    bottomSpacer: null,
-    pinnedWidths: [],
-    // engagement-time column widths (full-render truth)
-    pendingRows: null,
-    // adoption handoff from the ro-morph handleSwap
-    pendingScrollY: null
-  };
-  function virtualizerActive() {
-    return virtState.active && !!virtState.tbody && virtState.tbody.isConnected;
-  }
-  function virtReset() {
-    virtState.active = false;
-    virtState.rows = [];
-    virtState.byKey = /* @__PURE__ */ new Map();
-    virtState.visible = [];
-    virtState.rowH = 0;
-    virtState.start = 0;
-    virtState.end = 0;
-    virtState.table = null;
-    virtState.tbody = null;
-    virtState.topSpacer = null;
-    virtState.bottomSpacer = null;
-    virtState.pinnedWidths = [];
-    virtState.pendingRows = null;
-    virtState.pendingScrollY = null;
-  }
-  function virtMakeSpacer() {
-    const tr = document.createElement("tr");
-    tr.className = "ro-vspacer";
-    tr.setAttribute("aria-hidden", "true");
-    tr.appendChild(document.createElement("td"));
-    return tr;
-  }
-  function virtSetSpacerColspan() {
-    const cols = virtState.table.querySelectorAll("thead th").length || 1;
-    virtState.topSpacer.firstElementChild.colSpan = cols;
-    virtState.bottomSpacer.firstElementChild.colSpan = cols;
-  }
-  function virtMeasureRowHeight() {
-    const rendered = virtState.tbody.querySelectorAll(":scope > tr[data-key]");
-    if (rendered.length === 0) {
-      return 0;
-    }
-    const first = rendered[0].getBoundingClientRect();
-    const last = rendered[rendered.length - 1].getBoundingClientRect();
-    const pitch = (last.bottom - first.top) / rendered.length;
-    return pitch > 0 ? pitch : 0;
-  }
-  function virtFallbackRowHeight() {
-    let py = 9;
-    let lh = 18;
-    try {
-      const cs = window.getComputedStyle(document.documentElement);
-      py = parseFloat(cs.getPropertyValue("--row-py")) || py;
-      const cell = virtState.tbody && virtState.tbody.querySelector("td");
-      if (cell) {
-        lh = parseFloat(window.getComputedStyle(cell).lineHeight) || lh;
-      }
-    } catch (e) {
-    }
-    return py * 2 + lh + 1;
-  }
-  function virtApplyPins() {
-    const ths = virtState.table.querySelectorAll("thead th");
-    if (virtState.pinnedWidths.length !== ths.length) {
-      return false;
-    }
-    ths.forEach((th, i) => {
-      th.style.width = virtState.pinnedWidths[i] + "px";
-    });
-    virtState.table.classList.add("ro-virtualized");
-    return true;
-  }
-  function virtPinColumns() {
-    const ths = Array.from(virtState.table.querySelectorAll("thead th"));
-    virtState.pinnedWidths = ths.map((th) => th.getBoundingClientRect().width);
-    virtApplyPins();
-  }
-  function virtComputeVisible() {
-    const keys = roRowModel.visibleKeys;
-    virtState.visible = keys ? virtState.rows.filter((tr) => keys.has(tr.dataset.key)) : virtState.rows.slice();
-  }
-  function virtWindowBounds() {
-    const rect = virtState.tbody.getBoundingClientRect();
-    const rowH = virtState.rowH || 1;
-    const n = virtState.visible.length;
-    const first = Math.floor((0 - rect.top) / rowH);
-    const last = Math.ceil((window.innerHeight - rect.top) / rowH);
-    let start = Math.max(0, first - VIRT_BUFFER_ROWS);
-    let end = Math.min(n, last + VIRT_BUFFER_ROWS);
-    if (start > n) {
-      start = n;
-    }
-    if (end < start) {
-      end = start;
-    }
-    return { start, end };
-  }
-  function virtRenderWindow() {
-    const s = virtState;
-    const bounds = virtWindowBounds();
-    s.start = bounds.start;
-    s.end = bounds.end;
-    const n = s.visible.length;
-    s.topSpacer.firstElementChild.style.height = s.start * s.rowH + "px";
-    s.bottomSpacer.firstElementChild.style.height = (n - s.end) * s.rowH + "px";
-    const slice = s.visible.slice(s.start, s.end);
-    slice.forEach((tr) => tr.classList.remove(FILTER_HIDE_CLASS));
-    s.tbody.replaceChildren(s.topSpacer, ...slice, s.bottomSpacer);
-    reapplyRowState();
-  }
-  function virtBindMounts() {
-    const content = document.getElementById("resource-list-content");
-    const wrap = content && content.querySelector(".ro-table-wrap.ro-windowed");
-    const table = wrap && wrap.querySelector("table.ro-table");
-    const tbody = table && table.tBodies.length > 0 ? table.tBodies[0] : null;
-    virtState.table = table || null;
-    virtState.tbody = tbody || null;
-    return !!tbody;
-  }
-  function virtualizeInit() {
-    const content = document.getElementById("resource-list-content");
-    const wrap = content && content.querySelector(".ro-table-wrap.ro-windowed");
-    if (!wrap) {
-      virtReset();
-      return;
-    }
-    const table = wrap.querySelector("table.ro-table");
-    const tbody = table && table.tBodies.length > 0 ? table.tBodies[0] : null;
-    if (!tbody) {
-      virtReset();
-      return;
-    }
-    if (tbody.querySelector(":scope > tr.ro-vspacer")) {
-      if (virtState.active && virtState.tbody === tbody) {
-        return;
-      }
-      virtReset();
-      requestListRefresh();
-      return;
-    }
-    const rows = Array.from(tbody.querySelectorAll(":scope > tr[data-key]"));
-    if (rows.length === 0) {
-      virtReset();
-      return;
-    }
-    virtReset();
-    virtState.table = table;
-    virtState.tbody = tbody;
-    virtState.rows = rows;
-    virtState.byKey = new Map(rows.map((tr) => [tr.dataset.key, tr]));
-    virtState.topSpacer = virtMakeSpacer();
-    virtState.bottomSpacer = virtMakeSpacer();
-    virtSetSpacerColspan();
-    virtState.rowH = virtMeasureRowHeight() || virtFallbackRowHeight();
-    virtPinColumns();
-    virtState.active = true;
-    virtComputeVisible();
-    virtRenderWindow();
-  }
-  function virtualizePrepareSwap(fragment) {
-    virtState.pendingRows = null;
-    virtState.pendingScrollY = null;
-    const wrap = fragment.querySelector(".ro-table-wrap.ro-windowed");
-    const tbody = wrap ? wrap.querySelector("table.ro-table tbody") : null;
-    if (!tbody) {
-      return;
-    }
-    const rows = [];
-    Array.prototype.forEach.call(tbody.children, (el) => {
-      if (el.tagName === "TR" && el.dataset.key) {
-        rows.push(el);
-      }
-    });
-    if (rows.length === 0) {
-      return;
-    }
-    virtState.pendingRows = rows;
-    virtState.pendingScrollY = window.scrollY;
-    const rowH = virtState.rowH || virtFallbackRowHeight();
-    const start = Math.min(virtState.active ? virtState.start : 0, rows.length);
-    const topSpacer = virtMakeSpacer();
-    const bottomSpacer = virtMakeSpacer();
-    topSpacer.firstElementChild.style.height = start * rowH + "px";
-    bottomSpacer.firstElementChild.style.height = Math.max(0, rows.length - start) * rowH + "px";
-    tbody.replaceChildren(topSpacer, bottomSpacer);
-  }
-  function virtualizeAfterSwap() {
-    const pending = virtState.pendingRows;
-    virtState.pendingRows = null;
-    if (!pending) {
-      if (virtState.active) {
-        virtReset();
-      }
-      return;
-    }
-    const prior = virtState.byKey;
-    const wasActive = virtState.active;
-    if (!virtBindMounts()) {
-      virtReset();
-      return;
-    }
-    virtState.rows = pending;
-    virtState.byKey = new Map(pending.map((tr) => [tr.dataset.key, tr]));
-    if (!virtState.topSpacer) {
-      virtState.topSpacer = virtMakeSpacer();
-      virtState.bottomSpacer = virtMakeSpacer();
-    }
-    virtSetSpacerColspan();
-    virtState.active = true;
-    if (!virtState.rowH) {
-      virtState.rowH = virtFallbackRowHeight();
-    }
-    virtComputeVisible();
-    virtRenderWindow();
-    if (!wasActive) {
-      const measured = virtMeasureRowHeight();
-      if (measured && Math.abs(measured - virtState.rowH) > 0.5) {
-        virtState.rowH = measured;
-        virtRenderWindow();
-      }
-    }
-    if (!virtApplyPins()) {
-      virtPinColumns();
-    }
-    if (virtState.pendingScrollY !== null && window.scrollY !== virtState.pendingScrollY) {
-      window.scrollTo(0, virtState.pendingScrollY);
-      virtRenderWindow();
-    }
-    virtState.pendingScrollY = null;
-    virtFlashChangedCells(prior);
-  }
-  function virtFlashChangedCells(prior) {
-    if (!prior || prior.size === 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      return;
-    }
-    virtState.tbody.querySelectorAll(":scope > tr[data-key]").forEach((tr) => {
-      const old = prior.get(tr.dataset.key);
-      if (!old) {
-        return;
-      }
-      const oldCells = old.children;
-      const newCells = tr.children;
-      for (let i = 0; i < newCells.length; i++) {
-        const o = oldCells[i];
-        const nd = newCells[i];
-        if (o && nd && nd.tagName === "TD" && o.textContent !== nd.textContent) {
-          nd.classList.remove("ro-cell-changed");
-          void nd.offsetWidth;
-          nd.classList.add("ro-cell-changed");
-        }
-      }
-    });
-  }
-  function virtualizeOnFilterChange() {
-    if (!virtualizerActive() || virtState.pendingRows) {
-      return;
-    }
-    virtComputeVisible();
-    virtRenderWindow();
-  }
-  function virtualizeMoveFocus(delta) {
-    const list = virtState.visible;
-    if (list.length === 0) {
-      return false;
-    }
-    let current = -1;
-    const focusKey = window.roRowState.focusedKey();
-    for (let i = 0; i < list.length; i++) {
-      if (list[i].dataset.key === focusKey) {
-        current = i;
-        break;
-      }
-    }
-    const next = Math.max(0, Math.min(list.length - 1, current + delta));
-    virtualizeScrollToIndex(next);
-    window.roRowState.setFocus(list[next].dataset.key);
-    return true;
-  }
-  function virtualizeScrollToIndex(index) {
-    const rect = virtState.tbody.getBoundingClientRect();
-    const rowTop = rect.top + index * virtState.rowH;
-    const rowBottom = rowTop + virtState.rowH;
-    const topbar = document.querySelector("header.ro-topbar");
-    const topMin = topbar ? topbar.getBoundingClientRect().bottom : 0;
-    if (rowTop < topMin) {
-      window.scrollBy(0, rowTop - topMin);
-    } else if (rowBottom > window.innerHeight) {
-      window.scrollBy(0, rowBottom - window.innerHeight);
-    }
-    virtRenderWindow();
-  }
-  var virtScrollScheduled = false;
-  function virtOnScroll() {
-    if (!virtualizerActive()) {
-      return;
-    }
-    const bounds = virtWindowBounds();
-    if (bounds.start !== virtState.start || bounds.end !== virtState.end) {
-      virtRenderWindow();
-    }
-  }
-  window.addEventListener("scroll", () => {
-    if (!virtState.active || virtScrollScheduled) {
-      return;
-    }
-    virtScrollScheduled = true;
-    window.requestAnimationFrame(() => {
-      virtScrollScheduled = false;
-      virtOnScroll();
-    });
-  }, { passive: true });
-  window.addEventListener("resize", virtOnScroll);
-  if (document.fonts && document.fonts.ready && typeof document.fonts.ready.then === "function") {
-    document.fonts.ready.then(() => {
-      if (!virtualizerActive()) {
-        return;
-      }
-      const measured = virtMeasureRowHeight();
-      if (measured && Math.abs(measured - virtState.rowH) > 0.5) {
-        virtState.rowH = measured;
-        virtRenderWindow();
-      }
-    });
-  }
-  window.roVirtual = {
-    active: virtualizerActive,
-    renderedBounds() {
-      return { start: virtState.start, end: virtState.end, total: virtState.visible.length };
-    },
-    scrollToKey(key) {
-      if (!virtualizerActive()) {
-        return false;
-      }
-      const tr = virtState.byKey.get(key);
-      const index = tr ? virtState.visible.indexOf(tr) : -1;
-      if (index === -1) {
-        return false;
-      }
-      virtualizeScrollToIndex(index);
-      return true;
-    }
-  };
-  var colsPopOpen = false;
-  function setColsPopOpen(open) {
-    colsPopOpen = open;
-    const pop = document.getElementById("ro-cols-pop");
-    if (pop) {
-      pop.classList.toggle("is-open", open);
-    }
-    const btn = document.getElementById("ro-cols-btn");
-    if (btn) {
-      btn.setAttribute("aria-expanded", open ? "true" : "false");
-    }
-  }
-  function syncColsPopState() {
-    const pop = document.getElementById("ro-cols-pop");
-    colsPopOpen = !!pop && pop.classList.contains("is-open");
-  }
-  window.roClusterBridge = {
-    virtualizerActive,
-    virtRows() {
-      return virtState.rows;
-    },
-    virtVisible() {
-      return virtState.visible;
-    },
-    virtRowByKey(key) {
-      return virtState.byKey.get(key) || null;
-    },
-    virtMoveFocus(delta) {
-      return virtualizeMoveFocus(delta);
-    },
-    colsPopOpen() {
-      return colsPopOpen;
-    }
-  };
-  function commitColumnVisibility(pop) {
-    if (!pop) {
-      return;
-    }
-    const plural = pop.dataset.plural || "";
-    if (!plural) {
-      return;
-    }
-    const hidden = [];
-    pop.querySelectorAll(".col-toggle").forEach((toggle) => {
-      const check = toggle.querySelector(".ro-check");
-      if (!toggle.disabled && check && !check.checked && toggle.dataset.col) {
-        hidden.push(toggle.dataset.col);
-      }
-    });
-    roPrefsSetHiddenColumns(plural, hidden);
-    const content = document.getElementById("resource-list-content");
-    if (content && typeof htmx !== "undefined") {
-      htmx.trigger(content, "htmx:abort");
-    }
-    requestListRefresh();
-  }
-  document.addEventListener("click", (event) => {
-    if (!colsPopOpen) {
-      return;
-    }
-    if (event.target.closest("#ro-cols-pop") || event.target.closest("[data-cols-toggle]")) {
-      return;
-    }
-    setColsPopOpen(false);
-  });
-  var roRowModel = {
-    fields: [],
-    // [{ label, name, hint }] -- hint '' = not filterable
-    rows: [],
-    // [{ key, name, cells: [string] }] -- cells align with fields
-    visibleKeys: null
-    // Set of keys passing the live name match; null = no live filter
-  };
-  window.roRowModel = roRowModel;
-  function normalizeFieldName(s) {
-    return (s || "").toLowerCase().replace(/-/g, " ").trim();
-  }
-  function fieldSuggestionText(label) {
-    return (label || "").toLowerCase().trim().replace(/\s+/g, "-");
-  }
-  function captureRowModel(root) {
-    const table = root.querySelector("table.ro-table");
-    if (!table) {
-      roRowModel.fields = [];
-      roRowModel.rows = [];
-      return;
-    }
-    const fields = [];
-    table.querySelectorAll("thead th").forEach((th) => {
-      const label = (th.textContent || "").trim();
-      fields.push({ label, name: fieldSuggestionText(label), hint: th.dataset.hint || "" });
-    });
-    const rows = [];
-    table.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
-      const cells = [];
-      tr.querySelectorAll("td").forEach((td) => {
-        cells.push((td.textContent || "").trim());
-      });
-      const nameLink = tr.querySelector("td.cell-name a");
-      rows.push({
-        key: tr.dataset.key,
-        name: nameLink ? (nameLink.textContent || "").trim() : cells[0] || "",
-        cells
-      });
-    });
-    roRowModel.fields = fields;
-    roRowModel.rows = rows;
-  }
-  function captureRowModelFromDocument() {
-    const content = document.getElementById("resource-list-content");
-    if (content && document.getElementById("ro-filter-input") && !virtualizerActive()) {
-      captureRowModel(content);
-    }
-  }
-  function splitFilterDraft(s) {
-    for (let i = 0; i < s.length; i++) {
-      const c = s[i];
-      if (c === "!" && s[i + 1] === "=") {
-        return { field: s.slice(0, i).trim(), op: "!=", value: s.slice(i + 2) };
-      }
-      if (c === ":" || c === ">" || c === "<") {
-        return { field: s.slice(0, i).trim(), op: c, value: s.slice(i + 1) };
-      }
-    }
-    return null;
-  }
-  function filterSuggestionFields() {
-    const out = [];
-    roRowModel.fields.forEach((f) => {
-      if (!f.hint) {
-        return;
-      }
-      const norm = normalizeFieldName(f.label);
-      if (norm === "cpu" || norm === "memory") {
-        return;
-      }
-      out.push({ text: f.name, hint: f.hint });
-    });
-    out.push({ text: "label", hint: "key=value" });
-    if (hasModelColumn("cpu usage")) {
-      out.push({ text: "cpu", hint: "quantity" });
-    }
-    if (hasModelColumn("memory usage")) {
-      out.push({ text: "memory", hint: "quantity" });
-    }
-    return out;
-  }
-  function hasModelColumn(normName) {
-    return roRowModel.fields.some((f) => f.hint && normalizeFieldName(f.label) === normName);
-  }
-  function filterFieldKnown(field) {
-    const want = normalizeFieldName(field);
-    if (!want) {
-      return false;
-    }
-    if (want === "label") {
-      return true;
-    }
-    if (want === "cpu" || want === "memory") {
-      return hasModelColumn(want + " usage");
-    }
-    return roRowModel.fields.some((f) => f.hint && normalizeFieldName(f.label) === want);
-  }
-  function fieldColumnIndex(field) {
-    let want = normalizeFieldName(field);
-    if (want === "cpu" || want === "memory") {
-      want += " usage";
-    }
-    for (let i = 0; i < roRowModel.fields.length; i++) {
-      const f = roRowModel.fields[i];
-      if (f.hint && normalizeFieldName(f.label) === want) {
-        return i;
-      }
-    }
-    return -1;
-  }
-  var FILTER_HIDE_CLASS = "ro-row-filtered";
-  function applyLiveNameFilter() {
-    const content = document.getElementById("resource-list-content");
-    if (!content) {
-      return;
-    }
-    const input = document.getElementById("ro-filter-input");
-    const draft = input ? input.value : "";
-    const text = !draft || splitFilterDraft(draft) ? "" : draft.trim().toLowerCase();
-    let visible = null;
-    if (text) {
-      visible = /* @__PURE__ */ new Set();
-      roRowModel.rows.forEach((row) => {
-        if (row.name.toLowerCase().indexOf(text) !== -1) {
-          visible.add(row.key);
-        }
-      });
-    }
-    roRowModel.visibleKeys = visible;
-    content.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
-      tr.classList.toggle(FILTER_HIDE_CLASS, !!visible && !visible.has(tr.dataset.key));
-    });
-    virtualizeOnFilterChange();
-  }
-  function issueFilterNavigation(href) {
-    const content = document.getElementById("resource-list-content");
-    const input = document.getElementById("ro-filter-input");
-    if (!content || !input || typeof htmx === "undefined") {
-      window.location.assign(href);
-      return;
-    }
-    const u = new URL(href, window.location.href);
-    const partial = u.pathname.replace(/\/+$/, "") + "/_table" + u.search;
-    const request = htmx.ajax("GET", partial, {
-      source: input,
-      target: "#resource-list-content",
-      swap: "morph"
-    });
-    if (request && typeof request.catch === "function") {
-      request.catch(() => {
-      });
-    }
-  }
-  function commitFilterChip(draft) {
-    const text = draft.trim();
-    const parsed = splitFilterDraft(text);
-    if (!parsed) {
-      return;
-    }
-    if (!filterFieldKnown(parsed.field)) {
-      showFilterFieldHint();
-      return;
-    }
-    const raw = encodeURIComponent(text).replace(/%2C/gi, ",");
-    const search = window.location.search;
-    const href = window.location.pathname + (search ? search + "&" : "?") + "f=" + raw;
-    clearFilterDraft();
-    issueFilterNavigation(href);
-  }
-  function popLastFilterChip() {
-    const removers = document.querySelectorAll("#ro-filter-field .ro-scope-chip .chip-x");
-    if (removers.length === 0) {
-      return;
-    }
-    const href = removers[removers.length - 1].getAttribute("href");
-    if (href) {
-      issueFilterNavigation(href);
-    }
-  }
-  function clearFilterDraft() {
-    const input = document.getElementById("ro-filter-input");
-    if (input) {
-      input.value = "";
-    }
-    closeFilterAC();
-    applyLiveNameFilter();
-  }
-  function showFilterFieldHint() {
-    const el = document.getElementById("ro-filter-error");
-    if (!el) {
-      return;
-    }
-    const names = filterSuggestionFields().slice(0, 3).map((f) => f.text);
-    el.textContent = "no such field — try " + (names.length ? names.join(", ") : "status, node, age") + "…";
-    el.hidden = false;
-  }
-  function hideFilterFieldHint() {
-    const el = document.getElementById("ro-filter-error");
-    if (el) {
-      el.hidden = true;
-    }
-  }
-  var filterACItems = [];
-  var filterACActive = -1;
-  function filterACOpen() {
-    const ac = document.getElementById("ro-filter-ac");
-    return !!ac && !ac.hidden;
-  }
-  function closeFilterAC() {
-    const ac = document.getElementById("ro-filter-ac");
-    if (ac) {
-      ac.hidden = true;
-      ac.textContent = "";
-    }
-    filterACItems = [];
-    filterACActive = -1;
-  }
-  function openFilterAC(items) {
-    const ac = document.getElementById("ro-filter-ac");
-    if (!ac || items.length === 0) {
-      closeFilterAC();
-      return;
-    }
-    ac.textContent = "";
-    ac.setAttribute("role", "listbox");
-    filterACItems = items;
-    filterACActive = 0;
-    items.forEach((item, idx) => {
-      const row = document.createElement("div");
-      row.className = "ro-ac-item" + (idx === 0 ? " active" : "");
-      row.setAttribute("role", "option");
-      row.setAttribute("aria-selected", idx === 0 ? "true" : "false");
-      row.dataset.acIndex = String(idx);
-      const name = document.createElement("span");
-      name.className = "ac-name";
-      name.textContent = item.label;
-      row.appendChild(name);
-      if (item.hint) {
-        const hint = document.createElement("span");
-        hint.className = "ac-hint";
-        hint.textContent = item.hint;
-        row.appendChild(hint);
-      }
-      row.addEventListener("mousemove", () => setFilterACActive(idx));
-      ac.appendChild(row);
-    });
-    ac.hidden = false;
-  }
-  function setFilterACActive(index) {
-    if (filterACItems.length === 0) {
-      return;
-    }
-    filterACActive = Math.max(0, Math.min(filterACItems.length - 1, index));
-    const ac = document.getElementById("ro-filter-ac");
-    if (!ac) {
-      return;
-    }
-    ac.querySelectorAll(".ro-ac-item").forEach((el) => {
-      const on = Number(el.dataset.acIndex) === filterACActive;
-      el.classList.toggle("active", on);
-      el.setAttribute("aria-selected", on ? "true" : "false");
-    });
-  }
-  function moveFilterACActive(delta) {
-    if (filterACItems.length === 0) {
-      return;
-    }
-    setFilterACActive((filterACActive + delta + filterACItems.length) % filterACItems.length);
-  }
-  function updateFilterAC() {
-    const input = document.getElementById("ro-filter-input");
-    if (!input) {
-      return;
-    }
-    const draft = input.value;
-    if (!draft.trim()) {
-      closeFilterAC();
-      return;
-    }
-    const parsed = splitFilterDraft(draft);
-    if (!parsed) {
-      const q = normalizeFieldName(draft);
-      const fields = filterSuggestionFields().filter(
-        (f) => normalizeFieldName(f.text).indexOf(q) !== -1
-      );
-      fields.sort((a, b) => {
-        const ap = normalizeFieldName(a.text).indexOf(q) === 0 ? 0 : 1;
-        const bp = normalizeFieldName(b.text).indexOf(q) === 0 ? 0 : 1;
-        return ap - bp;
-      });
-      openFilterAC(fields.map((f) => ({
-        label: f.text,
-        hint: f.hint,
-        insert: f.text + ":",
-        kind: "field"
-      })));
-      return;
-    }
-    const isLabel = normalizeFieldName(parsed.field) === "label";
-    if (parsed.op !== ":" || isLabel || !filterFieldKnown(parsed.field)) {
-      closeFilterAC();
-      return;
-    }
-    const idx = fieldColumnIndex(parsed.field);
-    if (idx < 0) {
-      closeFilterAC();
-      return;
-    }
-    const freq = /* @__PURE__ */ new Map();
-    roRowModel.rows.forEach((row) => {
-      const v = row.cells[idx];
-      if (v) {
-        freq.set(v, (freq.get(v) || 0) + 1);
-      }
-    });
-    const typed = parsed.value.trim().toLowerCase();
-    let entries = Array.from(freq.entries());
-    if (typed) {
-      entries = entries.filter(([v]) => v.toLowerCase().indexOf(typed) !== -1);
-    }
-    entries.sort((a, b) => b[1] - a[1]);
-    openFilterAC(entries.slice(0, 8).map(([v, n]) => ({
-      label: v,
-      hint: "×" + n,
-      insert: parsed.field.trim() + ":" + v,
-      kind: "value"
-    })));
-  }
-  function acceptFilterAC(commitValues) {
-    const input = document.getElementById("ro-filter-input");
-    const item = filterACItems[filterACActive];
-    if (!input || !item) {
-      return;
-    }
-    input.value = item.insert;
-    closeFilterAC();
-    if (item.kind === "value" && commitValues) {
-      commitFilterChip(input.value);
-    } else {
-      applyLiveNameFilter();
-      updateFilterAC();
-    }
-  }
-  function handleFilterInputKeydown(event) {
-    const input = event.target;
-    if (event.key === "Enter") {
-      event.preventDefault();
-      if (filterACOpen() && filterACActive >= 0) {
-        acceptFilterAC(true);
-        return;
-      }
-      commitFilterChip(input.value);
-      return;
-    }
-    if (event.key === "Tab" && filterACOpen()) {
-      event.preventDefault();
-      acceptFilterAC(false);
-      return;
-    }
-    if (event.key === "Escape" && filterACOpen()) {
-      event.preventDefault();
-      closeFilterAC();
-      return;
-    }
-    if (event.key === "ArrowDown" && filterACOpen()) {
-      event.preventDefault();
-      moveFilterACActive(1);
-      return;
-    }
-    if (event.key === "ArrowUp" && filterACOpen()) {
-      event.preventDefault();
-      moveFilterACActive(-1);
-      return;
-    }
-    if (event.key === "Backspace" && input.value === "") {
-      event.preventDefault();
-      popLastFilterChip();
-    }
-  }
-  document.addEventListener("click", (event) => {
-    if (!event.target.closest("#ro-filter-field")) {
-      closeFilterAC();
-    }
   });
   function setupStickyNamespace() {
     document.querySelectorAll(".ro-table-wrap table.ro-table").forEach((table) => {

@@ -22,6 +22,8 @@ import { bulkBindings } from './bulk-actions.js';
 import { rowSelectionBindings } from './row-selection.js';
 import { paletteBindings } from './palette.js';
 import { keyboardBindings } from './keyboard.js';
+import { columnsBindings } from './columns.js';
+import { filtersBindings } from './filters.js';
 import { foldBindings } from './yaml-folds.js';
 import { logsBindings } from './logs.js';
 import { miscBindings } from './misc-ui.js';
@@ -57,11 +59,31 @@ import { miscBindings } from './misc-ui.js';
 //     the palette/menu via keyboardSurfaceBusy() -- the DOM guard is the real
 //     decoupler, so it neither stops nor double-acts regardless of order
 //     (compound case 2). The kbd-overlay backdrop click (C3) is independent;
+//
+// The Unit-12 cluster (columns + filters) registers AFTER the row cluster but
+// BEFORE palette, for ONE inter-listener reason: the columns outside-click (C4)
+// and the filter-AC outside-click (C5) were SEPARATE always-running monolith
+// listeners with NO selector (they match every click and guard themselves), so
+// they must front-run the stop:true leaves below (a palette-item / copy click
+// still dismisses an open columns popover or filter-AC, exactly as the separate
+// monolith listeners did). They register AFTER the row cluster so the
+// context-menu UNCONDITIONAL dismiss (C2 step 2) and the row-select fall-through
+// still run on a chip-✕ / column-toggle click -- a chip-✕ click while a row menu
+// is open dismisses the menu (C1 returned, C2 still ran in the monolith). Their
+// own click branches (chip-✕/AC-item/field; cols-toggle/col-toggle) never
+// co-match a row/palette selector, so the relative order within is free; the
+// cols-toggle binding precedes C4 so the toggle-click-while-open guard sees the
+// freshly-flipped flag (single close, never a reopen -- listener-inventory
+// C1/C4). columns precedes filters only because the popover-submit (form) and
+// the column toggles share the popover surface; neither stops the other.
+//
 //   - the Unit-9 leaves (folds/logs/misc) keep their existing relative order.
 export const bindings: Binding[] = [
     ...contextMenuBindings,
     ...bulkBindings,
     ...rowSelectionBindings,
+    ...columnsBindings,
+    ...filtersBindings,
     ...paletteBindings,
     ...keyboardBindings,
     ...foldBindings,
