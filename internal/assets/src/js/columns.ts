@@ -34,10 +34,10 @@
 // (the Unit-12 dismantling of the window.roClusterBridge colsPopOpen member).
 
 import type { Binding } from './events.js';
+import { issueFilterNavigation } from './filters.js';
+import { mergeColParams } from './filters-parse.js';
 import { roPrefsSetHiddenColumns } from './prefs.js';
 import { requestListRefresh } from './refresh.js';
-import { mergeColParams } from './filters-parse.js';
-import { issueFilterNavigation } from './filters.js';
 
 function getHtmx(): { trigger(el: Element, name: string): void } | undefined {
     return (window as unknown as { htmx?: { trigger(el: Element, name: string): void } }).htmx;
@@ -90,8 +90,12 @@ function commitColumnVisibility(pop: Element | null): void {
     const hidden: string[] = [];
     pop.querySelectorAll('.col-toggle').forEach((toggle) => {
         const check = toggle.querySelector('.ro-check') as HTMLInputElement | null;
-        if (!(toggle as HTMLButtonElement).disabled && check && !check.checked
-            && (toggle as HTMLElement).dataset.col) {
+        if (
+            !(toggle as HTMLButtonElement).disabled &&
+            check &&
+            !check.checked &&
+            (toggle as HTMLElement).dataset.col
+        ) {
             hidden.push((toggle as HTMLElement).dataset.col as string);
         }
     });
@@ -124,7 +128,7 @@ function popFormMergedHref(form: HTMLFormElement): string {
         }
         owned.add(el.name);
         if (el.value) {
-            fields.push(el.name + '=' + encodeURIComponent(el.value));
+            fields.push(`${el.name}=${encodeURIComponent(el.value)}`);
         }
     });
     return mergeColParams(window.location.pathname, window.location.search, owned, fields);

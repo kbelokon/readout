@@ -41,7 +41,7 @@
 
 // The matched element handed to a selector-bound handler. `null` only for a
 // binding with NO selector (it opted out of delegated matching).
-export type BindingHandler = (event: Event, matched: Element | null) => boolean | void;
+export type BindingHandler = (event: Event, matched: Element | null) => boolean | undefined;
 
 export interface Binding {
     // The DOM event type ('click', 'keydown', 'change', 'input', 'keyup', ...).
@@ -81,7 +81,7 @@ function dispatch(bindings: Binding[], event: Event): void {
                 continue; // selector miss -> this binding does not apply
             }
         }
-        let result: boolean | void;
+        let result: boolean | undefined;
         try {
             result = binding.handler(event, matched);
         } catch (e) {

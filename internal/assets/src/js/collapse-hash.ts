@@ -23,15 +23,17 @@ export function parseCollapsedNames(hash: string): string[] {
     // fragment with no '#' is parsed verbatim. Each param is split on '=' and
     // only the `collapsed` key's value (the element AT index 1, mirroring the
     // monolith's keyVal[1]) contributes names.
-    hash.replace(/^#/, '').split(';').forEach((param) => {
-        const keyVal = param.split('=');
-        if (keyVal[0] === 'collapsed' && keyVal[1]) {
-            keyVal[1].split(',').forEach((name) => {
-                if (name) {
-                    names.push(name);
-                }
-            });
-        }
-    });
+    hash.replace(/^#/, '')
+        .split(';')
+        .forEach((param) => {
+            const keyVal = param.split('=');
+            if (keyVal[0] === 'collapsed' && keyVal[1]) {
+                keyVal[1].split(',').forEach((name) => {
+                    if (name) {
+                        names.push(name);
+                    }
+                });
+            }
+        });
     return names;
 }

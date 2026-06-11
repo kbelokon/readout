@@ -23,19 +23,19 @@
 // keydown listener -- compound case 4), so the focus-routed Escape semantics are
 // preserved exactly.
 
-import type { Binding } from './events.js';
-import {
-    roFuzzyScore,
-    dedupeRecents,
-    buildPaletteGroups,
-    type RecentEntry,
-    type PaletteFeed,
-    type PageObject,
-    type PaletteGroup,
-} from './palette-rank.js';
-import { virtualizerActive, virtRows } from './virtualizer.js';
 import { closeRowMenu } from './context-menu.js';
+import type { Binding } from './events.js';
 import { closeKbdOverlay } from './keyboard.js';
+import {
+    buildPaletteGroups,
+    dedupeRecents,
+    type PageObject,
+    type PaletteFeed,
+    type PaletteGroup,
+    type RecentEntry,
+    roFuzzyScore,
+} from './palette-rank.js';
+import { virtRows, virtualizerActive } from './virtualizer.js';
 
 const PALETTE_ID = 'ro-palette';
 
@@ -59,8 +59,12 @@ interface PaletteData extends PaletteFeed {
 // names safely.
 function readPaletteData(): PaletteData {
     const empty: PaletteData = {
-        currentCluster: null, currentNamespace: null,
-        clusters: [], namespaces: [], kinds: [], actions: [],
+        currentCluster: null,
+        currentNamespace: null,
+        clusters: [],
+        namespaces: [],
+        kinds: [],
+        actions: [],
     };
     const el = document.getElementById('ro-palette-data');
     if (!el) {
@@ -126,10 +130,16 @@ function readPaletteRecents(): RecentEntry[] {
             return [];
         }
         // Shape-check every entry: a label plus a SAFE href or a named action.
-        return list.filter((entry: RecentEntry) => entry && typeof entry === 'object'
-            && typeof entry.label === 'string' && entry.label !== ''
-            && ((typeof entry.href === 'string' && paletteHrefSafe(entry.href) !== '')
-                || (typeof entry.action === 'string' && entry.action !== '')))
+        return list
+            .filter(
+                (entry: RecentEntry) =>
+                    entry &&
+                    typeof entry === 'object' &&
+                    typeof entry.label === 'string' &&
+                    entry.label !== '' &&
+                    ((typeof entry.href === 'string' && paletteHrefSafe(entry.href) !== '') ||
+                        (typeof entry.action === 'string' && entry.action !== '')),
+            )
             .slice(0, PALETTE_RECENTS_MAX);
     } catch {
         return []; // corrupt store -> ignored (next record starts fresh)
@@ -168,7 +178,8 @@ let paletteActive = 0;
 // The current scope (cluster/namespace) of the page, set by readPaletteData via
 // renderPalette so buildPaletteRow can flag the in-scope rows.
 const paletteScope: { cluster: string | null; namespace: string | null } = {
-    cluster: null, namespace: null,
+    cluster: null,
+    namespace: null,
 };
 
 // Build one row element for a blob entry in group `key`. Names go in via
@@ -185,12 +196,12 @@ function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLEleme
         row.appendChild(holder.content);
     }
 
-    const labelText = key === 'kinds'
-        ? String(entry.kind || entry.plural || '')
-        : String(entry.name || entry.label || '');
-    const display = (typeof entry.display === 'string' && entry.display !== '')
-        ? entry.display
-        : labelText;
+    const labelText =
+        key === 'kinds'
+            ? String(entry.kind || entry.plural || '')
+            : String(entry.name || entry.label || '');
+    const display =
+        typeof entry.display === 'string' && entry.display !== '' ? entry.display : labelText;
     const label = document.createElement('span');
     label.className = 'pal-label';
     label.textContent = display;
@@ -198,8 +209,9 @@ function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLEleme
         row.title = labelText; // truncated -> full name in the tooltip
     }
 
-    const isCurrent = (key === 'clusters' && entry.name && entry.name === paletteScope.cluster)
-        || (key === 'namespaces' && entry.name && entry.name === paletteScope.namespace);
+    const isCurrent =
+        (key === 'clusters' && entry.name && entry.name === paletteScope.cluster) ||
+        (key === 'namespaces' && entry.name && entry.name === paletteScope.namespace);
     if (isCurrent) {
         const ctx = document.createElement('span');
         ctx.className = 'pal-ctx';
@@ -214,7 +226,7 @@ function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLEleme
         meta.textContent = String(entry.group || 'core');
         row.appendChild(meta);
         const scope = document.createElement('span');
-        scope.className = 'pal-scope ' + (entry.namespaced ? 'ns' : 'cluster');
+        scope.className = `pal-scope ${entry.namespaced ? 'ns' : 'cluster'}`;
         scope.textContent = entry.namespaced ? 'namespaced' : 'cluster';
         row.appendChild(scope);
     }
@@ -238,15 +250,15 @@ function buildEverywhereRow(query: string): HTMLElement {
     row.className = 'ro-pal-item';
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', 'false');
-    const glyph = document.querySelector('#' + PALETTE_ID + ' .ro-pal-search .ico');
+    const glyph = document.querySelector(`#${PALETTE_ID} .ro-pal-search .ico`);
     if (glyph) {
         row.appendChild(glyph.cloneNode(true));
     }
     const label = document.createElement('span');
     label.className = 'pal-label';
-    label.textContent = 'Search all clusters for “' + query + '”';
+    label.textContent = `Search all clusters for “${query}”`;
     row.appendChild(label);
-    row.dataset.href = '/search?q=' + encodeURIComponent(query);
+    row.dataset.href = `/search?q=${encodeURIComponent(query)}`;
     row.dataset.label = label.textContent;
     return row;
 }
@@ -321,7 +333,7 @@ function buildObjectRow(o: PageObject): HTMLElement {
     row.appendChild(label);
     if (o.status) {
         const st = document.createElement('span');
-        st.className = 'pal-status' + (o.tone ? ' ' + String(o.tone) : '');
+        st.className = `pal-status${o.tone ? ` ${String(o.tone)}` : ''}`;
         st.textContent = String(o.status);
         row.appendChild(st);
     }
@@ -368,7 +380,12 @@ function renderPalette(query: string): void {
 
     const groups: PaletteGroup[] = buildPaletteGroups(
         q,
-        { clusters: data.clusters, namespaces: data.namespaces, kinds: data.kinds, actions: data.actions },
+        {
+            clusters: data.clusters,
+            namespaces: data.namespaces,
+            kinds: data.kinds,
+            actions: data.actions,
+        },
         readPaletteRecents(),
         harvestPageObjects(),
     );
@@ -416,8 +433,12 @@ function setPaletteActive(index: number): void {
         return;
     }
     let i = index;
-    if (i < 0) { i = 0; }
-    if (i > paletteRows.length - 1) { i = paletteRows.length - 1; }
+    if (i < 0) {
+        i = 0;
+    }
+    if (i > paletteRows.length - 1) {
+        i = paletteRows.length - 1;
+    }
     paletteActive = i;
     paintPaletteActive();
 }
@@ -502,9 +523,12 @@ export function closePalette(): void {
     }
     palette.classList.remove('open');
     palette.setAttribute('aria-hidden', 'true');
-    if (palettePriorFocus && document.contains(palettePriorFocus)
-        && !palette.contains(palettePriorFocus)
-        && typeof (palettePriorFocus as HTMLElement).focus === 'function') {
+    if (
+        palettePriorFocus &&
+        document.contains(palettePriorFocus) &&
+        !palette.contains(palettePriorFocus) &&
+        typeof (palettePriorFocus as HTMLElement).focus === 'function'
+    ) {
         paletteRestoringFocus = true;
         (palettePriorFocus as HTMLElement).focus();
         paletteRestoringFocus = false;
@@ -564,7 +588,7 @@ export const paletteBindings: Binding[] = [
     // NOT close it -- the monolith's exact `target.id === PALETTE_ID` test.
     {
         event: 'click',
-        selector: '#' + PALETTE_ID,
+        selector: `#${PALETTE_ID}`,
         stop: true,
         handler: (event) => {
             if ((event.target as Element).id === PALETTE_ID) {
@@ -596,8 +620,12 @@ export const paletteBindings: Binding[] = [
         event: 'keydown',
         handler: (event) => {
             const e = event as KeyboardEvent;
-            if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey
-                && (e.key === 'k' || e.key === 'K')) {
+            if (
+                (e.metaKey || e.ctrlKey) &&
+                !e.altKey &&
+                !e.shiftKey &&
+                (e.key === 'k' || e.key === 'K')
+            ) {
                 e.preventDefault();
                 closeKbdOverlay();
                 closeRowMenu();
@@ -623,7 +651,7 @@ export const paletteBindings: Binding[] = [
                 return; // the filter editor owns its keys (its own keydown listener)
             }
             const palette = document.getElementById(PALETTE_ID);
-            if (!palette || !palette.classList.contains('open')) {
+            if (!palette?.classList.contains('open')) {
                 return;
             }
             if (e.key === 'Escape') {

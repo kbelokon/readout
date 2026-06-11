@@ -6,8 +6,8 @@
 // Run: `node --test 'internal/assets/src/js/**/*.test.ts'` (Node 24 strips the
 // types natively -- no framework, erasable-only TS).
 
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { test } from 'node:test';
 
 import { yamlEffectiveIndent } from './yaml-folds.ts';
 

@@ -5,8 +5,8 @@
 //
 // Run: `node --test 'internal/assets/src/js/**/*.test.ts'`.
 
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { test } from 'node:test';
 
 import { parseCollapsedNames } from './collapse-hash.ts';
 
@@ -31,10 +31,10 @@ test('the leading # is optional', () => {
 test('collapsed is selected out of a multi-param fragment', () => {
     // The fragment is a `;`-separated list of key=value params; only the
     // `collapsed` value contributes names.
-    assert.deepEqual(
-        parseCollapsedNames('#line=12;collapsed=spec,status;other=x'),
-        ['spec', 'status'],
-    );
+    assert.deepEqual(parseCollapsedNames('#line=12;collapsed=spec,status;other=x'), [
+        'spec',
+        'status',
+    ]);
 });
 
 test('a missing or empty collapsed value yields no names', () => {

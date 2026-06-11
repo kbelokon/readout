@@ -7,22 +7,22 @@
 //
 // Run: `node --test 'internal/assets/src/js/**/*.test.ts'`.
 
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { test } from 'node:test';
 
 import {
-    normalizeFieldName,
-    fieldSuggestionText,
-    splitFilterDraft,
-    filterSuggestionFields,
-    filterFieldKnown,
     fieldColumnIndex,
-    rankFieldSuggestions,
-    rankValueSuggestions,
+    fieldSuggestionText,
+    filterFieldKnown,
+    filterSuggestionFields,
     liveNameMatchKeys,
-    mergeColParams,
     type ModelField,
     type ModelRow,
+    mergeColParams,
+    normalizeFieldName,
+    rankFieldSuggestions,
+    rankValueSuggestions,
+    splitFilterDraft,
 } from './filters-parse.ts';
 
 // A pod-like model: Name + the data-hint Status/Node columns, plus a synthetic
@@ -64,7 +64,9 @@ test('free text (no operator) is null', () => {
 
 test('the FIRST operator splits field from value', () => {
     assert.deepEqual(splitFilterDraft('status:Running'), {
-        field: 'status', op: ':', value: 'Running',
+        field: 'status',
+        op: ':',
+        value: 'Running',
     });
     assert.deepEqual(splitFilterDraft('cpu>100m'), { field: 'cpu', op: '>', value: '100m' });
     assert.deepEqual(splitFilterDraft('node<x'), { field: 'node', op: '<', value: 'x' });
@@ -72,7 +74,9 @@ test('the FIRST operator splits field from value', () => {
 
 test('!= is recognized as a two-char operator before a later single-char op', () => {
     assert.deepEqual(splitFilterDraft('status!=Pending'), {
-        field: 'status', op: '!=', value: 'Pending',
+        field: 'status',
+        op: '!=',
+        value: 'Pending',
     });
     // a `<` inside the value does not re-split: != wins as the first operator.
     assert.deepEqual(splitFilterDraft('a!=b<c'), { field: 'a', op: '!=', value: 'b<c' });
@@ -93,7 +97,7 @@ test('suggestion fields exclude synthetic columns and add the virtual label/cpu/
 test('bare cpu/memory CAPACITY columns are not suggested under those names', () => {
     const capacity: ModelField[] = [
         { label: 'Name', name: 'name', hint: 'string' },
-        { label: 'CPU', name: 'cpu', hint: 'quantity' },     // capacity, not usage
+        { label: 'CPU', name: 'cpu', hint: 'quantity' }, // capacity, not usage
         { label: 'Memory', name: 'memory', hint: 'quantity' },
     ];
     const texts = filterSuggestionFields(capacity).map((f) => f.text);
@@ -115,9 +119,7 @@ test('label always resolves; typed columns resolve normalized; unknowns do not',
 
 test('cpu/memory resolve via the joined usage columns, never the capacity columns', () => {
     assert.equal(filterFieldKnown(PODS_FIELDS, 'cpu'), true); // CPU Usage present
-    const capacity: ModelField[] = [
-        { label: 'CPU', name: 'cpu', hint: 'quantity' },
-    ];
+    const capacity: ModelField[] = [{ label: 'CPU', name: 'cpu', hint: 'quantity' }];
     assert.equal(filterFieldKnown(capacity, 'cpu'), false); // capacity-only -> unknown
 });
 

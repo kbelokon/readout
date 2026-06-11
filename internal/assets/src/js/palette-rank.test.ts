@@ -5,17 +5,17 @@
 //
 // Run: `node --test 'internal/assets/src/js/**/*.test.ts'`.
 
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { test } from 'node:test';
 
 import {
-    roFuzzyScore,
-    rankPaletteEntries,
-    paletteRecentTarget,
-    dedupeRecents,
     buildPaletteGroups,
+    dedupeRecents,
     type PaletteFeed,
+    paletteRecentTarget,
     type RecentEntry,
+    rankPaletteEntries,
+    roFuzzyScore,
 } from './palette-rank.ts';
 
 const EMPTY_FEED: PaletteFeed = { clusters: [], namespaces: [], kinds: [], actions: [] };
@@ -76,7 +76,10 @@ test('matching is case-insensitive and respects diacritics as literal chars', ()
 
 test('rankPaletteEntries keeps feed order on an empty query', () => {
     const list = [{ n: 'b' }, { n: 'a' }, { n: 'c' }];
-    assert.deepEqual(rankPaletteEntries(list, '', (e) => e.n), list);
+    assert.deepEqual(
+        rankPaletteEntries(list, '', (e) => e.n),
+        list,
+    );
 });
 
 test('rankPaletteEntries drops non-matches and orders best-first', () => {
@@ -115,7 +118,10 @@ test('dedupeRecents caps at max as a WRITE-side bound (oldest evicted)', () => {
     }));
     const out = dedupeRecents(prior, { label: 'Nodes', href: '/nodes' }, 5);
     assert.equal(out.length, 5);
-    assert.deepEqual(out.map((e) => e.label), ['Nodes', 'Seed 1', 'Seed 2', 'Seed 3', 'Seed 4']);
+    assert.deepEqual(
+        out.map((e) => e.label),
+        ['Nodes', 'Seed 1', 'Seed 2', 'Seed 3', 'Seed 4'],
+    );
 });
 
 // --- buildPaletteGroups (group order) ---------------------------------------
@@ -128,7 +134,10 @@ test('empty query: Recents first (when present), then On this page, then feed', 
     const recents: RecentEntry[] = [{ label: 'Nodes', href: '/nodes' }];
     const pageObjects = [{ name: 'nginx', href: '/p/nginx' }];
     const groups = buildPaletteGroups('', feed, recents, pageObjects);
-    assert.deepEqual(groups.map((g) => g.title), ['Recents', 'On this page', 'Resource types']);
+    assert.deepEqual(
+        groups.map((g) => g.title),
+        ['Recents', 'On this page', 'Resource types'],
+    );
     // Everywhere is ABSENT on the empty query.
     assert.ok(!groups.some((g) => g.title === 'Everywhere'));
 });
@@ -136,7 +145,10 @@ test('empty query: Recents first (when present), then On this page, then feed', 
 test('empty query with no recents: groups lead with On this page', () => {
     const feed: PaletteFeed = { ...EMPTY_FEED, kinds: [{ kind: 'Pods' }] };
     const groups = buildPaletteGroups('', feed, [], [{ name: 'nginx' }]);
-    assert.deepEqual(groups.map((g) => g.title), ['On this page', 'Resource types']);
+    assert.deepEqual(
+        groups.map((g) => g.title),
+        ['On this page', 'Resource types'],
+    );
 });
 
 test('typing: Everywhere is pinned FIRST, then On this page, then ranked feed', () => {
@@ -145,17 +157,26 @@ test('typing: Everywhere is pinned FIRST, then On this page, then ranked feed', 
         kinds: [{ kind: 'Ingresses' }, { kind: 'Pods' }],
     };
     const groups = buildPaletteGroups('ng', feed, [], [{ name: 'nginx' }, { name: 'my-app' }]);
-    assert.deepEqual(groups.map((g) => g.title), ['Everywhere', 'On this page', 'Resource types']);
+    assert.deepEqual(
+        groups.map((g) => g.title),
+        ['Everywhere', 'On this page', 'Resource types'],
+    );
     // Everywhere carries the live query verbatim as its single entry.
     assert.deepEqual(groups[0].entries, [{ query: 'ng' }]);
     // On this page is ranked: nginx matches "ng", my-app does not.
-    assert.deepEqual((groups[1].entries as { name: string }[]).map((e) => e.name), ['nginx']);
+    assert.deepEqual(
+        (groups[1].entries as { name: string }[]).map((e) => e.name),
+        ['nginx'],
+    );
 });
 
 test('empty groups are skipped entirely', () => {
     const groups = buildPaletteGroups('zzz-no-match', EMPTY_FEED, [], [{ name: 'nginx' }]);
     // Only Everywhere survives: nothing else matches "zzz-no-match".
-    assert.deepEqual(groups.map((g) => g.title), ['Everywhere']);
+    assert.deepEqual(
+        groups.map((g) => g.title),
+        ['Everywhere'],
+    );
 });
 
 test('feed group order is Resource types -> Namespaces -> Clusters -> Actions', () => {
@@ -166,10 +187,8 @@ test('feed group order is Resource types -> Namespaces -> Clusters -> Actions', 
         actions: [{ label: 'Toggle theme', action: 'theme' }],
     };
     const groups = buildPaletteGroups('', feed, [], []);
-    assert.deepEqual(groups.map((g) => g.title), [
-        'Resource types',
-        'Namespaces',
-        'Clusters',
-        'Actions',
-    ]);
+    assert.deepEqual(
+        groups.map((g) => g.title),
+        ['Resource types', 'Namespaces', 'Clusters', 'Actions'],
+    );
 });

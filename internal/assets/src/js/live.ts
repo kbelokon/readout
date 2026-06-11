@@ -26,15 +26,15 @@
 // orchestrated in legacy.js's htmx:beforeSwap hook, which imports liveState +
 // liveTeardown from this module so the needle literals stay inside that hook.
 
+import { classifyStreamClose, shouldDiscardPush } from './live-policy.js';
 import {
-    scheduleRefreshTick,
-    pruneSettledListRequests,
-    userListRequestsInFlight,
     containerListRequestsInFlight,
+    pruneSettledListRequests,
     refreshMode,
+    scheduleRefreshTick,
+    userListRequestsInFlight,
 } from './refresh.js';
 import { markListStale } from './stale.js';
-import { classifyStreamClose, shouldDiscardPush } from './live-policy.js';
 
 // The htmx surface this module uses (the vendored ro-morph extension resolves
 // the 'morph' swap style itself). Typed minimally; htmx is a classic-script
@@ -66,8 +66,8 @@ export const liveState: {
     streamPath: string;
 } = {
     status: 'idle', // 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden'
-    abort: null,    // AbortController of the current stream fetch
-    gen: '',        // the minted generation every frame must echo (string compare)
+    abort: null, // AbortController of the current stream fetch
+    gen: '', // the minted generation every frame must echo (string compare)
     streamPath: '', // the stream URL sans ?g= -- the page/params identity
 };
 let liveGenSeq = 0;
@@ -92,11 +92,11 @@ export function liveFallbackSeconds(): number {
 // not be disabled (the D19 scope cut). Server truth drives the client.
 function liveSupported(): boolean {
     const content = document.getElementById('resource-list-content') as HTMLElement | null;
-    if (!content || content.dataset.liveUrl !== 'location') {
+    if (content?.dataset.liveUrl !== 'location') {
         return false;
     }
     const option = document.querySelector(
-        '.refresh-option[data-interval="Live"]'
+        '.refresh-option[data-interval="Live"]',
     ) as HTMLButtonElement | null;
     return !!option && !option.disabled;
 }
@@ -107,7 +107,7 @@ function liveSupported(): boolean {
 // survive byte-exactly.
 function liveStreamBase(): string {
     const u = new URL(window.location.href);
-    return u.pathname.replace(/\/+$/, '') + '/_stream' + u.search;
+    return `${u.pathname.replace(/\/+$/, '')}/_stream${u.search}`;
 }
 
 // liveTeardown aborts the current stream fetch (if any) and zeroes the fallback
@@ -161,11 +161,10 @@ function liveOpen(base: string): void {
     }
     liveState.status = 'connecting';
     liveGenSeq += 1;
-    liveState.gen = Date.now().toString(36) + '.' + liveGenSeq;
+    liveState.gen = `${Date.now().toString(36)}.${liveGenSeq}`;
     const ctrl = new AbortController();
     liveState.abort = ctrl;
-    const url = base + (base.indexOf('?') === -1 ? '?' : '&')
-        + 'g=' + encodeURIComponent(liveState.gen);
+    const url = `${base + (base.indexOf('?') === -1 ? '?' : '&')}g=${encodeURIComponent(liveState.gen)}`;
     scheduleRefreshTick(); // effective cadence is 0 now -> the poll chain disarms
     void liveConnect(url, ctrl);
 }
@@ -315,10 +314,15 @@ function liveMorph(html: string): void {
     if (!content || !htmx || typeof htmx.swap !== 'function') {
         return;
     }
-    htmx.swap(content, html, { swapStyle: 'morph' }, {
-        contextElement: content,
-        eventInfo: { target: content, roLivePush: true },
-    });
+    htmx.swap(
+        content,
+        html,
+        { swapStyle: 'morph' },
+        {
+            contextElement: content,
+            eventInfo: { target: content, roLivePush: true },
+        },
+    );
 }
 
 // liveOnListSwap is the param-change reopen (called from the container afterSwap
@@ -328,14 +332,14 @@ function liveMorph(html: string): void {
 // (byte-exact) rather than location. In FALLBACK nothing reopens.
 export function liveOnListSwap(event: Event): void {
     const detail = (event as CustomEvent).detail;
-    if (detail && detail.roLivePush) {
+    if (detail?.roLivePush) {
         return; // a push is not a param change
     }
     if (liveState.status !== 'open' && liveState.status !== 'connecting') {
         return;
     }
     let base = liveStreamBase();
-    const pathInfo = detail && detail.pathInfo;
+    const pathInfo = detail?.pathInfo;
     const requestPath = pathInfo && (pathInfo.finalRequestPath || pathInfo.requestPath);
     if (requestPath && requestPath.indexOf('/_table') !== -1) {
         base = requestPath.replace('/_table', '/_stream');

@@ -7,17 +7,13 @@
 // Run: `node --test internal/assets/src/js/prefs.test.ts` (Node 24 strips the
 // types natively -- no framework, erasable-only TS).
 
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import {
-    encodePrefsValue,
-    decodePrefsValue,
-    type Prefs,
-} from './prefs.ts';
+import { decodePrefsValue, encodePrefsValue, type Prefs } from './prefs.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // js -> src -> assets -> internal -> repo root, then into the Go testdata dir.
@@ -54,7 +50,10 @@ const fixtureFiles = readdirSync(goldenDir)
 
 // Sanity: the directory the Go test reads is the one we read.
 test('golden fixtures discovered', () => {
-    assert.ok(fixtureFiles.length >= 7, `expected >=7 golden fixtures, found ${fixtureFiles.length}`);
+    assert.ok(
+        fixtureFiles.length >= 7,
+        `expected >=7 golden fixtures, found ${fixtureFiles.length}`,
+    );
     assert.ok(fixtureFiles.includes('07_corrupt_decode.json'), 'corrupt-decode fixture missing');
 });
 
@@ -107,13 +106,21 @@ for (const file of fixtureFiles) {
     });
 
     if (fx.evicted && fx.kept) {
+        // Hoist the narrowed values into consts so the nested test() closure
+        // keeps the non-null narrowing (the closure cannot see the outer
+        // `if (fx.evicted && fx.kept)` guard, which is why the `!` lived here).
+        const evicted = fx.evicted;
+        const kept = fx.kept;
         // Cross-check the eviction outcome decodes back to exactly the kept
         // kinds, in order -- the dropped tail entries are gone.
-        test(`${file}: post-eviction value keeps exactly ${fx.kept.join(',')}`, () => {
+        test(`${file}: post-eviction value keeps exactly ${kept.join(',')}`, () => {
             const { prefs, ok } = decodePrefsValue(fx.encoded);
             assert.ok(ok, 'post-eviction value must decode cleanly');
-            assert.deepEqual(prefs.kinds.map((k) => k.k), fx.kept);
-            for (const dropped of fx.evicted!) {
+            assert.deepEqual(
+                prefs.kinds.map((k) => k.k),
+                kept,
+            );
+            for (const dropped of evicted) {
                 assert.ok(
                     !prefs.kinds.some((k) => k.k === dropped),
                     `evicted kind ${dropped} must be absent`,

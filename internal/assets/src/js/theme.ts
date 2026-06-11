@@ -33,7 +33,7 @@ export function syncThemeTogglePostTarget(): void {
         return;
     }
     const form = (toggle as HTMLButtonElement).form;
-    const input = form && form.querySelector('input[name="theme"]');
+    const input = form?.querySelector('input[name="theme"]');
     if (input) {
         // Effective palette is dark -> the toggle should switch to light, and
         // vice versa (post the opposite of the current effective scheme).

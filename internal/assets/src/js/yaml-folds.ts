@@ -104,7 +104,7 @@ function injectFoldControls(lineSpan: Element, bodyCount: number): void {
     // Place the toggle after the leading anchor (so it reads at the line start,
     // left of the key); fall back to prepend if no anchor is present.
     const anchor = lineSpan.querySelector('a');
-    if (anchor && anchor.nextSibling) {
+    if (anchor?.nextSibling) {
         lineSpan.insertBefore(toggle, anchor.nextSibling);
     } else if (anchor) {
         lineSpan.appendChild(toggle);
@@ -181,7 +181,7 @@ export function buildYamlFolds(): void {
                 }
                 injectFoldControls(lines[i], bodyCount);
             }
-        } catch (e) {
+        } catch (_e) {
             // Anything unexpected -> leave this block plainly highlighted (the
             // accepted graceful fallback). The cell is already marked, so we do
             // not retry it; the section-level fold + line anchors keep working.

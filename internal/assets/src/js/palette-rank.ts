@@ -50,12 +50,12 @@ export function roFuzzyScore(query: string, text: string): number {
         last = at;
         from = at + 1;
     }
-    const gaps = (last - first + 1) - q.length;
-    const camelHump = source[first] >= 'A' && source[first] <= 'Z'
-        && !(source[first - 1] >= 'A' && source[first - 1] <= 'Z');
-    const wordStart = first === 0
-        || ' -_./:'.indexOf(t[first - 1]) !== -1
-        || camelHump;
+    const gaps = last - first + 1 - q.length;
+    const camelHump =
+        source[first] >= 'A' &&
+        source[first] <= 'Z' &&
+        !(source[first - 1] >= 'A' && source[first - 1] <= 'Z');
+    const wordStart = first === 0 || ' -_./:'.indexOf(t[first - 1]) !== -1 || camelHump;
     let tier = 2;
     if (gaps === 0 && first === 0) {
         tier = 0;
@@ -102,7 +102,7 @@ export interface RecentEntry {
 // The dedupe identity of a recents entry: its navigation target. href wins when
 // both are present (the same identity the monolith used).
 export function paletteRecentTarget(entry: RecentEntry): string {
-    return entry.href ? 'href:' + entry.href : 'action:' + entry.action;
+    return entry.href ? `href:${entry.href}` : `action:${entry.action}`;
 }
 
 // dedupeRecents is the recents WRITE rule: drop any prior entry sharing the new
@@ -110,10 +110,12 @@ export function paletteRecentTarget(entry: RecentEntry): string {
 // PURE -- the localStorage read/write stays in palette.ts. The cap is a
 // write-side bound (the store never grows past `max`), matching the e2e
 // "caps at five" assertion that the persisted store itself holds exactly five.
-export function dedupeRecents(prior: RecentEntry[], entry: RecentEntry, max: number): RecentEntry[] {
-    const kept = prior.filter(
-        (it) => paletteRecentTarget(it) !== paletteRecentTarget(entry),
-    );
+export function dedupeRecents(
+    prior: RecentEntry[],
+    entry: RecentEntry,
+    max: number,
+): RecentEntry[] {
+    const kept = prior.filter((it) => paletteRecentTarget(it) !== paletteRecentTarget(entry));
     kept.unshift(entry);
     return kept.slice(0, max);
 }

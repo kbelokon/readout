@@ -19,29 +19,26 @@
 // colsPopOpen guard import them DIRECTLY (the window.roClusterBridge seam this
 // file used is dismantled).
 
-import type { Binding } from './events.js';
-import {
-    virtualizerActive,
-    virtMoveFocus,
-    virtRowByKey,
-    virtVisible,
-} from './virtualizer.js';
 import { colsPopOpen } from './columns.js';
+import type { Binding } from './events.js';
+import { virtMoveFocus, virtRowByKey, virtualizerActive, virtVisible } from './virtualizer.js';
 
 const PALETTE_ID = 'ro-palette';
 
 // roRowState focus seam (owned by row-selection.ts), read at call time.
 function roRowState(): { setFocus(key: string): void; focusedKey(): string | null } {
-    return (window as unknown as {
-        roRowState: { setFocus(key: string): void; focusedKey(): string | null };
-    }).roRowState;
+    return (
+        window as unknown as {
+            roRowState: { setFocus(key: string): void; focusedKey(): string | null };
+        }
+    ).roRowState;
 }
 
 // keyboardTargetIsTextEntry: the focused element owns typed characters, so the
 // gesture keys pass through untouched (j in the filter editor is the letter j).
 function keyboardTargetIsTextEntry(target: EventTarget | null): boolean {
     const el = target as (Element & { isContentEditable?: boolean }) | null;
-    if (!el || el.nodeType !== 1) {
+    if (el?.nodeType !== 1) {
         return false;
     }
     const tag = el.tagName;
@@ -54,15 +51,15 @@ function keyboardTargetIsTextEntry(target: EventTarget | null): boolean {
 // (Unit 12, still in legacy.js) is read through the bridge.
 function keyboardSurfaceBusy(): boolean {
     const palette = document.getElementById(PALETTE_ID);
-    if (palette && palette.classList.contains('open')) {
+    if (palette?.classList.contains('open')) {
         return true;
     }
     const menu = document.getElementById('ro-ctxmenu');
-    if (menu && menu.classList.contains('is-open')) {
+    if (menu?.classList.contains('is-open')) {
         return true;
     }
     const nsDropdown = document.getElementById('namespace-dropdown');
-    if (nsDropdown && nsDropdown.classList.contains('is-active')) {
+    if (nsDropdown?.classList.contains('is-active')) {
         return true;
     }
     return colsPopOpen();
@@ -113,7 +110,7 @@ function openFocusedRow(): boolean {
             row = tr;
         }
     }
-    if (!row || !row.dataset.href) {
+    if (!row?.dataset.href) {
         return false;
     }
     window.location.assign(row.dataset.href);
@@ -220,7 +217,7 @@ export const keyboardBindings: Binding[] = [
                 // its native activation; the focusable table wrap is intentionally
                 // NOT excluded -- ⏎ there is the aria-activedescendant pattern).
                 const target = e.target as Element | null;
-                if (target && target.closest && target.closest('a, button, summary')) {
+                if (target?.closest?.('a, button, summary')) {
                     return;
                 }
                 if (openFocusedRow()) {

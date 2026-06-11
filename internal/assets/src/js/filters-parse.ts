@@ -121,7 +121,7 @@ export function filterFieldKnown(fields: ModelField[], field: string): boolean {
         return true;
     }
     if (want === 'cpu' || want === 'memory') {
-        return hasModelColumn(fields, want + ' usage');
+        return hasModelColumn(fields, `${want} usage`);
     }
     return fields.some((f) => !!f.hint && normalizeFieldName(f.label) === want);
 }
@@ -158,7 +158,7 @@ export function rankFieldSuggestions(fields: ModelField[], draft: string): ACIte
     return matched.map((f) => ({
         label: f.text,
         hint: f.hint,
-        insert: f.text + ':',
+        insert: `${f.text}:`,
         kind: 'field' as const,
     }));
 }
@@ -191,8 +191,8 @@ export function rankValueSuggestions(
     entries.sort((a, b) => b[1] - a[1]);
     return entries.slice(0, 8).map(([v, n]) => ({
         label: v,
-        hint: '×' + n,
-        insert: split.field.trim() + ':' + v,
+        hint: `×${n}`,
+        insert: `${split.field.trim()}:${v}`,
         kind: 'value' as const,
     }));
 }
@@ -203,7 +203,7 @@ export function rankValueSuggestions(
 // nothing). The MATCH runs on the full row model; the DOM application is the
 // caller's job.
 export function liveNameMatchKeys(rows: ModelRow[], draft: string): Set<string> | null {
-    const text = (!draft || splitFilterDraft(draft)) ? '' : draft.trim().toLowerCase();
+    const text = !draft || splitFilterDraft(draft) ? '' : draft.trim().toLowerCase();
     if (!text) {
         return null;
     }
@@ -238,11 +238,14 @@ export function mergeColParams(
     fields: string[],
 ): string {
     const kept: string[] = [];
-    search.replace(/^\?/, '').split('&').forEach((pair) => {
-        if (pair && !owned.has(pair.split('=')[0])) {
-            kept.push(pair); // byte-exact survival (raw f= commas included)
-        }
-    });
+    search
+        .replace(/^\?/, '')
+        .split('&')
+        .forEach((pair) => {
+            if (pair && !owned.has(pair.split('=')[0])) {
+                kept.push(pair); // byte-exact survival (raw f= commas included)
+            }
+        });
     const query = kept.concat(fields).join('&');
-    return pathname + (query ? '?' + query : '');
+    return pathname + (query ? `?${query}` : '');
 }

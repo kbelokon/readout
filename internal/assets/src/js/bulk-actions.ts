@@ -12,7 +12,7 @@
 // reaching the handler implies the action is allowed.
 
 import type { Binding } from './events.js';
-import { roCopyText, BULK_NAMES_MAX, clearRowState } from './row-selection.js';
+import { BULK_NAMES_MAX, clearRowState, roCopyText } from './row-selection.js';
 
 // bulkCopyNames copies the newline-joined FULL names of every selected row --
 // PINNED: including rows the live free-text filter is hiding and rows a
@@ -48,28 +48,30 @@ function bulkCopyNames(button: HTMLElement): void {
 // selection key. The URL serves a Content-Disposition attachment, so
 // location.assign downloads WITHOUT leaving the page and the selection survives.
 function bulkDownloadYAML(bar: HTMLElement | null): void {
-    if (!bar || !bar.dataset.bulkHref) {
+    if (!bar?.dataset.bulkHref) {
         return;
     }
     const entries = roRowState().selectedEntries();
     if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
         return; // the button is disabled in both states; belt for direct calls
     }
-    const clusterPrefix = (bar.dataset.bulkCluster || '') + '/';
+    const clusterPrefix = `${bar.dataset.bulkCluster || ''}/`;
     const names = entries.map((entry) => {
         if (bar.dataset.bulkAllns === 'true' && entry.key.indexOf(clusterPrefix) === 0) {
             return entry.key.slice(clusterPrefix.length);
         }
         return entry.name;
     });
-    window.location.assign(bar.dataset.bulkHref + '&names=' + encodeURIComponent(names.join(',')));
+    window.location.assign(`${bar.dataset.bulkHref}&names=${encodeURIComponent(names.join(','))}`);
 }
 
 // roRowState reads the selection seam (owned by row-selection.ts) at call time.
 function roRowState(): { selectedEntries(): { key: string; name: string }[] } {
-    return (window as unknown as {
-        roRowState: { selectedEntries(): { key: string; name: string }[] };
-    }).roRowState;
+    return (
+        window as unknown as {
+            roRowState: { selectedEntries(): { key: string; name: string }[] };
+        }
+    ).roRowState;
 }
 
 // --- dispatcher bindings ----------------------------------------------------

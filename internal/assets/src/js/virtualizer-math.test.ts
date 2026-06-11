@@ -6,17 +6,17 @@
 //
 // Run: `node --test 'internal/assets/src/js/**/*.test.ts'`.
 
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { test } from 'node:test';
 
 import {
-    VIRT_BUFFER_ROWS,
-    windowBounds,
-    spacerHeights,
+    clampFocusIndex,
     prepareSwapSpacers,
     rowOffsetTop,
     scrollAdjustToReveal,
-    clampFocusIndex,
+    spacerHeights,
+    VIRT_BUFFER_ROWS,
+    windowBounds,
 } from './virtualizer-math.ts';
 
 // --- windowBounds -----------------------------------------------------------

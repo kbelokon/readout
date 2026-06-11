@@ -32,9 +32,7 @@ document.addEventListener('htmx:beforeRequest', (event) => {
     if (!content || !template || !listRegionIsEmpty(content)) {
         return;
     }
-    content.replaceChildren(
-        ...Array.from(template.children, (node) => node.cloneNode(true))
-    );
+    content.replaceChildren(...Array.from(template.children, (node) => node.cloneNode(true)));
 });
 
 // A failed request into a skeleton-only region removes the skeleton (htmx does
@@ -43,7 +41,7 @@ document.addEventListener('htmx:beforeRequest', (event) => {
 // a region that had none.
 function clearListSkeleton(): void {
     const content = document.getElementById('resource-list-content');
-    const skel = content && content.querySelector(':scope > .ro-skel');
+    const skel = content?.querySelector(':scope > .ro-skel');
     if (skel) {
         skel.remove();
     }

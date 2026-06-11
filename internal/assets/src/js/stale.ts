@@ -40,7 +40,7 @@ export function updateStaleCountdown(): void {
         return;
     }
     const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1000));
-    span.textContent = remaining + 's';
+    span.textContent = `${remaining}s`;
 }
 
 // True when the htmx event belongs to a request that lands in the live
@@ -54,7 +54,7 @@ export function isListRefreshEvent(event: Event): boolean {
         return false;
     }
     const elt = detail.elt;
-    if (!!elt && elt.id === 'resource-list-content') {
+    if (elt && elt.id === 'resource-list-content') {
         return true;
     }
     const target = detail.target;

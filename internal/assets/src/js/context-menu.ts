@@ -16,7 +16,7 @@
 // htmx captures a boosted anchor's href at PROCESS time.
 
 import type { Binding } from './events.js';
-import { roCopyText, lastKeySegment } from './row-selection.js';
+import { lastKeySegment, roCopyText } from './row-selection.js';
 
 const CTX_CLAMP_W = 220;
 const CTX_CLAMP_H = 240;
@@ -35,7 +35,7 @@ export function openRowMenu(tr: HTMLElement, x: number, y: number): void {
         return;
     }
     const bind = (action: string, href: string): void => {
-        const item = menu.querySelector('[data-ctx="' + action + '"]') as HTMLElement | null;
+        const item = menu.querySelector(`[data-ctx="${action}"]`) as HTMLElement | null;
         if (!item) {
             return;
         }
@@ -53,9 +53,9 @@ export function openRowMenu(tr: HTMLElement, x: number, y: number): void {
     bind('download', tr.dataset.download || '');
     (menu as HTMLElement).dataset.name = tr.dataset.name || lastKeySegment(tr.dataset.key || '');
     (menu as HTMLElement).style.left =
-        Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W)) + 'px';
+        `${Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W))}px`;
     (menu as HTMLElement).style.top =
-        Math.max(8, Math.min(y, window.innerHeight - CTX_CLAMP_H)) + 'px';
+        `${Math.max(8, Math.min(y, window.innerHeight - CTX_CLAMP_H))}px`;
     menu.classList.add('is-open');
     menu.setAttribute('aria-hidden', 'false');
 }
@@ -90,7 +90,7 @@ export const contextMenuBindings: Binding[] = [
             event.preventDefault();
             const item = matched as HTMLElement;
             const menu = item.closest('#ro-ctxmenu') as HTMLElement | null;
-            const name = (menu && menu.dataset.name) || '';
+            const name = menu?.dataset.name || '';
             const href = item.dataset.href || '';
             closeRowMenu();
             if (item.dataset.ctx === 'copy') {

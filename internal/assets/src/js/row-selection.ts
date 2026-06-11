@@ -42,7 +42,7 @@ export function reapplyRowState(): void {
     // the focused row left the fragment.
     content.querySelectorAll('.ro-table-wrap').forEach((wrap) => {
         const fr = focusedRow as HTMLElement | null;
-        if (fr && fr.id && wrap.contains(fr)) {
+        if (fr?.id && wrap.contains(fr)) {
             wrap.setAttribute('aria-activedescendant', fr.id);
         } else {
             wrap.removeAttribute('aria-activedescendant');
@@ -92,16 +92,18 @@ export function clearRowState(): void {
 }
 
 // window.roRowState -- the e2e + gesture seam (selection store + j/k focus).
-(window as unknown as {
-    roRowState: {
-        setSelected(key: string, on: boolean): void;
-        setFocus(key: string): void;
-        focusedKey(): string | null;
-        clear(): void;
-        selectedKeys(): string[];
-        selectedEntries(): { key: string; name: string }[];
-    };
-}).roRowState = {
+(
+    window as unknown as {
+        roRowState: {
+            setSelected(key: string, on: boolean): void;
+            setFocus(key: string): void;
+            focusedKey(): string | null;
+            clear(): void;
+            selectedKeys(): string[];
+            selectedEntries(): { key: string; name: string }[];
+        };
+    }
+).roRowState = {
     setSelected: setRowSelected,
     setFocus(key: string) {
         rowFocusKey = key || null;
@@ -143,7 +145,7 @@ export function updateBulkBar(): void {
     const count = rowSelection.size;
     const label = document.getElementById('ro-bulk-count');
     if (label && count > 0) {
-        label.textContent = count + ' selected';
+        label.textContent = `${count} selected`;
     }
     bar.classList.toggle('is-open', count > 0);
     bar.toggleAttribute('inert', count === 0);
@@ -151,9 +153,9 @@ export function updateBulkBar(): void {
     if (download && (bar as HTMLElement).dataset.bulkHref) {
         const over = count > BULK_NAMES_MAX;
         download.disabled = over;
-        download.title = over ? 'Over the ' + BULK_NAMES_MAX + '-object bulk download cap' : '';
+        download.title = over ? `Over the ${BULK_NAMES_MAX}-object bulk download cap` : '';
         if (over && !bulkOverCapToasted) {
-            roToast('Download refused: ' + count + ' selected (max ' + BULK_NAMES_MAX + ')');
+            roToast(`Download refused: ${count} selected (max ${BULK_NAMES_MAX})`);
         }
         bulkOverCapToasted = over;
     }
@@ -192,8 +194,11 @@ export function roCopyText(text: string, done: (ok: boolean) => void): void {
         ta.remove();
         return ok;
     };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(() => done(true), () => done(fallback()));
+    if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(
+            () => done(true),
+            () => done(fallback()),
+        );
         return;
     }
     done(fallback());
@@ -230,7 +235,7 @@ export const rowSelectionBindings: Binding[] = [
             // Interactive descendants keep their own gesture (the NAME anchor
             // opens, label chips filter, +N overflow expands; SPEC §5).
             const target = event.target as Element | null;
-            if (target && target.closest('a, button, input, select, textarea, label')) {
+            if (target?.closest('a, button, input, select, textarea, label')) {
                 return;
             }
             toggleRowSelection(matched as HTMLElement);

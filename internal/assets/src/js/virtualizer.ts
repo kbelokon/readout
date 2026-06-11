@@ -38,16 +38,16 @@
 // DIRECTLY (the Unit-12 dismantling of the window.roClusterBridge seam): the
 // virtualizer is a module now, so those callers reach it by name at call time.
 
+import { requestListRefresh } from './refresh.js';
+import { reapplyRowState } from './row-selection.js';
 import {
-    windowBounds,
-    spacerHeights,
+    clampFocusIndex,
     prepareSwapSpacers,
     rowOffsetTop,
     scrollAdjustToReveal,
-    clampFocusIndex,
+    spacerHeights,
+    windowBounds,
 } from './virtualizer-math.js';
-import { reapplyRowState } from './row-selection.js';
-import { requestListRefresh } from './refresh.js';
 
 // The live free-text hide class (owned by filters.ts; the literal is shared
 // rather than imported so the matcher->virtualizer dependency stays one-way).
@@ -61,9 +61,11 @@ function roRowModel(): { visibleKeys: Set<string> | null } {
 
 // roRowState focus seam (owned by row-selection.ts), read at call time.
 function roRowState(): { setFocus(key: string): void; focusedKey(): string | null } {
-    return (window as unknown as {
-        roRowState: { setFocus(key: string): void; focusedKey(): string | null };
-    }).roRowState;
+    return (
+        window as unknown as {
+            roRowState: { setFocus(key: string): void; focusedKey(): string | null };
+        }
+    ).roRowState;
 }
 
 interface VirtState {
@@ -134,15 +136,20 @@ function virtMakeSpacer(): HTMLTableRowElement {
 
 function virtSetSpacerColspan(): void {
     const cols = (virtState.table as HTMLTableElement).querySelectorAll('thead th').length || 1;
-    ((virtState.topSpacer as HTMLTableRowElement).firstElementChild as HTMLTableCellElement).colSpan = cols;
-    ((virtState.bottomSpacer as HTMLTableRowElement).firstElementChild as HTMLTableCellElement).colSpan = cols;
+    (
+        (virtState.topSpacer as HTMLTableRowElement).firstElementChild as HTMLTableCellElement
+    ).colSpan = cols;
+    (
+        (virtState.bottomSpacer as HTMLTableRowElement).firstElementChild as HTMLTableCellElement
+    ).colSpan = cols;
 }
 
 // virtMeasureRowHeight returns the mean row pitch of the CURRENTLY RENDERED
 // identity rows (exact at engagement, when the full set is in the DOM).
 function virtMeasureRowHeight(): number {
-    const rendered = (virtState.tbody as HTMLTableSectionElement)
-        .querySelectorAll(':scope > tr[data-key]');
+    const rendered = (virtState.tbody as HTMLTableSectionElement).querySelectorAll(
+        ':scope > tr[data-key]',
+    );
     if (rendered.length === 0) {
         return 0;
     }
@@ -161,7 +168,7 @@ function virtFallbackRowHeight(): number {
     try {
         const cs = window.getComputedStyle(document.documentElement);
         py = parseFloat(cs.getPropertyValue('--row-py')) || py;
-        const cell = virtState.tbody && virtState.tbody.querySelector('td');
+        const cell = virtState.tbody?.querySelector('td');
         if (cell) {
             lh = parseFloat(window.getComputedStyle(cell).lineHeight) || lh;
         }
@@ -181,7 +188,7 @@ function virtApplyPins(): boolean {
         return false;
     }
     ths.forEach((th, i) => {
-        (th as HTMLElement).style.width = virtState.pinnedWidths[i] + 'px';
+        (th as HTMLElement).style.width = `${virtState.pinnedWidths[i]}px`;
     });
     (virtState.table as HTMLTableElement).classList.add('ro-virtualized');
     return true;
@@ -220,10 +227,14 @@ function virtRenderWindow(): void {
     s.start = bounds.start;
     s.end = bounds.end;
     const heights = spacerHeights(s.start, s.end, s.visible.length, s.rowH);
-    ((s.topSpacer as HTMLTableRowElement).firstElementChild as HTMLElement).style.height = heights.top + 'px';
-    ((s.bottomSpacer as HTMLTableRowElement).firstElementChild as HTMLElement).style.height = heights.bottom + 'px';
+    ((s.topSpacer as HTMLTableRowElement).firstElementChild as HTMLElement).style.height =
+        `${heights.top}px`;
+    ((s.bottomSpacer as HTMLTableRowElement).firstElementChild as HTMLElement).style.height =
+        `${heights.bottom}px`;
     const slice = s.visible.slice(s.start, s.end);
-    slice.forEach((tr) => tr.classList.remove(FILTER_HIDE_CLASS));
+    slice.forEach((tr) => {
+        tr.classList.remove(FILTER_HIDE_CLASS);
+    });
     tbody.replaceChildren(s.topSpacer as Node, ...slice, s.bottomSpacer as Node);
     reapplyRowState();
 }
@@ -232,11 +243,12 @@ function virtRenderWindow(): void {
 // have replaced the nodes the virtualizer held).
 function virtBindMounts(): boolean {
     const content = document.getElementById('resource-list-content');
-    const wrap = content && content.querySelector('.ro-table-wrap.ro-windowed');
-    const table = wrap && wrap.querySelector('table.ro-table');
-    const tbody = table && (table as HTMLTableElement).tBodies.length > 0
-        ? (table as HTMLTableElement).tBodies[0]
-        : null;
+    const wrap = content?.querySelector('.ro-table-wrap.ro-windowed');
+    const table = wrap?.querySelector('table.ro-table');
+    const tbody =
+        table && (table as HTMLTableElement).tBodies.length > 0
+            ? (table as HTMLTableElement).tBodies[0]
+            : null;
     virtState.table = (table as HTMLTableElement) || null;
     virtState.tbody = tbody || null;
     return !!tbody;
@@ -247,7 +259,7 @@ function virtBindMounts(): boolean {
 // dataset, and the model must capture it before the window prunes the rows.
 export function virtualizeInit(): void {
     const content = document.getElementById('resource-list-content');
-    const wrap = content && content.querySelector('.ro-table-wrap.ro-windowed');
+    const wrap = content?.querySelector('.ro-table-wrap.ro-windowed');
     if (!wrap) {
         virtReset(); // small list / non-list page: windowing disengaged
         return;
@@ -321,8 +333,8 @@ export function virtualizePrepareSwap(fragment: DocumentFragment): void {
     const heights = prepareSwapSpacers(priorStart, rows.length, rowH);
     const topSpacer = virtMakeSpacer();
     const bottomSpacer = virtMakeSpacer();
-    (topSpacer.firstElementChild as HTMLElement).style.height = heights.top + 'px';
-    (bottomSpacer.firstElementChild as HTMLElement).style.height = heights.bottom + 'px';
+    (topSpacer.firstElementChild as HTMLElement).style.height = `${heights.top}px`;
+    (bottomSpacer.firstElementChild as HTMLElement).style.height = `${heights.bottom}px`;
     tbody.replaceChildren(topSpacer, bottomSpacer);
 }
 
@@ -391,8 +403,11 @@ export function virtualizeAfterSwap(): void {
 // window is diffed here against the prior row set by identity. Disabled under
 // prefers-reduced-motion exactly like the idiomorph hooks.
 function virtFlashChangedCells(prior: Map<string, HTMLElement>): void {
-    if (!prior || prior.size === 0
-        || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (
+        !prior ||
+        prior.size === 0 ||
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
         return;
     }
     (virtState.tbody as HTMLTableSectionElement)
@@ -490,28 +505,37 @@ function virtOnScroll(): void {
         return;
     }
     const rect = (virtState.tbody as HTMLTableSectionElement).getBoundingClientRect();
-    const bounds = windowBounds(rect.top, window.innerHeight, virtState.rowH, virtState.visible.length);
+    const bounds = windowBounds(
+        rect.top,
+        window.innerHeight,
+        virtState.rowH,
+        virtState.visible.length,
+    );
     if (bounds.start !== virtState.start || bounds.end !== virtState.end) {
         virtRenderWindow();
     }
 }
-window.addEventListener('scroll', () => {
-    if (!virtState.active || virtScrollScheduled) {
-        return;
-    }
-    virtScrollScheduled = true;
-    window.requestAnimationFrame(() => {
-        virtScrollScheduled = false;
-        virtOnScroll();
-    });
-}, { passive: true });
+window.addEventListener(
+    'scroll',
+    () => {
+        if (!virtState.active || virtScrollScheduled) {
+            return;
+        }
+        virtScrollScheduled = true;
+        window.requestAnimationFrame(() => {
+            virtScrollScheduled = false;
+            virtOnScroll();
+        });
+    },
+    { passive: true },
+);
 // Viewport growth widens the needed window (row pitch itself is re-measured only
 // at engagement; the fixed-height law keeps it stable in between).
 window.addEventListener('resize', virtOnScroll);
 // Web-font activation can shift the line-height the row pitch was measured
 // against (engagement at DOMContentLoaded can precede the Geist swap-in);
 // re-measure once the fonts settle.
-if (document.fonts && document.fonts.ready && typeof document.fonts.ready.then === 'function') {
+if (document.fonts?.ready && typeof document.fonts.ready.then === 'function') {
     document.fonts.ready.then(() => {
         if (!virtualizerActive()) {
             return;
@@ -528,13 +552,15 @@ if (document.fonts && document.fonts.ready && typeof document.fonts.ready.then =
 // inspection plus the scroll-to-identity jump the specs drive. window.roVirtual
 // is an e2e contract (windowing.spec.ts) -- the names active/renderedBounds/
 // scrollToKey are frozen.
-(window as unknown as {
-    roVirtual: {
-        active(): boolean;
-        renderedBounds(): { start: number; end: number; total: number };
-        scrollToKey(key: string): boolean;
-    };
-}).roVirtual = {
+(
+    window as unknown as {
+        roVirtual: {
+            active(): boolean;
+            renderedBounds(): { start: number; end: number; total: number };
+            scrollToKey(key: string): boolean;
+        };
+    }
+).roVirtual = {
     active: virtualizerActive,
     renderedBounds() {
         return { start: virtState.start, end: virtState.end, total: virtState.visible.length };

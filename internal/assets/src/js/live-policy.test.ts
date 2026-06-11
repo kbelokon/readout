@@ -7,17 +7,17 @@
 //
 // Run: `node --test 'internal/assets/src/js/**/*.test.ts'`.
 
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { test } from 'node:test';
 
 import {
-    effectivePollSeconds,
-    refreshDelaySeconds,
-    nextFailureStage,
     classifyStreamClose,
-    shouldDiscardPush,
-    type StreamCloseFacts,
+    effectivePollSeconds,
+    nextFailureStage,
     type PushDiscardFacts,
+    refreshDelaySeconds,
+    type StreamCloseFacts,
+    shouldDiscardPush,
 } from './live-policy.ts';
 
 // --- effectivePollSeconds ---------------------------------------------------
@@ -171,9 +171,9 @@ test('a stale generation is discarded FIRST (before page / in-flight)', () => {
                 currentGeneration: 'g1',
                 liveStreamBase: '/other/_stream',
                 requestInFlight: true,
-            })
+            }),
         ),
-        'stale-generation'
+        'stale-generation',
     );
 });
 
@@ -183,9 +183,9 @@ test('a current-generation frame against a changed page is wrong-page', () => {
             push({
                 liveStreamBase: '/clusters/c/pods/_stream?f=status:Running',
                 openedStreamBase: '/clusters/c/pods/_stream',
-            })
+            }),
         ),
-        'wrong-page'
+        'wrong-page',
     );
 });
 
@@ -199,8 +199,8 @@ test('wrong-page is checked before in-flight', () => {
             push({
                 liveStreamBase: '/other/_stream',
                 requestInFlight: true,
-            })
+            }),
         ),
-        'wrong-page'
+        'wrong-page',
     );
 });
