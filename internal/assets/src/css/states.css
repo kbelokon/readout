@@ -1,0 +1,201 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Edge states: full-page error, empty, in-flight progress,
+       auto-refresh changed-cell flash. Tokens only; no inline style, no overrides.
+       --------------------------------------------------------------------------- */
+
+    /* Full-page error (error.html). A calm centered column: a big status code in
+       the error hue, a short title, the REAL apiserver message verbatim in a mono
+       code block (the most useful thing for a read-only RBAC tool -- never hidden),
+       a plain-language hint, then Back (quiet) + Retry (accent) actions. */
+    .ro-error {
+        max-width: 42rem;
+        margin: 3.5rem auto 0;
+        text-align: center;
+    }
+    .ro-error-code {
+        font-family: var(--font-mono);
+        font-size: 4rem;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.03em;
+        color: var(--st-err);
+    }
+    .ro-error-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text);
+        margin: 0.5rem 0 1.25rem;
+    }
+    .ro-error-message {
+        text-align: left;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-left: 0.1875rem solid var(--st-err);
+        border-radius: var(--radius);
+        padding: 0.75rem 0.875rem;
+        margin-bottom: 1rem;
+        overflow-x: auto;
+    }
+    .ro-error-message code {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text);
+        background: transparent;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .ro-error-hint {
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        margin-bottom: 1.5rem;
+    }
+    .ro-error-hint code {
+        font-family: var(--font-mono);
+        background: var(--surface-2);
+        color: var(--text);
+        border-radius: var(--radius-sm);
+        padding: 0 0.25rem;
+    }
+    .ro-error-actions {
+        display: flex;
+        gap: 0.625rem;
+        justify-content: center;
+    }
+    .ro-error-card {
+        max-width: 42rem;
+        margin: 3.5rem auto 0;
+        padding: 1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 0.1875rem solid var(--st-err);
+        border-radius: var(--radius);
+        color: var(--text);
+    }
+    .ro-error-card h2 {
+        margin: 0 0 0.5rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text);
+    }
+    .ro-error-card p {
+        margin: 0;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    /* Empty state (resource-list-content.html). Not an error -- a calm, expected
+       state: the literal "No <Kind> ... found." title plus a quiet nudge. The cell
+       spans the table; the inner block is centered with breathing room so an empty
+       table reads as intentional, not broken. (Unit 16: the dead
+       `.ro-list-table tr.ro-empty-row` hover/border rules were removed -- the
+       redesign empty row rides in a `.ro-table`, and the `.ro-empty-lg` card owns
+       the empty state.) */
+    .ro-empty {
+        text-align: center;
+        padding: 2.5rem 1rem;
+        color: var(--text-muted);
+    }
+    .ro-empty-title {
+        font-family: var(--font-mono);
+        font-size: 0.9375rem;
+        color: var(--text);
+        margin-bottom: 0.35rem;
+    }
+    .ro-empty-hint {
+        font-size: 0.8125rem;
+        color: var(--text-faint);
+    }
+
+    /* Global in-flight progress bar. A thin rail fixed across the very top of the
+       viewport (over the sticky topbar) that fades in while ANY request is in
+       flight and sweeps a bar left-to-right. It lives in the layout (one per page)
+       and is the indicator for BOTH every hx-boost navigation (the body sets
+       hx-indicator="#ro-progress") AND the in-place list auto-refresh
+       (#resource-list-content points its hx-indicator here too) -- so it is
+       consistent on every page change, not just when leaving a list. Reuses
+       .htmx-indicator for show/hide (opacity:0 at rest -> 1 on .htmx-request). The
+       sweep is dropped under reduced-motion (media block below); the bar still
+       fades. */
+    .ro-progress {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        z-index: 200;
+        background: var(--surface-2);
+        overflow: hidden;
+        pointer-events: none;
+    }
+    .ro-progress .ro-progress-bar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        width: 40%;
+        background: var(--accent);
+        border-radius: 1px;
+        animation: ro-progress-sweep 1.1s ease-in-out infinite;
+    }
+    @keyframes ro-progress-sweep {
+        0%   { left: -40%; width: 40%; }
+        50%  { width: 55%; }
+        100% { left: 100%; width: 40%; }
+    }
+
+    /* Auto-refresh changed-cell flash. readout.js adds .ro-cell-changed to a
+       table cell whose text actually changed across a morph refresh; this plays one
+       brief tint fade so the eye is drawn to the delta. The page never jumps (the
+       morph diffs in place); the class is added only off-reduced-motion (the JS
+       hook is not registered under prefers-reduced-motion), and the animation is
+       additionally disabled in the media block below as defence-in-depth.
+       (Unit 16: retargeted from the retired `.ro-list-table` to the redesign
+       `.ro-table` so the JS-driven flash actually lands on the live table cells --
+       readout.js adds `.ro-cell-changed` to `.ro-table` `<td>`s on morph.) */
+    .ro-table tbody td.ro-cell-changed {
+        animation: ro-cell-flash 1s ease-out;
+    }
+    @keyframes ro-cell-flash {
+        0%   { background: var(--accent-weak); }
+        100% { background: transparent; }
+    }
+
+    /* Reduced-motion: disable every decorative animation -- the navbar refresh-spin,
+       the in-flight progress sweep, and the changed-cell flash glow. The
+       progress bar still FADES in/out (a static rail) and the table still morphs in
+       place; users who asked for less motion just get no looping/sweeping/flashing.
+       Honoured purely in CSS so it holds even where the JS hook did register. */
+    @media (prefers-reduced-motion: reduce) {
+        #refresh-dropdown.refresh-on .refresh-icon svg { animation: none; }
+        .ro-progress .ro-progress-bar {
+            animation: none;
+            left: 0;
+            width: 100%;
+            opacity: 0.6;
+        }
+        .ro-table tbody td.ro-cell-changed { animation: none; }
+    }
+
+    /* ---------------------------------------------------------------------------
+       ⌘K jump-to palette -- RETIRED here (Unit 4).
+
+       The pre-redesign overlay (`.ro-palette` / `.ro-palette-panel` / `-head` /
+       `-input` / `-list` / `-row` / `-tag` / `-label` / `-path` / `-empty` + the
+       `ro-palette-in` keyframe) is gone. Its markup was deleted in
+       components.templ and its bare `.ro-palette` selector collided with the
+       redesign inner panel (`.ro-rd .ro-palette`, defined further below). Unit 2
+       lifted the redesign palette under the `.ro-rd.ro-palette-backdrop` marker
+       and noted "Unit 4 retires it" -- this is that retirement. The redesign
+       palette + its reduced-motion guard live in the REDESIGN COMPONENT PORT
+       block below (search the `⌘K PALETTE (redesign canonical .ro-pal-*)`
+       banner). */
+
+}

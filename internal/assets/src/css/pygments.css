@@ -1,0 +1,411 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer theme {
+    /* Pygments syntax highlight -- LIGHT / default (style='friendly').
+     * highlight() emits a bare class="highlight" with no inline fallback, so these
+     * rules must live here (theme-scoped) or YAML/resource code blocks lose colour.
+     * Regenerate with:
+     *   from pygments.formatters import HtmlFormatter
+     *   print(HtmlFormatter(style='friendly').get_style_defs('.highlight'))
+     */
+    .highlight .hll { background-color: #ffffcc }
+    .highlight  { background: #f0f0f0; }
+    .highlight .c { color: #60a0b0; font-style: italic } /* Comment */
+    .highlight .err { border: 1px solid #FF0000 } /* Error */
+    .highlight .k { color: #007020; font-weight: bold } /* Keyword */
+    .highlight .o { color: #666666 } /* Operator */
+    .highlight .ch { color: #60a0b0; font-style: italic } /* Comment.Hashbang */
+    .highlight .cm { color: #60a0b0; font-style: italic } /* Comment.Multiline */
+    .highlight .cp { color: #007020 } /* Comment.Preproc */
+    .highlight .cpf { color: #60a0b0; font-style: italic } /* Comment.PreprocFile */
+    .highlight .c1 { color: #60a0b0; font-style: italic } /* Comment.Single */
+    .highlight .cs { color: #60a0b0; background-color: #fff0f0 } /* Comment.Special */
+    .highlight .gd { color: #A00000 } /* Generic.Deleted */
+    .highlight .ge { font-style: italic } /* Generic.Emph */
+    .highlight .gr { color: #FF0000 } /* Generic.Error */
+    .highlight .gh { color: #000080; font-weight: bold } /* Generic.Heading */
+    .highlight .gi { color: #00A000 } /* Generic.Inserted */
+    .highlight .go { color: #888888 } /* Generic.Output */
+    .highlight .gp { color: #c65d09; font-weight: bold } /* Generic.Prompt */
+    .highlight .gs { font-weight: bold } /* Generic.Strong */
+    .highlight .gu { color: #800080; font-weight: bold } /* Generic.Subheading */
+    .highlight .gt { color: #0044DD } /* Generic.Traceback */
+    .highlight .kc { color: #007020; font-weight: bold } /* Keyword.Constant */
+    .highlight .kd { color: #007020; font-weight: bold } /* Keyword.Declaration */
+    .highlight .kn { color: #007020; font-weight: bold } /* Keyword.Namespace */
+    .highlight .kp { color: #007020 } /* Keyword.Pseudo */
+    .highlight .kr { color: #007020; font-weight: bold } /* Keyword.Reserved */
+    .highlight .kt { color: #902000 } /* Keyword.Type */
+    .highlight .m { color: #40a070 } /* Literal.Number */
+    .highlight .s { color: #4070a0 } /* Literal.String */
+    .highlight .na { color: #4070a0 } /* Name.Attribute */
+    .highlight .nb { color: #007020 } /* Name.Builtin */
+    .highlight .nc { color: #0e84b5; font-weight: bold } /* Name.Class */
+    .highlight .no { color: #60add5 } /* Name.Constant */
+    .highlight .nd { color: #555555; font-weight: bold } /* Name.Decorator */
+    .highlight .ni { color: #d55537; font-weight: bold } /* Name.Entity */
+    .highlight .ne { color: #007020 } /* Name.Exception */
+    .highlight .nf { color: #06287e } /* Name.Function */
+    .highlight .nl { color: #002070; font-weight: bold } /* Name.Label */
+    .highlight .nn { color: #0e84b5; font-weight: bold } /* Name.Namespace */
+    .highlight .nt { color: #062873; font-weight: bold } /* Name.Tag */
+    .highlight .nv { color: #bb60d5 } /* Name.Variable */
+    .highlight .ow { color: #007020; font-weight: bold } /* Operator.Word */
+    .highlight .w { color: #bbbbbb } /* Text.Whitespace */
+    .highlight .mb { color: #40a070 } /* Literal.Number.Bin */
+    .highlight .mf { color: #40a070 } /* Literal.Number.Float */
+    .highlight .mh { color: #40a070 } /* Literal.Number.Hex */
+    .highlight .mi { color: #40a070 } /* Literal.Number.Integer */
+    .highlight .mo { color: #40a070 } /* Literal.Number.Oct */
+    .highlight .sa { color: #4070a0 } /* Literal.String.Affix */
+    .highlight .sb { color: #4070a0 } /* Literal.String.Backtick */
+    .highlight .sc { color: #4070a0 } /* Literal.String.Char */
+    .highlight .dl { color: #4070a0 } /* Literal.String.Delimiter */
+    .highlight .sd { color: #4070a0; font-style: italic } /* Literal.String.Doc */
+    .highlight .s2 { color: #4070a0 } /* Literal.String.Double */
+    .highlight .se { color: #4070a0; font-weight: bold } /* Literal.String.Escape */
+    .highlight .sh { color: #4070a0 } /* Literal.String.Heredoc */
+    .highlight .si { color: #70a0d0; font-style: italic } /* Literal.String.Interpol */
+    .highlight .sx { color: #c65d09 } /* Literal.String.Other */
+    .highlight .sr { color: #235388 } /* Literal.String.Regex */
+    .highlight .s1 { color: #4070a0 } /* Literal.String.Single */
+    .highlight .ss { color: #517918 } /* Literal.String.Symbol */
+    .highlight .bp { color: #007020 } /* Name.Builtin.Pseudo */
+    .highlight .fm { color: #06287e } /* Name.Function.Magic */
+    .highlight .vc { color: #bb60d5 } /* Name.Variable.Class */
+    .highlight .vg { color: #bb60d5 } /* Name.Variable.Global */
+    .highlight .vi { color: #bb60d5 } /* Name.Variable.Instance */
+    .highlight .vm { color: #bb60d5 } /* Name.Variable.Magic */
+    .highlight .il { color: #40a070 } /* Literal.Number.Integer.Long */
+
+    /* Dark overrides: explicit [data-theme=dark] choice. Within this layer a
+       [data-theme=dark]-prefixed selector out-specifies the light default above,
+       so the dark palette wins when the user pinned dark. */
+    /* (age dark override removed: td.age-* now consume the --age-* token, which
+       already carries the dark value under [data-theme="dark"].) */
+    [data-theme="dark"] .log-line .log-c0 { color: #ff6b6b; }
+    [data-theme="dark"] .log-line .log-c1 { color: #ffa94d; }
+    [data-theme="dark"] .log-line .log-c2 { color: #ffd43b; }
+    [data-theme="dark"] .log-line .log-c3 { color: #69db7c; }
+    [data-theme="dark"] .log-line .log-c4 { color: #3bc9db; }
+    [data-theme="dark"] .log-line .log-c5 { color: #74a9ff; }
+    [data-theme="dark"] .log-line .log-c6 { color: #b197fc; }
+    [data-theme="dark"] .log-line .log-c7 { color: #f783ac; }
+
+    /* Pygments dark override (style='native'), scoped to an explicit dark choice.
+     * Regenerate with HtmlFormatter(style='native').get_style_defs('.highlight'). */
+    [data-theme="dark"] .highlight .hll { background-color: #404040 }
+    [data-theme="dark"] .highlight  { background: #202020; color: #d0d0d0 }
+    [data-theme="dark"] .highlight .c { color: #999999; font-style: italic } /* Comment */
+    [data-theme="dark"] .highlight .err { color: #a61717; background-color: #e3d2d2 } /* Error */
+    [data-theme="dark"] .highlight .esc { color: #d0d0d0 } /* Escape */
+    [data-theme="dark"] .highlight .g { color: #d0d0d0 } /* Generic */
+    [data-theme="dark"] .highlight .k { color: #6ab825; font-weight: bold } /* Keyword */
+    [data-theme="dark"] .highlight .l { color: #d0d0d0 } /* Literal */
+    [data-theme="dark"] .highlight .n { color: #d0d0d0 } /* Name */
+    [data-theme="dark"] .highlight .o { color: #d0d0d0 } /* Operator */
+    [data-theme="dark"] .highlight .x { color: #d0d0d0 } /* Other */
+    [data-theme="dark"] .highlight .p { color: #d0d0d0 } /* Punctuation */
+    [data-theme="dark"] .highlight .ch { color: #999999; font-style: italic } /* Comment.Hashbang */
+    [data-theme="dark"] .highlight .cm { color: #999999; font-style: italic } /* Comment.Multiline */
+    [data-theme="dark"] .highlight .cp { color: #cd2828; font-weight: bold } /* Comment.Preproc */
+    [data-theme="dark"] .highlight .cpf { color: #999999; font-style: italic } /* Comment.PreprocFile */
+    [data-theme="dark"] .highlight .c1 { color: #999999; font-style: italic } /* Comment.Single */
+    [data-theme="dark"] .highlight .cs { color: #e50808; font-weight: bold; background-color: #520000 } /* Comment.Special */
+    [data-theme="dark"] .highlight .gd { color: #d22323 } /* Generic.Deleted */
+    [data-theme="dark"] .highlight .ge { color: #d0d0d0; font-style: italic } /* Generic.Emph */
+    [data-theme="dark"] .highlight .gr { color: #d22323 } /* Generic.Error */
+    [data-theme="dark"] .highlight .gh { color: #ffffff; font-weight: bold } /* Generic.Heading */
+    [data-theme="dark"] .highlight .gi { color: #589819 } /* Generic.Inserted */
+    [data-theme="dark"] .highlight .go { color: #cccccc } /* Generic.Output */
+    [data-theme="dark"] .highlight .gp { color: #aaaaaa } /* Generic.Prompt */
+    [data-theme="dark"] .highlight .gs { color: #d0d0d0; font-weight: bold } /* Generic.Strong */
+    [data-theme="dark"] .highlight .gu { color: #ffffff; text-decoration: underline } /* Generic.Subheading */
+    [data-theme="dark"] .highlight .gt { color: #d22323 } /* Generic.Traceback */
+    [data-theme="dark"] .highlight .kc { color: #6ab825; font-weight: bold } /* Keyword.Constant */
+    [data-theme="dark"] .highlight .kd { color: #6ab825; font-weight: bold } /* Keyword.Declaration */
+    [data-theme="dark"] .highlight .kn { color: #6ab825; font-weight: bold } /* Keyword.Namespace */
+    [data-theme="dark"] .highlight .kp { color: #6ab825 } /* Keyword.Pseudo */
+    [data-theme="dark"] .highlight .kr { color: #6ab825; font-weight: bold } /* Keyword.Reserved */
+    [data-theme="dark"] .highlight .kt { color: #6ab825; font-weight: bold } /* Keyword.Type */
+    [data-theme="dark"] .highlight .ld { color: #d0d0d0 } /* Literal.Date */
+    [data-theme="dark"] .highlight .m { color: #3677a9 } /* Literal.Number */
+    [data-theme="dark"] .highlight .s { color: #ed9d13 } /* Literal.String */
+    [data-theme="dark"] .highlight .na { color: #bbbbbb } /* Name.Attribute */
+    [data-theme="dark"] .highlight .nb { color: #24909d } /* Name.Builtin */
+    [data-theme="dark"] .highlight .nc { color: #447fcf; text-decoration: underline } /* Name.Class */
+    [data-theme="dark"] .highlight .no { color: #40ffff } /* Name.Constant */
+    [data-theme="dark"] .highlight .nd { color: #ffa500 } /* Name.Decorator */
+    [data-theme="dark"] .highlight .ni { color: #d0d0d0 } /* Name.Entity */
+    [data-theme="dark"] .highlight .ne { color: #bbbbbb } /* Name.Exception */
+    [data-theme="dark"] .highlight .nf { color: #447fcf } /* Name.Function */
+    [data-theme="dark"] .highlight .nl { color: #d0d0d0 } /* Name.Label */
+    [data-theme="dark"] .highlight .nn { color: #447fcf; text-decoration: underline } /* Name.Namespace */
+    [data-theme="dark"] .highlight .nx { color: #d0d0d0 } /* Name.Other */
+    [data-theme="dark"] .highlight .py { color: #d0d0d0 } /* Name.Property */
+    [data-theme="dark"] .highlight .nt { color: #6ab825; font-weight: bold } /* Name.Tag */
+    [data-theme="dark"] .highlight .nv { color: #40ffff } /* Name.Variable */
+    [data-theme="dark"] .highlight .ow { color: #6ab825; font-weight: bold } /* Operator.Word */
+    [data-theme="dark"] .highlight .w { color: #666666 } /* Text.Whitespace */
+    [data-theme="dark"] .highlight .mb { color: #3677a9 } /* Literal.Number.Bin */
+    [data-theme="dark"] .highlight .mf { color: #3677a9 } /* Literal.Number.Float */
+    [data-theme="dark"] .highlight .mh { color: #3677a9 } /* Literal.Number.Hex */
+    [data-theme="dark"] .highlight .mi { color: #3677a9 } /* Literal.Number.Integer */
+    [data-theme="dark"] .highlight .mo { color: #3677a9 } /* Literal.Number.Oct */
+    [data-theme="dark"] .highlight .sa { color: #ed9d13 } /* Literal.String.Affix */
+    [data-theme="dark"] .highlight .sb { color: #ed9d13 } /* Literal.String.Backtick */
+    [data-theme="dark"] .highlight .sc { color: #ed9d13 } /* Literal.String.Char */
+    [data-theme="dark"] .highlight .dl { color: #ed9d13 } /* Literal.String.Delimiter */
+    [data-theme="dark"] .highlight .sd { color: #ed9d13 } /* Literal.String.Doc */
+    [data-theme="dark"] .highlight .s2 { color: #ed9d13 } /* Literal.String.Double */
+    [data-theme="dark"] .highlight .se { color: #ed9d13 } /* Literal.String.Escape */
+    [data-theme="dark"] .highlight .sh { color: #ed9d13 } /* Literal.String.Heredoc */
+    [data-theme="dark"] .highlight .si { color: #ed9d13 } /* Literal.String.Interpol */
+    [data-theme="dark"] .highlight .sx { color: #ffa500 } /* Literal.String.Other */
+    [data-theme="dark"] .highlight .sr { color: #ed9d13 } /* Literal.String.Regex */
+    [data-theme="dark"] .highlight .s1 { color: #ed9d13 } /* Literal.String.Single */
+    [data-theme="dark"] .highlight .ss { color: #ed9d13 } /* Literal.String.Symbol */
+    [data-theme="dark"] .highlight .bp { color: #24909d } /* Name.Builtin.Pseudo */
+    [data-theme="dark"] .highlight .fm { color: #447fcf } /* Name.Function.Magic */
+    [data-theme="dark"] .highlight .vc { color: #40ffff } /* Name.Variable.Class */
+    [data-theme="dark"] .highlight .vg { color: #40ffff } /* Name.Variable.Global */
+    [data-theme="dark"] .highlight .vi { color: #40ffff } /* Name.Variable.Instance */
+    [data-theme="dark"] .highlight .vm { color: #40ffff } /* Name.Variable.Magic */
+    [data-theme="dark"] .highlight .il { color: #3677a9 } /* Literal.Number.Integer.Long */
+
+    /* System dark (no data-theme cookie): re-use the dark palette via the OS
+       preference. Bare selectors here tie specificity with the light defaults, so
+       this block MUST follow them (it does -- source order in-layer breaks the
+       tie). A user who explicitly picked LIGHT must keep light even on a dark OS,
+       so the light palette is re-asserted under [data-theme="light"] inside. */
+    @media (prefers-color-scheme: dark) {
+        /* (age handled by the --age-* token under :root:not([data-theme=light]);
+           no per-bucket age rule needed here.) */
+        .log-line .log-c0 { color: #ff6b6b; }
+        .log-line .log-c1 { color: #ffa94d; }
+        .log-line .log-c2 { color: #ffd43b; }
+        .log-line .log-c3 { color: #69db7c; }
+        .log-line .log-c4 { color: #3bc9db; }
+        .log-line .log-c5 { color: #74a9ff; }
+        .log-line .log-c6 { color: #b197fc; }
+        .log-line .log-c7 { color: #f783ac; }
+
+        .highlight .hll { background-color: #404040 }
+        .highlight  { background: #202020; color: #d0d0d0 }
+        .highlight .c { color: #999999; font-style: italic }
+        .highlight .err { color: #a61717; background-color: #e3d2d2 }
+        .highlight .esc { color: #d0d0d0 }
+        .highlight .g { color: #d0d0d0 }
+        .highlight .k { color: #6ab825; font-weight: bold }
+        .highlight .l { color: #d0d0d0 }
+        .highlight .n { color: #d0d0d0 }
+        .highlight .o { color: #d0d0d0 }
+        .highlight .x { color: #d0d0d0 }
+        .highlight .p { color: #d0d0d0 }
+        .highlight .ch { color: #999999; font-style: italic }
+        .highlight .cm { color: #999999; font-style: italic }
+        .highlight .cp { color: #cd2828; font-weight: bold }
+        .highlight .cpf { color: #999999; font-style: italic }
+        .highlight .c1 { color: #999999; font-style: italic }
+        .highlight .cs { color: #e50808; font-weight: bold; background-color: #520000 }
+        .highlight .gd { color: #d22323 }
+        .highlight .ge { color: #d0d0d0; font-style: italic }
+        .highlight .gr { color: #d22323 }
+        .highlight .gh { color: #ffffff; font-weight: bold }
+        .highlight .gi { color: #589819 }
+        .highlight .go { color: #cccccc }
+        .highlight .gp { color: #aaaaaa }
+        .highlight .gs { color: #d0d0d0; font-weight: bold }
+        .highlight .gu { color: #ffffff; text-decoration: underline }
+        .highlight .gt { color: #d22323 }
+        .highlight .kc { color: #6ab825; font-weight: bold }
+        .highlight .kd { color: #6ab825; font-weight: bold }
+        .highlight .kn { color: #6ab825; font-weight: bold }
+        .highlight .kp { color: #6ab825 }
+        .highlight .kr { color: #6ab825; font-weight: bold }
+        .highlight .kt { color: #6ab825; font-weight: bold }
+        .highlight .ld { color: #d0d0d0 }
+        .highlight .m { color: #3677a9 }
+        .highlight .s { color: #ed9d13 }
+        .highlight .na { color: #bbbbbb }
+        .highlight .nb { color: #24909d }
+        .highlight .nc { color: #447fcf; text-decoration: underline }
+        .highlight .no { color: #40ffff }
+        .highlight .nd { color: #ffa500 }
+        .highlight .ni { color: #d0d0d0 }
+        .highlight .ne { color: #bbbbbb }
+        .highlight .nf { color: #447fcf }
+        .highlight .nl { color: #d0d0d0 }
+        .highlight .nn { color: #447fcf; text-decoration: underline }
+        .highlight .nx { color: #d0d0d0 }
+        .highlight .py { color: #d0d0d0 }
+        .highlight .nt { color: #6ab825; font-weight: bold }
+        .highlight .nv { color: #40ffff }
+        .highlight .ow { color: #6ab825; font-weight: bold }
+        .highlight .w { color: #666666 }
+        .highlight .mb { color: #3677a9 }
+        .highlight .mf { color: #3677a9 }
+        .highlight .mh { color: #3677a9 }
+        .highlight .mi { color: #3677a9 }
+        .highlight .mo { color: #3677a9 }
+        .highlight .sa { color: #ed9d13 }
+        .highlight .sb { color: #ed9d13 }
+        .highlight .sc { color: #ed9d13 }
+        .highlight .dl { color: #ed9d13 }
+        .highlight .sd { color: #ed9d13 }
+        .highlight .s2 { color: #ed9d13 }
+        .highlight .se { color: #ed9d13 }
+        .highlight .sh { color: #ed9d13 }
+        .highlight .si { color: #ed9d13 }
+        .highlight .sx { color: #ffa500 }
+        .highlight .sr { color: #ed9d13 }
+        .highlight .s1 { color: #ed9d13 }
+        .highlight .ss { color: #ed9d13 }
+        .highlight .bp { color: #24909d }
+        .highlight .fm { color: #447fcf }
+        .highlight .vc { color: #40ffff }
+        .highlight .vg { color: #40ffff }
+        .highlight .vi { color: #40ffff }
+        .highlight .vm { color: #40ffff }
+        .highlight .il { color: #3677a9 }
+
+        /* Explicit LIGHT choice pinned -- re-assert the light palette so a light
+           cookie wins on a dark OS. (Age omitted: the --age-* token is NOT
+           overridden to dark under [data-theme="light"] -- the media token block
+           is gated :not([data-theme="light"]) -- so age stays light here too.) */
+        [data-theme="light"] .log-line .log-c0 { color: #c0392b; }
+        [data-theme="light"] .log-line .log-c1 { color: #b9530a; }
+        [data-theme="light"] .log-line .log-c2 { color: #897a00; }
+        [data-theme="light"] .log-line .log-c3 { color: #1f8b4c; }
+        [data-theme="light"] .log-line .log-c4 { color: #0e7c86; }
+        [data-theme="light"] .log-line .log-c5 { color: #2362c0; }
+        [data-theme="light"] .log-line .log-c6 { color: #7d3cc0; }
+        [data-theme="light"] .log-line .log-c7 { color: #b03088; }
+
+        [data-theme="light"] .highlight .hll { background-color: #ffffcc }
+        [data-theme="light"] .highlight  { background: #f0f0f0; }
+        [data-theme="light"] .highlight .c { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .err { border: 1px solid #FF0000 }
+        [data-theme="light"] .highlight .k { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .o { color: #666666 }
+        [data-theme="light"] .highlight .ch { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .cm { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .cp { color: #007020 }
+        [data-theme="light"] .highlight .cpf { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .c1 { color: #60a0b0; font-style: italic }
+        [data-theme="light"] .highlight .cs { color: #60a0b0; background-color: #fff0f0 }
+        [data-theme="light"] .highlight .gd { color: #A00000 }
+        [data-theme="light"] .highlight .ge { font-style: italic }
+        [data-theme="light"] .highlight .gr { color: #FF0000 }
+        [data-theme="light"] .highlight .gh { color: #000080; font-weight: bold }
+        [data-theme="light"] .highlight .gi { color: #00A000 }
+        [data-theme="light"] .highlight .go { color: #888888 }
+        [data-theme="light"] .highlight .gp { color: #c65d09; font-weight: bold }
+        [data-theme="light"] .highlight .gs { font-weight: bold }
+        [data-theme="light"] .highlight .gu { color: #800080; font-weight: bold }
+        [data-theme="light"] .highlight .gt { color: #0044DD }
+        [data-theme="light"] .highlight .kc { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .kd { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .kn { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .kp { color: #007020 }
+        [data-theme="light"] .highlight .kr { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .kt { color: #902000 }
+        [data-theme="light"] .highlight .m { color: #40a070 }
+        [data-theme="light"] .highlight .s { color: #4070a0 }
+        [data-theme="light"] .highlight .na { color: #4070a0 }
+        [data-theme="light"] .highlight .nb { color: #007020 }
+        [data-theme="light"] .highlight .nc { color: #0e84b5; font-weight: bold }
+        [data-theme="light"] .highlight .no { color: #60add5 }
+        [data-theme="light"] .highlight .nd { color: #555555; font-weight: bold }
+        [data-theme="light"] .highlight .ni { color: #d55537; font-weight: bold }
+        [data-theme="light"] .highlight .ne { color: #007020 }
+        [data-theme="light"] .highlight .nf { color: #06287e }
+        [data-theme="light"] .highlight .nl { color: #002070; font-weight: bold }
+        [data-theme="light"] .highlight .nn { color: #0e84b5; font-weight: bold }
+        [data-theme="light"] .highlight .nt { color: #062873; font-weight: bold }
+        [data-theme="light"] .highlight .nv { color: #bb60d5 }
+        [data-theme="light"] .highlight .ow { color: #007020; font-weight: bold }
+        [data-theme="light"] .highlight .w { color: #bbbbbb }
+        [data-theme="light"] .highlight .mb { color: #40a070 }
+        [data-theme="light"] .highlight .mf { color: #40a070 }
+        [data-theme="light"] .highlight .mh { color: #40a070 }
+        [data-theme="light"] .highlight .mi { color: #40a070 }
+        [data-theme="light"] .highlight .mo { color: #40a070 }
+        [data-theme="light"] .highlight .sa { color: #4070a0 }
+        [data-theme="light"] .highlight .sb { color: #4070a0 }
+        [data-theme="light"] .highlight .sc { color: #4070a0 }
+        [data-theme="light"] .highlight .dl { color: #4070a0 }
+        [data-theme="light"] .highlight .sd { color: #4070a0; font-style: italic }
+        [data-theme="light"] .highlight .s2 { color: #4070a0 }
+        [data-theme="light"] .highlight .se { color: #4070a0; font-weight: bold }
+        [data-theme="light"] .highlight .sh { color: #4070a0 }
+        [data-theme="light"] .highlight .si { color: #70a0d0; font-style: italic }
+        [data-theme="light"] .highlight .sx { color: #c65d09 }
+        [data-theme="light"] .highlight .sr { color: #235388 }
+        [data-theme="light"] .highlight .s1 { color: #4070a0 }
+        [data-theme="light"] .highlight .ss { color: #517918 }
+        [data-theme="light"] .highlight .bp { color: #007020 }
+        [data-theme="light"] .highlight .fm { color: #06287e }
+        [data-theme="light"] .highlight .vc { color: #bb60d5 }
+        [data-theme="light"] .highlight .vg { color: #bb60d5 }
+        [data-theme="light"] .highlight .vi { color: #bb60d5 }
+        [data-theme="light"] .highlight .vm { color: #bb60d5 }
+        [data-theme="light"] .highlight .il { color: #40a070 }
+    }
+
+    /* ===========================================================================
+       YAML recolor onto the redesign --tok-* palette (D7). chroma/Pygments stays
+       SERVER-SIDE; only the token COLOURS move here. The base Pygments blocks above
+       (light default + the [data-theme=dark] + prefers-dark overrides) are kept; THIS
+       block lands LAST in @layer theme and repoints just the classes that matter for
+       a k8s manifest at the --tok-* tokens (which already carry the right value per
+       theme, so one token recolor is correct in light / dark / cookieless-either):
+
+         keys   -> nt (Name.Tag)                 -> --tok-key
+         strings-> s2 + the .s* string family    -> --tok-str
+         scalars-> .l (UNQUOTED Literal!)         -> --tok-str   (CRITICAL: most k8s
+                   values -- nginx:1.25, apps/v1, Deployment -- tokenize as Literal->.l;
+                   without this they render uncoloured)
+         numbers-> m + the .m* number family      -> --tok-num
+         bools  -> kc (Keyword.Constant: true/false/null) -> --tok-bool
+         comment-> c + the .c* comment family     -> faint, italic
+
+       Specificity: the dark Pygments rules are prefixed [data-theme="dark"] (0,3,0),
+       so a bare `.highlight .nt` (0,2,0) here would LOSE under an explicit dark
+       choice. We therefore mirror this recolor across the SAME three theme contexts
+       the Pygments blocks use -- a top-level pass (wins for the light default + the
+       prefers-dark cookieless path, both bare-specificity) and a [data-theme="dark"]
+       pass at matching (0,3,0) for the explicit dark choice -- so the token colours
+       win in every theme path. Static manifests are read-only; no inline style. */
+    .highlight .nt { color: var(--tok-key); font-weight: 600; }
+    .highlight .l,
+    .highlight .s, .highlight .s1, .highlight .s2, .highlight .sa, .highlight .sb,
+    .highlight .sc, .highlight .dl, .highlight .sd, .highlight .se, .highlight .sh,
+    .highlight .si, .highlight .sx, .highlight .sr, .highlight .ss { color: var(--tok-str); }
+    .highlight .m, .highlight .mb, .highlight .mf, .highlight .mh, .highlight .mi,
+    .highlight .mo, .highlight .il { color: var(--tok-num); }
+    .highlight .kc { color: var(--tok-bool); font-weight: 600; }
+    .highlight .c, .highlight .ch, .highlight .cm, .highlight .cp, .highlight .cpf,
+    .highlight .c1, .highlight .cs { color: var(--text-faint); font-style: italic; }
+
+    [data-theme="dark"] .highlight .nt { color: var(--tok-key); font-weight: 600; }
+    [data-theme="dark"] .highlight .l,
+    [data-theme="dark"] .highlight .s, [data-theme="dark"] .highlight .s1,
+    [data-theme="dark"] .highlight .s2, [data-theme="dark"] .highlight .sa,
+    [data-theme="dark"] .highlight .sb, [data-theme="dark"] .highlight .sc,
+    [data-theme="dark"] .highlight .dl, [data-theme="dark"] .highlight .sd,
+    [data-theme="dark"] .highlight .se, [data-theme="dark"] .highlight .sh,
+    [data-theme="dark"] .highlight .si, [data-theme="dark"] .highlight .sx,
+    [data-theme="dark"] .highlight .sr, [data-theme="dark"] .highlight .ss { color: var(--tok-str); }
+    [data-theme="dark"] .highlight .m, [data-theme="dark"] .highlight .mb,
+    [data-theme="dark"] .highlight .mf, [data-theme="dark"] .highlight .mh,
+    [data-theme="dark"] .highlight .mi, [data-theme="dark"] .highlight .mo,
+    [data-theme="dark"] .highlight .il { color: var(--tok-num); }
+    [data-theme="dark"] .highlight .kc { color: var(--tok-bool); font-weight: 600; }
+    [data-theme="dark"] .highlight .c, [data-theme="dark"] .highlight .ch,
+    [data-theme="dark"] .highlight .cm, [data-theme="dark"] .highlight .cp,
+    [data-theme="dark"] .highlight .cpf, [data-theme="dark"] .highlight .c1,
+    [data-theme="dark"] .highlight .cs { color: var(--text-faint); font-style: italic; }
+}

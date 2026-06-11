@@ -1,0 +1,248 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Resource-DETAIL header + body. These rules skin the parts no other unit owns:
+       the header (kind badge · mono name · meta · Download-YAML + configured
+       link-outs), labels/annotations chips, owner line, Default/YAML/Logs tabs,
+       body tables (controller Pods subtable + Events) and the global footer. The
+       header stays READ-ONLY: the only actions are Download-YAML and the operator-
+       configured object/label link-outs (the link loop), rendered as quiet
+       `.ro-iconbtn` icon buttons (the single authoritative icon-button skin).
+
+       The legacy detail page <h1> keeps bare `class="title"` (a pinned offline guard
+       matches `<h1 class="title">name` verbatim), so the mono-name treatment is
+       scoped to a title that CONTAINS a kind badge -- i.e. only the detail header,
+       never the list page's plain "Pods" title. */
+    h1.title:has(.ro-kind-badge) {
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 0.625rem;
+        font-family: var(--font-mono);
+        font-size: 1.375rem;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: var(--text);
+    }
+    /* Kind badge: a small uppercase mono pill in the accent-weak wash (matches the
+       sidebar active tint), sitting just after the mono resource name. */
+    .ro-kind-badge {
+        display: inline-flex;
+        align-items: center;
+        height: 1.375rem;
+        padding: 0 0.5rem;
+        border-radius: var(--pill-radius);
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        font-family: var(--font-mono);
+        font-size: 0.625rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        order: -1;            /* badge reads LEFT of the name (markup keeps name first
+                                 so the offline `<h1 class="title">name` pin holds) */
+    }
+    /* Detail-header meta line. (Unit 16: the header link-outs are now plain
+       `.ro-iconbtn` anchors in `.ro-detail-actions` -- the same icon-button skin as
+       the Download button beside them -- so the dead `h1 .links .button.ro-link-out`
+       rules (which required a `.button` inside `h1 .links`, never emitted) and the
+       `ro-link-out` token on the markup were removed. `.ro-iconbtn` is the single
+       authoritative skin.) */
+    h1.title:has(.ro-kind-badge) .meta {
+        font-family: var(--font-ui);
+        color: var(--text-faint);
+        font-size: 0.8125rem;
+    }
+
+    /* Tabs (Default / YAML / Logs) -> a quiet underline tab strip: a hairline
+       baseline, muted labels, the active tab marked by an accent underline + accent
+       text. The <a>s are real navigation links (kept verbatim). */
+    .tabs.ro-detail-tabs {
+        margin-bottom: 1rem;
+        font-size: 0.8125rem;
+    }
+    .tabs.ro-detail-tabs ul {
+        border-bottom: 1px solid var(--border);
+    }
+    .tabs.ro-detail-tabs li a {
+        color: var(--text-muted);
+        border-bottom: 2px solid transparent;
+        padding: 0.5rem 0.75rem;
+    }
+    .tabs.ro-detail-tabs li a:hover {
+        color: var(--text);
+        border-bottom-color: var(--border-strong);
+    }
+    .tabs.ro-detail-tabs li.is-active a {
+        color: var(--accent-text);
+        border-bottom-color: var(--accent);
+    }
+
+    /* Labels / Annotations sections: a quiet uppercase mono caption (matching the
+       sidebar group labels) over a wrapped row of chips. */
+    .ro-section { margin-bottom: 1rem; }
+    .ro-section-label {
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        font-weight: 600;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        margin-bottom: 0.5rem;
+    }
+    .ro-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3125rem;
+        align-items: flex-start;
+    }
+
+    /* Chips. The LABEL chip keeps its selector <a> + the pinned `.tag.is-link`
+       inner span working (the click-to-filter link is load-bearing); we re-skin
+       the tag to a neutral bordered surface token. The ANNOTATION chip is the same
+       skin on a bare `.tag`. */
+    .ro-chip {
+        display: inline-flex;
+        max-width: 21.25rem;
+        flex: 0 0 auto;
+    }
+    .ro-chip .tag,
+    .tag.ro-chip {
+        height: auto;
+        padding: 0.125rem 0.5rem;
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        line-height: 1.5;
+        white-space: nowrap;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: inline-block;
+        transition: border-color .12s, color .12s;
+    }
+    a.ro-chip:hover .tag { border-color: var(--border-strong); color: var(--text); }
+    .ro-chip-trunc { min-width: 0; }
+    /* (D3 colour law) the legacy `.ro-chip.ro-label-app` green accent rules were
+       removed: labels are neutral, key/value differ by ink weight, never hue. */
+
+    /* Owner line: a quiet mono line; the owner links carry the accent text colour,
+       the (Kind) suffix is faint. The owner <a>s are kept verbatim. */
+    .ro-owner {
+        font-family: var(--font-mono);
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+    .ro-owner a { color: var(--accent-text); }
+    .ro-owner .kind { color: var(--text-faint); }
+
+    /* Detail body subtables (controller Pods subtable + Events) -- the
+       pre-redesign `.ro-subtable` skin. NOTE (Unit 16): the migrated detail page
+       (resource_view.templ `subtableC` / `eventsSection`) renders the subtable as a
+       `.ro-table-wrap > .ro-table` (the same redesign table the list uses), NOT
+       `table.table.ro-subtable`, so these `.ro-subtable` rules no longer match the
+       emitted markup. They are LEFT IN PLACE here (out of this unit's teardown
+       scope -- `.ro-subtable` is not in the colliding-family list and is not a
+       net-new retired class), but they are effectively inert. */
+    table.table.ro-subtable {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+        background: var(--surface);
+    }
+    /* the card border already draws the bottom edge -- drop the last row's rule */
+    table.table.ro-subtable tbody tr:last-child td { border-bottom: 0; }
+    /* the Events message column takes the remaining width and ellipsizes */
+    table.table.ro-subtable td.ro-event-msg { width: 100%; color: var(--text-muted); }
+
+    /* Global footer -> a quiet hairline-topped strip on the page surface. The
+       codeberg link keeps the id-colour. */
+    footer.footer.ro-footer {
+        background: var(--bg);
+        border-top: 1px solid var(--border);
+        padding: 1.5rem;
+        color: var(--text-faint);
+        font-size: 0.8125rem;
+    }
+    footer.footer.ro-footer a { color: var(--id-color); }
+    .ro-footer-copy { text-align: center; }
+
+    a.toggle-tools.is-active span {
+        transform: rotate(180deg);
+    }
+    form.tools-form {
+        display: none;
+        margin-bottom: 1rem;
+        padding: 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+    }
+    form.tools-form.is-active { display: block; }
+    form .checkboxes label { margin-right: 0.5rem; padding-top: 0.375em; }
+    .ro-tools-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 0.625rem;
+    }
+    .ro-tools-field {
+        display: grid;
+        grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
+        gap: 0.75rem;
+        align-items: center;
+    }
+    .ro-tools-label {
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+    }
+    .ro-input-wrap {
+        position: relative;
+        display: block;
+        min-width: 0;
+    }
+    .ro-field-icon {
+        position: absolute;
+        left: 0.625rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-faint);
+        pointer-events: none;
+    }
+    .ro-input {
+        width: 100%;
+        height: 2.125rem;
+        padding: 0 0.625rem 0 2rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        color: var(--text);
+        font-family: var(--font-mono);
+        font-size: 0.78125rem;
+        box-shadow: none;
+    }
+    .ro-input::placeholder { color: var(--text-faint); }
+    .ro-input:hover { border-color: var(--border-strong); }
+    .ro-input:focus { border-color: var(--accent); background: var(--surface); }
+    .ro-tools-actions {
+        display: flex;
+        justify-content: flex-end;
+    }
+    @media (max-width: 760px) {
+        .ro-tools-field {
+            grid-template-columns: 1fr;
+            gap: 0.375rem;
+        }
+        .ro-tools-actions { justify-content: stretch; }
+        .ro-tools-actions .ro-btn { width: 100%; justify-content: center; }
+    }
+
+}

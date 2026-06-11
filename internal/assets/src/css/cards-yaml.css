@@ -1,0 +1,331 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Preferences page. The page is `preferences.html`: a single
+       POST /preferences form (the one allowed write, hx-boost="false") with a
+       theme <select> + the accent Save button. The form owns its native controls
+       and card shell directly, using only `.ro-*` classes. ------------------ */
+    .ro-prefs {
+        max-width: 28rem;
+        padding: 1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+    }
+    .ro-form-row { margin-bottom: 1rem; }
+    .ro-label {
+        display: block;
+        margin-bottom: 0.5rem;
+        color: var(--text-muted);
+        font-size: 0.8125rem;
+        font-weight: 600;
+    }
+    .ro-select {
+        width: min(18rem, 100%);
+        height: 2.25rem;
+        appearance: none;
+        padding: 0 2.25rem 0 0.75rem;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text);
+        background-color: var(--surface);
+        background-image:
+            linear-gradient(45deg, transparent 50%, var(--text-faint) 50%),
+            linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
+        background-position:
+            calc(100% - 0.95rem) 50%,
+            calc(100% - 0.65rem) 50%;
+        background-repeat: no-repeat;
+        background-size: 0.3125rem 0.3125rem, 0.3125rem 0.3125rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        box-shadow: none;
+    }
+    .ro-select:hover { border-color: var(--border-strong); }
+    .ro-select:focus {
+        border-color: var(--accent);
+        background-color: var(--surface);
+    }
+    .ro-select:disabled {
+        background-color: var(--surface-2);
+        color: var(--text-faint);
+        opacity: 1;
+    }
+
+    /* (Unit 16) the pre-redesign `.ro-list-table td.ro-cell-url` + the
+       `.ro-list-table td.ro-cell-name a.ro-ext-link` link-out rules were removed:
+       the redesign Clusters table is `.ro-table.ro-select-table` (under `.ro-rd`),
+       styled by the canonical `.ro-rd .ro-cell-url` + `.ro-rd .ro-ext-link` rules
+       below. */
+
+    /* Single-cluster overview header: the label chips + a quiet mono API-URL line
+       sit in a compact meta block under the title. */
+    .ro-cluster-meta { margin-bottom: 1.25rem; }
+    .ro-cluster-meta .ro-chips { margin-bottom: 0.625rem; }
+    .ro-meta-line {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+    }
+    .ro-meta-line .ro-meta-key {
+        color: var(--text-faint);
+        margin-right: 0.375rem;
+    }
+
+    /* (Unit 16) the pre-redesign `.tabs.ro-rt-tabs li ...` rules were removed:
+       resource_types now emits `<div class="ro-tabs ro-rt-tabs">` with bare `<a>`
+       anchors (no `.tabs`, no `<li>`), styled by the redesign `.ro-rd .ro-tabs`
+       chrome; the `.ro-rt-tabs` marker is KEEP-AS-IS but its old `.tabs`/`<li>`
+       rules matched nothing. */
+
+    /* Resource-type row cells: the API GROUP + VERSION read as quiet mono
+       metadata; scope renders as a quiet bordered caption badge (D3 colour law:
+       status dots and green are for health only -- a categorical value like
+       scope gets the `.scope-badge` pattern, with the cluster variant earning
+       an amber-mixed border per the v2 prototype). */
+    .ro-rt-group,
+    .ro-rt-version {
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        color: var(--text-muted);
+    }
+    .scope-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em;
+        padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-faint); }
+    .scope-badge.cluster { color: var(--st-warn); border-color: color-mix(in oklab, var(--st-warn) 35%, var(--border)); }
+
+    /* CRD badge (F-crdbadge): a small info-tinted mono tag after a CUSTOM
+       resource's Kind. The CRD check uses a built-in group ALLOWLIST, NOT a
+       "contains a slash" test -- so apps/v1, batch/v1 and the
+       *.k8s.io groups are NOT badged, while cert-manager.io / argoproj.io /
+       monitoring.coreos.com ARE. Info tint per the v2 prototype (D3 colour law:
+       green is reserved; the CRD marker is categorical). */
+    .ro-crd-badge {
+        flex: 0 0 auto;
+        font-family: var(--font-mono);
+        font-size: 0.5625rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--st-info);
+        background: var(--st-info-bg);
+        padding: 0.0625rem 0.3125rem;
+        border-radius: 3px;
+        margin-left: 0.4375rem;
+        vertical-align: middle;
+    }
+
+    div.section { margin: 0 0 1rem 0; padding: 0; }
+    div.section h4.title { margin-bottom: 1rem; }
+
+    /* Collapsible sections (Pods subtable + Events keep the bare collapsible look):
+       the fold target is the h4.title (readout.js toggles `is-collapsed` on the
+       parent .collapsible and syncs `#collapsed=`). A non-card collapsible keeps a
+       quiet hairline under its mono title with a fold caret on hover; the YAML
+       section cards below override the chrome but reuse the SAME fold mechanism. */
+    div.section.collapsible h4.title {
+        cursor: pointer;
+        font-family: var(--font-mono);
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
+    }
+    div.section.collapsible h4.title:hover { border-bottom-color: var(--border-strong); }
+    div.section.collapsible h4.title::after { content: " \25b4"; color: var(--text-faint); }
+    div.section.is-collapsed h4.title { color: var(--text-muted); }
+    div.section.is-collapsed h4.title::after { content: " \25be"; }
+    div.section.is-collapsed .content,
+    div.section.is-collapsed .ro-card-content,
+    div.section.is-collapsed table { display: none; }
+
+    /* ---------------------------------------------------------------------------
+       Detail Default-tab YAML++ section cards. Each top-level
+       object key (spec, status, ...) renders as a bordered card: a card-head bar
+       (mono title + a quiet per-section "copy" button) over a line-numbered,
+       syntax-highlighted YAML body. The fold is UNCHANGED -- it is still driven by
+       the h4.title click + `#collapsed=` hash sync (readout.js); the card chrome
+       below just re-skins the same .collapsible[data-name] structure. The copy
+       button is a sibling of h4.title (NOT a descendant), so a copy click never
+       matches the fold handler's `closest('.collapsible h4.title')`.
+
+       linenos="table" (now passed for the section cards too, like the YAML tab)
+       emits `div.highlight > table.highlighttable` with the line-number gutter in a
+       SEPARATE `td.linenos` and the code in `td.code`. We neutralise the Pygments
+       block background INSIDE the card so the code sits flush on the card surface
+       (no box-in-box), draw a faint hairline-separated gutter, and let long lines
+       wrap so a 400+ line / CRD object never blows out the card width. */
+    .ro-yaml-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+    }
+    .ro-yaml-card .ro-card-head {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 0.75rem 0.5rem 0.875rem;
+        background: var(--card-head-bg);
+        border-bottom: 1px solid var(--border);
+    }
+    /* the fold target keeps its h4.title role; inside the card it is a flush mono
+       caption with the fold caret moved to the LEFT, and no hairline of its own
+       (the card-head border already separates header from body). */
+    .ro-yaml-card .ro-card-head h4.title {
+        flex: 0 0 auto;
+        margin: 0;
+        font-size: 0.9375rem;
+        font-weight: 600;
+        border-bottom: 0;
+    }
+    /* Suppress the bare-collapsible trailing caret INSIDE a card -- the card draws
+       its own ::before caret on the left. This selector must out-specify
+       `div.section.collapsible h4.title::after` (0,3,3), which a .ro-card-head
+       descendant rule alone (0,3,2) loses to, leaving a stray second caret. */
+    div.section.collapsible.ro-yaml-card .ro-card-head h4.title::after,
+    div.section.collapsible.ro-yaml-card.is-collapsed .ro-card-head h4.title::after { content: ""; }
+    .ro-yaml-card .ro-card-head h4.title::before {
+        content: "\25be";
+        margin-right: 0.4375rem;
+        color: var(--text-faint);
+        font-size: 0.75rem;
+    }
+    .ro-yaml-card.is-collapsed .ro-card-head h4.title::before { content: "\25b8"; }
+    .ro-yaml-card.is-collapsed .ro-card-head { border-bottom: 0; }
+
+    /* Per-section copy button: a quiet token chip (muted icon + mono "copy"
+       label) that warms on hover -- saturation stays reserved for status. The
+       label is swapped to "copied" in JS (textContent), not via CSS content. */
+    .ro-copy-btn {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3125rem;
+        padding: 0.1875rem 0.5rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        line-height: 1.4;
+        cursor: pointer;
+        transition: border-color .12s, color .12s, background .12s;
+    }
+    .ro-copy-btn:hover,
+    .ro-copy-btn:focus {
+        border-color: var(--border-strong);
+        color: var(--text);
+        background: var(--surface-2);
+    }
+    .ro-copy-btn .icon svg.lucide-icon { width: 0.875rem; height: 0.875rem; }
+
+    /* YAML body inside the card: flush on the card surface (kill the Pygments
+       block fill), comfortable padding, small mono type. */
+    .ro-yaml-card .ro-card-content { margin: 0; }
+    .ro-yaml-card .ro-card-content .highlight { background: transparent; margin: 0; }
+    /* Full-manifest YAML tab: the same carded shell as a YAML card, so the gutter
+       rules below (shared via :is) sit inside a bordered surface instead of bare. */
+    .ro-yaml-view { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable {
+        width: 100%;
+        margin: 0;
+        border: 0;
+        background: transparent;
+        border-collapse: collapse;
+        font-size: 0.875rem;
+        line-height: 1.55;
+    }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td { border: 0; padding: 0; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos,
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.code { vertical-align: top; }
+    /* line-number gutter: faint, right-aligned, hairline-separated, NOT selectable
+       (so a drag-select / the copy reads code only). The anchors stay clickable
+       (the .linenos a handler + yaml-line-N highlight are unchanged). */
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos {
+        width: 1px;
+        white-space: nowrap;
+        padding: 0.625rem 0.625rem 0.625rem 0.875rem;
+        border-right: 1px solid var(--border);
+        background: var(--card-head-bg);
+        user-select: none;
+        text-align: right;
+    }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos .linenodiv pre { margin: 0; background: transparent; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos a { color: var(--text-faint); }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.linenos a:hover { color: var(--text); }
+    /* code column: padded, and WRAPS long values so a wide CRD line never forces a
+       horizontal scrollbar / breaks the card layout. */
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.code { width: 100%; padding: 0.625rem 0.875rem; }
+    :is(.ro-yaml-card, .ro-yaml-view) .highlighttable td.code pre {
+        margin: 0;
+        background: transparent;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+
+    /* ---------------------------------------------------------------------------
+       Nested-YAML-block folding. readout.js (buildYamlFolds)
+       injects a quiet caret <button>.ro-fold-toggle into each line that opens a
+       nested block, plus a hidden .ro-fold-note on that line; clicking the
+       toggle adds `ro-line-folded` to the block's deeper-indented child line
+       spans. Presentation only -- the line anchors + raw lines (for copy) are
+       untouched. App layer; no inline style, no forced-priority override. The fold UI works in
+       the section CARDS (Default tab) and the single YAML-tab block alike (both are
+       the same .highlighttable shape), so these rules are NOT card-scoped.
+
+       The toggle is a borderless inline button carrying ONLY a caret (drawn via
+       ::before so it adds no text node -- the copy clone strips the control anyway,
+       but a contentless caret keeps the rendered line text clean too). It points
+       down when expanded, right when folded (matches the section-card caret).
+
+       v2 (D26): the caret is a quiet hover affordance -- invisible (opacity 0,
+       its inline space still reserved so the YAML text never shifts) until the
+       pointer is over its line, the button has keyboard focus, or the block is
+       folded; revealed with the shared opacity transition, like the prototype's
+       gutter-hover chevron. The Pygments structure has no per-line gutter cell
+       (one .linenos column for the whole block), so "gutter hover" maps to the
+       line span the toggle lives in. */
+    .ro-fold-toggle {
+        display: inline;
+        margin: 0 0.3em 0 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text-faint);
+        font: inherit;
+        line-height: inherit;
+        cursor: pointer;
+        vertical-align: baseline;
+        opacity: 0;
+        transition: opacity var(--dur);
+    }
+    .ro-fold-toggle::before { content: "\25be"; }       /* down -- expanded */
+    .ro-fold-toggle.is-folded::before { content: "\25b8"; } /* right -- folded */
+    .highlighttable td.code pre > span:hover > .ro-fold-toggle,
+    .ro-fold-toggle:focus,
+    .ro-fold-toggle.is-folded { opacity: 1; }
+    .ro-fold-toggle:hover,
+    .ro-fold-toggle:focus { color: var(--accent-text); }
+
+    /* The collapsed-block fold-note ("… 24 lines") rides the opener line, shown
+       only when that opener is folded. It is faint + italic so it reads as a
+       meta affordance, not YAML content (v2 prototype .fold-note). Driven off
+       the sibling toggle's is-folded state so it appears in lockstep with the
+       caret. */
+    .ro-fold-note {
+        display: none;
+        color: var(--text-faint);
+        font-style: italic;
+        user-select: none;
+    }
+    .ro-fold-toggle.is-folded ~ .ro-fold-note { display: inline; }
+
+    /* A folded child line is removed from flow (its raw text stays in the DOM for
+       copy; only the rendering is hidden). */
+    .ro-line-folded { display: none; }
+
+}

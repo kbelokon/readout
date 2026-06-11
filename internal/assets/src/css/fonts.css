@@ -1,0 +1,39 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+/* Self-hosted fonts. Geist (UI) + Geist Mono (data), vendored as local
+   variable woff2 next to this file in /assets/fonts/, so the relative URL below
+   resolves SAME-ORIGIN -- no Google Fonts, no CDN at runtime (the CSP is
+   `default-src 'self'` with no font-src, so cross-origin font fetches are
+   blocked). One variable woff2 per family covers the whole weight range
+   (100..900). @font-face rules are global descriptors and intentionally sit
+   OUTSIDE the cascade layers (only @layer/@import may precede them).
+
+   Geist Mono is the DATA face: tabular figures are baked in here
+   (`font-feature-settings: "tnum" 1`) so columns of numbers/ages align by
+   default wherever --font-mono is applied. */
+@font-face {
+    font-family: "Geist";
+    src: url('fonts/Geist-Variable.woff2') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Geist Mono";
+    src: url('fonts/GeistMono-Variable.woff2') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+    font-feature-settings: "tnum" 1;
+}
+
+:root {
+    /* Font tokens, wired onto body/code; both carry a sane fallback
+       stack so text stays readable while the woff2 loads (font-display: swap)
+       or if it ever fails. --font-mono inherits the tabular figures baked into
+       the Geist Mono @font-face above. */
+    --font-ui: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}

@@ -1,0 +1,81 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Phase strip: a thin semantic tally band ABOVE the list table.
+       A PURE INDICATOR -- the chips carry no links (no click-to-filter). Each chip
+       is a reused .ro-status-dot (coloured by its has-text-* class, same palette
+       as the per-row stripes) + a label + a mono count; the right side is the
+       visible-row total. The dot rule itself lives in @layer theme (shared with the
+       Status cell); this rule only owns the band's layout and the mono numerals. */
+    .ro-phase-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.625rem;
+        padding: 0.5rem 0.875rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        font-size: 0.8125rem;
+    }
+    .ro-phase-tally {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.25rem 1rem;
+        min-width: 0;
+    }
+    .ro-phase-chip {
+        display: inline-flex;
+        align-items: baseline;
+        white-space: nowrap;
+        color: var(--text-muted);
+    }
+    .ro-phase-label { color: var(--text-muted); }
+    .ro-phase-count {
+        margin-left: 0.375rem;
+        font-family: var(--font-mono);
+        font-weight: 600;
+        color: var(--text);
+    }
+    .ro-phase-total {
+        flex: 0 0 auto;
+        font-family: var(--font-mono);
+        color: var(--text-faint);
+        white-space: nowrap;
+    }
+    .ro-phase-total .ro-phase-count { margin-left: 0; }
+
+    table.table.has-bottom-controls { margin-bottom: 0.5rem; }
+    .bottom-controls { margin-bottom: 1.5rem; }
+
+    /* ---------------------------------------------------------------------------
+       Clusters list / single-cluster overview / Resource Types.
+       The clusters page is sidebar-less by design (no sidebar_menu in its context,
+       so partials/sidebar.html renders empty -- nothing to add here). These pages
+       reuse the redesign .ro-table look and the .ro-chip;
+       this block adds only the bits unique to them: the title count badge, the one
+       accent action button, the cluster-meta header, and the resource-type
+       group/version/scope cells + the CRD badge. App wins by layer order.
+       --------------------------------------------------------------------------- */
+
+    /* Title count badge ("Clusters 4", "Resource Types 19"): a small quiet mono
+       pill after the page title, reusing the surface-2 chip skin. */
+    h1.title .ro-count {
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        font-weight: 600;
+        vertical-align: middle;
+        margin-left: 0.5rem;
+        padding: 0.125rem 0.4375rem;
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        color: var(--text-faint);
+    }
+
+}

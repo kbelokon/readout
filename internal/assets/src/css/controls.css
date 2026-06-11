@@ -1,0 +1,90 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Type split (the redesign's core move): CALM CHROME / LOUD DATA.
+
+       CHROME is the quiet grotesk (--font-ui): the whole page inherits it from
+       <body>, so nav, sidebar, sidebar labels, titles and prose are grotesk
+       without being named one by one. DATA is the monospace face (--font-mono):
+       identifiers, namespaces, YAML, numbers, ages, kind/label tags and the
+       breadcrumb path are opted INTO mono so columns of identifiers and numerics
+       align (tabular figures are baked into the Geist Mono @font-face, so mono
+       elements get aligned numerals for free). Both vars carry a fallback stack
+       (declared on :root) so text stays readable while the woff2 loads.
+
+       <body> is the page shell: it carries the grotesk UI face AND the theme
+       foundation (page surface + base text colour) from tokens, so the whole
+       app picks up the right palette per theme. The one blue / off-white
+       identifier hue (--id-color) is wired onto links here -- the token comment
+       defines it as "identifiers + links", and it is the only saturated colour
+       in the chrome. Component surfaces (navbar/table/sidebar fills) are later
+       units; this is just the shared root. */
+    body {
+        font-family: var(--font-ui);
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+    }
+    a { color: var(--id-color); text-decoration: none; }
+
+    /* DATA -> mono. Code/pre/highlight (YAML + resource blocks), the breadcrumb
+       path, kind/label tags, and table cells (identifiers + numerics + ages).
+       The breadcrumb is a quiet mono path, so it takes the muted data colour. */
+    code,
+    pre,
+    .highlight,
+    .highlight pre,
+    nav.breadcrumb,
+    .tag,
+    table.table th,
+    table.table td { font-family: var(--font-mono); }
+
+    /* ---------------------------------------------------------------------------
+       Breadcrumb -> quiet mono path. The real cluster / namespace /
+       endpoint links are KEPT (the template still renders them as <a>); this only
+       restyles them into a calm technical path: small mono type, muted links that
+       warm to the accent on hover, faint "/" separators from li+li::before, and
+       the trailing current segment in plain body text. The current crumb is inert,
+       while every ancestor segment stays a working link. */
+    nav.breadcrumb.ro-breadcrumb {
+        font-size: 0.78rem;
+        margin-bottom: 0.85rem;
+    }
+    nav.breadcrumb.ro-breadcrumb a {
+        color: var(--text-muted);
+        padding: 0 0.4em;
+    }
+    nav.breadcrumb.ro-breadcrumb a:hover { color: var(--accent-text); }
+    nav.breadcrumb.ro-breadcrumb li.is-active a { color: var(--text); }
+    nav.breadcrumb.ro-breadcrumb li + li::before {
+        color: var(--text-faint);
+        opacity: 0.5;
+    }
+
+    /* App-shell view transitions. With globalViewTransitions on, an
+       hx-boost navigation crossfades the whole page via the default `root`
+       snapshot -- which snapshots the navbar + sidebar too, so a transition that
+       does not settle cleanly (e.g. a slow cluster-API page render) can leave a
+       ghost of the previous sidebar beside the new page until the next
+       transition clears it. Giving the persistent shell elements their own
+       view-transition-name takes them OUT of the root snapshot: the browser
+       matches them across the swap by name and holds them continuous (no
+       crossfade, no ghost), so only <main> animates -- the cleaner, SPA-like
+       result. Each name must be unique and appear at most once in the DOM. */
+    nav.navbar { view-transition-name: ro-navbar; }
+    aside.menu { view-transition-name: ro-sidebar; }
+
+    /* Inline-SVG icons (Lucide) emitted by the partials/icons.html `icon()` macro.
+       The SVGs carry no width/height of their own, so they size to the owned
+       `.icon` span here; stroke="currentColor" makes them follow the surrounding
+       (theme-aware) text colour. Replaces the FontAwesome-JS runtime. */
+    .icon svg.lucide-icon {
+        width: 1.25em;
+        height: 1.25em;
+        vertical-align: middle;
+    }
+
+}
