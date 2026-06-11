@@ -69,16 +69,20 @@ e2e-docker: e2e-docker-preflight e2e-docker-binaries
 
 ## e2e-visual: run the SPEC §9 visual baselines (the `visual` project) on the HOST -- compares against committed PNGs
 # Host-only, single-machine contract: the baselines are the developer machine's
-# own Chromium render, so a strict (zero-tolerance) compare is honest on that one
-# machine. Chromium glyph rasterization is NOT deterministic across machines (nor
-# under Rosetta emulation), so these PNGs are not portable -- regenerate them with
+# own Chromium render, so a near-strict compare is honest on that one machine.
+# Chromium glyph rasterization is NOT deterministic across machines (nor under
+# Rosetta emulation), so these PNGs are not portable -- regenerate them with
 # `make e2e-visual-update` whenever the dev mac or its macOS version changes. CI
-# does NOT run the visual grid. The tolerance env mechanism survives in
-# playwright.config.ts (default 0); set RO_VISUAL_MAXDIFF only if a measured
-# same-machine noise floor demands it.
+# does NOT run the visual grid.
+#
+# RO_VISUAL_MAXDIFF=180 is the MEASURED same-machine glyph-edge noise floor: the
+# clean frames peaked at 57 differing pixels across repeated strict runs, x3 for
+# margin. The wall-of-text logs frames (which flipped 0<->~14k px) are masked in
+# the spec instead, so no _DENSE budget is needed here -- the env mechanism still
+# lives in playwright.config.ts (default 0) as an escape hatch.
 e2e-visual: e2e-deps
 	go build -o readout ./cmd/readout
-	cd tests/e2e && READOUT_BIN=$(CURDIR)/readout RO_VISUAL=1 npx playwright test --project=visual
+	cd tests/e2e && READOUT_BIN=$(CURDIR)/readout RO_VISUAL=1 RO_VISUAL_MAXDIFF=180 npx playwright test --project=visual
 
 ## e2e-visual-update: REGENERATE the visual baselines on the HOST (commit the result)
 # Generation mode (--update-snapshots): writes the PNGs and reports pass

@@ -176,7 +176,16 @@ for (const theme of THEMES) {
     await page.goto(LOGS);
     await expect(page.locator('pre.ro-logpre')).toBeVisible();
     await expect(page.locator('.ro-logpre .log-line').first()).toBeVisible();
-    await snap(page, 'desktop', theme, 'logs');
+    // MASK (host nondeterminism): the log body is a wall of monospace text, and
+    // Chromium re-rasterizes that block with sub-pixel glyph-edge shifts between
+    // browser-process launches even on one machine — the frame flips between 0
+    // and ~14k differing pixels run to run, which no honest tolerance can cover
+    // (a budget that wide would blind the frame to a real regression). The log
+    // CONTENT is asserted by the behavioural logs specs; here we gate the page
+    // chrome (topbar, tabs, log toolbar, layout) pixel-exact and mask the text.
+    await snap(page, 'desktop', theme, 'logs', {
+      mask: [page.locator('pre.ro-logpre')],
+    });
   });
 
   test(`search results — ${theme}`, async ({ page }) => {
