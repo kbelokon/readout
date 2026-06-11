@@ -1,0 +1,173 @@
+package templates
+
+// table-chrome.templ holds the engine ENTRY POINT and the per-table chrome: the
+// title row (count chip + TSV / columns / search-this actions), the tools / cols
+// / filter mounts (rendered by table-tools.templ), the phase strip, the
+// `.ro-table` head + body (cells rendered by table-cells.templ), the mobile card
+// projection (table-cards.templ), then the footer meta line and the all-cluster
+// partial-failure banner. The data contracts live in table-data.go.
+
+// ResourceTable renders the full table fragment (one block per table + the
+// footer + the partial-failure banner). This is what the `_table` partial
+// returns and what the full list page wraps in #resource-list-content.
+templ ResourceTable(d ListData) {
+	if d.State.Kind != "" {
+		@listStateBlock(d.State)
+	} else {
+		@resourceTables(d)
+	}
+}
+
+// resourceTables renders the per-table blocks + footer + the all-cluster
+// partial-failure banner (the happy/partial path; the whole-list forbidden/
+// unreachable STATE short-circuits this in ResourceTable above).
+templ resourceTables(d ListData) {
+	for i, table := range d.Tables {
+		<div class="ro-title-row">
+			<h1 class="title ro-title">{ table.Kind }</h1> <span class="ro-count">{ itoa(table.Count) }</span> <span style="flex:1"></span>
+			<div class="ro-title-actions">
+				// hx-boost="false": the body-level boost intercepts a plain
+				// anchor click and swaps the response into <body> -- for an
+				// attachment URL that pastes the raw TSV bytes over the page
+				// instead of downloading (htmx 2.0.4, verified live). Every
+				// download-serving anchor must opt out.
+				<a href={ templ.SafeURL(table.DownloadTSVHref) } hx-boost="false" title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
+				if table.Cols != nil {
+					<span class="rel">
+						<button type="button" id="ro-cols-btn" class="ro-iconbtn" data-ro-cols-toggle title="Columns" aria-haspopup="true" aria-expanded="false"><span class="icon">@templ.Raw(table.Cols.Icon)</span></button>
+						@colsPopover(*table.Cols)
+					</span>
+				} else {
+					<a href="#" class="ro-iconbtn toggle-tools" data-ro-action="toggle-tools" title="Columns &amp; filters" data-target={ toolsTableID(i) }><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
+				}
+				<a href={ templ.SafeURL(table.SearchHref) } class="ro-iconbtn" title="Search this type"><span class="icon">@templ.Raw(table.SearchIcon)</span></a>
+			</div>
+		</div>
+		if table.Cols == nil {
+			@toolsForm(table.Tools, i)
+		}
+		if i == 0 && d.FilterBar != nil {
+			@filterBar(*d.FilterBar)
+		}
+		if table.ShowMetricsHref != "" {
+			<div class="section"><a href={ templ.SafeURL(table.ShowMetricsHref) }>Show CPU/Memory Usage</a></div>
+		}
+		if len(table.Phase) > 0 {
+			<div class="ro-phase-strip"><div class="ro-phase-tally">
+				for _, chip := range table.Phase {
+					<span class="ro-phase-chip"><span class={ dotClass(chip.Tone) } aria-hidden="true"></span><span class="ro-phase-label">{ chip.Label }</span> <span class="ro-phase-count">{ chip.Count }</span></span>{ " " }
+				}
+				</div><div class="ro-phase-total"><span class="ro-phase-count">{ itoa(table.PhaseRows) }</span>{ " object" }{ pluralSuffix(table.PhaseRows) }{ " · " }{ formatSeconds(d.DurationSeconds) }{ "s" }</div></div>
+		}
+		// The wrap is keyboard-reachable (tabindex) -- required for a scrollable
+		// region anyway -- and carries role="group", which supports the JS-managed
+		// aria-activedescendant that mirrors the j/k row focus (D23/SPEC §8.6:
+		// "j/k focus moves aria-activedescendant"). readout.js writes/clears the
+		// attribute from the identity-keyed focus store after every morph.
+		// Above the windowing threshold the wrap carries `ro-windowed` instead
+		// of `has-cards` (Unit 24/D20): the virtualizer engages off it, the
+		// fixed-height clamp CSS keys off it, and <760px keeps the table
+		// visible because the card projection below is suppressed.
+		<div class={ tableWrapClass(tableWindowed(&table)) } role="group" tabindex="0" aria-label={ table.Kind }><table class="ro-table"><thead><tr>
+			if table.MultiCluster {
+				<th>Cluster</th>
+			}
+			if d.IsAllNamespaces {
+				<th>Namespace</th>
+			}
+			for _, col := range table.Columns {
+				<th
+					title={ col.Description }
+					class={ thClass(col.Class, col.Sorted) }
+					if col.Hint != "" {
+						data-hint={ col.Hint }
+					}
+					if col.Sorted {
+						aria-sort={ ariaSort(col.SortIcon) }
+					}
+				><a
+					href={ templ.SafeURL(col.SortHref) }
+					if col.PartialHref != "" {
+						hx-get={ col.PartialHref }
+						hx-target="#resource-list-content"
+						hx-swap="morph"
+					}
+				>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
+			}
+			if !table.HideCreated {
+				<th
+					class={ thClass("", table.CreatedSorted) }
+					if table.CreatedSorted {
+						aria-sort={ ariaSort(table.CreatedIcon) }
+					}
+				><a
+					href={ templ.SafeURL(table.CreatedHref) }
+					if table.CreatedPartialHref != "" {
+						hx-get={ table.CreatedPartialHref }
+						hx-target="#resource-list-content"
+						hx-swap="morph"
+					}
+				>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
+			}
+			</tr></thead><tbody>
+			for _, row := range table.Rows {
+				<tr
+					class={ rowClass(row.StatusClass) }
+					if row.Key != "" {
+						id={ row.DomID }
+						data-key={ row.Key }
+						data-name={ row.Name }
+						data-href={ row.OpenHref }
+						data-yaml={ row.YAMLHref }
+						data-download={ row.DownloadHref }
+					}
+					if row.LogsHref != "" {
+						data-logs={ row.LogsHref }
+					}
+				>
+					if table.MultiCluster {
+						<td class="cell-clu"><a href={ templ.SafeURL(row.ClusterHref) }>{ row.Cluster }</a></td>
+					}
+					if d.IsAllNamespaces {
+						<td class="cell-ns"><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></td>
+					}
+					for _, cell := range row.Cells {
+						@tableCell(cell, tableWindowed(&table))
+					}
+					if !table.HideCreated {
+						<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</td>
+					}
+					</tr>
+			}
+			if len(table.Rows) == 0 {
+				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces, table.HideCreated)) }>
+					if len(table.EmptyFilters) > 0 {
+						@emptyFiltered(d, table)
+					} else {
+						@emptyPlain(d, table)
+					}
+					</td></tr>
+			}
+			</tbody></table></div>
+		// Card suppression above the windowing threshold (Unit 24/D20): the
+		// server-rendered mobile projection would ride EVERY morph as 600
+		// hidden .ro-pcard subtrees. Below the threshold the card layer is
+		// unchanged (D22).
+		if !tableWindowed(&table) {
+			@cardList(d, table)
+		}
+	}
+	<div class="ro-table-meta">
+		if d.AllNamespacesHref != "" {
+			<a href={ templ.SafeURL(d.AllNamespacesHref) }>{ "Show " + d.Plural + " across all namespaces" }</a>
+		}
+		<span class="ro-foundline">{ foundLine(d.TotalRows, d.TableCount, d.ClusterCount, d.DurationSeconds) }</span>
+		</div>
+	if len(d.Errors) > 0 {
+		<div class="ro-banner warn" role="alert"><span class="bn-ico ico sm">@templ.Raw(warnIcon())</span><div class="bn-body"><p class="bn-title ro-partial-note">{ "Partial results: " + itoa(len(d.Errors)) + " failed" }</p>
+			for _, errMsg := range d.Errors {
+				<p class="bn-text"><span class="mono">{ errMsg }</span></p>
+			}
+			</div></div>
+	}
+}

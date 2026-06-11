@@ -1,0 +1,210 @@
+package templates
+
+// table-cards.templ holds the MOBILE card projection of the resource table: the
+// `.ro-cardlist` of `.ro-pcard` (cardList / pcard), the loud identifier +
+// status pill (pcardName / pcardStatus), and the per-column meta value render
+// (pcardCell, mirroring tableCell's branches without the <td> wrapper). It rides
+// the SAME row data the table body does; base.css shows it below 760px.
+
+// cardList renders the MOBILE projection of the SAME table rows (D11/D13): a
+// `.ro-cardlist` of `.ro-pcard`, one card per `table.Rows` entry, carrying the
+// IDENTICAL row data the `.ro-table` above does. base.css's @media (max-width:
+// 760px) hides `.ro-table-wrap.has-cards` and shows `.ro-cardlist`, so below
+// 760px the user sees stacked cards instead of a horizontally-scrolling table.
+// It rides inside the same `.ro-rd` content marker the table does (added on the
+// list shell), so the bare card classes resolve to the redesign CSS. An empty
+// table emits no cards (the table's own empty-state row already covers it).
+templ cardList(d ListData, table TableData) {
+	<div class="ro-cardlist">
+		for _, row := range table.Rows {
+			@pcard(d, table, row)
+		}
+		</div>
+}
+
+// pcard renders one resource as a mobile card: the `.pc-top` carries the loud
+// identifier (`.pc-name`, the same head/tail split as the sticky table cell) and
+// the status pill (`.pc-status`, the same `.ro-dot` tone + pulse the table emits);
+// every OTHER column becomes a `.pc-meta` key/value row (`.m` > `.k` column-name +
+// the cell's value rendered in the same rich vocabulary). The leading Cluster /
+// Namespace columns and the trailing Created column join the meta rows so the card
+// surfaces the full row, not just the per-kind cells.
+templ pcard(d ListData, table TableData, row TableRow) {
+	<div class="ro-pcard">
+		<div class="pc-top">@pcardName(row)@pcardStatus(row)</div>
+		<div class="pc-meta">
+			if table.MultiCluster {
+				<span class="m"><span class="k">cluster</span><a href={ templ.SafeURL(row.ClusterHref) }>{ row.Cluster }</a></span>
+			}
+			if d.IsAllNamespaces {
+				<span class="m"><span class="k">namespace</span><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></span>
+			}
+			for ci, cell := range row.Cells {
+				if cell.Kind != CellName && cell.Kind != CellStatus {
+					<span class="m"><span class="k">{ metaKey(&table, ci) }</span>@pcardCell(cell)</span>
+				}
+			}
+			if !table.HideCreated && row.CreatedText != "" {
+				<span class="m"><span class="k">created</span><span class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</span></span>
+			}
+			</div>
+		</div>
+}
+
+// pcardName renders the card's loud identifier from the row's name cell: the same
+// pn-head/pn-tail split (full name preserved) the sticky table cell uses, wrapped
+// in `.pc-name`. Falls back to the first cell's value if no Name cell is present
+// (a kind whose Table API has no name column -- the generic engine still lists it).
+templ pcardName(row TableRow) {
+	<span class="pc-name">
+		if cell, ok := nameCell(&row); ok {
+			<a
+				href={ templ.SafeURL(cell.Href) }
+				if cell.Title != "" {
+					title={ cell.Title }
+				}
+			>
+				if cell.NameTail != "" {
+					<span class="pn-head">{ cell.NameHead }</span><span class="pn-tail">{ cell.NameTail }</span>
+				} else if cell.Title != "" {
+					<span class="pn-head">{ cell.NameHead }</span>
+				} else {
+					{ cell.Value }
+				}
+				</a>
+		} else if len(row.Cells) > 0 {
+			{ row.Cells[0].Value }
+		}
+		</span>
+}
+
+// pcardStatus renders the card's status pill from the row's status cell (the same
+// `.ro-dot` tone + pulse the table status cell emits, inside `.pc-status` with the
+// tone modifier). Renders nothing when the kind has no status column.
+templ pcardStatus(row TableRow) {
+	if cell, ok := statusCell(&row); ok {
+		<span class={ pcStatusClass(cell.Tone) }><span class={ dotClass2(cell.Tone, cell.Pulse) } aria-hidden="true"></span>{ cell.Value }</span>
+	}
+}
+
+// pcardCell renders the VALUE of a meta cell inside a card `.m` row, reusing the
+// exact rich-cell vocabulary the table body uses (so a 2/3 ratio is `.ready.partial`,
+// a restarted count is `.restarts.some` + `.ago`, an age is `.age-*`, a capacity
+// bar is `.cap`, etc.) -- the card is the SAME data, only re-laid-out. It mirrors
+// tableCell's per-kind branches without the `<td>` wrapper.
+templ pcardCell(cell TableCell) {
+	switch cell.Kind {
+		case CellReady:
+			<span class={ readyClassRD(cell.Ratio) }>{ cell.Value }</span>
+		case CellRestarts:
+			<span class={ restartsClassRD(cell.Tone) }>{ cell.Value }</span>
+			if cell.Ago != "" {
+				{ " " }<span class="ago">{ cell.Ago }</span>
+			}
+		case CellNode:
+			<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
+		case CellLabel:
+			<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
+		case CellCapacity:
+			if cell.CapBar {
+				<span class={ capClass(cell.CapBucket) }><span class="cap-bar"><i style={ capWidth(cell.CapPct) }></i></span><span class="cap-val">{ cell.Value }</span></span>
+			} else {
+				<span class="cap-val">{ cell.Value }</span>
+			}
+		case CellRoles:
+			if len(cell.Roles) == 0 {
+				<span class="faint">—</span>
+			} else {
+				<span class="ro-roles">
+					for _, role := range cell.Roles {
+						<span class={ roleClass(role) }>{ role }</span>{ " " }
+					}
+				</span>
+			}
+		case CellConditions:
+			if len(cell.Conds) == 0 {
+				<span class="faint">—</span>
+			} else {
+				<span class="ro-cond-pills">
+					for _, cond := range cell.Conds {
+						<span class={ condPillClass(cond.Tone) }><span class={ dotClass(cond.Tone) } aria-hidden="true"></span><span class="ro-cond-name">{ cond.Name }</span></span>{ " " }
+					}
+				</span>
+			}
+		case CellReplicas:
+			<span class="rep"><span class="rep-track">
+				for _, seg := range cell.RepSegments {
+					<i class={ seg.State }></i>
+				}
+				</span><span class={ repNumClass(cell.Ratio) }>{ cell.RepNum }</span></span>
+		case CellRollout:
+			<span class={ rolloutClass(cell.RolloutState) }><span class="ico sm">@templ.Raw(cell.RolloutIcon)</span>{ cell.Value }</span>
+		case CellChips:
+			if len(cell.Chips) == 0 {
+				<span class="faint">—</span>
+			} else {
+				// cards exist only below the windowing threshold, so the
+				// in-cell expand machinery always applies here
+				@chipsStrip(cell.Chips, false)
+			}
+		case CellPending:
+			if cell.Pulse {
+				<span class={ cellStatusClass(cell.Tone) }><span class={ dotClass2(cell.Tone, cell.Pulse) } aria-hidden="true"></span>{ cell.Value }</span>
+			} else if cell.Value == "" {
+				<span class="faint">{ "<none>" }</span>
+			} else {
+				{ cell.Value }
+			}
+		case CellPorts, CellHosts:
+			if cell.Value == "" {
+				<span class="faint">—</span>
+			} else {
+				{ cell.Value }
+				if cell.More != "" {
+					{ " " }<span class="faint" title={ cell.Title }>{ cell.More }</span>
+				}
+			}
+		case CellTLS:
+			if cell.Value != "" {
+				<span class="cell-status ok" title="TLS terminated"><span class="ico sm">@templ.Raw(cell.CellIcon)</span>{ cell.Value }</span>
+			} else {
+				<span class="faint">—</span>
+			}
+		case CellLastRun:
+			if cell.Value == "" {
+				<span class="faint">{ "<never>" }</span>
+			} else {
+				<span class={ cell.Class }>{ cell.Value }</span>
+			}
+		case CellKeys:
+			if len(cell.Keys) == 0 {
+				<span class="faint">—</span>
+			} else {
+				@keysChips(cell.Keys, false)
+			}
+		case CellCount:
+			<span class={ cell.Class }>{ "×" + cell.Value }</span>
+		case CellEvObj:
+			<span
+				class="res-kind"
+				if cell.Title != "" {
+					title={ cell.Title }
+				}
+			>@templ.Raw(cell.CellIcon)<span class="faint">{ cell.EvKind + "/" }</span>{ cell.EvName }</span>
+		case CellEvAge:
+			<span class={ cell.Class }>{ cell.Value }</span>
+			if cell.EvAgeRest != "" {
+				{ " " }<span class="faint evage-rest">{ cell.EvAgeRest }</span>
+			}
+		case CellMsg:
+			<span class="ro-event-msg">{ cell.Value }</span>
+		case CellMemory:
+			{ cell.Value + " MiB" }
+		default:
+			if vc := pcardValueClass(&cell); vc != "" {
+				<span class={ vc } title={ cell.Title }>{ cell.Value }</span>
+			} else {
+				{ cell.Value }
+			}
+	}
+}
