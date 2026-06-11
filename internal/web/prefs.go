@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -108,10 +109,20 @@ func encodePrefs(p prefs) string {
 	for {
 		clone := p
 		clone.Kinds = kinds
-		raw, err := json.Marshal(&clone)
-		if err != nil {
+		// HTML escaping is DISABLED below: json.Marshal escapes < > & to
+		// the < > & forms, but JS JSON.stringify (the writer this
+		// mirrors) leaves them literal -- escaping would diverge the two codecs
+		// byte-for-byte on CRD column names carrying those characters. No
+		// escaping is needed: the JSON is wrapped in base64url and never reaches
+		// an HTML context. The Encoder appends a trailing newline that the wire
+		// format excludes, so trim it before base64-encoding.
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(&clone); err != nil {
 			return "" // unreachable for this plain struct; degrade to no cookie
 		}
+		raw := bytes.TrimRight(buf.Bytes(), "\n")
 		value := prefsVersionPrefix + base64.RawURLEncoding.EncodeToString(raw)
 		if len(value) <= prefsMaxEncoded || len(kinds) == 0 {
 			return value
