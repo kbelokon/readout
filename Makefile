@@ -70,6 +70,14 @@ e2e-docker:
 			echo "ERROR: PLAYWRIGHT_IMAGE pins v$$image_tag but tests/e2e/package.json wants @playwright/test $$pkg_ver -- bump them together."; \
 			exit 1; \
 		fi
+	# Emulated (Rosetta) Chromium OOMs below ~6 GiB; a 2 GiB VM gets SIGKILLed
+	# (exit 137) at browser launch. Fail early with a fixable message instead.
+	@mem=$$(docker info --format '{{.MemTotal}}'); \
+		min=6442450944; \
+		if [ "$$mem" -lt "$$min" ]; then \
+			echo "ERROR: Docker VM has $$mem bytes; raise your Docker VM memory to >=6 GB (emulated Chromium OOMs below that)."; \
+			exit 1; \
+		fi
 	# The Playwright image has no Go toolchain, so cross-compile the readout and
 	# harness binaries on the host (CGO_ENABLED=0 -> static linux/amd64) and mount
 	# them in. HARNESS_BIN/READOUT_BIN point the harness at the prebuilt binaries.
