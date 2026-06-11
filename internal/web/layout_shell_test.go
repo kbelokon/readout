@@ -54,8 +54,14 @@ func TestShellTopbarChrome(t *testing.T) {
 	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
 		t.Fatalf("refresh-option data-interval set = %v, want [0 5 10 30 60 Live]", got)
 	}
-	p.wantHas(".tb-group .tb-btn.refresh-live")
-	p.wantHas(".tb-group .tb-btn.refresh-live .ro-livedot")
+	p.wantHas(".tb-group .tb-btn.refresh-trigger")
+	p.wantHas(".tb-group .tb-btn.refresh-trigger .ro-livedot")
+	// The livedot's live state has exactly ONE owner: `refresh-on` on
+	// #refresh-dropdown (SSR refreshDropdownClass + JS syncRefreshUI). The old
+	// static `refresh-live` class painted the dot brand-green even at Off -- a
+	// false live-health signal (colour law §1.1, the ctx-dot.none precedent) --
+	// so it must never come back.
+	p.wantAbsent(".refresh-live")
 	p.wantHas("#refresh-label")
 
 	// Theme toggle stays a server POST /preferences that opts OUT of hx-boost (D5).

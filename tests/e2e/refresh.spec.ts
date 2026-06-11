@@ -17,7 +17,9 @@ import { controlURL } from './playwright.config';
 //   - the interval choice persists via the ro_prefs cookie (asserted on the
 //     NEW 10s option that replaced 15s, D18);
 //   - the topbar livedot pulses while any non-Off interval is active and is
-//     static at Off (SPEC §6.1 "pulsing brand dot when live").
+//     static GHOST-GREY at Off (SPEC §6.1 "pulsing brand dot when live" +
+//     colour law §1.1: brand-green is a live-health signal, so a dot that
+//     stays green at Off is a false signal — prototype chrome.css:110-111).
 
 const PODS = '/clusters/e2e/namespaces/default/pods';
 const PODS_LIST_PATH = '/api/v1/namespaces/default/pods';
@@ -63,6 +65,20 @@ function rowNames(page: Page) {
 async function pickInterval(page: Page, secs: number): Promise<void> {
   await page.locator('#refresh-dropdown').hover();
   await page.locator(`.refresh-option[data-interval="${secs}"]`).click();
+}
+
+// Resolve a CSS custom property to the computed rgb() serialization toHaveCSS
+// compares against (the raw token is a hex literal; themes differ, so the
+// expected colour is read from the page itself, never hardcoded).
+function resolvedToken(page: Page, token: string): Promise<string> {
+  return page.evaluate((t) => {
+    const probe = document.createElement('span');
+    probe.style.color = `var(${t})`;
+    document.body.appendChild(probe);
+    const rgb = getComputedStyle(probe).color;
+    probe.remove();
+    return rgb;
+  }, token);
 }
 
 test.beforeEach(async ({}, testInfo) => {
@@ -189,15 +205,29 @@ test('the interval choice (the new 10s option) survives reload via the prefs coo
   await expect(page.locator('.refresh-option[data-interval="10"]')).toHaveClass(/is-active/);
 });
 
-test('the livedot pulses while an interval is active and is static at Off', async ({ page }) => {
+test('the livedot pulses brand while an interval is active and is static ghost at Off', async ({
+  page,
+}) => {
   await page.goto(PODS);
   const dot = page.locator('#refresh-dropdown .ro-livedot');
-  // Off (the default): a static brand dot -- no pulse (SPEC §6.1).
-  await expect(dot).toHaveCSS('animation-name', 'none');
+  const ghost = await resolvedToken(page, '--text-ghost');
+  const brand = await resolvedToken(page, '--brand');
+  expect(ghost).not.toBe(brand); // the colour assertions below must be able to tell them apart
 
+  // Off (the default): a static GHOST dot -- no pulse AND no brand green
+  // (colour law §1.1: green means live health; a green dot at Off is a false
+  // signal -- the prototype defaults the dot to --text-ghost, chrome.css:110).
+  await expect(dot).toHaveCSS('animation-name', 'none');
+  await expect(dot).toHaveCSS('background-color', ghost);
+
+  // An active interval: brand colour + the pulse, both under the one
+  // refresh-on state owner (SSR refreshDropdownClass / JS syncRefreshUI).
   await pickInterval(page, 5);
   await expect(dot).toHaveCSS('animation-name', 'ro-pulse');
+  await expect(dot).toHaveCSS('background-color', brand);
 
+  // Back to Off: the dot drops the pulse AND the green.
   await pickInterval(page, 0);
   await expect(dot).toHaveCSS('animation-name', 'none');
+  await expect(dot).toHaveCSS('background-color', ghost);
 });

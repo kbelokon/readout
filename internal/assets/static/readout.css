@@ -1926,14 +1926,16 @@
     .tb-btn .ico { display: inline-flex; }
     /* (the live `.refresh-label` size is owned by the existing app rule above; the
        redesign bar reuses it -- no duplicate here to keep this additive.) */
-    .refresh-live .ro-livedot { width: 6px; height: 6px; border-radius: 50%;
-        background: var(--brand); box-shadow: 0 0 0 0 var(--brand); }
-    /* SPEC §6.1: the dot PULSES only while a refresh mode is active ("pulsing
-       brand dot when live" -- any non-Off interval today; Unit 27's Live joins
-       through the same refresh-on hook). Off keeps the static dot. refresh-on
-       is rendered at SSR (refreshDropdownClass) and toggled by syncRefreshUI
-       on an interval pick. */
-    #refresh-dropdown.refresh-on .ro-livedot { animation: ro-pulse 1.8s ease-out infinite; }
+    .ro-livedot { width: 6px; height: 6px; border-radius: 50%;
+        background: var(--text-ghost); flex: none; }
+    /* SPEC §6.1 + colour law §1.1: the dot is GHOST-GREY by default and turns
+       brand + PULSES only while a refresh mode is active ("pulsing brand dot
+       when live" -- any non-Off interval today; Unit 27's Live joins through
+       the same refresh-on hook). Green is a live-health signal, so Off keeps
+       the grey dot (prototype chrome.css:110-111; the ctx-dot.none precedent).
+       refresh-on is the ONE state owner: rendered at SSR (refreshDropdownClass)
+       and toggled by syncRefreshUI on an interval pick. */
+    #refresh-dropdown.refresh-on .ro-livedot { background: var(--brand); animation: ro-pulse 1.8s ease-out infinite; }
     @keyframes ro-pulse {
         0% { box-shadow: 0 0 0 0 rgba(86,224,188,.5); }
         70% { box-shadow: 0 0 0 6px rgba(86,224,188,0); }
@@ -3126,7 +3128,8 @@
        sweeping / pulsing motion is dropped. */
     @media (prefers-reduced-motion: reduce) {
         /* Matches the active-state pulse selector above (the id-weighted rule
-           would out-rank a bare .refresh-live override). */
+           would out-rank a bare .ro-livedot override). Only the motion drops:
+           the brand colour keeps carrying the live signal. */
         #refresh-dropdown.refresh-on .ro-livedot { animation: none; }
         .ro-dot.pulse { animation: none; }
         .rep .rep-track i.updating { animation: none; }

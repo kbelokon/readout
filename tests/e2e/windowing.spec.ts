@@ -328,6 +328,28 @@ test.describe('windowing (desktop)', () => {
     await expect(smallMsg).not.toHaveAttribute('title');
   });
 
+  test('a transient (Pending) status dot pulses; a settled Running dot is static', async ({
+    page,
+  }) => {
+    await page.goto(BIG_PODS);
+    // big-pod-0007 is Pending (the fixture makes every 7th pod Pending);
+    // big-pod-0001 is Running. Both sit inside the initial window.
+    await expect(podRow(page, 7)).toBeVisible();
+
+    // Law §1.3: a transient status (Pending) animates its dot -- the
+    // ro-dot-pulse keyframes resolve on the COMPUTED style, not a class proxy
+    // (the refresh.spec.ts livedot pattern).
+    await expect(podRow(page, 7).locator('.cell-status .ro-dot')).toHaveCSS(
+      'animation-name',
+      'ro-dot-pulse'
+    );
+    // A settled status (Running) keeps a static dot.
+    await expect(podRow(page, 1).locator('.cell-status .ro-dot')).toHaveCSS(
+      'animation-name',
+      'none'
+    );
+  });
+
   test('free text matches a name currently OUTSIDE the rendered window', async ({ page }) => {
     await page.goto(BIG_PODS);
     await expect(podRow(page, 1)).toBeVisible();
