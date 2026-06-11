@@ -385,7 +385,7 @@ func (s *Server) paletteKindEntry(cluster, namespace string, rt *kube.ResourceTy
 		href = fmt.Sprintf("/clusters/%s/%s", url.PathEscape(cluster), url.PathEscape(rt.Plural))
 	}
 	override := s.cfg.ResourceIcons[config.ResourceIconKey{Kind: rt.Kind, Group: rt.Group}]
-	kindLabel := pluralizeKind(rt.Kind)
+	kindLabel := pluralizeKind(rt.Kind, rt.Plural)
 	return paletteKindFeed{
 		Kind:       kindLabel,
 		Plural:     rt.Plural,

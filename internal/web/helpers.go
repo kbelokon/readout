@@ -608,7 +608,14 @@ func capitalizeWord(value string) string {
 	return strings.ToUpper(value[:1]) + strings.ToLower(value[1:])
 }
 
-func pluralizeKind(kind string) string {
+// pluralizeKind renders a Kind as its display plural. A kind that IS its own
+// plural -- the API plural is just the lowercased kind, e.g. Endpoints/
+// endpoints -- passes through verbatim (naive suffixing would mint
+// "Endpointses").
+func pluralizeKind(kind, plural string) string {
+	if strings.EqualFold(kind, plural) {
+		return kind
+	}
 	if strings.HasSuffix(kind, "s") {
 		return kind + "es"
 	}

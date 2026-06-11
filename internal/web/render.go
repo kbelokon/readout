@@ -116,7 +116,7 @@ func (s *Server) sidebarResourceLink(r *http.Request, client *kube.Client, clust
 func sidebarLinkFromResource(href string, rt *kube.ResourceType) sidebarLink {
 	return sidebarLink{
 		Href:     href,
-		Text:     pluralizeKind(rt.Kind),
+		Text:     pluralizeKind(rt.Kind, rt.Plural),
 		Kind:     rt.Kind,
 		Group:    rt.Group,
 		Plural:   rt.Plural,

@@ -22,7 +22,7 @@ func TestFormattingHelpers(t *testing.T) {
 	if capitalizeWord("eventTime") != "Eventtime" || capitalizeWord("reportingComponent") != "Reportingcomponent" || capitalizeWord("") != "" {
 		t.Fatalf("capitalizeWord mismatch")
 	}
-	if pluralizeKind("Policy") != "Policies" || pluralizeKind("Ingress") != "Ingresses" || pluralizeKind("Pod") != "Pods" {
+	if pluralizeKind("Policy", "policies") != "Policies" || pluralizeKind("Ingress", "ingresses") != "Ingresses" || pluralizeKind("Pod", "pods") != "Pods" || pluralizeKind("Endpoints", "endpoints") != "Endpoints" {
 		t.Fatalf("pluralizeKind mismatch")
 	}
 	if createdSortParam("Created") != "Created:desc" || createdSortParam("") != "Created" || pluralS(1) != "" || pluralS(2) != "s" {

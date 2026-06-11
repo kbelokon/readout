@@ -38,7 +38,7 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	if !strings.Contains(icon("missing"), "<circle") {
 		t.Fatal("default icon mismatch")
 	}
-	if pluralizeKind("Policy") != "Policies" || pluralizeKind("Ingress") != "Ingresses" || pluralizeKind("Pod") != "Pods" {
+	if pluralizeKind("Policy", "policies") != "Policies" || pluralizeKind("Ingress", "ingresses") != "Ingresses" || pluralizeKind("Pod", "pods") != "Pods" || pluralizeKind("Endpoints", "endpoints") != "Endpoints" {
 		t.Fatal("pluralizeKind mismatch")
 	}
 	if sortIcon("Name", "Name") == "" || sortIcon("Name:desc", "Name") == "" || sortIcon("Other", "Name") != "" {
