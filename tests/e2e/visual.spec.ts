@@ -5,12 +5,13 @@ import { controlURL } from './playwright.config';
 // the pixel insurance that licenses every later refactor (Unit 2). Any
 // unintended visual drift fails this run.
 //
-// CRITICAL — these baselines are generated ONLY inside the pinned Playwright
-// container (`make e2e-visual-update`), never on the arm64-macOS host: the
-// host renderer does not match the linux/amd64 container, so host-grown
-// baselines would diff on every CI/container run. The host `make e2e` runs the
-// desktop/mobile projects only and never touches this spec (testIgnore in
-// playwright.config.ts).
+// CONTRACT — these baselines are the DEVELOPER MACHINE's own Chromium render,
+// generated with `make e2e-visual-update` and compared with `make e2e-visual`,
+// both on the host. The grid is a single-machine tool: Chromium glyph
+// rasterization is not portable across machines, so CI does NOT run it.
+// Regenerate the baselines whenever the dev mac or its macOS version changes.
+// The behavioural `make e2e` runs the desktop/mobile projects only and never
+// touches this spec (testIgnore in playwright.config.ts).
 //
 // Determinism contract (why this can run twice with a zero diff):
 //   - the fakeapi fixtures carry FIXED Table cells, ages, and timestamps
@@ -52,13 +53,12 @@ const VIEWPORTS = {
 } as const;
 type ViewportName = keyof typeof VIEWPORTS;
 
-// The dense-frame budget for the two text-heavy nodes tables. Rosetta's
-// glyph-edge noise is BIMODAL (see playwright.config.ts): ~100 px or fewer on
-// the 32 clean frames vs ~6326 on the nodes table. The default RO_VISUAL_MAXDIFF
-// (project-level) keeps the 32 clean frames tight; these two frames take
-// RO_VISUAL_MAXDIFF_DENSE instead, falling back to RO_VISUAL_MAXDIFF, default 0
-// (strict — CI sets neither env, so the canonical native-amd64 check stays
-// zero-tolerance on every frame).
+// The dense-frame budget for the text-heavy frames. Chromium glyph
+// rasterization can re-shift sub-pixel along glyph edges between browser-process
+// launches even on one machine, and that noise scales with how much text a frame
+// packs — so the busiest frames (the nodes table) take a separate budget from
+// the clean frames. Both default to 0 (strict): the dense frames take
+// RO_VISUAL_MAXDIFF_DENSE when set, falling back to RO_VISUAL_MAXDIFF, then 0.
 const DENSE_MAXDIFF = Number(
   process.env.RO_VISUAL_MAXDIFF_DENSE ?? process.env.RO_VISUAL_MAXDIFF ?? 0
 );
@@ -112,7 +112,7 @@ const THEMES = ['light', 'dark'] as const;
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'visual',
-    'visual baselines are container-only; the desktop/mobile projects ignore this file'
+    'visual baselines run only in the RO_VISUAL visual project; the desktop/mobile projects ignore this file'
   );
   await control('/__control/reset');
 });
@@ -150,7 +150,7 @@ for (const theme of THEMES) {
     await page.goto(NODES);
     await expect(page.locator('table.ro-table td.cell-name').first()).toBeVisible();
     // The dense-table frame: takes the wider DENSE_MAXDIFF budget for the
-    // Rosetta glyph-edge outlier (see DENSE_MAXDIFF above). Overrides the
+    // text-heavy glyph-edge outlier (see DENSE_MAXDIFF above). Overrides the
     // project-level default maxDiffPixels for this comparison only.
     await snap(page, 'desktop', theme, 'nodes', { maxDiffPixels: DENSE_MAXDIFF });
   });

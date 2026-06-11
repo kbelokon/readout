@@ -3,12 +3,6 @@ on:
   push:
     branches: [main, frontend-refactor]
   pull_request:
-  workflow_dispatch:
-    inputs:
-      update-baselines:
-        description: "Regenerate the visual baselines from the native amd64 render and upload them as an artifact (does NOT commit)."
-        type: boolean
-        default: false
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -70,71 +64,3 @@ jobs:
             tests/e2e/playwright-report
             tests/e2e/test-results
           if-no-files-found: ignore
-
-  # Visual grid: container path, STRICT (zero tolerance). The runner is native
-  # linux/amd64, so the pinned Playwright image renders deterministically and
-  # the committed baselines must match pixel-exact (both RO_VISUAL_MAXDIFF and
-  # RO_VISUAL_MAXDIFF_DENSE default to 0 -- the CI job sets neither). This is the
-  # CANONICAL visual check; the host-tolerant flow is `make e2e-visual`.
-  #
-  # workflow_dispatch with update-baselines=true regenerates the baselines from
-  # this native render and uploads them as an artifact (no commit). Otherwise it
-  # runs the strict check, and on a green check immediately re-runs it strictly
-  # in the same job -- the double run proves the native render is deterministic.
-  visual:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.26.4"
-          cache-dependency-path: go.sum
-      - name: Regenerate visual baselines (native amd64 render)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update-baselines }}
-        run: make e2e-visual-update
-      - name: Upload regenerated baselines artifact
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update-baselines }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: visual-baselines
-          path: tests/e2e/__screenshots__
-          if-no-files-found: error
-      # Two strict runs on the SAME runner are the determinism proof. run 1 is
-      # continue-on-error so run 2 always executes on the same machine even when
-      # run 1 fails; we stash run 1's actuals between them. Identical results
-      # across both runs => the native render is deterministic within a machine
-      # (any baseline mismatch is then a cross-machine canonicalization gap, not
-      # flakiness); diverging results => true nondeterminism (a STOP).
-      - name: Strict visual check (zero tolerance) -- run 1
-        id: visual_run1
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.update-baselines) }}
-        continue-on-error: true
-        run: make e2e-visual-ci
-      - name: Stash run 1 artifacts
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.update-baselines) }}
-        run: |
-          rm -rf tests/e2e/test-results-run1
-          if [ -d tests/e2e/test-results ]; then
-            mv tests/e2e/test-results tests/e2e/test-results-run1
-          fi
-      - name: Strict visual check (zero tolerance) -- run 2 (determinism proof)
-        id: visual_run2
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.update-baselines) }}
-        continue-on-error: true
-        run: make e2e-visual-ci
-      - name: Upload visual reports (both runs)
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.update-baselines) }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: visual-playwright-report
-          path: |
-            tests/e2e/playwright-report
-            tests/e2e/test-results
-            tests/e2e/test-results-run1
-          if-no-files-found: ignore
-      - name: Gate -- both strict runs must pass
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.update-baselines) }}
-        run: |
-          echo "run 1: ${{ steps.visual_run1.outcome }}"
-          echo "run 2: ${{ steps.visual_run2.outcome }}"
-          [ "${{ steps.visual_run1.outcome }}" = "success" ] && [ "${{ steps.visual_run2.outcome }}" = "success" ]

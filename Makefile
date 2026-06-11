@@ -15,7 +15,7 @@ PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.60.0-noble
 
 .DEFAULT_GOAL := ci
 
-.PHONY: ci tools generate templ-check lint test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-ci e2e-visual-update
+.PHONY: ci tools generate templ-check lint test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-update
 
 ## ci: the REQUIRED gates -- templ freshness, lint, race tests (matches .github/workflows/ci.yaml)
 ci: templ-check lint race
@@ -67,42 +67,26 @@ e2e-docker: e2e-docker-preflight e2e-docker-binaries
 	docker run --rm --platform linux/amd64 -v $(CURDIR):/work -w /work/tests/e2e $(PLAYWRIGHT_IMAGE) \
 		sh -c 'npm ci --no-audit --no-fund && HARNESS_BIN=/work/.build/linux-amd64/harness READOUT_BIN=/work/.build/linux-amd64/readout npx playwright test'
 
-## e2e-visual: run the SPEC §9 visual baselines (the `visual` project) in the container -- compares against committed PNGs
-# Container-only: the arm64-macOS host renderer does not match the linux/amd64
-# image, so baselines are generated and compared ONLY here -- never on the host
-# `make e2e`, which ignores visual.spec.ts (testIgnore in playwright.config.ts).
-# The LOCAL tolerance is two-level, sized to the BIMODAL Rosetta glyph-edge
-# noise (emulated Chromium re-rasterizes glyphs with sub-pixel shifts across
-# browser-process launches, and the per-frame count itself fluctuates run to
-# run): RO_VISUAL_MAXDIFF=300 covers the 32 clean frames (observed peak ~101 px,
-# with margin); RO_VISUAL_MAXDIFF_DENSE=10000 (~6326 px x1.6) covers the two
-# text-dense nodes frames (the spec applies it to them). This keeps the clean
-# frames tight while still letting the dense outliers pass against the
-# Rosetta-rendered baselines. The CANONICAL strict (0-tolerance) check is the
-# native-amd64 CI visual job, which runs WITHOUT either env -- see
-# playwright.config.ts (both default 0).
-e2e-visual: e2e-docker-preflight e2e-docker-binaries
-	docker run --rm --platform linux/amd64 -v $(CURDIR):/work -w /work/tests/e2e $(PLAYWRIGHT_IMAGE) \
-		sh -c 'npm ci --no-audit --no-fund && RO_VISUAL=1 RO_VISUAL_MAXDIFF=300 RO_VISUAL_MAXDIFF_DENSE=10000 HARNESS_BIN=/work/.build/linux-amd64/harness READOUT_BIN=/work/.build/linux-amd64/readout npx playwright test --project=visual'
+## e2e-visual: run the SPEC §9 visual baselines (the `visual` project) on the HOST -- compares against committed PNGs
+# Host-only, single-machine contract: the baselines are the developer machine's
+# own Chromium render, so a strict (zero-tolerance) compare is honest on that one
+# machine. Chromium glyph rasterization is NOT deterministic across machines (nor
+# under Rosetta emulation), so these PNGs are not portable -- regenerate them with
+# `make e2e-visual-update` whenever the dev mac or its macOS version changes. CI
+# does NOT run the visual grid. The tolerance env mechanism survives in
+# playwright.config.ts (default 0); set RO_VISUAL_MAXDIFF only if a measured
+# same-machine noise floor demands it.
+e2e-visual: e2e-deps
+	go build -o readout ./cmd/readout
+	cd tests/e2e && READOUT_BIN=$(CURDIR)/readout RO_VISUAL=1 npx playwright test --project=visual
 
-## e2e-visual-ci: the CANONICAL strict (0-tolerance) visual check -- container path with NEITHER tolerance env set
-# This is the native-amd64 CI visual job's entrypoint. It runs the same pinned
-# image as e2e-visual but WITHOUT RO_VISUAL_MAXDIFF / RO_VISUAL_MAXDIFF_DENSE, so
-# every frame is compared pixel-exact (both envs default 0 in playwright.config.ts).
-# On the CI runner (native linux/amd64) the renderer is deterministic, so the
-# baselines committed under tests/e2e/__screenshots__ must match exactly. Locally
-# (arm64 + Rosetta) this target will diff on glyph-edge noise -- that is expected;
-# the host-tolerant target is e2e-visual.
-e2e-visual-ci: e2e-docker-preflight e2e-docker-binaries
-	docker run --rm --platform linux/amd64 -v $(CURDIR):/work -w /work/tests/e2e $(PLAYWRIGHT_IMAGE) \
-		sh -c 'npm ci --no-audit --no-fund && RO_VISUAL=1 HARNESS_BIN=/work/.build/linux-amd64/harness READOUT_BIN=/work/.build/linux-amd64/readout npx playwright test --project=visual'
-
-## e2e-visual-update: REGENERATE the visual baselines in the container (commit the result; never run on the host)
+## e2e-visual-update: REGENERATE the visual baselines on the HOST (commit the result)
 # Generation mode (--update-snapshots): writes the PNGs and reports pass
-# regardless of any diff, so no RO_VISUAL_MAXDIFF tolerance applies here.
-e2e-visual-update: e2e-docker-preflight e2e-docker-binaries
-	docker run --rm --platform linux/amd64 -v $(CURDIR):/work -w /work/tests/e2e $(PLAYWRIGHT_IMAGE) \
-		sh -c 'npm ci --no-audit --no-fund && RO_VISUAL=1 HARNESS_BIN=/work/.build/linux-amd64/harness READOUT_BIN=/work/.build/linux-amd64/readout npx playwright test --project=visual --update-snapshots'
+# regardless of any diff. Run this on the dev mac after changing machines or
+# updating macOS, then commit the refreshed tests/e2e/__screenshots__.
+e2e-visual-update: e2e-deps
+	go build -o readout ./cmd/readout
+	cd tests/e2e && READOUT_BIN=$(CURDIR)/readout RO_VISUAL=1 npx playwright test --project=visual --update-snapshots
 
 # e2e-docker-preflight: the two fail-early gates shared by every containerized
 # e2e target -- the image/package-pin agreement and the Docker VM memory floor.

@@ -10,36 +10,27 @@ const baseURL = `http://127.0.0.1:${readoutPort}`;
 export const controlURL = `http://127.0.0.1:${fakeapiPort}`;
 
 // The visual baselines run ONLY when RO_VISUAL=1 (the Makefile e2e-visual /
-// e2e-visual-update targets set it inside the container). A bare
-// `npx playwright test` on the host therefore runs the behavioural projects
-// only and never the screenshot walk: the arm64-macOS host renderer does not
-// match the linux/amd64 container, so host-side baseline compares are
-// meaningless. testIgnore on the behavioural projects is the second guard —
-// even with RO_VISUAL=1 they never pick up visual.spec.ts.
+// e2e-visual-update targets set it). A bare `npx playwright test` therefore
+// runs the behavioural projects only and never the screenshot walk. testIgnore
+// on the behavioural projects is the second guard — even with RO_VISUAL=1 they
+// never pick up visual.spec.ts.
+//
+// Contract: the grid is a HOST tool on a SINGLE developer machine. The committed
+// baselines are that machine's own Chromium render, so a same-machine strict
+// compare is honest. The PNGs are NOT portable — Chromium glyph rasterization
+// differs across machines (and under emulation) — so CI does NOT run the visual
+// grid. Regenerate the baselines with `make e2e-visual-update` whenever the dev
+// mac or its macOS version changes.
 const visualEnabled = process.env.RO_VISUAL === '1';
 
 // Per-comparison maxDiffPixels, read from RO_VISUAL_MAXDIFF — DEFAULT 0 (strict,
 // zero tolerance). There is NO unconditional tolerance baked into the spec.
 //
-// Why the env knob exists: the CANONICAL baselines are generated and verified
-// STRICTLY (no env => 0) by the visual CI job on NATIVE linux/amd64, where
-// Chromium glyph rasterization is deterministic. Locally the only runner is the
-// arm64-macOS Docker daemon emulating linux/amd64 under Rosetta, whose glyph
-// rasterization is nondeterministic ACROSS browser-process launches: glyphs
-// re-rasterize with sub-pixel position shifts along their edges (not any single
-// dynamic element).
-//
-// That noise is BIMODAL under Playwright's comparator: ~100 differing pixels or
-// fewer on 32 of the 34 frames (the count fluctuates run to run), but ~6326 on
-// the two busiest text-dense frames (the nodes table, light + dark). A single
-// budget wide enough for nodes (10000) would needlessly slacken the 32 clean
-// frames and is already the scale of a small real regression. So there are TWO
-// budgets: the default RO_VISUAL_MAXDIFF covers the clean frames, and
-// RO_VISUAL_MAXDIFF_DENSE (the spec applies it to the two nodes frames; falls
-// back to RO_VISUAL_MAXDIFF) covers the dense outliers. `make e2e-visual` sets
-// RO_VISUAL_MAXDIFF=300 (observed clean peak ~101 px, with margin) and
-// RO_VISUAL_MAXDIFF_DENSE=10000 (~6326 x1.6). CI runs WITHOUT either env =>
-// both default to strict zero.
+// The knob exists as an escape hatch: if a measured same-machine noise floor
+// ever demands a small budget, set RO_VISUAL_MAXDIFF (and the dense fallback
+// RO_VISUAL_MAXDIFF_DENSE for the text-heavy frames) rather than editing the
+// baselines. The default stays 0 so the grid compares pixel-exact unless a knob
+// is set explicitly.
 const visualMaxDiff = Number(process.env.RO_VISUAL_MAXDIFF ?? 0);
 
 const visualProject = {
@@ -80,9 +71,9 @@ export default defineConfig({
   },
   projects: [
     // Desktop walk: the full chrome (sidebar + topbar + table layer).
-    // testIgnore keeps the visual baselines OFF this project: the host
-    // renderer does not match the linux/amd64 container, so a host `make e2e`
-    // must never run (or require) the screenshot spec.
+    // testIgnore keeps the visual baselines OFF this project: the behavioural
+    // `make e2e` must never run (or require) the screenshot spec, which lives
+    // in its own RO_VISUAL-gated `visual` project.
     {
       name: 'desktop',
       testIgnore: /visual\.spec\.ts/,
@@ -95,7 +86,7 @@ export default defineConfig({
       testIgnore: /visual\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, hasTouch: true },
     },
-    // Visual baselines (SPEC §9 / Unit 2): the screenshot walk, container-only,
+    // Visual baselines (SPEC §9 / Unit 2): the screenshot walk, host-only,
     // included only under RO_VISUAL=1. testMatch pins it to visual.spec.ts
     // alone, so it never runs the behavioural specs.
     ...(visualEnabled ? [visualProject] : []),
