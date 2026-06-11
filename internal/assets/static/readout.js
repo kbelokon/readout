@@ -1648,6 +1648,7 @@ ${piece}`;
     items.forEach((item, idx) => {
       const row = document.createElement("div");
       row.className = `ro-ac-item${idx === 0 ? " active" : ""}`;
+      row.dataset.roAction = "pick-suggestion";
       row.setAttribute("role", "option");
       row.setAttribute("aria-selected", idx === 0 ? "true" : "false");
       row.dataset.acIndex = String(idx);
@@ -1675,7 +1676,7 @@ ${piece}`;
     if (!ac) {
       return;
     }
-    ac.querySelectorAll(".ro-ac-item").forEach((el) => {
+    ac.querySelectorAll('[data-ro-action="pick-suggestion"]').forEach((el) => {
       const on = Number(el.dataset.acIndex) === filterACActive;
       el.classList.toggle("active", on);
       el.setAttribute("aria-selected", on ? "true" : "false");
@@ -1771,7 +1772,7 @@ ${piece}`;
     // (morph + canonical push) instead of a full navigation.
     {
       event: "click",
-      selector: "#ro-filter-field .chip-x",
+      selector: '#ro-filter-field [data-ro-action="remove-chip"]',
       handler: (event, matched) => {
         event.preventDefault();
         const href = matched.getAttribute("href");
@@ -1786,7 +1787,7 @@ ${piece}`;
     // field fills `field:` and opens the value suggestions).
     {
       event: "click",
-      selector: "#ro-filter-ac .ro-ac-item",
+      selector: '#ro-filter-ac [data-ro-action="pick-suggestion"]',
       handler: (event, matched) => {
         event.preventDefault();
         setFilterACActive(Number(matched.dataset.acIndex) || 0);

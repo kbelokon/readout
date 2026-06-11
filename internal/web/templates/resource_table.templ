@@ -1176,7 +1176,7 @@ templ filterBar(fb FilterBarData) {
 					} else {
 						<span class="v">{ chip.Label }</span>
 					}
-					<a class="chip-x" href={ templ.SafeURL(chip.RemoveHref) } title="remove" aria-label={ "Remove filter " + chip.Label }>✕</a>
+					<a class="chip-x" data-ro-action="remove-chip" href={ templ.SafeURL(chip.RemoveHref) } title="remove" aria-label={ "Remove filter " + chip.Label }>✕</a>
 				</span>
 			}
 			<input id="ro-filter-input" type="text" autocomplete="off" spellcheck="false" placeholder={ filterPlaceholder(fb) } aria-label="Filter">
