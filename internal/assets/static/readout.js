@@ -1,5 +1,157 @@
 "use strict";
 (() => {
+  // internal/assets/src/js/prefs.ts
+  var PREFS_COOKIE = "ro_prefs";
+  var PREFS_VERSION_PREFIX = "v1.";
+  var PREFS_MAX_ENCODED = 3072;
+  var PREFS_COOKIE_MAX_AGE = 31536e3;
+  var REFRESH_KEY = "roRefresh";
+  function b64urlEncodeUTF8(text) {
+    const bytes = new TextEncoder().encode(text);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) {
+      bin += String.fromCharCode(bytes[i]);
+    }
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function b64urlDecodeUTF8(encoded) {
+    const b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(b64 + "====".slice(b64.length % 4 || 4));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      bytes[i] = bin.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
+  }
+  function decodePrefsValue(value) {
+    const empty = { kinds: [], refresh: "", ns: {} };
+    if (!value || value.indexOf(PREFS_VERSION_PREFIX) !== 0) {
+      return { prefs: empty, ok: false };
+    }
+    const payload = value.slice(PREFS_VERSION_PREFIX.length);
+    if (!payload) {
+      return { prefs: empty, ok: false };
+    }
+    try {
+      const decoded = JSON.parse(b64urlDecodeUTF8(payload));
+      if (!decoded || typeof decoded !== "object") {
+        return { prefs: empty, ok: false };
+      }
+      const kinds = [];
+      if (Array.isArray(decoded.kinds)) {
+        decoded.kinds.forEach((e) => {
+          if (!e || typeof e !== "object" || typeof e.k !== "string") {
+            return;
+          }
+          const entry = { k: e.k };
+          if (typeof e.sort === "string") {
+            entry.sort = e.sort;
+          }
+          if (Array.isArray(e.hide) && e.hide.every((name) => typeof name === "string")) {
+            entry.hide = e.hide;
+          }
+          kinds.push(entry);
+        });
+      }
+      const ns = {};
+      if (decoded.ns && typeof decoded.ns === "object" && !Array.isArray(decoded.ns)) {
+        Object.keys(decoded.ns).forEach((cluster) => {
+          if (typeof decoded.ns[cluster] === "string") {
+            ns[cluster] = decoded.ns[cluster];
+          }
+        });
+      }
+      return {
+        prefs: {
+          kinds,
+          refresh: typeof decoded.refresh === "string" ? decoded.refresh : "",
+          ns
+        },
+        ok: true
+      };
+    } catch (e) {
+      return { prefs: empty, ok: false };
+    }
+  }
+  function encodePrefsValue(prefs) {
+    const out = {};
+    if (prefs.kinds && prefs.kinds.length > 0) {
+      out.kinds = prefs.kinds;
+    }
+    if (prefs.refresh) {
+      out.refresh = prefs.refresh;
+    }
+    if (prefs.ns && Object.keys(prefs.ns).length > 0) {
+      out.ns = prefs.ns;
+    }
+    let value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
+    while (value.length > PREFS_MAX_ENCODED && out.kinds && out.kinds.length > 0) {
+      out.kinds = out.kinds.slice(0, -1);
+      if (out.kinds.length === 0) {
+        delete out.kinds;
+      }
+      value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
+    }
+    return value;
+  }
+  function prefsCookieValue() {
+    const parts = document.cookie ? document.cookie.split("; ") : [];
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].indexOf(PREFS_COOKIE + "=") === 0) {
+        return parts[i].slice(PREFS_COOKIE.length + 1);
+      }
+    }
+    return "";
+  }
+  function readPrefs() {
+    return decodePrefsValue(prefsCookieValue()).prefs;
+  }
+  function writePrefs(prefs) {
+    try {
+      let cookie = PREFS_COOKIE + "=" + encodePrefsValue(prefs) + "; Path=/; SameSite=Lax; Max-Age=" + PREFS_COOKIE_MAX_AGE;
+      if (window.location.protocol === "https:") {
+        cookie += "; Secure";
+      }
+      document.cookie = cookie;
+    } catch (e) {
+    }
+  }
+  function prefsTouchKind(prefs, plural) {
+    for (let i = 0; i < prefs.kinds.length; i++) {
+      if (prefs.kinds[i].k === plural) {
+        const entry = prefs.kinds.splice(i, 1)[0];
+        prefs.kinds.unshift(entry);
+        return entry;
+      }
+    }
+    const fresh = { k: plural };
+    prefs.kinds.unshift(fresh);
+    return fresh;
+  }
+  function roPrefsSetSort(plural, sort) {
+    const prefs = readPrefs();
+    prefsTouchKind(prefs, plural).sort = sort;
+    writePrefs(prefs);
+  }
+  function roPrefsSetHiddenColumns(plural, names) {
+    const prefs = readPrefs();
+    prefsTouchKind(prefs, plural).hide = Array.isArray(names) ? names : [];
+    writePrefs(prefs);
+  }
+  function roPrefsSetRefresh(mode) {
+    const prefs = readPrefs();
+    prefs.refresh = mode;
+    writePrefs(prefs);
+  }
+  function roPrefsSetNamespace(cluster, namespace) {
+    if (!cluster || !namespace) {
+      return;
+    }
+    const prefs = readPrefs();
+    prefs.ns[cluster] = namespace;
+    writePrefs(prefs);
+  }
+
   // internal/assets/src/js/legacy.js
   if (typeof htmx !== "undefined") {
     htmx.config.globalViewTransitions = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1010,146 +1162,6 @@
     }
     palettePriorFocus = null;
   }
-  var PREFS_COOKIE = "ro_prefs";
-  var PREFS_VERSION_PREFIX = "v1.";
-  var PREFS_MAX_ENCODED = 3072;
-  var PREFS_COOKIE_MAX_AGE = 31536e3;
-  function b64urlEncodeUTF8(text) {
-    const bytes = new TextEncoder().encode(text);
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) {
-      bin += String.fromCharCode(bytes[i]);
-    }
-    return window.btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  }
-  function b64urlDecodeUTF8(encoded) {
-    const b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
-    const bin = window.atob(b64 + "====".slice(b64.length % 4 || 4));
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) {
-      bytes[i] = bin.charCodeAt(i);
-    }
-    return new TextDecoder().decode(bytes);
-  }
-  function prefsCookieValue() {
-    const parts = document.cookie ? document.cookie.split("; ") : [];
-    for (let i = 0; i < parts.length; i++) {
-      if (parts[i].indexOf(PREFS_COOKIE + "=") === 0) {
-        return parts[i].slice(PREFS_COOKIE.length + 1);
-      }
-    }
-    return "";
-  }
-  function readPrefs() {
-    const empty = { kinds: [], refresh: "", ns: {} };
-    const value = prefsCookieValue();
-    if (!value || value.indexOf(PREFS_VERSION_PREFIX) !== 0) {
-      return empty;
-    }
-    try {
-      const decoded = JSON.parse(b64urlDecodeUTF8(value.slice(PREFS_VERSION_PREFIX.length)));
-      if (!decoded || typeof decoded !== "object") {
-        return empty;
-      }
-      const kinds = [];
-      if (Array.isArray(decoded.kinds)) {
-        decoded.kinds.forEach((e) => {
-          if (!e || typeof e !== "object" || typeof e.k !== "string") {
-            return;
-          }
-          const entry = { k: e.k };
-          if (typeof e.sort === "string") {
-            entry.sort = e.sort;
-          }
-          if (Array.isArray(e.hide) && e.hide.every((name) => typeof name === "string")) {
-            entry.hide = e.hide;
-          }
-          kinds.push(entry);
-        });
-      }
-      const ns = {};
-      if (decoded.ns && typeof decoded.ns === "object" && !Array.isArray(decoded.ns)) {
-        Object.keys(decoded.ns).forEach((cluster) => {
-          if (typeof decoded.ns[cluster] === "string") {
-            ns[cluster] = decoded.ns[cluster];
-          }
-        });
-      }
-      return {
-        kinds,
-        refresh: typeof decoded.refresh === "string" ? decoded.refresh : "",
-        ns
-      };
-    } catch (e) {
-      return empty;
-    }
-  }
-  function encodePrefsValue(prefs) {
-    const out = {};
-    if (prefs.kinds && prefs.kinds.length > 0) {
-      out.kinds = prefs.kinds;
-    }
-    if (prefs.refresh) {
-      out.refresh = prefs.refresh;
-    }
-    if (prefs.ns && Object.keys(prefs.ns).length > 0) {
-      out.ns = prefs.ns;
-    }
-    let value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
-    while (value.length > PREFS_MAX_ENCODED && out.kinds && out.kinds.length > 0) {
-      out.kinds = out.kinds.slice(0, -1);
-      if (out.kinds.length === 0) {
-        delete out.kinds;
-      }
-      value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
-    }
-    return value;
-  }
-  function writePrefs(prefs) {
-    try {
-      let cookie = PREFS_COOKIE + "=" + encodePrefsValue(prefs) + "; Path=/; SameSite=Lax; Max-Age=" + PREFS_COOKIE_MAX_AGE;
-      if (window.location.protocol === "https:") {
-        cookie += "; Secure";
-      }
-      document.cookie = cookie;
-    } catch (e) {
-    }
-  }
-  function prefsTouchKind(prefs, plural) {
-    for (let i = 0; i < prefs.kinds.length; i++) {
-      if (prefs.kinds[i].k === plural) {
-        const entry = prefs.kinds.splice(i, 1)[0];
-        prefs.kinds.unshift(entry);
-        return entry;
-      }
-    }
-    const fresh = { k: plural };
-    prefs.kinds.unshift(fresh);
-    return fresh;
-  }
-  function roPrefsSetSort(plural, sort) {
-    const prefs = readPrefs();
-    prefsTouchKind(prefs, plural).sort = sort;
-    writePrefs(prefs);
-  }
-  function roPrefsSetHiddenColumns(plural, names) {
-    const prefs = readPrefs();
-    prefsTouchKind(prefs, plural).hide = Array.isArray(names) ? names : [];
-    writePrefs(prefs);
-  }
-  function roPrefsSetRefresh(mode) {
-    const prefs = readPrefs();
-    prefs.refresh = mode;
-    writePrefs(prefs);
-  }
-  function roPrefsSetNamespace(cluster, namespace) {
-    if (!cluster || !namespace) {
-      return;
-    }
-    const prefs = readPrefs();
-    prefs.ns[cluster] = namespace;
-    writePrefs(prefs);
-  }
   document.addEventListener("htmx:beforeRequest", (event) => {
     const detail = event.detail;
     const cfg = detail && detail.requestConfig;
@@ -1177,7 +1189,6 @@
       roPrefsSetSort(plural, sort);
     }
   });
-  var REFRESH_KEY = "roRefresh";
   var refreshTimerId = null;
   var refreshNextAt = 0;
   var refreshFailureStage = 0;
