@@ -108,16 +108,16 @@ templ listSkeleton(d ListData) {
 templ listBreadcrumb(b ListBreadcrumb) {
 	<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul>
 		if b.IsAllClusters {
-			<li><a href="/clusters">all</a></li>
+			@crumb("/clusters", "all")
 		} else {
-			<li><a href={ templ.SafeURL(b.ClusterHref) }>{ b.Cluster }</a></li>
+			@crumb(b.ClusterHref, b.Cluster)
 		}
 		if b.Namespace != "" {
 			if b.IsAllNamespaces {
-				<li><a href={ templ.SafeURL(b.AllNamespaces) }>all</a></li>
+				@crumb(b.AllNamespaces, "all")
 			} else {
-				<li><a href={ templ.SafeURL(b.NamespaceHref) }>{ b.Namespace }</a></li>
+				@crumb(b.NamespaceHref, b.Namespace)
 			}
 		}
-		<li class="is-active"><a href="#">{ b.Plural }</a></li></ul></nav>
+		@crumbActive(b.Plural)</ul></nav>
 }

@@ -49,11 +49,11 @@ type ResourceTypeRow struct {
 
 templ ResourceTypes(d ResourceTypesData) {
 	<div class="ro-rd">
-		<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul><li><a href={ templ.SafeURL(clusterHref(d.Cluster)) }>{ d.Cluster }</a></li>
+		<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul>@crumb(clusterHref(d.Cluster), d.Cluster)
 			if d.NamespaceShow {
-				<li><a href={ templ.SafeURL(namespaceHref(d.Cluster, d.Namespace)) }>{ d.Namespace }</a></li><li class="is-active"><a href="#">resource types</a></li>
+				@crumb(namespaceHref(d.Cluster, d.Namespace), d.Namespace)@crumbActive("resource types")
 			} else {
-				<li class="is-active"><a href="#">cluster resource types</a></li>
+				@crumbActive("cluster resource types")
 			}
 			</ul></nav>
 		<div class="ro-title-row"><h1 class="ro-title">Resource Types</h1><span class="ro-count">{ itoa(d.Count) }</span></div>

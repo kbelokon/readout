@@ -36,3 +36,19 @@ templ tabLink(active bool, href, label string) {
 templ labelChip(key, val string) {
 	<span class="ro-chip"><span class="ck">{ key }</span><span class="cs">:</span><span class="cv">{ val }</span></span>
 }
+
+// crumb renders one LINKED breadcrumb item -- the `<li><a href>` pair inside the
+// shared `nav.ro-breadcrumb > ul` wrapper. Every page's breadcrumb body keeps
+// its own crumb-assembly logic (the cluster/namespace/all collapse rules differ
+// per route); this primitive owns only the repeated leaf markup. href is wrapped
+// in templ.SafeURL, matching the previous inline crumbs.
+templ crumb(href, label string) {
+	<li><a href={ templ.SafeURL(href) }>{ label }</a></li>
+}
+
+// crumbActive renders the trailing ACTIVE breadcrumb item: the `is-active`
+// marker on the `<li>` and the inert `href="#"` anchor (the current page is not
+// a navigation target).
+templ crumbActive(label string) {
+	<li class="is-active"><a href="#">{ label }</a></li>
+}
