@@ -595,8 +595,10 @@ func TestStatesStaleHandlerInReadoutJS(t *testing.T) {
 	}
 	// The stale path keeps the rows (it must NOT swap on error): the handlers mark
 	// stale rather than blanking, and the retry triggers the existing ro:refresh
-	// (a read-only GET), never a write.
-	if strings.Contains(js, "innerHTML = ''") {
+	// (a read-only GET), never a write. Spacing-insensitive so a compacted
+	// `innerHTML=''` emitted by a future bundler setting cannot slip past the
+	// guard (js is already quote-normalized by readoutJS).
+	if regexp.MustCompile(`innerHTML\s*=\s*''`).MatchString(js) {
 		t.Fatalf("stale path must not blank the rows")
 	}
 

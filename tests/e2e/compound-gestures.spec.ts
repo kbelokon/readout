@@ -217,11 +217,18 @@ test('Escape with the palette open closes the palette layer and leaves the filte
   await expect(page.locator('#ro-palette')).not.toHaveClass(/open/);
   await expect(filter).toHaveValue('ngi');
 
-  // A second Esc with focus back in the filter input does NOT touch the palette
-  // (already closed) and, with no autocomplete open, is a no-op on the draft --
-  // the focus-routed reality the dispatcher must preserve.
+  // A second Esc with focus in the filter input routes into the FILTER's own
+  // keydown FIRST (focus-routed, not layer-ordered). Make that branch
+  // load-bearing: open the suggestion popover by typing a field-name prefix,
+  // then Esc must dismiss the AUTOCOMPLETE while the draft survives and the
+  // palette stays closed -- a global "close topmost / clear draft" handler
+  // would get one of these wrong. (Post-exec review: the earlier form asserted
+  // this with the autocomplete closed, which any Escape implementation passes.)
   await filter.focus();
+  await filter.fill('na'); // prefix of the Name column -> suggestions render
+  await expect(page.locator('#ro-filter-ac')).toBeVisible();
   await page.keyboard.press('Escape');
+  await expect(page.locator('#ro-filter-ac')).toBeHidden();
+  await expect(filter).toHaveValue('na');
   await expect(page.locator('#ro-palette')).not.toHaveClass(/open/);
-  await expect(filter).toHaveValue('ngi');
 });

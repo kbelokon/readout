@@ -69,7 +69,7 @@ jobs:
   # static/ artifacts are fresh. Node 24 (matches package.json engines), npm cache
   # keyed off the root package-lock.json. Both typecheckers run (tsgo = TS7 native
   # preview, tsc = stable cross-check) until TS7 is stable. The node-test step is a
-  # deterministic no-op until the first *.test.ts lands (and stays correct after).
+  # the find-guard keeps this step deterministic: it runs the suite when *.test.ts files exist (95 today) and no-ops cleanly if they are ever absent.
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -87,7 +87,7 @@ jobs:
         run: npx tsgo --noEmit
       - name: Gate - typecheck (tsc, stable cross-check)
         run: npx tsc --noEmit
-      - name: JS unit tests (guarded -- no-op until the first *.test.ts lands)
+      - name: JS unit tests
         run: find internal/assets/src/js -name '*.test.ts' | grep -q . && node --test 'internal/assets/src/js/**/*.test.ts' || echo 'no JS tests yet — step skipped'
       - name: Gate - embedded assets are fresh
         run: |
