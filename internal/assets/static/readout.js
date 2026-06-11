@@ -1999,7 +1999,7 @@ ${piece}`;
       return;
     }
     const hidden = [];
-    pop.querySelectorAll(".col-toggle").forEach((toggle) => {
+    pop.querySelectorAll('[data-ro-action="toggle-column"]').forEach((toggle) => {
       const check = toggle.querySelector(".ro-check");
       if (!toggle.disabled && check && !check.checked && toggle.dataset.col) {
         hidden.push(toggle.dataset.col);
@@ -2030,13 +2030,13 @@ ${piece}`;
   var columnsBindings = [
     // Column-visibility popover (D8): the ⊞ title-row button toggles the popover
     // open/closed. Open state is derived from the DOM (a boosted body swap
-    // renders it closed). NOT stop:true -- C4's own [data-cols-toggle] guard
+    // renders it closed). NOT stop:true -- C4's own [data-ro-cols-toggle] guard
     // (the outside-click binding below) keeps the double-fire single, not a stop
     // signal (listener-inventory C1/C4: both see the same click, no propagation
     // stop between them).
     {
       event: "click",
-      selector: "[data-cols-toggle]",
+      selector: "[data-ro-cols-toggle]",
       handler: (event) => {
         event.preventDefault();
         const pop = document.getElementById("ro-cols-pop");
@@ -2050,7 +2050,7 @@ ${piece}`;
     // is a disabled <button>, so its clicks never fire.
     {
       event: "click",
-      selector: ".col-toggle",
+      selector: '[data-ro-action="toggle-column"]',
       handler: (event, matched) => {
         event.preventDefault();
         const toggle = matched;
@@ -2065,7 +2065,7 @@ ${piece}`;
     },
     // C4: a click outside the popover (and not on its ⊞ opener) closes it -- the
     // same dismissal contract the autocomplete dropdown uses. The
-    // [data-cols-toggle] escape: when the ⊞ toggle is clicked WHILE open, the
+    // [data-ro-cols-toggle] escape: when the ⊞ toggle is clicked WHILE open, the
     // toggle binding above already set colsPopOpen=false (closed), and this
     // guard makes this binding a no-op so it does NOT re-toggle (no double-fire /
     // no reopen). No selector (it keys off the flag + the closest() escapes).
@@ -2076,7 +2076,7 @@ ${piece}`;
           return;
         }
         const t = event.target;
-        if (t.closest("#ro-cols-pop") || t.closest("[data-cols-toggle]")) {
+        if (t.closest("#ro-cols-pop") || t.closest("[data-ro-cols-toggle]")) {
           return;
         }
         setColsPopOpen(false);

@@ -83,7 +83,7 @@ func TestBehaviorAppChromeAndJSContract(t *testing.T) {
 	// Single-type pages carry the D8 columns popover in the title row (it
 	// replaced the v1 toggle-tools + tools form there; multi-type pages keep
 	// the old chrome -- pinned in TestColsPopoverSingleTypeGate).
-	p.wantAttr("button#ro-cols-btn[data-cols-toggle]", "title", "Columns")
+	p.wantAttr("button#ro-cols-btn[data-ro-cols-toggle]", "title", "Columns")
 	p.wantHas("#ro-cols-pop .col-toggle")
 	p.wantAbsent("a.toggle-tools")
 

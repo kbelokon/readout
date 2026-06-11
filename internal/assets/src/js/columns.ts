@@ -25,10 +25,11 @@
 // 'issueFilterNavigation(popFormMergedHref(popForm))'.
 //
 // DISPATCH (the Unit 12 ordered-binding migration): the popover's click branches
-// were branches of the monolith's big click listener (the [data-cols-toggle]
-// toggle C1, the .col-toggle commit) plus its own outside-click listener (C4).
-// The [data-cols-toggle] branch flips colsPopOpen and does NOT stop the chain --
-// C4's own [data-cols-toggle] guard prevents the double-close, NOT propagation
+// were branches of the monolith's big click listener (the [data-ro-cols-toggle]
+// toggle C1, the [data-ro-action="toggle-column"] commit) plus its own
+// outside-click listener (C4).
+// The [data-ro-cols-toggle] branch flips colsPopOpen and does NOT stop the chain --
+// C4's own [data-ro-cols-toggle] guard prevents the double-close, NOT propagation
 // (listener-inventory C1/C4). So neither binding is stop:true; the guard does
 // the work. colsPopOpen() is read DIRECTLY by keyboard.ts's keyboardSurfaceBusy
 // (the Unit-12 dismantling of the window.roClusterBridge colsPopOpen member).
@@ -88,7 +89,7 @@ function commitColumnVisibility(pop: Element | null): void {
         return;
     }
     const hidden: string[] = [];
-    pop.querySelectorAll('.col-toggle').forEach((toggle) => {
+    pop.querySelectorAll('[data-ro-action="toggle-column"]').forEach((toggle) => {
         const check = toggle.querySelector('.ro-check') as HTMLInputElement | null;
         if (
             !(toggle as HTMLButtonElement).disabled &&
@@ -138,13 +139,13 @@ function popFormMergedHref(form: HTMLFormElement): string {
 export const columnsBindings: Binding[] = [
     // Column-visibility popover (D8): the ⊞ title-row button toggles the popover
     // open/closed. Open state is derived from the DOM (a boosted body swap
-    // renders it closed). NOT stop:true -- C4's own [data-cols-toggle] guard
+    // renders it closed). NOT stop:true -- C4's own [data-ro-cols-toggle] guard
     // (the outside-click binding below) keeps the double-fire single, not a stop
     // signal (listener-inventory C1/C4: both see the same click, no propagation
     // stop between them).
     {
         event: 'click',
-        selector: '[data-cols-toggle]',
+        selector: '[data-ro-cols-toggle]',
         handler: (event) => {
             event.preventDefault();
             const pop = document.getElementById('ro-cols-pop');
@@ -158,7 +159,7 @@ export const columnsBindings: Binding[] = [
     // is a disabled <button>, so its clicks never fire.
     {
         event: 'click',
-        selector: '.col-toggle',
+        selector: '[data-ro-action="toggle-column"]',
         handler: (event, matched) => {
             event.preventDefault();
             const toggle = matched as HTMLElement;
@@ -173,7 +174,7 @@ export const columnsBindings: Binding[] = [
     },
     // C4: a click outside the popover (and not on its ⊞ opener) closes it -- the
     // same dismissal contract the autocomplete dropdown uses. The
-    // [data-cols-toggle] escape: when the ⊞ toggle is clicked WHILE open, the
+    // [data-ro-cols-toggle] escape: when the ⊞ toggle is clicked WHILE open, the
     // toggle binding above already set colsPopOpen=false (closed), and this
     // guard makes this binding a no-op so it does NOT re-toggle (no double-fire /
     // no reopen). No selector (it keys off the flag + the closest() escapes).
@@ -184,7 +185,7 @@ export const columnsBindings: Binding[] = [
                 return;
             }
             const t = event.target as Element;
-            if (t.closest('#ro-cols-pop') || t.closest('[data-cols-toggle]')) {
+            if (t.closest('#ro-cols-pop') || t.closest('[data-ro-cols-toggle]')) {
                 return;
             }
             setColsPopOpen(false);

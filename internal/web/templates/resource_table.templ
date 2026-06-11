@@ -449,7 +449,7 @@ templ resourceTables(d ListData) {
 				<a href={ templ.SafeURL(table.DownloadTSVHref) } hx-boost="false" title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
 				if table.Cols != nil {
 					<span class="rel">
-						<button type="button" id="ro-cols-btn" class="ro-iconbtn" data-cols-toggle title="Columns" aria-haspopup="true" aria-expanded="false"><span class="icon">@templ.Raw(table.Cols.Icon)</span></button>
+						<button type="button" id="ro-cols-btn" class="ro-iconbtn" data-ro-cols-toggle title="Columns" aria-haspopup="true" aria-expanded="false"><span class="icon">@templ.Raw(table.Cols.Icon)</span></button>
 						@colsPopover(*table.Cols)
 					</span>
 				} else {
@@ -1024,6 +1024,7 @@ templ colsPopover(c ColsPopover) {
 			<button
 				type="button"
 				class="col-toggle"
+				data-ro-action="toggle-column"
 				data-col={ entry.Name }
 				if entry.Identity {
 					disabled

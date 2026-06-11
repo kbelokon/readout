@@ -10,7 +10,7 @@ import { controlURL } from './playwright.config';
 //   (A) DOM-GUARD decoupling — surfaces stay disjoint by reading the live DOM,
 //       not by registration order: keyboardSurfaceBusy() (palette `.open`,
 //       ctxmenu `.is-open`, namespace dropdown, columns popover), the
-//       text-entry gate, and the columns outside-click `[data-cols-toggle]`
+//       text-entry gate, and the columns outside-click `[data-ro-cols-toggle]`
 //       escape;
 //   (B) INTRA-listener SEQUENCE — the inviolable invariant is the ORDER of
 //       steps INSIDE one listener: the row-gesture click closes any open menu
@@ -154,7 +154,7 @@ test('open palette + j/k/Enter: the palette navigates, the table keeps row focus
 // it; and -- the load-bearing half -- clicking the ⊞ toggle WHILE open closes it
 // exactly once. The big delegated click listener flips colsPopOpen=false on the
 // toggle WITHOUT stopPropagation, and the outside-click listener's own
-// `[data-cols-toggle]` guard then early-returns, so the popover never
+// `[data-ro-cols-toggle]` guard then early-returns, so the popover never
 // double-fires back open. Both listeners see the same click; the guard, not
 // propagation, keeps it single.
 test('columns popover: outside click closes; toggle-click while open closes once (no reopen)', async ({
