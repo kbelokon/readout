@@ -56,7 +56,7 @@ type ExternalClusterRow struct {
 
 templ Clusters(d ClustersData) {
 	<div class="ro-rd">
-		<div class="ro-title-row"><h1 class="ro-title">Clusters</h1><span class="ro-count">{ itoa(d.Count) }</span></div>
+		@titleRow("Clusters", d.Count, true)
 		if d.FirstRun {
 			@firstRun()
 		} else {

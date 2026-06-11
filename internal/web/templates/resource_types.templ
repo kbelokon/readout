@@ -56,7 +56,7 @@ templ ResourceTypes(d ResourceTypesData) {
 				@crumbActive("cluster resource types")
 			}
 			</ul></nav>
-		<div class="ro-title-row"><h1 class="ro-title">Resource Types</h1><span class="ro-count">{ itoa(d.Count) }</span></div>
+		@titleRow("Resource Types", d.Count, true)
 		<div class="ro-tabs ro-rt-tabs">@tabLink(d.ClusterActive, d.ClusterTab, "Cluster")@tabLink(!d.ClusterActive, d.NamespacedTab, "Namespaced")</div>
 		<div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Kind</th><th>API Group</th><th>Version</th><th>Scope</th></tr></thead><tbody>
 			for _, row := range d.Rows {

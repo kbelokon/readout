@@ -61,7 +61,7 @@ type ClusterResourceTypeRow struct {
 templ Cluster(d ClusterData) {
 	<div class="ro-rd">
 		<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul><li class="is-active"><a href={ templ.SafeURL(clusterHref(d.Name)) }>{ d.Name }</a></li></ul></nav>
-		<div class="ro-title-row"><h1 class="ro-title">{ d.Name }</h1></div>
+		@titleRow(d.Name, 0, false)
 		<div class="ro-cluster-meta">
 			if len(d.ClusterChips) > 0 {
 				<div class="ro-chips">
