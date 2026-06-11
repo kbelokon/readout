@@ -21,6 +21,11 @@ coverage.*
 docs/
 test-artifacts/
 
+# Root asset-build toolchain (esbuild / Lightning CSS / biome / tsgo). The Go
+# binary embeds the committed static/ artifacts and builds with NO Node, so
+# node_modules is dev-only and never shipped.
+/node_modules/
+
 # Playwright e2e suite artifacts (baselines under __screenshots__/ ARE committed)
 tests/e2e/node_modules/
 tests/e2e/test-results/
