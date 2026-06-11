@@ -1061,10 +1061,14 @@ templ colsPopoverForm(c ColsPopover) {
 		for _, in := range c.Tools.HiddenInputs {
 			<input type="hidden" name={ in.Name } value={ in.Value }>
 		}
+		// The section heads above each input already NAME the field, so the
+		// placeholders carry only a short worked example that fits the popover
+		// width un-clipped; the full explanation lives in the title tooltip
+		// (a clipped placeholder is unreadable -- field report 2026-06-11).
 		<div class="pop-head">Label columns</div>
-		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TableIcon)</span><input id="ro-cols-labelcols" class="ro-input" type="text" placeholder="Labels as columns (comma separated, '*' for all)" name="labelcols" value={ c.Tools.LabelColsVal } aria-label="Label columns"></span>
+		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TableIcon)</span><input id="ro-cols-labelcols" class="ro-input" type="text" placeholder="app, team — or *" name="labelcols" value={ c.Tools.LabelColsVal } aria-label="Label columns" title="Comma-separated label keys to show as table columns; * shows every label"></span>
 		<div class="pop-head">Label selector</div>
-		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TagsIcon)</span><input id="ro-cols-selector" class="ro-input" type="text" placeholder="Label selector (label=value)" name="selector" value={ c.Tools.SelectorVal } aria-label="Label selector"></span>
+		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TagsIcon)</span><input id="ro-cols-selector" class="ro-input" type="text" placeholder="app=nginx,tier!=cache" name="selector" value={ c.Tools.SelectorVal } aria-label="Label selector" title="Kubernetes label selector — only rows whose labels match are listed"></span>
 		<div class="ro-tools-actions"><button class="ro-btn quiet" type="submit">Apply</button></div>
 	</form>
 }

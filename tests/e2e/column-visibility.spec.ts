@@ -165,6 +165,24 @@ test('title-row survivors: TSV + search buttons stay, labelcols/selector live in
   await expect(page.locator('#ro-cols-labelcols')).toBeVisible();
   await expect(page.locator('#ro-cols-selector')).toBeVisible();
   await expect(page.locator('form.tools-form')).toHaveCount(0);
+
+  // The placeholders must be READABLE: the example text fits the input's
+  // content box un-clipped (a cut-off hint is no hint -- field report
+  // 2026-06-11), and the full explanation rides the title tooltip.
+  for (const id of ['ro-cols-labelcols', 'ro-cols-selector']) {
+    const fits = await page.locator(`#${id}`).evaluate((el) => {
+      const input = el as HTMLInputElement;
+      const cs = getComputedStyle(input);
+      const ctx = document.createElement('canvas').getContext('2d')!;
+      ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      const text = ctx.measureText(input.placeholder).width;
+      const room =
+        input.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      return { text, room, ok: text <= room };
+    });
+    expect(fits.ok, `#${id} placeholder ${fits.text}px must fit ${fits.room}px`).toBe(true);
+    await expect(page.locator(`#${id}`)).toHaveAttribute('title', /.{20,}/);
+  }
 });
 
 test('a popover selector submit keeps the active filter chip (f= merge)', async ({ page }) => {
