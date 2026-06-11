@@ -15,7 +15,7 @@ PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.60.0-noble
 
 .DEFAULT_GOAL := ci
 
-.PHONY: ci tools generate templ-check lint test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-update
+.PHONY: ci tools generate templ-check lint test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-ci e2e-visual-update
 
 ## ci: the REQUIRED gates -- templ freshness, lint, race tests (matches .github/workflows/ci.yaml)
 ci: templ-check lint race
@@ -84,6 +84,18 @@ e2e-docker: e2e-docker-preflight e2e-docker-binaries
 e2e-visual: e2e-docker-preflight e2e-docker-binaries
 	docker run --rm --platform linux/amd64 -v $(CURDIR):/work -w /work/tests/e2e $(PLAYWRIGHT_IMAGE) \
 		sh -c 'npm ci --no-audit --no-fund && RO_VISUAL=1 RO_VISUAL_MAXDIFF=300 RO_VISUAL_MAXDIFF_DENSE=10000 HARNESS_BIN=/work/.build/linux-amd64/harness READOUT_BIN=/work/.build/linux-amd64/readout npx playwright test --project=visual'
+
+## e2e-visual-ci: the CANONICAL strict (0-tolerance) visual check -- container path with NEITHER tolerance env set
+# This is the native-amd64 CI visual job's entrypoint. It runs the same pinned
+# image as e2e-visual but WITHOUT RO_VISUAL_MAXDIFF / RO_VISUAL_MAXDIFF_DENSE, so
+# every frame is compared pixel-exact (both envs default 0 in playwright.config.ts).
+# On the CI runner (native linux/amd64) the renderer is deterministic, so the
+# baselines committed under tests/e2e/__screenshots__ must match exactly. Locally
+# (arm64 + Rosetta) this target will diff on glyph-edge noise -- that is expected;
+# the host-tolerant target is e2e-visual.
+e2e-visual-ci: e2e-docker-preflight e2e-docker-binaries
+	docker run --rm --platform linux/amd64 -v $(CURDIR):/work -w /work/tests/e2e $(PLAYWRIGHT_IMAGE) \
+		sh -c 'npm ci --no-audit --no-fund && RO_VISUAL=1 HARNESS_BIN=/work/.build/linux-amd64/harness READOUT_BIN=/work/.build/linux-amd64/readout npx playwright test --project=visual'
 
 ## e2e-visual-update: REGENERATE the visual baselines in the container (commit the result; never run on the host)
 # Generation mode (--update-snapshots): writes the PNGs and reports pass

@@ -1,8 +1,14 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, frontend-refactor]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      update-baselines:
+        description: "Regenerate the visual baselines from the native amd64 render and upload them as an artifact (does NOT commit)."
+        type: boolean
+        default: false
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -31,3 +37,79 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  # Behavioural e2e: host path on the native amd64 runner. The Playwright
+  # browser plus its OS deps are installed directly (no container); `make e2e`
+  # builds the readout binary and runs the desktop/mobile projects against the
+  # fakeapi harness. Deliberately NOT a `make ci` gate (see Makefile).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tests/e2e/package-lock.json
+      - name: Install Playwright browser + OS deps (Chromium)
+        working-directory: tests/e2e
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Run the behavioural e2e suite
+        run: make e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-playwright-report
+          path: |
+            tests/e2e/playwright-report
+            tests/e2e/test-results
+          if-no-files-found: ignore
+
+  # Visual grid: container path, STRICT (zero tolerance). The runner is native
+  # linux/amd64, so the pinned Playwright image renders deterministically and
+  # the committed baselines must match pixel-exact (both RO_VISUAL_MAXDIFF and
+  # RO_VISUAL_MAXDIFF_DENSE default to 0 -- the CI job sets neither). This is the
+  # CANONICAL visual check; the host-tolerant flow is `make e2e-visual`.
+  #
+  # workflow_dispatch with update-baselines=true regenerates the baselines from
+  # this native render and uploads them as an artifact (no commit). Otherwise it
+  # runs the strict check, and on a green check immediately re-runs it strictly
+  # in the same job -- the double run proves the native render is deterministic.
+  visual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: go.sum
+      - name: Regenerate visual baselines (native amd64 render)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update-baselines }}
+        run: make e2e-visual-update
+      - name: Upload regenerated baselines artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update-baselines }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-baselines
+          path: tests/e2e/__screenshots__
+          if-no-files-found: error
+      - name: Strict visual check (zero tolerance) -- run 1
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.update-baselines) }}
+        run: make e2e-visual-ci
+      - name: Strict visual check (zero tolerance) -- run 2 (determinism proof)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.update-baselines) }}
+        run: make e2e-visual-ci
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: visual-playwright-report
+          path: |
+            tests/e2e/playwright-report
+            tests/e2e/test-results
+          if-no-files-found: ignore
