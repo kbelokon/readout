@@ -297,8 +297,8 @@ export function syncRefreshUI(): void {
     if (label) {
         label.textContent = live ? 'Live' : secs > 0 ? `${secs}s` : 'Off';
     }
-    document.querySelectorAll('.refresh-option').forEach((opt) => {
-        const value = (opt as HTMLElement).dataset.interval ?? '';
+    document.querySelectorAll('[data-ro-action="set-refresh"]').forEach((opt) => {
+        const value = (opt as HTMLElement).dataset.roInterval ?? '';
         opt.classList.toggle(
             'is-active',
             live ? value === 'Live' : value !== 'Live' && (parseInt(value, 10) || 0) === secs,
@@ -350,7 +350,9 @@ document.addEventListener('visibilitychange', () => {
 // .refresh-option), and neither co-matches a row/palette/columns selector, so
 // their position at the END of the dispatcher's leaf list (after the migrated
 // clusters) preserves the C1 contract: every migrated leaf still front-ran the
-// monolith, and these were the monolith's own trailing branches.
+// monolith, and these were the monolith's own trailing branches. Both now route
+// on data-ro-action ("retry" / "set-refresh") instead of the presentational
+// .ro-stale-retry / .refresh-option classes -- the interval rides data-ro-interval.
 export const refreshBindings: Binding[] = [
     // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
     // #resource-list-content through the shared refresh path (the v2 loop derives
@@ -365,7 +367,7 @@ export const refreshBindings: Binding[] = [
     // read-only floor is untouched.
     {
         event: 'click',
-        selector: '.ro-stale-retry',
+        selector: '[data-ro-action="retry"]',
         stop: true,
         handler: (event) => {
             event.preventDefault();
@@ -389,14 +391,14 @@ export const refreshBindings: Binding[] = [
     // selection. Kept its early-return (stop:true).
     {
         event: 'click',
-        selector: '.refresh-option',
+        selector: '[data-ro-action="set-refresh"]',
         stop: true,
         handler: (event, matched) => {
             const option = matched as HTMLElement;
-            if (option.dataset.interval === 'Live') {
+            if (option.dataset.roInterval === 'Live') {
                 roPrefsSetRefresh('Live');
             } else {
-                const interval = parseInt(option.dataset.interval ?? '', 10) || 0;
+                const interval = parseInt(option.dataset.roInterval ?? '', 10) || 0;
                 roPrefsSetRefresh(interval > 0 ? String(interval) : 'Off');
             }
             liveApply(true); // force: an explicit pick re-attempts even after a fallback

@@ -396,21 +396,21 @@ func TestPrefsRefreshModeRendered(t *testing.T) {
 	p := prefsGet(t, app, "/clusters", "", nil)
 	p.wantText("#refresh-label", "Off")
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown")
-	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option is-active")
+	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option is-active")
 
 	// Persisted interval: label + active option + the refresh-on hook.
 	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "30"}), nil)
 	p.wantText("#refresh-label", "30s")
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown refresh-on")
-	p.wantAttr(`.refresh-option[data-interval="30"]`, "class", "refresh-option is-active")
-	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option")
+	p.wantAttr(`.refresh-option[data-ro-interval="30"]`, "class", "refresh-option is-active")
+	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option")
 
 	// Persisted Off: an explicit choice renders like the default (and the
 	// legacy "0" never reaches the cookie -- the JS writes "Off").
 	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "Off"}), nil)
 	p.wantText("#refresh-label", "Off")
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown")
-	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option is-active")
+	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option is-active")
 
 	// Persisted Live (Unit 27/D19): the label says Live, the Live option is the
 	// active one (NOT Off, even though Live arms no polling interval), and the
@@ -418,8 +418,8 @@ func TestPrefsRefreshModeRendered(t *testing.T) {
 	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "Live"}), nil)
 	p.wantText("#refresh-label", "Live")
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown refresh-on")
-	p.wantAttr(`.refresh-option[data-interval="Live"]`, "class", "refresh-option is-active")
-	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option")
+	p.wantAttr(`.refresh-option[data-ro-interval="Live"]`, "class", "refresh-option is-active")
+	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option")
 }
 
 // TestLiveOptionScopeGate pins the server-rendered Live availability (Unit 27/
@@ -429,7 +429,7 @@ func TestPrefsRefreshModeRendered(t *testing.T) {
 // pages (detail) keep it enabled-but-inert, like the interval options.
 func TestLiveOptionScopeGate(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
-	live := `.refresh-option[data-interval="Live"]`
+	live := `.refresh-option[data-ro-interval="Live"]`
 
 	// Single-type, single-cluster list: enabled.
 	p := prefsGet(t, app, "/clusters/test/namespaces/default/pods", "", nil)

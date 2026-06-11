@@ -100,7 +100,7 @@ function rowNames(page: Page) {
 // The navbar interval menu opens on hover (CSS :hover/:focus-within).
 async function pickInterval(page: Page, secs: number): Promise<void> {
   await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-interval="${secs}"]`).click();
+  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
 }
 
 test.beforeEach(async ({}, testInfo) => {

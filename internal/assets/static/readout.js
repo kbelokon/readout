@@ -283,7 +283,7 @@
       return false;
     }
     const option = document.querySelector(
-      '.refresh-option[data-interval="Live"]'
+      '[data-ro-action="set-refresh"][data-ro-interval="Live"]'
     );
     return !!option && !option.disabled;
   }
@@ -812,8 +812,8 @@ ${piece}`;
     if (label) {
       label.textContent = live ? "Live" : secs > 0 ? `${secs}s` : "Off";
     }
-    document.querySelectorAll(".refresh-option").forEach((opt) => {
-      const value = opt.dataset.interval ?? "";
+    document.querySelectorAll('[data-ro-action="set-refresh"]').forEach((opt) => {
+      const value = opt.dataset.roInterval ?? "";
       opt.classList.toggle(
         "is-active",
         live ? value === "Live" : value !== "Live" && (parseInt(value, 10) || 0) === secs
@@ -858,7 +858,7 @@ ${piece}`;
     // read-only floor is untouched.
     {
       event: "click",
-      selector: ".ro-stale-retry",
+      selector: '[data-ro-action="retry"]',
       stop: true,
       handler: (event) => {
         event.preventDefault();
@@ -882,14 +882,14 @@ ${piece}`;
     // selection. Kept its early-return (stop:true).
     {
       event: "click",
-      selector: ".refresh-option",
+      selector: '[data-ro-action="set-refresh"]',
       stop: true,
       handler: (event, matched) => {
         const option = matched;
-        if (option.dataset.interval === "Live") {
+        if (option.dataset.roInterval === "Live") {
           roPrefsSetRefresh("Live");
         } else {
-          const interval = parseInt(option.dataset.interval ?? "", 10) || 0;
+          const interval = parseInt(option.dataset.roInterval ?? "", 10) || 0;
           roPrefsSetRefresh(interval > 0 ? String(interval) : "Off");
         }
         liveApply(true);

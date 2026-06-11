@@ -637,7 +637,7 @@ func staleBanner() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "</span><div class=\"bn-body\"><p class=\"bn-title\">Auto-refresh failed — showing the last good data</p><p class=\"bn-text\">Retrying in <span class=\"mono\" data-stale-countdown>…</span>. The rows below are the last good data.</p></div><div class=\"bn-actions\"><button type=\"button\" class=\"ro-btn quiet sm ro-stale-retry\">Retry now</button></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "</span><div class=\"bn-body\"><p class=\"bn-title\">Auto-refresh failed — showing the last good data</p><p class=\"bn-text\">Retrying in <span class=\"mono\" data-stale-countdown>…</span>. The rows below are the last good data.</p></div><div class=\"bn-actions\"><button type=\"button\" class=\"ro-btn quiet sm ro-stale-retry\" data-ro-action=\"retry\">Retry now</button></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

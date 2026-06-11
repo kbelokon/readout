@@ -96,7 +96,7 @@ function liveSupported(): boolean {
         return false;
     }
     const option = document.querySelector(
-        '.refresh-option[data-interval="Live"]',
+        '[data-ro-action="set-refresh"][data-ro-interval="Live"]',
     ) as HTMLButtonElement | null;
     return !!option && !option.disabled;
 }

@@ -51,8 +51,8 @@ func TestShellTopbarChrome(t *testing.T) {
 	// Refresh control: the five interval options (10 replaced 15 per D18/SPEC
 	// §8.3) plus the Live mode (Unit 27/D19), the #refresh-label, the
 	// #refresh-dropdown hook.
-	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
-		t.Fatalf("refresh-option data-interval set = %v, want [0 5 10 30 60 Live]", got)
+	if got := p.attrs("#refresh-dropdown .refresh-option", "data-ro-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
+		t.Fatalf("refresh-option data-ro-interval set = %v, want [0 5 10 30 60 Live]", got)
 	}
 	p.wantHas(".tb-group .tb-btn.refresh-trigger")
 	p.wantHas(".tb-group .tb-btn.refresh-trigger .ro-livedot")
