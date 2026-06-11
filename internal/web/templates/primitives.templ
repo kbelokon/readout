@@ -1,0 +1,27 @@
+package templates
+
+// primitives.templ holds the low-level templ building blocks the page bodies
+// reuse, factored out of LIVE repeats (not speculative variants). Each primitive
+// here had >=2 byte-identical call sites across the page templates; routing them
+// through one definition means a markup change lands in one place instead of N
+// copies. The render output of every primitive MUST stay byte-identical to the
+// markup it replaced -- the SPEC §9 visual grid + the behavior-fact net are the
+// arbiters, so element/attribute order and inter-node whitespace are load-bearing
+// and must not be "tidied" here.
+//
+// Scope rule: variation rides on parameters/opts, never children-magic, until a
+// live call site forces otherwise. data-ro-* hooks are preserved verbatim by the
+// callers (they are behavioral contracts, not styling).
+
+// tabLink renders one anchor in the `.ro-tabs` underline chrome shared by the
+// detail page (Default/YAML/Events), the logs page, and the resource-types
+// Cluster/Namespaced switch. The active tab carries the is-active marker; the
+// hrefs are real <a> targets (the views are sibling GETs). Replaces the
+// previously duplicated detailTab + rtTab helpers.
+templ tabLink(active bool, href, label string) {
+	if active {
+		<a href={ templ.SafeURL(href) } class="is-active">{ label }</a>
+	} else {
+		<a href={ templ.SafeURL(href) }>{ label }</a>
+	}
+}

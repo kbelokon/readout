@@ -57,7 +57,7 @@ templ ResourceTypes(d ResourceTypesData) {
 			}
 			</ul></nav>
 		<div class="ro-title-row"><h1 class="ro-title">Resource Types</h1><span class="ro-count">{ itoa(d.Count) }</span></div>
-		<div class="ro-tabs ro-rt-tabs">@rtTab(d.ClusterActive, d.ClusterTab, "Cluster")@rtTab(!d.ClusterActive, d.NamespacedTab, "Namespaced")</div>
+		<div class="ro-tabs ro-rt-tabs">@tabLink(d.ClusterActive, d.ClusterTab, "Cluster")@tabLink(!d.ClusterActive, d.NamespacedTab, "Namespaced")</div>
 		<div class="ro-table-wrap"><table class="ro-table"><thead><tr><th>Kind</th><th>API Group</th><th>Version</th><th>Scope</th></tr></thead><tbody>
 			for _, row := range d.Rows {
 				<tr><td class="ro-cell-kind"><span class="res-kind">@templ.Raw(row.Icon)<a href={ templ.SafeURL(row.Href) }>{ row.Kind }</a></span>
@@ -77,15 +77,4 @@ templ ResourceTypes(d ResourceTypesData) {
 			}
 			</tbody></table></div>
 	</div>
-}
-
-// rtTab renders one resource-types tab anchor in the borrowed `.ro-tabs` chrome;
-// the active tab carries the is-active underline marker (matching the detail-page
-// tabs). The template keeps the real <a> hrefs.
-templ rtTab(active bool, href, label string) {
-	if active {
-		<a href={ templ.SafeURL(href) } class="is-active">{ label }</a>
-	} else {
-		<a href={ templ.SafeURL(href) }>{ label }</a>
-	}
 }

@@ -248,15 +248,15 @@ func Logs(d LogsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = detailTab(false, d.DefaultHref, "Default").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = tabLink(false, d.DefaultHref, "Default").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = detailTab(false, d.YAMLHref, "YAML").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = tabLink(false, d.YAMLHref, "YAML").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = detailTab(false, d.EventsHref, "Events").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = tabLink(false, d.EventsHref, "Events").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

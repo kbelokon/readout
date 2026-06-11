@@ -329,7 +329,7 @@ templ ResourceView(d DetailData) {
 				for _, link := range d.Links {
 					<a href={ templ.SafeURL(link.Href) } class="ro-iconbtn" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
 				}</div><span class="ro-detail-meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></div>
-			<div class="ro-tabs">@detailTab(d.DefaultTabActive, "?", "Default")@detailTab(d.YAMLTabActive, "?view=yaml", "YAML")@detailTab(d.EventsTabActive, "?view=events", "Events")
+			<div class="ro-tabs">@tabLink(d.DefaultTabActive, "?", "Default")@tabLink(d.YAMLTabActive, "?view=yaml", "YAML")@tabLink(d.EventsTabActive, "?view=events", "Events")
 				if d.LogsHref != "" {
 					<a href={ templ.SafeURL(d.LogsHref) }>Logs</a>
 				}
@@ -533,16 +533,6 @@ templ detailBreadcrumb(b DetailBreadcrumb) {
 			<li><a href={ templ.SafeURL(b.PluralHref) }>{ b.Plural }</a></li>
 		}
 		<li class="is-active"><a href="#">{ b.Name }</a></li></ul></nav>
-}
-
-// detailTab renders one redesign detail-page tab anchor; the active tab carries
-// the is-active class (the .ro-tabs underline marker).
-templ detailTab(active bool, href, label string) {
-	if active {
-		<a href={ templ.SafeURL(href) } class="is-active">{ label }</a>
-	} else {
-		<a href={ templ.SafeURL(href) }>{ label }</a>
-	}
 }
 
 // subtableC renders the related-pods subtable as a collapsible section (the

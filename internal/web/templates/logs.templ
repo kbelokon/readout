@@ -99,7 +99,7 @@ templ Logs(d LogsData) {
 			<div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } hx-boost="false" title="Download logs" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a></div>
 		}
 		</div>
-		<div class="ro-tabs">@detailTab(false, d.DefaultHref, "Default")@detailTab(false, d.YAMLHref, "YAML")@detailTab(false, d.EventsHref, "Events")<a class="is-active">Logs</a></div>
+		<div class="ro-tabs">@tabLink(false, d.DefaultHref, "Default")@tabLink(false, d.YAMLHref, "YAML")@tabLink(false, d.EventsHref, "Events")<a class="is-active">Logs</a></div>
 		if !d.ShowContainerLogs {
 			<article class="ro-notice" role="note"><p class="ro-notice-title">Container Logs Disabled</p><p>Container logs are not shown as they were disabled in readout. Enable them with <code>showContainerLogs: true</code> in readout.yaml.</p></article>
 		} else {
