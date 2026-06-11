@@ -1,11 +1,14 @@
 package templates
 
+import "strings"
+
 // resource_table.templ is the resource-list TABLE fragment (the body of the
 // `.../{plural}/_table` GET partial route AND the inner content of the full
-// list page's #resource-list-content container): per-table title row (count chip
-// + TSV/columns/search-this actions) + tools form + phase strip + the redesign
-// `.ro-table` (in `.ro-table-wrap`), then the footer meta line and the
-// all-cluster partial-failure banner.
+// list page's #resource-list-content container): per-table title row (count
+// chip + TSV / columns / search-this actions -- the columns action is the D8
+// ⊞ popover on single-type pages, the v1 toggle-tools + tools form elsewhere)
+// + phase strip + the redesign `.ro-table` (in `.ro-table-wrap`), then the
+// footer meta line and the all-cluster partial-failure banner.
 //
 // This is the canonical resource-list ENGINE: it renders Pods (rich cells),
 // Nodes/Deployments/Namespaces (rich cells arrive in later waves), and every
@@ -21,6 +24,14 @@ package templates
 // carried in ListData; the renderer touches no request and recomputes nothing.
 // Trusted pre-rendered chrome (inline SVG icons, the sort-direction icon) rides
 // in as raw strings.
+//
+// The v2 interaction loop (D6, single-type pages only -- D1): sort headers with
+// a non-empty PartialHref are hx-get requests against the `_table` partial,
+// morph-swapped into #resource-list-content (the handler pushes the CANONICAL
+// page URL via HX-Push-Url -- never the partial URL); rows with a non-empty Key
+// carry data-key="cluster/ns/name" plus an id derived from it, so idiomorph
+// matches rows by object identity rather than position and readout.js re-keys
+// selection/focus state onto the same object after every morph.
 
 // ListData is the resolved resource-list input shared by the full page and the
 // `_table` partial. The all-* flags drive the leading Cluster/Namespace columns
@@ -46,16 +57,45 @@ type ListData struct {
 	// hidden hook; it lives on the FULL page only (the partial fragment is what
 	// gets dimmed, it does not re-emit the banner).
 	ShowStaleBanner bool
+
+	// FilterBar is the Filters v2 chips editor (D7): rendered in the tools row of
+	// the FIRST (only) table on single-type pages, inside the morphed fragment so
+	// a chip-committing partial request re-renders the chips and a shareable URL
+	// lands with them visible. nil on multi-type pages (D1: `?f=` ignored there).
+	FilterBar *FilterBarData
+}
+
+// FilterBarData is the chips editor: the plural (placeholder copy), the icon,
+// and the active `?f=` chips rendered server-side.
+type FilterBarData struct {
+	Plural     string
+	FilterIcon string
+	Chips      []EditorChip
+}
+
+// EditorChip is one `.ro-scope-chip` in the editor. Field/Op/Value carry the
+// display split of a well-formed chip; a malformed chip (Field == "") renders
+// its whole Label instead. RemoveHref drops exactly this raw occurrence.
+type EditorChip struct {
+	Field      string
+	Op         string
+	Value      string
+	Label      string
+	RemoveHref string
 }
 
 // ListState is the resolved whole-list failure state. Kind is "" (no state),
-// "forbidden", or "unreachable". Forbidden names the verb/resource/namespace +
-// 403 in Detail; unreachable carries the REAL transport error string in Detail.
+// "forbidden", or "unreachable". Hint is the ONE plain-language line under the
+// headline; Detail carries the VERBATIM apiserver/transport string for the
+// mono `.errdetail` block (SPEC §1.5). Cluster names the failing cluster in
+// the unreachable headline ("Can’t reach <cluster>").
 type ListState struct {
 	Kind      string
+	Cluster   string
 	Verb      string
 	Resource  string
 	Namespace string
+	Hint      string
 	Detail    string
 	GlyphIcon string // pre-rendered state glyph (raw SVG)
 	RetryHref string
@@ -75,6 +115,17 @@ type TableData struct {
 
 	Tools TableTools
 
+	// Cols is the ⊞ column-visibility popover (D8): non-nil on single-type
+	// pages, where it REPLACES the v1 toggle-tools button + tools form (the
+	// filter input's new home is the chips editor, labelcols + selector move
+	// into the popover). nil (multi-type pages, D1) keeps the v1 chrome.
+	Cols *ColsPopover
+
+	// HideCreated suppresses the synthetic Created header and cells (D8): the
+	// Created column is rendered by this template, not carried by the kube
+	// Table, so the hide set reaches it through this flag.
+	HideCreated bool
+
 	ShowMetricsHref string
 
 	Phase     []PhaseChip
@@ -88,9 +139,13 @@ type TableData struct {
 	CreatedIcon   string
 	CreatedSorted bool // active sort is the synthetic Created column
 
+	// CreatedPartialHref is the Created header's `_table` partial sort URL: when
+	// non-empty (single-type pages, D6) the header becomes an hx-get morph swap
+	// of #resource-list-content; empty keeps the v1 boosted link (D1).
+	CreatedPartialHref string
+
 	Rows []TableRow
 
-	EmptyKind  string // Resource.Kind for the empty-state sentence
 	EmptyGlyph string // pre-rendered empty-state glyph (raw SVG, the inbox icon)
 
 	// Empty-state enrichment (rendered only when Rows is empty). EmptyActionHref/
@@ -120,6 +175,10 @@ type PhaseChip struct {
 // TableColumn is one column header: its title/class + sort link + the
 // pre-rendered sort-direction icon (raw HTML, empty when not the sort column).
 // Sorted marks the active sort column (the redesign `th.sorted` highlight).
+// PartialHref, when non-empty (single-type pages, D6), turns the header link
+// into an hx-get of the `_table` partial morph-swapped into
+// #resource-list-content; SortHref stays the canonical page URL for
+// history/new-tab/no-JS. Empty PartialHref keeps the v1 boosted link (D1).
 type TableColumn struct {
 	Description string
 	Class       string
@@ -127,6 +186,35 @@ type TableColumn struct {
 	Name        string
 	SortIcon    string
 	Sorted      bool
+	PartialHref string
+
+	// Hint is the chips-editor autocomplete type hint (text/number/duration),
+	// emitted as data-hint on the <th>. Its presence marks the column
+	// FILTERABLE: the editor builds field suggestions only from data-hint
+	// headers, so the synthetic Created / leading Cluster/Namespace headers
+	// (which the server-side filter cannot bind) are never suggested.
+	Hint string
+}
+
+// ColsPopover is the ⊞ column-visibility popover (D8): the per-column
+// checkbox entries (the full universe -- hidden columns included, so they stay
+// re-offerable) plus the labelcols / selector inputs absorbed from the tools
+// form (Tools carries their values and the hidden param round-trip; its
+// FilterVal is unused here -- the chips editor owns filtering).
+type ColsPopover struct {
+	Plural  string
+	Icon    string // pre-rendered ⊞ glyph (raw SVG)
+	Entries []ColsEntry
+	Tools   TableTools
+}
+
+// ColsEntry is one popover checkbox: the column name, whether the current
+// render hides it, and whether it is the protected identity column (rendered
+// checked + disabled -- the server ignores it in hidecols too).
+type ColsEntry struct {
+	Name     string
+	Hidden   bool
+	Identity bool
 }
 
 // TableTools is the per-table tools form (label columns / selector / filter).
@@ -148,7 +236,10 @@ type HiddenInput struct {
 }
 
 // TableRow is one body row: its status class, the optional Cluster/Namespace
-// cells, the per-column cells, and the Created cell.
+// cells, the per-column cells, and the Created cell. Key/DomID carry the D6
+// row identity ("cluster/ns/name" + the id derived from it): when non-empty
+// (single-type pages) the <tr> emits data-key + id so idiomorph matches rows
+// by identity (never position) and client row state re-keys across morphs.
 type TableRow struct {
 	StatusClass  string
 	ClusterHref  string
@@ -159,6 +250,19 @@ type TableRow struct {
 	CreatedClass string
 	CreatedText  string
 	CreatedTitle string
+	Key          string
+	DomID        string
+
+	// Per-row gesture targets (Unit 16 / D10), set together with Key on
+	// single-type pages: the full untruncated object name plus the
+	// server-resolved open / ?view=yaml / /logs (pods-only) / ?download=yaml
+	// hrefs, emitted as data-name/data-href/data-yaml/data-logs/data-download
+	// for the context menu + bulk actions in readout.js.
+	Name         string
+	OpenHref     string
+	YAMLHref     string
+	LogsHref     string
+	DownloadHref string
 }
 
 // TableCell is one body cell. Kind selects the render branch; Class is the full
@@ -174,11 +278,11 @@ type TableCell struct {
 	Tone     string // status-dot / cell-status tone (ok/warn/err/info/mute)
 	Ratio    string // ready ratio tone (full/partial/zero)
 	Pulse    bool   // transient status -> .ro-dot.pulse
-	NameHead string // bright workload prefix (sticky name cell)
-	NameTail string // muted hash suffix (NameHead+NameTail == Value)
+	NameHead string // bright workload prefix (sticky name cell); middle-truncated past 42 chars (full name then in Title)
+	NameTail string // muted hash suffix -- NEVER truncated
 	Ago      string // optional "(… ago)" suffix on a restarts cell
 	Trunc    bool   // secondary free-text cell: truncate with Title tooltip
-	Title    string // full-value tooltip (truncated or age cell)
+	Title    string // full-value tooltip (truncated, age, ports/hosts, evobj cells)
 
 	CapBucket string // node capacity bar bucket (lo/mid/hi); "" -> no colour fill
 	CapPct    int    // node capacity bar fill width %; 0 -> empty bar
@@ -191,15 +295,34 @@ type TableCell struct {
 	RolloutState string       // deployment rollout state (done/prog/paused)
 	RolloutIcon  string       // pre-rendered rollout glyph (raw SVG, themed by state colour)
 
-	Chips []RowChip // namespace label chips (empty -> muted "—")
+	Chips []RowChip // label/selector chips (empty -> muted "—"); 2 + the +N in-cell expand
+
+	More      string    // faint overflow suffix on a ports/hosts cell ("+N" / "+N hosts")
+	Keys      []KeyChip // configmap/secret data chips (name · size); 3 + the +N keys in-cell expand
+	EvKind    string    // events object kind (faint "Kind/" prefix)
+	EvName    string    // events object name, 20…8 middle-truncated (full name in Title)
+	EvAgeRest string    // faint 11px second layer of an events age cell
+	CellIcon  string    // pre-rendered glyph for the tls lock / evobj kind icon (raw trusted markup)
 }
 
-// RowChip is one namespace label chip: Class is the full redesign chip class
-// (`ro-chip` + the ` app` accent token for app.kubernetes.io/* labels), Text is
-// the "key: value" label shown in the pill.
+// KeyChip is one configmap/secret data chip (`name · size`): the key name and
+// its human byte size. No value field exists by construction -- secret VALUES
+// never enter the DOM (SPEC §4.10).
+type KeyChip struct {
+	Name string
+	Size string
+}
+
+// RowChip is one namespace label chip: the label key and value, rendered as a
+// NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3 colour
+// law: every label chip is neutral; the green `.app` accent is retired).
+// A non-empty Href (single-type pages, D7/SPEC §8.1) renders the chip as a
+// click-to-filter anchor: the same list with `label:key=value` appended to
+// `?f=`.
 type RowChip struct {
-	Class string
-	Text  string
+	Key  string
+	Val  string
+	Href string
 }
 
 // Cond is one abnormal node condition pill (name + redesign tone warn/err/ok).
@@ -234,7 +357,70 @@ const (
 	CellReplicas
 	CellRollout
 	CellChips
+	// SPEC §4 cookbook corner-case kinds -- the order MUST mirror the
+	// package-web cellKind enum (the bridge casts between them).
+	CellPending
+	CellPorts
+	CellHosts
+	CellTLS
+	CellLastRun
+	CellKeys
+	CellCount
+	CellEvObj
+	CellEvAge
+	CellMsg
 )
+
+// chipsCellMax / keysCellMax are the SPEC §4.9/§4.10 in-cell overflow
+// thresholds: 2 label/selector chips and 3 data-key chips shown before the
+// extras hide behind `.xtra` + the `+N` expand button.
+const (
+	chipsCellMax = 2
+	keysCellMax  = 3
+)
+
+// virtualizeThreshold is the D20 windowing boundary (~500 rows), owned HERE:
+// readout.js engages its virtualizer off the `ro-windowed` wrap class this
+// template emits, so the threshold has exactly one owner. Above it (Unit 24):
+//   - the wrap swaps `has-cards` for `ro-windowed` and the mobile card
+//     projection is NOT emitted (600 hidden .ro-pcard subtrees must not ride
+//     every morph);
+//   - the events msg cell clamps to one line in CSS and carries the full text
+//     in its title (recorded SPEC deviation, the fixed-height law);
+//   - in-cell chip/keys expansion is disabled: the +N renders as a static
+//     chip whose title carries the full list, and the `.xtra` overflow chips
+//     are not emitted at all.
+const virtualizeThreshold = 500
+
+// tableWindowed reports whether a table crosses the windowing threshold.
+func tableWindowed(table TableData) bool { return len(table.Rows) > virtualizeThreshold }
+
+// tableWrapClass picks the wrap modifier: the mobile-card projection marker
+// below the threshold, the D20 `ro-windowed` marker above it.
+func tableWrapClass(windowed bool) string {
+	if windowed {
+		return "ro-table-wrap ro-windowed"
+	}
+	return "ro-table-wrap has-cards"
+}
+
+// chipsTitle / keysTitle render the FULL chip list for the windowed +N's
+// title (D20: expansion disabled while windowed; the title recovers the data).
+func chipsTitle(chips []RowChip) string {
+	parts := make([]string, len(chips))
+	for i, chip := range chips {
+		parts[i] = chip.Key + ":" + chip.Val
+	}
+	return strings.Join(parts, ", ")
+}
+
+func keysTitle(keys []KeyChip) string {
+	parts := make([]string, len(keys))
+	for i, key := range keys {
+		parts[i] = key.Name + " · " + key.Size
+	}
+	return strings.Join(parts, ", ")
+}
 
 // ResourceTable renders the full table fragment (one block per table + the
 // footer + the partial-failure banner). This is what the `_table` partial
@@ -255,12 +441,29 @@ templ resourceTables(d ListData) {
 		<div class="ro-title-row">
 			<h1 class="title ro-title">{ table.Kind }</h1> <span class="ro-count">{ itoa(table.Count) }</span> <span style="flex:1"></span>
 			<div class="ro-title-actions">
-				<a href={ templ.SafeURL(table.DownloadTSVHref) } title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
-				<a href="#" class="ro-iconbtn toggle-tools" title="Columns &amp; filters" data-target={ toolsTableID(i) }><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
+				// hx-boost="false": the body-level boost intercepts a plain
+				// anchor click and swaps the response into <body> -- for an
+				// attachment URL that pastes the raw TSV bytes over the page
+				// instead of downloading (htmx 2.0.4, verified live). Every
+				// download-serving anchor must opt out.
+				<a href={ templ.SafeURL(table.DownloadTSVHref) } hx-boost="false" title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
+				if table.Cols != nil {
+					<span class="rel">
+						<button type="button" id="ro-cols-btn" class="ro-iconbtn" data-cols-toggle title="Columns" aria-haspopup="true" aria-expanded="false"><span class="icon">@templ.Raw(table.Cols.Icon)</span></button>
+						@colsPopover(*table.Cols)
+					</span>
+				} else {
+					<a href="#" class="ro-iconbtn toggle-tools" title="Columns &amp; filters" data-target={ toolsTableID(i) }><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
+				}
 				<a href={ templ.SafeURL(table.SearchHref) } class="ro-iconbtn" title="Search this type"><span class="icon">@templ.Raw(table.SearchIcon)</span></a>
 			</div>
 		</div>
-		@toolsForm(table.Tools, i)
+		if table.Cols == nil {
+			@toolsForm(table.Tools, i)
+		}
+		if i == 0 && d.FilterBar != nil {
+			@filterBar(*d.FilterBar)
+		}
 		if table.ShowMetricsHref != "" {
 			<div class="section"><a href={ templ.SafeURL(table.ShowMetricsHref) }>Show CPU/Memory Usage</a></div>
 		}
@@ -271,7 +474,16 @@ templ resourceTables(d ListData) {
 				}
 				</div><div class="ro-phase-total"><span class="ro-phase-count">{ itoa(table.PhaseRows) }</span>{ " object" }{ pluralSuffix(table.PhaseRows) }{ " · " }{ formatSeconds(d.DurationSeconds) }{ "s" }</div></div>
 		}
-		<div class="ro-table-wrap has-cards"><table class="ro-table"><thead><tr>
+		// The wrap is keyboard-reachable (tabindex) -- required for a scrollable
+		// region anyway -- and carries role="group", which supports the JS-managed
+		// aria-activedescendant that mirrors the j/k row focus (D23/SPEC §8.6:
+		// "j/k focus moves aria-activedescendant"). readout.js writes/clears the
+		// attribute from the identity-keyed focus store after every morph.
+		// Above the windowing threshold the wrap carries `ro-windowed` instead
+		// of `has-cards` (Unit 24/D20): the virtualizer engages off it, the
+		// fixed-height clamp CSS keys off it, and <760px keeps the table
+		// visible because the card projection below is suppressed.
+		<div class={ tableWrapClass(tableWindowed(table)) } role="group" tabindex="0" aria-label={ table.Kind }><table class="ro-table"><thead><tr>
 			if table.MultiCluster {
 				<th>Cluster</th>
 			}
@@ -279,12 +491,55 @@ templ resourceTables(d ListData) {
 				<th>Namespace</th>
 			}
 			for _, col := range table.Columns {
-				<th title={ col.Description } class={ thClass(col.Class, col.Sorted) }><a href={ templ.SafeURL(col.SortHref) }>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
+				<th
+					title={ col.Description }
+					class={ thClass(col.Class, col.Sorted) }
+					if col.Hint != "" {
+						data-hint={ col.Hint }
+					}
+					if col.Sorted {
+						aria-sort={ ariaSort(col.SortIcon) }
+					}
+				><a
+					href={ templ.SafeURL(col.SortHref) }
+					if col.PartialHref != "" {
+						hx-get={ col.PartialHref }
+						hx-target="#resource-list-content"
+						hx-swap="morph"
+					}
+				>{ col.Name }@templ.Raw(col.SortIcon)</a></th>
 			}
-			<th class={ thClass("", table.CreatedSorted) }><a href={ templ.SafeURL(table.CreatedHref) }>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
+			if !table.HideCreated {
+				<th
+					class={ thClass("", table.CreatedSorted) }
+					if table.CreatedSorted {
+						aria-sort={ ariaSort(table.CreatedIcon) }
+					}
+				><a
+					href={ templ.SafeURL(table.CreatedHref) }
+					if table.CreatedPartialHref != "" {
+						hx-get={ table.CreatedPartialHref }
+						hx-target="#resource-list-content"
+						hx-swap="morph"
+					}
+				>{ "Created" }@templ.Raw(table.CreatedIcon)</a></th>
+			}
 			</tr></thead><tbody>
 			for _, row := range table.Rows {
-				<tr class={ rowClass(row.StatusClass) }>
+				<tr
+					class={ rowClass(row.StatusClass) }
+					if row.Key != "" {
+						id={ row.DomID }
+						data-key={ row.Key }
+						data-name={ row.Name }
+						data-href={ row.OpenHref }
+						data-yaml={ row.YAMLHref }
+						data-download={ row.DownloadHref }
+					}
+					if row.LogsHref != "" {
+						data-logs={ row.LogsHref }
+					}
+				>
 					if table.MultiCluster {
 						<td class="cell-clu"><a href={ templ.SafeURL(row.ClusterHref) }>{ row.Cluster }</a></td>
 					}
@@ -292,12 +547,15 @@ templ resourceTables(d ListData) {
 						<td class="cell-ns"><a href={ templ.SafeURL(row.NsHref) }>{ row.Namespace }</a></td>
 					}
 					for _, cell := range row.Cells {
-						@tableCell(cell)
+						@tableCell(cell, tableWindowed(table))
 					}
-					<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</td></tr>
+					if !table.HideCreated {
+						<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</td>
+					}
+					</tr>
 			}
 			if len(table.Rows) == 0 {
-				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces)) }>
+				<tr class="ro-empty-row"><td colspan={ itoa(emptyColspan(table.ColumnCount, table.MultiCluster, d.IsAllNamespaces, table.HideCreated)) }>
 					if len(table.EmptyFilters) > 0 {
 						@emptyFiltered(d, table)
 					} else {
@@ -306,7 +564,13 @@ templ resourceTables(d ListData) {
 					</td></tr>
 			}
 			</tbody></table></div>
-		@cardList(d, table)
+		// Card suppression above the windowing threshold (Unit 24/D20): the
+		// server-rendered mobile projection would ride EVERY morph as 600
+		// hidden .ro-pcard subtrees. Below the threshold the card layer is
+		// unchanged (D22).
+		if !tableWindowed(table) {
+			@cardList(d, table)
+		}
 	}
 	<div class="ro-table-meta">
 		if d.AllNamespacesHref != "" {
@@ -326,11 +590,27 @@ templ resourceTables(d ListData) {
 // tableCell renders one body cell, branching on Kind. The Name branch is its own
 // sticky `td.cell-name` (with the pn-head/pn-tail split); the rest share the
 // (cellClass + colClass) <td> wrapper and reskin into the redesign vocabulary.
-templ tableCell(cell TableCell) {
+// A middle-truncated name (head > 42 chars, SPEC §4.2) renders its truncated
+// head with the FULL name in the link's title; a short name keeps the exact
+// v1 markup (bare value when there is no hash tail).
+//
+// windowed (Unit 24/D20, true above the virtualization threshold) flips the
+// fixed-height variants: the events msg cell gains a full-text title (CSS
+// clamps it to one line off the wrap's ro-windowed class) and the chip/keys
+// strips render their +N as a static title-carrying chip instead of the
+// in-cell expand.
+templ tableCell(cell TableCell, windowed bool) {
 	if cell.Kind == CellName {
-		<td class="cell-name"><a href={ templ.SafeURL(cell.Href) }>
+		<td class="cell-name"><a
+			href={ templ.SafeURL(cell.Href) }
+			if cell.Title != "" {
+				title={ cell.Title }
+			}
+		>
 			if cell.NameTail != "" {
 				<span class="pn-head">{ cell.NameHead }</span><span class="pn-tail">{ cell.NameTail }</span>
+			} else if cell.Title != "" {
+				<span class="pn-head">{ cell.NameHead }</span>
 			} else {
 				{ cell.Value }
 			}
@@ -390,13 +670,89 @@ templ tableCell(cell TableCell) {
 			if len(cell.Chips) == 0 {
 				<span class="faint">—</span>
 			} else {
-				<div class="ro-chips">
-					for _, chip := range cell.Chips {
-						<span class={ chip.Class }>{ chip.Text }</span>
-					}
-				</div>
+				@chipsStrip(cell.Chips, windowed)
 			}
 			</td>
+	} else if cell.Kind == CellPending {
+		<td class={ cell.ColClass }>
+			if cell.Pulse {
+				<span class={ cellStatusClass(cell.Tone) }><span class={ dotClass2(cell.Tone, cell.Pulse) } aria-hidden="true"></span>{ cell.Value }</span>
+			} else if cell.Value == "" {
+				<span class="faint">{ "<none>" }</span>
+			} else {
+				{ cell.Value }
+			}
+			</td>
+	} else if cell.Kind == CellPorts {
+		if cell.Value == "" {
+			<td class={ cell.ColClass }><span class="faint">—</span></td>
+		} else {
+			<td class={ cell.ColClass } title={ cell.Title }>
+				{ cell.Value }
+				if cell.More != "" {
+					{ " " }<span class="faint" title={ cell.Title }>{ cell.More }</span>
+				}
+				</td>
+		}
+	} else if cell.Kind == CellHosts {
+		<td class={ cell.ColClass }>
+			if cell.Value == "" {
+				<span class="faint">—</span>
+			} else {
+				{ cell.Value }
+				if cell.More != "" {
+					{ " " }<span class="faint" title={ cell.Title }>{ cell.More }</span>
+				}
+			}
+			</td>
+	} else if cell.Kind == CellTLS {
+		<td class={ cell.ColClass }>
+			if cell.Value != "" {
+				<span class="cell-status ok" title="TLS terminated"><span class="ico sm">@templ.Raw(cell.CellIcon)</span>{ cell.Value }</span>
+			} else {
+				<span class="faint">—</span>
+			}
+			</td>
+	} else if cell.Kind == CellLastRun {
+		<td class={ cell.ColClass }>
+			if cell.Value == "" {
+				<span class="faint">{ "<never>" }</span>
+			} else {
+				<span class={ cell.Class }>{ cell.Value }</span>
+			}
+			</td>
+	} else if cell.Kind == CellKeys {
+		<td>
+			if len(cell.Keys) == 0 {
+				<span class="faint">—</span>
+			} else {
+				@keysChips(cell.Keys, windowed)
+			}
+			</td>
+	} else if cell.Kind == CellCount {
+		<td class={ numColClass(cell.ColClass) }><span class={ cell.Class }>{ "×" + cell.Value }</span></td>
+	} else if cell.Kind == CellEvObj {
+		<td
+			if cell.Title != "" {
+				title={ cell.Title }
+			}
+		><span class="res-kind">@templ.Raw(cell.CellIcon)<span class="faint">{ cell.EvKind + "/" }</span>{ cell.EvName }</span></td>
+	} else if cell.Kind == CellEvAge {
+		<td class={ cell.ColClass }><span class={ cell.Class }>{ cell.Value }</span>
+			if cell.EvAgeRest != "" {
+				{ " " }<span class="faint evage-rest">{ cell.EvAgeRest }</span>
+			}
+			</td>
+	} else if cell.Kind == CellMsg {
+		// While windowed the CSS clamps the msg to ONE line (the D20
+		// fixed-height law); the title carries the full text so it stays
+		// recoverable (§1.4). Below the threshold: full wrap, no title.
+		<td
+			class="ro-event-msg"
+			if windowed {
+				title={ cell.Value }
+			}
+		>{ cell.Value }</td>
 	} else {
 		<td class={ cellTdClass(cell.Class, cell.ColClass) } title={ cell.Title }>
 			switch cell.Kind {
@@ -459,7 +815,7 @@ templ pcard(d ListData, table TableData, row TableRow) {
 					<span class="m"><span class="k">{ metaKey(&table, ci) }</span>@pcardCell(cell)</span>
 				}
 			}
-			if row.CreatedText != "" {
+			if !table.HideCreated && row.CreatedText != "" {
 				<span class="m"><span class="k">created</span><span class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</span></span>
 			}
 			</div>
@@ -473,9 +829,16 @@ templ pcard(d ListData, table TableData, row TableRow) {
 templ pcardName(row TableRow) {
 	<span class="pc-name">
 		if cell, ok := nameCell(&row); ok {
-			<a href={ templ.SafeURL(cell.Href) }>
+			<a
+				href={ templ.SafeURL(cell.Href) }
+				if cell.Title != "" {
+					title={ cell.Title }
+				}
+			>
 				if cell.NameTail != "" {
 					<span class="pn-head">{ cell.NameHead }</span><span class="pn-tail">{ cell.NameTail }</span>
+				} else if cell.Title != "" {
+					<span class="pn-head">{ cell.NameHead }</span>
 				} else {
 					{ cell.Value }
 				}
@@ -551,12 +914,61 @@ templ pcardCell(cell TableCell) {
 			if len(cell.Chips) == 0 {
 				<span class="faint">—</span>
 			} else {
-				<div class="ro-chips">
-					for _, chip := range cell.Chips {
-						<span class={ chip.Class }>{ chip.Text }</span>
-					}
-				</div>
+				// cards exist only below the windowing threshold, so the
+				// in-cell expand machinery always applies here
+				@chipsStrip(cell.Chips, false)
 			}
+		case CellPending:
+			if cell.Pulse {
+				<span class={ cellStatusClass(cell.Tone) }><span class={ dotClass2(cell.Tone, cell.Pulse) } aria-hidden="true"></span>{ cell.Value }</span>
+			} else if cell.Value == "" {
+				<span class="faint">{ "<none>" }</span>
+			} else {
+				{ cell.Value }
+			}
+		case CellPorts, CellHosts:
+			if cell.Value == "" {
+				<span class="faint">—</span>
+			} else {
+				{ cell.Value }
+				if cell.More != "" {
+					{ " " }<span class="faint" title={ cell.Title }>{ cell.More }</span>
+				}
+			}
+		case CellTLS:
+			if cell.Value != "" {
+				<span class="cell-status ok" title="TLS terminated"><span class="ico sm">@templ.Raw(cell.CellIcon)</span>{ cell.Value }</span>
+			} else {
+				<span class="faint">—</span>
+			}
+		case CellLastRun:
+			if cell.Value == "" {
+				<span class="faint">{ "<never>" }</span>
+			} else {
+				<span class={ cell.Class }>{ cell.Value }</span>
+			}
+		case CellKeys:
+			if len(cell.Keys) == 0 {
+				<span class="faint">—</span>
+			} else {
+				@keysChips(cell.Keys, false)
+			}
+		case CellCount:
+			<span class={ cell.Class }>{ "×" + cell.Value }</span>
+		case CellEvObj:
+			<span
+				class="res-kind"
+				if cell.Title != "" {
+					title={ cell.Title }
+				}
+			>@templ.Raw(cell.CellIcon)<span class="faint">{ cell.EvKind + "/" }</span>{ cell.EvName }</span>
+		case CellEvAge:
+			<span class={ cell.Class }>{ cell.Value }</span>
+			if cell.EvAgeRest != "" {
+				{ " " }<span class="faint evage-rest">{ cell.EvAgeRest }</span>
+			}
+		case CellMsg:
+			<span class="ro-event-msg">{ cell.Value }</span>
 		case CellMemory:
 			{ cell.Value + " MiB" }
 		default:
@@ -594,4 +1006,191 @@ templ toolsForm(t TableTools, tableIndex int) {
 
 func toolsTableID(tableIndex int) string {
 	return "tools-table-" + itoa(tableIndex+1)
+}
+
+// colsPopover renders the ⊞ column-visibility popover (D8): one checkbox row
+// per column of the FULL universe (hidden columns included; the identity
+// column checked + disabled), then the labelcols / selector form absorbed from
+// the v1 tools form. It lives inside the morphed fragment, so every toggle's
+// partial re-render refreshes the checkbox states from server truth;
+// readout.js owns the open state (`.is-open`, re-applied after each morph) and
+// the toggle gesture (cookie write + RO-No-Push `_table` re-render -- never a
+// history entry). The stable ids let idiomorph match the popover and its
+// inputs across morphs (ignoreActiveValue keeps a focused draft).
+templ colsPopover(c ColsPopover) {
+	<div class="ro-pop" id="ro-cols-pop" data-plural={ c.Plural }>
+		<div class="pop-head">Columns</div>
+		for _, entry := range c.Entries {
+			<button
+				type="button"
+				class="col-toggle"
+				data-col={ entry.Name }
+				if entry.Identity {
+					disabled
+					title="The identity column cannot be hidden"
+				}
+			><input
+				type="checkbox"
+				class="ro-check"
+				tabindex="-1"
+				if !entry.Hidden {
+					checked
+				}
+				if entry.Identity {
+					disabled
+				}
+			><span>{ entry.Name }</span></button>
+		}
+		@colsPopoverForm(c)
+	</div>
+}
+
+// colsPopoverForm is the labelcols + selector half of the popover: the same
+// read-only GET form mechanics the v1 tools form used (hidden inputs
+// round-trip the other params; readout.js blanks empty input names on submit
+// so they never pollute the URL). Capabilities kept: the `labelcols` /
+// `selector` params and their config defaults are untouched -- only the input
+// chrome moved here.
+templ colsPopoverForm(c ColsPopover) {
+	// hx-boost="false": the body-level boost would otherwise intercept this
+	// submit ahead of the document-level JS merge handler and race it with a
+	// form-fields-only GET (last-write-wins wiped the f= chips
+	// nondeterministically); the JS submit handler owns this form, the native
+	// GET stays as the no-JS floor.
+	<form action="#" method="get" class="ro-pop-form" hx-boost="false">
+		for _, in := range c.Tools.HiddenInputs {
+			<input type="hidden" name={ in.Name } value={ in.Value }>
+		}
+		// The section heads above each input already NAME the field, so the
+		// placeholders carry only a short worked example that fits the popover
+		// width un-clipped; the full explanation lives in the title tooltip
+		// (a clipped placeholder is unreadable -- field report 2026-06-11).
+		<div class="pop-head">Label columns</div>
+		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TableIcon)</span><input id="ro-cols-labelcols" class="ro-input" type="text" placeholder="app, team — or *" name="labelcols" value={ c.Tools.LabelColsVal } aria-label="Label columns" title="Comma-separated label keys to show as table columns; * shows every label"></span>
+		<div class="pop-head">Label selector</div>
+		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TagsIcon)</span><input id="ro-cols-selector" class="ro-input" type="text" placeholder="app=nginx,tier!=cache" name="selector" value={ c.Tools.SelectorVal } aria-label="Label selector" title="Kubernetes label selector — only rows whose labels match are listed"></span>
+		<div class="ro-tools-actions"><button class="ro-btn quiet" type="submit">Apply</button></div>
+	</form>
+}
+
+// rowChip renders one label chip in a table cell (and its mobile-card mirror):
+// a click-to-filter anchor when Href is set (single-type pages, D7/SPEC §8.1),
+// an inert span otherwise. Both keep the NEUTRAL `.ck`/`.cs`/`.cv` split (D3).
+// extra marks an overflow chip past the SPEC §4.9 in-cell threshold: it
+// carries `.xtra` and stays hidden until the strip expands.
+templ rowChip(chip RowChip, extra bool) {
+	if chip.Href != "" {
+		<a class={ chipClass(extra) } href={ templ.SafeURL(chip.Href) } title={ "Filter by " + chip.Key + "=" + chip.Val }><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></a>
+	} else {
+		<span class={ chipClass(extra) }><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+	}
+}
+
+// chipsStrip renders a label/selector chip strip with the SPEC §4.9 in-cell
+// overflow: the first chipsCellMax chips show, the extras carry `.xtra`
+// (hidden until the `.ro-chips` strip gains `.expanded`), and the trailing +N
+// button toggles the expansion IN-CELL (its text flips to "less" via the
+// `.more-n`/`.more-less` CSS swap). Callers branch the empty case ("—")
+// themselves.
+//
+// While windowed (Unit 24/D20) expansion is DISABLED -- expanding a strip
+// in-cell would break the fixed row height exactly where virtualization
+// engages -- so the overflow chips are not emitted at all and the +N renders
+// static with the full list in its title.
+templ chipsStrip(chips []RowChip, windowed bool) {
+	<div class="ro-chips">
+		for ci, chip := range chips {
+			if !windowed || ci < chipsCellMax {
+				@rowChip(chip, !windowed && ci >= chipsCellMax)
+			}
+		}
+		if len(chips) > chipsCellMax {
+			if windowed {
+				@moreChipStatic(len(chips)-chipsCellMax, "", chipsTitle(chips))
+			} else {
+				@moreChip(len(chips)-chipsCellMax, "")
+			}
+		}
+	</div>
+}
+
+// keysChips renders a configmap/secret data-keys strip (SPEC §4.10): one
+// `name · size` chip per key (name firm `.cv`, size faint `.ck`), the first
+// keysCellMax shown, the rest behind the `+N keys` expand -- the SAME
+// `.xtra`/`.expanded` machinery the label chips use. Secret VALUES are absent
+// by construction: KeyChip carries only the key name + byte size. The
+// windowed flag flattens the overflow exactly like chipsStrip above.
+templ keysChips(keys []KeyChip, windowed bool) {
+	<div class="ro-chips">
+		for ki, key := range keys {
+			if !windowed || ki < keysCellMax {
+				<span class={ chipClass(!windowed && ki >= keysCellMax) }><span class="cv">{ key.Name }</span><span class="cs">·</span><span class="ck">{ key.Size }</span></span>
+			}
+		}
+		if len(keys) > keysCellMax {
+			if windowed {
+				@moreChipStatic(len(keys)-keysCellMax, " keys", keysTitle(keys))
+			} else {
+				@moreChip(len(keys)-keysCellMax, " keys")
+			}
+		}
+	</div>
+}
+
+// moreChip is the in-cell overflow toggle (SPEC §4.9/§4.10): a real <button>
+// (keyboard-reachable) carrying `data-more` for the delegated readout.js
+// toggle -- the strict CSP forbids inline handlers. Collapsed it shows
+// "+N<suffix>"; once the strip carries `.expanded` the CSS hides `.more-n`
+// and reveals `.more-less` ("less"). aria-expanded mirrors the state (the JS
+// flips it with the class).
+templ moreChip(n int, suffix string) {
+	<button type="button" class="ro-chip more" data-more aria-expanded="false"><span class="more-n">{ "+" + itoa(n) + suffix }</span><span class="more-less">less</span></button>
+}
+
+// moreChipStatic is the WINDOWED overflow chip (Unit 24/D20): no data-more
+// hook (the delegated expand handler can never match it -- expansion is
+// disabled by construction, not by suppression), no button semantics; the
+// full chip list rides the title instead.
+templ moreChipStatic(n int, suffix string, full string) {
+	<span class="ro-chip more more-static" title={ full }>{ "+" + itoa(n) + suffix }</span>
+}
+
+// filterBar renders the Filters v2 chips editor (D7): the `.ro-tools-filter`
+// field with the active `?f=` chips (server-rendered, so shareable URLs land
+// with chips visible), the free-text/autocomplete input readout.js drives, the
+// inline unknown-field hint mount, and the filter-hint legend. The input
+// carries a STABLE id so idiomorph matches it across morphs (the v2 loop runs
+// ignoreActiveValue:true -- a focused draft and its caret survive every tick).
+// Each chip's ✕ is a real link (no-JS fallback); readout.js intercepts it to
+// ride the partial loop. The `.ro-filter-ac` mount is the JS-owned autocomplete
+// dropdown (rendered empty + hidden here so morphs keep a stable anchor).
+templ filterBar(fb FilterBarData) {
+	<div class="tools-row ro-filterbar">
+		<div class="ro-tools-filter" id="ro-filter-field">
+			<span class="ico sm" aria-hidden="true">@templ.Raw(fb.FilterIcon)</span>
+			for _, chip := range fb.Chips {
+				<span class="ro-scope-chip">
+					if chip.Field != "" {
+						<span class="ck">{ chip.Field }</span><b>{ chip.Op }</b><span class="v">{ chip.Value }</span>
+					} else {
+						<span class="v">{ chip.Label }</span>
+					}
+					<a class="chip-x" href={ templ.SafeURL(chip.RemoveHref) } title="remove" aria-label={ "Remove filter " + chip.Label }>✕</a>
+				</span>
+			}
+			<input id="ro-filter-input" type="text" autocomplete="off" spellcheck="false" placeholder={ filterPlaceholder(fb) } aria-label="Filter">
+			<div class="ro-filter-ac" id="ro-filter-ac" hidden></div>
+		</div>
+	</div>
+	<div class="ro-filter-error" id="ro-filter-error" hidden></div>
+	<div class="filter-hint"><span><b>filter</b>{ " free text matches the name" }</span> <span><b>field:value</b>{ " ⏎ adds a removable chip" }</span> <span><b>⌫</b>{ " on empty input removes the last chip" }</span></div>
+}
+
+// filterPlaceholder is the editor input's placeholder: the worked-example copy
+// when no chips are active, empty once chips exist (the prototype contract).
+func filterPlaceholder(fb FilterBarData) string {
+	if len(fb.Chips) > 0 {
+		return ""
+	}
+	return "Filter " + fb.Plural + "…   status:Running   node:worker   ⏎ makes a chip"
 }

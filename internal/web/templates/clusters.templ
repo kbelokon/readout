@@ -20,9 +20,14 @@ package templates
 // count) are resolved in the handler and carried in ClustersData; the renderer
 // touches no request.
 
-// ClustersData is the resolved clusters-entry input.
+// ClustersData is the resolved clusters-entry input. FirstRun flips the body to
+// the SPEC §7.2 first-run instruction screen (D17): true only when ZERO
+// clusters are configured anywhere (no loaded clusters, no broken clusters, no
+// external clusters) -- a broken-but-configured cluster is a different problem
+// and must not see the nothing-configured headline.
 type ClustersData struct {
 	Count         int
+	FirstRun      bool
 	SelectorValue string // current ?selector= value (hidden form input)
 	SelectorError string // visible parse hint for malformed ?selector=
 	FilterValue   string // current ?filter= value (form round-trip)
@@ -31,10 +36,14 @@ type ClustersData struct {
 }
 
 // ClusterRow is one in-cluster row: name + API URL + the label chips. Each chip
-// carries the FULL redesign chip class (`ro-chip`, plus the ` app` accent token
-// for app.kubernetes.io/* labels) and its `key: val` text.
+// is a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3
+// colour law: the green app.kubernetes.io/* accent is retired). Href is the
+// resolved cluster-entry link (clusterEntryHref in package web): the plain
+// /clusters/<name> overview, or the persisted namespace's pods list when the
+// ro_prefs cookie carries one for this cluster (D9 -- link construction only).
 type ClusterRow struct {
 	Name  string
+	Href  string
 	URL   string
 	Chips []LabelChip
 }
@@ -48,17 +57,49 @@ type ExternalClusterRow struct {
 templ Clusters(d ClustersData) {
 	<div class="ro-rd">
 		<div class="ro-title-row"><h1 class="ro-title">Clusters</h1><span class="ro-count">{ itoa(d.Count) }</span></div>
-		<form class="tools-row" action="#" method="get"><input type="hidden" name="selector" value={ d.SelectorValue }><div class="ro-tools-filter"><span class="ico sm" aria-hidden="true">@iconC("filter")</span><input type="text" placeholder="Filter clusters" name="filter" value={ d.FilterValue }></div><button class="ro-btn quiet" type="submit">Filter</button></form>
+		if d.FirstRun {
+			@firstRun()
+		} else {
+			@clustersBody(d)
+		}
+	</div>
+}
+
+// firstRun is the SPEC §7.2 first-run screen (D17): zero clusters configured is
+// an INSTRUCTION, not emptiness. The headline copy matches the prototype
+// literally; the command block uses the binary's REAL config surface --
+// `KUBECONFIG=~/.kube/config readout` plus the `--config` file alternative
+// (the prototype's `--kubeconfig` flag does not exist in readout: an unknown
+// flag exits at config.Parse). Setup docs links the README's cluster-connection
+// section; Re-check is a plain read-only GET reload of /clusters. There is NO
+// login screen anywhere (D17: auth stays config-only).
+templ firstRun() {
+	<div class="ro-empty-lg ro-firstrun">
+		<div class="ro-empty-glyph"><span class="ico">@iconC("inbox")</span></div>
+		<h3>No clusters configured</h3>
+		<p>readout reads cluster credentials from a kubeconfig. Point it at yours and restart — every context becomes a cluster here.</p>
+		<div class="errdetail">{ "$ KUBECONFIG=~/.kube/config readout" }<br><span class="note">{ "# or set kubeconfigPath in a config file: readout --config readout.yaml" }</span><br><span class="note">{ "# in-cluster service accounts are picked up automatically" }</span></div>
+		<div class="ro-empty-actions">
+			<a href="https://github.com/kbelokon/readout#connecting-to-clusters" target="_blank" rel="noreferrer" class="ro-btn sm"><span class="ico sm" aria-hidden="true">@iconC("external-link")</span><span>Setup docs</span></a>
+			<a href="/clusters" class="ro-btn quiet sm"><span class="ico sm" aria-hidden="true">@iconC("rotate-cw")</span><span>Re-check</span></a>
+		</div>
+	</div>
+}
+
+// clustersBody is the normal clusters-entry body: the filter tools row, the
+// selector-error banner, and the search-select table.
+templ clustersBody(d ClustersData) {
+	<form class="tools-row" action="#" method="get"><input type="hidden" name="selector" value={ d.SelectorValue }><div class="ro-tools-filter"><span class="ico sm" aria-hidden="true">@iconC("filter")</span><input type="text" placeholder="Filter clusters" name="filter" value={ d.FilterValue }></div><button class="ro-btn quiet" type="submit">Filter</button></form>
 		if d.SelectorError != "" {
 			<div class="ro-banner err ro-cluster-selector-error" role="alert"><div class="bn-body"><p class="bn-title">Invalid selector</p><p class="bn-text"><span class="mono">{ d.SelectorError }</span></p></div></div>
 		}
 		<form action="/search" method="get"><div class="ro-table-wrap"><table class="ro-table ro-select-table"><thead><tr><th></th><th>Name</th><th>API URL</th><th>Labels</th></tr></thead><tbody>
 			for _, row := range d.Rows {
-				<tr><td><input class="ro-check" type="checkbox" name="cluster" value={ row.Name } data-toggle-button="search-clusters-button"></td><td class="cl-name"><a href={ templ.SafeURL(clusterHref(row.Name)) }>{ row.Name }</a></td><td class="ro-cell-url">{ row.URL }</td><td>
+				<tr><td><input class="ro-check" type="checkbox" name="cluster" value={ row.Name } data-toggle-button="search-clusters-button"></td><td class="cl-name"><a href={ templ.SafeURL(row.Href) }>{ row.Name }</a></td><td class="ro-cell-url">{ row.URL }</td><td>
 					if len(row.Chips) > 0 {
 						<div class="ro-chips">
 							for _, chip := range row.Chips {
-								<span class={ chip.Class }>{ chip.Key + ": " + chip.Val }</span>
+								<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
 							}
 							</div>
 					}
@@ -68,5 +109,4 @@ templ Clusters(d ClustersData) {
 				<tr><td></td><td class="cl-name"><a href={ templ.SafeURL(ext.URL) } class="ro-ext-link">{ ext.Name } <span class="icon ico sm" aria-hidden="true">@iconC("external-link-alt")</span></a></td><td class="ro-cell-url">{ ext.URL }</td><td></td></tr>
 			}
 			</tbody></table></div><div class="ro-bottom-controls"><button class="ro-btn" type="submit" id="search-clusters-button" disabled><span class="ico sm" aria-hidden="true">@iconC("search")</span><span>Search in selected clusters</span></button></div></form>
-	</div>
 }

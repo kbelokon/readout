@@ -4,19 +4,35 @@ package templates
 // in-flight progress bar, and the persistent #resource-list-content htmx
 // container wrapping the ResourceTable fragment.
 //
-// The #resource-list-content attributes are a hard JS contract: the live
-// morph-refresh (readout.js fires ro:refresh) re-fetches PartialURL and
-// morph-swaps the fragment in place. They are pinned by the behavior-fact net
-// (hx-get/hx-trigger/hx-target/hx-ext/hx-swap/hx-indicator on
-// #resource-list-content). The container's PartialURL must round-trip the
-// page's query string (the `_table` URL) -- it is resolved in the handler and
-// carried in ListPageData.
+// The container comes in TWO variants (D1 surface boundary):
+//
+//   - Single-type pages (SingleType) run the v2 interaction loop (D6): the
+//     container carries NO baked request URL -- the refresh tick and every
+//     programmatic re-fetch derive the `_table` URL from location.href at fire
+//     time (readout.js, marked by data-live-url="location"), so a sort/filter
+//     pushed into history is never reverted by a tick. Swaps go through the
+//     CSP-safe `ro-morph` extension (hx-swap="morph": idiomorph with an
+//     explicit JS config object -- attribute-spec morph config would be
+//     eval'd by the vendored extension and blocked by CSP). The gesture chrome
+//     (Unit 16: the #ro-bulkbar selection pill + the #ro-ctxmenu right-click
+//     menu, both defined in layout.templ) mounts HERE, OUTSIDE the swap
+//     target, so it survives every morph untouched -- and only on single-type
+//     pages, the D1 boundary the gestures share with the loop.
+//
+//   - Multi-type pages (plural=all / CSV / _all union) keep the v1 contract:
+//     the render-time-baked PartialURL hx-get re-fetched on the ro:refresh
+//     trigger, plain boosted sort links, no row identity, no bulk bar.
 
 // ListPageData is the full resource-list page input: the breadcrumb crumbs, the
-// `_table` partial URL for the htmx container, and the table fragment data.
+// `_table` partial URL for the v1 multi-type htmx container (unused on
+// single-type pages, which derive it from location at fire time -- D6), the
+// SingleType loop flag (D1), the bulk bar's download wiring (Unit 17 / D11),
+// and the table fragment data.
 type ListPageData struct {
 	Breadcrumb ListBreadcrumb
 	PartialURL string
+	SingleType bool
+	Bulk       BulkBar
 	List       ListData
 }
 
@@ -49,9 +65,43 @@ templ ResourceList(d ListPageData) {
 		if d.List.ShowStaleBanner {
 			@staleBanner()
 		}
-		<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
-			@ResourceTable(d.List)
-		</div>
+		if d.SingleType {
+			<div id="resource-list-content" data-live-url="location" hx-target="this" hx-ext="ro-morph" hx-swap="morph" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
+				@ResourceTable(d.List)
+			</div>
+			@listSkeleton(d.List)
+			@rowCtxMenuC()
+			@bulkBarC(d.Bulk)
+		} else {
+			<div id="resource-list-content" hx-get={ d.PartialURL } hx-trigger="ro:refresh" hx-target="this" hx-ext="morph" hx-swap="morph:innerHTML" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
+				@ResourceTable(d.List)
+			</div>
+		}
+	</div>
+}
+
+// listSkeleton is the loading-skeleton SOURCE (D16/SPEC §7.19): a hidden,
+// inert block of schema-mirroring placeholder rows -- one `.skel` bar per
+// VISIBLE column (widths from skelWidths), fading toward the bottom. It lives
+// OUTSIDE the #resource-list-content morph target so it survives swaps and is
+// still present when the container is empty. readout.js clones it into the
+// container on htmx:beforeRequest ONLY when the swap target region is BLANK
+// (zero element children -- the first paint of a partial into an empty
+// region); a POPULATED region (table, state card, or banner) NEVER gets a
+// skeleton over its content (the data-never-disappears law) -- slow refreshes
+// keep the last-good rows. Boosted full-page navigations keep the global
+// #ro-progress sweep instead.
+templ listSkeleton(d ListData) {
+	<div id="ro-skel-template" hidden aria-hidden="true">
+		<div class="ro-skel ro-table-wrap">
+			for row := 0; row < skelRowCount; row++ {
+				<div class="skel-row">
+					for _, w := range skelWidths(&d) {
+						<div class="skel" style={ skelStyle(w, row) }></div>
+					}
+				</div>
+			}
+			</div>
 	</div>
 }
 

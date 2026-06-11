@@ -80,15 +80,18 @@ func TestBehaviorAppChromeAndJSContract(t *testing.T) {
 	p.wantAbsent("nav.navbar")
 	p.wantHas(".ro-shell aside.ro-sidebar #aside-menu")
 	p.wantHas(".ro-shell main.ro-main")
-	// The tools-table toggle is CONTENT (the resource-list tools form), unchanged
-	// by the shell migration; it still names its target via data-target.
-	p.wantAttr("a.toggle-tools", "data-target", "tools-table-1")
-	p.wantHas("#tools-table-1")
+	// Single-type pages carry the D8 columns popover in the title row (it
+	// replaced the v1 toggle-tools + tools form there; multi-type pages keep
+	// the old chrome -- pinned in TestColsPopoverSingleTypeGate).
+	p.wantAttr("button#ro-cols-btn[data-cols-toggle]", "title", "Columns")
+	p.wantHas("#ro-cols-pop .col-toggle")
+	p.wantAbsent("a.toggle-tools")
 
-	// Auto-refresh dropdown: each option carries data-interval; the handler
-	// stores that value and re-arms the poll.
-	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,15,30,60" {
-		t.Fatalf("refresh-option data-interval set = %v, want [0 5 15 30 60]", got)
+	// Auto-refresh dropdown: each option carries data-interval (10 replaced 15
+	// per D18/SPEC §8.3; Live joined in Unit 27/D19); the handler stores that
+	// value and re-arms the poll (or opens the stream for Live).
+	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
+		t.Fatalf("refresh-option data-interval set = %v, want [0 5 10 30 60 Live]", got)
 	}
 	p.wantHas("#refresh-label")
 
@@ -311,8 +314,9 @@ func TestBehaviorClusterOverviewAgeBuckets(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Resource-types pages: the full kind matrix WITHOUT needing per-kind list
 // fixtures -- a non-pod namespaced built-in (ReplicaSet), a CRD (Certificate
-// with the CRD badge), plus the cluster/namespaced split and the Namespaced
-// boolean cells.
+// with the CRD badge), plus the cluster/namespaced split and the quiet
+// bordered scope badges (D3: categorical values get a badge, never a green
+// boolean or a dot).
 // ---------------------------------------------------------------------------
 
 func TestBehaviorResourceTypesMatrix(t *testing.T) {
@@ -344,21 +348,32 @@ func TestBehaviorResourceTypesMatrix(t *testing.T) {
 		t.Fatalf("Deployment (apps/v1 built-in) must NOT carry a CRD badge")
 	}
 
-	// Namespaced boolean pill bound to the ROW's flag (not just "some pill
-	// exists"): a known namespaced row (Deployment) carries ro-bool-yes, and on
-	// the cluster page a known cluster-scoped row (Node) carries ro-bool-no. An
-	// inverted boolean would break one of these.
-	deployBool := p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/default/deployments"])`)
-	if deployBool.Find(".ro-bool-yes").Length() != 1 || deployBool.Find(".ro-bool-no").Length() != 0 {
-		t.Fatalf("Deployment (namespaced) row should carry ro-bool-yes, not ro-bool-no")
+	// Scope badge bound to the ROW's flag (not just "some badge exists"): a known
+	// namespaced row (Deployment) carries the quiet .scope-badge.ns reading
+	// "namespaced", and on the cluster page a known cluster-scoped row carries
+	// .scope-badge.cluster reading "cluster" (the amber-bordered variant). An
+	// inverted scope would break one of these. D3: no green boolean text, no dot.
+	deployScope := p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/default/deployments"])`)
+	if deployScope.Find(".scope-badge.ns").Length() != 1 || deployScope.Find(".scope-badge.cluster").Length() != 0 {
+		t.Fatalf("Deployment (namespaced) row should carry .scope-badge.ns, not .scope-badge.cluster")
+	}
+	if got := normSpace(deployScope.Find(".scope-badge.ns").Text()); got != "namespaced" {
+		t.Fatalf("Deployment scope badge text = %q, want namespaced", got)
 	}
 	pc := get(t, app, "/clusters/test/_resource-types", http.StatusOK)
 	// CSINode has a unique href (Node + NodeMetrics both link to /nodes, so that
-	// href matches two rows); CSINode is cluster-scoped, so its row carries
-	// ro-bool-no and never ro-bool-yes.
-	csiBool := pc.doc.Find(`tr:has(a[href="/clusters/test/csinodes"])`)
-	if csiBool.Find(".ro-bool-no").Length() != 1 || csiBool.Find(".ro-bool-yes").Length() != 0 {
-		t.Fatalf("CSINode (cluster-scoped) row should carry ro-bool-no, not ro-bool-yes")
+	// href matches two rows); CSINode is cluster-scoped, so its row carries the
+	// .scope-badge.cluster variant and never .scope-badge.ns.
+	csiScope := pc.doc.Find(`tr:has(a[href="/clusters/test/csinodes"])`)
+	if csiScope.Find(".scope-badge.cluster").Length() != 1 || csiScope.Find(".scope-badge.ns").Length() != 0 {
+		t.Fatalf("CSINode (cluster-scoped) row should carry .scope-badge.cluster, not .scope-badge.ns")
+	}
+	if got := normSpace(csiScope.Find(".scope-badge.cluster").Text()); got != "cluster" {
+		t.Fatalf("CSINode scope badge text = %q, want cluster", got)
+	}
+	// The retired green boolean pills are gone from both pages.
+	if p.doc.Find(".ro-bool-yes, .ro-bool-no").Length() != 0 || pc.doc.Find(".ro-bool-yes, .ro-bool-no").Length() != 0 {
+		t.Fatalf("retired .ro-bool-yes/.ro-bool-no pills still rendered on a resource-types page")
 	}
 	// Cluster tab vs Namespaced tab active state. Resource-types borrows the
 	// detail-page `.ro-tabs` chrome (anchor-based, the active tab carries
@@ -374,8 +389,8 @@ func TestBehaviorResourceTypesMatrix(t *testing.T) {
 // the active tab on the <a>, a PLAIN `.ro-table` (in `.ro-table-wrap`, not the
 // legacy `.ro-list-table`) for the kind matrix, the KEEP-AS-IS cell classes
 // (`.ro-cell-kind` kind link + sibling `.ro-crd-badge`, `.ro-rt-group`,
-// `.ro-rt-version`, `.ro-bool-yes`/`.ro-bool-no`), and the kind-icon resolver in
-// the Kind cell (`.res-kind .ico`).
+// `.ro-rt-version`), the quiet bordered `.scope-badge` scope cell (D3), and the
+// kind-icon resolver in the Kind cell (`.res-kind .ico`).
 func TestResourceTypesRender(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/_resource-types", http.StatusOK)
@@ -389,7 +404,7 @@ func TestResourceTypesRender(t *testing.T) {
 	p.wantAbsent(".ro-list-table")
 
 	// KEEP-AS-IS cell classes survive: the Deployment row carries the kind link in
-	// `.ro-cell-kind`, the mono group/version cells, and the namespaced `true` pill.
+	// `.ro-cell-kind`, the mono group/version cells, and the quiet scope badge.
 	deployRow := p.doc.Find(`tr:has(a[href="/clusters/test/namespaces/default/deployments"])`)
 	if deployRow.Length() == 0 {
 		t.Fatalf("Deployment row missing from resource-types table")
@@ -400,8 +415,8 @@ func TestResourceTypesRender(t *testing.T) {
 	if deployRow.Find("td.ro-rt-group").Length() != 1 || deployRow.Find("td.ro-rt-version").Length() != 1 {
 		t.Fatalf("Deployment row missing the KEEP-AS-IS group/version cells")
 	}
-	if deployRow.Find(".ro-bool-yes").Length() != 1 {
-		t.Fatalf("Deployment (namespaced) row should carry ro-bool-yes")
+	if deployRow.Find(".scope-badge.ns").Length() != 1 {
+		t.Fatalf("Deployment (namespaced) row should carry .scope-badge.ns")
 	}
 	// The Kind cell pairs the resolved kind icon with the link (borrow rule:
 	// icons.KindIcon).
@@ -423,16 +438,27 @@ func TestBehaviorPodListFacts(t *testing.T) {
 	p.wantText("title", "pods in test - readout")
 	p.wantText("h1.title", "Pods")
 
-	// #resource-list-content htmx wiring (the live-refresh contract readout.js
-	// fires ro:refresh against). Every attribute pinned by exact value.
-	p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods/_table")
-	p.wantAttr("#resource-list-content", "hx-trigger", "ro:refresh")
+	// #resource-list-content htmx wiring -- the v2 single-type loop (D6): the
+	// container bakes NO request URL (data-live-url="location" is the readout.js
+	// contract: the refresh tick derives the `_table` URL from location.href at
+	// fire time, so it can never revert a pushed sort/filter), and swaps go
+	// through the CSP-safe ro-morph extension (hx-swap="morph", config delivered
+	// as a JS object -- attribute-spec morph config would be eval'd and blocked).
+	p.wantAttr("#resource-list-content", "data-live-url", "location")
 	p.wantAttr("#resource-list-content", "hx-target", "this")
-	p.wantAttr("#resource-list-content", "hx-ext", "morph")
-	p.wantAttr("#resource-list-content", "hx-swap", "morph:innerHTML")
+	p.wantAttr("#resource-list-content", "hx-ext", "ro-morph")
+	p.wantAttr("#resource-list-content", "hx-swap", "morph")
+	// The render-time-baked PartialURL contract is REPLACED on single-type pages:
+	// a baked hx-get/hx-trigger here would resurrect the tick-reverts-sort bug.
+	p.wantAbsent("#resource-list-content[hx-get]")
+	p.wantAbsent("#resource-list-content[hx-trigger]")
 	// The refresh points its in-flight indicator at the single global top progress
 	// bar (#ro-progress in the layout), the same rail every hx-boost navigation uses.
 	p.wantAttr("#resource-list-content", "hx-indicator", "#ro-progress")
+	// The bulk-bar mount (Unit 16 content) sits OUTSIDE the swap target so a
+	// morph never touches it.
+	p.wantHas("#ro-bulkbar")
+	p.wantAbsent("#resource-list-content #ro-bulkbar")
 
 	// Column headers in order, each linking to its own ?sort=<col>. The redesign
 	// list engine renders the canonical `.ro-table` inside `.ro-table-wrap`.
@@ -445,7 +471,22 @@ func TestBehaviorPodListFacts(t *testing.T) {
 		if !p.containsHref("thead th a", want) {
 			t.Fatalf("missing column sort href %q among %v", want, p.attrs("thead th a", "href"))
 		}
+		// The v2 loop (D6): every header ALSO carries an hx-get of the same sort
+		// against the `_table` partial, morph-swapped into the persistent
+		// container (the canonical href stays for history/new-tab/no-JS).
+		wantPartial := "/clusters/test/namespaces/default/pods/_table?sort=" + col
+		if !contains(p.attrs("thead th a", "hx-get"), wantPartial) {
+			t.Fatalf("missing column partial sort hx-get %q among %v", wantPartial, p.attrs("thead th a", "hx-get"))
+		}
 	}
+	p.wantAttr("thead th a[hx-get]", "hx-target", "#resource-list-content")
+	p.wantAttr("thead th a[hx-get]", "hx-swap", "morph")
+
+	// Row identity (D6): every row carries data-key="cluster/ns/name" plus the
+	// id derived from it, so idiomorph matches rows by object identity (never
+	// position) and client selection/focus state re-keys across morphs.
+	p.wantAttr(`tr[data-key="test/default/nginx"]`, "id", "row-test/default/nginx")
+	p.wantAttr(`tr[data-key="test/default/my-app"]`, "id", "row-test/default/my-app")
 
 	// Phase strip: the Running tally (redesign phase strip, dot tone "ok").
 	p.wantText(".ro-phase-label", "Running")
@@ -481,14 +522,17 @@ func TestBehaviorPodListFacts(t *testing.T) {
 	// "Show CPU/Memory Usage" affordance (join=metrics not yet applied).
 	p.wantAttr(`a[href="/clusters/test/namespaces/default/pods?join=metrics"]`, "href", "/clusters/test/namespaces/default/pods?join=metrics")
 
-	// The tools form carries the owned .ro-* layout and the labelcols / selector /
-	// filter inputs the delegated submit handler blanks-when-empty.
-	p.wantHas(`form.tools-form .ro-tools-grid`)
-	p.wantHas(`form.tools-form .ro-tools-field .ro-input[name="labelcols"]`)
-	p.wantHas(`form.tools-form .ro-tools-field .ro-input[name="selector"]`)
-	p.wantHas(`form.tools-form .ro-tools-field .ro-input[name="filter"]`)
-	p.wantHas(`form.tools-form .ro-field-icon`)
-	p.wantHas(`form.tools-form button.ro-btn.quiet[type="submit"]`)
+	// The labelcols / selector inputs live in the D8 columns popover on
+	// single-type pages (the delegated submit handler intercepts form.ro-pop-form
+	// and MERGES it into the live query, keeping `?f=` chips byte-exact); the
+	// filter input's home is the chips editor (D7), so the v1 tools form is
+	// fully retired here.
+	p.wantHas(`form.ro-pop-form .ro-input[name="labelcols"]`)
+	p.wantHas(`form.ro-pop-form .ro-input[name="selector"]`)
+	p.wantHas(`form.ro-pop-form .ro-field-icon`)
+	p.wantHas(`form.ro-pop-form button.ro-btn.quiet[type="submit"]`)
+	p.wantHas(`#ro-filter-input`)
+	p.wantAbsent(`form.tools-form`)
 }
 
 // TestBehaviorPodListSortToggle pins the descending-toggle behaviour: with
@@ -499,16 +543,18 @@ func TestBehaviorPodListSortToggle(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods?sort=Name", http.StatusOK)
 
-	// hx-get carries the sort through to the partial refresh URL.
-	p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods/_table?sort=Name")
-
 	// The Name header now points at the :desc toggle (percent-encoded colon) and
 	// carries a sort icon; goquery returns the href HTML-decoded (&amp;->&) but
-	// keeps %3A literal.
+	// keeps %3A literal. Its hx-get carries the SAME toggle against the `_table`
+	// partial (D6: the sort interaction is a partial morph; the container no
+	// longer bakes a request URL -- the tick derives it from location).
 	nameHeader := p.doc.Find(`thead th:has(a) a:contains("Name")`).First()
 	href, _ := nameHeader.Attr("href")
 	if href != "/clusters/test/namespaces/default/pods?sort=Name%3Adesc" {
 		t.Fatalf("Name header href = %q, want ...?sort=Name%%3Adesc", href)
+	}
+	if hxGet, _ := nameHeader.Attr("hx-get"); hxGet != "/clusters/test/namespaces/default/pods/_table?sort=Name%3Adesc" {
+		t.Fatalf("Name header hx-get = %q, want .../_table?sort=Name%%3Adesc", hxGet)
 	}
 	if nameHeader.Find(".icon").Length() == 0 {
 		t.Fatalf("active sort column should render a sort icon")
@@ -540,13 +586,17 @@ func TestBehaviorPodListSortToggle(t *testing.T) {
 }
 
 // TestBehaviorPodListAllNamespaces pins the all-namespaces variant: a leading
-// Namespace column appears, the breadcrumb shows "all", and the partial URL
-// targets the _all path.
+// Namespace column appears, the breadcrumb shows "all", and the v2 loop's
+// partial sort headers target the _all path (an all-NAMESPACES pods list is
+// still a single-TYPE page, so the D6 loop applies).
 func TestBehaviorPodListAllNamespaces(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/_all/pods", http.StatusOK)
 
-	p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/_all/pods/_table")
+	p.wantAttr("#resource-list-content", "data-live-url", "location")
+	if !contains(p.attrs("thead th a", "hx-get"), "/clusters/test/namespaces/_all/pods/_table?sort=Name") {
+		t.Fatalf("missing _all-path partial sort hx-get among %v", p.attrs("thead th a", "hx-get"))
+	}
 	headers := p.texts("table.ro-table thead th")
 	if headers[0] != "Namespace" {
 		t.Fatalf("all-namespaces first header = %q, want Namespace (headers=%v)", headers[0], headers)
@@ -561,29 +611,40 @@ func TestBehaviorPodListAllNamespaces(t *testing.T) {
 func TestBehaviorListQueryMatrix(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 
-	t.Run("labelcols adds an App column and activates the tools form", func(t *testing.T) {
+	t.Run("labelcols adds an App column and fills the popover input", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?labelcols=app", http.StatusOK)
-		p.wantAttr(`form.tools-form .ro-input[name="labelcols"]`, "value", "app")
-		p.wantHas("form.tools-form.is-active")
-		p.wantHas("form.tools-form.is-active .ro-tools-grid")
+		p.wantAttr(`form.ro-pop-form .ro-input[name="labelcols"]`, "value", "app")
 		if !contains(p.texts("thead th"), "App") {
 			t.Fatalf("labelcols=app did not add an App column: %v", p.texts("thead th"))
 		}
+		// The label column joins the popover universe as a hideable entry.
+		p.wantHas(`#ro-cols-pop .col-toggle[data-col="App"] .ro-check[checked]`)
 	})
 
-	t.Run("selector round-trips into the selector input", func(t *testing.T) {
+	t.Run("selector round-trips into the popover selector input", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?selector=app%3Dnginx", http.StatusOK)
-		p.wantAttr(`form.tools-form .ro-input[name="selector"]`, "value", "app=nginx")
-		p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods/_table?selector=app%3Dnginx")
+		p.wantAttr(`form.ro-pop-form .ro-input[name="selector"]`, "value", "app=nginx")
+		// The selector rides every header's partial sort hx-get (D6: the partial
+		// request must carry the full current query so a sort keeps the selector).
+		want := "/clusters/test/namespaces/default/pods/_table?selector=app%3Dnginx&sort=Name"
+		if !contains(p.attrs("thead th a", "hx-get"), want) {
+			t.Fatalf("selector missing from partial sort hx-get: %v", p.attrs("thead th a", "hx-get"))
+		}
 	})
 
-	t.Run("filter narrows rows and round-trips into the filter input", func(t *testing.T) {
+	t.Run("filter narrows rows (the param keeps working without its retired input)", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?filter=nginx", http.StatusOK)
-		p.wantAttr(`form.tools-form .ro-input[name="filter"]`, "value", "nginx")
 		if got := p.texts("td.cell-name"); strings.Join(got, "|") != "nginx" {
 			t.Fatalf("filter=nginx rows = %v, want [nginx]", got)
 		}
 		p.wantText(".ro-phase-strip .ro-phase-tally .ro-phase-count", "1")
+		// The filter input's new home is the chips editor (D7); no legacy TYPED
+		// input. The popover form still round-trips the ACTIVE ?filter= as a
+		// hidden input -- its GET submit must not wipe the param (pinned in
+		// TestColsPopoverFilterRoundTrip).
+		p.wantAbsent(`input[type="text"][name="filter"]`)
+		p.wantHas(`form.ro-pop-form input[type="hidden"][name="filter"]`)
+		p.wantHas("#ro-filter-input")
 	})
 
 	t.Run("a filter matching nothing renders the empty-FILTERED state", func(t *testing.T) {
@@ -594,25 +655,25 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 		// same list path).
 		p := get(t, app, "/clusters/test/namespaces/default/pods?filter=zzz-no-such-pod", http.StatusOK)
 		p.wantAbsent("td.cell-name")
-		p.wantText(".ro-empty-row .ro-empty-lg h3", "No Pod objects match your filters")
-		if got := p.text(".ro-empty-row .ro-scope .ro-scope-chip"); !strings.Contains(got, "zzz-no-such-pod") {
+		p.wantText(".ro-empty-row .ro-empty-lg h3", "No Pods match the active filters")
+		if got := p.text(".ro-empty-row .ro-empty-lg .ro-empty-chips .ro-scope-chip"); !strings.Contains(got, "zzz-no-such-pod") {
 			t.Fatalf("empty-filtered chip = %q, want it to name the filter", got)
 		}
 		// The chip ✕ removes just the filter param; Clear filters drops the set.
-		p.wantAttr(".ro-empty-row .ro-scope .ro-scope-chip a.retry", "href", "/clusters/test/namespaces/default/pods")
+		p.wantAttr(".ro-empty-row .ro-empty-lg .ro-empty-chips .ro-scope-chip a.chip-x", "href", "/clusters/test/namespaces/default/pods")
 		p.wantAttr(".ro-empty-row .ro-empty-actions a", "href", "/clusters/test/namespaces/default/pods")
 	})
 
 	t.Run("a genuinely empty list renders the plain empty sentence + broad action", func(t *testing.T) {
-		// Pins the empty-state sentence "No <Kind> objects in namespace "<ns>"
-		// found." verbatim (the redesign .ro-empty-lg in-table state). This guards
-		// the templ empty-state against the @templ.Raw children-drop that would
-		// silently lose the trailing "found." -- a regression the row-bearing facts
-		// cannot see. With no filter active the broad next action ("Show pods across
-		// all namespaces") is offered.
+		// Pins the empty-state sentence `No <Kind> found in namespace “<ns>”`
+		// verbatim (the prototype VIEW.states copy, D16). This guards the templ
+		// empty-state against the @templ.Raw children-drop that would silently lose
+		// the namespace clause -- a regression the row-bearing facts cannot see.
+		// With no filter active the broad next action ("Show pods across all
+		// namespaces") is offered.
 		p := get(t, app, "/clusters/test/namespaces/empty/pods", http.StatusOK)
 		p.wantAbsent("td.cell-name")
-		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-title", `No Pod objects in namespace "empty" found.`)
+		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-title", "No Pods found in namespace “empty”")
 		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-hint", "Nothing to show here yet.")
 		p.wantText(".ro-empty-row .ro-empty-lg .ro-empty-actions a", "Show pods across all namespaces")
 	})
@@ -644,7 +705,12 @@ func TestBehaviorListQueryMatrix(t *testing.T) {
 
 	t.Run("custom-columns round-trips into hx-get and adds the column", func(t *testing.T) {
 		p := get(t, app, "/clusters/test/namespaces/default/pods?custom-columns=Image=spec.containers[0].image", http.StatusOK)
-		p.wantAttr("#resource-list-content", "hx-get", "/clusters/test/namespaces/default/pods/_table?custom-columns=Image=spec.containers[0].image")
+		// The custom-columns spec rides the partial sort hx-get (addQuery
+		// re-encodes the query, so '=' and brackets are percent-escaped).
+		want := "/clusters/test/namespaces/default/pods/_table?custom-columns=Image%3Dspec.containers%5B0%5D.image&sort=Name"
+		if !contains(p.attrs("thead th a", "hx-get"), want) {
+			t.Fatalf("custom-columns missing from partial sort hx-get: %v", p.attrs("thead th a", "hx-get"))
+		}
 		if !contains(p.texts("thead th"), "Image") {
 			t.Fatalf("custom-columns did not add an Image column: %v", p.texts("thead th"))
 		}
@@ -716,8 +782,9 @@ func TestBehaviorPodDetailFacts(t *testing.T) {
 
 // TestBehaviorPodEventsTabFacts pins the Events TAB (a separate ?view=events
 // GET): the toned events table renders the fixture's single Scheduled event with
-// the redesign status-dot/cell-status pair on the Type cell, the age bucket on
-// the Age cell, and the wrapping .ro-event-msg on the Message cell.
+// the redesign status-dot/cell-status pair on the Type cell, the inherited
+// events-list cells (D15: the ×N count, the compressed-duration age with its
+// bucket class on the span), and the wrapping .ro-event-msg on the Message cell.
 func TestBehaviorPodEventsTabFacts(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx?view=events", http.StatusOK)
@@ -742,9 +809,18 @@ func TestBehaviorPodEventsTabFacts(t *testing.T) {
 	if got := normSpace(eventRow.Find(".cell-status").Text()); got != "Normal" {
 		t.Fatalf("event Type text = %q, want Normal", got)
 	}
-	// Age cell carries the age class for lastTimestamp at days=1 == age-old.
-	if ageCls, _ := eventRow.Find("td:nth-child(3)").Attr("class"); ageCls != "age-old" {
-		t.Fatalf("event Age cell class = %q, want age-old (age_color lastTimestamp days=1)", ageCls)
+	// Count cell: the fixture event carries no count -> the faint ×1 (D15).
+	if got := normSpace(eventRow.Find("td.num span.faint").Text()); got != "×1" {
+		t.Fatalf("event Count cell = %q, want the faint ×1", got)
+	}
+	// Age cell: the 2024 lastTimestamp is years before now -> the age-old
+	// bucket on the duration span (single layer: a once-seen event never gets
+	// the "(first … ago)" second layer).
+	if eventRow.Find("td span.age-old").Length() != 1 {
+		t.Fatalf("event Age cell missing the age-old duration span: %s", normSpace(eventRow.Text()))
+	}
+	if eventRow.Find(".evage-rest").Length() != 0 {
+		t.Fatalf("single-occurrence event must not render the second age layer")
 	}
 }
 
@@ -836,10 +912,12 @@ func TestBehaviorNodeDetailFacts(t *testing.T) {
 }
 
 // TestBehaviorDetailLabelChips pins the resource-view label/annotation chips in
-// the redesign vocabulary: each label is an anchor to the selector-filtered list
-// carrying the bare .ro-chip class (label text directly inside, no inner .tag),
-// the selector value kept literal (key=value, NOT url-encoded). The annotations
-// render as non-link .ro-chip.anno pills that truncate with a title= tooltip.
+// the v2 vocabulary (D3: chips are NEUTRAL; key and value differ by ink weight
+// through the .ck/.cs/.cv spans, never by hue): each label is a click-to-filter
+// anchor (D7/SPEC §8.1) to this kind's list in the same cluster/namespace with
+// the `label:key=value` chip applied via `?f=` (the chip text QueryEscape'd
+// whole). The annotations render as non-link .ro-chip.anno pills that truncate
+// with a title= tooltip.
 func TestBehaviorDetailLabelChips(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
@@ -851,29 +929,40 @@ func TestBehaviorDetailLabelChips(t *testing.T) {
 		t.Fatalf("expected a label chip anchor on the pod detail page")
 	}
 	href, _ := chip.Attr("href")
-	// The chip links to the namespaced list filtered by selector=key=value, with
-	// the '=' kept literal (goquery decodes the attribute; a %3D here would be the
-	// double-encoding regression this fact guards against).
-	if !strings.HasPrefix(href, "/clusters/test/namespaces/default/pods?selector=") || strings.Contains(href, "%3D") {
-		t.Fatalf("label chip href = %q, want a literal selector=key=value link", href)
+	// The chip links to the namespaced list with a `?f=label:key=value` chip
+	// (Filters v2 click-to-filter), never the legacy selector= form.
+	if !strings.HasPrefix(href, "/clusters/test/namespaces/default/pods?f=label%3A") {
+		t.Fatalf("label chip href = %q, want a ?f=label:key=value chip link", href)
 	}
-	// The nginx pod fixture carries app=nginx; that chip's exact selector href +
-	// its bare-text label (the redesign chip has no inner .tag).
-	appChip := p.doc.Find(`.ro-chips a[href="/clusters/test/namespaces/default/pods?selector=app=nginx"]`)
+	// The nginx pod fixture carries app=nginx; that chip's exact `?f=` href +
+	// the ink-weight key/value split: the key sits in .ck, the ghost colon in
+	// .cs, the firm value in .cv (D3 -- weight, not hue, separates key from value).
+	appChip := p.doc.Find(`.ro-chips a[href="/clusters/test/namespaces/default/pods?f=label%3Aapp%3Dnginx"]`)
 	if appChip.Length() != 1 {
-		t.Fatalf("expected the app=nginx label chip with a literal selector href, hrefs=%v", p.attrs(".ro-chips a.ro-chip", "href"))
+		t.Fatalf("expected the app=nginx label chip with a ?f= chip href, hrefs=%v", p.attrs(".ro-chips a.ro-chip", "href"))
 	}
-	if got := normSpace(appChip.Text()); got != "app: nginx" {
-		t.Fatalf("label chip text = %q, want app: nginx", got)
+	if k, v := normSpace(appChip.Find(".ck").Text()), normSpace(appChip.Find(".cv").Text()); k != "app" || v != "nginx" {
+		t.Fatalf("label chip ck/cv = %q/%q, want app/nginx", k, v)
+	}
+	if appChip.Find(".cs").Length() != 1 {
+		t.Fatalf("label chip missing the .cs separator span")
 	}
 
 	// Annotations render as non-link .ro-chip.anno pills carrying the full value
-	// in title= (the fixture's example.com/note: generic-annotation).
+	// in title= (the fixture's example.com/note: generic-annotation), with the
+	// same .ck/.cs/.cv split inside the chip body.
 	p.wantText(`.ro-section:has(.ro-section-label:contains("Annotations")) .ro-section-label`, "Annotations")
-	annText := p.texts("span.ro-chip.anno")
-	assertContainsAll(t, "annotation chips", annText, "example.com/note: generic-annotation")
-	if title, _ := p.doc.Find("span.ro-chip.anno").First().Attr("title"); title != "example.com/note: generic-annotation" {
-		t.Fatalf("annotation chip title = %q, want the full key: value tooltip", title)
+	anno := p.doc.Find(`span.ro-chip.anno[title="example.com/note: generic-annotation"]`)
+	if anno.Length() != 1 {
+		t.Fatalf("expected the example.com/note annotation chip with the full key: value tooltip, titles=%v", p.attrs("span.ro-chip.anno", "title"))
+	}
+	if k, v := normSpace(anno.Find(".ck").Text()), normSpace(anno.Find(".cv").Text()); k != "example.com/note" || v != "generic-annotation" {
+		t.Fatalf("annotation chip ck/cv = %q/%q, want example.com/note/generic-annotation", k, v)
+	}
+
+	// D3 negative: the retired green chip accent never reaches the detail DOM.
+	if p.doc.Find(".ro-chip.app").Length() != 0 {
+		t.Fatalf("retired .ro-chip.app accent rendered on the detail page")
 	}
 }
 
@@ -952,14 +1041,25 @@ func TestSearchRender(t *testing.T) {
 	p.wantHas(".ro-rd")
 	p.wantText(".search-hero .ro-title", "Search")
 
-	// The `.search-big` GET form round-trips the query + the scope (cluster /
-	// namespace / type) as hidden inputs so re-submitting keeps the scope. The
-	// search is a read-only GET to /search.
+	// The `.search-big` GET form round-trips the query + the cluster/namespace
+	// scope as hidden inputs; the resource-type scope rides the RESTORED
+	// checkbox row (D12) -- the searched type is checked, an unsearched offered
+	// type renders unchecked -- so re-submitting keeps the scope. The search is
+	// a read-only GET to /search.
 	p.wantAttr(`.search-hero form[action="/search"]`, "method", "get")
 	p.wantAttr(`.search-big input[name="q"]`, "value", "nginx")
 	p.wantAttr(`.search-hero form input[type="hidden"][name="cluster"]`, "value", "test")
 	p.wantAttr(`.search-hero form input[type="hidden"][name="namespace"]`, "value", "default")
-	p.wantHas(`.search-hero form input[type="hidden"][name="type"][value="pods"]`)
+	p.wantHas(`.search-types input[type="checkbox"][name="type"][value="pods"][checked]`)
+	p.wantHas(`.search-types input[type="checkbox"][name="type"][value="services"]:not([checked])`)
+	p.wantHas(`.search-types .ro-btn[type="submit"]`)
+
+	// The "Refine · ⌘K" affordance: a type=button (never a submit) carrying the
+	// query for the delegated readout.js listener that opens the ⌘K palette
+	// prefilled. The TOPBAR search affordance stays the palette trigger.
+	p.wantAttr(`.ro-title-actions button[data-search-refine]`, "data-query", "nginx")
+	p.wantAttr(`.ro-title-actions button[data-search-refine]`, "type", "button")
+	p.wantHas(`.ro-topbar .ro-search[data-palette-open]`)
 
 	// Scope-opts line: a `.ok` cluster chip naming the single cluster + the
 	// namespace + the type summary.
@@ -976,15 +1076,26 @@ func TestSearchRender(t *testing.T) {
 		t.Fatalf("scope `.ok` chip = %q, want it to start with the cluster name", got)
 	}
 
-	// Results table: the nginx row carries its Cluster + Namespace links, the Kind
-	// cell pairs an icon with the kind name, the Name cell is the sticky object
-	// link, and the Age column header is present.
-	row := p.doc.Find(`.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/default/pods/nginx"])`)
-	if row.Length() != 1 {
-		t.Fatalf("expected exactly one nginx result row, found %d", row.Length())
+	// Grouped results (D12): the single cluster renders one `.search-group`
+	// whose header carries the ok dot + the mono cluster name + the count chip;
+	// the group table drops the Cluster column (the header owns it). The nginx
+	// row carries its Namespace link, the Kind cell pairs an icon with the kind
+	// name, the Name cell is the sticky object link (whole-match query => the
+	// full head is the <mark>), and the Age column header is present.
+	group := p.doc.Find(".search-group")
+	if group.Length() != 1 {
+		t.Fatalf("expected exactly one .search-group, found %d", group.Length())
 	}
-	if got := normSpace(row.Find("td.cell-clu a").Text()); got != "test" {
-		t.Fatalf("result Cluster cell = %q, want test", got)
+	if got := normSpace(group.Find(".search-cluster .mono").Text()); got != "test" {
+		t.Fatalf("group header cluster = %q, want test", got)
+	}
+	p.wantHas(".search-group .search-cluster .ro-dot.ok")
+	if got := normSpace(group.Find(".search-cluster .ro-count").Text()); got != "1" {
+		t.Fatalf("group count chip = %q, want 1", got)
+	}
+	row := group.Find(`table.ro-table tbody tr:has(td.cell-name a[href="/clusters/test/namespaces/default/pods/nginx"])`)
+	if row.Length() != 1 {
+		t.Fatalf("expected exactly one nginx result row in the group, found %d", row.Length())
 	}
 	if got := normSpace(row.Find("td.cell-ns a").Text()); got != "default" {
 		t.Fatalf("result Namespace cell = %q, want default", got)
@@ -995,12 +1106,19 @@ func TestSearchRender(t *testing.T) {
 	if row.Find("td .res-kind .ico, td .res-kind .kind-tile, td .res-kind svg").Length() == 0 {
 		t.Fatalf("result Kind cell missing the resolved kind icon")
 	}
+	if got := row.Find("td.cell-name a .pn-head mark").Text(); got != "nginx" {
+		t.Fatalf("name <mark> = %q, want the matched fragment nginx", got)
+	}
 	p.wantText(".ro-table thead th.num", "Age")
 
-	// Foundline footer: the redesign `.ro-foundline` count sentence.
-	if got := p.text(".ro-table-meta .ro-foundline"); !strings.Contains(got, `Found 1 object matching "nginx"`) {
-		t.Fatalf("foundline = %q, want a 'Found 1 object matching \"nginx\"' sentence", got)
+	// Totals strip (replaces the foundline): the tally line + the searched meta.
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-chip")); got != "1 object · 1 cluster · 1 kind" {
+		t.Fatalf("totals chip = %q, want '1 object · 1 cluster · 1 kind'", got)
 	}
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-meta")); !strings.HasPrefix(got, "searched 1 cluster in ") {
+		t.Fatalf("totals meta = %q, want a 'searched 1 cluster in <T>s' sentence", got)
+	}
+	p.wantAbsent(".ro-foundline")
 
 	// Shell sidebar + navbar context render from the ?cluster=/?namespace= QUERY
 	// (the /search route is param-less): the sidebar is built from the cluster
@@ -1085,9 +1203,14 @@ func TestSearchPartialFailure(t *testing.T) {
 		t.Fatalf("`.err` chip retry href = %q (ok=%v), want a read-only /search GET scoped to cluster=zbad", chipRetry, ok)
 	}
 
-	// Foundline names the failed-cluster clause.
-	if got := p.text(".ro-foundline"); !strings.Contains(got, "1 cluster failed") {
-		t.Fatalf("foundline = %q, want it to note the failed cluster", got)
+	// The totals strip tallies only the answering cluster's results while the
+	// meta reports the FULL searched scope -- the failed cluster is counted as
+	// searched (its failure is the banner + `.err` chip's story, D12).
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-chip")); got != "1 object · 1 cluster · 1 kind" {
+		t.Fatalf("totals chip = %q, want '1 object · 1 cluster · 1 kind' (answering cluster only)", got)
+	}
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-meta")); !strings.HasPrefix(got, "searched 2 clusters in ") {
+		t.Fatalf("totals meta = %q, want 'searched 2 clusters in <T>s' (failed cluster still searched)", got)
 	}
 }
 
@@ -1125,17 +1248,20 @@ func TestBehaviorSearchAllClustersNoSidebar(t *testing.T) {
 	p.wantAbsent(".context-name")
 }
 
-// TestBehaviorSearchNoResults pins the redesign "no results" block + the
-// foundline footer for a query that matches nothing: no results table, the
-// `.ro-noresults` sentence, and a "Found 0 objects" foundline.
+// TestBehaviorSearchNoResults pins the redesign "no results" state (D12,
+// prototype VIEW.search empty copy) for a query that matches nothing: no group
+// renders, the `.ro-empty-lg` card carries the "Nothing matched “q”" headline +
+// the searched-scope sentence, and the totals strip stays truthful at zero.
 func TestBehaviorSearchNoResults(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/search?q=zzzznomatch&cluster=test&namespace=default&type=pods", http.StatusOK)
 
+	p.wantAbsent(".search-group")
 	p.wantAbsent(".ro-table tbody tr")
-	p.wantText(".ro-noresults p", `No results found for "zzzznomatch".`)
-	if got := p.text(".ro-foundline"); !strings.Contains(got, `Found 0 objects matching "zzzznomatch"`) {
-		t.Fatalf("foundline = %q, want a 'Found 0 objects matching \"zzzznomatch\"' sentence", got)
+	p.wantText(".ro-empty-lg h3", "Nothing matched “zzzznomatch”")
+	p.wantText(".ro-empty-lg p", "Searched names across 1 cluster and 1 resource type.")
+	if got := normSpace(p.text(".ro-phase-strip .ro-phase-chip")); got != "0 objects · 0 clusters · 0 kinds" {
+		t.Fatalf("totals chip = %q, want '0 objects · 0 clusters · 0 kinds'", got)
 	}
 }
 
@@ -1154,7 +1280,7 @@ func TestBehaviorSearchRespectsExcludeNamespaces(t *testing.T) {
 
 	p.wantAbsent(".ro-table tbody tr")
 	p.wantBodyExcludes("/clusters/test/namespaces/default/pods/nginx")
-	p.wantText(".ro-noresults p", `No results found for "nginx".`)
+	p.wantText(".ro-empty-lg h3", "Nothing matched “nginx”")
 }
 
 // ---------------------------------------------------------------------------

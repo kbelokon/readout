@@ -49,7 +49,14 @@ func (s *Server) observeMetrics(next http.Handler) http.Handler {
 		} else if method, path, ok := strings.Cut(route, " "); ok && method == r.Method {
 			route = path
 		}
-		s.metrics.requestLatency.WithLabelValues(r.Method, route).Observe(time.Since(start).Seconds())
+		// The `_stream` SSE routes are excluded from the duration histogram
+		// (D19): a stream's lifetime is minutes of intentional held-open
+		// connection, not request latency — one 30-minute stream would
+		// permanently distort every latency quantile. Streams stay counted in
+		// the request totals below.
+		if !strings.HasSuffix(route, "/_stream") {
+			s.metrics.requestLatency.WithLabelValues(r.Method, route).Observe(time.Since(start).Seconds())
+		}
 		s.metrics.requestCount.WithLabelValues(r.Method, route, strconv.Itoa(ww.status)).Inc()
 		if !s.cfg.NoAccessLogs {
 			slog.Info("request", "method", r.Method, "path", r.URL.Path, "route", route, "status", ww.status, "duration", time.Since(start).String())
@@ -73,4 +80,21 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
+}
+
+// Flush forwards to the wrapped writer's http.Flusher. The embedded
+// ResponseWriter field hides the interface (a struct-embedded interface only
+// re-exposes its OWN methods), which would buffer SSE pushes indefinitely —
+// the `_stream` endpoint flushes per message through this (D19).
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the wrapped writer for http.ResponseController, so any
+// future wrapper stacked above statusWriter can still reach the underlying
+// connection's Flusher/deadline controls through the standard unwrap chain.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }

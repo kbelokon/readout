@@ -20,6 +20,12 @@ type clusterFakeOptions struct {
 	// a partial failure (its FindResource succeeds, its Table fails) -- the
 	// other clusters must still render and the partial notice must appear.
 	failList bool
+	// searchFixtures swaps the pods table for the search-shaped fixture
+	// (api-backend / metrics-api / redis-master names) and adds a deployments
+	// route (api-gateway), so the grouped-search tests can assert the D12 mark
+	// highlight + the multi-kind totals. Off by default: existing tests keep the
+	// nginx/my-app rows and no deployments route.
+	searchFixtures bool
 }
 
 // newClusterFakeAPI builds a minimal fake kube API (discovery + pods table/list)
@@ -53,6 +59,10 @@ func newClusterFakeAPI(t *testing.T, opts clusterFakeOptions) *httptest.Server {
 	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
 	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
 	mux.HandleFunc("/version", fixture("discovery/version.json"))
+	podsFixture := "data/pods_table.json"
+	if opts.searchFixtures {
+		podsFixture = "data/search_pods_table.json"
+	}
 	podsHandler := delay(func(w http.ResponseWriter, r *http.Request) {
 		if opts.failList {
 			http.Error(w, "boom: pods backend unavailable", http.StatusInternalServerError)
@@ -60,13 +70,25 @@ func newClusterFakeAPI(t *testing.T, opts clusterFakeOptions) *httptest.Server {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.Header.Get("Accept"), "as=Table") {
-			_, _ = w.Write(readFixture(t, "data/pods_table.json"))
+			_, _ = w.Write(readFixture(t, podsFixture))
 			return
 		}
 		_, _ = w.Write(readFixture(t, "data/pods_with_node_list.json"))
 	})
 	mux.HandleFunc("/api/v1/namespaces/default/pods", podsHandler)
 	mux.HandleFunc("/api/v1/pods", podsHandler)
+	if opts.searchFixtures {
+		deploymentsHandler := delay(func(w http.ResponseWriter, _ *http.Request) {
+			if opts.failList {
+				http.Error(w, "boom: deployments backend unavailable", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(readFixture(t, "data/search_deployments_table.json"))
+		})
+		mux.HandleFunc("/apis/apps/v1/namespaces/default/deployments", deploymentsHandler)
+		mux.HandleFunc("/apis/apps/v1/deployments", deploymentsHandler)
+	}
 	// Namespaces list (the navbar / _all-namespaces resolution may touch it).
 	mux.HandleFunc("/api/v1/namespaces", fixture("data/render_namespaces_list.json"))
 	server := httptest.NewServer(mux)
@@ -258,6 +280,146 @@ func TestMultiClusterSearchFanInIsDeterministicAndPartialSafe(t *testing.T) {
 		if got := strings.Join(links, "|"); got != first {
 			t.Fatalf("run %d: result link order %q differs from first %q (non-deterministic search fan-in)", run, got, first)
 		}
+	}
+}
+
+// TestSearchGroupedByClusterMarksAndTotals pins the D12 grouped search render
+// over the proven fan-out: a two-cluster search (the alphabetically-first
+// cluster is the SLOWEST, finishing last) renders one `.search-group` per
+// cluster in fixed cluster-name order across repeated runs, each group header
+// carrying the ok dot + mono cluster name + count chip; the matched query
+// fragment is wrapped in a server-side `<mark>` inside the Unit 10
+// pn-head/pn-tail name split; and the totals strip counts
+// objects/clusters/kinds with the searched-clusters timing meta.
+func TestSearchGroupedByClusterMarksAndTotals(t *testing.T) {
+	// aaa is slowest -> completes LAST but its group must still render FIRST.
+	aaa := newClusterFakeAPI(t, clusterFakeOptions{delay: 40 * time.Millisecond, searchFixtures: true})
+	bbb := newClusterFakeAPI(t, clusterFakeOptions{searchFixtures: true})
+	app := newMultiClusterServer(t, map[string]string{"aaa": aaa.URL, "bbb": bbb.URL})
+
+	var first string
+	for run := 0; run < 4; run++ {
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=api&cluster=_all&namespace=default&type=pods&type=deployments", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("run %d: status = %d body=%s", run, rec.Code, rec.Body.String())
+		}
+		doc, err := goquery.NewDocumentFromReader(strings.NewReader(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("run %d: parse search body: %v", run, err)
+		}
+
+		// One group per cluster, in fixed cluster-name order (aaa before bbb)
+		// regardless of completion order.
+		groups := doc.Find(".search-group")
+		if groups.Length() != 2 {
+			t.Fatalf("run %d: .search-group count = %d, want 2: %s", run, groups.Length(), rec.Body.String())
+		}
+		var headers []string
+		groups.Find(".search-cluster .mono").Each(func(_ int, s *goquery.Selection) {
+			headers = append(headers, strings.TrimSpace(s.Text()))
+		})
+		if strings.Join(headers, "|") != "aaa|bbb" {
+			t.Fatalf("run %d: group header order = %v, want [aaa bbb]", run, headers)
+		}
+		// Group header anatomy: ok dot + mono name + count chip (2 matching pods
+		// + 1 matching deployment per cluster; redis-master-0 filtered out).
+		firstGroup := groups.First()
+		if firstGroup.Find(".search-cluster .ro-dot.ok").Length() != 1 {
+			t.Fatalf("run %d: first group header missing the ok dot", run)
+		}
+		if got := normSpace(firstGroup.Find(".search-cluster .ro-count").Text()); got != "3" {
+			t.Fatalf("run %d: first group count chip = %q, want 3", run, got)
+		}
+		if firstGroup.Find(`td.cell-name a[href^="/clusters/bbb/"]`).Length() != 0 {
+			t.Fatalf("run %d: aaa group leaked bbb rows", run)
+		}
+
+		// The matched fragment is <mark>-wrapped inside the pn-head split: the
+		// api-backend pod renders pre "" + mark "api" + post "-backend" with the
+		// hash tail muted and unmarked.
+		nameCell := firstGroup.Find(`td.cell-name a[href="/clusters/aaa/namespaces/default/pods/api-backend-7c9f7cd495-6fff6"]`)
+		if nameCell.Length() != 1 {
+			t.Fatalf("run %d: api-backend name link missing (links=%v)", run, resultLinkOrder(rec.Body.String()))
+		}
+		if got := nameCell.Find(".pn-head mark").Text(); got != "api" {
+			t.Fatalf("run %d: <mark> fragment = %q, want %q", run, got, "api")
+		}
+		if got := nameCell.Find(".pn-head").Text(); got != "api-backend" {
+			t.Fatalf("run %d: pn-head = %q, want api-backend", run, got)
+		}
+		if got := nameCell.Find(".pn-tail").Text(); got != "-7c9f7cd495-6fff6" {
+			t.Fatalf("run %d: pn-tail = %q, want the unmarked hash tail", run, got)
+		}
+		if nameCell.Find(".pn-tail mark").Length() != 0 {
+			t.Fatalf("run %d: hash tail must never carry a mark", run)
+		}
+
+		// Totals strip: 6 objects (3 per cluster) across 2 clusters in 2 kinds
+		// (Pod + Deployment), with the right-side searched-clusters timing meta.
+		if got := normSpace(doc.Find(".ro-phase-strip .ro-phase-chip").First().Text()); got != "6 objects · 2 clusters · 2 kinds" {
+			t.Fatalf("run %d: totals chip = %q, want %q", run, got, "6 objects · 2 clusters · 2 kinds")
+		}
+		meta := normSpace(doc.Find(".ro-phase-strip .ro-phase-meta").Text())
+		if !strings.HasPrefix(meta, "searched 2 clusters in ") || !strings.HasSuffix(meta, "s") {
+			t.Fatalf("run %d: totals meta = %q, want 'searched 2 clusters in <T>s'", run, meta)
+		}
+
+		// Row order within + across groups is stable across repeats.
+		links := strings.Join(resultLinkOrder(rec.Body.String()), "|")
+		if run == 0 {
+			first = links
+			continue
+		}
+		if links != first {
+			t.Fatalf("run %d: result link order %q differs from first %q", run, links, first)
+		}
+	}
+}
+
+// TestSearchGroupedPartialFailureKeepsFailedChip pins the D12 partial-failure
+// composition: a failed cluster renders its `.ro-scope-chip.err` (+ inline
+// read-only retry GET) ALONGSIDE the healthy cluster's `.search-group`, and the
+// failed cluster never grows a group.
+func TestSearchGroupedPartialFailureKeepsFailedChip(t *testing.T) {
+	good := newClusterFakeAPI(t, clusterFakeOptions{searchFixtures: true})
+	bad := newClusterFakeAPI(t, clusterFakeOptions{failList: true, searchFixtures: true})
+	app := newMultiClusterServer(t, map[string]string{"good": good.URL, "zbad": bad.URL})
+
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=api&cluster=_all&namespace=default&type=pods", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (partial failure must NOT fail the whole search) body=%s", rec.Code, rec.Body.String())
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse search body: %v", err)
+	}
+
+	// Exactly one group: the healthy cluster's. The failed cluster has no group.
+	groups := doc.Find(".search-group")
+	if groups.Length() != 1 {
+		t.Fatalf(".search-group count = %d, want 1 (only the healthy cluster groups)", groups.Length())
+	}
+	if got := normSpace(groups.Find(".search-cluster .mono").Text()); got != "good" {
+		t.Fatalf("group header = %q, want good", got)
+	}
+
+	// The failed cluster keeps the scope-chip + retry treatment alongside the group.
+	errChip := doc.Find(".ro-scope .ro-scope-chip.err")
+	if errChip.Length() != 1 {
+		t.Fatalf("`.err` scope chip count = %d, want 1", errChip.Length())
+	}
+	if got := normSpace(errChip.Text()); !strings.HasPrefix(got, "zbad") {
+		t.Fatalf("`.err` chip = %q, want it to name zbad", got)
+	}
+	retry, ok := errChip.Find("a.retry").Attr("href")
+	if !ok || !strings.HasPrefix(retry, "/search?") || !strings.Contains(retry, "cluster=zbad") {
+		t.Fatalf("`.err` chip retry href = %q (ok=%v), want a read-only /search GET scoped to zbad", retry, ok)
+	}
+	// The partial banner renders too.
+	if doc.Find(".ro-banner.warn").Length() == 0 {
+		t.Fatalf("partial-failure banner missing")
 	}
 }
 

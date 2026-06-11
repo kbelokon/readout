@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
@@ -18,7 +19,12 @@ func defaultSidebarGroups() []config.SidebarGroup {
 	return []config.SidebarGroup{
 		{Label: "Cluster Resources", Resources: []string{"namespaces", "nodes", "persistentvolumes"}},
 		{Label: "Controllers", Resources: []string{"deployments", "cronjobs", "jobs", "daemonsets", "statefulsets"}},
-		{Label: "Pod Management", Resources: []string{"ingresses", "services", "pods", "configmaps"}},
+		// Secrets close the §6.2 Pod Management group (D13). With the secret
+		// barrier down (IncludeSecrets=false, the default) discovery filters the
+		// Secret type out, sidebarResourceLink fails to resolve it, and the entry
+		// simply does not render -- so the curated entry only appears when the
+		// operator opted into secrets.
+		{Label: "Pod Management", Resources: []string{"ingresses", "services", "pods", "configmaps", "secrets"}},
 	}
 }
 
@@ -67,6 +73,20 @@ type navbarView struct {
 	NextTheme     string
 	ToggleNextURL string
 	ThemeExplicit bool
+
+	// RefreshMode is the persisted auto-refresh mode from the ro_prefs cookie
+	// (D9): "" (no preference) / "Off" / an interval in seconds as a string /
+	// "Live" (Unit 27). The topbar renders the refresh label + active option
+	// from it at SSR so the persisted choice paints without the JS sync flash;
+	// readout.js re-derives the same state from the same cookie on init.
+	RefreshMode string
+
+	// LiveDisabled disables the dropdown's Live option (Unit 27/D19 scope
+	// cut): set on multi-type and multi-cluster LIST pages, the scope the
+	// `_stream` endpoint 404s. Mirrors resourceStream's gate exactly
+	// (isSingleListType + the all/CSV cluster check) so the rendered option is
+	// the single client-consumable truth about Live availability.
+	LiveDisabled bool
 }
 
 // sidebarView is the resolved sidebar: the grouped resource-type links (each
@@ -103,6 +123,18 @@ type navItem struct {
 	IsCRD   bool
 	HasKind bool // true once a kube.ResourceType was resolved (vs the no-discovery fallback)
 
+	// Resource is the full resolved kube.ResourceType behind the entry (zero
+	// unless HasKind). The sidebar counts fetch needs the parts the flat fields
+	// above drop -- APIVersion (the count cache key) and Namespaced (whether the
+	// count is namespace- or cluster-scoped).
+	Resource kube.ResourceType
+
+	// Count/HasCount carry the per-kind object count (D13): the mono
+	// `.menu-count` value. HasCount distinguishes a real "0" (rendered) from a
+	// failed or never-attempted fetch (no count shown).
+	Count    string
+	HasCount bool
+
 	// Icon is the pre-rendered per-entry glyph from the Unit-1 resolver
 	// (icons.KindIcon when HasKind, else icons.PluralMonogram), resolved in the
 	// handler seam so the templ sidebar and the palette feed share one markup
@@ -126,14 +158,20 @@ type paletteFeedView struct {
 }
 
 // paletteLinkFeed is a {name, href} jump target (a cluster or a namespace).
+// Display carries the SPEC §4.2 middle-truncated form when -- and only when --
+// the name overruns the 42-rune identifier budget (D5/D21: truncation is
+// SERVER-side, in this feed builder, via the shared MiddleTruncate); the JS
+// renders Display and keeps the full Name in the row title.
 type paletteLinkFeed struct {
-	Name string `json:"name"`
-	Href string `json:"href"`
+	Name    string `json:"name"`
+	Href    string `json:"href"`
+	Display string `json:"display,omitempty"`
 }
 
 // paletteKindFeed is a resource-type jump target: the kind label + plural +
-// API group + the list href + the pre-rendered (HTML-escaped via JSON encoding)
-// icon markup from the Unit-1 resolver.
+// API group + the namespaced/cluster scope + the list href + the pre-rendered
+// (HTML-escaped via JSON encoding) icon markup from the Unit-1 resolver.
+// Display is the truncated label form, exactly as on paletteLinkFeed.
 type paletteKindFeed struct {
 	Kind       string `json:"kind"`
 	Plural     string `json:"plural"`
@@ -141,6 +179,7 @@ type paletteKindFeed struct {
 	Namespaced bool   `json:"namespaced"`
 	Href       string `json:"href"`
 	Icon       string `json:"icon"`
+	Display    string `json:"display,omitempty"`
 }
 
 // paletteActionFeed is a labelled action: an href (navigate) or a named client
@@ -215,16 +254,27 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, cl
 	}
 
 	if s.manager != nil {
+		// The palette cluster list is the topbar's cluster nav, i.e. a
+		// cluster-ENTRY surface: each link consumes the persisted
+		// namespace-per-cluster pref via clusterEntryHref (D9 -- link
+		// construction only, never a redirect).
+		nsPrefs := prefsFromRequest(r).Namespaces
 		for _, c := range s.manager.Clusters() {
 			feed.Clusters = append(feed.Clusters, paletteLinkFeed{
-				Name: c.Name,
-				Href: "/clusters/" + url.PathEscape(c.Name),
+				Name:    c.Name,
+				Href:    clusterEntryHref(c.Name, nsPrefs[c.Name]),
+				Display: paletteDisplayName(c.Name),
 			})
 		}
 	}
 
-	for _, ns := range navbar.NamespaceLinks {
-		feed.Namespaces = append(feed.Namespaces, paletteLinkFeed{Name: ns.Text, Href: ns.Href})
+	for i := range navbar.NamespaceLinks {
+		ns := &navbar.NamespaceLinks[i]
+		feed.Namespaces = append(feed.Namespaces, paletteLinkFeed{
+			Name:    ns.Text,
+			Href:    ns.Href,
+			Display: paletteDisplayName(ns.Text),
+		})
 	}
 
 	// Resource-type group: ALL discovered types (built-ins + CRDs) so ⌘K jumps to
@@ -287,7 +337,8 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, cl
 	for _, a := range feed.Actions {
 		metaSeen[a.Label] = true
 	}
-	for _, meta := range sidebar.Meta {
+	for i := range sidebar.Meta {
+		meta := &sidebar.Meta[i]
 		if metaSeen[meta.Text] {
 			continue
 		}
@@ -334,14 +385,29 @@ func (s *Server) paletteKindEntry(cluster, namespace string, rt *kube.ResourceTy
 		href = fmt.Sprintf("/clusters/%s/%s", url.PathEscape(cluster), url.PathEscape(rt.Plural))
 	}
 	override := s.cfg.ResourceIcons[config.ResourceIconKey{Kind: rt.Kind, Group: rt.Group}]
+	kindLabel := pluralizeKind(rt.Kind, rt.Plural)
 	return paletteKindFeed{
-		Kind:       pluralizeKind(rt.Kind),
+		Kind:       kindLabel,
 		Plural:     rt.Plural,
 		Group:      rt.Group,
 		Namespaced: rt.Namespaced,
 		Href:       href,
 		Icon:       string(icons.KindIcon(rt.Kind, rt.Group, isCRD(rt.APIVersion), override)),
+		Display:    paletteDisplayName(kindLabel),
 	}
+}
+
+// paletteDisplayName applies the D5/D21 server-side truncation to a palette
+// label: the SPEC §4.2 identifier budget (>42 runes -> first 26 + "…" + last
+// 12) through the shared MiddleTruncate. Returns "" when the name fits -- the
+// omitempty Display field then stays off the wire and the palette JS renders
+// the full Name itself.
+func paletteDisplayName(name string) string {
+	display, truncated := MiddleTruncate(name, nameHeadMax, nameHeadLead, nameHeadTrail)
+	if !truncated {
+		return ""
+	}
+	return display
 }
 
 func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName string, explicit bool, clients requestKubeClients) navbarView {
@@ -355,6 +421,8 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 		NextTheme:       nextTheme,
 		ToggleNextURL:   r.URL.RequestURI(),
 		ThemeExplicit:   explicit,
+		RefreshMode:     prefsFromRequest(r).Refresh,
+		LiveDisabled:    liveOptionDisabled(r, cluster),
 	}
 	if cluster != "" && cluster != kube.AllClusters {
 		if clusterObj, ok := s.manager.Get(cluster); ok {
@@ -373,6 +441,22 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 		}
 	}
 	return v
+}
+
+// liveOptionDisabled decides the topbar Live option's disabled state (Unit
+// 27/D19): true exactly on LIST pages outside the `_stream` scope cut --
+// multi-type plurals ("all"/"_all"/CSV) or multi-cluster scope ("_all"/CSV
+// cluster). Detail pages ({name} bound) and non-resource pages keep the
+// option enabled; it is inert there, like the interval options (no
+// #resource-list-content to refresh). The predicate restates resourceStream's
+// 404 gate so the server renders the availability the endpoint will enforce.
+func liveOptionDisabled(r *http.Request, cluster string) bool {
+	plural := r.PathValue("plural")
+	if plural == "" || r.PathValue("name") != "" {
+		return false // not a list page: enabled-but-inert
+	}
+	multiCluster := cluster == kube.AllClusters || strings.Contains(cluster, ",")
+	return !isSingleListType(plural) || multiCluster
 }
 
 func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, clients requestKubeClients) sidebarView {
@@ -402,14 +486,15 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, cl
 				continue
 			}
 			item := navItem{
-				Href:    link.Href,
-				Text:    link.Text,
-				Active:  r.URL.Path == link.Href,
-				Kind:    link.Kind,
-				Group:   link.Group,
-				Plural:  link.Plural,
-				IsCRD:   link.IsCRD,
-				HasKind: link.HasKind,
+				Href:     link.Href,
+				Text:     link.Text,
+				Active:   r.URL.Path == link.Href,
+				Kind:     link.Kind,
+				Group:    link.Group,
+				Plural:   link.Plural,
+				IsCRD:    link.IsCRD,
+				HasKind:  link.HasKind,
+				Resource: link.Resource,
 			}
 			item.Icon = sidebarNavIcon(s, &item)
 			links = append(links, item)
@@ -421,16 +506,64 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, cl
 	}
 
 	if cluster != "" && namespace != "" {
-		for _, link := range []navItem{
+		metaLinks := []navItem{
 			{Text: "Resource Types", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/_resource-types", url.PathEscape(cluster), url.PathEscape(namespace))},
 			{Text: "Events", Href: fmt.Sprintf("/clusters/%s/namespaces/%s/events", url.PathEscape(cluster), url.PathEscape(namespace))},
-		} {
-			link.Active = r.URL.Path == link.Href
-			v.Meta = append(v.Meta, link)
 		}
+		for i := range metaLinks {
+			metaLinks[i].Active = r.URL.Path == metaLinks[i].Href
+		}
+		v.Meta = append(v.Meta, metaLinks...)
 	} else if cluster != "" {
 		href := fmt.Sprintf("/clusters/%s/_resource-types", cluster)
 		v.Meta = append(v.Meta, navItem{Text: "Resource Types", Href: href, Active: r.URL.Path == href})
 	}
+
+	// Per-kind counts (D13): collected AFTER the view is fully assembled so the
+	// target pointers into v.Groups/v.Meta stay valid, fetched concurrently
+	// under one short deadline. With no concrete client (multi-cluster `_all`,
+	// unknown cluster, no manager) no targets resolve and the sidebar renders
+	// no counts.
+	s.attachSidebarCounts(r.Context(), client, cluster, s.sidebarCountTargets(r, client, namespace, &v))
 	return v
+}
+
+// sidebarCountTargets collects the sidebar entries that receive a count: every
+// group entry with a resolved resource type, plus the namespace-scope Events
+// meta entry (the §6.2 prototype shows a count on Events but not on Resource
+// Types, which is not a kind). Namespaced kinds count within the in-scope
+// namespace; cluster-scoped kinds count cluster-wide.
+func (s *Server) sidebarCountTargets(r *http.Request, client *kube.Client, namespace string, v *sidebarView) []countTarget {
+	if client == nil {
+		return nil
+	}
+	var targets []countTarget
+	for gi := range v.Groups {
+		for li := range v.Groups[gi].Links {
+			item := &v.Groups[gi].Links[li]
+			if !item.HasKind {
+				continue
+			}
+			ns := ""
+			if item.Resource.Namespaced {
+				ns = namespace
+			}
+			targets = append(targets, countTarget{item: item, resource: item.Resource, namespace: ns})
+		}
+	}
+	if namespace != "" {
+		for mi := range v.Meta {
+			if v.Meta[mi].Text != "Events" {
+				continue
+			}
+			// The Events meta link lists the preferred events kind in the scoped
+			// namespace; resolve the same type for its count. Discovery is already
+			// warm (the groups above resolved through it); a failure just leaves
+			// the Events entry uncounted.
+			if rt, err := client.FindResource(r.Context(), "events", true, ""); err == nil {
+				targets = append(targets, countTarget{item: &v.Meta[mi], resource: rt, namespace: namespace})
+			}
+		}
+	}
+	return targets
 }

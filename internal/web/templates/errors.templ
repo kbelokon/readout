@@ -1,17 +1,16 @@
 package templates
 
 // errors.templ is the error + STATE surface. It holds (1) the full-page error
-// body (the simple `.ro-error-card` from the error() handler) and (2) the redesign
-// list/detail STATE partials (D11): the big empty-state card `.ro-empty-lg`
-// (forbidden / unreachable / a generic empty), the removable filter chips of the
-// empty-FILTERED state, and the hidden `.ro-banner.warn` the client-side stale
-// path reveals on an auto-refresh error. Each net-new state class (`.ro-empty-lg`,
-// `.ro-empty-glyph`, `.ro-banner`, `.ro-scope`, `.ro-scope-chip`) is bare; it
-// resolves against the redesign CSS via the `.ro-rd` content ancestor the
-// list/detail content already carries (D13).
-//
-// VOICE (Principles §11): unreachable shows the REAL transport error string, not
-// a cute message; forbidden names the verb/resource/namespace + 403.
+// body (the simple `.ro-error-card` from the error() handler) and (2) the
+// redesign list/detail STATE partials aligned with the prototype VIEW.states
+// markup (D16): the big state card `.ro-empty-lg` with one plain-language
+// headline + `<p>` line and the VERBATIM apiserver/transport string in the mono
+// `.errdetail` block (SPEC §1.5 -- never a cute paraphrase), the empty-FILTERED
+// card with its inline `.ro-empty-chips`, the plainly-empty card with the broad
+// next action, and the hidden `.ro-banner.warn` the client-side stale path
+// reveals on an auto-refresh error. Each net-new state class resolves against
+// the redesign CSS via the `.ro-rd` content ancestor the list/detail content
+// already carries (D13).
 
 // ErrorBody renders the full-page error content: the HTTP status text heading
 // and the verbatim error message.
@@ -19,15 +18,20 @@ templ ErrorBody(statusText, message string) {
 	<div class="ro-error-card"><h2>{ statusText }</h2><p>{ message }</p></div>
 }
 
-// roEmptyLg is the canonical big empty/failure state card: a glyph tile, a
-// title, an optional reason line (`.hint`, mono when it carries a real error
-// string), and a slot of action buttons. The glyph is trusted pre-rendered SVG.
-templ roEmptyLg(glyphIcon, title, hint string, hintMono bool, actions templ.Component) {
+// roEmptyLg is the canonical big empty/failure state card (prototype
+// VIEW.states): a glyph tile (optionally toned warn/err), the one
+// plain-language headline, an optional single `<p>` reason line, the verbatim
+// error string in the mono `.errdetail` block, and a slot of action buttons.
+// The glyph is trusted pre-rendered SVG.
+templ roEmptyLg(tone, glyphIcon, title, plain, errDetail string, actions templ.Component) {
 	<div class="ro-empty-lg">
-		<div class="ro-empty-glyph"><span class="ico">@templ.Raw(glyphIcon)</span></div>
+		<div class={ emptyGlyphClass(tone) }><span class="ico">@templ.Raw(glyphIcon)</span></div>
 		<h3>{ title }</h3>
-		if hint != "" {
-			<p class={ hintClass(hintMono) }>{ hint }</p>
+		if plain != "" {
+			<p>{ plain }</p>
+		}
+		if errDetail != "" {
+			<div class="errdetail">{ errDetail }</div>
 		}
 		if actions != nil {
 			<div class="ro-empty-actions">@actions</div>
@@ -36,14 +40,16 @@ templ roEmptyLg(glyphIcon, title, hint string, hintMono bool, actions templ.Comp
 }
 
 // listStateBlock renders the whole-list forbidden/unreachable state inside the
-// content region (no table). Forbidden: "Not allowed to list <resource> here" +
-// "403 Forbidden · <reason>" naming the verb/resource/namespace. Unreachable:
-// "Can't reach this cluster" + the REAL error string + Retry + Back to clusters.
+// content region (no table). Forbidden (warn lock tile): "Not allowed to list
+// <resource> in “<ns>”" + the RBAC plain line + the verbatim 403 Status in
+// `.errdetail`. Unreachable (err unplug tile): "Can’t reach <cluster>" + the
+// plain line + the REAL transport/apiserver error string. Both offer Retry (a
+// read-only GET) + Back to clusters, matching the prototype.
 templ listStateBlock(s ListState) {
 	if s.Kind == "forbidden" {
-		@roEmptyLg(s.GlyphIcon, "Not allowed to "+s.Verb+" "+s.Resource+stateNamespaceClause(s.Namespace)+" here", s.Detail, false, stateActions(s.RetryHref, s.BackHref, false))
+		@roEmptyLg("warn", s.GlyphIcon, "Not allowed to "+s.Verb+" "+s.Resource+stateNamespaceClause(s.Namespace), s.Hint, s.Detail, stateActions(s.RetryHref, s.BackHref))
 	} else {
-		@roEmptyLg(s.GlyphIcon, "Can't reach this cluster", s.Detail, true, stateActions(s.RetryHref, s.BackHref, true))
+		@roEmptyLg("err", s.GlyphIcon, "Can’t reach "+s.Cluster, s.Hint, s.Detail, stateActions(s.RetryHref, s.BackHref))
 	}
 }
 
@@ -51,58 +57,67 @@ templ listStateBlock(s ListState) {
 // detail replaced by the state card).
 templ detailStateBlock(s DetailState) {
 	if s.Kind == "forbidden" {
-		@roEmptyLg(s.GlyphIcon, "Not allowed to "+s.Verb+" "+s.Resource+stateNamespaceClause(s.Namespace)+" here", s.Detail, false, stateActions(s.RetryHref, s.BackHref, false))
+		@roEmptyLg("warn", s.GlyphIcon, "Not allowed to "+s.Verb+" "+s.Resource+stateNamespaceClause(s.Namespace), s.Hint, s.Detail, stateActions(s.RetryHref, s.BackHref))
 	} else {
-		@roEmptyLg(s.GlyphIcon, "Can't reach this cluster", s.Detail, true, stateActions(s.RetryHref, s.BackHref, true))
+		@roEmptyLg("err", s.GlyphIcon, "Can’t reach "+s.Cluster, s.Hint, s.Detail, stateActions(s.RetryHref, s.BackHref))
 	}
 }
 
 // stateActions is the action row of a failure state: a Retry (a read-only GET
-// back to the same URL) and a "Back to clusters" escape. The Retry shows only on
-// the unreachable state (forbidden has nothing to retry into -- the denial is
-// stable), matching the mockup.
-templ stateActions(retryHref, backHref string, showRetry bool) {
-	if showRetry {
-		<a href={ templ.SafeURL(retryHref) } class="ro-btn quiet">Retry</a>
-	}
-	<a href={ templ.SafeURL(backHref) } class="ro-btn quiet">Back to clusters</a>
+// back to the same URL -- RBAC and reachability both change, so both states
+// offer it, per the prototype) and a "Back to clusters" escape.
+templ stateActions(retryHref, backHref string) {
+	<a href={ templ.SafeURL(retryHref) } class="ro-btn quiet sm">Retry</a>
+	<a href={ templ.SafeURL(backHref) } class="ro-btn quiet sm">Back to clusters</a>
 }
 
-// emptyFiltered renders the empty-FILTERED state: a `.ro-scope` strip of
-// removable filter chips (each ✕ drops one filter) + a `.ro-empty-lg` "No <kind>
-// match your filters" with a Clear-filters button.
+// emptyFiltered renders the empty-FILTERED state per the prototype: the inbox
+// card with "No <Kind> match the active filters", the plain line, the ACTIVE
+// chips inline in `.ro-empty-chips` (each ✕ a read-only GET dropping one
+// filter), and the Clear-filters action dropping the whole set.
 templ emptyFiltered(d ListData, table TableData) {
-	<div class="ro-scope"><span class="lbl">filters</span>
-		for _, chip := range table.EmptyFilters {
-			<span class="ro-scope-chip">{ chip.Label } <a href={ templ.SafeURL(chip.RemoveHref) } class="retry" aria-label={ "Remove filter " + chip.Label }>✕</a></span>{ " " }
-		}
-		</div>
-	@roEmptyLg(table.EmptyGlyph, "No "+table.EmptyKind+" objects match your filters", "", false, clearAction(table.ClearHref))
+	<div class="ro-empty-lg">
+		<div class="ro-empty-glyph"><span class="ico">@templ.Raw(table.EmptyGlyph)</span></div>
+		<h3>{ "No " + table.Kind + " match the active filters" }</h3>
+		<p>Each chip narrows the list. Remove one, or clear them all.</p>
+		<div class="ro-empty-chips">
+			for _, chip := range table.EmptyFilters {
+				<span class="ro-scope-chip"><span class="v">{ chip.Label }</span><a href={ templ.SafeURL(chip.RemoveHref) } class="chip-x" aria-label={ "Remove filter " + chip.Label }>✕</a></span>{ " " }
+			}
+			</div>
+		<div class="ro-empty-actions">@clearAction(table.ClearHref)</div>
+	</div>
 }
 
 // clearAction is the "Clear filters" button of the empty-filtered state.
 templ clearAction(clearHref string) {
-	<a href={ templ.SafeURL(clearHref) } class="ro-btn quiet">Clear filters</a>
+	<a href={ templ.SafeURL(clearHref) } class="ro-btn quiet sm">Clear filters</a>
 }
 
-// emptyPlain renders the plainly-empty state inside a table: the precomputed
-// "No <Kind> objects ... found." sentence (the fact-pinned `.ro-empty-title` +
-// `.ro-empty-hint`) plus, when offered, a broad next action (e.g. "Show <plural>
-// across all namespaces"). The sentence stays one @templ.Raw piece (see
-// emptyTitle) so its trailing "found." is never dropped.
+// emptyPlain renders the plainly-empty state inside a table: the prototype
+// sentence "No <Kind> found in namespace “<ns>”" (the fact-pinned
+// `.ro-empty-title` + `.ro-empty-hint`) plus, when offered, the broad next
+// action ("Show <plural> across all namespaces" -- namespaced kinds only; a
+// cluster-scoped list never gets the link, SPEC §5/§9). The sentence stays one
+// @templ.Raw piece (see emptyTitle) so its clauses are never dropped.
 templ emptyPlain(d ListData, table TableData) {
-	<div class="ro-empty-lg"><div class="ro-empty-glyph"><span class="ico">@templ.Raw(table.EmptyGlyph)</span></div><h3 class="ro-empty-title">@templ.Raw(emptyTitle(table.EmptyKind, d.Namespace, d.IsAllNamespaces))</h3><p class="ro-empty-hint">Nothing to show here yet.</p>
+	<div class="ro-empty-lg"><div class="ro-empty-glyph"><span class="ico">@templ.Raw(table.EmptyGlyph)</span></div><h3 class="ro-empty-title">@templ.Raw(emptyTitle(table.Kind, d.Namespace, d.IsAllNamespaces))</h3><p class="ro-empty-hint">Nothing to show here yet.</p>
 		if table.EmptyActionHref != "" {
-			<div class="ro-empty-actions"><a href={ templ.SafeURL(table.EmptyActionHref) } class="ro-btn quiet">{ table.EmptyActionLabel }</a></div>
+			<div class="ro-empty-actions"><a href={ templ.SafeURL(table.EmptyActionHref) } class="ro-btn quiet sm">{ table.EmptyActionLabel }</a></div>
 		}
 		</div>
 }
 
-// staleBanner is the hidden `.ro-banner.warn` the client-side stale path (D11)
-// reveals on an auto-refresh error. It is rendered HIDDEN on first paint; on a
-// refresh `htmx:responseError`/`htmx:sendError` readout.js removes the `hidden`
-// attribute and dims #resource-list-content (it never blanks the rows -- HTMX
-// keeps them on error). The "retry" re-fires the read-only refresh GET.
+// staleBanner is the hidden `.ro-banner.warn` the client-side stale path (D11/
+// D16) reveals on an auto-refresh error. It is rendered HIDDEN on first paint;
+// on a refresh `htmx:responseError`/`htmx:sendError` readout.js removes the
+// `hidden` attribute and dims #resource-list-content (it never blanks the rows
+// -- HTMX keeps them on error). Copy per D16: "Auto-refresh failed — showing
+// the last good data" / "Retrying in Ns" / Retry now. The countdown span
+// (data-stale-countdown) carries readout.js's live backoff countdown ("Ns",
+// repainted every second); the "…" placeholder shows only while no retry is
+// armed (interval Off). The Retry now button re-fires the read-only refresh
+// GET.
 templ staleBanner() {
-	<div class="ro-banner warn ro-stale-banner" role="alert" hidden><span class="bn-ico ico sm">@templ.Raw(warnIcon())</span><div class="bn-body"><p class="bn-title">Showing last known data — refresh failed</p><p class="bn-text">The cluster did not answer the last auto-refresh. The rows below are the last data that loaded.</p></div><div class="bn-actions"><button type="button" class="ro-btn quiet ro-stale-retry">retry</button></div></div>
+	<div class="ro-banner warn ro-stale-banner" role="alert" hidden><span class="bn-ico ico sm">@iconC("rotate-cw")</span><div class="bn-body"><p class="bn-title">Auto-refresh failed — showing the last good data</p><p class="bn-text">Retrying in <span class="mono" data-stale-countdown>…</span>. The rows below are the last good data.</p></div><div class="bn-actions"><button type="button" class="ro-btn quiet sm ro-stale-retry">Retry now</button></div></div>
 }

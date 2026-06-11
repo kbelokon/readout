@@ -16,11 +16,11 @@ import (
 // added to the canonical resource-list engine. Every expectation is an
 // INDEPENDENT fact about how a Kubernetes Namespace value maps onto the redesign
 // vocabulary, asserted against the documented semantics (Active -> the ok status
-// dot; an app.kubernetes.io/* label -> the .app accent chip; a plain label -> a
-// plain chip; NO fabricated pod-count column because a Namespace object carries
-// no pod count), never an echo of the emitted class. The mapping is driven
-// through the REAL pipeline (buildCellView / buildListView), not re-implemented
-// in the test.
+// dot; EVERY label -> a neutral .ro-chip with the .ck/.cs/.cv ink-weight split,
+// the green .app accent being retired by the D3 colour law; NO fabricated
+// pod-count column because a Namespace object carries no pod count), never an
+// echo of the emitted class. The mapping is driven through the REAL pipeline
+// (buildCellView / buildListView), not re-implemented in the test.
 
 // namespaceObject builds a Namespace Row.Object carrying the phase + labels the
 // rich namespace cells read: status.phase (Active/Terminating) and
@@ -64,14 +64,15 @@ func namespacesCellView(t *testing.T, columns []string, cells []any, obj map[str
 // TestNamespaceCells drives the real cell-assembly for the namespace columns and
 // asserts the resolved view-model in one namespace row: the Status column reuses
 // the status-dot cell (Active -> ok tone), and the synthetic Labels column becomes
-// the label-chips cell (an app.kubernetes.io/* label earns the .app accent class; a
-// plain label stays a plain chip). The acceptance proof that the render test then
-// confirms reaches the DOM. The expectations are INDEPENDENT documented facts
-// (Active is the steady ok phase; the app.kubernetes.io/ prefix is the accent
-// gate), never an echo of the emitted class.
+// the label-chips cell carrying the sorted key/value pairs -- with NO class
+// plumbing at all (D3 colour law: every chip is neutral; an app.kubernetes.io/*
+// label maps to exactly the same chip shape as any other label). The acceptance
+// proof that the render test then confirms reaches the DOM. The expectations are
+// INDEPENDENT documented facts (Active is the steady ok phase; labels sort by
+// key), never an echo of the emitted markup.
 func TestNamespaceCells(t *testing.T) {
-	// A namespace carrying one app.kubernetes.io/* label (accented) and one plain
-	// label, in the Active phase.
+	// A namespace carrying one app.kubernetes.io/* label and one plain label, in
+	// the Active phase. Under D3 both map to the SAME neutral chip shape.
 	labels := map[string]any{
 		"app.kubernetes.io/name": "ingress-nginx",
 		"team":                   "platform",
@@ -94,8 +95,8 @@ func TestNamespaceCells(t *testing.T) {
 		t.Fatalf("Active status tone = %q, want ok", status.Tone)
 	}
 
-	// Labels: the synthetic Labels column becomes the label-chips cell. The
-	// app.kubernetes.io/* label earns the .app accent; the plain label does not.
+	// Labels: the synthetic Labels column becomes the label-chips cell, one
+	// key/value chip per label, sorted by key (app.kubernetes.io/name < team).
 	chips := namespacesCellView(t, cols, cells, obj, 3)
 	if chips.Kind != cellChips {
 		t.Fatalf("Labels cell kind = %v, want cellChips", chips.Kind)
@@ -103,56 +104,35 @@ func TestNamespaceCells(t *testing.T) {
 	if len(chips.Chips) != 2 {
 		t.Fatalf("chips = %d, want 2 (one per label)", len(chips.Chips))
 	}
-	// Independent expectation: the app.kubernetes.io/name chip carries the .app
-	// accent token; the team chip stays a plain chip (no .app). Asserted by the
-	// chip text + the documented app-accent gate, not by echoing the class verbatim.
 	appChip := findChip(chips.Chips, "app.kubernetes.io/name")
-	if appChip == nil {
-		t.Fatalf("app.kubernetes.io/name chip missing from %#v", chips.Chips)
-	}
-	if !hasClassToken(appChip.Class, "app") {
-		t.Fatalf("app.kubernetes.io/name chip class = %q, want the .app accent token", appChip.Class)
+	if appChip == nil || appChip.Val != "ingress-nginx" {
+		t.Fatalf("app.kubernetes.io/name chip missing or wrong value: %#v", chips.Chips)
 	}
 	plainChip := findChip(chips.Chips, "team")
-	if plainChip == nil {
-		t.Fatalf("team chip missing from %#v", chips.Chips)
-	}
-	if hasClassToken(plainChip.Class, "app") {
-		t.Fatalf("plain team chip class = %q, must NOT carry the .app accent", plainChip.Class)
+	if plainChip == nil || plainChip.Val != "platform" {
+		t.Fatalf("team chip missing or wrong value: %#v", chips.Chips)
 	}
 }
 
-// findChip returns the chip whose Text starts with the given label key (the chip
-// renders "<key>: <value>"), or nil. Lets the test assert per-chip class by the
-// label it represents rather than by position.
+// findChip returns the chip carrying the given label key, or nil. Lets the test
+// assert per-chip values by the label it represents rather than by position.
 func findChip(chips []chipView, key string) *chipView {
 	for i := range chips {
-		if strings.HasPrefix(chips[i].Text, key+":") || chips[i].Text == key {
+		if chips[i].Key == key {
 			return &chips[i]
 		}
 	}
 	return nil
 }
 
-// hasClassToken reports whether a space-separated class string contains the exact
-// token (so "ro-chip app" matches "app" but "ro-chip" does not match "app", and a
-// hypothetical "ro-chip-app" would not falsely match "app").
-func hasClassToken(class, token string) bool {
-	for _, f := range strings.Fields(class) {
-		if f == token {
-			return true
-		}
-	}
-	return false
-}
-
 // TestNamespaceLabelChipsThroughRender drives a namespaces list through the REAL
 // pipeline (decorateNamespaceColumns -> buildListView -> ResourceTable templ) and
-// asserts the redesign DOM: the Active status dot, the app.kubernetes.io/* chip
-// with the .app accent inside .ro-chips, a plain chip without it, a no-label
-// namespace's muted "—", and -- the load-bearing constraint -- that NO pod-count
-// column is fabricated (a Namespace object has no pod count, and readout has no
-// per-namespace pod-count seam).
+// asserts the redesign DOM: the Active status dot, NEUTRAL label chips with the
+// .ck/.cs/.cv ink-weight split inside .ro-chips (D3 colour law -- the retired
+// .ro-chip.app green accent must NEVER render, asserted negatively across the
+// whole document), a no-label namespace's muted "—", and -- the load-bearing
+// constraint -- that NO pod-count column is fabricated (a Namespace object has
+// no pod count, and readout has no per-namespace pod-count seam).
 func TestNamespaceLabelChipsThroughRender(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 
@@ -190,17 +170,21 @@ func TestNamespaceLabelChipsThroughRender(t *testing.T) {
 	if ingressRow.Find(".cell-status.ok .ro-dot.ok").Length() != 1 {
 		t.Fatalf("ingress-nginx status cell missing .cell-status.ok > .ro-dot.ok: %s", normSpace(ingressRow.Text()))
 	}
-	// Labels render as .ro-chips with one .app accent chip + one plain chip.
-	if ingressRow.Find(".ro-chips .ro-chip.app").Length() != 1 {
-		t.Fatalf("ingress-nginx missing the .app accent chip for app.kubernetes.io/name")
+	// Labels render as .ro-chips with one neutral chip per label. Each chip
+	// splits its key into .ck and its value into .cv (D3: ink weight, not hue).
+	if got := ingressRow.Find(".ro-chips .ro-chip").Length(); got != 2 {
+		t.Fatalf("ingress-nginx label chips = %d, want 2: %s", got, normSpace(ingressRow.Text()))
 	}
-	if got := normSpace(ingressRow.Find(".ro-chips .ro-chip.app").Text()); !strings.Contains(got, "app.kubernetes.io/name") {
-		t.Fatalf("app chip text = %q, want the app.kubernetes.io/name label", got)
+	appChip := ingressRow.Find(`.ro-chips .ro-chip:has(.ck:contains("app.kubernetes.io/name"))`).First()
+	if appChip.Length() != 1 {
+		t.Fatalf("app.kubernetes.io/name chip missing from the chips cell")
 	}
-	// The plain label chip is a .ro-chip WITHOUT .app.
-	plainChips := ingressRow.Find(".ro-chips .ro-chip:not(.app)")
-	if plainChips.Length() != 1 || !strings.Contains(normSpace(plainChips.Text()), "team") {
-		t.Fatalf("plain team chip missing or wrong: %s", normSpace(ingressRow.Find(".ro-chips").Text()))
+	if v := normSpace(appChip.Find(".cv").Text()); v != "ingress-nginx" {
+		t.Fatalf("app.kubernetes.io/name chip .cv = %q, want ingress-nginx", v)
+	}
+	teamChip := ingressRow.Find(`.ro-chips .ro-chip:has(.ck:contains("team"))`).First()
+	if teamChip.Length() != 1 || normSpace(teamChip.Find(".cv").Text()) != "platform" {
+		t.Fatalf("team chip missing or wrong: %s", normSpace(ingressRow.Find(".ro-chips").Text()))
 	}
 
 	// The no-label namespace renders the muted "—" (the empty-labels fallback),
@@ -213,13 +197,12 @@ func TestNamespaceLabelChipsThroughRender(t *testing.T) {
 		t.Fatalf("no-label namespace should render the muted —, got %q", got)
 	}
 
-	// Across the namespace TABLE: exactly one .app accent chip (only the
-	// app.kubernetes.io/* label earns it) -- a regression broadening the accent gate
-	// would trip this count. Scoped to the .ro-table: the engine now ALSO emits the
-	// mobile `.ro-cardlist` projection of the same rows (Unit 15), whose chips meta
-	// repeats the chip; TestMobileCards pins the card projection.
-	if got := doc.Find("table.ro-table .ro-chip.app").Length(); got != 1 {
-		t.Fatalf(".app chip count = %d, want 1 (only app.kubernetes.io/*)", got)
+	// THE D3 NEGATIVE ASSERTION (the regression net for the retired class):
+	// across the WHOLE rendered document -- table, mobile `.ro-cardlist`
+	// projection, chrome -- no element ever carries the retired `.ro-chip.app`
+	// green accent. Any surface re-emitting it trips this count.
+	if got := doc.Find(".ro-chip.app").Length(); got != 0 {
+		t.Fatalf("retired .ro-chip.app accent rendered %d time(s); every label chip must be neutral (D3)", got)
 	}
 
 	// The load-bearing constraint: NO pod-count column is fabricated. A Namespace

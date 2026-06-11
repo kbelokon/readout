@@ -88,6 +88,8 @@ func toNavbar(n *navbarView) templates.Navbar {
 		NextTheme:       n.NextTheme,
 		ToggleNextURL:   n.ToggleNextURL,
 		ThemeExplicit:   n.ThemeExplicit,
+		RefreshMode:     n.RefreshMode,
+		LiveDisabled:    n.LiveDisabled,
 	}
 }
 
@@ -104,8 +106,11 @@ func toNavItems(items []navItem) []templates.NavItem {
 		return nil
 	}
 	out := make([]templates.NavItem, len(items))
-	for i, it := range items {
-		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active}
+	for i := range items {
+		it := &items[i]
+		// Count/HasCount ride along for the sidebar Meta entries (the Events
+		// meta carries a count, D13); namespace nav items never set them.
+		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active, Count: it.Count, HasCount: it.HasCount}
 	}
 	return out
 }
@@ -120,8 +125,9 @@ func toSidebarItems(items []navItem) []templates.NavItem {
 		return nil
 	}
 	out := make([]templates.NavItem, len(items))
-	for i, it := range items {
-		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active, Icon: string(it.Icon)}
+	for i := range items {
+		it := &items[i]
+		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active, Icon: string(it.Icon), Count: it.Count, HasCount: it.HasCount}
 	}
 	return out
 }
@@ -154,6 +160,19 @@ func toListData(v *listView) templates.ListData {
 	if v.State != nil {
 		d.State = toListState(v.State)
 	}
+	if v.FilterBar != nil {
+		fb := &templates.FilterBarData{Plural: v.FilterBar.Plural, FilterIcon: icon("filter")}
+		for _, chip := range v.FilterBar.Chips {
+			fb.Chips = append(fb.Chips, templates.EditorChip{
+				Field:      chip.Field,
+				Op:         chip.Op,
+				Value:      chip.Value,
+				Label:      chip.Label,
+				RemoveHref: chip.RemoveHref,
+			})
+		}
+		d.FilterBar = fb
+	}
 	return d
 }
 
@@ -164,9 +183,11 @@ func toListState(s *listStateView) templates.ListState {
 	kind, glyph := stateKindAndGlyph(s.Kind)
 	return templates.ListState{
 		Kind:      kind,
+		Cluster:   s.Cluster,
 		Verb:      s.Verb,
 		Resource:  s.Resource,
 		Namespace: s.Namespace,
+		Hint:      s.Hint,
 		Detail:    s.Detail,
 		GlyphIcon: glyph,
 		RetryHref: s.RetryHref,
@@ -185,24 +206,55 @@ func stateKindAndGlyph(kind listStateKind) (string, string) {
 
 func toTableData(t *tableView) templates.TableData {
 	td := templates.TableData{
-		Kind:            t.Kind,
-		Count:           len(t.Table.Rows),
-		DownloadTSVHref: t.DownloadTSVHref,
-		SearchHref:      t.SearchHref,
-		DownloadIcon:    icon("download"),
-		ToolsIcon:       icon("caret-square-down"),
-		SearchIcon:      icon("search"),
-		Tools:           toTableTools(&t.Tools),
-		ShowMetricsHref: t.ShowMetricsHref,
-		PhaseRows:       len(t.Table.Rows),
-		MultiCluster:    len(t.Table.Clusters) > 1,
-		ColumnCount:     len(t.Table.Columns),
-		CreatedHref:     t.CreatedHref,
-		CreatedIcon:     t.CreatedIcon,
-		CreatedSorted:   t.CreatedIcon != "",
-		EmptyKind:       t.Table.Resource.Kind,
-		EmptyGlyph:      icon("inbox"),
-		ClearHref:       t.ClearHref,
+		Kind:               t.Kind,
+		Count:              len(t.Table.Rows),
+		DownloadTSVHref:    t.DownloadTSVHref,
+		SearchHref:         t.SearchHref,
+		DownloadIcon:       icon("download"),
+		ToolsIcon:          icon("caret-square-down"),
+		SearchIcon:         icon("search"),
+		Tools:              toTableTools(&t.Tools),
+		ShowMetricsHref:    t.ShowMetricsHref,
+		PhaseRows:          len(t.Table.Rows),
+		MultiCluster:       len(t.Table.Clusters) > 1,
+		ColumnCount:        len(t.Table.Columns),
+		CreatedHref:        t.CreatedHref,
+		CreatedIcon:        t.CreatedIcon,
+		CreatedSorted:      t.CreatedIcon != "",
+		CreatedPartialHref: t.CreatedPartialHref,
+		HideCreated:        t.HideCreated,
+		EmptyGlyph:         icon("inbox"),
+		ClearHref:          t.ClearHref,
+	}
+	// The ⊞ column-visibility popover (D8): single-type pages only (buildListView
+	// fills ColumnVis under the D1 gate). It absorbs the tools form's labelcols +
+	// selector inputs, so it reuses the resolved toolsView values + hidden-input
+	// round-trip; nil keeps the v1 toggle-tools chrome.
+	if len(t.ColumnVis) > 0 {
+		pop := &templates.ColsPopover{
+			Plural: t.Table.Resource.Plural,
+			Icon:   icon("columns-3"),
+			Tools:  toTableTools(&t.Tools),
+		}
+		// The popover did NOT absorb the v1 visible filter input (the chips
+		// editor replaced it on single-type pages), so an active legacy
+		// ?filter= must round-trip its GET submit as a hidden input here --
+		// without it, applying a selector wipes the filter. POPOVER-ONLY by
+		// construction: buildToolsView's shared round-trip key list must not
+		// gain "filter", because the v1 multi-type tools form still renders
+		// the visible same-named input, and a hidden twin would precede it in
+		// form order and shadow every user edit (q.Get returns the first
+		// occurrence). The `?f=` chips have no hidden input at all: their raw
+		// OR-commas cannot survive form urlencoding (filter.go splits on raw
+		// commas) -- readout.js merges them into the submit URL byte-exact.
+		if t.Tools.FilterVal != "" {
+			pop.Tools.HiddenInputs = append(pop.Tools.HiddenInputs,
+				templates.HiddenInput{Name: "filter", Value: t.Tools.FilterVal})
+		}
+		for _, entry := range t.ColumnVis {
+			pop.Entries = append(pop.Entries, templates.ColsEntry{Name: entry.Name, Hidden: entry.Hidden, Identity: entry.Identity})
+		}
+		td.Cols = pop
 	}
 	if t.EmptyAction != nil {
 		td.EmptyActionHref = t.EmptyAction.Href
@@ -226,6 +278,8 @@ func toTableData(t *tableView) templates.TableData {
 			Name:        col.Name,
 			SortIcon:    t.Columns[i].SortIcon,
 			Sorted:      t.Columns[i].SortIcon != "",
+			PartialHref: t.Columns[i].PartialHref,
+			Hint:        t.Columns[i].Hint,
 		})
 	}
 	for i := range t.Rows {
@@ -238,6 +292,13 @@ func toTableData(t *tableView) templates.TableData {
 			Namespace:    row.Namespace,
 			CreatedClass: row.CreatedClass,
 			CreatedText:  row.CreatedText,
+			Key:          row.Key,
+			DomID:        rowDomID(row.Key),
+			Name:         row.Name,
+			OpenHref:     row.OpenHref,
+			YAMLHref:     row.YAMLHref,
+			LogsHref:     row.LogsHref,
+			DownloadHref: row.DownloadHref,
 		}
 		if row.CreatedText != "" {
 			tr.CreatedTitle = "created " + row.CreatedText
@@ -264,6 +325,10 @@ func toTableData(t *tableView) templates.TableData {
 				Roles:        cell.Roles,
 				RepNum:       cell.RepNum,
 				RolloutState: cell.RolloutState,
+				More:         cell.More,
+				EvKind:       cell.EvKind,
+				EvName:       cell.EvName,
+				EvAgeRest:    cell.EvAgeRest,
 			}
 			for _, cond := range cell.Conds {
 				tc.Conds = append(tc.Conds, templates.Cond{Name: cond.Name, Tone: cond.Tone})
@@ -272,16 +337,55 @@ func toTableData(t *tableView) templates.TableData {
 				tc.RepSegments = append(tc.RepSegments, templates.RepSegment{State: seg.State})
 			}
 			for _, chip := range cell.Chips {
-				tc.Chips = append(tc.Chips, templates.RowChip{Class: chip.Class, Text: chip.Text})
+				tc.Chips = append(tc.Chips, templates.RowChip{Key: chip.Key, Val: chip.Val, Href: chip.Href})
 			}
-			if cell.Kind == cellRollout {
+			for _, key := range cell.Keys {
+				tc.Keys = append(tc.Keys, templates.KeyChip{Name: key.Name, Size: key.Size})
+			}
+			switch cell.Kind {
+			case cellRollout:
 				tc.RolloutIcon = icon(rolloutIconName(cell.RolloutState))
+			case cellTLS:
+				// The earned-green lock (SPEC §4.13), pre-rendered only for a
+				// terminated cell (the "—" fallback carries no icon).
+				if cell.Value != "" {
+					tc.CellIcon = icon("lock")
+				}
+			case cellEvObj:
+				// The events Object kind icon: the same 3-tier resolver every
+				// kind surface uses (group unknown on an event ref -> monogram
+				// hue keys on the kind, exactly like the reference kindIcon).
+				tc.CellIcon = string(icons.KindIcon(cell.EvKind, "", false, ""))
 			}
 			tr.Cells = append(tr.Cells, tc)
 		}
 		td.Rows = append(td.Rows, tr)
 	}
 	return td
+}
+
+// rowDomID derives the row's DOM id from its data-key (D6: idiomorph matches
+// rows by id, never position). The id must be safe inside the quoted attribute
+// selector idiomorph uses (`[id="…"]`) and as an HTML id, so '%', '"', '\',
+// whitespace, and control bytes are percent-escaped; everything else (incl.
+// '/') passes through, keeping the common case readable ("row-c/ns/name").
+// Percent-escaping '%' itself keeps distinct keys mapping to distinct ids.
+// An empty key (a multi-type v1 row) yields an empty id (no attribute emitted).
+func rowDomID(key string) string {
+	if key == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("row-")
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if c <= ' ' || c == '"' || c == '\\' || c == '%' || c == 0x7f {
+			fmt.Fprintf(&b, "%%%02X", c)
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // toListPageData maps the listView + the request-derived partial URL onto the
@@ -300,7 +404,13 @@ func toListPageData(v *listView, partialURL string) templates.ListPageData {
 			Plural:          v.Plural,
 		},
 		PartialURL: partialURL,
-		List:       toListData(v),
+		SingleType: v.SingleType,
+		Bulk: templates.BulkBar{
+			DownloadHref:  v.BulkDownloadHref,
+			Cluster:       v.Cluster,
+			AllNamespaces: v.IsAllNamespaces,
+		},
+		List: toListData(v),
 	}
 }
 
@@ -319,10 +429,12 @@ func toDetailData(v *detailView) templates.DetailData {
 			Name:       v.State.Name,
 			State: templates.DetailState{
 				Kind:      kind,
+				Cluster:   v.State.Cluster,
 				Verb:      v.State.Verb,
 				Resource:  v.State.Resource,
 				Name:      v.State.Name,
 				Namespace: v.State.Namespace,
+				Hint:      v.State.Hint,
 				Detail:    v.State.Detail,
 				GlyphIcon: glyph,
 				RetryHref: v.State.RetryHref,
@@ -334,6 +446,9 @@ func toDetailData(v *detailView) templates.DetailData {
 	d := templates.DetailData{
 		Breadcrumb:         toDetailBreadcrumb(v),
 		Name:               object.Name(),
+		NameHead:           v.NameHead,
+		NameTail:           v.NameTail,
+		NameTitle:          v.NameTitle,
 		Kind:               object.Kind(),
 		DownloadHref:       v.DownloadHref,
 		DownloadIcon:       icon("download"),
@@ -354,13 +469,39 @@ func toDetailData(v *detailView) templates.DetailData {
 		d.Links = append(d.Links, templates.DetailLink{Href: link.Href, Title: link.Title, Icon: icon(link.Icon)})
 	}
 	for _, chip := range v.Labels {
-		d.Labels = append(d.Labels, templates.DetailLabelChip{Href: chip.Href, Class: chip.Class, Key: chip.Key, Val: chip.Val})
+		d.Labels = append(d.Labels, templates.DetailLabelChip{Href: chip.Href, Key: chip.Key, Val: chip.Val})
 	}
 	for _, chip := range v.Annotations {
 		d.Annotations = append(d.Annotations, templates.AnnotationChip{Key: chip.Key, Val: chip.Val, Full: chip.Full})
 	}
+	for _, long := range v.AnnotationsLong {
+		d.AnnotationsLong = append(d.AnnotationsLong, templates.AnnotationLong{Key: long.Key, Size: long.Size, Value: long.Value, ChevIcon: icon("chevron-down")})
+	}
 	if v.Node != nil {
 		d.Node = toNodeSummary(*v.Node)
+	}
+	if v.Containers != nil {
+		c := &templates.Containers{Count: v.Containers.Count, InitCount: v.Containers.InitCount}
+		for i := range v.Containers.Rows {
+			row := &v.Containers.Rows[i]
+			c.Rows = append(c.Rows, templates.ContainerRow{
+				Name:         row.Name,
+				Init:         row.Init,
+				State:        row.State,
+				StateTone:    row.StateTone,
+				StatePulse:   row.StatePulse,
+				Ready:        row.Ready,
+				ReadyClass:   row.ReadyClass,
+				Restarts:     row.Restarts,
+				RestartsTone: row.RestartsTone,
+				Ago:          row.Ago,
+				Ports:        row.Ports,
+				CPU:          row.CPU,
+				Mem:          row.Mem,
+				Image:        row.Image,
+			})
+		}
+		d.Containers = c
 	}
 	for _, owner := range v.Owners {
 		kind, name := splitOwnerTitle(owner.Title)
@@ -374,14 +515,26 @@ func toDetailData(v *detailView) templates.DetailData {
 		d.Secret = &templates.SecretData{KeyCount: v.Secret.KeyCount, Keys: v.Secret.Keys}
 	}
 	for _, card := range v.YAMLCards {
-		d.YAMLCards = append(d.YAMLCards, templates.YAMLCard{Name: card.Name, Title: card.Title, CopyIcon: icon("copy"), Content: card.Content})
+		d.YAMLCards = append(d.YAMLCards, templates.YAMLCard{Name: card.Name, Title: card.Title, CopyIcon: icon("copy"), Content: card.Content, Collapsed: card.Collapsed})
 	}
 	if v.RelatedPods != nil {
 		d.RelatedPods = toSubtable(v.RelatedPods)
 	}
 	for i := range v.Events {
 		ev := &v.Events[i]
-		d.Events = append(d.Events, templates.EventRow{Type: ev.Type, Tone: ev.Tone, Reason: ev.Reason, Age: ev.Age, AgeClass: ev.AgeClass, From: ev.From, Message: ev.Message})
+		d.Events = append(d.Events, templates.EventRow{
+			Type:       ev.Type,
+			Tone:       ev.Tone,
+			Reason:     ev.Reason,
+			Count:      ev.Count,
+			CountClass: ev.CountClass,
+			Age:        ev.Age,
+			AgeClass:   ev.AgeClass,
+			AgeRest:    ev.AgeRest,
+			AgeTitle:   ev.AgeTitle,
+			From:       ev.From,
+			Message:    ev.Message,
+		})
 	}
 	return d
 }
@@ -491,11 +644,13 @@ func toSubtable(v *subtableView) *templates.Subtable {
 
 // toSearchData maps the package-web searchView onto the redesign templ
 // SearchData: the breadcrumb branches, the form round-trip (query + hidden
-// cluster/namespace/type inputs), the scope-opts labels, the partial-failure
-// banner, the per-cluster `.ro-scope-chip.ok|err` chips (with the read-only retry
-// hrefs), the results-table rows (with the resolved kind icon + the age-bucket
-// cell), and the foundline. Every value was resolved in buildSearchView; the
-// search + kind icons are pre-rendered to raw strings.
+// cluster/namespace inputs + the restored resource-type checkboxes), the
+// scope-opts labels, the partial-failure banner, the per-cluster
+// `.ro-scope-chip.ok|err` chips (with the read-only retry hrefs), the totals
+// strip, the per-cluster result groups (rows carrying the resolved kind icon,
+// the pn-head/pn-tail + mark name segments, and the age-bucket cell), and the
+// no-results copy. Every value was resolved in buildSearchView; the search +
+// kind icons are pre-rendered to raw strings.
 func toSearchData(v *searchView) templates.SearchData {
 	hasQuery := v.Query != ""
 	offeredCount := len(v.OfferedTypes)
@@ -507,11 +662,13 @@ func toSearchData(v *searchView) templates.SearchData {
 		Namespace:         v.Namespace,
 		SearchIcon:        icon("search"),
 		HasQuery:          hasQuery,
-		HiddenTypes:       v.SelectedTypes,
 		ScopeClusterLabel: searchScopeClusterLabel(v),
 		NamespaceLabel:    searchNamespaceLabel(v),
 		TypeLabel:         searchTypeLabel(allTypes, v.SelectedTypeCount),
 		Banner:            searchBanner(v),
+	}
+	for _, opt := range v.OfferedTypes {
+		d.Types = append(d.Types, templates.SearchTypeOption{Plural: opt.Plural, Kind: opt.Kind, Checked: opt.Checked})
 	}
 	for _, c := range v.ScopeClusters {
 		d.ScopeClusters = append(d.ScopeClusters, templates.SearchScopeChip{
@@ -522,26 +679,55 @@ func toSearchData(v *searchView) templates.SearchData {
 			RetryHref: c.RetryHref,
 		})
 	}
-	for i := range v.Results {
-		res := &v.Results[i]
-		d.Results = append(d.Results, templates.SearchResultRow{
-			Cluster:     res.Cluster,
-			ClusterHref: "/clusters/" + url.PathEscape(res.Cluster),
-			Namespace:   res.Namespace,
-			NsHref:      "/clusters/" + url.PathEscape(res.Cluster) + "/namespaces/" + url.PathEscape(res.Namespace),
-			HasNs:       res.Namespace != "",
-			Kind:        res.Kind,
-			KindIcon:    string(icons.KindIcon(res.Kind, res.Group, res.IsCRD, "")),
-			Name:        res.Title,
-			Link:        res.Link,
-			Age:         res.Created,
-			AgeClass:    res.AgeClass,
-		})
+	for gi := range v.Groups {
+		group := &v.Groups[gi]
+		tone := "ok"
+		if group.Failed {
+			tone = "err"
+		}
+		tg := templates.SearchGroup{Cluster: group.Cluster, DotTone: tone, Count: len(group.Results)}
+		for i := range group.Results {
+			res := &group.Results[i]
+			tg.Rows = append(tg.Rows, templates.SearchResultRow{
+				Namespace: res.Namespace,
+				NsHref:    "/clusters/" + url.PathEscape(res.Cluster) + "/namespaces/" + url.PathEscape(res.Namespace),
+				HasNs:     res.Namespace != "",
+				Kind:      res.Kind,
+				KindIcon:  string(icons.KindIcon(res.Kind, res.Group, res.IsCRD, "")),
+				NamePre:   res.NamePre,
+				NameMark:  res.NameMark,
+				NamePost:  res.NamePost,
+				NameTail:  res.NameTail,
+				NameTitle: res.NameTitle,
+				Link:      res.Link,
+				Age:       res.Created,
+				AgeClass:  res.AgeClass,
+			})
+		}
+		d.Groups = append(d.Groups, tg)
 	}
 	if hasQuery {
-		d.ResultSummary = searchFoundLine(v)
+		d.TotalsLine, d.TotalsMeta = searchTotals(v)
+		d.EmptyTitle = "Nothing matched “" + v.Query + "”"
+		d.EmptyText = fmt.Sprintf("Searched names across %d cluster%s and %d resource type%s.",
+			len(v.ScopeClusters), pluralS(len(v.ScopeClusters)), v.SelectedTypeCount, pluralS(v.SelectedTypeCount))
 	}
 	return d
+}
+
+// searchTotals builds the totals strip (D12): the tally line counts what the
+// results ACTUALLY span -- "N objects · M clusters · K kinds" where M is the
+// clusters that contributed results (the group count) -- and the meta reports
+// what the search COVERED: "searched M clusters in T s" over every cluster in
+// scope, with the same %.3f timing the list footers use.
+func searchTotals(v *searchView) (line, meta string) {
+	line = fmt.Sprintf("%d object%s · %d cluster%s · %d kind%s",
+		len(v.Results), pluralS(len(v.Results)),
+		len(v.Groups), pluralS(len(v.Groups)),
+		v.KindCount, pluralS(v.KindCount))
+	meta = fmt.Sprintf("searched %d cluster%s in %.3fs",
+		len(v.ScopeClusters), pluralS(len(v.ScopeClusters)), v.Duration.Seconds())
+	return line, meta
 }
 
 // searchScopeClusterLabel is the scope-opts cluster fragment: "all clusters" for
@@ -627,27 +813,6 @@ func toSearchBreadcrumb(v *searchView) templates.SearchBreadcrumb {
 		b.NamespaceHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(namespaces[0])
 	}
 	return b
-}
-
-// searchFoundLine is the redesign `.ro-foundline` footer sentence ("Found N
-// objects matching "<q>" across A of M clusters in T seconds[ · K cluster(s)
-// failed].") with object/cluster pluralization, %.3f timing, and the trailing
-// failed-cluster clause appended only when a cluster did not answer.
-func searchFoundLine(v *searchView) string {
-	total := len(v.ScopeClusters)
-	failed := 0
-	for _, c := range v.ScopeClusters {
-		if c.Failed {
-			failed++
-		}
-	}
-	answered := total - failed
-	line := fmt.Sprintf("Found %d object%s matching %q across %d of %d cluster%s in %.3f seconds",
-		len(v.Results), pluralS(len(v.Results)), v.Query, answered, total, pluralS(total), v.Duration.Seconds())
-	if failed > 0 {
-		line += fmt.Sprintf(" · %d cluster%s failed", failed, pluralS(failed))
-	}
-	return line + "."
 }
 
 func toTableTools(t *toolsView) templates.TableTools {

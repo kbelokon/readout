@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -120,5 +122,55 @@ func TestRunServerInitAndListenErrors(t *testing.T) {
 	seen[":9092"].Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "# HELP readout_up") {
 		t.Fatalf("metrics server handler status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRunGracefulShutdownOnSignal pins the shutdown terminal's reachability
+// (waves E+F review): run() must catch SIGTERM/SIGINT and drive
+// http.Server.Shutdown — with a plain context.Background() the app's
+// shutdownCh never fires, open Live streams never get their `ro-terminal`
+// "shutdown" frame, and the process dies mid-write. The listenAndServe seam
+// serves a real listener on an ephemeral port so Shutdown's listener close is
+// observable as Serve returning (run exiting 0). A REAL signal is sent to the
+// test process: run() arms signal.NotifyContext before listenAndServe runs,
+// so the started channel ordering guarantees the handler is installed (an
+// unhandled SIGTERM would kill the test binary — the pre-fix failure shape).
+func TestRunGracefulShutdownOnSignal(t *testing.T) {
+	oldListenAndServe := listenAndServe
+	t.Cleanup(func() { listenAndServe = oldListenAndServe })
+	started := make(chan struct{}, 1)
+	listenAndServe = func(srv *http.Server) error {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		started <- struct{}{}
+		return srv.Serve(ln)
+	}
+
+	cfgPath := writeConfig(t, "clusters:\n  - name: test\n    server: https://example.invalid\n")
+	var stdout, stderr bytes.Buffer
+	codes := make(chan int, 1)
+	go func() { codes <- run([]string{"--config", cfgPath, "--port", "9093"}, &stdout, &stderr) }()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never started")
+	}
+	proc, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-codes:
+		if code != 0 {
+			t.Fatalf("graceful shutdown exit code = %d, want 0; stderr=%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return after SIGTERM — graceful shutdown never engaged")
 	}
 }

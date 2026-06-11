@@ -8,15 +8,27 @@
     "resourceVersion": "201",
     "creationTimestamp": "2024-03-01T10:00:00Z",
     "labels": {"app": "nginx"},
-    "annotations": {"example.com/note": "generic-annotation"}
+    "annotations": {
+      "example.com/note": "generic-annotation",
+      "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"labels\":{\"app\":\"nginx\"},\"name\":\"nginx\",\"namespace\":\"default\"},\"spec\":{\"containers\":[{\"image\":\"nginx:1.27\",\"name\":\"nginx\",\"ports\":[{\"containerPort\":80,\"protocol\":\"TCP\"}]}]}}\n"
+    }
   },
   "spec": {
     "containers": [
-      {"name": "nginx", "image": "nginx:1.27"}
+      {"name": "nginx", "image": "nginx:1.27", "ports": [{"containerPort": 80, "protocol": "TCP"}]}
     ]
   },
   "status": {
     "phase": "Running",
-    "podIP": "127.0.0.1"
+    "podIP": "127.0.0.1",
+    "containerStatuses": [
+      {
+        "name": "nginx",
+        "ready": true,
+        "restartCount": 0,
+        "image": "nginx:1.27",
+        "state": {"running": {"startedAt": "2024-03-01T10:00:05Z"}}
+      }
+    ]
   }
 }

@@ -67,10 +67,69 @@ func splitObjectName(plural, name string) (head, tail string) {
 	return name, ""
 }
 
-// statusTone maps the existing kube.CellClass Bulma text-color tone onto the
-// redesign status-dot tone vocabulary (ok/warn/err/info/mute). An empty Bulma
-// class (an unmocked kind, or a value with no recognised status) yields "" so the
-// generic fallback cell emits a dot with no tone colour.
+// SPEC §4.2 middle-truncation thresholds. Table/palette/detail identifier
+// heads: >42 chars -> first 26 + "…" + last 12. Event object names: >34 ->
+// first 20 + "…" + last 8.
+const (
+	nameHeadMax   = 42
+	nameHeadLead  = 26
+	nameHeadTrail = 12
+	evObjNameMax  = 34
+	evObjLead     = 20
+	evObjTrail    = 8
+)
+
+// MiddleTruncate shortens an identifier that exceeds max runes to
+// `lead…trail` (SPEC §4.2): the prefix identifies the workload, the suffix
+// stays unique, and the full name must ride in a `title=` tooltip whenever
+// truncated reports true. It counts and slices in RUNE space so a multi-byte
+// name is never cut mid-rune. Exported because every identifier surface shares
+// it: the table name cells + event objects consume it now; the palette feed
+// (Unit 19) and the detail title (Unit 13) consume it from their own assembly.
+func MiddleTruncate(name string, max, lead, trail int) (display string, truncated bool) {
+	runes := []rune(name)
+	if len(runes) <= max || lead+trail >= len(runes) {
+		return name, false
+	}
+	return string(runes[:lead]) + "…" + string(runes[len(runes)-trail:]), true
+}
+
+// groupThousands inserts comma thousands separators into a plain base-10 digit
+// string ("1047" -> "1,047"), the SPEC §4.5/§4.15 restart/event-count format.
+// Anything that is not purely digits (an empty cell, an already-grouped value,
+// a decorated string) passes through unchanged, so the helper can never
+// corrupt a non-numeric cell. Unit 6's filter engine strips these commas when
+// it parses leading numeric tokens, so the display stays filter-compatible.
+func groupThousands(value string) string {
+	if value == "" || len(value) <= 3 {
+		return value
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return value
+		}
+	}
+	var b strings.Builder
+	lead := len(value) % 3
+	if lead > 0 {
+		b.WriteString(value[:lead])
+	}
+	for i := lead; i < len(value); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(value[i : i+3])
+	}
+	return b.String()
+}
+
+// statusTone decodes a kube.CellClass Bulma text class into the status-dot tone
+// vocabulary (ok/warn/err/info/mute). The value->tone DECISIONS live in exactly
+// one place -- kube.StatusTone, the SPEC §3 table, which CellClass delegates
+// every status word to -- so this is a pure decoding of that wire class, never a
+// second opinion about a word. "info" survives only for the events Reason map
+// (a kept vocabulary outside SPEC §3); an empty class (a non-status cell) yields
+// "" so the generic fallback emits a dot with no tone colour.
 func statusTone(bulmaClass string) string {
 	switch bulmaClass {
 	case "has-text-success":
@@ -88,11 +147,13 @@ func statusTone(bulmaClass string) string {
 	}
 }
 
-// transientPodPhase reports whether a pod status phase is an in-flight state that
-// should animate (the dot gets .pulse). Per the design rulebook ONLY in-flight
-// states pulse; steady states (Running/Completed/CrashLoopBackOff/Error/...)
-// never animate.
-func transientPodPhase(value string) bool {
+// transientStatus reports whether a status value is an in-flight state that
+// should animate (the dot gets .pulse): ContainerCreating, Pending,
+// Terminating, PodInitializing, and Init:* progress without an error. Per the
+// design rulebook (law §1.3) ONLY this transient set pulses -- steady states
+// never animate, and errors NEVER pulse (the Init error/backoff states are
+// excluded here and tone err via kube.StatusTone).
+func transientStatus(value string) bool {
 	switch strings.TrimSpace(value) {
 	case "ContainerCreating", "Terminating", "PodInitializing", "Pending":
 		return true
@@ -547,7 +608,14 @@ func capitalizeWord(value string) string {
 	return strings.ToUpper(value[:1]) + strings.ToLower(value[1:])
 }
 
-func pluralizeKind(kind string) string {
+// pluralizeKind renders a Kind as its display plural. A kind that IS its own
+// plural -- the API plural is just the lowercased kind, e.g. Endpoints/
+// endpoints -- passes through verbatim (naive suffixing would mint
+// "Endpointses").
+func pluralizeKind(kind, plural string) string {
+	if strings.EqualFold(kind, plural) {
+		return kind
+	}
 	if strings.HasSuffix(kind, "s") {
 		return kind + "es"
 	}
@@ -592,32 +660,11 @@ func namespaceEmptyText(namespace string, allNamespaces bool) string {
 	return ""
 }
 
-func appLabelClass(key string) string {
-	if strings.HasPrefix(key, "app.kubernetes.io/") {
-		return " ro-label-app"
-	}
-	return ""
-}
-
-// redesignChipClass is the FULL redesign chip class for a label key: the
-// canonical "ro-chip", plus the " app" accent token for app.kubernetes.io/*
-// labels. It reuses the same app.kubernetes.io/ recognition as appLabelClass /
-// chipClass, but emits the redesign canonical ".app" token (scoped under a
-// migrated screen's .ro-rd marker) instead of the legacy ".ro-label-app" accent,
-// so the list namespace chips AND the detail label chips match the mockup
-// `<span class="ro-chip app">` vocabulary.
-func redesignChipClass(key string) string {
-	if strings.HasPrefix(key, "app.kubernetes.io/") {
-		return "ro-chip app"
-	}
-	return "ro-chip"
-}
-
 // namespaceLabelChips builds the namespace label-chip view models from the row
-// object's metadata.labels (sorted by key for a stable order). Each chip carries
-// the redesign chip class (the .app accent for app.kubernetes.io/* labels) and its
-// "key: value" text. A namespace with no labels yields nil, so the renderer shows
-// the muted "—".
+// object's metadata.labels (sorted by key for a stable order). Every chip is
+// NEUTRAL (D3 colour law: the green app.kubernetes.io/* accent is retired; the
+// key/value pair differs by ink weight in the renderer). A namespace with no
+// labels yields nil, so the renderer shows the muted "—".
 func namespaceLabelChips(obj map[string]any) []chipView {
 	labels, _, _ := unstructured.NestedStringMap(obj, "metadata", "labels")
 	if len(labels) == 0 {
@@ -630,7 +677,7 @@ func namespaceLabelChips(obj map[string]any) []chipView {
 	sort.Strings(keys)
 	chips := make([]chipView, 0, len(keys))
 	for _, key := range keys {
-		chips = append(chips, chipView{Class: redesignChipClass(key), Text: key + ": " + labels[key]})
+		chips = append(chips, chipView{Key: key, Val: labels[key]})
 	}
 	return chips
 }
@@ -691,6 +738,59 @@ func numericCell(cell any) (float64, bool) {
 
 func formatTimestamp(value string) string {
 	return strings.TrimSuffix(strings.ReplaceAll(value, "T", " "), "Z")
+}
+
+// durationToken matches one `<count><unit>` segment of a kubectl-style
+// compressed duration ("3h2m", "41d", "1y127d"). The unit vocabulary is the
+// SPEC §4.3 parser set: s m h d w y.
+var durationToken = regexp.MustCompile(`(\d+)([smhdwy])`)
+
+// durationUnitMinutes maps the SPEC §4.3 duration units onto minutes,
+// mirroring the design reference ageMinutes (render.js) byte-faithfully.
+var durationUnitMinutes = map[byte]float64{
+	's': 1.0 / 60,
+	'm': 1,
+	'h': 60,
+	'd': 1440,
+	'w': 10080,
+	'y': 525600,
+}
+
+// ageMinutes parses a kubectl-style compressed duration string into minutes by
+// summing its `<count><unit>` tokens. Unrecognized text contributes nothing
+// ("<unknown>" -> 0), matching the reference parser's regex scan.
+func ageMinutes(value string) float64 {
+	var minutes float64
+	for _, m := range durationToken.FindAllStringSubmatch(value, -1) {
+		n, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			continue
+		}
+		minutes += n * durationUnitMinutes[m[2][0]]
+	}
+	return minutes
+}
+
+// durationAgeClass buckets a kubectl-style duration STRING as a fraction of
+// the 24h window (SPEC §4.3, the same fractions s.ageClass applies to
+// timestamps): <10% fresh, <35% recent, <65% day, <100% week, ≥1d old. The
+// duration flavour serves the cells whose source value is already a compressed
+// duration (cronjob Last Schedule, event ages) rather than an RFC3339
+// timestamp.
+func durationAgeClass(value string) string {
+	fraction := ageMinutes(value) / (24 * 60)
+	switch {
+	case fraction < 0.10:
+		return "age-fresh"
+	case fraction < 0.35:
+		return "age-recent"
+	case fraction < 0.65:
+		return "age-day"
+	case fraction < 1.0:
+		return "age-week"
+	default:
+		return "age-old"
+	}
 }
 
 func (s *Server) ageClass(value string) string {
@@ -880,6 +980,17 @@ func downloadTSVHref(u *url.URL, plural string) string {
 	return clone.String()
 }
 
+// bulkDownloadHref builds the CLEAN bulk-download base for the current list
+// (D11): the canonical list path plus ONLY `download=yaml`. Unlike
+// downloadTSVHref it deliberately drops the carried query -- the selection
+// store may hold rows the active server-side filter hides, and the bulk
+// handler must find them in the unfiltered table.
+func bulkDownloadHref(u *url.URL) string {
+	clone := *resourceListBaseURL(u)
+	clone.RawQuery = "download=yaml"
+	return clone.String()
+}
+
 // delQuery returns u with the named query params removed (a read-only GET),
 // used by the empty-filtered state: the per-chip ✕ drops one filter param and
 // "Clear filters" drops the whole set. Removing params never changes the verb
@@ -895,10 +1006,17 @@ func delQuery(u *url.URL, keys ...string) string {
 }
 
 // queryEncodeKeepParens URL-encodes the query values but leaves parentheses
-// literal, so selector links like `?selector=app(in)(a,b)` stay readable in the
-// address bar instead of showing %28/%29.
+// and commas literal, so selector links like `?selector=app(in)(a,b)` stay
+// readable in the address bar instead of showing %28/%29. The literal comma
+// is also LOAD-BEARING for Filters v2 (D7): an `?f=status:Running,Pending`
+// chip's OR-comma is RAW on the wire, and every server-rebuilt href (sort
+// headers, metrics join, TSV download) round-trips the query through this
+// codec -- encoding the comma to %2C would silently collapse the OR into a
+// literal-comma alternative on the first click. The known cost: a deep link
+// that deliberately encodes %2C (a literal comma inside one alternative)
+// degrades to an OR comma after one rebuilt-href navigation.
 func queryEncodeKeepParens(values url.Values) string {
-	return strings.NewReplacer("%28", "(", "%29", ")").Replace(values.Encode())
+	return strings.NewReplacer("%28", "(", "%29", ")", "%2C", ",").Replace(values.Encode())
 }
 
 func resourceListBaseURL(u *url.URL) *url.URL {

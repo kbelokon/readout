@@ -1,0 +1,80 @@
+{
+  "kind": "Table",
+  "apiVersion": "meta.k8s.io/v1",
+  "metadata": {"resourceVersion": "900"},
+  "columnDefinitions": [
+    {"name": "Name", "type": "string", "format": "name", "priority": 0, "description": "Name of the ingress"},
+    {"name": "Class", "type": "string", "format": "", "priority": 0, "description": "Ingress class"},
+    {"name": "Hosts", "type": "string", "format": "", "priority": 0, "description": "Hosts"},
+    {"name": "Address", "type": "string", "format": "", "priority": 0, "description": "Address"},
+    {"name": "Ports", "type": "string", "format": "", "priority": 0, "description": "Ports"},
+    {"name": "Age", "type": "string", "format": "", "priority": 0, "description": "Age of the ingress"}
+  ],
+  "rows": [
+    {
+      "cells": ["slr-www", "nginx", "sexlikereal.com,www.sexlikereal.com,m.sexlikereal.com,cdn.sexlikereal.com", "45.55.107.21", "80, 443", "17d"],
+      "object": {
+        "kind": "Ingress",
+        "apiVersion": "networking.k8s.io/v1",
+        "metadata": {
+          "name": "slr-www",
+          "namespace": "default",
+          "uid": "00000000-0000-0000-0000-0000000000i1",
+          "resourceVersion": "901",
+          "creationTimestamp": "2026-05-24T12:00:00Z"
+        },
+        "spec": {
+          "ingressClassName": "nginx",
+          "tls": [
+            {"hosts": ["sexlikereal.com", "www.sexlikereal.com", "m.sexlikereal.com", "cdn.sexlikereal.com"], "secretName": "tls-sexlikereal-com"}
+          ],
+          "rules": [
+            {"host": "sexlikereal.com"},
+            {"host": "www.sexlikereal.com"},
+            {"host": "m.sexlikereal.com"},
+            {"host": "cdn.sexlikereal.com"}
+          ]
+        },
+        "status": {"loadBalancer": {"ingress": [{"ip": "45.55.107.21"}]}}
+      }
+    },
+    {
+      "cells": ["admin-internal", "nginx-internal", "admin.internal.slr", "10.245.0.7", "80", "17d"],
+      "object": {
+        "kind": "Ingress",
+        "apiVersion": "networking.k8s.io/v1",
+        "metadata": {
+          "name": "admin-internal",
+          "namespace": "default",
+          "uid": "00000000-0000-0000-0000-0000000000i2",
+          "resourceVersion": "902",
+          "creationTimestamp": "2026-05-24T12:00:00Z"
+        },
+        "spec": {
+          "ingressClassName": "nginx-internal",
+          "rules": [{"host": "admin.internal.slr"}]
+        },
+        "status": {"loadBalancer": {"ingress": [{"ip": "10.245.0.7"}]}}
+      }
+    },
+    {
+      "cells": ["preview-env", "nginx", "preview-8842.dev.slr", "<pending>", "80", "6m"],
+      "object": {
+        "kind": "Ingress",
+        "apiVersion": "networking.k8s.io/v1",
+        "metadata": {
+          "name": "preview-env",
+          "namespace": "default",
+          "uid": "00000000-0000-0000-0000-0000000000i3",
+          "resourceVersion": "903",
+          "creationTimestamp": "2026-06-10T11:54:00Z"
+        },
+        "spec": {
+          "ingressClassName": "nginx",
+          "rules": [{"host": "preview-8842.dev.slr"}]
+        },
+        "status": {"loadBalancer": {}}
+      }
+    }
+  ]
+}

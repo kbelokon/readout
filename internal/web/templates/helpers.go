@@ -17,11 +17,6 @@ import (
 // itoa is strconv.Itoa, exposed under a short name for the count expressions.
 func itoa(n int) string { return strconv.Itoa(n) }
 
-// escapeHTML is html.EscapeString, exposed under a short name for the search
-// page's snippet/no-results helpers that assemble a trusted HTML string (so the
-// <em> highlight emits via a single @templ.Raw without a stray text-node child).
-func escapeHTML(s string) string { return html.EscapeString(s) }
-
 // itoa64 formats an int64 (the logs tail_lines value) as a base-10 string.
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
 
@@ -70,6 +65,67 @@ func menuItemClass(active bool) string {
 // (a constant glyph wrapped in `.ico sm`).
 func metaIcon(label string) string {
 	return string(icons.MetaGlyph(label))
+}
+
+// ctxDotClass is the topbar namespace-pill dot: green only when a namespace is
+// actually SET (SPEC §6.1 "green dot when set" + law §1.1); the "None" state
+// adds the .none variant the prototype greys (chrome.css:77).
+func ctxDotClass(contextName string) string {
+	if contextName == "None" {
+		return "ctx-dot none"
+	}
+	return "ctx-dot"
+}
+
+// refreshSeconds maps a persisted ro_prefs refresh mode (D9 string vocabulary:
+// "Off", an interval in seconds, future "Live") to polling seconds. "" / "Off"
+// / "Live" / junk all yield 0 -- exactly what readout.js's refreshInterval()
+// derives from the same cookie, so the SSR'd topbar state and the JS init sync
+// always agree (Live gains its own rendering in Unit 27).
+func refreshSeconds(mode string) int {
+	n, err := strconv.Atoi(mode)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// refreshLabel is the topbar #refresh-label text for a persisted refresh mode:
+// "Live" for the Live stream mode (Unit 27/D19), "Ns" for an active interval,
+// else "Off" (matching readout.js syncRefreshUI).
+func refreshLabel(mode string) string {
+	if mode == "Live" {
+		return "Live"
+	}
+	if secs := refreshSeconds(mode); secs > 0 {
+		return strconv.Itoa(secs) + "s"
+	}
+	return "Off"
+}
+
+// refreshOptionClass marks the dropdown option matching the persisted refresh
+// mode as is-active ("Off"/none activates the data-interval="0" option, like
+// the JS sync does). Mode "Live" activates ONLY the Live option -- without the
+// special case the Off option would match it (refreshSeconds("Live") is 0).
+func refreshOptionClass(interval, mode string) string {
+	active := interval == strconv.Itoa(refreshSeconds(mode))
+	if interval == "Live" || mode == "Live" {
+		active = interval == mode
+	}
+	if active {
+		return "refresh-option is-active"
+	}
+	return "refresh-option"
+}
+
+// refreshDropdownClass adds the refresh-on styling hook when a positive
+// interval OR the Live mode is persisted (the pulsing-livedot state readout.js
+// otherwise toggles -- Live pulses through the same hook, Unit 21/27 rule).
+func refreshDropdownClass(mode string) string {
+	if mode == "Live" || refreshSeconds(mode) > 0 {
+		return "refresh-dropdown refresh-on"
+	}
+	return "refresh-dropdown"
 }
 
 // pluralSuffix returns "" for a count of 1, else "s", for the "N object(s)" /
@@ -204,6 +260,37 @@ func restartsClassRD(tone string) string {
 	return "restarts " + tone
 }
 
+// chipClass is the label/data chip class: `ro-chip`, plus the `.xtra` marker
+// on a chip past the in-cell overflow threshold -- hidden by CSS until its
+// `.ro-chips` strip gains `.expanded` (SPEC §4.9/§4.10).
+func chipClass(extra bool) string {
+	if extra {
+		return "ro-chip xtra"
+	}
+	return "ro-chip"
+}
+
+// containersLabel is the pod containers section label, mirroring the
+// prototype grammar: `Containers · N`, plus ` + M init` when init containers
+// exist.
+func containersLabel(count, initCount int) string {
+	label := "Containers · " + strconv.Itoa(count)
+	if initCount > 0 {
+		label += " + " + strconv.Itoa(initCount) + " init"
+	}
+	return label
+}
+
+// yamlCardClass is the per-section YAML card class: the collapsible card
+// triple, plus `is-collapsed` when the card starts folded (SPEC §7.15 -- the
+// Status card collapses by default; the readout.js fold toggle reopens it).
+func yamlCardClass(collapsed bool) string {
+	if collapsed {
+		return "section collapsible ro-yaml-card is-collapsed"
+	}
+	return "section collapsible ro-yaml-card"
+}
+
 // thClass is the table header class: the kube column class (e.g. "num" for a
 // numeric column) plus the redesign `sorted` modifier on the active sort column.
 func thClass(colClass string, sorted bool) string {
@@ -212,6 +299,18 @@ func thClass(colClass string, sorted bool) string {
 		parts = strings.TrimSpace(parts + " sorted")
 	}
 	return parts
+}
+
+// ariaSort derives the sorted header's aria-sort value (D23/SPEC §8.6) from
+// the pre-rendered sort icon markup -- the SAME single source the visual
+// direction uses (sortIcon emits `sort-asc` for ascending, the plain chevron
+// for descending), so the announced direction can never drift from the drawn
+// one. Callers gate on Sorted, so this only ever sees a non-empty icon.
+func ariaSort(sortIcon string) string {
+	if strings.Contains(sortIcon, "sort-asc") {
+		return "ascending"
+	}
+	return "descending"
 }
 
 // rowClass keeps the existing row-status stripe class on the body row (carried
@@ -305,6 +404,57 @@ func rolloutClass(state string) string {
 	return "rollout " + state
 }
 
+// skelRowCount is the number of placeholder rows the loading skeleton renders
+// (the prototype loading screen renders 12).
+const skelRowCount = 12
+
+// skelWidths mirrors the VISIBLE column layout of the list's first table into
+// the skeleton cell widths (D16: rows mirror the column schema widths): the
+// optional leading Cluster/Namespace columns, every kube column that survived
+// the hide set, and the synthetic Created column unless hidden. Widths follow
+// the prototype renderSkeleton mapping (identity 220 / age 40 / default 80).
+func skelWidths(d *ListData) []int {
+	if len(d.Tables) == 0 {
+		return nil
+	}
+	t := &d.Tables[0]
+	var widths []int
+	if t.MultiCluster {
+		widths = append(widths, 120)
+	}
+	if d.IsAllNamespaces {
+		widths = append(widths, 80)
+	}
+	for i, col := range t.Columns {
+		widths = append(widths, skelColWidth(col.Name, i))
+	}
+	if !t.HideCreated {
+		widths = append(widths, 40)
+	}
+	return widths
+}
+
+// skelColWidth maps one column to its prototype skeleton width: the first
+// (identity) column is wide, age-shaped columns narrow, everything else the
+// default bar.
+func skelColWidth(name string, index int) int {
+	if index == 0 {
+		return 220
+	}
+	switch name {
+	case "Age", "First Seen", "Last Seen", "Created":
+		return 40
+	}
+	return 80
+}
+
+// skelStyle is the per-cell inline declaration of one skeleton bar: the column
+// width plus the row fade toward the bottom (prototype: 1 - row*0.08, floored
+// well above zero by the 12-row cap).
+func skelStyle(width, row int) string {
+	return fmt.Sprintf("width:%dpx;opacity:%.2f", width, 1.0-float64(row)*0.08)
+}
+
 // warnIcon is the redesign partial-failure banner glyph (lucide triangle-alert),
 // wrapped in the same <svg> shell as the icons package glyphs so it themes via
 // `.ico svg`. A static constant: no runtime-derived data crosses it.
@@ -313,9 +463,13 @@ func warnIcon() string {
 }
 
 // emptyColspan computes the empty-row <td> colspan: the kube.Table column count
-// + 1 (the Created column), plus the optional Cluster / Namespace columns.
-func emptyColspan(columnCount int, multiCluster, allNamespaces bool) int {
-	colspan := columnCount + 1
+// + 1 for the Created column (unless the D8 hide set suppressed it), plus the
+// optional Cluster / Namespace columns.
+func emptyColspan(columnCount int, multiCluster, allNamespaces, hideCreated bool) int {
+	colspan := columnCount
+	if !hideCreated {
+		colspan++
+	}
 	if multiCluster {
 		colspan++
 	}
@@ -326,43 +480,44 @@ func emptyColspan(columnCount int, multiCluster, allNamespaces bool) int {
 }
 
 // emptyNamespaceText is the namespace clause inside the empty-state sentence.
-// It returns trusted HTML (the namespace is html-escaped here): `in namespace
-// "<ns>" ` (with a trailing space) when scoped to one namespace, else "".
+// It returns trusted HTML (the namespace is html-escaped here): ` in namespace
+// “<ns>”` (prototype curly quotes) when scoped to one namespace, else "".
 func emptyNamespaceText(namespace string, allNamespaces bool) string {
 	if namespace != "" && !allNamespaces {
-		return `in namespace "` + html.EscapeString(namespace) + `" `
+		return " in namespace “" + html.EscapeString(namespace) + "”"
 	}
 	return ""
 }
 
-// emptyTitle is the full empty-state sentence ("No <Kind> objects <ns-clause>
-// found."), returned as one trusted HTML string so the templ card emits it via a
-// single @templ.Raw -- a text node after @templ.Raw is parsed as that call's
-// children (and templ.Raw drops children), so the sentence must be one piece.
-// kind is html-escaped here; the namespace clause is escaped inside
-// emptyNamespaceText.
-func emptyTitle(kind, namespace string, allNamespaces bool) string {
-	return "No " + html.EscapeString(kind) + " objects " + emptyNamespaceText(namespace, allNamespaces) + "found."
+// emptyTitle is the full plainly-empty sentence per the prototype VIEW.states
+// copy ("No <Kind> found in namespace “<ns>”", D16), returned as one trusted
+// HTML string so the templ card emits it via a single @templ.Raw -- a text node
+// after @templ.Raw is parsed as that call's children (and templ.Raw drops
+// children), so the sentence must be one piece. kindPlural is the pluralized
+// display kind (TableData.Kind, e.g. "Pods"), html-escaped here; the namespace
+// clause is escaped inside emptyNamespaceText.
+func emptyTitle(kindPlural, namespace string, allNamespaces bool) string {
+	return "No " + html.EscapeString(kindPlural) + " found" + emptyNamespaceText(namespace, allNamespaces)
 }
 
-// hintClass is the reason-line class on a state card: `hint` always, plus `mono`
-// when the line carries a real (transport) error string so it renders in the
-// mono face (matching the mockup's `.hint.mono` for the verbatim error).
-func hintClass(mono bool) string {
-	if mono {
-		return "hint mono"
+// emptyGlyphClass is the state-card glyph tile class: bare for the neutral
+// (empty/first-run) tile, plus the warn (forbidden) / err (unreachable) tone.
+func emptyGlyphClass(tone string) string {
+	if tone == "" {
+		return "ro-empty-glyph"
 	}
-	return "hint"
+	return "ro-empty-glyph " + tone
 }
 
-// stateNamespaceClause is the " in namespace "<ns>"" suffix on a forbidden-state
-// title, naming the namespace scope the verb was denied in. Empty for a
-// cluster-scoped or all-namespaces request (no single namespace to name).
+// stateNamespaceClause is the ` in “<ns>”` suffix on a forbidden-state title
+// (prototype copy: `Not allowed to list secrets in “kube-system”`), naming the
+// namespace scope the verb was denied in. Empty for a cluster-scoped or
+// all-namespaces request (no single namespace to name).
 func stateNamespaceClause(namespace string) string {
 	if namespace == "" || namespace == "_all" {
 		return ""
 	}
-	return ` in namespace "` + namespace + `"`
+	return " in “" + namespace + "”"
 }
 
 // ownerLabel is "Owner" for a single owner, "Owners" for more.

@@ -12,11 +12,13 @@ import (
 	"k8s.io/client-go/util/jsonpath"
 )
 
-// TestBuildEventViewsNormalizesBothEventShapes proves the events-panel fix: the
-// core/v1 `events` endpoint dual-writes BOTH the old core/v1 Event shape AND the
-// newer events.k8s.io/v1 shape, and buildEventViews normalizes the spelling
-// differences so the new-style fields no longer render "Unknown":
-//   - age:     lastTimestamp -> eventTime -> series.lastObservedTime
+// TestBuildEventViewsNormalizesBothEventShapes proves the dual-shape events
+// decode: the core/v1 `events` endpoint dual-writes BOTH the old core/v1 Event
+// shape AND the newer events.k8s.io/v1 shape, and buildEventViews normalizes
+// the spelling differences with the PINNED D15 precedence:
+//   - last-seen: series.lastObservedTime -> lastTimestamp ->
+//     deprecatedLastTimestamp -> eventTime, rendered as the compressed
+//     duration since (the full timestamp moves into the AgeTitle tooltip)
 //   - message: message -> note
 //   - from:    source.component -> reportingController
 func TestBuildEventViewsNormalizesBothEventShapes(t *testing.T) {
@@ -38,12 +40,13 @@ func TestBuildEventViewsNormalizesBothEventShapes(t *testing.T) {
 			"eventTime":           "2024-03-02T11:00:00Z",
 			"reportingController": "kubelet",
 		},
-		// New shape variant: no eventTime, age falls back to the series
-		// last-observed time.
+		// Series shape: series.lastObservedTime OUTRANKS the also-present
+		// eventTime (D15 — the series aggregate is the freshest observation).
 		{
 			"type": "Normal", "reason": "Pulled",
-			"note":   "from series",
-			"series": map[string]any{"lastObservedTime": "2024-03-03T12:00:00Z"},
+			"note":      "from series",
+			"eventTime": "2024-03-01T00:00:00Z",
+			"series":    map[string]any{"lastObservedTime": "2024-03-03T12:00:00Z"},
 		},
 		// New shape with a RECENT eventTime (1h before the fixed clock) so its
 		// age bucket is age-fresh, not age-old. This makes the AgeClass check
@@ -62,15 +65,23 @@ func TestBuildEventViewsNormalizesBothEventShapes(t *testing.T) {
 		t.Fatalf("event views = %d, want 4", len(views))
 	}
 
-	// Old-style row: unchanged behavior.
-	if views[0].Age != "2024-03-01 10:00:05" || views[0].Message != "old-style assigned" || views[0].From != "default-scheduler" {
+	// Old-style row: the compressed duration since lastTimestamp (Mar 1 ->
+	// Jun 1 = 91d) with the full timestamp in the tooltip; a countless event
+	// occurred once -> the faint ×1 (D15 count default).
+	if views[0].Age != "91d" || views[0].Message != "old-style assigned" || views[0].From != "default-scheduler" {
 		t.Fatalf("old-style event view = %#v", views[0])
+	}
+	if views[0].AgeTitle != "last seen 2024-03-01 10:00:05" {
+		t.Fatalf("old-style AgeTitle = %q, want the full last-seen timestamp tooltip", views[0].AgeTitle)
+	}
+	if views[0].Count != "1" || views[0].CountClass != "faint" {
+		t.Fatalf("countless event count = ×%q class %q, want the faint ×1", views[0].Count, views[0].CountClass)
 	}
 	// New-style row: eventTime -> age, note -> message, reportingController ->
 	// from. The Warning type maps to the redesign "warn" tone (via the SAME
 	// CellClass the list path uses, then statusTone), proving normalization still
 	// feeds the cell classer; a Normal event with no class defaults to "mute".
-	if views[1].Age != "2024-03-02 11:00:00" || views[1].Message != "new-style back-off" || views[1].From != "kubelet" {
+	if views[1].Age != "90d" || views[1].Message != "new-style back-off" || views[1].From != "kubelet" {
 		t.Fatalf("new-style event view = %#v, want eventTime/note/reportingController normalized", views[1])
 	}
 	if views[1].Tone != "warn" {
@@ -79,12 +90,14 @@ func TestBuildEventViewsNormalizesBothEventShapes(t *testing.T) {
 	if views[0].Tone != "mute" {
 		t.Fatalf("Normal event tone = %q, want mute (no kube class -> mute default)", views[0].Tone)
 	}
-	// Series-fallback row: series.lastObservedTime -> age.
-	if views[2].Age != "2024-03-03 12:00:00" || views[2].Message != "from series" {
-		t.Fatalf("series-fallback event view = %#v", views[2])
+	// Series row: series.lastObservedTime (Mar 3 -> 89d) beats the older
+	// eventTime (92d) — the head of the D15 last-seen precedence.
+	if views[2].Age != "89d" || views[2].Message != "from series" {
+		t.Fatalf("series event view = %#v, want the series.lastObservedTime age", views[2])
 	}
-	// Recent new-style row: eventTime normalizes AND flows to the age classer.
-	if views[3].Age != "2024-05-31 23:00:00" || views[3].From != "kubelet" {
+	// Recent new-style row: eventTime normalizes AND flows to the age classer
+	// (1h before the clock -> "60m").
+	if views[3].Age != "60m" || views[3].From != "kubelet" {
 		t.Fatalf("recent new-style event view = %#v", views[3])
 	}
 	// The first three timestamps are months before the fixed clock (age-old);
@@ -123,7 +136,7 @@ func TestJoinMetricsJoinsCPUAndMemoryByObjectKey(t *testing.T) {
 		},
 	}
 	ctx := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods?join=metrics", nil).Context()
-	app.joinMetrics(ctx, cluster.Client, &table, "default", false, "")
+	applyMetricsUsage(&table, app.fetchMetricsUsage(ctx, cluster.Client, table.Resource.Namespaced, "default", false, ""))
 
 	if len(table.Columns) != 3 || table.Columns[1].Name != "CPU Usage" || table.Columns[2].Name != "Memory Usage" {
 		t.Fatalf("metrics columns not appended: %#v", table.Columns)

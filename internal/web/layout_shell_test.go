@@ -13,6 +13,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -33,8 +34,9 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantHas("header.ro-topbar")
 	p.wantAbsent("nav.navbar")
 
-	// Brand mask + name (the CSS mask over readout-logo.svg inherits --brand).
-	p.wantHas("header.ro-topbar .brand-item .brand-logo")
+	// Brand chip + mask + name: the SPEC 2.5 .brand-chip wrapper carries the
+	// dark chip behind the .brand-logo CSS mask (which inherits --brand).
+	p.wantHas("header.ro-topbar .brand-item .brand-chip .brand-logo")
 	p.wantText("header.ro-topbar .brand-name", "readout")
 
 	// The body opts into the fixed-topbar offset class for the redesign shell.
@@ -46,13 +48,20 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantHas("header.ro-topbar .ro-search .kbd-hint .ro-kbd")
 	p.wantAttr("header.ro-topbar .ro-search", "data-palette-open", "true")
 
-	// Refresh control: the existing localStorage/ro:refresh wiring is preserved --
-	// the five interval options, the #refresh-label, the #refresh-dropdown hook.
-	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,15,30,60" {
-		t.Fatalf("refresh-option data-interval set = %v, want [0 5 15 30 60]", got)
+	// Refresh control: the five interval options (10 replaced 15 per D18/SPEC
+	// §8.3) plus the Live mode (Unit 27/D19), the #refresh-label, the
+	// #refresh-dropdown hook.
+	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
+		t.Fatalf("refresh-option data-interval set = %v, want [0 5 10 30 60 Live]", got)
 	}
-	p.wantHas(".tb-group .tb-btn.refresh-live")
-	p.wantHas(".tb-group .tb-btn.refresh-live .ro-livedot")
+	p.wantHas(".tb-group .tb-btn.refresh-trigger")
+	p.wantHas(".tb-group .tb-btn.refresh-trigger .ro-livedot")
+	// The livedot's live state has exactly ONE owner: `refresh-on` on
+	// #refresh-dropdown (SSR refreshDropdownClass + JS syncRefreshUI). The old
+	// static `refresh-live` class painted the dot brand-green even at Off -- a
+	// false live-health signal (colour law §1.1, the ctx-dot.none precedent) --
+	// so it must never come back.
+	p.wantAbsent(".refresh-live")
 	p.wantHas("#refresh-label")
 
 	// Theme toggle stays a server POST /preferences that opts OUT of hx-boost (D5).
@@ -65,13 +74,23 @@ func TestShellTopbarChrome(t *testing.T) {
 // TestNavbarNamespaceContext pins the namespace context dropdown (.ctx-dd): it
 // renders only with a cluster in scope, shows the current namespace, and keeps
 // the JS hooks (#namespace-dropdown / #namespace-searchbox / .namespace-item).
+// The pill dot is green only when a namespace is SET (SPEC §6.1 "green dot when
+// set" + law §1.1): the "None" state carries .ctx-dot.none, which the prototype
+// greys (chrome.css:77).
 func TestNavbarNamespaceContext(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 
 	p.wantHas("header.ro-topbar .ctx-dd")
 	p.wantHas(".ctx-dd .ctx-dot")
+	p.wantAbsent(".ctx-dd .ctx-dot.none")
 	p.wantText(".ctx-dd .context-name", "default")
+
+	// Cluster-scope page (no namespace in the URL): the pill reads "None" and
+	// the dot drops its green (the .none variant).
+	none := get(t, app, "/clusters/test/namespaces", http.StatusOK)
+	none.wantText(".ctx-dd .context-name", "None")
+	none.wantHas(".ctx-dd .ctx-dot.none")
 
 	// Namespace filter hooks preserved for readout.js.
 	p.wantHas("#namespace-dropdown")
@@ -366,19 +385,78 @@ func TestPaletteFeedDetailTabActions(t *testing.T) {
 	check(base + "/logs")
 }
 
+// TestPaletteFeedServerSideTruncation pins the D5/D21 truncation seat: LONG
+// palette labels are middle-truncated SERVER-side, in the feed builder, via the
+// shared MiddleTruncate (SPEC §4.2: >42 runes -> first 26 + "…" + last 12),
+// carried as the omitempty `display` field next to the untouched full `name`
+// (the JS renders display and keeps name in the row title). Short names emit
+// no display at all -- the wire stays byte-compatible for them.
+func TestPaletteFeedServerSideTruncation(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+
+	long := strings.Repeat("a", 30) + "-" + strings.Repeat("b", 30) // 61 runes
+	wantDisplay, truncated := MiddleTruncate(long, nameHeadMax, nameHeadLead, nameHeadTrail)
+	if !truncated {
+		t.Fatalf("fixture name %q should exceed the truncation budget", long)
+	}
+
+	// paletteDisplayName is the single truncation seat: long -> the §4.2 form,
+	// short / exactly-at-budget -> "" (the omitempty field stays off the wire).
+	if got := paletteDisplayName(long); got != wantDisplay {
+		t.Fatalf("paletteDisplayName(long) = %q, want %q", got, wantDisplay)
+	}
+	if got := paletteDisplayName("pods"); got != "" {
+		t.Fatalf("paletteDisplayName(short) = %q, want \"\"", got)
+	}
+	if got := paletteDisplayName(strings.Repeat("x", nameHeadMax)); got != "" {
+		t.Fatalf("paletteDisplayName(at-budget) = %q, want \"\" (42 runes fit)", got)
+	}
+
+	// Feed-level: a long namespace link flows through buildPaletteFeed with the
+	// full name intact and the truncated display alongside.
+	r := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods", nil)
+	navbar := navbarView{NamespaceLinks: []navItem{{Text: long, Href: "/clusters/test/namespaces/" + long + "/pods"}}}
+	sidebar := sidebarView{}
+	feed := app.buildPaletteFeed(r, "test", "default", requestKubeClients{}, &navbar, &sidebar)
+
+	if len(feed.Namespaces) != 1 {
+		t.Fatalf("namespaces feed length = %d, want 1", len(feed.Namespaces))
+	}
+	ns := feed.Namespaces[0]
+	if ns.Name != long {
+		t.Fatalf("namespace feed name = %q, want the FULL name (truncation must not destroy identity)", ns.Name)
+	}
+	if ns.Display != wantDisplay {
+		t.Fatalf("namespace feed display = %q, want %q", ns.Display, wantDisplay)
+	}
+
+	// Short labels (the fixture cluster + every fixture kind) carry NO display.
+	if len(feed.Clusters) != 1 || feed.Clusters[0].Display != "" {
+		t.Fatalf("short cluster name must emit no display, got %+v", feed.Clusters)
+	}
+	for _, k := range feed.Kinds {
+		if k.Display != "" {
+			t.Fatalf("short kind label %q must emit no display, got %q", k.Kind, k.Display)
+		}
+	}
+}
+
 // paletteFeedJSON mirrors the pinned palette-feed wire shape so the test parses
 // the emitted blob structurally (the camelCase keys are the public contract Unit
-// 4's JS reads).
+// 4's JS reads). `display` is the Unit 19 extension: the server-truncated
+// label form, present only when the name overruns the SPEC §4.2 budget.
 type paletteFeedJSON struct {
 	CurrentCluster   *string `json:"currentCluster"`
 	CurrentNamespace *string `json:"currentNamespace"`
 	Clusters         []struct {
-		Name string `json:"name"`
-		Href string `json:"href"`
+		Name    string `json:"name"`
+		Href    string `json:"href"`
+		Display string `json:"display"`
 	} `json:"clusters"`
 	Namespaces []struct {
-		Name string `json:"name"`
-		Href string `json:"href"`
+		Name    string `json:"name"`
+		Href    string `json:"href"`
+		Display string `json:"display"`
 	} `json:"namespaces"`
 	Kinds []struct {
 		Kind       string `json:"kind"`
@@ -387,6 +465,7 @@ type paletteFeedJSON struct {
 		Namespaced bool   `json:"namespaced"`
 		Href       string `json:"href"`
 		Icon       string `json:"icon"`
+		Display    string `json:"display"`
 	} `json:"kinds"`
 	Actions []struct {
 		Label  string `json:"label"`

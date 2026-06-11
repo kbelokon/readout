@@ -4,19 +4,25 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/kbelokon/readout/tests/unit/fakeapi"
 	"k8s.io/client-go/rest"
 )
 
+// fakeAPIServer wraps the shared fakeapi fixture server, capturing the Accept
+// header of the most recent collection request through the package's list
+// recorder option (synchronized: discovery and list requests can run on
+// concurrent client-go goroutines under -race).
 type fakeAPIServer struct {
-	t          *testing.T
-	server     *httptest.Server
+	server *fakeapi.Server
+
+	mu         sync.Mutex
 	lastAccept string
 }
 
@@ -117,33 +123,26 @@ func TestPassthroughClientCache(t *testing.T) {
 }
 
 func newFakeAPIServer(t *testing.T) *fakeAPIServer {
-	f := &fakeAPIServer{t: t}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api", f.fixture("discovery/api.json"))
-	mux.HandleFunc("/api/v1", f.fixture("discovery/api__v1.json"))
-	mux.HandleFunc("/apis", f.fixture("discovery/apis.json"))
-	mux.HandleFunc("/apis/apps/v1", f.fixture("discovery/apis__apps__v1.json"))
-	mux.HandleFunc("/apis/cert-manager.io/v1", f.fixture("discovery/apis__cert-manager.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", f.fixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", f.fixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", f.fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/storage.k8s.io/v1", f.fixture("discovery/apis__storage.k8s.io__v1.json"))
-	mux.HandleFunc("/version", f.fixture("discovery/version.json"))
-	mux.HandleFunc("/api/v1/namespaces/default/pods", func(w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	f := &fakeAPIServer{}
+	server, err := fakeapi.New(fakeapi.WithListRecorder(func(r *http.Request) {
+		f.mu.Lock()
 		f.lastAccept = r.Header.Get("Accept")
-		if strings.Contains(f.lastAccept, "as=Table") {
-			f.writeFixture(w, "data/pods_table.json")
-			return
-		}
-		f.writeFixture(w, "data/pods_list.json")
-	})
-	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx", f.fixture("data/pod_nginx.json"))
-	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx/log", f.text("data/pod_log.txt"))
-	mux.HandleFunc("/api/v1/nodes", f.fixture("data/nodes_list.json"))
-	mux.HandleFunc("/api/v1/nodes/worker-1", f.fixture("data/render_node.json"))
-	f.server = httptest.NewServer(mux)
-	t.Cleanup(f.server.Close)
+		f.mu.Unlock()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Close)
+	f.server = server
 	return f
+}
+
+// accept returns the Accept header of the most recent collection request.
+func (f *fakeAPIServer) accept() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastAccept
 }
 
 func (f *fakeAPIServer) client(t *testing.T, includeSecrets bool) *Client {
@@ -167,8 +166,8 @@ func TestTableUsesServerSideTableAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(f.lastAccept, "as=Table") {
-		t.Fatalf("expected server-side Table Accept header, got %q", f.lastAccept)
+	if !strings.Contains(f.accept(), "as=Table") {
+		t.Fatalf("expected server-side Table Accept header, got %q", f.accept())
 	}
 	if len(table.Columns) == 0 || table.Columns[0].Name != "Name" {
 		t.Fatalf("unexpected columns: %#v", table.Columns)
@@ -178,6 +177,44 @@ func TestTableUsesServerSideTableAccept(t *testing.T) {
 	}
 	if cell := table.Rows[0].Cells[0]; cell != "nginx" {
 		t.Fatalf("unexpected first cell: %#v", cell)
+	}
+}
+
+// TestTableLimitChunkAndRemainingItemCount pins the chunked Table fetch the
+// sidebar counts ride on: ListOptions.Limit becomes the `?limit=N` query
+// parameter, the response chunk is decoded as-is, and the chunk's
+// metadata.remainingItemCount surfaces on Table.RemainingItemCount. An
+// unlimited fetch keeps RemainingItemCount nil.
+func TestTableLimitChunkAndRemainingItemCount(t *testing.T) {
+	f := newFakeAPIServer(t)
+	client := f.client(t, false)
+
+	rt, err := client.FindResource(context.Background(), "pods", true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := client.Table(context.Background(), &rt, ListOptions{Namespace: "default", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pods fixture has 2 rows: limit=1 must return one row and report the
+	// remainder (the fakeapi mirrors the live-probed apiserver shape).
+	if len(table.Rows) != 1 {
+		t.Fatalf("limited table rows = %d, want 1", len(table.Rows))
+	}
+	if table.RemainingItemCount == nil || *table.RemainingItemCount != 1 {
+		t.Fatalf("limited table RemainingItemCount = %v, want 1", table.RemainingItemCount)
+	}
+
+	full, err := client.Table(context.Background(), &rt, ListOptions{Namespace: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Rows) != 2 {
+		t.Fatalf("unlimited table rows = %d, want 2", len(full.Rows))
+	}
+	if full.RemainingItemCount != nil {
+		t.Fatalf("unlimited table RemainingItemCount = %v, want nil", full.RemainingItemCount)
 	}
 }
 
@@ -423,32 +460,4 @@ func TestTableURLPreservesAPIServerBasePath(t *testing.T) {
 	if got := u.Path; got != "/root/api/v1/namespaces/default/pods" {
 		t.Fatalf("path = %q", got)
 	}
-}
-
-func (f *fakeAPIServer) fixture(name string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		f.writeFixture(w, name)
-	}
-}
-
-func (f *fakeAPIServer) text(name string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		data := f.read(name)
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write(data)
-	}
-}
-
-func (f *fakeAPIServer) writeFixture(w http.ResponseWriter, name string) {
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(f.read(name))
-}
-
-func (f *fakeAPIServer) read(name string) []byte {
-	path := filepath.Join("..", "..", "tests", "unit", "fakeapi", "fixtures", name)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		f.t.Fatalf("read fixture %s: %v", name, err)
-	}
-	return data
 }

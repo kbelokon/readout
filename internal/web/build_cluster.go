@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -23,15 +24,15 @@ import (
 
 // labelChips builds the redesign non-link label pills (D11/D13) shared by the
 // clusters-entry rows, the cluster-overview meta line, and the namespace rows.
-// Each pill renders as `<span class={Class}>key: val</span>`; Class is the
-// canonical redesign chip class (`ro-chip`, plus the ` app` accent token for
-// app.kubernetes.io/* labels via redesignChipClass) so it matches the migrated
-// list/detail `.ro-chip` vocabulary scoped under the page's .ro-rd marker.
+// Each pill renders as a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv`
+// ink-weight split (D3 colour law: the green app.kubernetes.io/* accent is
+// retired), matching the migrated list/detail `.ro-chip` vocabulary scoped
+// under the page's .ro-rd marker.
 func labelChips(labels map[string]string) []templates.LabelChip {
 	keys := sortedKeys(labels)
 	chips := make([]templates.LabelChip, 0, len(keys))
 	for _, key := range keys {
-		chips = append(chips, templates.LabelChip{Class: redesignChipClass(key), Key: key, Val: labels[key]})
+		chips = append(chips, templates.LabelChip{Key: key, Val: labels[key]})
 	}
 	return chips
 }
@@ -48,13 +49,21 @@ func sortedKeys(m map[string]string) []string {
 // buildClustersData assembles the clusters-list view model: the count, the form
 // round-trip values, the filtered in-cluster rows, and the external-cluster
 // rows. The filter matches the prior handler (case-insensitive over
-// name+url+labels).
-func (s *Server) buildClustersData(selector, filter string) templates.ClustersData {
+// name+url+labels). Each row's entry link consumes the persisted
+// namespace-per-cluster pref via clusterEntryHref (D9 -- the clusters page is a
+// cluster-ENTRY surface; link construction only, never a redirect).
+func (s *Server) buildClustersData(r *http.Request, selector, filter string) templates.ClustersData {
 	clusters := s.manager.Clusters()
+	nsPrefs := prefsFromRequest(r).Namespaces
 	data := templates.ClustersData{
 		Count:         len(clusters) + len(s.cfg.ExternalClusters),
 		SelectorValue: selector,
 		FilterValue:   filter,
+		// First-run (SPEC §7.2 / D17): ZERO clusters configured anywhere -- no
+		// loaded clusters, no broken ones (a configured-but-broken cluster is a
+		// different failure, not "nothing configured"), and no external links.
+		// The filter/selector never affect this: Count is computed pre-filter.
+		FirstRun: len(clusters) == 0 && len(s.manager.Broken()) == 0 && len(s.cfg.ExternalClusters) == 0,
 	}
 	var labelSelector labels.Selector
 	if strings.TrimSpace(selector) != "" {
@@ -75,6 +84,7 @@ func (s *Server) buildClustersData(selector, filter string) templates.ClustersDa
 		}
 		data.Rows = append(data.Rows, templates.ClusterRow{
 			Name:  cluster.Name,
+			Href:  clusterEntryHref(cluster.Name, nsPrefs[cluster.Name]),
 			URL:   cluster.URL,
 			Chips: labelChips(cluster.Labels),
 		})

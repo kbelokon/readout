@@ -38,7 +38,7 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	if !strings.Contains(icon("missing"), "<circle") {
 		t.Fatal("default icon mismatch")
 	}
-	if pluralizeKind("Policy") != "Policies" || pluralizeKind("Ingress") != "Ingresses" || pluralizeKind("Pod") != "Pods" {
+	if pluralizeKind("Policy", "policies") != "Policies" || pluralizeKind("Ingress", "ingresses") != "Ingresses" || pluralizeKind("Pod", "pods") != "Pods" || pluralizeKind("Endpoints", "endpoints") != "Endpoints" {
 		t.Fatal("pluralizeKind mismatch")
 	}
 	if sortIcon("Name", "Name") == "" || sortIcon("Name:desc", "Name") == "" || sortIcon("Other", "Name") != "" {
@@ -63,9 +63,6 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	}
 	if namespaceEmptyText("default", false) == "" || namespaceEmptyText("default", true) != "" {
 		t.Fatal("namespaceEmptyText mismatch")
-	}
-	if appLabelClass("app.kubernetes.io/name") == "" || appLabelClass("team") != "" {
-		t.Fatal("appLabelClass mismatch")
 	}
 	if cpuFormat(0.25) != "250m" || memoryMiBFormat(float64(2*1024*1024)) != "2" || cpuFormat("bad") != "bad" {
 		t.Fatal("resource format mismatch")

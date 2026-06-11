@@ -72,10 +72,22 @@ type sidebarLink struct {
 	Plural  string
 	IsCRD   bool
 	HasKind bool
+
+	// Resource is the full resolved kube.ResourceType (zero unless HasKind);
+	// the sidebar counts fetch consumes its APIVersion + Namespaced fields.
+	Resource kube.ResourceType
 }
 
 func (s *Server) sidebarResourceLink(r *http.Request, client *kube.Client, cluster, namespace, plural string) (sidebarLink, bool) {
 	if client == nil {
+		// The no-discovery fallback (multi-cluster `_all`, unknown cluster) cannot
+		// consult a cluster's filtered type list, so the secret barrier applies
+		// here directly: without IncludeSecrets the curated secrets entry must not
+		// surface a dead link (single-cluster sidebars hide it because discovery
+		// filters the Secret type out).
+		if plural == "secrets" && !s.cfg.IncludeSecrets {
+			return sidebarLink{}, false
+		}
 		return sidebarLink{Href: sidebarResourceHref(cluster, namespace, plural), Text: sidebarResourceText(plural), Plural: plural}, true
 	}
 	var rt kube.ResourceType
@@ -103,13 +115,14 @@ func (s *Server) sidebarResourceLink(r *http.Request, client *kube.Client, clust
 // the same kube.ResourceType the link already resolved.
 func sidebarLinkFromResource(href string, rt *kube.ResourceType) sidebarLink {
 	return sidebarLink{
-		Href:    href,
-		Text:    pluralizeKind(rt.Kind),
-		Kind:    rt.Kind,
-		Group:   rt.Group,
-		Plural:  rt.Plural,
-		IsCRD:   isCRD(rt.APIVersion),
-		HasKind: true,
+		Href:     href,
+		Text:     pluralizeKind(rt.Kind, rt.Plural),
+		Kind:     rt.Kind,
+		Group:    rt.Group,
+		Plural:   rt.Plural,
+		IsCRD:    isCRD(rt.APIVersion),
+		HasKind:  true,
+		Resource: *rt,
 	}
 }
 
@@ -173,6 +186,8 @@ func sidebarResourceText(plural string) string {
 		return "Pods"
 	case "configmaps":
 		return "ConfigMaps"
+	case "secrets":
+		return "Secrets"
 	default:
 		return plural
 	}

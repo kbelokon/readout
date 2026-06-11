@@ -354,7 +354,7 @@ func resolve(file *fileConfig) (Config, error) {
 		SearchOfferedResourceTypes: file.Search.OfferedResourceTypes,
 		SearchMaxConcurrency:       100,
 		DefaultLabelColumns:        mapOrEmpty(file.LabelColumns),
-		DefaultHiddenColumns:       mapOrEmpty(file.HiddenColumns),
+		DefaultHiddenColumns:       overlayMap(v2DefaultHiddenColumns, file.HiddenColumns),
 		DefaultCustomColumns:       mapOrEmpty(file.CustomColumns),
 		PreferredAPIVersions:       mapOrEmpty(file.PreferredAPIVersions),
 		DefaultTheme:               firstNonEmpty(file.DefaultTheme, "dark"),
@@ -460,6 +460,32 @@ func mapOrEmpty(m map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return m
+}
+
+// v2DefaultHiddenColumns ships the D8 per-kind noise-off defaults: these
+// columns render HIDDEN unless something more specific speaks -- a config
+// file entry for the kind (overlayMap: file wins per key, an explicit empty
+// value re-shows everything), a user column preference in the ro_prefs cookie,
+// or an explicit ?hidecols= URL param. "Created" names the synthetic
+// render-time Created column, not a kube Table column.
+var v2DefaultHiddenColumns = map[string]string{
+	"nodes": "External-IP,OS-Image,Kernel-Version,Created",
+	"pods":  "IP,Nominated Node,Readiness Gates",
+}
+
+// overlayMap merges the file map over the shipped defaults: every default key
+// applies unless the file carries that key, in which case the file value wins
+// outright -- including an explicit empty value, which disables the default.
+// Neither input map is mutated.
+func overlayMap(defaults, file map[string]string) map[string]string {
+	merged := make(map[string]string, len(defaults)+len(file))
+	for k, v := range defaults {
+		merged[k] = v
+	}
+	for k, v := range file {
+		merged[k] = v
+	}
+	return merged
 }
 
 // resolveClusterConnections folds the on-disk cluster list into the runtime

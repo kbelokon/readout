@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kbelokon/readout/internal/kube"
 	"golang.org/x/sync/errgroup"
@@ -71,7 +72,6 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, requestKubeClient
 		IsAllClusters:     allClusters,
 		IsAllNamespaces:   isAllNamespaces,
 		SelectedTypeCount: len(types),
-		SelectedTypes:     types,
 	}
 	for _, cluster := range clusters {
 		view.ScopeClusters = append(view.ScopeClusters, searchScopeCluster{Name: cluster.Name})
@@ -133,17 +133,23 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, requestKubeClient
 	}
 
 	// Cluster hits: when searching all clusters, a cluster whose name or any
-	// label value contains the query becomes a result card.
+	// label value contains the query becomes a result card. The mark split uses
+	// the SAME needle clusterMatches did (the full lowered query), so the
+	// highlight shows what actually matched the name.
 	if q != "" && allClusters {
 		needle := strings.ToLower(q)
 		for _, cluster := range s.manager.Clusters() {
 			if clusterMatches(cluster, needle) {
+				pre, mark, post := markFirstMatch(cluster.Name, []string{q})
 				view.Results = append(view.Results, searchResult{
-					Title:   cluster.Name,
-					Kind:    "Cluster",
-					Link:    "/clusters/" + url.PathEscape(cluster.Name),
-					Cluster: cluster.Name,
-					Labels:  cluster.Labels,
+					Title:    cluster.Name,
+					Kind:     "Cluster",
+					Link:     "/clusters/" + url.PathEscape(cluster.Name),
+					Cluster:  cluster.Name,
+					Labels:   cluster.Labels,
+					NamePre:  pre,
+					NameMark: mark,
+					NamePost: post,
 				})
 			}
 		}
@@ -166,8 +172,124 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, requestKubeClient
 
 	view.OfferedTypes = buildTypeOptions(searchable, types)
 	sortResults(view.Results, q)
+	view.Groups = groupSearchResults(view.Results, view.ScopeClusters)
+	view.KindCount = distinctKindCount(view.Results)
 	view.Duration = s.clock().Sub(start)
 	return view, clients, nil
+}
+
+// groupSearchResults partitions the (already sortResults-ordered) results into
+// per-cluster groups (D12). Group order follows the ScopeClusters slice -- the
+// name-sorted cluster order the fan-out merged by -- so the grouped render is
+// deterministic regardless of completion order; rows keep their total order
+// within each group. A cluster with no results grows no group (the scope chip
+// is its presence). A defensive sweep appends any result whose cluster carries
+// no scope chip (unreachable today: chips cover every searched cluster, and
+// cluster-hit cards reference the same set) in first-seen order, so a future
+// mismatch can never silently drop rows.
+func groupSearchResults(results []searchResult, chips []searchScopeCluster) []searchGroup {
+	var groups []searchGroup
+	grouped := map[string]bool{}
+	for _, chip := range chips {
+		if grouped[chip.Name] {
+			continue
+		}
+		grouped[chip.Name] = true
+		group := searchGroup{Cluster: chip.Name, Failed: chip.Failed}
+		for i := range results {
+			if results[i].Cluster == chip.Name {
+				group.Results = append(group.Results, results[i])
+			}
+		}
+		if len(group.Results) > 0 {
+			groups = append(groups, group)
+		}
+	}
+	orphanIdx := map[string]int{}
+	for i := range results {
+		if grouped[results[i].Cluster] {
+			continue
+		}
+		idx, ok := orphanIdx[results[i].Cluster]
+		if !ok {
+			idx = len(groups)
+			orphanIdx[results[i].Cluster] = idx
+			groups = append(groups, searchGroup{Cluster: results[i].Cluster})
+		}
+		groups[idx].Results = append(groups[idx].Results, results[i])
+	}
+	return groups
+}
+
+// distinctKindCount counts the distinct result kinds -- the "K kinds" leg of
+// the totals strip.
+func distinctKindCount(results []searchResult) int {
+	kinds := map[string]bool{}
+	for i := range results {
+		kinds[results[i].Kind] = true
+	}
+	return len(kinds)
+}
+
+// searchResultName resolves a result row's name treatment: the Unit 10
+// head/tail split + SPEC §4.2 middle truncation the table name cells apply,
+// then the D12 mark split of the DISPLAY head around the first matching query
+// word. The hash tail is never marked (prototype VIEW.search mark()); a match
+// living in the tail or in a truncated-away middle simply renders unmarked.
+// NameTitle is the full name, set only when the head truncated.
+func searchResultName(plural, name, filterQuery string) (pre, mark, post, tail, title string) {
+	head, tail := splitObjectName(plural, name)
+	display, truncated := MiddleTruncate(head, nameHeadMax, nameHeadLead, nameHeadTrail)
+	if truncated {
+		title = name
+	}
+	pre, mark, post = markFirstMatch(display, strings.Fields(filterQuery))
+	return pre, mark, post, tail, title
+}
+
+// markFirstMatch splits display into pre/mark/post around the first
+// case-insensitive occurrence of the first matching query word, for the D12
+// <mark> wrap. Matching is PLAIN strings.Index over lowered strings -- never a
+// regex -- so names and queries carrying regex-special characters ('.', '+',
+// '(' ...) match literally. A byte offset from the lowered scan is applied to
+// the original string only under a PER-OCCURRENCE guard: it must land on a
+// rune start in display, end on one, and the display slice must case-fold to
+// the word (lowering can change individual rune widths while preserving the
+// whole string's byte length -- e.g. U+023A grows 2->3 bytes while U+212B
+// shrinks 3->2 -- so a whole-string length check cannot vouch for any single
+// offset). A rejected candidate retries the next occurrence; exhausting them
+// falls back to an exact-case match, and a miss leaves the display unmarked --
+// an honest degradation, never a mid-rune split. The fast path is unchanged:
+// DNS-1123 names + ASCII queries accept the first occurrence immediately.
+// pre+mark+post == display, always.
+func markFirstMatch(display string, words []string) (pre, mark, post string) {
+	lowerDisplay := strings.ToLower(display)
+	for _, word := range words {
+		if word == "" {
+			continue
+		}
+		lowerWord := strings.ToLower(word)
+		if len(lowerWord) == len(word) {
+			for from := 0; ; {
+				i := strings.Index(lowerDisplay[from:], lowerWord)
+				if i < 0 {
+					break
+				}
+				i += from
+				end := i + len(lowerWord)
+				if end <= len(display) && utf8.RuneStart(display[i]) &&
+					(end == len(display) || utf8.RuneStart(display[end])) &&
+					strings.EqualFold(display[i:end], word) {
+					return display[:i], display[i:end], display[end:]
+				}
+				from = i + 1
+			}
+		}
+		if i := strings.Index(display, word); i >= 0 {
+			return display[:i], display[i : i+len(word)], display[i+len(word):]
+		}
+	}
+	return display, "", ""
 }
 
 // clusterSearchResult is one cluster's fan-out slot: its ordered result cards,
@@ -240,6 +362,7 @@ func (s *Server) clusterSearch(r *http.Request, client *kube.Client, cluster *ku
 				link := resourceHref(cluster.Name, &rt, ns, name)
 				labels, _, _ := unstructured.NestedStringMap(row.Object, "metadata", "labels")
 				created := nestedString(row.Object, "metadata", "creationTimestamp")
+				pre, mark, post, tail, title := searchResultName(rt.Plural, name, filterQuery)
 				out.results = append(out.results, searchResult{
 					Title:     name,
 					Kind:      rt.Kind,
@@ -251,6 +374,11 @@ func (s *Server) clusterSearch(r *http.Request, client *kube.Client, cluster *ku
 					Labels:    labels,
 					Created:   formatTimestamp(created),
 					AgeClass:  "num " + s.ageClass(created),
+					NamePre:   pre,
+					NameMark:  mark,
+					NamePost:  post,
+					NameTail:  tail,
+					NameTitle: title,
 				})
 			}
 		}

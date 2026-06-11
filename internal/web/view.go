@@ -31,10 +31,27 @@ type listView struct {
 	Errors          []error
 	Tables          []tableView
 
+	// SingleType marks a single-resource-type list page -- the D1 surface
+	// boundary for the v2 interaction loop (D6). Only single-type pages get the
+	// partial sort headers, row identity keys, the location-derived refresh tick,
+	// and the bulk-bar mount; multi-type pages (plural=all / CSV / _all) keep the
+	// v1 behavior (boosted sort links + the render-time-baked partial URL).
+	SingleType bool
+
 	// AllNamespacesHref is the precomputed "Show <plural> across all namespaces"
 	// link target (carries the current query string). Empty when the link should
 	// not render.
 	AllNamespacesHref string
+
+	// BulkDownloadHref is the CLEAN bulk-download base for the bulk bar's
+	// Download YAML button (D11): the canonical list path + `?download=yaml`,
+	// to which readout.js appends `&names=`. Deliberately WITHOUT the current
+	// filter/sort params -- selection may include rows a server-side filter
+	// dropped (Unit 16 pinned: selection is explicit intent), so the bulk
+	// fetch must look names up in the UNFILTERED table. Set only on
+	// single-type, single-cluster lists; empty disables the button
+	// (multi-cluster scope renders it disabled with an explanatory title).
+	BulkDownloadHref string
 
 	// State is the resolved whole-list failure state for a SINGLE-cluster list
 	// that produced no tables at all (forbidden / unreachable). nil for the happy
@@ -51,6 +68,21 @@ type listView struct {
 	// "stale" (there is no last-good cache) -- only the client does, on a refresh
 	// error that keeps the existing rows.
 	StaleBanner bool
+
+	// FilterBar is the Filters v2 chips editor (D7): the active `?f=` chips
+	// rendered server-side in the tools row (a shareable URL lands with its
+	// chips visible) plus the free-text/autocomplete input readout.js drives.
+	// nil on multi-type pages (the D1 boundary -- `?f=` is ignored there, so no
+	// editor may suggest it works).
+	FilterBar *filterBarView
+}
+
+// filterBarView is the resolved chips-editor state: the list's plural (the
+// input placeholder copy) and the active `?f=` chips. Chips render inside the
+// morphed fragment, so a chip-committing partial request re-renders them.
+type filterBarView struct {
+	Plural string
+	Chips  []filterChipView
 }
 
 // listKind enumerates the whole-list failure/empty states. emptyState /
@@ -70,10 +102,12 @@ const (
 // "Back to clusters" escape.
 type listStateView struct {
 	Kind      listStateKind
+	Cluster   string // the cluster the failure names ("Can’t reach <cluster>")
 	Verb      string // "list" (the read-only verb that was denied/attempted)
 	Resource  string // the resource plural the request targeted
 	Namespace string // the namespace scope ("" / "_all" rendered as a clause)
-	Detail    string // forbidden: "403 Forbidden · <reason>"; unreachable: the real error
+	Hint      string // the ONE plain-language line under the headline (D16)
+	Detail    string // the verbatim apiserver/transport string for the mono errdetail block
 	RetryHref string // a read-only GET back to this same list URL
 	BackHref  string // "/clusters"
 
@@ -108,6 +142,23 @@ type tableView struct {
 	CreatedHref string
 	CreatedIcon string
 
+	// CreatedPartialHref is the synthetic Created header's `_table` partial sort
+	// URL (the hx-get target of the v2 loop, D6). Empty on multi-type pages
+	// (D1), where the Created header stays a plain boosted link.
+	CreatedPartialHref string
+
+	// HideCreated suppresses the synthetic Created header/cells (D8): the
+	// Created column is template-rendered, not a kube column, so the hide set
+	// reaches it through this flag rather than kube.RemoveColumns. The zero
+	// value keeps Created shown.
+	HideCreated bool
+
+	// ColumnVis is the column-visibility popover universe (D8): every column of
+	// the fully-decorated table + the synthetic Created, with hidden/identity
+	// flags. Non-nil only on single-type pages (the D1 gate); nil keeps the v1
+	// toggle-tools form chrome.
+	ColumnVis []columnVis
+
 	Tools toolsView
 
 	Rows []rowView
@@ -129,18 +180,37 @@ type emptyActionView struct {
 	Label string
 }
 
-// filterChipView is one removable active-filter chip on the empty-filtered
-// state: Label is the human "key = value" text, RemoveHref drops just that one
-// filter (a read-only GET) so the ✕ removes it.
+// filterChipView is one removable active-filter chip, shared by the
+// empty-filtered state and the chips editor (D7): Label is the human chip text,
+// RemoveHref drops just that one filter (a read-only GET) so the ✕ removes it.
+// Field/Op/Value carry the editor's display split (`.ck` key, accent operator,
+// `.v` value) for a well-formed `?f=` chip; they stay empty for the legacy
+// filter/selector/labels chips and for a malformed chip (Label then renders
+// whole).
 type filterChipView struct {
 	Label      string
 	RemoveHref string
+	Field      string
+	Op         string
+	Value      string
 }
 
-// columnView precomputes a column header's sort link and indicator.
+// columnView precomputes a column header's sort link and indicator. SortHref is
+// the CANONICAL page URL (history/new-tab/no-JS); PartialHref is the same sort
+// against the `_table` partial route -- the header's hx-get in the v2 loop (D6).
+// PartialHref is empty on multi-type pages (D1 boundary: v1 boosted links).
 type columnView struct {
-	SortHref string
-	SortIcon string
+	SortHref    string
+	SortIcon    string
+	PartialHref string
+
+	// Hint is the filter-autocomplete type hint for this column (text / number /
+	// duration), emitted as the header's data-hint. Its PRESENCE marks the
+	// column filterable: the chips editor builds its field-name suggestions from
+	// the data-hint headers, so synthetic non-Column headers (Created, the
+	// leading Cluster/Namespace columns) never get suggested -- exactly the set
+	// resolveFilterColumn can bind. Empty on multi-type pages (no editor).
+	Hint string
 }
 
 // toolsView precomputes the resource-list tools form (label columns, selector,
@@ -169,6 +239,29 @@ type rowView struct {
 	Cells        []cellView
 	CreatedClass string
 	CreatedText  string
+
+	// Key is the row's stable object identity "cluster/ns/name" (empty segments
+	// collapsed) -- the D6 row-identity contract. The renderer emits it as
+	// data-key plus an id derived from it, so idiomorph matches rows by identity
+	// (never position) and client row state (selection, j/k focus) re-keys onto
+	// the same object across morphs. Empty on multi-type pages (D1), where rows
+	// stay identity-less v1 markup.
+	Key string
+
+	// Per-row gesture targets (Unit 16 / D10), emitted as <tr> data attributes
+	// on single-type pages only (set together with Key; all empty on multi-type
+	// pages). The context menu binds them at open time and the bulk actions read
+	// Name/DownloadHref off the selection store:
+	//   Name         full untruncated object name (data-name; the Copy targets)
+	//   OpenHref     the name-cell open target (data-href; namespaces drill down)
+	//   YAMLHref     detail ?view=yaml (data-yaml)
+	//   LogsHref     detail /logs, PODS ONLY -- empty hides the menu item (data-logs)
+	//   DownloadHref single-object detail ?download=yaml (data-download)
+	Name         string
+	OpenHref     string
+	YAMLHref     string
+	LogsHref     string
+	DownloadHref string
 }
 
 // cellView precomputes a single body cell. Kind selects the render branch; the
@@ -192,7 +285,10 @@ type cellView struct {
 	// Pulse marks a transient status whose dot animates (.pulse).
 	Pulse bool
 	// NameHead/NameTail split an identifier into a bright workload prefix + a
-	// muted hash suffix for the sticky name cell. NameHead+NameTail == Value.
+	// muted hash suffix for the sticky name cell. NameHead+NameTail == Value,
+	// EXCEPT when the head exceeds the SPEC §4.2 threshold (42 chars): the head
+	// is then middle-truncated for display (26…12) and Title carries the FULL
+	// name. The tail/hash is NEVER truncated.
 	NameHead string
 	NameTail string
 	// Ago is the optional "(… ago)" suffix on a restarts cell (muted).
@@ -235,19 +331,50 @@ type cellView struct {
 	RolloutState string
 
 	// Chips are the namespace label chips for cellChips: one per metadata.labels
-	// entry (sorted), each carrying its chip class (the .app accent for
-	// app.kubernetes.io/* labels) + its "key: value" text. Empty means a namespace
-	// with no labels, rendered as a muted "—".
+	// entry (sorted), each carrying its key/value pair. Empty means a namespace
+	// with no labels, rendered as a muted "—". In tables the renderer shows the
+	// first chipsCellMax chips; the rest carry `.xtra` (hidden) behind the `+N`
+	// in-cell expand button (SPEC §4.9).
 	Chips []chipView
+
+	// More is the faint overflow suffix on a ports/hosts cell ("+N" / "+N
+	// hosts"); the full list rides in Title. Empty when nothing overflows.
+	More string
+	// Keys are the configmap/secret data chips for cellKeys (`name · size`).
+	// Secret VALUES never reach this view model -- a key chip carries ONLY the
+	// key name and its byte size (SPEC §4.10). Past keysCellMax the renderer
+	// hides chips behind the `+N keys` in-cell expand, same `.xtra` machinery
+	// as the label chips.
+	Keys []keyChipView
+	// EvKind/EvName are the events Object cell split for cellEvObj: EvKind
+	// renders faint with a trailing slash next to its kind icon; EvName is the
+	// 20…8 middle-truncated object name (Title carries the full name when
+	// truncated, SPEC §4.2).
+	EvKind string
+	EvName string
+	// EvAgeRest is the faint second layer of an events Age cell for cellEvAge
+	// (e.g. "(first 41h ago)"); Value keeps the leading age token, which is the
+	// only part the age bucket colours.
+	EvAgeRest string
 }
 
-// chipView is one namespace label chip: Class is the FULL redesign chip class
-// (the canonical "ro-chip" + the " app" accent token for app.kubernetes.io/*
-// labels, scoped under the list shell's .ro-rd marker), Text is the "key: value"
-// label shown in the pill.
+// keyChipView is one configmap/secret data chip for cellKeys: the key name and
+// its HUMAN byte size ("4.2 KiB"). By construction no value field exists --
+// secret values must never be serialized into a view model (SPEC §4.10).
+type keyChipView struct {
+	Name string
+	Size string
+}
+
+// chipView is one namespace label chip: the label key and value, rendered as a
+// NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3 colour law:
+// every label chip is neutral; the green `.app` accent is retired). Href, when
+// non-empty (single-type pages, D7/SPEC §8.1), is the click-to-filter target:
+// the SAME list URL with the `label:key=value` chip appended to `?f=`.
 type chipView struct {
-	Class string
-	Text  string
+	Key  string
+	Val  string
+	Href string
 }
 
 // repSegment is one deployment replica-track segment. State is "" for a filled
@@ -284,6 +411,21 @@ const (
 	cellReplicas
 	cellRollout
 	cellChips
+	// The SPEC §4 cookbook corner-case kinds (Unit 10). The kind-specific
+	// schema decorators that EMIT most of them land with the services/ingress/
+	// configmap/secret/cronjob/job (Unit 11) and events (Unit 12) columns; the
+	// constructors live in build_list.go and the renderers in
+	// resource_table.templ.
+	cellPending // empty -> faint <none>; literal <pending> -> amber pulsing dot + word
+	cellPorts   // first 2 ports + faint +N, full list in title
+	cellHosts   // first host + faint "+N hosts", full list in title
+	cellTLS     // green lock + "tls" ONLY when terminated, else "—"
+	cellLastRun // age-scale colour + " ago"; never ran -> faint <never>
+	cellKeys    // data chips `name · size`, 3 + "+N keys" in-cell expand
+	cellCount   // events ×N, ≥20 amber, 1 faint, thousands separator
+	cellEvObj   // kind icon + faint "Kind/" + 20…8 middle-truncated name
+	cellEvAge   // two-layer age: bucket-coloured first token + faint remainder
+	cellMsg     // the ONLY wrapping cell in the system (max-width 520px)
 )
 
 // detailView is the view model for the resource-view (object detail) page. The
@@ -295,6 +437,15 @@ type detailView struct {
 	Namespace string
 	Object    kube.Object
 	Title     string
+
+	// NameHead/NameTail split the detail H1 into the bright workload prefix +
+	// the muted hash tail (SPEC §6.6: the hash tail stays faint even in the
+	// title), via the same splitObjectName/MiddleTruncate pair the table name
+	// cells use (D14). NameTitle carries the FULL name for the title= tooltip
+	// when the head was middle-truncated; "" otherwise.
+	NameHead  string
+	NameTail  string
+	NameTitle string
 
 	DownloadHref string
 	Links        []config.Link
@@ -325,7 +476,16 @@ type detailView struct {
 
 	Labels      []labelChipView
 	Annotations []annotationChipView
-	Node        *nodeSummaryView // non-nil only for Kind == Node
+	// AnnotationsLong are the >120-char annotation values (SPEC §7.15 /
+	// D14): each renders as a collapsed `key · size` toggle whose payload
+	// expands into a scrollable <pre>, never as a chip.
+	AnnotationsLong []annotationLongView
+	Node            *nodeSummaryView // non-nil only for Kind == Node
+
+	// Containers is the pod containers table (D14): init containers first
+	// (badged), then regular, each joining status/spec/metrics. nil for
+	// non-pod kinds and for a pod whose spec decodes no containers.
+	Containers *containersSectionView
 
 	Secret    *secretDataView // non-nil only for masked Secret with data
 	YAMLCards []yamlCardView
@@ -344,22 +504,24 @@ type detailView struct {
 // clusters.
 type detailStateView struct {
 	Kind      listStateKind
+	Cluster   string
 	Verb      string
 	Resource  string
 	Name      string
 	Namespace string
-	Detail    string
+	Hint      string // the ONE plain-language line under the headline (D16)
+	Detail    string // the verbatim apiserver/transport string (mono errdetail)
 	RetryHref string
 	BackHref  string
 }
 
-// labelChipView is one resolved label chip: the selector href, the full chip
-// class (incl. the app accent), and the key/value.
+// labelChipView is one resolved label chip: the selector href and the
+// key/value. Every label chip is a NEUTRAL `.ro-chip` (D3 colour law -- the
+// green app.kubernetes.io/* accent is retired; key/value differ by ink weight).
 type labelChipView struct {
-	Href  string
-	Class string
-	Key   string
-	Val   string
+	Href string
+	Key  string
+	Val  string
 }
 
 // annotationChipView is one resolved annotation chip. Val is the truncated
@@ -370,6 +532,52 @@ type annotationChipView struct {
 	Key  string
 	Val  string
 	Full string
+}
+
+// annotationLongView is one >120-char annotation (SPEC §7.15): the key, the
+// humanBytes payload size shown on the collapsed toggle, and the full value
+// rendered (escaped) inside the hidden scrollable <pre>.
+type annotationLongView struct {
+	Key   string
+	Size  string
+	Value string
+}
+
+// containersSectionView is the pod containers table (D14): Count/InitCount
+// drive the `Containers · N + M init` section label; Rows are ordered init
+// containers first (badged), then regular, both in spec declaration order.
+type containersSectionView struct {
+	Count     int
+	InitCount int
+	Rows      []containerRowView
+}
+
+// containerRowView is one container row. State/Ready/Restarts/Ago come from
+// the status.containerStatuses / status.initContainerStatuses entry joined by
+// name; Ports/Image come from the spec.containers entry; CPU/Mem come from the
+// PodMetrics containers[] join when live ("" renders the faint "—"). The
+// StateTone is kube.StatusTone(State) (D4 — the single value->tone owner, the
+// waiting/terminated reason IS the state word); StatePulse marks the transient
+// set (law §1.3).
+type containerRowView struct {
+	Name string
+	Init bool
+
+	State      string
+	StateTone  string
+	StatePulse bool
+
+	Ready      string // "ready" / "not ready"; "" (init or no status) renders "—"
+	ReadyClass string // full / partial
+
+	Restarts     string
+	RestartsTone string // zero / some
+	Ago          string // "(6d ago)" suffix, "" when never restarted
+
+	Ports string
+	CPU   string
+	Mem   string
+	Image string
 }
 
 // nodeSummaryView holds the resolved Node-kind summary blocks.
@@ -405,10 +613,14 @@ type secretDataView struct {
 
 // yamlCardView is one resolved per-section YAML card. Content is the trusted
 // highlighted-YAML HTML produced by the YAML highlighter (injected raw).
+// Collapsed marks a card that starts folded (SPEC §7.15: the Status card is
+// collapsed by default) — the same is-collapsed class the readout.js section
+// fold toggles.
 type yamlCardView struct {
-	Name    string
-	Title   string
-	Content string
+	Name      string
+	Title     string
+	Content   string
+	Collapsed bool
 }
 
 // subtableView is the related-pods subtable on the detail page, with column sort
@@ -448,17 +660,25 @@ type subtableCell struct {
 // eventView is one rendered event row (already flattened from the raw object).
 // Tone is the redesign status tone for the Type cell (mute for Normal/unknown,
 // warn for Warning), mapped from the events/Type cell class via statusTone.
-// AgeClass is the age bucket for lastTimestamp at days=1 (the .age-* token on the
-// Age <td>). The Reason cell renders plain and From faint in the redesign; the
-// Message <td>'s ro-event-msg class is static (emitted in the templ).
+// Count/CountClass are the ×N dedupe cell (D15: ≥20 amber "restarts some", 1
+// faint); Age is the leading compressed-duration token with AgeClass its
+// .age-* bucket, AgeRest the faint "(first 41h ago)" second layer (empty for
+// a single occurrence or a ≤60s spread), and AgeTitle the full last-seen
+// timestamp tooltip. The Reason cell renders plain and From faint in the
+// redesign; the Message <td>'s ro-event-msg class is static (emitted in the
+// templ).
 type eventView struct {
-	Type     string
-	Tone     string
-	Reason   string
-	Age      string
-	AgeClass string
-	From     string
-	Message  string
+	Type       string
+	Tone       string
+	Reason     string
+	Count      string
+	CountClass string
+	Age        string
+	AgeClass   string
+	AgeRest    string
+	AgeTitle   string
+	From       string
+	Message    string
 }
 
 // searchView is the view model for the search page. Every value the
@@ -487,16 +707,12 @@ type searchView struct {
 	IsAllClusters   bool
 	IsAllNamespaces bool
 
-	// OfferedTypes are the resource-type checkboxes, sorted by plural; Checked
-	// marks the types in the current ?type= selection.
+	// OfferedTypes are the resource-type checkboxes (restored in the body per
+	// D12), sorted by plural; Checked marks the types in the current ?type=
+	// selection, so the GET form round-trips the type scope without hidden
+	// inputs.
 	OfferedTypes      []searchTypeOption
 	SelectedTypeCount int // len(resource_types) -- drives the "type N" chip
-
-	// SelectedTypes is the raw ?type= plural set the search ran with (or the
-	// configured default when the request carried none). The redesign search
-	// drops the in-body checkbox UI, so these round-trip as hidden form inputs to
-	// preserve the type scope when the query box is re-submitted.
-	SelectedTypes []string
 
 	// ScopeClusters are the chips in the scope strip (search_clusters). When
 	// IsAllClusters and ScopeClusters is empty, the strip shows "all clusters".
@@ -506,6 +722,16 @@ type searchView struct {
 
 	Results  []searchResult
 	Duration time.Duration
+
+	// Groups partitions Results per cluster in fixed cluster-name order (D12):
+	// one group per cluster that contributed at least one result, rows keeping
+	// the sortResults total order. A cluster that answered with zero hits (or
+	// failed) grows no group -- its presence is the scope chip's job.
+	Groups []searchGroup
+
+	// KindCount is the number of DISTINCT result kinds across Results, the "K
+	// kinds" leg of the totals strip.
+	KindCount int
 
 	// RetryFailedHref is the read-only GET the partial-failure banner's "Retry
 	// failed" action points at: the SAME search re-scoped to the comma-joined set
@@ -537,12 +763,30 @@ type searchScopeCluster struct {
 	RetryHref   string
 }
 
+// searchGroup is one cluster's block in the grouped results render (D12): the
+// header (ok dot + mono cluster name + count chip) plus that cluster's result
+// rows. Failed carries the cluster's scope-chip status so the header dot can
+// tell partial health truthfully (a cluster can answer SOME types and fail
+// others) -- colour law D3: the dot is live health, not decoration.
+type searchGroup struct {
+	Cluster string
+	Failed  bool
+	Results []searchResult
+}
+
 // searchResult is one search hit row in the redesign results table
-// (Cluster/Namespace/Kind/Name/Age). Cluster + Namespace populate their own
-// cells; Kind + Group + IsCRD drive the kind-icon resolver (icons.KindIcon) in
+// (Kind/Name/Namespace/Age under a per-cluster group header). Cluster keys the
+// group; Kind + Group + IsCRD drive the kind-icon resolver (icons.KindIcon) in
 // the Kind cell; Created feeds the Age cell's bucket class. Labels feeds the
-// sort score (searchScore ranks on Title + Labels). The redesign table drops the
-// per-card snippet UI, so no match snippets are retained on the result row.
+// sort score (searchScore ranks on Title + Labels).
+//
+// The name cell reuses the Unit 10 treatment server-side: NamePre/NameMark/
+// NamePost are the display HEAD (splitObjectName + MiddleTruncate) split around
+// the first case-insensitive query-word match (NameMark "" = no mark), NameTail
+// is the muted hash tail (never marked), and NameTitle carries the full name
+// tooltip when the head middle-truncated. Pre+Mark+Post always reassemble the
+// display head, so the templ can emit each segment as an auto-escaped text node
+// around a literal <mark> -- no templ.Raw over user-derived text (D12).
 type searchResult struct {
 	Title     string
 	Kind      string
@@ -554,4 +798,10 @@ type searchResult struct {
 	Created   string // formatTimestamp(creationTimestamp); "" => no age cell text
 	AgeClass  string // the num + age-* bucket class for the Age cell
 	Labels    map[string]string
+
+	NamePre   string
+	NameMark  string
+	NamePost  string
+	NameTail  string
+	NameTitle string
 }

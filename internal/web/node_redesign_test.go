@@ -20,8 +20,9 @@ import (
 // Kubernetes node value maps onto the redesign vocabulary, asserted against the
 // documented thresholds (81%->hi, 60%->mid, 40%->lo; control-plane->.cp; a clean
 // node->"—"; a NotReady condition->a pill), never an echo of the emitted class.
-// The mapping is driven through the REAL pipeline (buildCellView / joinMetrics)
-// from a crafted node Table, not re-implemented in the test.
+// The mapping is driven through the REAL pipeline (buildCellView /
+// fetchMetricsUsage + applyMetricsUsage) from a crafted node Table, not
+// re-implemented in the test.
 
 // nodeObject builds a node Row.Object carrying the status/labels the rich node
 // cells read: status.capacity (cpu/memory/pods), status.conditions, and the
@@ -459,9 +460,9 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 
 // newNodeMetricsRaggedAPI is a fake kube API whose metrics DISCOVERY succeeds but
 // whose NodeMetrics LIST call returns 500 -- the precise shape of the ragged-rows
-// hazard: joinMetrics appends the CPU/Memory columns up front, then the list call
-// fails after discovery, so without the placeholder guard the rows are left short
-// two cells.
+// hazard: applyMetricsUsage appends the CPU/Memory columns up front, but the
+// fetch fails after discovery, so without the placeholder guard the rows are
+// left short two cells.
 func newNodeMetricsRaggedAPI(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -485,12 +486,12 @@ func newNodeMetricsRaggedAPI(t *testing.T) *httptest.Server {
 }
 
 // TestMetricsRaggedGuard pins the no-ragged-rows invariant: when metrics discovery
-// succeeds but the metrics LIST call fails, joinMetrics MUST still append the two
-// placeholder cells to EVERY row, so the row cell count stays equal to the column
-// count (no ragged table). It drives the real joinMetrics against a node table with
-// a metrics-list-failure fake, then asserts column/row cell parity. Reverting the
-// list-failure guard (the bare `return`) makes this fail (rows left two cells
-// short).
+// succeeds but the metrics LIST call fails (fetchMetricsUsage returns nil),
+// applyMetricsUsage MUST still append the two placeholder cells to EVERY row, so
+// the row cell count stays equal to the column count (no ragged table). It drives
+// the real fetch+apply pair against a node table with a metrics-list-failure
+// fake, then asserts column/row cell parity. Reverting the list-failure guard
+// (the bare `return`) makes this fail (rows left two cells short).
 func TestMetricsRaggedGuard(t *testing.T) {
 	api := newNodeMetricsRaggedAPI(t)
 	app := newTestServerWithConfig(t, &config.Config{
@@ -513,11 +514,11 @@ func TestMetricsRaggedGuard(t *testing.T) {
 		},
 	}
 	ctx := httptest.NewRequest(http.MethodGet, "/clusters/test/nodes?join=metrics", nil).Context()
-	app.joinMetrics(ctx, cluster.Client, &table, "", false, "")
+	applyMetricsUsage(&table, app.fetchMetricsUsage(ctx, cluster.Client, table.Resource.Namespaced, "", false, ""))
 
-	// joinMetrics appended the two metrics columns.
+	// applyMetricsUsage appended the two metrics columns.
 	if got := len(table.Columns); got != 4 {
-		t.Fatalf("columns after joinMetrics = %d, want 4 (Name,Status,CPU Usage,Memory Usage)", got)
+		t.Fatalf("columns after applyMetricsUsage = %d, want 4 (Name,Status,CPU Usage,Memory Usage)", got)
 	}
 	// EVERY row must have a cell count equal to the column count (no ragged rows).
 	for i := range table.Rows {
@@ -556,8 +557,8 @@ func TestMetricsRaggedGuardRendersThroughHandler(t *testing.T) {
 			t.Fatalf("ragged row: %d cells vs %d header columns", got, headerCells)
 		}
 	})
-	// The metrics CPU/Memory columns are present (joinMetrics ran) even though the
-	// metrics list failed.
+	// The metrics CPU/Memory columns are present (applyMetricsUsage ran) even
+	// though the metrics list failed.
 	headers := p.texts("table.ro-table thead th")
 	assertContainsAll(t, "node metrics headers", headers, "CPU Usage", "Memory Usage")
 }

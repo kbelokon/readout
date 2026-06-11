@@ -19,8 +19,10 @@ import (
 // ResourceView templ). Each fact is an independent statement about how an object
 // maps onto the redesign detail vocabulary -- the .ro-rd content marker, the
 // .ro-detail-title / .ro-kind-badge header, the Default/YAML/Events(/Logs) tabs,
-// the app.kubernetes.io/* -> .ro-chip.app accent, the collapsible+copyable YAML
-// cards, the toned Events table, and the chroma token spans in the YAML body.
+// the NEUTRAL label chips (D3: every label is a plain .ro-chip with the
+// .ck/.cs/.cv ink-weight split; the green .app accent is retired), the
+// collapsible+copyable YAML cards, the toned Events table, and the chroma token
+// spans in the YAML body.
 
 // detailObject builds a kube.Object for the given kind/labels, used to drive the
 // detail assembly without a fake-API round-trip.
@@ -82,8 +84,9 @@ func buildDefaultDetailView(t *testing.T, obj *kube.Object) *detailView {
 		Version:      nestedString(obj.Raw, "metadata", "resourceVersion"),
 		DownloadHref: objectDownloadYAMLHref("test", obj.Namespace(), obj),
 	}
+	v.NameHead, v.NameTail, v.NameTitle = detailNameParts(obj)
 	v.Labels = buildLabelChips("test", obj.Namespace(), obj)
-	v.Annotations = buildAnnotationChips(obj)
+	v.Annotations, v.AnnotationsLong = buildAnnotationChips(obj)
 	v.YAMLCards = app.buildYAMLCards("test", obj.Namespace(), obj)
 	return v
 }
@@ -144,31 +147,46 @@ func TestResourceViewTabsPodVsNonPod(t *testing.T) {
 	}
 }
 
-// TestDetailLabelAppChip pins the app.kubernetes.io/* label accent: such a label
-// renders as an .ro-chip.app anchor (bare text, no inner .tag) linking to the
-// selector-filtered list, while an ordinary label is a plain .ro-chip with no
-// .app accent.
-func TestDetailLabelAppChip(t *testing.T) {
+// TestDetailLabelChipsNeutral pins the D3 colour law on the detail labels: an
+// app.kubernetes.io/* label renders as a PLAIN neutral .ro-chip anchor exactly
+// like any other label -- the retired green .app accent never appears -- and
+// every chip splits its key (.ck), ghost separator (.cs), and value (.cv) so
+// ink weight, not hue, differentiates them. The href is the click-to-filter
+// chip link (D7/SPEC §8.1): this kind's list with `?f=label:key=value`, the
+// chip text QueryEscape'd whole so '/' and '=' survive literally.
+func TestDetailLabelChipsNeutral(t *testing.T) {
 	obj := detailObject("deployments", "Deployment", true, map[string]any{
 		"app.kubernetes.io/component": "master",
 		"tier":                        "backend",
 	}, nil)
 	doc := renderDetailView(t, buildDefaultDetailView(t, obj))
 
-	appChip := doc.Find(".ro-chips a.ro-chip.app")
+	// NEGATIVE (the regression net for the retired class): no rendered chip on
+	// the detail page carries the .app accent -- not even for app.kubernetes.io/*.
+	if got := doc.Find(".ro-chip.app").Length(); got != 0 {
+		t.Fatalf("retired .ro-chip.app accent rendered %d time(s); labels are neutral (D3)", got)
+	}
+
+	// The app.kubernetes.io/* label is an ordinary neutral chip: addressed by its
+	// `?f=label:key=value` chip href, carrying the .ck/.cs/.cv ink-weight split.
+	appChip := doc.Find(`.ro-chips a.ro-chip[href="/clusters/test/namespaces/default/deployments?f=label%3Aapp.kubernetes.io%2Fcomponent%3Dmaster"]`)
 	if appChip.Length() != 1 {
-		t.Fatalf("expected exactly one .ro-chip.app for the app.kubernetes.io/* label, got %d", appChip.Length())
+		t.Fatalf("expected the app.kubernetes.io/component label as one plain .ro-chip anchor, got %d; hrefs=%v",
+			appChip.Length(), attrsOf(doc, ".ro-chips a.ro-chip", "href"))
 	}
-	if got := normSpace(appChip.Text()); got != "app.kubernetes.io/component: master" {
-		t.Fatalf(".app chip text = %q, want app.kubernetes.io/component: master", got)
+	if k, v := normSpace(appChip.Find(".ck").Text()), normSpace(appChip.Find(".cv").Text()); k != "app.kubernetes.io/component" || v != "master" {
+		t.Fatalf("chip ck/cv = %q/%q, want app.kubernetes.io/component/master", k, v)
 	}
-	if href, _ := appChip.Attr("href"); href != "/clusters/test/namespaces/default/deployments?selector=app.kubernetes.io/component=master" {
-		t.Fatalf(".app chip href = %q", href)
+	if appChip.Find(".cs").Length() != 1 {
+		t.Fatalf("chip missing the .cs separator span")
 	}
-	// The ordinary "tier" label is a plain .ro-chip without the .app accent.
-	tierChip := doc.Find(`.ro-chips a.ro-chip:not(.app):contains("tier")`)
+	// The ordinary "tier" label renders identically (one plain chip, same split).
+	tierChip := doc.Find(`.ro-chips a.ro-chip:has(.ck:contains("tier"))`)
 	if tierChip.Length() != 1 {
-		t.Fatalf("expected the tier label as a plain .ro-chip (no .app), got %d", tierChip.Length())
+		t.Fatalf("expected the tier label as a plain .ro-chip, got %d", tierChip.Length())
+	}
+	if v := normSpace(tierChip.Find(".cv").Text()); v != "backend" {
+		t.Fatalf("tier chip .cv = %q, want backend", v)
 	}
 }
 
@@ -198,33 +216,36 @@ func TestDetailAnnotationChipTruncation(t *testing.T) {
 			fullTitle, attrsOf(doc, "span.ro-chip.anno", "title"))
 	}
 
-	// The visible BODY is the clipped form: ends with the "..." ellipsis and is
-	// strictly shorter than the full "key: value" string.
-	body := normSpace(longChip.Text())
-	if !strings.HasSuffix(body, "...") {
-		t.Fatalf("annotation chip body = %q, want it clipped with a trailing %q ellipsis", body, "...")
+	// The visible VALUE (.cv span) is the clipped form: ends with the "..."
+	// ellipsis and is strictly shorter than the full value.
+	bodyVal := normSpace(longChip.Find(".cv").Text())
+	if !strings.HasSuffix(bodyVal, "...") {
+		t.Fatalf("annotation chip value = %q, want it clipped with a trailing %q ellipsis", bodyVal, "...")
 	}
-	if len([]rune(body)) >= len([]rune(fullTitle)) {
-		t.Fatalf("annotation chip body (%d runes) must be SHORTER than the full value (%d runes): body=%q", len([]rune(body)), len([]rune(fullTitle)), body)
+	if len([]rune(bodyVal)) >= len([]rune(fullVal)) {
+		t.Fatalf("annotation chip value (%d runes) must be SHORTER than the full value (%d runes): value=%q", len([]rune(bodyVal)), len([]rune(fullVal)), bodyVal)
 	}
-	// The body is the exact truncate(value,40) output, prefixed by the key.
-	if body != "example.com/note: this-is-a-very-long-annotation-value-..." {
-		t.Fatalf("annotation chip body = %q, want the truncate(...,40) clipped form", body)
+	// The value is the exact truncate(value,40) output; the key sits in .ck.
+	if bodyVal != "this-is-a-very-long-annotation-value-..." {
+		t.Fatalf("annotation chip value = %q, want the truncate(...,40) clipped form", bodyVal)
 	}
-	// Body and title DIVERGE: the title must NOT equal the clipped body.
-	if title, _ := longChip.Attr("title"); title == body {
-		t.Fatalf("annotation tooltip is useless: title equals the clipped body %q (full value lost)", body)
+	if k := normSpace(longChip.Find(".ck").Text()); k != "example.com/note" {
+		t.Fatalf("annotation chip key = %q, want example.com/note", k)
+	}
+	// Body and title DIVERGE: the title must NOT equal the clipped body text.
+	if title, _ := longChip.Attr("title"); title == normSpace(longChip.Text()) {
+		t.Fatalf("annotation tooltip is useless: title equals the clipped body %q (full value lost)", title)
 	}
 
-	// The short-value chip keeps body == title (below the truncate threshold), so
-	// the non-truncating branch is exercised too.
+	// The short-value chip keeps its full value visible (below the truncate
+	// threshold), so the non-truncating branch is exercised too.
 	shortTitle := "example.com/short: " + shortVal
 	shortChip := doc.Find(`span.ro-chip.anno[title="` + shortTitle + `"]`)
 	if shortChip.Length() != 1 {
 		t.Fatalf("expected the short annotation chip with title=%q", shortTitle)
 	}
-	if got := normSpace(shortChip.Text()); got != shortTitle {
-		t.Fatalf("short annotation chip body = %q, want it whole (== %q)", got, shortTitle)
+	if got := normSpace(shortChip.Find(".cv").Text()); got != shortVal {
+		t.Fatalf("short annotation chip value = %q, want it whole (== %q)", got, shortVal)
 	}
 }
 
@@ -295,9 +316,15 @@ func TestEventsTabTonedTable(t *testing.T) {
 	if got := normSpace(muteRow.Find("td.ro-event-msg").Text()); got != "Successfully assigned default/x to node-1" {
 		t.Fatalf("event message cell = %q", got)
 	}
-	// Age bucket: the 2024-03 event is months before the fixed clock -> age-old.
-	if cls, _ := muteRow.Find("td:nth-child(3)").Attr("class"); cls != "age-old" {
-		t.Fatalf("event age cell class = %q, want age-old", cls)
+	// The detail tab inherits the events-list cells (D15): a countless event
+	// reads the faint ×1 in the Count column.
+	if got := normSpace(muteRow.Find("td.num span.faint").Text()); got != "×1" {
+		t.Fatalf("event count cell = %q, want the faint ×1", got)
+	}
+	// Age: the compressed duration since lastTimestamp, bucket class on the
+	// span (the 2024-03 event is months before the fixed clock -> 91d/age-old).
+	if got := normSpace(muteRow.Find("td span.age-old").Text()); got != "91d" {
+		t.Fatalf("event age cell = %q, want the age-old 91d duration", got)
 	}
 	// From cell is faint.
 	if muteRow.Find("td.faint").Length() == 0 {

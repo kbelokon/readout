@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +14,7 @@ import (
 
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
+	"github.com/kbelokon/readout/tests/unit/fakeapi"
 	"k8s.io/client-go/rest"
 )
 
@@ -523,7 +522,7 @@ func newTestServerWithConfig(t *testing.T, cfg *config.Config) *Server {
 	return app
 }
 
-func newServerFakeAPI(t *testing.T) *httptest.Server {
+func newServerFakeAPI(t *testing.T) *fakeapi.Server {
 	return newRecordingServerFakeAPI(t, nil)
 }
 
@@ -551,7 +550,7 @@ func (a *authRecorder) value() string {
 	return a.last
 }
 
-func newRecordingServerFakeAPI(t *testing.T, lastAuth *authRecorder) *httptest.Server {
+func newRecordingServerFakeAPI(t *testing.T, lastAuth *authRecorder) *fakeapi.Server {
 	return newRecordingServerFakeAPIWithLogRecorder(t, lastAuth, nil)
 }
 
@@ -620,134 +619,36 @@ func assertDiscoveryCountsAtMostOnce(t *testing.T, counts map[string]int) {
 	}
 }
 
-func newRecordingServerFakeAPIWithLogRecorder(t *testing.T, lastAuth *authRecorder, logQuery *logQueryRecorder) *httptest.Server {
+func newRecordingServerFakeAPIWithLogRecorder(t *testing.T, lastAuth *authRecorder, logQuery *logQueryRecorder) *fakeapi.Server {
 	return newRecordingServerFakeAPIWithRecorders(t, lastAuth, logQuery, nil)
 }
 
-func newRecordingServerFakeAPIWithDiscoveryCounter(t *testing.T, discovery *discoveryCounter) *httptest.Server {
+func newRecordingServerFakeAPIWithDiscoveryCounter(t *testing.T, discovery *discoveryCounter) *fakeapi.Server {
 	return newRecordingServerFakeAPIWithRecorders(t, nil, nil, discovery)
 }
 
-func newRecordingServerFakeAPIWithRecorders(t *testing.T, lastAuth *authRecorder, logQuery *logQueryRecorder, discovery *discoveryCounter) *httptest.Server {
-	mux := http.NewServeMux()
-	fixture := func(name string) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			lastAuth.record(r)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(readFixture(t, name))
-		}
+// newRecordingServerFakeAPIWithRecorders builds the shared fakeapi fixture
+// server, feeding this suite's recorders through the package's functional
+// options. The recorder methods are nil-receiver-safe, so absent recorders are
+// passed as-is. Route map, discovery patching (events/replicasets), and the
+// Table-vs-List Accept negotiation live in the fakeapi package now.
+func newRecordingServerFakeAPIWithRecorders(t *testing.T, lastAuth *authRecorder, logQuery *logQueryRecorder, discovery *discoveryCounter) *fakeapi.Server {
+	t.Helper()
+	server, err := fakeapi.New(
+		fakeapi.WithRequestRecorder(lastAuth.record),
+		fakeapi.WithLogRecorder(logQuery.record),
+		fakeapi.WithDiscoveryRecorder(discovery.record),
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	discoveryFixture := func(name string) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			discovery.record(r)
-			fixture(name)(w, r)
-		}
-	}
-	tableOrList := func(tableFixture, listFixture string) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			lastAuth.record(r)
-			w.Header().Set("Content-Type", "application/json")
-			if strings.Contains(r.Header.Get("Accept"), "as=Table") {
-				_, _ = w.Write(readFixture(t, tableFixture))
-				return
-			}
-			_, _ = w.Write(readFixture(t, listFixture))
-		}
-	}
-	mux.HandleFunc("/api", discoveryFixture("discovery/api.json"))
-	mux.HandleFunc("/api/v1", func(w http.ResponseWriter, r *http.Request) {
-		discovery.record(r)
-		lastAuth.record(r)
-		var body map[string]any
-		if err := json.Unmarshal(readFixture(t, "discovery/api__v1.json"), &body); err != nil {
-			t.Fatal(err)
-		}
-		body["resources"] = append(body["resources"].([]any), map[string]any{
-			"name":         "events",
-			"singularName": "event",
-			"namespaced":   true,
-			"kind":         "Event",
-			"verbs":        []string{"get", "list", "watch"},
-			"shortNames":   []string{"ev"},
-		})
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(body)
-	})
-	mux.HandleFunc("/apis", discoveryFixture("discovery/apis.json"))
-	mux.HandleFunc("/apis/apps/v1", func(w http.ResponseWriter, r *http.Request) {
-		discovery.record(r)
-		lastAuth.record(r)
-		var body map[string]any
-		if err := json.Unmarshal(readFixture(t, "discovery/apis__apps__v1.json"), &body); err != nil {
-			t.Fatal(err)
-		}
-		body["resources"] = append(body["resources"].([]any), map[string]any{
-			"name":         "replicasets",
-			"singularName": "replicaset",
-			"namespaced":   true,
-			"kind":         "ReplicaSet",
-			"verbs":        []string{"get", "list", "watch"},
-			"shortNames":   []string{"rs"},
-		})
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(body)
-	})
-	mux.HandleFunc("/apis/cert-manager.io/v1", discoveryFixture("discovery/apis__cert-manager.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", discoveryFixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", discoveryFixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", discoveryFixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/storage.k8s.io/v1", discoveryFixture("discovery/apis__storage.k8s.io__v1.json"))
-	mux.HandleFunc("/version", discoveryFixture("discovery/version.json"))
-	mux.HandleFunc("/api/v1/namespaces/default/pods", tableOrList("data/pods_table.json", "data/pods_with_node_list.json"))
-	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx", fixture("data/render_pod_nginx.json"))
-	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx/log", func(w http.ResponseWriter, r *http.Request) {
-		lastAuth.record(r)
-		logQuery.record(r)
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write(readFixture(t, "data/pod_log.txt"))
-	})
-	mux.HandleFunc("/api/v1/pods", tableOrList("data/pods_table.json", "data/pods_with_node_list.json"))
-	// Pods in the "states" namespace exercise the redesign status/ready/restart
-	// tones END TO END: a transient pod (ContainerCreating/Terminating) pulses, a
-	// degraded pod is 2/3 partial with restarts, a steady pod does not pulse. The
-	// resource-list path always requests the server-side Table, so the Table
-	// fixture is served directly.
-	mux.HandleFunc("/api/v1/namespaces/states/pods", fixture("data/pods_states_table.json"))
-	// Pods in the "empty" namespace return a zero-row Table, exercising the
-	// genuinely-EMPTY list state (the plain "No Pod objects ... found." sentence +
-	// the broad next action) through the real assembly with NO filter active.
-	mux.HandleFunc("/api/v1/namespaces/empty/pods", fixture("data/table_empty_rows.json"))
-	// Services in "default" exercise the GENERIC fallback through the real
-	// assembly: a kind with NO Status column and no per-kind rich cells renders
-	// its rows from the Table API with no status dot.
-	mux.HandleFunc("/api/v1/namespaces/default/services", fixture("data/services_table.json"))
-	mux.HandleFunc("/api/v1/namespaces/default/events", fixture("data/render_events_nginx.json"))
-	mux.HandleFunc("/api/v1/namespaces/default/secrets", tableOrList("data/render_secrets_table.json", "data/secrets_list.json"))
-	mux.HandleFunc("/api/v1/namespaces/default/secrets/my-secret", fixture("data/render_secret.json"))
-	mux.HandleFunc("/api/v1/namespaces/default", func(w http.ResponseWriter, r *http.Request) {
-		lastAuth.record(r)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"default","creationTimestamp":"2024-01-01T00:00:00Z","resourceVersion":"1"},"status":{"phase":"Active"}}`))
-	})
-	mux.HandleFunc("/api/v1/namespaces", fixture("data/render_namespaces_list.json"))
-	mux.HandleFunc("/api/v1/nodes", tableOrList("data/render_namespaces_list.json", "data/nodes_list.json"))
-	mux.HandleFunc("/api/v1/nodes/worker-1", fixture("data/render_node.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1/namespaces/default/pods", fixture("data/metrics_pods_list.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1/pods", fixture("data/metrics_pods_list.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1/nodes", func(w http.ResponseWriter, r *http.Request) {
-		lastAuth.record(r)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"apiVersion":"metrics.k8s.io/v1beta1","kind":"NodeMetricsList","items":[{"apiVersion":"metrics.k8s.io/v1beta1","kind":"NodeMetrics","metadata":{"name":"worker-1"},"usage":{"cpu":"1","memory":"256Mi"}}]}`))
-	})
-	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
 }
 
 func readFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	path := filepath.Join("..", "..", "tests", "unit", "fakeapi", "fixtures", name)
-	data, err := os.ReadFile(path)
+	data, err := fakeapi.Fixture(name)
 	if err != nil {
 		t.Fatalf("read fixture %s: %v", name, err)
 	}

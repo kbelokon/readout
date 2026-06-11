@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/kbelokon/readout/internal/config"
@@ -17,6 +20,11 @@ import (
 var listenAndServe = func(srv *http.Server) error {
 	return srv.ListenAndServe()
 }
+
+// shutdownGrace bounds the graceful drain after SIGINT/SIGTERM: long enough
+// for open Live streams to flush their `ro-terminal` "shutdown" frames (the
+// app's shutdownCh is the same signal context) before the listener dies.
+const shutdownGrace = 5 * time.Second
 
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
@@ -48,7 +56,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: level})))
 
-	ctx := context.Background()
+	// The signal context is the app's shutdown signal (web.New wires its Done
+	// channel to every open Live stream's `ro-terminal` "shutdown" frame) AND
+	// the trigger for the graceful http.Server.Shutdown below — with a plain
+	// context.Background() neither ever fired.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	app, err := web.New(ctx, &cfg)
 	if err != nil {
 		slog.Error("failed to initialize app", "version", version.Version, "error", err)
@@ -67,9 +80,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	srv := newHTTPServer(addr, app.Handler())
 	slog.Info("readout started", "version", version.Version, "addr", addr)
-	if err := listenAndServe(srv); err != nil {
-		slog.Error("server exited", "error", err)
-		return 1
+	errCh := make(chan error, 1)
+	go func() { errCh <- listenAndServe(srv) }()
+	select {
+	case err := <-errCh:
+		// ErrServerClosed only follows a Shutdown call, which lives in the
+		// other branch — any error here is a real listen/serve failure.
+		if err != nil {
+			slog.Error("server exited", "error", err)
+			return 1
+		}
+		return 0
+	case <-ctx.Done():
+		slog.Info("readout shutting down", "grace", shutdownGrace.String())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("graceful shutdown failed", "error", err)
+			return 1
+		}
+		// Shutdown unblocked ListenAndServe with ErrServerClosed; drain it so
+		// the serve goroutine never leaks.
+		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server exited", "error", err)
+			return 1
+		}
+		return 0
 	}
-	return 0
 }

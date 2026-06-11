@@ -96,12 +96,69 @@ type Table struct {
 	Columns  []Column
 	Rows     []Row
 	Clusters []string
+
+	// RemainingItemCount mirrors the response's metadata.remainingItemCount:
+	// with a ListOptions.Limit the apiserver returns the first chunk plus an
+	// ESTIMATE of how many items it left out (nil when the list was complete or
+	// the server does not paginate). The sidebar counts consume it as
+	// len(Rows) + RemainingItemCount.
+	RemainingItemCount *int64
+
+	// ResourceVersion mirrors the response's list metadata.resourceVersion —
+	// the consistency point of the list. A Live stream (D19) captures it from
+	// the initial Table list and starts its watch there; for a decoded watch
+	// event this is the EVENT's resourceVersion instead.
+	ResourceVersion string
 }
 
 type ListOptions struct {
 	Namespace     string
 	LabelSelector string
 	FieldSelector string
+
+	// Limit caps the number of items the apiserver returns (the chunked-list
+	// `?limit=N` parameter); 0 means no limit. A limited response carries
+	// metadata.remainingItemCount + continue, which Table surfaces.
+	Limit int64
+}
+
+// WatchOptions scope a Table watch (Client.WatchTable). ResourceVersion is
+// the captured list resourceVersion the watch resumes from
+// (Table.ResourceVersion of the initial list); empty starts at the server's
+// current state with no replay. No FieldSelector: the one watch consumer (the
+// Live stream, D19) scopes by namespace + label selector only.
+type WatchOptions struct {
+	Namespace       string
+	LabelSelector   string
+	ResourceVersion string
+}
+
+// WatchEventType is the Kubernetes watch wire vocabulary. ERROR frames never
+// surface as events: TableWatch.Next folds them into typed errors
+// (ErrWatchGone for 410/Expired, a StatusError otherwise).
+type WatchEventType string
+
+const (
+	WatchAdded    WatchEventType = "ADDED"
+	WatchModified WatchEventType = "MODIFIED"
+	WatchDeleted  WatchEventType = "DELETED"
+	WatchBookmark WatchEventType = "BOOKMARK"
+	WatchError    WatchEventType = "ERROR"
+)
+
+// WatchEvent is one decoded Table watch event. Data events carry a 1-row
+// Table whose columnDefinitions are populated only in the stream's FIRST
+// event — the consumer caches those columns for the rest of the stream.
+// Bookmarks carry no rows; they exist to advance ResourceVersion.
+type WatchEvent struct {
+	Type  WatchEventType
+	Table Table
+
+	// ResourceVersion is the event's resourceVersion (the payload Table's
+	// list metadata) — the consumer's last-seen RV for re-watching after a
+	// clean EOF. Every event type carries it; BOOKMARK events carry nothing
+	// else.
+	ResourceVersion string
 }
 
 type LogOptions struct {
@@ -214,6 +271,7 @@ type metricsItem struct {
 }
 
 type containerUsage struct {
+	Name  string        `json:"name"`
 	Usage resourceUsage `json:"usage"`
 }
 
@@ -241,4 +299,35 @@ func MetricsUsage(obj map[string]any) (key string, cpu, mem float64) {
 		return key, cpu, mem
 	}
 	return key, item.Usage.CPU.AsApproximateFloat64(), item.Usage.Memory.AsApproximateFloat64()
+}
+
+// ContainerUsage is one container's resolved usage from a PodMetrics
+// `containers[]` entry: CPU in cores, memory in bytes.
+type ContainerUsage struct {
+	CPU    float64
+	Memory float64
+}
+
+// PodContainerUsage decodes a PodMetrics item into per-container usage keyed
+// by container name (the pod-detail containers table joins on it, D14). It
+// lives next to MetricsUsage so the metrics-object -> typed-values conversion
+// stays at this one seam. An undecodable object or one without a containers
+// list yields nil — the caller renders the no-metrics placeholder.
+func PodContainerUsage(obj map[string]any) map[string]ContainerUsage {
+	var item metricsItem
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &item); err != nil {
+		return nil
+	}
+	if len(item.Containers) == 0 {
+		return nil
+	}
+	out := make(map[string]ContainerUsage, len(item.Containers))
+	for i := range item.Containers {
+		c := &item.Containers[i]
+		out[c.Name] = ContainerUsage{
+			CPU:    c.Usage.CPU.AsApproximateFloat64(),
+			Memory: c.Usage.Memory.AsApproximateFloat64(),
+		}
+	}
+	return out
 }

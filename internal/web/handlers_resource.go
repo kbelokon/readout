@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -39,6 +40,13 @@ func hasLogTimestamp(line string) bool {
 }
 
 func (s *Server) resourceList(w http.ResponseWriter, r *http.Request) {
+	// Bulk YAML download (D11) branches BEFORE the table fan-out: its name
+	// bounds are validated first, so a rejected request (101+ names) never
+	// pays for a cluster round-trip.
+	if r.URL.Query().Get("download") == "yaml" {
+		s.downloadBulkYAML(w, r)
+		return
+	}
 	ctx, err := s.listContext(r)
 	if err != nil {
 		s.error(w, r, err)
@@ -85,6 +93,24 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, view.State.SourceErr)
 		return
 	}
+	// Canonical-URL history push (D6): a USER-initiated sort/filter request gets
+	// the CANONICAL list URL (path minus `/_table`, current query) pushed into
+	// history -- never the partial URL (hx-push-url="true" would push
+	// `…/_table?…`; a reload of that entry renders a bare fragment). The header
+	// is deliberately conditional: htmx pushes one history entry per HX-Push-Url
+	// occurrence with NO same-URL dedupe, so an unconditional header would turn a
+	// 5s refresh interval into one junk entry per tick. Ticks and every other
+	// programmatic re-fetch mark themselves with RO-No-Push (readout.js sets it
+	// on requests issued by #resource-list-content itself; column toggles and
+	// later programmatic surfaces ride the same header), preload warm-ups carry
+	// HX-Preloaded, non-htmx requests have no HX-Request, and the loop is
+	// single-type-only (D1) -- none of those push.
+	if isSingleListType(r.PathValue("plural")) &&
+		r.Header.Get("HX-Request") == "true" &&
+		r.Header.Get("RO-No-Push") == "" &&
+		r.Header.Get("HX-Preloaded") != "true" {
+		w.Header().Set("HX-Push-Url", resourceListBaseURL(r.URL).String())
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.ResourceTable(toListData(&view)).Render(r.Context(), w)
 }
@@ -120,6 +146,123 @@ func (s *Server) downloadTSV(w http.ResponseWriter, r *http.Request, table *kube
 		_ = writer.Write(rec)
 	}
 	writer.Flush()
+}
+
+// bulkNamesMax is the double-sided bulk-download bound (D11): the client
+// disables the bulk button above this many selected objects, and the server
+// rejects a larger `names` list with 400 -- so a hand-built GET URL stays
+// bounded exactly like a button-built one.
+const bulkNamesMax = 100
+
+// parseBulkNames splits every `names` query occurrence on commas and drops
+// empty segments. Kubernetes object names and namespaces are DNS-shaped (no
+// commas), so the comma join is unambiguous for both the bare-name and the
+// ns/name grammar.
+func parseBulkNames(query url.Values) []string {
+	var names []string
+	for _, raw := range query["names"] {
+		for _, name := range strings.Split(raw, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
+// downloadBulkYAML serves the list-level `?download=yaml&names=…` bulk export
+// (D11): ONE multi-document YAML, `---`-separated, one document per requested
+// name in request order. It extends the existing list download surface -- the
+// objects come from the same Table fan-out the page render uses (full objects
+// ride the rows via includeObject=Object), so the config namespace allow/deny
+// filtering applies identically and no per-name GET fan-out is introduced.
+//
+// Names grammar: bare `name` on single-namespace (and cluster-scoped) lists,
+// `ns/name` on _all-namespaces lists. A name absent from the table renders a
+// `# not found: <name>` comment document -- never a whole-download failure.
+// Bounds: >bulkNamesMax names, an empty names list, a multi-type plural, and
+// multi-cluster scope (the bulk button is single-cluster only) all reject
+// with 400.
+func (s *Server) downloadBulkYAML(w http.ResponseWriter, r *http.Request) {
+	if !isSingleListType(r.PathValue("plural")) {
+		s.error(w, r, statusError{status: http.StatusBadRequest, message: "bulk YAML download needs a single resource type"})
+		return
+	}
+	names := parseBulkNames(r.URL.Query())
+	if len(names) == 0 {
+		s.error(w, r, statusError{status: http.StatusBadRequest, message: "bulk YAML download needs a names parameter"})
+		return
+	}
+	if len(names) > bulkNamesMax {
+		s.error(w, r, statusError{status: http.StatusBadRequest, message: fmt.Sprintf("bulk YAML download is limited to %d names, got %d", bulkNamesMax, len(names))})
+		return
+	}
+	ctx, err := s.listContext(r)
+	if err != nil {
+		s.error(w, r, err)
+		return
+	}
+	if ctx.IsAllClusters || ctx.ClusterCount > 1 {
+		s.error(w, r, statusError{status: http.StatusBadRequest, message: "bulk YAML download works on single-cluster lists only"})
+		return
+	}
+	// A whole-list failure (unreachable / forbidden cluster) surfaces as the
+	// fetch error: rendering every name as not-found would misreport objects
+	// that merely could not be listed.
+	if len(ctx.Tables) == 0 && len(ctx.Errors) > 0 {
+		s.error(w, r, ctx.Errors[0])
+		return
+	}
+
+	// Index the rows by the grammar key: ns/name on _all-namespaces lists
+	// (a cluster-scoped row there keeps its bare name -- it has no namespace
+	// segment), bare name everywhere else.
+	objects := map[string]map[string]any{}
+	for ti := range ctx.Tables {
+		for _, row := range ctx.Tables[ti].Rows {
+			// Secret VALUES are never serialized (D5). The single-object
+			// download masks the fetched object before marshaling
+			// (buildDetailView -> maskSecret); this path serializes the
+			// table's row objects, so it applies the SAME treatment before
+			// any row can reach the YAML writer. In-place mutation is safe:
+			// the rows come from this request's own table fan-out, and the
+			// download path returns without rendering anything else.
+			if nestedString(row.Object, "kind") == "Secret" {
+				maskSecret(row.Object)
+			}
+			key := nestedString(row.Object, "metadata", "name")
+			if ns := nestedString(row.Object, "metadata", "namespace"); ctx.IsAllNamespaces && ns != "" {
+				key = ns + "/" + key
+			}
+			objects[key] = row.Object
+		}
+	}
+
+	var b strings.Builder
+	for i, name := range names {
+		if i > 0 {
+			b.WriteString("---\n")
+		}
+		obj, ok := objects[name]
+		if !ok {
+			// The echoed name is collapsed to one line so a crafted %0A can
+			// never break out of the YAML comment.
+			b.WriteString("# not found: " + strings.Join(strings.Fields(name), " ") + "\n")
+			continue
+		}
+		data, _ := yamlview.Marshal(obj)
+		b.Write(data)
+	}
+
+	filename := make([]string, 0, 3)
+	for _, part := range []string{ctx.Cluster, ctx.Namespace, ctx.Plural} {
+		if part != "" {
+			filename = append(filename, part)
+		}
+	}
+	w.Header().Set("Content-Type", "text/vnd.yaml; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.Join(filename, "_")+`_bulk.yaml"`)
+	_, _ = io.WriteString(w, b.String())
 }
 
 func (s *Server) resourceView(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +374,14 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		return lines[i].Container < lines[j].Container
 	})
+	// Download-logs (D25): a plain GET over the SAME assembled view -- the
+	// container/tail/filter params shape `lines` exactly like the on-screen
+	// stream. Branches before the page render; gated on showContainerLogs so a
+	// disabled deployment never serves log bytes through the download spelling.
+	if s.cfg.ShowContainerLogs && r.URL.Query().Get("download") == "txt" {
+		s.downloadLogs(w, r, lines)
+		return
+	}
 	allContainers := make([]string, 0, len(containerSet))
 	for name := range containerSet {
 		allContainers = append(allContainers, name)
@@ -256,7 +407,25 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		FilterVal:         filterText,
 		ContainerVal:      selectedContainer,
 	}
+	// The logs H1 carries the same pn-head/pn-tail split as the detail title
+	// (Unit 13 flagged the plain-name gap here).
+	data.NameHead, data.NameTail, data.NameTitle = detailNameParts(&object)
 	if s.cfg.ShowContainerLogs {
+		// The Download-logs title action mirrors the on-screen view: same
+		// container/tail/filter params, download=txt spelling.
+		dq := url.Values{}
+		dq.Set("download", "txt")
+		if selectedContainer != "" {
+			dq.Set("container", selectedContainer)
+		}
+		dq.Set("tail_lines", strconv.FormatInt(tail, 10))
+		if filterText != "" {
+			dq.Set("filter", filterText)
+		}
+		data.DownloadHref = base + "/logs?" + dq.Encode()
+		data.DownloadIcon = icon("download")
+		data.FollowIcon = icon("rotate-cw")
+
 		if len(allContainers) > 2 {
 			for _, container := range allContainers {
 				text := container
@@ -321,6 +490,21 @@ func splitLogTimestamp(text string) (ts, msg string) {
 	}
 	ts, msg, _ = strings.Cut(text, " ")
 	return ts, msg
+}
+
+// downloadLogs serves the assembled log stream as a plain-text attachment
+// (D25: the Download-logs title action is a plain GET). One line per entry in
+// display order -- source pod, container, then the raw entry text (timestamp
+// prefix + message, folded continuation lines kept inline) -- so the file
+// mirrors the on-screen stream without markup. The filename derives from the
+// request path exactly like downloadYAML (slashes to underscores).
+func (s *Server) downloadLogs(w http.ResponseWriter, r *http.Request, lines []logLine) {
+	filename := strings.Trim(strings.ReplaceAll(r.URL.Path, "/", "_"), "_")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`.txt"`)
+	for _, l := range lines {
+		_, _ = fmt.Fprintf(w, "%s %s %s\n", l.Pod, l.Container, l.Text)
+	}
 }
 
 func (s *Server) downloadYAML(w http.ResponseWriter, r *http.Request, obj map[string]any) {

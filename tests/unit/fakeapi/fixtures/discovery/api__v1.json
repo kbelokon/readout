@@ -33,6 +33,14 @@
       "verbs": ["get", "list", "watch"]
     },
     {
+      "name": "configmaps",
+      "singularName": "configmap",
+      "namespaced": true,
+      "kind": "ConfigMap",
+      "verbs": ["get", "list", "watch"],
+      "shortNames": ["cm"]
+    },
+    {
       "name": "nodes",
       "singularName": "node",
       "namespaced": false,
@@ -47,6 +55,14 @@
       "kind": "Namespace",
       "verbs": ["get", "list", "watch"],
       "shortNames": ["ns"]
+    },
+    {
+      "name": "persistentvolumes",
+      "singularName": "persistentvolume",
+      "namespaced": false,
+      "kind": "PersistentVolume",
+      "verbs": ["get", "list", "watch"],
+      "shortNames": ["pv"]
     }
   ]
 }
