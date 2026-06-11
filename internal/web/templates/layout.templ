@@ -288,12 +288,12 @@ templ footerC(custom string) {
 // contract: Open ⏎ · Copy name · View YAML · View logs · ── · Download YAML.
 templ rowCtxMenuC() {
 	<div class="ro-ctxmenu" id="ro-ctxmenu" role="menu" aria-label="Row actions" aria-hidden="true">
-		<button type="button" role="menuitem" data-ctx="open"><span class="ico sm" aria-hidden="true">@iconC("external-link")</span><span>Open</span><span class="ro-kbd">&#9166;</span></button>
-		<button type="button" role="menuitem" data-ctx="copy"><span class="ico sm" aria-hidden="true">@iconC("copy")</span><span>Copy name</span></button>
-		<button type="button" role="menuitem" data-ctx="yaml"><span class="ico sm" aria-hidden="true">@iconC("file")</span><span>View YAML</span></button>
-		<button type="button" role="menuitem" data-ctx="logs" hidden><span class="ico sm" aria-hidden="true">@iconC("terminal")</span><span>View logs</span></button>
+		<button type="button" role="menuitem" data-ro-action="open"><span class="ico sm" aria-hidden="true">@iconC("external-link")</span><span>Open</span><span class="ro-kbd">&#9166;</span></button>
+		<button type="button" role="menuitem" data-ro-action="copy"><span class="ico sm" aria-hidden="true">@iconC("copy")</span><span>Copy name</span></button>
+		<button type="button" role="menuitem" data-ro-action="yaml"><span class="ico sm" aria-hidden="true">@iconC("file")</span><span>View YAML</span></button>
+		<button type="button" role="menuitem" data-ro-action="logs" hidden><span class="ico sm" aria-hidden="true">@iconC("terminal")</span><span>View logs</span></button>
 		<hr>
-		<button type="button" role="menuitem" data-ctx="download"><span class="ico sm" aria-hidden="true">@iconC("download")</span><span>Download YAML</span></button>
+		<button type="button" role="menuitem" data-ro-action="download"><span class="ico sm" aria-hidden="true">@iconC("download")</span><span>Download YAML</span></button>
 	</div>
 }
 

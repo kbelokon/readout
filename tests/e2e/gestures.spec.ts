@@ -110,7 +110,7 @@ function selectedKeys(page: Page): Promise<string[]> {
   );
 }
 
-const menuItems = '#ro-ctxmenu [data-ctx]:not([hidden])';
+const menuItems = '#ro-ctxmenu [data-ro-action]:not([hidden])';
 
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
@@ -140,10 +140,10 @@ test('right-click on a pod row opens the 5-action menu bound to that row; esc cl
     /View logs/,
     /Download YAML/,
   ]);
-  await expect(page.locator('[data-ctx="open"]')).toHaveAttribute('data-href', POD_BASE);
-  await expect(page.locator('[data-ctx="yaml"]')).toHaveAttribute('data-href', `${POD_BASE}?view=yaml`);
-  await expect(page.locator('[data-ctx="logs"]')).toHaveAttribute('data-href', `${POD_BASE}/logs`);
-  await expect(page.locator('[data-ctx="download"]')).toHaveAttribute(
+  await expect(page.locator('[data-ro-action="open"]')).toHaveAttribute('data-href', POD_BASE);
+  await expect(page.locator('[data-ro-action="yaml"]')).toHaveAttribute('data-href', `${POD_BASE}?view=yaml`);
+  await expect(page.locator('[data-ro-action="logs"]')).toHaveAttribute('data-href', `${POD_BASE}/logs`);
+  await expect(page.locator('[data-ro-action="download"]')).toHaveAttribute(
     'data-href',
     `${POD_BASE}?download=yaml`
   );
@@ -154,7 +154,7 @@ test('right-click on a pod row opens the 5-action menu bound to that row; esc cl
 
   // Re-open and activate Open: lands on the pod detail page.
   await row.click({ button: 'right' });
-  await page.locator('[data-ctx="open"]').click();
+  await page.locator('[data-ro-action="open"]').click();
   await page.waitForURL(`**${POD_BASE}`);
   await expect(page.locator('.ro-topbar')).toBeVisible();
 });
@@ -180,10 +180,10 @@ test('right-click on a service row shows 4 actions -- View logs is pods-only', a
 
   await expect(page.locator('#ro-ctxmenu')).toHaveClass(/is-open/);
   await expect(page.locator(menuItems)).toHaveCount(4);
-  await expect(page.locator('[data-ctx="logs"]')).toBeHidden();
+  await expect(page.locator('[data-ro-action="logs"]')).toBeHidden();
   const base = '/clusters/e2e/namespaces/default/services/frontend';
-  await expect(page.locator('[data-ctx="open"]')).toHaveAttribute('data-href', base);
-  await expect(page.locator('[data-ctx="yaml"]')).toHaveAttribute('data-href', `${base}?view=yaml`);
+  await expect(page.locator('[data-ro-action="open"]')).toHaveAttribute('data-href', base);
+  await expect(page.locator('[data-ro-action="yaml"]')).toHaveAttribute('data-href', `${base}?view=yaml`);
 });
 
 test('row clicks toggle selection and the bulk bar counts; ✕ clears', async ({ page }) => {
@@ -285,7 +285,7 @@ test('Copy names yields newline-joined full names (live-filtered selections incl
 
   // Context-menu Copy name: the single FULL row name.
   await page.locator('tr[data-key="e2e/default/nginx"]').click({ button: 'right' });
-  await page.locator('[data-ctx="copy"]').click();
+  await page.locator('[data-ro-action="copy"]').click();
   await expect(page.locator('#ro-ctxmenu')).not.toHaveClass(/is-open/);
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))

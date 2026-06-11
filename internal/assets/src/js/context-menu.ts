@@ -35,7 +35,7 @@ export function openRowMenu(tr: HTMLElement, x: number, y: number): void {
         return;
     }
     const bind = (action: string, href: string): void => {
-        const item = menu.querySelector(`[data-ctx="${action}"]`) as HTMLElement | null;
+        const item = menu.querySelector(`[data-ro-action="${action}"]`) as HTMLElement | null;
         if (!item) {
             return;
         }
@@ -84,7 +84,7 @@ export const contextMenuBindings: Binding[] = [
     // downloads WITHOUT leaving the page. Returned in the monolith -> stop:true.
     {
         event: 'click',
-        selector: '#ro-ctxmenu [data-ctx]',
+        selector: '#ro-ctxmenu [data-ro-action]',
         stop: true,
         handler: (event, matched) => {
             event.preventDefault();
@@ -93,7 +93,7 @@ export const contextMenuBindings: Binding[] = [
             const name = menu?.dataset.name || '';
             const href = item.dataset.href || '';
             closeRowMenu();
-            if (item.dataset.ctx === 'copy') {
+            if (item.dataset.roAction === 'copy') {
                 roCopyText(name, () => {});
             } else if (href) {
                 window.location.assign(href);

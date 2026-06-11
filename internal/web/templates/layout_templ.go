@@ -1150,7 +1150,7 @@ func rowCtxMenuC() templ.Component {
 			templ_7745c5c3_Var48 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, "<div class=\"ro-ctxmenu\" id=\"ro-ctxmenu\" role=\"menu\" aria-label=\"Row actions\" aria-hidden=\"true\"><button type=\"button\" role=\"menuitem\" data-ctx=\"open\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, "<div class=\"ro-ctxmenu\" id=\"ro-ctxmenu\" role=\"menu\" aria-label=\"Row actions\" aria-hidden=\"true\"><button type=\"button\" role=\"menuitem\" data-ro-action=\"open\"><span class=\"ico sm\" aria-hidden=\"true\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1158,7 +1158,7 @@ func rowCtxMenuC() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "</span><span>Open</span><span class=\"ro-kbd\">&#9166;</span></button> <button type=\"button\" role=\"menuitem\" data-ctx=\"copy\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "</span><span>Open</span><span class=\"ro-kbd\">&#9166;</span></button> <button type=\"button\" role=\"menuitem\" data-ro-action=\"copy\"><span class=\"ico sm\" aria-hidden=\"true\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1166,7 +1166,7 @@ func rowCtxMenuC() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "</span><span>Copy name</span></button> <button type=\"button\" role=\"menuitem\" data-ctx=\"yaml\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "</span><span>Copy name</span></button> <button type=\"button\" role=\"menuitem\" data-ro-action=\"yaml\"><span class=\"ico sm\" aria-hidden=\"true\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1174,7 +1174,7 @@ func rowCtxMenuC() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 86, "</span><span>View YAML</span></button> <button type=\"button\" role=\"menuitem\" data-ctx=\"logs\" hidden><span class=\"ico sm\" aria-hidden=\"true\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 86, "</span><span>View YAML</span></button> <button type=\"button\" role=\"menuitem\" data-ro-action=\"logs\" hidden><span class=\"ico sm\" aria-hidden=\"true\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1182,7 +1182,7 @@ func rowCtxMenuC() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 87, "</span><span>View logs</span></button><hr><button type=\"button\" role=\"menuitem\" data-ctx=\"download\"><span class=\"ico sm\" aria-hidden=\"true\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 87, "</span><span>View logs</span></button><hr><button type=\"button\" role=\"menuitem\" data-ro-action=\"download\"><span class=\"ico sm\" aria-hidden=\"true\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
