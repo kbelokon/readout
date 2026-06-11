@@ -1,0 +1,13 @@
+{
+  "doc": "Simplest non-empty payload: one kind with a sort plus a refresh mode. Pins the canonical key order (kinds,refresh,ns; k,sort,hide) and compact (no-space) serialization.",
+  "payload": {
+    "kinds": [
+      {
+        "k": "pods",
+        "sort": "Name"
+      }
+    ],
+    "refresh": "30"
+  },
+  "encoded": "v1.eyJraW5kcyI6W3siayI6InBvZHMiLCJzb3J0IjoiTmFtZSJ9XSwicmVmcmVzaCI6IjMwIn0"
+}

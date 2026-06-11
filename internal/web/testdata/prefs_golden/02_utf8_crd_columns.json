@@ -1,0 +1,16 @@
+{
+  "doc": "UTF-8 multibyte CRD printer-column names in a hide list. base64url runs over the UTF-8 bytes (Go RawURLEncoding == JS TextEncoder+btoa), so multibyte names survive byte-for-byte.",
+  "payload": {
+    "kinds": [
+      {
+        "k": "widgets",
+        "hide": [
+          "Größe",
+          "名前",
+          "café"
+        ]
+      }
+    ]
+  },
+  "encoded": "v1.eyJraW5kcyI6W3siayI6IndpZGdldHMiLCJoaWRlIjpbIkdyw7bDn2UiLCLlkI3liY0iLCJjYWbDqSJdfV19"
+}
