@@ -1797,6 +1797,582 @@
     }, TOAST_VISIBLE_MS);
   }
 
+  // internal/assets/src/js/stale.ts
+  var STALE_DIM_CLASS = "ro-stale";
+  var staleCountdownId = null;
+  function updateStaleCountdown() {
+    const span = document.querySelector(".ro-stale-banner [data-stale-countdown]");
+    if (!span) {
+      return;
+    }
+    const nextAt = refreshNextAtMs();
+    if (!nextAt) {
+      span.textContent = "…";
+      return;
+    }
+    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
+    span.textContent = remaining + "s";
+  }
+  function isListRefreshEvent(event) {
+    const detail = event.detail;
+    if (!detail || isPreloadRequest(event)) {
+      return false;
+    }
+    const elt = detail.elt;
+    if (!!elt && elt.id === "resource-list-content") {
+      return true;
+    }
+    const target = detail.target;
+    return !!target && target.id === "resource-list-content";
+  }
+  function markListStale() {
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.add(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector(".ro-stale-banner");
+    if (banner) {
+      banner.hidden = false;
+    }
+    if (staleCountdownId === null) {
+      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
+    }
+    updateStaleCountdown();
+  }
+  function clearListStale() {
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.remove(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector(".ro-stale-banner");
+    if (banner) {
+      banner.hidden = true;
+    }
+    if (staleCountdownId !== null) {
+      window.clearInterval(staleCountdownId);
+      staleCountdownId = null;
+    }
+  }
+  document.addEventListener("htmx:responseError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+  document.addEventListener("htmx:sendError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+
+  // internal/assets/src/js/live-policy.ts
+  function effectivePollSeconds(mode, intervalSeconds, liveFallbackSeconds2) {
+    if (intervalSeconds > 0) {
+      return intervalSeconds;
+    }
+    return mode === "Live" ? liveFallbackSeconds2 : 0;
+  }
+  function refreshDelaySeconds(effectiveSeconds, failureStage) {
+    if (effectiveSeconds <= 0) {
+      return 0;
+    }
+    if (failureStage <= 1) {
+      return effectiveSeconds;
+    }
+    const factor = failureStage === 2 ? 2 : 4;
+    return Math.min(effectiveSeconds * factor, 60);
+  }
+  function nextFailureStage(stage) {
+    return Math.min(stage + 1, 3);
+  }
+  function classifyStreamClose(facts) {
+    if (facts.superseded) {
+      return { kind: "ignore" };
+    }
+    switch (facts.cause) {
+      case "connect-error":
+      case "bad-status":
+        return { kind: "fallback", banner: false, terminal: false };
+      case "read-error":
+      case "eof":
+        return { kind: "fallback", banner: true, terminal: false };
+      case "terminal-frame":
+        return { kind: "fallback", banner: true, terminal: true };
+    }
+  }
+  function shouldDiscardPush(facts) {
+    if (facts.frameGeneration !== facts.currentGeneration) {
+      return "stale-generation";
+    }
+    if (facts.liveStreamBase !== facts.openedStreamBase) {
+      return "wrong-page";
+    }
+    if (facts.requestInFlight) {
+      return "request-in-flight";
+    }
+    return "none";
+  }
+
+  // internal/assets/src/js/live.ts
+  function getHtmx() {
+    return window.htmx;
+  }
+  var liveState = {
+    status: "idle",
+    // 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden'
+    abort: null,
+    // AbortController of the current stream fetch
+    gen: "",
+    // the minted generation every frame must echo (string compare)
+    streamPath: ""
+    // the stream URL sans ?g= -- the page/params identity
+  };
+  var liveGenSeq = 0;
+  var liveDiscards = 0;
+  var liveFallbackSecs = 0;
+  function liveFallbackSeconds() {
+    return liveFallbackSecs;
+  }
+  function liveSupported() {
+    const content = document.getElementById("resource-list-content");
+    if (!content || content.dataset.liveUrl !== "location") {
+      return false;
+    }
+    const option = document.querySelector(
+      '.refresh-option[data-interval="Live"]'
+    );
+    return !!option && !option.disabled;
+  }
+  function liveStreamBase() {
+    const u = new URL(window.location.href);
+    return u.pathname.replace(/\/+$/, "") + "/_stream" + u.search;
+  }
+  function liveTeardown() {
+    const ctrl = liveState.abort;
+    liveState.abort = null;
+    liveFallbackSecs = 0;
+    if (ctrl) {
+      try {
+        ctrl.abort();
+      } catch {
+      }
+    }
+  }
+  function liveEngageFallback(banner) {
+    liveTeardown();
+    liveState.status = "fallback";
+    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
+    scheduleRefreshTick();
+    if (banner) {
+      markListStale();
+    }
+  }
+  function liveOpen(base) {
+    liveTeardown();
+    liveFallbackSecs = 0;
+    liveState.streamPath = base;
+    if (!base) {
+      liveEngageFallback(false);
+      return;
+    }
+    liveState.status = "connecting";
+    liveGenSeq += 1;
+    liveState.gen = Date.now().toString(36) + "." + liveGenSeq;
+    const ctrl = new AbortController();
+    liveState.abort = ctrl;
+    const url = base + (base.indexOf("?") === -1 ? "?" : "&") + "g=" + encodeURIComponent(liveState.gen);
+    scheduleRefreshTick();
+    void liveConnect(url, ctrl);
+  }
+  async function liveConnect(url, ctrl) {
+    let res;
+    try {
+      res = await fetch(url, { signal: ctrl.signal });
+    } catch {
+      applyClose({ superseded: liveState.abort !== ctrl, cause: "connect-error" });
+      return;
+    }
+    if (liveState.abort !== ctrl) {
+      return;
+    }
+    if (res.status !== 200 || !res.body) {
+      applyClose({ superseded: false, cause: "bad-status" });
+      return;
+    }
+    liveState.status = "open";
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    let eventName = "";
+    let dataText = "";
+    try {
+      for (; ; ) {
+        const chunk = await reader.read();
+        if (liveState.abort !== ctrl) {
+          return;
+        }
+        if (chunk.done) {
+          break;
+        }
+        buffered += decoder.decode(chunk.value, { stream: true });
+        let nl = buffered.indexOf("\n");
+        while (nl !== -1) {
+          const line = buffered.slice(0, nl).replace(/\r$/, "");
+          buffered = buffered.slice(nl + 1);
+          if (line === "") {
+            const ended = liveHandleFrame(eventName, dataText, ctrl);
+            eventName = "";
+            dataText = "";
+            if (ended || liveState.abort !== ctrl) {
+              return;
+            }
+          } else if (line.indexOf("event:") === 0) {
+            eventName = line.slice(6).trim();
+          } else if (line.indexOf("data:") === 0) {
+            const piece = line.slice(5).replace(/^ /, "");
+            dataText = dataText === "" ? piece : `${dataText}
+${piece}`;
+          }
+          nl = buffered.indexOf("\n");
+        }
+      }
+    } catch {
+      applyClose({ superseded: liveState.abort !== ctrl, cause: "read-error" });
+      return;
+    }
+    if (liveState.abort !== ctrl) {
+      return;
+    }
+    applyClose({ superseded: false, cause: "eof" });
+  }
+  function applyClose(facts) {
+    const action = classifyStreamClose(facts);
+    if (action.kind === "ignore") {
+      return;
+    }
+    liveEngageFallback(action.banner);
+  }
+  function liveHandleFrame(name, text, ctrl) {
+    if (liveState.abort !== ctrl || text === "") {
+      return false;
+    }
+    let payload = null;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      return false;
+    }
+    if (!payload || typeof payload !== "object") {
+      return false;
+    }
+    if (name === "ro-terminal") {
+      applyClose({ superseded: false, cause: "terminal-frame" });
+      return true;
+    }
+    if (name !== "ro-table") {
+      return false;
+    }
+    pruneSettledListRequests(userListRequestsInFlight);
+    pruneSettledListRequests(containerListRequestsInFlight);
+    const reason = shouldDiscardPush({
+      frameGeneration: String(payload.g),
+      currentGeneration: liveState.gen,
+      liveStreamBase: liveStreamBase(),
+      openedStreamBase: liveState.streamPath,
+      requestInFlight: userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0
+    });
+    if (reason !== "none" || liveStreamBase() !== liveState.streamPath) {
+      liveDiscards += 1;
+      return false;
+    }
+    liveMorph(String(payload.html));
+    return false;
+  }
+  function liveMorph(html) {
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx();
+    if (!content || !htmx2 || typeof htmx2.swap !== "function") {
+      return;
+    }
+    htmx2.swap(content, html, { swapStyle: "morph" }, {
+      contextElement: content,
+      eventInfo: { target: content, roLivePush: true }
+    });
+  }
+  function liveOnListSwap(event) {
+    const detail = event.detail;
+    if (detail && detail.roLivePush) {
+      return;
+    }
+    if (liveState.status !== "open" && liveState.status !== "connecting") {
+      return;
+    }
+    let base = liveStreamBase();
+    const pathInfo = detail && detail.pathInfo;
+    const requestPath = pathInfo && (pathInfo.finalRequestPath || pathInfo.requestPath);
+    if (requestPath && requestPath.indexOf("/_table") !== -1) {
+      base = requestPath.replace("/_table", "/_stream");
+    }
+    liveOpen(base);
+  }
+  function liveApply(force) {
+    if (refreshMode() !== "Live") {
+      if (liveState.status !== "idle") {
+        liveTeardown();
+        liveState.status = "idle";
+        liveState.streamPath = "";
+        liveFallbackSecs = 0;
+      }
+      return;
+    }
+    const base = liveSupported() ? liveStreamBase() : "";
+    if (!force && base === liveState.streamPath && liveState.status !== "idle") {
+      return;
+    }
+    liveOpen(base);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (liveState.status === "open" || liveState.status === "connecting") {
+        liveTeardown();
+        liveState.status = "hidden";
+      }
+      return;
+    }
+    if (liveState.status === "hidden" && refreshMode() === "Live") {
+      liveOpen(liveSupported() ? liveStreamBase() : "");
+    }
+  });
+  window.roLive = {
+    discards() {
+      return liveDiscards;
+    }
+  };
+
+  // internal/assets/src/js/refresh.ts
+  function getHtmx2() {
+    return window.htmx;
+  }
+  var refreshTimerId = null;
+  var refreshNextAt = 0;
+  var refreshFailureStage = 0;
+  function refreshNextAtMs() {
+    return refreshNextAt;
+  }
+  var userListRequestsInFlight = /* @__PURE__ */ new Set();
+  var containerListRequestsInFlight = /* @__PURE__ */ new Set();
+  function pruneSettledListRequests(requests) {
+    requests.forEach((xhr) => {
+      if (xhr.readyState === 4 || xhr.readyState === 0) {
+        requests.delete(xhr);
+      }
+    });
+  }
+  function isPreloadRequest(event) {
+    const cfg = event.detail && event.detail.requestConfig;
+    return !!cfg && !!cfg.headers && cfg.headers["HX-Preloaded"] === "true";
+  }
+  function isUserListRequest(event) {
+    const detail = event.detail;
+    if (!detail || !detail.elt || !detail.target) {
+      return false;
+    }
+    if (detail.elt.id === "resource-list-content") {
+      return false;
+    }
+    return detail.target.id === "resource-list-content" && !isPreloadRequest(event);
+  }
+  document.addEventListener("htmx:configRequest", (event) => {
+    const elt = event.detail && event.detail.elt;
+    if (elt && elt.id === "resource-list-content") {
+      event.detail.headers["RO-No-Push"] = "true";
+    }
+  });
+  document.addEventListener("htmx:beforeRequest", (event) => {
+    const detail = event.detail;
+    if (detail && detail.xhr && detail.elt && detail.elt.id === "resource-list-content") {
+      containerListRequestsInFlight.add(detail.xhr);
+      return;
+    }
+    if (!isUserListRequest(event)) {
+      return;
+    }
+    if (detail && detail.xhr) {
+      userListRequestsInFlight.add(detail.xhr);
+    }
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx2();
+    if (content && htmx2) {
+      htmx2.trigger(content, "htmx:abort");
+    }
+  });
+  document.addEventListener("htmx:afterRequest", (event) => {
+    const xhr = event.detail && event.detail.xhr;
+    if (xhr) {
+      userListRequestsInFlight.delete(xhr);
+      containerListRequestsInFlight.delete(xhr);
+    }
+  });
+  function refreshMode() {
+    const stored = readPrefs().refresh;
+    if (stored) {
+      return stored;
+    }
+    let legacy = null;
+    try {
+      legacy = window.localStorage.getItem(REFRESH_KEY);
+    } catch {
+      return "";
+    }
+    if (legacy === null || legacy === "") {
+      return "";
+    }
+    const secs = parseInt(legacy, 10) || 0;
+    const mode = secs > 0 ? String(secs) : "Off";
+    roPrefsSetRefresh(mode);
+    return mode;
+  }
+  function refreshInterval() {
+    const secs = parseInt(refreshMode(), 10);
+    return Number.isFinite(secs) && secs > 0 ? secs : 0;
+  }
+  function listTableURL() {
+    const u = new URL(window.location.href);
+    return u.pathname.replace(/\/+$/, "") + "/_table" + u.search;
+  }
+  function requestListRefresh() {
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx2();
+    if (!content || !htmx2) {
+      return;
+    }
+    if (content.dataset.liveUrl === "location") {
+      const request = htmx2.ajax("GET", listTableURL(), { source: content });
+      if (request && typeof request.catch === "function") {
+        request.catch(() => {
+        });
+      }
+    } else {
+      htmx2.trigger(content, "ro:refresh");
+    }
+  }
+  window.requestListRefresh = requestListRefresh;
+  function fireRefresh() {
+    if (document.hidden) {
+      return;
+    }
+    pruneSettledListRequests(userListRequestsInFlight);
+    pruneSettledListRequests(containerListRequestsInFlight);
+    if (userListRequestsInFlight.size > 0) {
+      return;
+    }
+    if (containerListRequestsInFlight.size > 0) {
+      return;
+    }
+    requestListRefresh();
+  }
+  function effectivePollSeconds2() {
+    return effectivePollSeconds(refreshMode(), refreshInterval(), liveFallbackSeconds());
+  }
+  function refreshDelaySeconds2() {
+    return refreshDelaySeconds(effectivePollSeconds2(), refreshFailureStage);
+  }
+  function scheduleRefreshTick() {
+    if (refreshTimerId !== null) {
+      window.clearTimeout(refreshTimerId);
+      refreshTimerId = null;
+    }
+    const delay = refreshDelaySeconds2();
+    if (delay <= 0) {
+      refreshNextAt = 0;
+      updateStaleCountdown();
+      return;
+    }
+    refreshNextAt = Date.now() + delay * 1e3;
+    refreshTimerId = window.setTimeout(() => {
+      refreshTimerId = null;
+      scheduleRefreshTick();
+      fireRefresh();
+    }, delay * 1e3);
+    updateStaleCountdown();
+  }
+  function applyRefresh() {
+    refreshFailureStage = 0;
+    scheduleRefreshTick();
+  }
+  function syncRefreshUI() {
+    const live = refreshMode() === "Live";
+    const secs = refreshInterval();
+    const label = document.getElementById("refresh-label");
+    if (label) {
+      label.textContent = live ? "Live" : secs > 0 ? `${secs}s` : "Off";
+    }
+    document.querySelectorAll(".refresh-option").forEach((opt) => {
+      const value = opt.dataset.interval ?? "";
+      opt.classList.toggle("is-active", live ? value === "Live" : value !== "Live" && (parseInt(value, 10) || 0) === secs);
+    });
+    const dropdown = document.getElementById("refresh-dropdown");
+    if (dropdown) {
+      dropdown.classList.toggle("refresh-on", live || secs > 0);
+    }
+  }
+  function noteRefreshFailure() {
+    refreshFailureStage = nextFailureStage(refreshFailureStage);
+    scheduleRefreshTick();
+  }
+  function noteRefreshRecovery() {
+    if (refreshFailureStage === 0) {
+      return;
+    }
+    refreshFailureStage = 0;
+    scheduleRefreshTick();
+    const toast = window.roToast;
+    if (typeof toast === "function") {
+      toast("Refresh resumed");
+    }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && effectivePollSeconds2() > 0) {
+      fireRefresh();
+    }
+  });
+
+  // internal/assets/src/js/skeleton.ts
+  function listRegionIsEmpty(content) {
+    return content.childElementCount === 0;
+  }
+  document.addEventListener("htmx:beforeRequest", (event) => {
+    if (!isListRefreshEvent(event)) {
+      return;
+    }
+    const content = document.getElementById("resource-list-content");
+    const template = document.getElementById("ro-skel-template");
+    if (!content || !template || !listRegionIsEmpty(content)) {
+      return;
+    }
+    content.replaceChildren(
+      ...Array.from(template.children, (node) => node.cloneNode(true))
+    );
+  });
+  function clearListSkeleton() {
+    const content = document.getElementById("resource-list-content");
+    const skel = content && content.querySelector(":scope > .ro-skel");
+    if (skel) {
+      skel.remove();
+    }
+  }
+  document.addEventListener("htmx:responseError", (event) => {
+    if (isListRefreshEvent(event)) {
+      clearListSkeleton();
+    }
+  });
+  document.addEventListener("htmx:sendError", (event) => {
+    if (isListRefreshEvent(event)) {
+      clearListSkeleton();
+    }
+  });
+
   // internal/assets/src/js/legacy.js
   registerBindings(bindings);
   if (typeof htmx !== "undefined") {
@@ -2040,261 +2616,6 @@
       roPrefsSetSort(plural, sort);
     }
   });
-  var refreshTimerId = null;
-  var refreshNextAt = 0;
-  var refreshFailureStage = 0;
-  var userListRequestsInFlight = /* @__PURE__ */ new Set();
-  var containerListRequestsInFlight = /* @__PURE__ */ new Set();
-  function pruneSettledListRequests(requests) {
-    requests.forEach((xhr) => {
-      if (xhr.readyState === 4 || xhr.readyState === 0) {
-        requests.delete(xhr);
-      }
-    });
-  }
-  function isPreloadRequest(event) {
-    const cfg = event.detail && event.detail.requestConfig;
-    return !!cfg && !!cfg.headers && cfg.headers["HX-Preloaded"] === "true";
-  }
-  function isUserListRequest(event) {
-    const detail = event && event.detail;
-    if (!detail || !detail.elt || !detail.target) {
-      return false;
-    }
-    if (detail.elt.id === "resource-list-content") {
-      return false;
-    }
-    return detail.target.id === "resource-list-content" && !isPreloadRequest(event);
-  }
-  document.addEventListener("htmx:configRequest", (event) => {
-    const elt = event.detail && event.detail.elt;
-    if (elt && elt.id === "resource-list-content") {
-      event.detail.headers["RO-No-Push"] = "true";
-    }
-  });
-  document.addEventListener("htmx:beforeRequest", (event) => {
-    const detail = event.detail;
-    if (detail && detail.xhr && detail.elt && detail.elt.id === "resource-list-content") {
-      containerListRequestsInFlight.add(detail.xhr);
-      return;
-    }
-    if (!isUserListRequest(event)) {
-      return;
-    }
-    if (detail && detail.xhr) {
-      userListRequestsInFlight.add(detail.xhr);
-    }
-    const content = document.getElementById("resource-list-content");
-    if (content && typeof htmx !== "undefined") {
-      htmx.trigger(content, "htmx:abort");
-    }
-  });
-  document.addEventListener("htmx:afterRequest", (event) => {
-    const xhr = event.detail && event.detail.xhr;
-    if (xhr) {
-      userListRequestsInFlight.delete(xhr);
-      containerListRequestsInFlight.delete(xhr);
-    }
-  });
-  function refreshMode() {
-    const stored = readPrefs().refresh;
-    if (stored) {
-      return stored;
-    }
-    let legacy = null;
-    try {
-      legacy = window.localStorage.getItem(REFRESH_KEY);
-    } catch (e) {
-      return "";
-    }
-    if (legacy === null || legacy === "") {
-      return "";
-    }
-    const secs = parseInt(legacy, 10) || 0;
-    const mode = secs > 0 ? String(secs) : "Off";
-    roPrefsSetRefresh(mode);
-    return mode;
-  }
-  function refreshInterval() {
-    const secs = parseInt(refreshMode(), 10);
-    return Number.isFinite(secs) && secs > 0 ? secs : 0;
-  }
-  function listTableURL() {
-    const u = new URL(window.location.href);
-    return u.pathname.replace(/\/+$/, "") + "/_table" + u.search;
-  }
-  function requestListRefresh() {
-    const content = document.getElementById("resource-list-content");
-    if (!content || typeof htmx === "undefined") {
-      return;
-    }
-    if (content.dataset.liveUrl === "location") {
-      const request = htmx.ajax("GET", listTableURL(), { source: content });
-      if (request && typeof request.catch === "function") {
-        request.catch(() => {
-        });
-      }
-    } else {
-      htmx.trigger(content, "ro:refresh");
-    }
-  }
-  window.requestListRefresh = requestListRefresh;
-  function fireRefresh() {
-    if (document.hidden) {
-      return;
-    }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    if (userListRequestsInFlight.size > 0) {
-      return;
-    }
-    if (containerListRequestsInFlight.size > 0) {
-      return;
-    }
-    requestListRefresh();
-  }
-  function effectivePollSeconds() {
-    const secs = refreshInterval();
-    if (secs > 0) {
-      return secs;
-    }
-    return refreshMode() === "Live" ? liveFallbackSecs : 0;
-  }
-  function refreshDelaySeconds() {
-    const secs = effectivePollSeconds();
-    if (secs <= 0) {
-      return 0;
-    }
-    if (refreshFailureStage <= 1) {
-      return secs;
-    }
-    const factor = refreshFailureStage === 2 ? 2 : 4;
-    return Math.min(secs * factor, 60);
-  }
-  function scheduleRefreshTick() {
-    if (refreshTimerId !== null) {
-      window.clearTimeout(refreshTimerId);
-      refreshTimerId = null;
-    }
-    const delay = refreshDelaySeconds();
-    if (delay <= 0) {
-      refreshNextAt = 0;
-      updateStaleCountdown();
-      return;
-    }
-    refreshNextAt = Date.now() + delay * 1e3;
-    refreshTimerId = window.setTimeout(() => {
-      refreshTimerId = null;
-      scheduleRefreshTick();
-      fireRefresh();
-    }, delay * 1e3);
-    updateStaleCountdown();
-  }
-  function applyRefresh() {
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-  }
-  function syncRefreshUI() {
-    const live = refreshMode() === "Live";
-    const secs = refreshInterval();
-    const label = document.getElementById("refresh-label");
-    if (label) {
-      label.textContent = live ? "Live" : secs > 0 ? `${secs}s` : "Off";
-    }
-    document.querySelectorAll(".refresh-option").forEach((opt) => {
-      const value = opt.dataset.interval;
-      opt.classList.toggle("is-active", live ? value === "Live" : value !== "Live" && (parseInt(value, 10) || 0) === secs);
-    });
-    const dropdown = document.getElementById("refresh-dropdown");
-    if (dropdown) {
-      dropdown.classList.toggle("refresh-on", live || secs > 0);
-    }
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && effectivePollSeconds() > 0) {
-      fireRefresh();
-    }
-  });
-  var STALE_DIM_CLASS = "ro-stale";
-  var staleCountdownId = null;
-  function updateStaleCountdown() {
-    const span = document.querySelector(".ro-stale-banner [data-stale-countdown]");
-    if (!span) {
-      return;
-    }
-    if (!refreshNextAt) {
-      span.textContent = "…";
-      return;
-    }
-    const remaining = Math.max(0, Math.ceil((refreshNextAt - Date.now()) / 1e3));
-    span.textContent = remaining + "s";
-  }
-  function noteRefreshFailure() {
-    refreshFailureStage = Math.min(refreshFailureStage + 1, 3);
-    scheduleRefreshTick();
-  }
-  function noteRefreshRecovery() {
-    if (refreshFailureStage === 0) {
-      return;
-    }
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-    if (typeof window.roToast === "function") {
-      window.roToast("Refresh resumed");
-    }
-  }
-  function isListRefreshEvent(event) {
-    const detail = event && event.detail;
-    if (!detail || isPreloadRequest(event)) {
-      return false;
-    }
-    const elt = detail.elt;
-    if (!!elt && elt.id === "resource-list-content") {
-      return true;
-    }
-    const target = detail.target;
-    return !!target && target.id === "resource-list-content";
-  }
-  function markListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.add(STALE_DIM_CLASS);
-    }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (banner) {
-      banner.hidden = false;
-    }
-    if (staleCountdownId === null) {
-      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
-    }
-    updateStaleCountdown();
-  }
-  function clearListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.remove(STALE_DIM_CLASS);
-    }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (banner) {
-      banner.hidden = true;
-    }
-    if (staleCountdownId !== null) {
-      window.clearInterval(staleCountdownId);
-      staleCountdownId = null;
-    }
-  }
-  document.addEventListener("htmx:responseError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
-    }
-  });
-  document.addEventListener("htmx:sendError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
-    }
-  });
   document.addEventListener("htmx:afterSwap", (event) => {
     if (isListRefreshEvent(event)) {
       noteRefreshRecovery();
@@ -2312,263 +2633,6 @@
       liveOnListSwap(event);
     }
   });
-  function listRegionIsEmpty(content) {
-    return content.childElementCount === 0;
-  }
-  document.addEventListener("htmx:beforeRequest", (event) => {
-    if (!isListRefreshEvent(event)) {
-      return;
-    }
-    const content = document.getElementById("resource-list-content");
-    const template = document.getElementById("ro-skel-template");
-    if (!content || !template || !listRegionIsEmpty(content)) {
-      return;
-    }
-    content.replaceChildren(
-      ...Array.from(template.children, (node) => node.cloneNode(true))
-    );
-  });
-  function clearListSkeleton() {
-    const content = document.getElementById("resource-list-content");
-    const skel = content && content.querySelector(":scope > .ro-skel");
-    if (skel) {
-      skel.remove();
-    }
-  }
-  document.addEventListener("htmx:responseError", (event) => {
-    if (isListRefreshEvent(event)) {
-      clearListSkeleton();
-    }
-  });
-  document.addEventListener("htmx:sendError", (event) => {
-    if (isListRefreshEvent(event)) {
-      clearListSkeleton();
-    }
-  });
-  var liveState = {
-    status: "idle",
-    // 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden'
-    abort: null,
-    // AbortController of the current stream fetch
-    gen: "",
-    // the minted generation every frame must echo (string compare)
-    streamPath: ""
-    // the stream URL sans ?g= -- the page/params identity
-  };
-  var liveGenSeq = 0;
-  var liveDiscards = 0;
-  var liveFallbackSecs = 0;
-  function liveSupported() {
-    const content = document.getElementById("resource-list-content");
-    if (!content || content.dataset.liveUrl !== "location") {
-      return false;
-    }
-    const option = document.querySelector('.refresh-option[data-interval="Live"]');
-    return !!option && !option.disabled;
-  }
-  function liveStreamBase() {
-    const u = new URL(window.location.href);
-    return u.pathname.replace(/\/+$/, "") + "/_stream" + u.search;
-  }
-  function liveTeardown() {
-    const ctrl = liveState.abort;
-    liveState.abort = null;
-    if (ctrl) {
-      try {
-        ctrl.abort();
-      } catch (e) {
-      }
-    }
-  }
-  function liveEngageFallback(banner) {
-    liveTeardown();
-    liveState.status = "fallback";
-    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
-    scheduleRefreshTick();
-    if (banner) {
-      markListStale();
-    }
-  }
-  function liveOpen(base) {
-    liveTeardown();
-    liveFallbackSecs = 0;
-    liveState.streamPath = base;
-    if (!base) {
-      liveEngageFallback(false);
-      return;
-    }
-    liveState.status = "connecting";
-    liveGenSeq += 1;
-    liveState.gen = Date.now().toString(36) + "." + liveGenSeq;
-    const ctrl = new AbortController();
-    liveState.abort = ctrl;
-    const url = base + (base.indexOf("?") === -1 ? "?" : "&") + "g=" + encodeURIComponent(liveState.gen);
-    scheduleRefreshTick();
-    liveConnect(url, ctrl);
-  }
-  async function liveConnect(url, ctrl) {
-    let res = null;
-    try {
-      res = await fetch(url, { signal: ctrl.signal });
-    } catch (e) {
-      if (liveState.abort !== ctrl) {
-        return;
-      }
-      liveEngageFallback(false);
-      return;
-    }
-    if (liveState.abort !== ctrl) {
-      return;
-    }
-    if (res.status !== 200 || !res.body) {
-      liveEngageFallback(false);
-      return;
-    }
-    liveState.status = "open";
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffered = "";
-    let eventName = "";
-    let dataText = "";
-    try {
-      for (; ; ) {
-        const chunk = await reader.read();
-        if (liveState.abort !== ctrl) {
-          return;
-        }
-        if (chunk.done) {
-          break;
-        }
-        buffered += decoder.decode(chunk.value, { stream: true });
-        let nl = buffered.indexOf("\n");
-        while (nl !== -1) {
-          const line = buffered.slice(0, nl).replace(/\r$/, "");
-          buffered = buffered.slice(nl + 1);
-          if (line === "") {
-            const ended = liveHandleFrame(eventName, dataText, ctrl);
-            eventName = "";
-            dataText = "";
-            if (ended || liveState.abort !== ctrl) {
-              return;
-            }
-          } else if (line.indexOf("event:") === 0) {
-            eventName = line.slice(6).trim();
-          } else if (line.indexOf("data:") === 0) {
-            const piece = line.slice(5).replace(/^ /, "");
-            dataText = dataText === "" ? piece : `${dataText}
-${piece}`;
-          }
-          nl = buffered.indexOf("\n");
-        }
-      }
-    } catch (e) {
-      if (liveState.abort !== ctrl) {
-        return;
-      }
-      liveEngageFallback(true);
-      return;
-    }
-    if (liveState.abort !== ctrl) {
-      return;
-    }
-    liveEngageFallback(true);
-  }
-  function liveHandleFrame(name, text, ctrl) {
-    if (liveState.abort !== ctrl || text === "") {
-      return false;
-    }
-    let payload = null;
-    try {
-      payload = JSON.parse(text);
-    } catch (e) {
-      return false;
-    }
-    if (!payload || typeof payload !== "object") {
-      return false;
-    }
-    if (name === "ro-terminal") {
-      liveEngageFallback(true);
-      return true;
-    }
-    if (name !== "ro-table") {
-      return false;
-    }
-    if (String(payload.g) !== liveState.gen) {
-      liveDiscards += 1;
-      return false;
-    }
-    if (liveStreamBase() !== liveState.streamPath) {
-      liveDiscards += 1;
-      return false;
-    }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    if (userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0) {
-      liveDiscards += 1;
-      return false;
-    }
-    liveMorph(String(payload.html));
-    return false;
-  }
-  function liveMorph(html) {
-    const content = document.getElementById("resource-list-content");
-    if (!content || typeof htmx === "undefined" || typeof htmx.swap !== "function") {
-      return;
-    }
-    htmx.swap(content, html, { swapStyle: "morph" }, {
-      contextElement: content,
-      eventInfo: { target: content, roLivePush: true }
-    });
-  }
-  function liveOnListSwap(event) {
-    const detail = event && event.detail;
-    if (detail && detail.roLivePush) {
-      return;
-    }
-    if (liveState.status !== "open" && liveState.status !== "connecting") {
-      return;
-    }
-    let base = liveStreamBase();
-    const pathInfo = detail && detail.pathInfo;
-    const requestPath = pathInfo && (pathInfo.finalRequestPath || pathInfo.requestPath);
-    if (requestPath && requestPath.indexOf("/_table") !== -1) {
-      base = requestPath.replace("/_table", "/_stream");
-    }
-    liveOpen(base);
-  }
-  function liveApply(force) {
-    if (refreshMode() !== "Live") {
-      if (liveState.status !== "idle") {
-        liveTeardown();
-        liveState.status = "idle";
-        liveState.streamPath = "";
-        liveFallbackSecs = 0;
-      }
-      return;
-    }
-    const base = liveSupported() ? liveStreamBase() : "";
-    if (!force && base === liveState.streamPath && liveState.status !== "idle") {
-      return;
-    }
-    liveOpen(base);
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      if (liveState.status === "open" || liveState.status === "connecting") {
-        liveTeardown();
-        liveState.status = "hidden";
-      }
-      return;
-    }
-    if (liveState.status === "hidden" && refreshMode() === "Live") {
-      liveOpen(liveSupported() ? liveStreamBase() : "");
-    }
-  });
-  window.roLive = {
-    discards() {
-      return liveDiscards;
-    }
-  };
   window.roToast = showToast;
   document.addEventListener("htmx:beforeSwap", (event) => {
     if (event.detail && event.detail.target === document.body) {
@@ -2578,7 +2642,6 @@ ${piece}`;
       liveTeardown();
       liveState.status = "idle";
       liveState.streamPath = "";
-      liveFallbackSecs = 0;
     }
   });
   document.addEventListener("htmx:historyRestore", () => {
