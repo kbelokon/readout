@@ -16,106 +16,70 @@
        matches `<h1 class="title">name` verbatim), so the mono-name treatment is
        scoped to a title that CONTAINS a kind badge -- i.e. only the detail header,
        never the list page's plain "Pods" title. */
-    h1.title:has(.ro-kind-badge) {
-        align-items: baseline;
-        flex-wrap: wrap;
-        gap: 0.625rem;
-        font-family: var(--font-mono);
-        font-size: 1.375rem;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-        color: var(--text);
-    }
     /* Kind badge: a small uppercase mono pill in the accent-weak wash (matches the
-       sidebar active tint), sitting just after the mono resource name. */
+       sidebar active tint), sitting just after the mono resource name. Single
+       contract (Unit 17): the former `.ro-rd .ro-kind-badge` override and the bare
+       twin are merged here -- `.ro-kind-badge` is only ever emitted inside a
+       `.ro-rd` content root (resource_view / logs), so the de-scoped rule paints
+       the same pixels the scoped rule did. The dead `h1.title:has(.ro-kind-badge)`
+       header rules were removed: the detail <h1> is `.ro-title` (not `.title`) and
+       the badge is its SIBLING (inside `.ro-detail-title`), never a descendant. */
     .ro-kind-badge {
         display: inline-flex;
         align-items: center;
         height: 1.375rem;
-        padding: 0 0.5rem;
-        border-radius: var(--pill-radius);
-        background: var(--accent-weak);
-        color: var(--accent-text);
-        font-family: var(--font-mono);
-        font-size: 0.625rem;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
         white-space: nowrap;
-        order: -1;            /* badge reads LEFT of the name (markup keeps name first
-                                 so the offline `<h1 class="title">name` pin holds) */
+        order: 0;
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 400;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 5px;
+        background: var(--accent-weak);
+        color: var(--accent);
     }
-    /* Detail-header meta line. (Unit 16: the header link-outs are now plain
-       `.ro-iconbtn` anchors in `.ro-detail-actions` -- the same icon-button skin as
-       the Download button beside them -- so the dead `h1 .links .button.ro-link-out`
-       rules (which required a `.button` inside `h1 .links`, never emitted) and the
-       `ro-link-out` token on the markup were removed. `.ro-iconbtn` is the single
-       authoritative skin.) */
-    h1.title:has(.ro-kind-badge) .meta {
-        font-family: var(--font-ui);
-        color: var(--text-faint);
-        font-size: 0.8125rem;
-    }
+    /* the containers-table `init` badge is MUTE, not accent (D14): an init
+       container is a fact, not a call to action. */
+    .ro-kind-badge.init { background: var(--st-mute-bg); color: var(--st-mute); }
 
     /* Labels / Annotations sections: a quiet uppercase mono caption (matching the
-       sidebar group labels) over a wrapped row of chips. */
-    .ro-section { margin-bottom: 1rem; }
+       sidebar group labels) over a wrapped row of chips. Single contract (Unit 17):
+       the bare twin and the `.ro-rd`-scoped override are merged (the `.ro-section`
+       / `.ro-section-label` markup is only emitted under `.ro-rd`). */
+    .ro-section { margin: 0 0 22px; }
     .ro-section-label {
         font-family: var(--font-mono);
-        font-size: 0.71875rem;
-        font-weight: 600;
-        letter-spacing: 0.09em;
+        font-size: 10px;
+        font-weight: 400;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--text-faint);
-        margin-bottom: 0.5rem;
+        margin: 0 0 9px;
     }
-    .ro-chips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.3125rem;
-        align-items: flex-start;
-    }
-
-    /* Chips. The LABEL chip keeps its selector <a> + the pinned `.tag.is-link`
-       inner span working (the click-to-filter link is load-bearing); we re-skin
-       the tag to a neutral bordered surface token. The ANNOTATION chip is the same
-       skin on a bare `.tag`. */
+    /* Chips. Single contract (Unit 17): the chip SKIN + `.ro-chips` layout are owned
+       by table.css; the dead `.ro-chip .tag` / `.tag.ro-chip` tag-based skin was
+       removed (`.tag` is no longer emitted in any template). Only the chip box
+       layout the skin rule does not restate (display / flex) stays here. */
     .ro-chip {
         display: inline-flex;
-        max-width: 21.25rem;
         flex: 0 0 auto;
     }
-    .ro-chip .tag,
-    .tag.ro-chip {
-        height: auto;
-        padding: 0.125rem 0.5rem;
-        border-radius: var(--radius-sm);
-        background: var(--surface-2);
-        border: 1px solid var(--border);
-        color: var(--text-muted);
-        font-family: var(--font-mono);
-        font-size: 0.75rem;
-        line-height: 1.5;
-        white-space: nowrap;
-        max-width: 100%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        display: inline-block;
-        transition: border-color .12s, color .12s;
-    }
-    a.ro-chip:hover .tag { border-color: var(--border-strong); color: var(--text); }
-    .ro-chip-trunc { min-width: 0; }
     /* (D3 colour law) the legacy `.ro-chip.ro-label-app` green accent rules were
        removed: labels are neutral, key/value differ by ink weight, never hue. */
 
-    /* Owner line: a quiet mono line; the owner links carry the accent text colour,
-       the (Kind) suffix is faint. The owner <a>s are kept verbatim. */
+    /* Owner line: a quiet mono line. Single contract (Unit 17): the bare twin and
+       the `.ro-rd`-scoped override are merged -- `.ro-owner` is only emitted under
+       `.ro-rd` (resource_view), so the de-scoped rule paints the same pixels. The
+       prefix text reads in the body UI font; the links read on the neutral link
+       colour (matching the other secondary resource links), not accent green. */
     .ro-owner {
-        font-family: var(--font-mono);
-        font-size: 0.875rem;
+        font-family: inherit;
+        font-size: 13px;
         color: var(--text-muted);
     }
-    .ro-owner a { color: var(--accent-text); }
+    .ro-owner a { font-family: var(--font-mono); color: var(--text-muted); }
     .ro-owner .kind { color: var(--text-faint); }
 
     /* Global footer -> a quiet hairline-topped strip on the page surface. The
@@ -217,18 +181,6 @@
        existing app rule. Non-colliding net-new names stay bare. */
     .ro-detail-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 2px 0 14px; }
     .ro-detail-title .ro-title { font-size: 23px; }
-    /* `order: 0` OVERRIDES the leaking old bare `.ro-kind-badge { order: -1 }` (the
-       only `order:` in the stylesheet): base.css sets no order, so the badge follows
-       DOM order -- `name [BADGE]`, not `[BADGE] name`. */
-    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-kind-badge
-       { font-weight: 600 }`: base.css sets no weight on the badge (10px uppercase
-       mono caption stays normal weight), so the badge is not bold. */
-    .ro-rd .ro-kind-badge { order: 0; font-weight: 400; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
-        text-transform: uppercase; padding: 3px 8px; border-radius: 5px;
-        background: var(--accent-weak); color: var(--accent); }
-    /* the containers-table `init` badge is MUTE, not accent (D14): an init
-       container is a fact, not a call to action. */
-    .ro-rd .ro-kind-badge.init { background: var(--st-mute-bg); color: var(--st-mute); }
     /* SPEC §6.6: the hash tail stays faint even in the title; the tail also
        sheds the heading weight so the workload head leads (prototype). The
        colours ride the global .pn-head/.pn-tail rules. */
@@ -243,14 +195,6 @@
     .ro-tabs a.is-active { color: var(--text); }
     .ro-tabs a.is-active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
         height: 2px; background: var(--accent); border-radius: 2px; }
-
-    /* sections (redesign) -- canonical names under the .ro-rd content marker */
-    .ro-rd .ro-section { margin: 0 0 22px; }
-    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-section-label
-       { font-weight: 600 }`: base.css keeps the 10px uppercase mono caption at
-       normal weight. */
-    .ro-rd .ro-section-label { font-weight: 400; font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
-        text-transform: uppercase; color: var(--text-faint); margin: 0 0 9px; }
 
     /* key/value lists (node capacity, system info) -- redesign */
     .ro-rd .ro-kv-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; }
@@ -280,37 +224,9 @@
     .ro-rd .ro-cond-pill.mute { background: var(--st-mute-bg); border-color: transparent; }
     .ro-rd .ro-cond-pill .ro-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: none; }
 
-    /* owners line (redesign) */
-    /* `font-family: inherit` OVERRIDES the leaking old bare `.ro-owner
-       { font-family: var(--font-mono) }`: base.css puts mono only on the owner
-       LINKS (`.ro-owner a`), so the "Owner …" prefix text reads in the body UI
-       font, not mono. */
-    .ro-rd .ro-owner { font-family: inherit; font-size: 13px; color: var(--text-muted); }
-    /* `color: var(--text-muted)` OVERRIDES the leaking old bare `.ro-owner a
-       { color: var(--accent-text) }`: base.css leaves owner links on the neutral
-       link colour (not accent green), matching the other secondary resource links
-       (`td.cell-node a` / `td.cell-ns a` are already `--text-muted`). */
-    .ro-rd .ro-owner a { font-family: var(--font-mono); color: var(--text-muted); }
-    .ro-rd .ro-owner .kind { color: var(--text-faint); }
-
-    /* YAML cards (collapsible per-section) -- redesign. NOTE (Unit 16): the COLLAPSE
-       is driven by `is-collapsed` on the `.collapsible` card (readout.js) + the live
-       `div.section.is-collapsed .ro-card-content { display:none }` rule above; the markup is
-       `.ro-card-head > h4.title` + `.ro-card-content` (the highlighted YAML), with no `.fold`
-       / `.ro-card-body` / `.key-count` / `.collapsed` elements. The dead overlay
-       lines that keyed on `.collapsed`/`.ro-card-body`/`.fold`/`.key-count` were
-       removed -- they claimed to own a collapse they never drove. */
-    .ro-rd .ro-yaml-card { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin: 0 0 12px; background: var(--surface); }
-    .ro-rd .ro-card-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px;
-        background: var(--card-head-bg); border-bottom: 1px solid var(--border); cursor: pointer; }
-    .ro-rd .ro-card-head h4 { font-size: 13px; font-weight: 600; margin: 0; }
-    .ro-rd .ro-copy-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
-        font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
-        background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px; cursor: pointer; }
-    /* `background: transparent` OVERRIDES the leaking old bare `.ro-copy-btn:hover
-       { background: var(--surface-2) }`: base.css keeps the copy button's hover
-       transparent (it changes only color + border-color). */
-    .ro-rd .ro-copy-btn:hover { background: transparent; color: var(--text); border-color: var(--border-strong); }
+    /* YAML cards: the card chrome (`.ro-yaml-card` / `.ro-card-head` / `.ro-copy-btn`)
+       is owned as a SINGLE contract by cards-yaml.css (Unit 17); only the YAML body
+       token rules stay here. */
 
     /* YAML / code block (redesign bare variant) */
     .ro-yaml { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.65;

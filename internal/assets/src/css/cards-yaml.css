@@ -156,19 +156,32 @@
        block background INSIDE the card so the code sits flush on the card surface
        (no box-in-box), draw a faint hairline-separated gutter, and let long lines
        wrap so a 400+ line / CRD object never blows out the card width. */
+    /* Single contract (Unit 17): the former `.ro-rd .ro-yaml-card/.ro-card-head/
+       .ro-copy-btn` overrides (detail.css) are folded into these `.ro-yaml-card`-
+       scoped rules -- the cards are only emitted inside a `.ro-rd` content root
+       (resource_view), so the de-scoped rules paint the same pixels the scoped
+       overrides did (the scoped rules won by being equal-specificity but later in
+       the bundle). */
     .ro-yaml-card {
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: var(--radius);
         overflow: hidden;
     }
+    /* The card margin must OUT-SPECIFY the `div.section { margin: 0 0 1rem 0 }`
+       base rule (0,1,1): the card is `div.section.collapsible.ro-yaml-card`, so a
+       bare `.ro-yaml-card` (0,1,0) would lose and the inter-card gap would jump
+       from 12px to 16px. `div.section.ro-yaml-card` (0,2,1) wins (this is what the
+       former `.ro-rd .ro-yaml-card` (0,2,0) achieved before de-scoping). */
+    div.section.ro-yaml-card { margin: 0 0 12px; }
     .ro-yaml-card .ro-card-head {
         display: flex;
         align-items: center;
-        gap: 0.5rem;
-        padding: 0.5rem 0.75rem 0.5rem 0.875rem;
+        gap: 10px;
+        padding: 9px 14px;
         background: var(--card-head-bg);
         border-bottom: 1px solid var(--border);
+        cursor: pointer;
     }
     /* the fold target keeps its h4.title role; inside the card it is a flush mono
        caption with the fold caret moved to the LEFT, and no hairline of its own
@@ -198,23 +211,32 @@
     /* Per-section copy button: a quiet token chip (muted icon + mono "copy"
        label) that warms on hover -- saturation stays reserved for status. The
        label is swapped to "copied" in JS (textContent), not via CSS content. */
+    /* Single contract (Unit 17): the `.ro-rd .ro-copy-btn` override is folded in
+       here (the copy button is only emitted inside `.ro-rd`). Note the HOVER stays
+       transparent (it changes only color + border-color) while FOCUS keeps the
+       surface-2 wash -- the two states differ on purpose. */
     .ro-copy-btn {
+        margin-left: auto;
         flex: 0 0 auto;
         display: inline-flex;
         align-items: center;
-        gap: 0.3125rem;
-        padding: 0.1875rem 0.5rem;
-        background: var(--surface);
+        gap: 6px;
+        padding: 3px 8px;
+        background: transparent;
         border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        color: var(--text-muted);
+        border-radius: 5px;
+        color: var(--text-faint);
         font-family: var(--font-mono);
-        font-size: 0.6875rem;
+        font-size: 11px;
         line-height: 1.4;
         cursor: pointer;
         transition: border-color .12s, color .12s, background .12s;
     }
-    .ro-copy-btn:hover,
+    .ro-copy-btn:hover {
+        border-color: var(--border-strong);
+        color: var(--text);
+        background: transparent;
+    }
     .ro-copy-btn:focus {
         border-color: var(--border-strong);
         color: var(--text);

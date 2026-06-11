@@ -261,7 +261,7 @@ templ searchResultRow(row SearchResultRow) {
 // searchBreadcrumb renders the search-page breadcrumb (all / cluster /
 // namespace / search).
 templ searchBreadcrumb(b SearchBreadcrumb) {
-	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul>
+	<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul>
 		if b.IsAllClusters {
 			<li><a href="/clusters">all</a></li>
 		} else if b.Cluster != "" {

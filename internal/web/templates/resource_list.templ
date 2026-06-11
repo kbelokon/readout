@@ -106,7 +106,7 @@ templ listSkeleton(d ListData) {
 }
 
 templ listBreadcrumb(b ListBreadcrumb) {
-	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul>
+	<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul>
 		if b.IsAllClusters {
 			<li><a href="/clusters">all</a></li>
 		} else {

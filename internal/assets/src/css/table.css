@@ -10,37 +10,46 @@
        as the per-row stripes) + a label + a mono count; the right side is the
        visible-row total. The dot rule itself lives in @layer theme (shared with the
        Status cell); this rule only owns the band's layout and the mono numerals. */
+    /* Single contract (Unit 17): the former `.ro-rd .ro-phase-strip/-tally/-chip/
+       -count` overrides are folded into these bare rules -- the phase strip is only
+       emitted inside a `.ro-rd` content root (resource_table / search), so the
+       de-scoped rules paint the same pixels the scoped overrides did. Properties the
+       scoped rules did not restate (font-size on the strip, min-width on the tally,
+       white-space on the chip, font-family/color on the count, the whole -label /
+       -total rules) are kept here. */
     .ro-phase-strip {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 1rem;
+        gap: 16px;
         flex-wrap: wrap;
-        margin-bottom: 0.625rem;
-        padding: 0.5rem 0.875rem;
+        margin: 0 0 12px;
+        padding: 8px 12px;
         background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
+        border-radius: var(--radius);
         font-size: 0.8125rem;
     }
     .ro-phase-tally {
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        gap: 0.25rem 1rem;
+        gap: 18px;
         min-width: 0;
     }
     .ro-phase-chip {
         display: inline-flex;
-        align-items: baseline;
+        align-items: center;
         white-space: nowrap;
+        gap: 7px;
+        font-size: 12.5px;
         color: var(--text-muted);
     }
     .ro-phase-label { color: var(--text-muted); }
     .ro-phase-count {
-        margin-left: 0.375rem;
+        margin-left: 0;
         font-family: var(--font-mono);
-        font-weight: 600;
+        font-weight: 550;
         color: var(--text);
     }
     .ro-phase-total {
@@ -63,19 +72,12 @@
        group/version/scope cells + the CRD badge. App wins by layer order.
        --------------------------------------------------------------------------- */
 
-    /* Title count badge ("Clusters 4", "Resource Types 19"): a small quiet mono
-       pill after the page title, reusing the surface-2 chip skin. */
-    h1.title .ro-count {
-        font-family: var(--font-mono);
-        font-size: 0.6875rem;
-        font-weight: 600;
-        vertical-align: middle;
-        margin-left: 0.5rem;
-        padding: 0.125rem 0.4375rem;
-        border-radius: var(--radius-sm);
-        background: var(--surface-2);
-        color: var(--text-faint);
-    }
+    /* (Unit 17) the dead `h1.title .ro-count` rule was removed: every `.ro-count`
+       in markup is a SIBLING of the title (`.ro-title-row > h1 + .ro-count` on
+       Clusters / Resource Types / list tables, `.search-cluster > .ro-count` on
+       search), never a DESCENDANT of an `h1.title`, so the descendant rule matched
+       nothing. The two live count badges are owned by `.ro-title-row .ro-count`
+       (shell.css) and `.search-cluster .ro-count` (search.css). */
 
     /* =====================================================================
        Redesign chrome dissolved here from the former redesign.css module
@@ -83,28 +85,6 @@
        bare twins above by specificity (.ro-rd-scoped / element-qualified),
        so concatenation order is not load-bearing for them.
        ===================================================================== */
-    /* ---------------------------------------------------------------- PHASE STRIP (redesign)
-       The redesign phase strip is `<div class="ro-phase-strip">` -- the SAME selector
-       the live phase strip uses. Scoped under the redesign CONTENT marker `.ro-rd`
-       (D13), NOT `.ro-shell`: `.ro-shell` is the layout grid present on EVERY screen
-       and cannot distinguish migrated content, whereas `.ro-rd` is added only by a
-       migrated content template -- so the live phase strip keeps its existing
-       `.ro-phase-strip` app rule until that screen migrates. */
-    .ro-rd .ro-phase-strip {
-        display: flex; align-items: center; justify-content: space-between;
-        gap: 16px; margin: 0 0 12px; flex-wrap: wrap;
-        padding: 8px 12px; border: 1px solid var(--border);
-        border-radius: var(--radius); background: var(--surface);
-    }
-    .ro-rd .ro-phase-tally { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
-    .ro-rd .ro-phase-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-muted); }
-    /* `margin-left: 0` OVERRIDES the leaking old bare `.ro-phase-count
-       { margin-left: 0.375rem }`: base.css gives the count no margin -- the
-       label->count spacing is the chip's `gap: 7px`, so the leak doubled it to ~13px.
-       `font-weight: 550` matches base.css (old bare leaked 600 -- a hair heavier). */
-    .ro-rd .ro-phase-count { margin-left: 0; font-weight: 550; }
-
-
     /* ---------------------------------------------------------------- TABLE (redesign) */
     .ro-table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; background: var(--surface); }
     table.ro-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -254,38 +234,41 @@
        reads faint, the ghost separator (.cs) fainter, the value (.cv) firm at
        weight 550 -- ink weight differentiates, never hue. The legacy green
        `.app` chip accent is retired; no chip rule may tint by label key. */
-    .ro-rd .ro-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-    .ro-rd .ro-chip {
+    /* Single contract (Unit 17): the chip skin is de-scoped from `.ro-rd` to bare
+       here -- `.ro-chip`/`.ro-chips` are only emitted inside a `.ro-rd` content root
+       (cluster / clusters / resource_table / resource_view), so the de-scoped rules
+       paint the same pixels. The chip LAYOUT props the skin does not restate
+       (display: inline-flex / flex / align-items on `.ro-chips`) live in detail.css.
+       The dead `.ro-chip .tag` tag-based skin was removed (`.tag` is no longer
+       emitted). */
+    .ro-chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: flex-start; }
+    .ro-chip {
         font-family: var(--font-mono); font-size: 11px;
         padding: 2px 7px; border-radius: var(--pill-radius);
         background: var(--chip-bg); border: 1px solid var(--chip-border);
         color: var(--text-muted); white-space: nowrap;
-        /* `max-width: none` OVERRIDES the leaking old bare `.ro-chip
-           { max-width: 21.25rem }`: with nowrap and no overflow, a label longer
-           than 340px spilled OUT of the chip onto its neighbour. base.css leaves a
-           base label chip uncapped so it grows to its text; .trunc/.anno cap. */
         max-width: none;
     }
-    .ro-rd .ro-chip .ck { color: var(--chip-key); }
-    .ro-rd .ro-chip .cs { color: var(--text-ghost); }
-    .ro-rd .ro-chip .cv { color: var(--chip-val); font-weight: 550; }
+    .ro-chip .ck { color: var(--chip-key); }
+    .ro-chip .cs { color: var(--text-ghost); }
+    .ro-chip .cv { color: var(--chip-val); font-weight: 550; }
     /* a LINK chip (detail-page selector filter) earns the green hover -- a
        navigable identifier is one of the four sanctioned greens (D3: link). */
-    .ro-rd a.ro-chip:hover { border-color: var(--border-strong); }
-    .ro-rd a.ro-chip:hover .cv { color: var(--accent-text); }
-    .ro-rd .ro-chip.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
-    .ro-rd .ro-chip.anno { max-width: 320px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+    a.ro-chip:hover { border-color: var(--border-strong); }
+    a.ro-chip:hover .cv { color: var(--accent-text); }
+    .ro-chip.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+    .ro-chip.anno { max-width: 320px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 
     /* long annotations (SPEC §7.15): a >120-char value renders as a collapsed
        `key · size` toggle chip; the payload expands into a scrollable <pre>
        capped at 300px (the only place a long annotation value renders whole).
        readout.js flips [hidden] on the .anno-pre + .open on the toggle. */
-    .ro-rd .anno-long { margin-top: 7px; }
-    .ro-rd .ro-chip.anno-toggle { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
-    .ro-rd .ro-chip.anno-toggle:hover { border-color: var(--border-strong); }
-    .ro-rd .ro-chip.anno-toggle .anno-chev { display: inline-flex; color: var(--text-faint); transition: transform var(--dur); }
-    .ro-rd .ro-chip.anno-toggle.open .anno-chev { transform: rotate(180deg); }
-    .ro-rd .anno-pre { margin: 7px 0 0; padding: 11px 14px; background: var(--code-bg);
+    .anno-long { margin-top: 7px; }
+    .ro-chip.anno-toggle { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    .ro-chip.anno-toggle:hover { border-color: var(--border-strong); }
+    .ro-chip.anno-toggle .anno-chev { display: inline-flex; color: var(--text-faint); transition: transform var(--dur); }
+    .ro-chip.anno-toggle.open .anno-chev { transform: rotate(180deg); }
+    .anno-pre { margin: 7px 0 0; padding: 11px 14px; background: var(--code-bg);
         border: 1px solid var(--border); border-radius: var(--radius-sm);
         font: 11px/1.65 var(--font-mono); color: var(--text-muted);
         max-height: 300px; max-width: 720px; overflow: auto; }
@@ -295,8 +278,8 @@
        is what makes flex-wrap actually wrap in an auto-layout cell; the chips stay
        full and stack on multiple lines, and only a single chip wider than the
        column ellipsises. Detail-page chips (outside .ro-table-wrap) are unbounded. */
-    .ro-rd .ro-table-wrap .ro-chips { max-width: 34rem; }
-    .ro-rd .ro-table-wrap .ro-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+    .ro-table-wrap .ro-chips { max-width: 34rem; }
+    .ro-table-wrap .ro-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 
     /* in-cell +N overflow (SPEC §4.9 label/selector chips, §4.10 data keys):
        chips past the threshold carry `.xtra` and stay hidden until the strip
@@ -307,13 +290,13 @@
        scope can disable in-cell expansion under virtualization by hiding the
        button (e.g. `.ro-rd .ro-windowed .ro-chip.more { display: none; }`) --
        no JS change needed. */
-    .ro-rd .ro-chip.more { color: var(--text-faint); cursor: pointer; }
-    .ro-rd .ro-chip.more:hover { color: var(--text-muted); border-color: var(--border-strong); }
-    .ro-rd .ro-chips .xtra { display: none; }
-    .ro-rd .ro-chips.expanded .xtra { display: inline-flex; }
-    .ro-rd .ro-chip.more .more-less { display: none; }
-    .ro-rd .ro-chips.expanded .more-n { display: none; }
-    .ro-rd .ro-chips.expanded .more-less { display: inline; }
+    .ro-chip.more { color: var(--text-faint); cursor: pointer; }
+    .ro-chip.more:hover { color: var(--text-muted); border-color: var(--border-strong); }
+    .ro-chips .xtra { display: none; }
+    .ro-chips.expanded .xtra { display: inline-flex; }
+    .ro-chip.more .more-less { display: none; }
+    .ro-chips.expanded .more-n { display: none; }
+    .ro-chips.expanded .more-less { display: inline; }
 
     /* ------------------------------------------------ VIRTUALIZATION (Unit 24 / D20)
        Above ~500 rows the server marks the wrap `.ro-windowed` (it replaces

@@ -30,39 +30,21 @@
     }
     a { color: var(--id-color); text-decoration: none; }
 
-    /* DATA -> mono. Code/pre/highlight (YAML + resource blocks), the breadcrumb
-       path, kind/label tags, and table cells (identifiers + numerics + ages).
-       The breadcrumb is a quiet mono path, so it takes the muted data colour. */
+    /* DATA -> mono. Code/pre/highlight (YAML + resource blocks), kind/label tags,
+       and table cells (identifiers + numerics + ages). (Unit 17: the breadcrumb
+       mono now rides the single `.ro-rd .ro-breadcrumb` contract in shell.css; the
+       `nav.breadcrumb` legacy hook was removed here with the legacy rules below.) */
     code,
     pre,
     .highlight,
     .highlight pre,
-    nav.breadcrumb,
     .tag,
     table.table th,
     table.table td { font-family: var(--font-mono); }
 
-    /* ---------------------------------------------------------------------------
-       Breadcrumb -> quiet mono path. The real cluster / namespace /
-       endpoint links are KEPT (the template still renders them as <a>); this only
-       restyles them into a calm technical path: small mono type, muted links that
-       warm to the accent on hover, faint "/" separators from li+li::before, and
-       the trailing current segment in plain body text. The current crumb is inert,
-       while every ancestor segment stays a working link. */
-    nav.breadcrumb.ro-breadcrumb {
-        font-size: 0.78rem;
-        margin-bottom: 0.85rem;
-    }
-    nav.breadcrumb.ro-breadcrumb a {
-        color: var(--text-muted);
-        padding: 0 0.4em;
-    }
-    nav.breadcrumb.ro-breadcrumb a:hover { color: var(--accent-text); }
-    nav.breadcrumb.ro-breadcrumb li.is-active a { color: var(--text); }
-    nav.breadcrumb.ro-breadcrumb li + li::before {
-        color: var(--text-faint);
-        opacity: 0.5;
-    }
+    /* (Unit 17) the legacy `nav.breadcrumb.ro-breadcrumb` rules were removed: the
+       breadcrumb is now a SINGLE `.ro-rd .ro-breadcrumb` contract (shell.css) that
+       carries the exact values these rules were painting. */
 
     /* Inline-SVG icons (Lucide) emitted by the partials/icons.html `icon()` macro.
        The SVGs carry no width/height of their own, so they size to the owned

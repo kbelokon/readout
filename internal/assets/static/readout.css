@@ -1496,21 +1496,7 @@
     background: var(--surface);
   }
 
-  .breadcrumb ul {
-    flex-wrap: wrap;
-    align-items: center;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-  }
-
-  .breadcrumb li {
-    align-items: center;
-    display: flex;
-  }
-
-  .breadcrumb li.is-active a, .ro-rd .ro-breadcrumb li.is-active a {
+  .ro-rd .ro-breadcrumb li.is-active a {
     pointer-events: none;
     cursor: default;
   }
@@ -1543,31 +1529,8 @@
     text-decoration: none;
   }
 
-  code, pre, .highlight, .highlight pre, nav.breadcrumb, .tag, table.table th, table.table td {
+  code, pre, .highlight, .highlight pre, .tag, table.table th, table.table td {
     font-family: var(--font-mono);
-  }
-
-  nav.breadcrumb.ro-breadcrumb {
-    margin-bottom: .85rem;
-    font-size: .78rem;
-  }
-
-  nav.breadcrumb.ro-breadcrumb a {
-    color: var(--text-muted);
-    padding: 0 .4em;
-  }
-
-  nav.breadcrumb.ro-breadcrumb a:hover {
-    color: var(--accent-text);
-  }
-
-  nav.breadcrumb.ro-breadcrumb li.is-active a {
-    color: var(--text);
-  }
-
-  nav.breadcrumb.ro-breadcrumb li + li:before {
-    color: var(--text-faint);
-    opacity: .5;
   }
 
   .icon svg.lucide-icon {
@@ -2163,8 +2126,8 @@
 
   .ro-rd .ro-breadcrumb {
     font-family: var(--font-mono);
-    margin-bottom: 14px;
-    font-size: 12px;
+    margin-bottom: .85rem;
+    font-size: .78rem;
   }
 
   .ro-rd .ro-breadcrumb ul {
@@ -2192,6 +2155,7 @@
 
   .ro-rd .ro-breadcrumb a {
     color: var(--text-muted);
+    padding: 0 .4em;
   }
 
   .ro-rd .ro-breadcrumb a:hover {
@@ -2403,13 +2367,13 @@
   .ro-phase-strip {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius);
     flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
-    gap: 1rem;
-    margin-bottom: .625rem;
-    padding: .5rem .875rem;
+    gap: 16px;
+    margin: 0 0 12px;
+    padding: 8px 12px;
     font-size: .8125rem;
     display: flex;
   }
@@ -2417,7 +2381,7 @@
   .ro-phase-tally {
     flex-wrap: wrap;
     align-items: center;
-    gap: .25rem 1rem;
+    gap: 18px;
     min-width: 0;
     display: flex;
   }
@@ -2425,7 +2389,9 @@
   .ro-phase-chip {
     white-space: nowrap;
     color: var(--text-muted);
-    align-items: baseline;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
     display: inline-flex;
   }
 
@@ -2436,8 +2402,8 @@
   .ro-phase-count {
     font-family: var(--font-mono);
     color: var(--text);
-    margin-left: .375rem;
-    font-weight: 600;
+    margin-left: 0;
+    font-weight: 550;
   }
 
   .ro-phase-total {
@@ -2453,51 +2419,6 @@
 
   .bottom-controls {
     margin-bottom: 1.5rem;
-  }
-
-  h1.title .ro-count {
-    font-family: var(--font-mono);
-    vertical-align: middle;
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    color: var(--text-faint);
-    margin-left: .5rem;
-    padding: .125rem .4375rem;
-    font-size: .6875rem;
-    font-weight: 600;
-  }
-
-  .ro-rd .ro-phase-strip {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface);
-    flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: center;
-    gap: 16px;
-    margin: 0 0 12px;
-    padding: 8px 12px;
-    display: flex;
-  }
-
-  .ro-rd .ro-phase-tally {
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 18px;
-    display: flex;
-  }
-
-  .ro-rd .ro-phase-chip {
-    color: var(--text-muted);
-    align-items: center;
-    gap: 7px;
-    font-size: 12.5px;
-    display: inline-flex;
-  }
-
-  .ro-rd .ro-phase-count {
-    margin-left: 0;
-    font-weight: 550;
   }
 
   .ro-table-wrap {
@@ -2800,13 +2721,14 @@
     font-size: 11.5px;
   }
 
-  .ro-rd .ro-chips {
+  .ro-chips {
     flex-wrap: wrap;
+    align-items: flex-start;
     gap: 5px;
     display: flex;
   }
 
-  .ro-rd .ro-chip {
+  .ro-chip {
     font-family: var(--font-mono);
     border-radius: var(--pill-radius);
     background: var(--chip-bg);
@@ -2818,66 +2740,66 @@
     font-size: 11px;
   }
 
-  .ro-rd .ro-chip .ck {
+  .ro-chip .ck {
     color: var(--chip-key);
   }
 
-  .ro-rd .ro-chip .cs {
+  .ro-chip .cs {
     color: var(--text-ghost);
   }
 
-  .ro-rd .ro-chip .cv {
+  .ro-chip .cv {
     color: var(--chip-val);
     font-weight: 550;
   }
 
-  .ro-rd a.ro-chip:hover {
+  a.ro-chip:hover {
     border-color: var(--border-strong);
   }
 
-  .ro-rd a.ro-chip:hover .cv {
+  a.ro-chip:hover .cv {
     color: var(--accent-text);
   }
 
-  .ro-rd .ro-chip.trunc {
+  .ro-chip.trunc {
     text-overflow: ellipsis;
     max-width: 280px;
     overflow: hidden;
   }
 
-  .ro-rd .ro-chip.anno {
+  .ro-chip.anno {
     text-overflow: ellipsis;
     cursor: default;
     max-width: 320px;
     overflow: hidden;
   }
 
-  .ro-rd .anno-long {
+  .anno-long {
     margin-top: 7px;
   }
 
-  .ro-rd .ro-chip.anno-toggle {
+  .ro-chip.anno-toggle {
     cursor: pointer;
     align-items: center;
     gap: 4px;
     display: inline-flex;
   }
 
-  .ro-rd .ro-chip.anno-toggle:hover {
+  .ro-chip.anno-toggle:hover {
     border-color: var(--border-strong);
   }
 
-  .ro-rd .ro-chip.anno-toggle .anno-chev {
+  .ro-chip.anno-toggle .anno-chev {
     color: var(--text-faint);
     transition: transform var(--dur);
     display: inline-flex;
   }
 
-  .ro-rd .ro-chip.anno-toggle.open .anno-chev {
+  .ro-chip.anno-toggle.open .anno-chev {
     transform: rotate(180deg);
   }
 
-  .ro-rd .anno-pre {
+  .anno-pre {
     background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
@@ -2890,39 +2812,39 @@
     overflow: auto;
   }
 
-  .ro-rd .ro-table-wrap .ro-chips {
+  .ro-table-wrap .ro-chips {
     max-width: 34rem;
   }
 
-  .ro-rd .ro-table-wrap .ro-chip {
+  .ro-table-wrap .ro-chip {
     text-overflow: ellipsis;
     max-width: 100%;
     overflow: hidden;
   }
 
-  .ro-rd .ro-chip.more {
+  .ro-chip.more {
     color: var(--text-faint);
     cursor: pointer;
   }
 
-  .ro-rd .ro-chip.more:hover {
+  .ro-chip.more:hover {
     color: var(--text-muted);
     border-color: var(--border-strong);
   }
 
-  .ro-rd .ro-chips .xtra {
+  .ro-chips .xtra {
     display: none;
   }
 
-  .ro-rd .ro-chips.expanded .xtra {
+  .ro-chips.expanded .xtra {
     display: inline-flex;
   }
 
-  .ro-rd .ro-chip.more .more-less, .ro-rd .ro-chips.expanded .more-n {
+  .ro-chip.more .more-less, .ro-chips.expanded .more-n {
     display: none;
   }
 
-  .ro-rd .ro-chips.expanded .more-less {
+  .ro-chips.expanded .more-less {
     display: inline;
   }
 
@@ -3371,12 +3293,17 @@
     overflow: hidden;
   }
 
+  div.section.ro-yaml-card {
+    margin: 0 0 12px;
+  }
+
   .ro-yaml-card .ro-card-head {
     background: var(--card-head-bg);
     border-bottom: 1px solid var(--border);
+    cursor: pointer;
     align-items: center;
-    gap: .5rem;
-    padding: .5rem .75rem .5rem .875rem;
+    gap: 10px;
+    padding: 9px 14px;
     display: flex;
   }
 
@@ -3408,23 +3335,30 @@
   }
 
   .ro-copy-btn {
-    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-muted);
+    color: var(--text-faint);
     font-family: var(--font-mono);
     cursor: pointer;
+    background: none;
+    border-radius: 5px;
     flex: none;
     align-items: center;
-    gap: .3125rem;
-    padding: .1875rem .5rem;
-    font-size: .6875rem;
+    gap: 6px;
+    margin-left: auto;
+    padding: 3px 8px;
+    font-size: 11px;
     line-height: 1.4;
     transition: border-color .12s, color .12s, background .12s;
     display: inline-flex;
   }
 
-  .ro-copy-btn:hover, .ro-copy-btn:focus {
+  .ro-copy-btn:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
+    background: none;
+  }
+
+  .ro-copy-btn:focus {
     border-color: var(--border-strong);
     color: var(--text);
     background: var(--surface-2);
@@ -3552,102 +3486,56 @@
     display: none;
   }
 
-  h1.title:has(.ro-kind-badge) {
-    font-family: var(--font-mono);
-    letter-spacing: -.02em;
-    color: var(--text);
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: .625rem;
-    font-size: 1.375rem;
-    font-weight: 600;
-  }
-
   .ro-kind-badge {
-    border-radius: var(--pill-radius);
-    background: var(--accent-weak);
-    height: 1.375rem;
-    color: var(--accent-text);
-    font-family: var(--font-mono);
-    letter-spacing: .04em;
-    text-transform: uppercase;
     white-space: nowrap;
-    order: -1;
+    height: 1.375rem;
+    font-family: var(--font-mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    background: var(--accent-weak);
+    color: var(--accent);
+    border-radius: 5px;
+    order: 0;
     align-items: center;
-    padding: 0 .5rem;
-    font-size: .625rem;
-    font-weight: 600;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-weight: 400;
     display: inline-flex;
   }
 
-  h1.title:has(.ro-kind-badge) .meta {
-    font-family: var(--font-ui);
-    color: var(--text-faint);
-    font-size: .8125rem;
+  .ro-kind-badge.init {
+    background: var(--st-mute-bg);
+    color: var(--st-mute);
   }
 
   .ro-section {
-    margin-bottom: 1rem;
+    margin: 0 0 22px;
   }
 
   .ro-section-label {
     font-family: var(--font-mono);
-    letter-spacing: .09em;
+    letter-spacing: .1em;
     text-transform: uppercase;
     color: var(--text-faint);
-    margin-bottom: .5rem;
-    font-size: .71875rem;
-    font-weight: 600;
-  }
-
-  .ro-chips {
-    flex-wrap: wrap;
-    align-items: flex-start;
-    gap: .3125rem;
-    display: flex;
+    margin: 0 0 9px;
+    font-size: 10px;
+    font-weight: 400;
   }
 
   .ro-chip {
     flex: none;
-    max-width: 21.25rem;
     display: inline-flex;
   }
 
-  .ro-chip .tag, .tag.ro-chip {
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    height: auto;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    max-width: 100%;
-    padding: .125rem .5rem;
-    font-size: .75rem;
-    line-height: 1.5;
-    transition: border-color .12s, color .12s;
-    display: inline-block;
-    overflow: hidden;
-  }
-
-  a.ro-chip:hover .tag {
-    border-color: var(--border-strong);
-    color: var(--text);
-  }
-
-  .ro-chip-trunc {
-    min-width: 0;
-  }
-
   .ro-owner {
-    font-family: var(--font-mono);
     color: var(--text-muted);
-    font-size: .875rem;
+    font-family: inherit;
+    font-size: 13px;
   }
 
   .ro-owner a {
-    color: var(--accent-text);
+    font-family: var(--font-mono);
+    color: var(--text-muted);
   }
 
   .ro-owner .kind {
@@ -3787,24 +3675,6 @@
     font-size: 23px;
   }
 
-  .ro-rd .ro-kind-badge {
-    font-weight: 400;
-    font-family: var(--font-mono);
-    letter-spacing: .06em;
-    text-transform: uppercase;
-    background: var(--accent-weak);
-    color: var(--accent);
-    border-radius: 5px;
-    order: 0;
-    padding: 3px 8px;
-    font-size: 10px;
-  }
-
-  .ro-rd .ro-kind-badge.init {
-    background: var(--st-mute-bg);
-    color: var(--st-mute);
-  }
-
   .ro-detail-title .ro-title .pn-tail {
     font-weight: 500;
   }
@@ -3849,20 +3719,6 @@
     bottom: -1px;
     left: 8px;
     right: 8px;
-  }
-
-  .ro-rd .ro-section {
-    margin: 0 0 22px;
-  }
-
-  .ro-rd .ro-section-label {
-    font-weight: 400;
-    font-family: var(--font-mono);
-    letter-spacing: .1em;
-    text-transform: uppercase;
-    color: var(--text-faint);
-    margin: 0 0 9px;
-    font-size: 10px;
   }
 
   .ro-rd .ro-kv-cols {
@@ -3951,66 +3807,6 @@
     height: 6px;
     box-shadow: none;
     border-radius: 50%;
-  }
-
-  .ro-rd .ro-owner {
-    color: var(--text-muted);
-    font-family: inherit;
-    font-size: 13px;
-  }
-
-  .ro-rd .ro-owner a {
-    font-family: var(--font-mono);
-    color: var(--text-muted);
-  }
-
-  .ro-rd .ro-owner .kind {
-    color: var(--text-faint);
-  }
-
-  .ro-rd .ro-yaml-card {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface);
-    margin: 0 0 12px;
-    overflow: hidden;
-  }
-
-  .ro-rd .ro-card-head {
-    background: var(--card-head-bg);
-    border-bottom: 1px solid var(--border);
-    cursor: pointer;
-    align-items: center;
-    gap: 10px;
-    padding: 9px 14px;
-    display: flex;
-  }
-
-  .ro-rd .ro-card-head h4 {
-    margin: 0;
-    font-size: 13px;
-    font-weight: 600;
-  }
-
-  .ro-rd .ro-copy-btn {
-    font-family: var(--font-mono);
-    color: var(--text-faint);
-    border: 1px solid var(--border);
-    cursor: pointer;
-    background: none;
-    border-radius: 5px;
-    align-items: center;
-    gap: 6px;
-    margin-left: auto;
-    padding: 3px 8px;
-    font-size: 11px;
-    display: inline-flex;
-  }
-
-  .ro-rd .ro-copy-btn:hover {
-    color: var(--text);
-    border-color: var(--border-strong);
-    background: none;
   }
 
   .ro-yaml {

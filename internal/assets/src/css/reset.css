@@ -131,19 +131,11 @@
     .input::placeholder { color: var(--text-faint); }
     .input:hover { border-color: var(--border-strong); }
     .input:focus { border-color: var(--accent); background: var(--surface); }
-    .breadcrumb ul {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        list-style: none;
-        margin: 0;
-        padding: 0;
-    }
-    .breadcrumb li {
-        display: flex;
-        align-items: center;
-    }
-    .breadcrumb li.is-active a,
+    /* (Unit 17) the `.breadcrumb ul` / `.breadcrumb li` reset rules were removed:
+       the `breadcrumb` legacy class is no longer emitted (single `.ro-breadcrumb`
+       contract), and the ul/li flex layout is fully restated by the
+       `.ro-rd .ro-breadcrumb ul` / `li` rules in shell.css. The inert current-crumb
+       guard survives on the canonical selector below. */
     .ro-rd .ro-breadcrumb li.is-active a {
         pointer-events: none;
         cursor: default;

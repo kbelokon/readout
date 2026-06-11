@@ -526,7 +526,7 @@ templ kvList(l KVList) {
 }
 
 templ detailBreadcrumb(b DetailBreadcrumb) {
-	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul><li><a href={ templ.SafeURL(b.ClusterHref) }>{ b.Cluster }</a></li>
+	<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul><li><a href={ templ.SafeURL(b.ClusterHref) }>{ b.Cluster }</a></li>
 		if b.ShowNamespace {
 			<li><a href={ templ.SafeURL(b.NamespaceHref) }>{ b.Namespace }</a></li><li><a href={ templ.SafeURL(b.PluralHref) }>{ b.Plural }</a></li>
 		} else {

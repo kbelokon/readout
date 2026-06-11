@@ -49,7 +49,7 @@ type ResourceTypeRow struct {
 
 templ ResourceTypes(d ResourceTypesData) {
 	<div class="ro-rd">
-		<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul><li><a href={ templ.SafeURL(clusterHref(d.Cluster)) }>{ d.Cluster }</a></li>
+		<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul><li><a href={ templ.SafeURL(clusterHref(d.Cluster)) }>{ d.Cluster }</a></li>
 			if d.NamespaceShow {
 				<li><a href={ templ.SafeURL(namespaceHref(d.Cluster, d.Namespace)) }>{ d.Namespace }</a></li><li class="is-active"><a href="#">resource types</a></li>
 			} else {

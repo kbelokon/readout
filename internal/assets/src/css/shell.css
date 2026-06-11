@@ -400,19 +400,21 @@
     .ro-main { flex: 1; min-width: 0; padding: 22px 26px 80px; }
     .ro-main.wide { max-width: 100%; }
 
-    /* breadcrumb (redesign). The redesign breadcrumb is `<nav class="ro-breadcrumb">`,
-       the same selector the legacy breadcrumb used, so these rules are scoped under
-       the redesign CONTENT marker `.ro-rd` (D13), added only by a migrated content
-       template. This keeps the port additive: the new breadcrumb look applies only
-       on migrated screens, the legacy breadcrumb keeps its existing
-       `nav.breadcrumb.ro-breadcrumb` styling. (Not `.ro-shell`: that grid wrapper is
-       present on every screen and cannot distinguish migrated content.) */
-    .ro-rd .ro-breadcrumb { font-family: var(--font-mono); font-size: 12px; margin-bottom: 14px; }
+    /* Breadcrumb -- SINGLE contract (Unit 17). Every breadcrumb is now
+       `<nav class="ro-breadcrumb">` inside a `.ro-rd` content root (the redundant
+       legacy `breadcrumb` class was dropped from the 4 list/detail templates, and
+       the `nav.breadcrumb.ro-breadcrumb` rules in controls.css + the `.breadcrumb`
+       rules in reset.css were removed). The surviving rule carries the values the
+       LEGACY `nav.breadcrumb.ro-breadcrumb` selector was ACTUALLY painting on the
+       migrated screens (it out-ranked the old redesign rule 0,2,1 > 0,2,0): the
+       0.78rem mono path, the 0.85rem bottom gap, and the 0 .4em link padding.
+       a:hover is `--accent` (== the legacy `--accent-text`, same hue per theme). */
+    .ro-rd .ro-breadcrumb { font-family: var(--font-mono); font-size: 0.78rem; margin-bottom: 0.85rem; }
     .ro-rd .ro-breadcrumb ul { list-style: none; display: flex; flex-wrap: wrap; align-items: center;
         gap: 6px; margin: 0; padding: 0; }
     .ro-rd .ro-breadcrumb li { display: flex; align-items: center; gap: 6px; color: var(--text-faint); }
     .ro-rd .ro-breadcrumb li:not(:first-child)::before { content: "/"; color: var(--text-faint); opacity: .5; }
-    .ro-rd .ro-breadcrumb a { color: var(--text-muted); }
+    .ro-rd .ro-breadcrumb a { color: var(--text-muted); padding: 0 0.4em; }
     .ro-rd .ro-breadcrumb a:hover { color: var(--accent); }
     .ro-rd .ro-breadcrumb .is-active a { color: var(--text); }
 
