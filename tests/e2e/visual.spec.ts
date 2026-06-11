@@ -131,6 +131,16 @@ for (const theme of THEMES) {
     await snap(page, 'desktop', theme, 'clusters');
   });
 
+  // Cluster overview was the one breadcrumb-bearing page outside the grid when
+  // the dual breadcrumb contract was collapsed (its paint shifted unseen) — and
+  // the primitives wave rewrites its markup next. Pin it.
+  test(`cluster overview — ${theme}`, async ({ page }) => {
+    await setTheme(page, theme);
+    await page.goto('/clusters/e2e');
+    await expect(page.locator('.ro-breadcrumb')).toBeVisible();
+    await snap(page, 'desktop', theme, 'cluster-overview');
+  });
+
   test(`namespaces list — ${theme}`, async ({ page }) => {
     await setTheme(page, theme);
     await page.goto(NAMESPACES);
