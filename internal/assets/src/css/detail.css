@@ -202,4 +202,129 @@
         .ro-tools-actions .ro-btn { width: 100%; justify-content: center; }
     }
 
+    /* =====================================================================
+       Redesign chrome dissolved here from the former redesign.css module
+       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       bare twins above by specificity (.ro-rd-scoped / element-qualified),
+       so concatenation order is not load-bearing for them.
+       ===================================================================== */
+    /* ================================================================ DETAIL VIEW (redesign)
+       Colliding canonical names (ro-kind-badge, ro-section, ro-section-label, ro-kv*,
+       ro-cond-pill, ro-owner, ro-yaml-card, ro-card-head, ro-copy-btn, ro-event-msg)
+       are scoped under the redesign CONTENT marker `.ro-rd` (D13): a migrated content
+       template adds `ro-rd` to its outermost content element, so the redesign look
+       applies only to migrated screens while the live (unmarked) markup keeps its
+       existing app rule. Non-colliding net-new names stay bare. */
+    .ro-detail-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 2px 0 14px; }
+    .ro-detail-title .ro-title { font-size: 23px; }
+    /* `order: 0` OVERRIDES the leaking old bare `.ro-kind-badge { order: -1 }` (the
+       only `order:` in the stylesheet): base.css sets no order, so the badge follows
+       DOM order -- `name [BADGE]`, not `[BADGE] name`. */
+    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-kind-badge
+       { font-weight: 600 }`: base.css sets no weight on the badge (10px uppercase
+       mono caption stays normal weight), so the badge is not bold. */
+    .ro-rd .ro-kind-badge { order: 0; font-weight: 400; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
+        text-transform: uppercase; padding: 3px 8px; border-radius: 5px;
+        background: var(--accent-weak); color: var(--accent); }
+    /* the containers-table `init` badge is MUTE, not accent (D14): an init
+       container is a fact, not a call to action. */
+    .ro-rd .ro-kind-badge.init { background: var(--st-mute-bg); color: var(--st-mute); }
+    /* SPEC §6.6: the hash tail stays faint even in the title; the tail also
+       sheds the heading weight so the workload head leads (prototype). The
+       colours ride the global .pn-head/.pn-tail rules. */
+    .ro-detail-title .ro-title .pn-tail { font-weight: 500; }
+    .ro-detail-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); margin-left: auto; }
+    .ro-detail-actions { display: flex; gap: 4px; }
+
+    /* tabs (Default / YAML / Logs) -- redesign bare variant */
+    .ro-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 0 20px; }
+    .ro-tabs a { padding: 8px 14px; font-size: 13px; color: var(--text-muted); position: relative; font-weight: 500; }
+    .ro-tabs a:hover { color: var(--text); }
+    .ro-tabs a.is-active { color: var(--text); }
+    .ro-tabs a.is-active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
+        height: 2px; background: var(--accent); border-radius: 2px; }
+
+    /* sections (redesign) -- canonical names under the .ro-rd content marker */
+    .ro-rd .ro-section { margin: 0 0 22px; }
+    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-section-label
+       { font-weight: 600 }`: base.css keeps the 10px uppercase mono caption at
+       normal weight. */
+    .ro-rd .ro-section-label { font-weight: 400; font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--text-faint); margin: 0 0 9px; }
+
+    /* key/value lists (node capacity, system info) -- redesign */
+    .ro-rd .ro-kv-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; }
+    .ro-rd .ro-kv { margin: 0; display: flex; flex-direction: column; gap: 1px; }
+    .ro-rd .ro-kv-row { display: flex; justify-content: space-between; gap: 16px; padding: 5px 0;
+        border-bottom: 1px solid var(--border-soft); }
+    .ro-rd .ro-kv-row dt { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); margin: 0; }
+    .ro-rd .ro-kv-row dd { font-family: var(--font-mono); font-size: 12px; color: var(--text); margin: 0; text-align: right; }
+
+    /* node condition pills (redesign). Tone-complete: the pill BODY is tinted per
+       tone (ok/warn/err/info/mute) and the DOT carries its own tone class
+       (`<span class="ro-dot <tone>">`), so the global `.ro-dot.<tone>` background
+       rules paint it -- previously the dot was bare and the overlay only tinted
+       ok/warn, so an `err`/`mute` condition (e.g. a NotReady node) rendered with an
+       invisible dot + untinted pill (the most severe state was the least marked). */
+    .ro-rd .ro-cond-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
+        border-radius: 999px; font-family: var(--font-mono); font-size: 11.5px; border: 1px solid var(--border); }
+    .ro-rd .ro-cond-pill .ro-cond-name { color: var(--text-muted); }
+    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-cond-pill .ro-cond-val
+       { font-weight: 600 }`: base.css sets no weight on the value, so the condition
+       value reads at normal weight, not bold. */
+    .ro-rd .ro-cond-pill .ro-cond-val { color: var(--text); font-weight: 400; }
+    .ro-rd .ro-cond-pill.ok   { background: var(--st-ok-bg);   border-color: transparent; }
+    .ro-rd .ro-cond-pill.warn { background: var(--st-warn-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill.err  { background: var(--st-err-bg);  border-color: transparent; }
+    .ro-rd .ro-cond-pill.info { background: var(--st-info-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill.mute { background: var(--st-mute-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill .ro-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: none; }
+
+    /* owners line (redesign) */
+    /* `font-family: inherit` OVERRIDES the leaking old bare `.ro-owner
+       { font-family: var(--font-mono) }`: base.css puts mono only on the owner
+       LINKS (`.ro-owner a`), so the "Owner …" prefix text reads in the body UI
+       font, not mono. */
+    .ro-rd .ro-owner { font-family: inherit; font-size: 13px; color: var(--text-muted); }
+    /* `color: var(--text-muted)` OVERRIDES the leaking old bare `.ro-owner a
+       { color: var(--accent-text) }`: base.css leaves owner links on the neutral
+       link colour (not accent green), matching the other secondary resource links
+       (`td.cell-node a` / `td.cell-ns a` are already `--text-muted`). */
+    .ro-rd .ro-owner a { font-family: var(--font-mono); color: var(--text-muted); }
+    .ro-rd .ro-owner .kind { color: var(--text-faint); }
+
+    /* YAML cards (collapsible per-section) -- redesign. NOTE (Unit 16): the COLLAPSE
+       is driven by `is-collapsed` on the `.collapsible` card (readout.js) + the live
+       `div.section.is-collapsed .ro-card-content { display:none }` rule above; the markup is
+       `.ro-card-head > h4.title` + `.ro-card-content` (the highlighted YAML), with no `.fold`
+       / `.ro-card-body` / `.key-count` / `.collapsed` elements. The dead overlay
+       lines that keyed on `.collapsed`/`.ro-card-body`/`.fold`/`.key-count` were
+       removed -- they claimed to own a collapse they never drove. */
+    .ro-rd .ro-yaml-card { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin: 0 0 12px; background: var(--surface); }
+    .ro-rd .ro-card-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+        background: var(--card-head-bg); border-bottom: 1px solid var(--border); cursor: pointer; }
+    .ro-rd .ro-card-head h4 { font-size: 13px; font-weight: 600; margin: 0; }
+    .ro-rd .ro-copy-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+        font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+        background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px; cursor: pointer; }
+    /* `background: transparent` OVERRIDES the leaking old bare `.ro-copy-btn:hover
+       { background: var(--surface-2) }`: base.css keeps the copy button's hover
+       transparent (it changes only color + border-color). */
+    .ro-rd .ro-copy-btn:hover { background: transparent; color: var(--text); border-color: var(--border-strong); }
+
+    /* YAML / code block (redesign bare variant) */
+    .ro-yaml { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
+        background: var(--code-bg); color: var(--text); overflow-x: auto; }
+    .ro-rd .ro-yaml-card .ro-yaml { background: transparent; }
+    .ro-yaml .ln { display: flex; }
+    .ro-yaml .gutter { flex: none; width: 44px; text-align: right; padding-right: 14px; color: var(--text-faint);
+        user-select: none; opacity: .6; }
+    .ro-yaml .code { white-space: pre; padding-right: 16px; }
+    .ro-yaml.full { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 0; }
+    .yk { color: var(--tok-key); } .ys { color: var(--tok-str); } .yn { color: var(--tok-num); }
+    .yb { color: var(--tok-bool); } .yc { color: var(--text-faint); font-style: italic; } .yd { color: var(--text-faint); }
+
+    /* events table message truncates with tooltip (redesign) */
+    .ro-rd td.ro-event-msg { white-space: normal; max-width: 520px; color: var(--text-muted); }
+
 }

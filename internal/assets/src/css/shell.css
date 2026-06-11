@@ -90,4 +90,419 @@
     /* numeric columns right-align unless an explicit align attribute overrides */
     table th.num:not([align]),
     table td.num:not([align]) { text-align: right; }
+
+    /* =====================================================================
+       Redesign chrome dissolved here from the former redesign.css module
+       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       bare twins above by specificity (.ro-rd-scoped / element-qualified),
+       so concatenation order is not load-bearing for them.
+       ===================================================================== */
+    /* ===========================================================================
+       REDESIGN COMPONENT PORT (Unit 2, additive). The component classes below are
+       lifted EXACT from the redesign source of truth -- design/assets/base.css plus
+       the per-screen inline <style> blocks (Clusters / Search / Pods Mobile) that
+       are NOT in base.css. They are NEW class names (e.g. bare `.ro-topbar`, not the
+       old `nav.navbar.ro-topbar`), so they sit ALONGSIDE the existing app rules --
+       nothing above is removed (old-class removal is a later unit). They consume the
+       same token layer just rethemed to the green/dark "Terminal" palette, so they
+       follow light/dark for free. base.css's two `body.theme-light` rules (on the
+       monogram tile) are mapped onto readout's data-theme mechanism (NOT a body
+       class) per D5.
+       =========================================================================== */
+
+    .mono { font-family: var(--font-mono); }
+    ::selection { background: var(--accent-weak); color: var(--text); }
+
+    /* focus ring -- green, the redesign's signature (bare-element variant) */
+    .ro-focus-ring:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
+    }
+
+
+    /* ---------------------------------------------------------------- TOP BAR
+       Scoped to `header.ro-topbar` (the redesign element) so it never touches the
+       still-live `nav.navbar.ro-topbar` -- keeping this ADDITIVE: the new bar is
+       opted in by switching the element from <nav> to <header> in a later unit. */
+    header.ro-topbar {
+        position: sticky; top: 0; z-index: 50;
+        height: var(--topbar-h);
+        display: flex; align-items: center; gap: 18px;
+        padding: 0 16px;
+        background: var(--header-bg);
+        backdrop-filter: saturate(140%) blur(12px);
+        border-bottom: 1px solid var(--border);
+    }
+    header.ro-topbar .brand-item { display: flex; align-items: center; gap: 9px; padding-right: 4px; }
+    /* the mark sits on a small dark chip (SPEC 2.5: #0d1117, radius 7, the SAME
+       in BOTH themes) so the light-green brand stays readable on the light
+       header too */
+    header.ro-topbar .brand-chip {
+        width: 26px; height: 26px; border-radius: 7px; background: #0d1117;
+        display: grid; place-items: center; flex: none;
+    }
+    header.ro-topbar .brand-logo {
+        width: 15px; height: 18px; display: block;
+        background: var(--brand);
+        -webkit-mask: url(/assets/readout-logo.svg) center / contain no-repeat;
+        mask: url(/assets/readout-logo.svg) center / contain no-repeat;
+    }
+    header.ro-topbar .brand-name { font-weight: 650; letter-spacing: -.01em; font-size: 14px; }
+    .topnav { display: flex; align-items: center; gap: 4px; }
+    .topnav a {
+        padding: 5px 9px; border-radius: var(--radius-sm);
+        color: var(--text-muted); font-weight: 500; font-size: 13px;
+    }
+    .topnav a:hover { background: var(--surface-2); color: var(--text); }
+    .topnav a.is-active { color: var(--text); }
+
+    /* context dropdown trigger (namespace) */
+    .ctx-dd {
+        display: inline-flex; align-items: center; gap: 7px;
+        max-width: min(22rem, 100vw);
+        padding: 4px 9px 4px 8px; border-radius: var(--radius-sm);
+        border: 1px solid var(--border); background: var(--surface);
+        font-family: var(--font-mono); font-size: 12px; color: var(--text);
+        cursor: pointer;
+    }
+    .ctx-dd .context-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .ctx-dd:hover { border-color: var(--border-strong); }
+    .ctx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand);
+        box-shadow: 0 0 0 3px var(--accent-weak); }
+    /* No namespace set ("None"): the dot drops its green -- SPEC §6.1 "green
+       dot when set" + law §1.1 (prototype chrome.css:77). */
+    .ctx-dot.none { background: var(--text-ghost); box-shadow: none; }
+    .ctx-caret { color: var(--text-faint); display: inline-flex; }
+
+    .topbar-spacer { flex: 1; }
+
+    /* search box */
+    .ro-search { position: relative; width: min(560px, 42vw); }
+    .ro-search input {
+        width: 100%; height: 34px;
+        padding: 0 40px 0 34px;
+        background: var(--surface); color: var(--text);
+        border: 1px solid var(--border); border-radius: var(--radius);
+        font-family: var(--font-ui); font-size: 13px;
+    }
+    .ro-search input::placeholder { color: var(--text-faint); }
+    .ro-search input:focus { border-color: var(--accent); background: var(--surface-2); }
+    .ro-search .s-ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+        color: var(--text-faint); display: inline-flex; pointer-events: none; }
+    .ro-search .kbd-hint { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
+
+    /* topbar icon buttons */
+    .tb-group { display: flex; align-items: center; gap: 2px; }
+    .tb-btn {
+        display: inline-flex; align-items: center; gap: 7px;
+        height: 32px; padding: 0 8px; border-radius: var(--radius-sm);
+        background: transparent; border: 1px solid transparent;
+        color: var(--text-muted); font-size: 12px; cursor: pointer;
+    }
+    .tb-btn:hover { background: var(--surface-2); color: var(--text); }
+    .tb-btn .ico { display: inline-flex; }
+    /* (the live `.refresh-label` size is owned by the existing app rule above; the
+       redesign bar reuses it -- no duplicate here to keep this additive.) */
+    .ro-livedot { width: 6px; height: 6px; border-radius: 50%;
+        background: var(--text-ghost); flex: none; }
+    /* SPEC §6.1 + colour law §1.1: the dot is GHOST-GREY by default and turns
+       brand + PULSES only while a refresh mode is active ("pulsing brand dot
+       when live" -- any non-Off interval today; Unit 27's Live joins through
+       the same refresh-on hook). Green is a live-health signal, so Off keeps
+       the grey dot (prototype chrome.css:110-111; the ctx-dot.none precedent).
+       refresh-on is the ONE state owner: rendered at SSR (refreshDropdownClass)
+       and toggled by syncRefreshUI on an interval pick. */
+    #refresh-dropdown.refresh-on .ro-livedot { background: var(--brand); animation: ro-pulse 1.8s ease-out infinite; }
+    @keyframes ro-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(86,224,188,.5); }
+        70% { box-shadow: 0 0 0 6px rgba(86,224,188,0); }
+        100% { box-shadow: 0 0 0 0 rgba(86,224,188,0); }
+    }
+
+    /* ---- topbar dropdown panels (namespace context + refresh interval) --------
+       The redesign header.ro-topbar chrome renamed the old dropdown panels to
+       NET-NEW class names: `.ctx-menu` (namespace list) and
+       `.refresh-menu` (interval picker). The old styling was scoped to
+       `nav.navbar.ro-topbar .navbar-dropdown`, which no longer matches under
+       <header>, so without these rules the panels render permanently expanded,
+       unpositioned and unstyled inline in the bar. These are additive (no old rule,
+       no .ro-rd collision): an elevated themed popover anchored under its trigger,
+       CLOSED by default, revealed only on the open state.
+
+       Two different open contracts, matching the JS that already drives the
+       triggers (readout.js):
+         - namespace: CLICK-toggled. The delegated click handler toggles `is-active`
+           on the #namespace-dropdown container, so the panel reveals on
+           `#namespace-dropdown.is-active`.
+         - refresh: HOVER/FOCUS-revealed. There is NO JS open/close handler for it --
+           `refresh-on` means "an interval is active", not "menu open" -- so the
+           panel reveals on container :hover / :focus-within. */
+    #namespace-dropdown { position: relative; min-width: 0; }
+    #refresh-dropdown { position: relative; }
+
+    .ctx-menu,
+    .refresh-menu {
+        display: none;
+        position: absolute;
+        top: calc(100% + 6px);
+        min-width: 200px;
+        z-index: 60;
+        padding: 5px;
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-pop);
+    }
+    /* refresh menu is right-aligned (it sits at the end of the bar) */
+    .refresh-menu { right: 0; min-width: 150px; }
+    /* Hover bridge: the menu floats 6px below the trigger, and that gap lies
+       OUTSIDE #refresh-dropdown -- a pointer travelling from the trigger into
+       the menu would drop :hover mid-way and the menu would slam shut (the
+       click-first behavior users hit before this strip existed). The invisible
+       strip keeps the container hovered across the gap. */
+    .refresh-menu::before {
+        content: "";
+        position: absolute;
+        top: -8px;
+        left: 0;
+        right: 0;
+        height: 8px;
+    }
+    .ctx-menu { left: 0; max-height: 60vh; overflow-y: auto; }
+
+    /* OPEN contracts: closed by default above, shown only on the open state. */
+    #namespace-dropdown.is-active .ctx-menu { display: block; }
+    #refresh-dropdown:hover .refresh-menu,
+    #refresh-dropdown:focus-within .refresh-menu { display: block; }
+
+    /* panel items: muted mono rows that firm up on hover/focus (palette language). */
+    .namespace-item,
+    .refresh-option {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 6px 9px;
+        border: 0;
+        border-radius: var(--radius-sm);
+        background: transparent;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+    }
+    .namespace-item:hover,
+    .namespace-item:focus,
+    .refresh-option:hover,
+    .refresh-option:focus {
+        background: var(--surface-2);
+        color: var(--text);
+    }
+    /* the active (stored) interval reads as selected via the accent wash. */
+    .refresh-option.is-active {
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        font-weight: 600;
+    }
+    /* a disabled option (Live on multi-type/multi-cluster pages, Unit 27/D19)
+       reads as unavailable: faded, no hover wash, the title explains why. */
+    .refresh-option:disabled,
+    .refresh-option:disabled:hover,
+    .refresh-option:disabled:focus {
+        background: transparent;
+        color: var(--text-muted);
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
+
+    /* namespace filter input inside the panel: matches the topbar search chip. */
+    .ctx-search { padding: 3px 3px 6px; }
+    #namespace-searchbox {
+        width: 100%;
+        height: 30px;
+        padding: 0 10px;
+        background: var(--surface-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        font-family: var(--font-mono);
+        font-size: 12px;
+    }
+    #namespace-searchbox::placeholder { color: var(--text-faint); }
+    #namespace-searchbox:focus { border-color: var(--accent); background: var(--surface); }
+
+    /* icons (lucide-ish via stroke) */
+    .ico svg { width: 15px; height: 15px; display: block; stroke: currentColor;
+        stroke-width: 1.75; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .ico.sm svg { width: 13px; height: 13px; }
+
+
+    /* ---------------------------------------------------------------- LAYOUT */
+    .ro-shell { display: flex; min-height: calc(100vh - var(--topbar-h)); }
+    .ro-sidebar {
+        width: var(--sidebar-w); flex: none;
+        background: var(--sidebar-bg);
+        border-right: 1px solid var(--border);
+        padding: 16px 10px 24px;
+        position: sticky; top: var(--topbar-h);
+        height: calc(100vh - var(--topbar-h));
+        overflow-y: auto;
+    }
+    .ro-sidebar .menu-label {
+        font-family: var(--font-mono);
+        font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+        color: var(--text-faint); font-weight: 500;
+        padding: 0 8px; margin: 18px 0 6px;
+    }
+    .ro-sidebar .menu-label:first-child { margin-top: 0; }
+    .ro-sidebar .menu-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+    .ro-sidebar .menu-list a {
+        position: relative;
+        display: flex; align-items: center; gap: 9px;
+        padding: 6px 9px; border-radius: var(--radius-sm);
+        color: var(--text-muted); font-size: 13px; font-weight: 450;
+    }
+    .ro-sidebar .menu-list a .ico { color: var(--text-faint); flex: none; }
+    /* A long kind name (HorizontalPodAutoscalers) must squeeze with an
+       ellipsis instead of shoving the count badge past the sidebar edge:
+       the label is the only flexible cell in the row. The full name stays
+       reachable via the link's title tooltip (rail markup already sets it). */
+    .ro-sidebar .menu-list a .nav-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .ro-sidebar .menu-list a:hover { background: var(--surface-2); color: var(--text); }
+    .ro-sidebar .menu-list a:hover .ico { color: var(--text-muted); }
+    .ro-sidebar .menu-list a.is-active {
+        background: var(--accent-weak); color: var(--text); font-weight: 550;
+    }
+    .ro-sidebar .menu-list a.is-active .ico { color: var(--accent); }
+    .ro-sidebar .menu-list a.is-active::before {
+        content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px;
+        width: 2.5px; border-radius: 2px; background: var(--accent);
+    }
+    /* Per-kind object count (D13, SPEC §6.2): the trailing mono badge on a
+       sidebar entry. margin-left:auto pushes it to the row's right edge. */
+    .ro-sidebar .menu-list a .menu-count {
+        margin-left: auto; font-family: var(--font-mono);
+        font-size: 11px; color: var(--text-faint);
+        flex: none;
+    }
+
+    .ro-main { flex: 1; min-width: 0; padding: 22px 26px 80px; }
+    .ro-main.wide { max-width: 100%; }
+
+    /* breadcrumb (redesign). The redesign breadcrumb is `<nav class="ro-breadcrumb">`,
+       the same selector the legacy breadcrumb used, so these rules are scoped under
+       the redesign CONTENT marker `.ro-rd` (D13), added only by a migrated content
+       template. This keeps the port additive: the new breadcrumb look applies only
+       on migrated screens, the legacy breadcrumb keeps its existing
+       `nav.breadcrumb.ro-breadcrumb` styling. (Not `.ro-shell`: that grid wrapper is
+       present on every screen and cannot distinguish migrated content.) */
+    .ro-rd .ro-breadcrumb { font-family: var(--font-mono); font-size: 12px; margin-bottom: 14px; }
+    .ro-rd .ro-breadcrumb ul { list-style: none; display: flex; flex-wrap: wrap; align-items: center;
+        gap: 6px; margin: 0; padding: 0; }
+    .ro-rd .ro-breadcrumb li { display: flex; align-items: center; gap: 6px; color: var(--text-faint); }
+    .ro-rd .ro-breadcrumb li:not(:first-child)::before { content: "/"; color: var(--text-faint); opacity: .5; }
+    .ro-rd .ro-breadcrumb a { color: var(--text-muted); }
+    .ro-rd .ro-breadcrumb a:hover { color: var(--accent); }
+    .ro-rd .ro-breadcrumb .is-active a { color: var(--text); }
+
+    /* page title */
+    .ro-title-row { display: flex; align-items: center; gap: 12px; margin: 2px 0 16px; }
+    .ro-title { font-size: 25px; font-weight: 680; letter-spacing: -.02em; margin: 0; }
+    .ro-title-actions { display: flex; gap: 4px; }
+    /* redesign count badge -- scoped to the redesign title row so it does not
+       restyle the live `h1.title .ro-count` (additive). */
+    .ro-title-row .ro-count {
+        font-family: var(--font-mono); font-size: 12px; font-weight: 500;
+        color: var(--text-muted); background: var(--surface-2);
+        border: 1px solid var(--border); border-radius: 6px;
+        padding: 2px 8px; transform: translateY(-2px);
+    }
+    .ro-iconbtn {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 30px; height: 30px; border-radius: var(--radius-sm);
+        border: 1px solid var(--border); background: var(--surface);
+        color: var(--text-muted); cursor: pointer;
+    }
+    .ro-iconbtn:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-2); }
+
+
+    /* ---------------------------------------------------------------- STATUS DOTS */
+    .ro-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; }
+    .ro-dot.ok { background: var(--st-ok); box-shadow: 0 0 0 3px var(--st-ok-bg); }
+    .ro-dot.warn { background: var(--st-warn); box-shadow: 0 0 0 3px var(--st-warn-bg); }
+    .ro-dot.err { background: var(--st-err); box-shadow: 0 0 0 3px var(--st-err-bg); }
+    .ro-dot.info { background: var(--st-info); box-shadow: 0 0 0 3px var(--st-info-bg); }
+    .ro-dot.mute { background: var(--st-mute); box-shadow: 0 0 0 3px var(--st-mute-bg); }
+    .ro-dot.pulse { animation: ro-dot-pulse 1.6s ease-in-out infinite; }
+    @keyframes ro-dot-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+
+    /* ---------------------------------------------------------------- ICON SYSTEM
+       .ico=curated lucide glyph; .kind-tile=monogram (hue from API group);
+       .kind-img / .kind-emoji=operator override. ~16px sidebar slot. */
+    .kind-tile {
+        --kc: .052; --kl: .80;
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; flex: none;
+        border-radius: 4px;
+        font-family: var(--font-mono); font-size: 8px; font-weight: 600;
+        letter-spacing: .02em;
+        background: oklch(0.62 0.10 var(--kh) / .20);
+        color: oklch(var(--kl) var(--kc) var(--kh));
+        box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .28);
+    }
+    .kind-tile.lg { width: 30px; height: 30px; border-radius: 7px; font-size: 13px; }
+    .kind-curated svg { color: oklch(var(--kl, .80) var(--kc, .052) var(--kh)); stroke: currentColor; }
+    .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.80 0.07 var(--kh)); }
+    .ro-sidebar .menu-list a.is-active .kind-tile { box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .5); }
+    .kind-img { width: 16px; height: 16px; flex: none; object-fit: contain; border-radius: 3px; }
+    .kind-emoji { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center;
+        justify-content: center; font-size: 13px; line-height: 1; }
+    /* base.css scoped the lighter tile to `body.theme-light`; mapped onto readout's
+       data-theme mechanism (NOT a body class) per D5 -- light default :root + explicit
+       [data-theme=light]; dark is the un-prefixed tile rule above + the prefers-dark
+       :not([data-theme=light]) re-assertion below. */
+    :root .kind-tile, [data-theme="light"] .kind-tile {
+        --kl: .42; --kc: .09;
+        background: oklch(0.72 0.11 var(--kh) / .16);
+        box-shadow: inset 0 0 0 1px oklch(0.55 0.10 var(--kh) / .25);
+    }
+    :root .kind-curated svg, :root .ro-sidebar .menu-list a .kind-curated svg,
+    [data-theme="light"] .kind-curated svg,
+    [data-theme="light"] .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.50 0.10 var(--kh)); }
+    [data-theme="dark"] .kind-tile {
+        --kc: .052; --kl: .80;
+        background: oklch(0.62 0.10 var(--kh) / .20);
+        box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .28);
+    }
+    [data-theme="dark"] .kind-curated svg { color: oklch(var(--kl, .80) var(--kc, .052) var(--kh)); }
+    [data-theme="dark"] .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.80 0.07 var(--kh)); }
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .kind-tile {
+            --kc: .052; --kl: .80;
+            background: oklch(0.62 0.10 var(--kh) / .20);
+            box-shadow: inset 0 0 0 1px oklch(0.70 0.09 var(--kh) / .28);
+        }
+        :root:not([data-theme="light"]) .kind-curated svg { color: oklch(var(--kl, .80) var(--kc, .052) var(--kh)); }
+        :root:not([data-theme="light"]) .ro-sidebar .menu-list a .kind-curated svg { color: oklch(0.80 0.07 var(--kh)); }
+    }
+
+
+    /* NOTE: the responsive media blocks (icon rail / ≤760px mobile card switch /
+       ≤420px / the .menu-toggle reveal) live in overlays.css -- the LAST-imported
+       module -- because their equal-specificity overrides must beat the base rules
+       they target across shell.css AND table.css (e.g. base `.ro-cardlist
+       { display:none }` here-and-in-table vs the ≤760px `.ro-cardlist
+       { display:flex }`). Co-locating them last keeps the override the winner. */
 }

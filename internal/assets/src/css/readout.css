@@ -3,9 +3,14 @@
  * This file owns ZERO style rules. It owns the cascade ORDER: the @layer
  * pre-declaration sets layer precedence, and the @import list below sets the
  * rule order WITHIN each layer (Lightning CSS concatenates each imported
- * `@layer app {...}` / `@layer theme {...}` block in import order). Splitting
- * the former monolith into zone modules was pure rule MOVEMENT -- no selector,
- * value, or rule changed -- so the bundled static/readout.css is byte-identical.
+ * `@layer app {...}` / `@layer theme {...}` block in import order). The former
+ * redesign.css port module has been DISSOLVED (Unit 16): its chrome zones moved
+ * into the thematic modules they belong to (top bar / layout / icons / dots ->
+ * shell; table / virtualization / list cells -> table; detail -> detail; logs ->
+ * logs; states -> states; overlays + the reduced-motion guard -> overlays). The
+ * redesign rules win over the bare twins they coexist with by specificity, so the
+ * move was order-safe. overlays.css is imported LAST so its prefers-reduced-motion
+ * `animation: none` overrides win over every base animation across the tree.
  *
  * Cascade layers. The order below is the cascade order: later-named layers
  * WIN over earlier ones regardless of selector specificity. So:
@@ -38,8 +43,9 @@
 @import "cards-yaml.css";
 @import "detail.css";
 @import "search.css";
+@import "logs.css";
 @import "states.css";
-@import "redesign.css";
+@import "overlays.css";
 
 /* @layer theme -- design tokens + dynamic colours, then the Pygments palette
    (isolated as a vendor-like module). */
