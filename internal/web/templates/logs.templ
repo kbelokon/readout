@@ -84,14 +84,7 @@ templ Logs(d LogsData) {
 			if d.NameTitle != "" {
 				title={ d.NameTitle }
 			}
-		>
-		if d.NameHead != "" && d.NameTail != "" {
-			<span class="pn-head">{ d.NameHead }</span><span class="pn-tail">{ d.NameTail }</span>
-		} else if d.NameHead != "" {
-			<span class="pn-head">{ d.NameHead }</span>
-		} else {
-			{ d.Name }
-		}
+		>@nameSplit(d.NameHead, d.NameTail, d.Name)
 		// The download anchor opts out of hx-boost: boost would swap the
 		// attachment body into <body> instead of downloading (htmx 2.0.4).
 		</h1> <span class="ro-kind-badge">{ d.Kind }</span>
