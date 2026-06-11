@@ -602,7 +602,7 @@ func TestBehaviorPodListAllNamespaces(t *testing.T) {
 		t.Fatalf("all-namespaces first header = %q, want Namespace (headers=%v)", headers[0], headers)
 	}
 	// Breadcrumb middle crumb is the all-namespaces link.
-	p.wantHas(`nav.breadcrumb a[href="/clusters/test/namespaces"]`)
+	p.wantHas(`nav.ro-breadcrumb a[href="/clusters/test/namespaces"]`)
 }
 
 // TestBehaviorListQueryMatrix walks the query-variant matrix and pins, per
@@ -974,14 +974,14 @@ func TestBehaviorDetailBreadcrumb(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
 
-	crumbs := p.texts("nav.breadcrumb li a")
+	crumbs := p.texts("nav.ro-breadcrumb li a")
 	if strings.Join(crumbs, "|") != "test|default|pods|nginx" {
 		t.Fatalf("detail breadcrumb crumbs = %v, want [test default pods nginx]", crumbs)
 	}
-	p.wantHas(`nav.breadcrumb a[href="/clusters/test"]`)
-	p.wantHas(`nav.breadcrumb a[href="/clusters/test/namespaces/default"]`)
-	p.wantHas(`nav.breadcrumb a[href="/clusters/test/namespaces/default/pods"]`)
-	p.wantText("nav.breadcrumb li.is-active a", "nginx")
+	p.wantHas(`nav.ro-breadcrumb a[href="/clusters/test"]`)
+	p.wantHas(`nav.ro-breadcrumb a[href="/clusters/test/namespaces/default"]`)
+	p.wantHas(`nav.ro-breadcrumb a[href="/clusters/test/namespaces/default/pods"]`)
+	p.wantText("nav.ro-breadcrumb li.is-active a", "nginx")
 }
 
 // ---------------------------------------------------------------------------
