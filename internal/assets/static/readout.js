@@ -2520,6 +2520,12 @@ const liveState = {
     streamPath: '', // the stream URL sans ?g= -- the page/params identity
 };
 let liveGenSeq = 0;
+// liveDiscards counts ro-table frames DISCARDED at morph time (stale
+// generation, wrong page identity, in-flight `_table` request). Exposed via
+// the window.roLive debug seam (the roVirtual pattern) so the e2e suite can
+// await "the push arrived AND was discarded" deterministically instead of
+// sleeping past an estimated delivery time.
+let liveDiscards = 0;
 // The Live FALLBACK poll cadence (seconds): 0 while a stream rides (or Live
 // is off), 5 while degraded to polling. effectivePollSeconds() feeds it into
 // the shared tick chain.
@@ -2706,11 +2712,24 @@ function liveHandleFrame(name, text, ctrl) {
         return false;
     }
     if (String(payload.g) !== liveState.gen) {
+        liveDiscards += 1;
         return false; // STALE GENERATION -> discarded at morph time
+    }
+    if (liveStreamBase() !== liveState.streamPath) {
+        // WRONG PAGE: the location no longer matches the page/params identity
+        // this stream was opened against. A boosted body swap pushes the new
+        // URL BEFORE htmx:load's liveApply reconciles the stream, so a push
+        // from the old page's still-open stream would otherwise morph the OLD
+        // resource's table into the NEW page's container. The body-swap hook
+        // tears the stream down structurally; this gate is the independent
+        // morph-time layer.
+        liveDiscards += 1;
+        return false;
     }
     pruneSettledListRequests(userListRequestsInFlight);
     pruneSettledListRequests(containerListRequestsInFlight);
     if (userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0) {
+        liveDiscards += 1;
         return false; // a _table request is in flight -> the push is discarded
     }
     liveMorph(String(payload.html));
@@ -2806,6 +2825,16 @@ document.addEventListener('visibilitychange', () => {
         liveOpen(liveSupported() ? liveStreamBase() : '');
     }
 });
+
+// The deliberate external seam (e2e / console), the roVirtual/roRowState
+// pattern: morph-time discard observability. The specs poll discards() to
+// prove a held push ARRIVED and was dropped (not merely "has not arrived
+// yet") before asserting the view stayed unchanged.
+window.roLive = {
+    discards() {
+        return liveDiscards;
+    },
+};
 
 // ---------------------------------------------------------------------------
 // Identity-keyed row state (D6): selection + j/k focus survive every morph
@@ -3232,6 +3261,18 @@ document.addEventListener('htmx:beforeSwap', (event) => {
         closeRowMenu();
         clearRowState();
         clearListStale();
+        // The riding Live stream belongs to the OLD page. liveApply (on the
+        // htmx:load re-init) would reconcile it anyway, but only AFTER the
+        // body swap -- a push delivered inside that gap would pass the
+        // generation check (nothing reset it yet) and morph the old
+        // resource's table into the new page's container. Tear it down NOW;
+        // the new page's init opens its own stream from the clean idle state
+        // (a fresh page init is a fresh attempt, so a sticky fallback resets
+        // here exactly like it does on a full-page navigation).
+        liveTeardown();
+        liveState.status = 'idle';
+        liveState.streamPath = '';
+        liveFallbackSecs = 0;
     }
 });
 

@@ -134,8 +134,10 @@ test('Live opens the stream: livedot pulses, a status change lands as a push and
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
 
   // A scripted change arrives as a PUSH: Live arms NO polling timer, so the
-  // morph landing at all (let alone this fast) proves the stream delivered
-  // it. The changed STATUS cell flashes; the untouched NAME cell does not.
+  // morph landing at all proves the stream delivered it — and the 1s budget
+  // pins it SUB-SECOND (push latency after the 300ms floor is ~tens of ms;
+  // no polling cadence could land this fast). The changed STATUS cell
+  // flashes; the untouched NAME cell does not.
   await scriptEvents([
     {
       path: PODS_LIST_PATH,
@@ -151,7 +153,7 @@ test('Live opens the stream: livedot pulses, a status change lands as a push and
   ]);
   const nginx = page.locator('tr[data-key="e2e/default/nginx"]');
   await expect(nginx.locator('td:has(span.cell-status)')).toContainText('CrashLoopBackOff', {
-    timeout: 2_000,
+    timeout: 1_000,
   });
   await expect(nginx.locator('td:has(span.cell-status)')).toHaveClass(/ro-cell-changed/);
   await expect(nginx.locator('td.cell-name')).not.toHaveClass(/ro-cell-changed/);
@@ -208,10 +210,22 @@ test('a filter chip while an old-generation push is held in flight: morph-time d
   await page.locator('#ro-filter-input').pressSequentially('status:Running');
   await page.locator('#ro-filter-input').press('Enter');
 
-  // t ~= 1.1s: the held push has been delivered and DISCARDED (the commit is
-  // still in flight) -- my-app shows its pre-change status, the unfiltered
-  // stale fragment never morphed in.
-  await page.waitForTimeout(1_100);
+  // The held push ARRIVED and was DISCARDED — observable on the roLive debug
+  // seam, not inferred from a sleep: the discard counter ticks at ~t+0.6s
+  // (the fakeapi delay) while the commit is still held in flight until
+  // ~t+1.5s, so the unchanged-view assert below runs squarely inside the
+  // in-flight window. The route-hold margins stay as the backstop.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () => (window as unknown as { roLive: { discards(): number } }).roLive.discards()
+        ),
+      { timeout: 5_000 }
+    )
+    .toBeGreaterThan(0);
+  // my-app still shows its pre-change status: the unfiltered stale fragment
+  // never morphed in.
   await expect(
     page.locator('tr[data-key="e2e/default/my-app"] td:has(span.cell-status)')
   ).toContainText('Running');

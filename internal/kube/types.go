@@ -125,11 +125,11 @@ type ListOptions struct {
 // WatchOptions scope a Table watch (Client.WatchTable). ResourceVersion is
 // the captured list resourceVersion the watch resumes from
 // (Table.ResourceVersion of the initial list); empty starts at the server's
-// current state with no replay.
+// current state with no replay. No FieldSelector: the one watch consumer (the
+// Live stream, D19) scopes by namespace + label selector only.
 type WatchOptions struct {
 	Namespace       string
 	LabelSelector   string
-	FieldSelector   string
 	ResourceVersion string
 }
 

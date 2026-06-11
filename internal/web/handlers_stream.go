@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/web/templates"
 )
@@ -60,6 +61,24 @@ var (
 
 	// streamMetricsPoll is the ?join=metrics usage sub-poll interval.
 	streamMetricsPoll = 30 * time.Second
+
+	// streamMaxLifetime bounds a stream's TOTAL lifetime in trusted-headers /
+	// none auth modes (`ro-terminal` reason "idle"): there is no per-session
+	// expiry in those modes, and the idle cap resets on every watch event, so
+	// without this bound a stream lives forever. In OIDC mode the session's
+	// own expiry bounds the stream instead (reason "auth") — the connect-time
+	// cookie check is the only auth check an SSE stream ever gets, and the
+	// stream must not outlive the session that authorized it. 12 hours,
+	// hardcoded; test-injectable.
+	streamMaxLifetime = 12 * time.Hour
+
+	// streamWriteTimeout is the per-frame write deadline: a connected peer
+	// that stopped READING would otherwise wedge Fprintf/Flush forever once
+	// TCP buffers fill — the handler never returns to its select loop, no
+	// timer can fire, and the deferred cap slot leaks until restart. A
+	// deadline error is treated as client-gone (the normal exit path). 30
+	// seconds, hardcoded; test-injectable.
+	streamWriteTimeout = 30 * time.Second
 )
 
 const (
@@ -217,20 +236,39 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 	if namespace == kube.AllNamespaces {
 		listNS = ""
 	}
+	lifetime, lifetimeReason := s.streamLifetime(r)
 	sess := &streamSession{
-		srv:         s,
-		w:           w,
-		rc:          http.NewResponseController(w),
-		renderReq:   streamRenderRequest(r),
-		client:      client,
-		rt:          rt,
-		cluster:     clusterName,
-		listNS:      listNS,
-		selector:    r.URL.Query().Get("selector"),
-		gen:         r.URL.Query().Get("g"),
-		wantMetrics: r.URL.Query().Get("join") == "metrics" && (plural == "pods" || plural == "nodes"),
+		srv:            s,
+		w:              w,
+		rc:             http.NewResponseController(w),
+		renderReq:      streamRenderRequest(r),
+		client:         client,
+		rt:             rt,
+		cluster:        clusterName,
+		listNS:         listNS,
+		selector:       r.URL.Query().Get("selector"),
+		gen:            r.URL.Query().Get("g"),
+		wantMetrics:    r.URL.Query().Get("join") == "metrics" && (plural == "pods" || plural == "nodes"),
+		lifetime:       lifetime,
+		lifetimeReason: lifetimeReason,
 	}
 	sess.run(ctx)
+}
+
+// streamLifetime resolves the stream's total-lifetime bound at connect time
+// (the only auth check an SSE stream ever gets — the idle cap resets on watch
+// data, so without this a revoked/expired session keeps receiving cluster
+// state indefinitely). OIDC mode: the session cookie's own Expires, terminal
+// reason "auth" (the client's no-reconnect taxonomy). Trusted-headers / none
+// modes have no per-session expiry: the hard streamMaxLifetime cap applies,
+// terminal reason "idle".
+func (s *Server) streamLifetime(r *http.Request) (time.Duration, string) {
+	if s.effectiveAuthMode() == config.AuthModeOIDC {
+		if session, ok := s.authSession(r); ok {
+			return time.Until(time.Unix(session.Expires, 0)), "auth"
+		}
+	}
+	return streamMaxLifetime, "idle"
 }
 
 // streamSession is one open Live stream: the unfiltered snapshot, the cached
@@ -260,6 +298,11 @@ type streamSession struct {
 
 	wantMetrics bool
 	metrics     map[string][2]float64
+
+	// lifetime / lifetimeReason bound the stream's TOTAL lifetime (resolved
+	// at connect by streamLifetime; the loop arms a single never-reset timer).
+	lifetime       time.Duration
+	lifetimeReason string
 
 	dirty      bool
 	lastPush   time.Time
@@ -323,6 +366,11 @@ func (st *streamSession) fetchMetrics(ctx context.Context) map[string][2]float64
 func (st *streamSession) loop(ctx context.Context) {
 	idleTimer := time.NewTimer(streamIdleCap)
 	defer idleTimer.Stop()
+	// The total-lifetime bound (session expiry in OIDC mode, the hard cap
+	// otherwise). NEVER reset — unlike the idle timer, watch data must not
+	// extend it.
+	lifetimeTimer := time.NewTimer(st.lifetime)
+	defer lifetimeTimer.Stop()
 	pushTimer := time.NewTimer(time.Hour)
 	pushTimer.Stop()
 	defer pushTimer.Stop()
@@ -467,6 +515,9 @@ func (st *streamSession) loop(ctx context.Context) {
 		case <-idleTimer.C:
 			st.terminal("idle")
 			return
+		case <-lifetimeTimer.C:
+			st.terminal(st.lifetimeReason)
+			return
 		}
 	}
 }
@@ -555,16 +606,29 @@ func (st *streamSession) terminal(reason string) {
 
 // writeEvent writes one SSE frame and flushes it — per-message flush is part
 // of the D19 plumbing (statusWriter forwards Flush; the anti-buffering header
-// set at the handshake keeps proxies honest).
+// set at the handshake keeps proxies honest). Every frame is bounded by a
+// write deadline (via statusWriter's Unwrap → http.ResponseController): a
+// connected-but-not-reading peer otherwise blocks the write forever once TCP
+// buffers fill, wedging the handler outside its select loop with the cap slot
+// held. A deadline error surfaces as the write/flush error — the normal
+// client-gone exit. The deadline disarms after a successful frame (pushes can
+// be arbitrarily far apart, and the next frame re-arms it anyway); deadline
+// (dis)arming itself is best-effort — an unsupported writer just keeps the
+// old unbounded behavior.
 func (st *streamSession) writeEvent(event string, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
+	_ = st.rc.SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 	if _, err := fmt.Fprintf(st.w, "event: %s\ndata: %s\n\n", event, data); err != nil {
 		return err
 	}
-	return st.rc.Flush()
+	if err := st.rc.Flush(); err != nil {
+		return err
+	}
+	_ = st.rc.SetWriteDeadline(time.Time{})
+	return nil
 }
 
 // mergeTableEvent folds one watch data event into the unfiltered snapshot:

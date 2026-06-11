@@ -244,7 +244,7 @@ func (c filterChip) matcher(table *kube.Table) rowMatcher {
 }
 
 // filterFieldAlias maps the reserved metrics filter fields to the joined
-// usage column names (build_list.go joinMetrics appends exactly these).
+// usage column names (build_list.go applyMetricsUsage appends exactly these).
 func filterFieldAlias(field string) (string, bool) {
 	switch {
 	case strings.EqualFold(field, "cpu"):

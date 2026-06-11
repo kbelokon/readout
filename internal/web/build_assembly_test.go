@@ -136,7 +136,7 @@ func TestJoinMetricsJoinsCPUAndMemoryByObjectKey(t *testing.T) {
 		},
 	}
 	ctx := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods?join=metrics", nil).Context()
-	app.joinMetrics(ctx, cluster.Client, &table, "default", false, "")
+	applyMetricsUsage(&table, app.fetchMetricsUsage(ctx, cluster.Client, table.Resource.Namespaced, "default", false, ""))
 
 	if len(table.Columns) != 3 || table.Columns[1].Name != "CPU Usage" || table.Columns[2].Name != "Memory Usage" {
 		t.Fatalf("metrics columns not appended: %#v", table.Columns)

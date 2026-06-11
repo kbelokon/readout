@@ -283,7 +283,7 @@ func buildAnnotationChips(object *kube.Object) ([]annotationChipView, []annotati
 }
 
 // podContainerMetrics fetches the pod's PodMetrics object and resolves its
-// per-container usage map. Availability detection mirrors joinMetrics: a
+// per-container usage map. Availability detection mirrors fetchMetricsUsage: a
 // cluster without metrics-server fails FindResourceByKind (discovery, cached
 // 60s) and a too-young pod fails the Get — both yield nil, which renders every
 // CPU/Memory cell as the faint "—" (D14: real values only when the metrics

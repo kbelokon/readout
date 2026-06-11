@@ -882,3 +882,58 @@ func TestListLoopReadoutJSContract(t *testing.T) {
 	get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK).wantBodyExcludes("morph:{")
 	get(t, app, "/clusters/test/namespaces/default/pods,services", http.StatusOK).wantBodyExcludes("morph:{")
 }
+
+// TestLiveWrongPageGateReadoutJSContract pins the two layers that keep a
+// boosted list→list navigation from morphing the OLD resource's table into
+// the NEW page's container (waves E+F review). htmx pushes the new URL and
+// swaps the body BEFORE htmx:load's liveApply reconciles the stream, so a
+// push delivered inside that gap passes the generation check (nothing minted
+// a new one yet) and the in-flight gates (the boosted body request has
+// settled). The gap is ~one settle delay (~20ms) — too narrow for an e2e
+// script to aim a held push into deterministically — so the layers are
+// pinned needle-style here (no headless JS runner in this suite; the
+// roLive.discards seam is exercised end to end by live.spec.ts).
+func TestLiveWrongPageGateReadoutJSContract(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
+	if err != nil {
+		t.Fatalf("read readout.js: %v", err)
+	}
+	js := string(src)
+	// Layer 1: the morph-time page-identity gate in liveHandleFrame — a frame
+	// whose stream identity no longer matches the live location is discarded,
+	// and every discard branch feeds the observability counter + seam.
+	for _, needle := range []string{
+		"liveStreamBase() !== liveState.streamPath", // the wrong-page gate
+		"liveDiscards",  // the discard counter
+		"window.roLive", // the e2e observability seam
+	} {
+		if !strings.Contains(js, needle) {
+			t.Fatalf("readout.js live wrong-page protection missing %q", needle)
+		}
+	}
+	// Layer 2 (structural): the body-swap hook tears the stream down at
+	// htmx:beforeSwap, closing the gap before it opens. Pin the teardown
+	// INSIDE the body-target hook, not merely somewhere in the file: slice
+	// the hook out between its listener registration and the next
+	// document-level listener.
+	start := strings.Index(js, "document.addEventListener('htmx:beforeSwap'")
+	if start < 0 {
+		t.Fatal("readout.js lost the htmx:beforeSwap body-swap hook")
+	}
+	length := strings.Index(js[start:], "htmx:historyRestore")
+	if length < 0 {
+		t.Fatal("readout.js lost the htmx:historyRestore listener that bounds the body-swap hook")
+	}
+	hook := js[start : start+length]
+	for _, needle := range []string{
+		"target === document.body",  // the hook is body-swap-gated
+		"clearRowState",             // the pre-existing screen-change clear rides along
+		"liveTeardown()",            // the stream aborts at swap time
+		"liveState.status = 'idle'", // ...and the state machine resets
+		"liveState.streamPath = ''", // ...so liveApply reopens for the NEW page
+	} {
+		if !strings.Contains(hook, needle) {
+			t.Fatalf("htmx:beforeSwap body hook missing %q — the wrong-page gap is open structurally", needle)
+		}
+	}
+}

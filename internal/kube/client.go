@@ -461,9 +461,6 @@ func (c *Client) WatchTable(ctx context.Context, rt *ResourceType, opts WatchOpt
 	if opts.LabelSelector != "" {
 		q.Set("labelSelector", opts.LabelSelector)
 	}
-	if opts.FieldSelector != "" {
-		q.Set("fieldSelector", opts.FieldSelector)
-	}
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)

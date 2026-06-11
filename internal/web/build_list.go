@@ -259,9 +259,9 @@ func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client
 	if table.Resource.Plural == "nodes" {
 		// Nodes get rich capacity/pods/conditions columns (read from each row's
 		// status). The CPU/Memory capacity columns are added here ONLY when metrics
-		// are not joined; with ?join=metrics the joinMetrics CPU/Memory Usage columns
-		// below carry the usage overlay instead (one CPU and one Memory column
-		// either way, never both).
+		// are not joined; with ?join=metrics the applyMetricsUsage CPU/Memory Usage
+		// columns below carry the usage overlay instead (one CPU and one Memory
+		// column either way, never both).
 		decorateNodeColumns(table, q.Get("join") == "metrics")
 	}
 	if table.Resource.Plural == "deployments" {
@@ -449,15 +449,11 @@ func mergeColumnVis(left, right []columnVis) []columnVis {
 	return left
 }
 
-func (s *Server) joinMetrics(ctx context.Context, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, labelSelector string) {
-	applyMetricsUsage(table, s.fetchMetricsUsage(ctx, client, table.Resource.Namespaced, namespace, allNamespaces, labelSelector))
-}
-
 // fetchMetricsUsage resolves the metrics.k8s.io usage overlay for a pods or
 // nodes scope: "namespace/name" → [cpu cores, memory bytes], decoded through
 // kube.MetricsUsage (the typed quantity seam). nil when discovery or the
 // metrics LIST fails — applyMetricsUsage then writes the zero placeholders,
-// preserving the old joinMetrics failure shape. Split from the column apply
+// so a failed fetch never leaves ragged rows. Split from the column apply
 // so the Live stream (D19) can refresh usage on its own 30s sub-poll instead
 // of re-fetching per push.
 func (s *Server) fetchMetricsUsage(ctx context.Context, client *kube.Client, namespaced bool, namespace string, allNamespaces bool, labelSelector string) map[string][2]float64 {
@@ -1491,8 +1487,9 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cv.Href = "/clusters/" + url.PathEscape(row.Cluster) + "/nodes/" + url.PathEscape(value)
 	case table.Resource.Plural == "nodes" && (colName == "CPU Usage" || colName == "Memory Usage"):
 		// Nodes reskin the joined metrics usage column as a capacity bar: the cell
-		// carries the usage (cores/bytes from joinMetrics), the node's capacity
-		// comes from status.capacity, and the bucket + fill come from usage/capacity.
+		// carries the usage (cores/bytes from applyMetricsUsage), the node's
+		// capacity comes from status.capacity, and the bucket + fill come from
+		// usage/capacity.
 		usage, haveUsage := numericCell(cell)
 		cv = capacityCellView(row.Object, nodeCapacityKey(colName), usage, haveUsage)
 	case table.Resource.Plural == "nodes" && (colName == "CPU" || colName == "Memory"):

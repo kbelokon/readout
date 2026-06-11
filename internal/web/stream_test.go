@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -125,7 +126,21 @@ func dialStream(t *testing.T, url string) *http.Response {
 // cleanup so the test server can drain its handler.
 func openStream(t *testing.T, url string) *sseStream {
 	t.Helper()
-	resp := dialStream(t, url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return openStreamRequest(t, req)
+}
+
+// openStreamRequest is openStream for a caller-built request (the OIDC
+// session-expiry test attaches a session cookie).
+func openStreamRequest(t *testing.T, req *http.Request) *sseStream {
+	t.Helper()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
@@ -135,6 +150,40 @@ func openStream(t *testing.T, url string) *sseStream {
 	t.Cleanup(s.close)
 	go s.read()
 	return s
+}
+
+// waitForOpenWatch polls the fakeapi hub snapshot until at least one
+// ?watch=true connection is registered. Control entries (GONE/EOF) never
+// replay to late watches, and emissions fan out to zero connections silently,
+// so a test posting them right after the SSE handshake races the server's
+// first watch connect — the GONE/EOF can vanish and the test hangs waiting
+// for a reaction that never comes (the reproduced TestStreamGoneRelists
+// flake). Data events (ADDED/MODIFIED/DELETED) are replayable and need no
+// guard.
+func waitForOpenWatch(t *testing.T, baseURL string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := http.Get(baseURL + "/__control/watch-script")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var snapshot struct {
+			OpenWatches []string `json:"openWatches"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&snapshot)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(snapshot.OpenWatches) > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no upstream watch opened within 5s")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (s *sseStream) close() { _ = s.resp.Body.Close() }
@@ -330,6 +379,16 @@ collect:
 	if len(times) < 3 {
 		t.Fatalf("only %d pushes during 3.4s of churn — coalescing starved the screen", len(times))
 	}
+	// Degradation must ENGAGE, not merely stay inside the [floor, ceiling]
+	// envelope (floor-paced pushes the whole window would also satisfy it).
+	// Budget: the initial push + ~3 floor-paced pushes before the 10-events-
+	// in-2s detection trips (~t+1.0s) + 1 degraded push at ~t+2.9s = 5
+	// nominal, 6 with one jitter-delayed detection. The undegraded behavior
+	// pushes every ~300ms for the whole 3.4s window (~11-12 pushes), so the
+	// bound separates cleanly.
+	if len(times) > 6 {
+		t.Fatalf("%d pushes during 3.4s of sustained churn — degradation never engaged (want ≤6)", len(times))
+	}
 	for i := 1; i < len(times); i++ {
 		gap := times[i].Sub(times[i-1])
 		if gap < 280*time.Millisecond {
@@ -372,16 +431,43 @@ func TestStreamFilterTransitions(t *testing.T) {
 
 // TestStreamGoneRelists pins the 410 branch: a scripted GONE triggers a
 // silent relist + full push (never a terminal), and the re-watched stream
-// keeps delivering subsequent changes.
+// keeps delivering subsequent changes. The relist itself is proven by the
+// recorder — a fresh non-watch LIST must hit the pods path after the GONE.
+// The pushed "nginx" alone is NOT proof: the stale snapshot also contains it,
+// so a handler that skipped the relist would pass that needle.
 func TestStreamGoneRelists(t *testing.T) {
-	ts, fake := newStreamFixture(t)
+	var mu sync.Mutex
+	goneArmed := false
+	listsAfterGone := 0
+	ts, fake := newStreamFixtureWithRecorder(t, func(r *http.Request) {
+		if r.URL.Query().Get("watch") == "true" || !strings.HasSuffix(r.URL.Path, "/pods") {
+			return
+		}
+		mu.Lock()
+		if goneArmed {
+			listsAfterGone++
+		}
+		mu.Unlock()
+	})
 	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=4")
 	s.requireEvent(t, "ro-table", 5*time.Second)
 
+	// The GONE must land on an OPEN watch (control entries never replay):
+	// wait for the server's first watch connect before posting.
+	waitForOpenWatch(t, fake.URL)
+	mu.Lock()
+	goneArmed = true
+	mu.Unlock()
 	postStreamScript(t, fake.URL, fmt.Sprintf(`{"events":[{"path":%q,"type":"GONE"}]}`, streamPodsPath))
 	relist := s.requireEvent(t, "ro-table", 3*time.Second) // the relist full push, NOT ro-terminal
 	if !strings.Contains(decodeFrame(t, relist).HTML, "nginx") {
 		t.Fatal("relist push is missing the listed rows")
+	}
+	mu.Lock()
+	relists := listsAfterGone
+	mu.Unlock()
+	if relists == 0 {
+		t.Fatal("no fresh pods LIST after the GONE — the 410 path skipped the relist")
 	}
 
 	// The re-watch from the fresh RV is live: a new MODIFY still pushes.
@@ -512,7 +598,11 @@ func TestStreamEOFStormTerminal(t *testing.T) {
 
 	// Five EOFs, each landing while a (re-)watch is open: spacing 400ms vs a
 	// ≤100ms re-watch delay leaves a wide margin. Every killed attempt ends
-	// event-less within the immediate window, so the 5th is terminal.
+	// event-less within the immediate window, so the 5th is terminal. The
+	// margin argument starts from the FIRST watch being open — EOFs are
+	// control entries (never replayed, dropped on zero conns), so the post
+	// must wait for the initial watch connect or the first EOF can vanish.
+	waitForOpenWatch(t, fake.URL)
 	var eofs []string
 	for i := 0; i < streamMaxImmediateEOFs; i++ {
 		eofs = append(eofs, fmt.Sprintf(`{"path":%q,"type":"EOF","delayMs":%d}`, streamPodsPath, (i+1)*400))
@@ -604,6 +694,125 @@ func TestStreamShutdownTerminal(t *testing.T) {
 		t.Fatalf("terminal reason = %q, want shutdown", reason)
 	}
 	s.requireClosed(t, 2*time.Second)
+}
+
+// TestStreamMaxLifetimeTerminal pins the hard lifetime bound (security
+// review, waves E+F): in trusted-headers/none auth modes a stream has no
+// per-session expiry, and the idle cap resets on every watch event — without
+// a total-lifetime bound a stream runs forever. The streamMaxLifetime package
+// var (test-injectable, 12h default) terminates it with reason "idle". The
+// 30-minute default idle cap is four orders of magnitude above the injected
+// bound, so a terminal arriving within seconds can only be the lifetime
+// timer.
+func TestStreamMaxLifetimeTerminal(t *testing.T) {
+	setStreamVar(t, &streamMaxLifetime, 300*time.Millisecond)
+	ts, _ := newStreamFixture(t)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=12")
+	s.requireEvent(t, "ro-table", 5*time.Second)
+	term := s.requireEvent(t, "ro-terminal", 3*time.Second)
+	if reason := decodeFrame(t, term).Reason; reason != "idle" {
+		t.Fatalf("terminal reason = %q, want idle", reason)
+	}
+	s.requireClosed(t, 2*time.Second)
+}
+
+// TestStreamOIDCSessionExpiryTerminal pins the session-bound lifetime
+// (security review, waves E+F): in OIDC mode the connect-time cookie check is
+// the ONLY auth check an SSE stream ever gets, so the stream must not outlive
+// the session it was authorized with — at the session's Expires instant the
+// server emits `ro-terminal` reason "auth" and closes. The expiry is
+// injectable through the session cookie itself (Expires is unix seconds, so
+// the shortest deterministic TTL is ~2s).
+func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
+	fake, err := fakeapi.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fake.Close)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:          8080,
+		Clusters:      []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:  "dark",
+		AuthMode:      config.AuthModeOIDC,
+		OIDCIssuerURL: "https://issuer.invalid",
+	})
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	value, err := app.sessions.Seal(sessionCookieName, authSession{
+		AccessToken: "session-token",
+		Expires:     time.Now().Add(2 * time.Second).Unix(),
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=13", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
+
+	s := openStreamRequest(t, req)
+	s.requireEvent(t, "ro-table", 5*time.Second)
+	term := s.requireEvent(t, "ro-terminal", 4*time.Second)
+	if reason := decodeFrame(t, term).Reason; reason != "auth" {
+		t.Fatalf("terminal reason = %q, want auth", reason)
+	}
+	s.requireClosed(t, 2*time.Second)
+}
+
+// TestStreamWriteDeadlineFreesWedgedSlot pins the non-draining-client armor
+// (security review, waves E+F): a connected peer that stops READING wedges
+// the SSE write (Fprintf/Flush block once TCP buffers fill) — the handler
+// never returns to its select loop, no timer can fire, and the deferred cap
+// slot leaks until restart. The per-write deadline (streamWriteTimeout,
+// test-injectable) turns the wedge into a write error — the normal
+// client-gone exit — and the slot releases. The 600-row "big" fixture makes
+// each push large enough to fill the loopback buffers within a few frames.
+func TestStreamWriteDeadlineFreesWedgedSlot(t *testing.T) {
+	setStreamVar(t, &streamWriteTimeout, 250*time.Millisecond)
+	fake, err := fakeapi.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fake.Close)
+	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	// A raw TCP client that sends the request and then NEVER reads: kernel
+	// buffers fill and the server's writes stop completing. Closed at cleanup
+	// FIRST (LIFO), so even a regressed (deadline-less) handler unblocks
+	// before ts.Close drains.
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := fmt.Fprintf(conn, "GET /clusters/test/namespaces/big/pods/_stream?g=wedge HTTP/1.1\r\nHost: readout-test\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The handler acquired its slot (the request routed and the stream started).
+	acquire := time.Now().Add(5 * time.Second)
+	for len(app.streamSlots) == 0 {
+		if time.Now().After(acquire) {
+			t.Fatal("stream handler never acquired its cap slot")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Keep producing dirty state so the handler keeps writing frames until
+	// one wedges (the initial 600-row push may fit in the buffers); then the
+	// injected write deadline must error the write and release the slot.
+	deadline := time.Now().Add(10 * time.Second)
+	for len(app.streamSlots) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("cap slot still held — the wedged write never hit the deadline")
+		}
+		postStreamScript(t, fake.URL, `{"events":[{"path":"/api/v1/namespaces/big/pods","type":"MODIFIED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"big-pod-0001","namespace":"big"}}}]}`)
+		time.Sleep(150 * time.Millisecond)
+	}
 }
 
 // TestStreamMetricsJoinSubPoll pins the ?join=metrics plumbing: the initial

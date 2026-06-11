@@ -170,9 +170,15 @@ test.describe('windowing (desktop)', () => {
       .click();
     await sorted;
 
-    // The store survives the swap; scrolling the window to the row's new
-    // position shows it still decorated.
+    // The store survives the swap; the selected row actually LEFT the window
+    // (its <tr> is detached — Status sort puts the ~85-row Pending block
+    // first, pushing big-pod-0002 to ~index 85, far past the rendered
+    // window). Without this the scrollToKey jump below could be a no-op on a
+    // still-rendered row, never proving re-decoration after a re-window; it
+    // doubles as the swap-completion barrier (the bulk-count text is
+    // identical before and after the swap, so it cannot be one).
     await expect(page.locator('#ro-bulk-count')).toHaveText('1 selected');
+    await expect(row2).toHaveCount(0);
     const jumped = await page.evaluate(
       (key) => (window as any).roVirtual.scrollToKey(key),
       podKey(2)
@@ -202,9 +208,52 @@ test.describe('windowing (desktop)', () => {
     await expect
       .poll(() => page.evaluate(() => window.scrollY), { timeout: 5_000 })
       .toBeGreaterThan(3500);
+    // The re-window rides a rAF-throttled scroll listener: wait until the
+    // rendered slice actually moved (the live.spec.ts pattern), then mutate a
+    // row INSIDE the scrolled-to window too — its new text is the adoption
+    // barrier below (waitForTick resolves on the HTTP response, which races
+    // the swap + adoption the asserts depend on).
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () =>
+              (window as unknown as { roVirtual: { renderedBounds(): { start: number } } })
+                .roVirtual.renderedBounds().start
+          ),
+        { timeout: 5_000 }
+      )
+      .toBeGreaterThan(50);
+    const bounds = await page.evaluate(
+      () =>
+        (window as unknown as { roVirtual: { renderedBounds(): { start: number; end: number } } })
+          .roVirtual.renderedBounds()
+    );
+    const inWindowPod = bounds.start + 7; // visible list index i is big-pod-(i+1)
+    await scriptEvents([
+      {
+        path: BIG_PODS_LIST_PATH,
+        type: 'MODIFIED',
+        object: {
+          apiVersion: 'v1',
+          kind: 'Pod',
+          metadata: { name: `big-pod-${String(inWindowPod).padStart(4, '0')}`, namespace: 'big' },
+        },
+        cells: [`big-pod-${String(inWindowPod).padStart(4, '0')}`, '0/1', 'ImagePullBackOff', '1', '10m'],
+      },
+    ]);
     const scrollBefore = await page.evaluate(() => window.scrollY);
 
     await waitForTick(page);
+    // Adoption barrier: the in-window row shows the mutated text, so the
+    // swap AND the virtualizer's adoption have fully landed — the stable-
+    // scroll and no-dupes asserts below run against the post-adoption DOM,
+    // never the pre-swap one. The generous timeout covers a tick that was
+    // already in flight when the mutation posted (the NEXT tick carries it).
+    await expect(podRow(page, inWindowPod).locator('td').nth(2)).toContainText(
+      'ImagePullBackOff',
+      { timeout: 15_000 }
+    );
 
     // Stable scroll, still windowed, NO duplicate rows.
     expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
