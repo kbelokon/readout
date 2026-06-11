@@ -118,3 +118,33 @@ test('mobile cards speak the v2 cell vocabulary at 700px', async ({ page }) => {
   await expect(nginxCard.locator('.pc-meta .ready.full')).toHaveText('1/1');
   await expect(nginxCard.locator('.pc-meta .m .k', { hasText: 'ready' })).toBeVisible();
 });
+
+test('a long sidebar kind name squeezes with an ellipsis instead of pushing the count out', async ({
+  page,
+}) => {
+  await page.goto('/clusters/e2e/namespaces/default/pods');
+  // Keyed by href, not text: the probe below renames the label, and a
+  // text-keyed locator would re-resolve to nothing afterwards.
+  const link = page.locator('.ro-sidebar .menu-list a[href$="/pods"]').first();
+  // Force the failure shape from the field report: a kind label as long as
+  // HorizontalPodAutoscalers, next to a real count badge.
+  await link.evaluate((a) => {
+    a.querySelector('.nav-label')!.textContent = 'HorizontalPodAutoscalersOverflowProbe';
+    let count = a.querySelector('.menu-count');
+    if (!count) {
+      count = document.createElement('span');
+      count.className = 'menu-count';
+      a.appendChild(count);
+    }
+    count.textContent = '22';
+  });
+  const aside = (await page.locator('.ro-sidebar').boundingBox())!;
+  const count = (await link.locator('.menu-count').boundingBox())!;
+  // The badge stays fully inside the sidebar...
+  expect(count.x + count.width).toBeLessThanOrEqual(aside.x + aside.width);
+  // ...because the LABEL is what gave way (scrollWidth > clientWidth = clipped).
+  const clipped = await link
+    .locator('.nav-label')
+    .evaluate((el) => el.scrollWidth > el.clientWidth);
+  expect(clipped).toBe(true);
+});

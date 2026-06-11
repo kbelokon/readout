@@ -2084,7 +2084,17 @@
         padding: 6px 9px; border-radius: var(--radius-sm);
         color: var(--text-muted); font-size: 13px; font-weight: 450;
     }
-    .ro-sidebar .menu-list a .ico { color: var(--text-faint); }
+    .ro-sidebar .menu-list a .ico { color: var(--text-faint); flex: none; }
+    /* A long kind name (HorizontalPodAutoscalers) must squeeze with an
+       ellipsis instead of shoving the count badge past the sidebar edge:
+       the label is the only flexible cell in the row. The full name stays
+       reachable via the link's title tooltip (rail markup already sets it). */
+    .ro-sidebar .menu-list a .nav-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
     .ro-sidebar .menu-list a:hover { background: var(--surface-2); color: var(--text); }
     .ro-sidebar .menu-list a:hover .ico { color: var(--text-muted); }
     .ro-sidebar .menu-list a.is-active {
@@ -2100,6 +2110,7 @@
     .ro-sidebar .menu-list a .menu-count {
         margin-left: auto; font-family: var(--font-mono);
         font-size: 11px; color: var(--text-faint);
+        flex: none;
     }
 
     .ro-main { flex: 1; min-width: 0; padding: 22px 26px 80px; }
