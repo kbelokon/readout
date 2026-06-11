@@ -99,7 +99,7 @@ templ clustersBody(d ClustersData) {
 					if len(row.Chips) > 0 {
 						<div class="ro-chips">
 							for _, chip := range row.Chips {
-								<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+								@labelChip(chip.Key, chip.Val)
 							}
 							</div>
 					}

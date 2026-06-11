@@ -25,3 +25,14 @@ templ tabLink(active bool, href, label string) {
 		<a href={ templ.SafeURL(href) }>{ label }</a>
 	}
 }
+
+// labelChip renders one NEUTRAL label pill -- the `.ro-chip` with the
+// `.ck`/`.cs`/`.cv` ink-weight split (D3 colour law: every label chip is
+// neutral; the green app.kubernetes.io/* accent is retired). This is the
+// non-link span form shared by the cluster-overview meta chips, the namespace
+// row chips, and the clusters-entry row chips. The link form (detail-page
+// selector chips) and the `.anno` annotation form carry different
+// elements/attributes and are kept inline at their single sites.
+templ labelChip(key, val string) {
+	<span class="ro-chip"><span class="ck">{ key }</span><span class="cs">:</span><span class="cv">{ val }</span></span>
+}

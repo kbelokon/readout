@@ -66,7 +66,7 @@ templ Cluster(d ClusterData) {
 			if len(d.ClusterChips) > 0 {
 				<div class="ro-chips">
 					for _, chip := range d.ClusterChips {
-						<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+						@labelChip(chip.Key, chip.Val)
 					}
 					</div>
 			}
@@ -77,7 +77,7 @@ templ Cluster(d ClusterData) {
 					if len(ns.Chips) > 0 {
 						<div class="ro-chips">
 							for _, chip := range ns.Chips {
-								<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+								@labelChip(chip.Key, chip.Val)
 							}
 							</div>
 					}
