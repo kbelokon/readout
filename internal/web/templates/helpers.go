@@ -67,6 +67,16 @@ func metaIcon(label string) string {
 	return string(icons.MetaGlyph(label))
 }
 
+// ctxDotClass is the topbar namespace-pill dot: green only when a namespace is
+// actually SET (SPEC §6.1 "green dot when set" + law §1.1); the "None" state
+// adds the .none variant the prototype greys (chrome.css:77).
+func ctxDotClass(contextName string) string {
+	if contextName == "None" {
+		return "ctx-dot none"
+	}
+	return "ctx-dot"
+}
+
 // refreshSeconds maps a persisted ro_prefs refresh mode (D9 string vocabulary:
 // "Off", an interval in seconds, future "Live") to polling seconds. "" / "Off"
 // / "Live" / junk all yield 0 -- exactly what readout.js's refreshInterval()

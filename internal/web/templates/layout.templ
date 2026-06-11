@@ -195,7 +195,7 @@ templ topbarC(n Navbar) {
 		}
 		<a class="brand-item" href="/clusters" aria-label="readout home"><span class="brand-chip" aria-hidden="true"><span class="brand-logo"></span></span><span class="brand-name">readout</span></a><nav class="topnav"><a class="is-active" href="/clusters">Clusters</a></nav>
 		if n.ShowContext {
-			<div id="namespace-dropdown"><button type="button" class="ctx-dd context-trigger" aria-haspopup="true" aria-label="Switch namespace"><span class="ctx-dot" aria-hidden="true"></span><span class="context-name">{ n.ContextName }</span><span class="ctx-caret ico sm" aria-hidden="true">@iconC("chevron-down")</span></button><div class="ctx-menu"><div class="ctx-search"><input id="namespace-searchbox" type="text" placeholder="type to filter" autocomplete="off"></div>
+			<div id="namespace-dropdown"><button type="button" class="ctx-dd context-trigger" aria-haspopup="true" aria-label="Switch namespace"><span class={ ctxDotClass(n.ContextName) } aria-hidden="true"></span><span class="context-name">{ n.ContextName }</span><span class="ctx-caret ico sm" aria-hidden="true">@iconC("chevron-down")</span></button><div class="ctx-menu"><div class="ctx-search"><input id="namespace-searchbox" type="text" placeholder="type to filter" autocomplete="off"></div>
 				for _, ns := range n.NamespaceLinks {
 					<a class="namespace-item" href={ templ.SafeURL(ns.Href) }>{ ns.Text }</a>
 				}

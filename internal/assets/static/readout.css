@@ -1892,6 +1892,9 @@
     .ctx-dd:hover { border-color: var(--border-strong); }
     .ctx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand);
         box-shadow: 0 0 0 3px var(--accent-weak); }
+    /* No namespace set ("None"): the dot drops its green -- SPEC §6.1 "green
+       dot when set" + law §1.1 (prototype chrome.css:77). */
+    .ctx-dot.none { background: var(--text-ghost); box-shadow: none; }
     .ctx-caret { color: var(--text-faint); display: inline-flex; }
 
     .topbar-spacer { flex: 1; }

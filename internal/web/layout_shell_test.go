@@ -68,13 +68,23 @@ func TestShellTopbarChrome(t *testing.T) {
 // TestNavbarNamespaceContext pins the namespace context dropdown (.ctx-dd): it
 // renders only with a cluster in scope, shows the current namespace, and keeps
 // the JS hooks (#namespace-dropdown / #namespace-searchbox / .namespace-item).
+// The pill dot is green only when a namespace is SET (SPEC §6.1 "green dot when
+// set" + law §1.1): the "None" state carries .ctx-dot.none, which the prototype
+// greys (chrome.css:77).
 func TestNavbarNamespaceContext(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 
 	p.wantHas("header.ro-topbar .ctx-dd")
 	p.wantHas(".ctx-dd .ctx-dot")
+	p.wantAbsent(".ctx-dd .ctx-dot.none")
 	p.wantText(".ctx-dd .context-name", "default")
+
+	// Cluster-scope page (no namespace in the URL): the pill reads "None" and
+	// the dot drops its green (the .none variant).
+	none := get(t, app, "/clusters/test/namespaces", http.StatusOK)
+	none.wantText(".ctx-dd .context-name", "None")
+	none.wantHas(".ctx-dd .ctx-dot.none")
 
 	// Namespace filter hooks preserved for readout.js.
 	p.wantHas("#namespace-dropdown")
