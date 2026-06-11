@@ -35,40 +35,45 @@
 
 import type { Binding } from './events.js';
 import {
-    normalizeFieldName,
+    type ACItem,
     fieldSuggestionText,
-    splitFilterDraft,
-    filterSuggestionFields,
     filterFieldKnown,
-    rankFieldSuggestions,
-    rankValueSuggestions,
+    filterSuggestionFields,
     liveNameMatchKeys,
     type ModelField,
     type ModelRow,
-    type ACItem,
+    normalizeFieldName,
+    rankFieldSuggestions,
+    rankValueSuggestions,
+    splitFilterDraft,
 } from './filters-parse.js';
+import type { RowModelWire } from './types.js';
 import { virtualizeOnFilterChange, virtualizerActive } from './virtualizer.js';
 
-function getHtmx(): { ajax(method: string, path: string, opts: object): Promise<unknown> | undefined } | undefined {
-    return (window as unknown as {
-        htmx?: { ajax(method: string, path: string, opts: object): Promise<unknown> | undefined };
-    }).htmx;
+function getHtmx():
+    | { ajax(method: string, path: string, opts: object): Promise<unknown> | undefined }
+    | undefined {
+    return (
+        window as unknown as {
+            htmx?: {
+                ajax(method: string, path: string, opts: object): Promise<unknown> | undefined;
+            };
+        }
+    ).htmx;
 }
 
 // roRowModel is the full server-render capture. EXPOSED as window.roRowModel
 // (the seam the virtualizer reads visibleKeys through, and a documented debug
-// seam) -- legacy.js's ro-morph handleSwap also reaches captureRowModel by name.
-interface RowModel {
-    fields: ModelField[];
-    rows: ModelRow[];
-    visibleKeys: Set<string> | null;
-}
-const roRowModel: RowModel = {
+// seam) -- morph.ts's ro-morph handleSwap also reaches captureRowModel by name.
+// RowModelWire (types.ts) is the shared seam shape declared on the global
+// Window, so this assignment is compiler-checked against the frozen e2e contract
+// instead of an `as unknown` cast.
+const roRowModel: RowModelWire = {
     fields: [],
     rows: [],
     visibleKeys: null,
 };
-(window as unknown as { roRowModel: RowModel }).roRowModel = roRowModel;
+window.roRowModel = roRowModel;
 
 // captureRowModel reads the chips-editor model from `root` -- the incoming
 // server fragment (a DocumentFragment) or the live container at init. The header
@@ -86,7 +91,11 @@ export function captureRowModel(root: ParentNode): void {
     const fields: ModelField[] = [];
     table.querySelectorAll('thead th').forEach((th) => {
         const label = (th.textContent || '').trim();
-        fields.push({ label, name: fieldSuggestionText(label), hint: (th as HTMLElement).dataset.hint || '' });
+        fields.push({
+            label,
+            name: fieldSuggestionText(label),
+            hint: (th as HTMLElement).dataset.hint || '',
+        });
     });
     const rows: ModelRow[] = [];
     table.querySelectorAll('tbody tr[data-key]').forEach((tr) => {
@@ -97,7 +106,7 @@ export function captureRowModel(root: ParentNode): void {
         const nameLink = tr.querySelector('td.cell-name a');
         rows.push({
             key: (tr as HTMLElement).dataset.key as string,
-            name: nameLink ? (nameLink.textContent || '').trim() : (cells[0] || ''),
+            name: nameLink ? (nameLink.textContent || '').trim() : cells[0] || '',
             cells,
         });
     });
@@ -136,7 +145,10 @@ export function applyLiveNameFilter(): void {
     const visible = liveNameMatchKeys(roRowModel.rows, draft);
     roRowModel.visibleKeys = visible;
     content.querySelectorAll('tbody tr[data-key]').forEach((tr) => {
-        tr.classList.toggle(FILTER_HIDE_CLASS, !!visible && !visible.has((tr as HTMLElement).dataset.key as string));
+        tr.classList.toggle(
+            FILTER_HIDE_CLASS,
+            !!visible && !visible.has((tr as HTMLElement).dataset.key as string),
+        );
     });
     // Virtualization (Unit 24/D20): the class application above only reaches the
     // rendered window -- re-window over the new visible set so a match currently
@@ -161,7 +173,7 @@ export function issueFilterNavigation(href: string): void {
         return;
     }
     const u = new URL(href, window.location.href);
-    const partial = u.pathname.replace(/\/+$/, '') + '/_table' + u.search;
+    const partial = `${u.pathname.replace(/\/+$/, '')}/_table${u.search}`;
     const request = htmx.ajax('GET', partial, {
         source: input,
         target: '#resource-list-content',
@@ -189,7 +201,7 @@ function commitFilterChip(draft: string): void {
     }
     const raw = encodeURIComponent(text).replace(/%2C/gi, ',');
     const search = window.location.search;
-    const href = window.location.pathname + (search ? search + '&' : '?') + 'f=' + raw;
+    const href = `${window.location.pathname + (search ? `${search}&` : '?')}f=${raw}`;
     clearFilterDraft();
     issueFilterNavigation(href);
 }
@@ -224,8 +236,10 @@ function showFilterFieldHint(): void {
     if (!el) {
         return;
     }
-    const names = filterSuggestionFields(roRowModel.fields).slice(0, 3).map((f) => f.text);
-    el.textContent = 'no such field — try ' + (names.length ? names.join(', ') : 'status, node, age') + '…';
+    const names = filterSuggestionFields(roRowModel.fields)
+        .slice(0, 3)
+        .map((f) => f.text);
+    el.textContent = `no such field — try ${names.length ? names.join(', ') : 'status, node, age'}…`;
     (el as HTMLElement).hidden = false;
 }
 
@@ -272,7 +286,7 @@ function openFilterAC(items: ACItem[]): void {
     filterACActive = 0;
     items.forEach((item, idx) => {
         const row = document.createElement('div');
-        row.className = 'ro-ac-item' + (idx === 0 ? ' active' : '');
+        row.className = `ro-ac-item${idx === 0 ? ' active' : ''}`;
         row.setAttribute('role', 'option');
         row.setAttribute('aria-selected', idx === 0 ? 'true' : 'false');
         row.dataset.acIndex = String(idx);

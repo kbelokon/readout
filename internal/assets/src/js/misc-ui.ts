@@ -18,10 +18,10 @@
 // section-collapse hash codec is split into a PURE parser (parseCollapsedNames)
 // pinned by node:test; the DOM application + the write path stay here.
 
-import type { Binding } from './events.js';
-import { yamlCodeText } from './yaml-folds.js';
-import { roPrefsSetNamespace } from './prefs.js';
 import { parseCollapsedNames } from './collapse-hash.js';
+import type { Binding } from './events.js';
+import { roPrefsSetNamespace } from './prefs.js';
+import { yamlCodeText } from './yaml-folds.js';
 
 // parseCollapsedNames (the PURE read half of the collapse-hash codec) lives in
 // collapse-hash.ts so it stays node-testable (no runtime imports); imported
@@ -74,7 +74,7 @@ export const miscBindings: Binding[] = [
             event.preventDefault();
             const copyBtn = matched as HTMLElement;
             const section = copyBtn.closest('.collapsible');
-            const codeCell = section && section.querySelector('.highlighttable td.code');
+            const codeCell = section?.querySelector('.highlighttable td.code');
             const text = codeCell ? yamlCodeText(codeCell) : '';
             const label = copyBtn.querySelector('.ro-copy-text');
             const done = (ok: boolean) => {
@@ -86,8 +86,11 @@ export const miscBindings: Binding[] = [
                     label.textContent = 'copy';
                 }, 1500);
             };
-            if (navigator.clipboard && navigator.clipboard.writeText && text) {
-                navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+            if (navigator.clipboard?.writeText && text) {
+                navigator.clipboard.writeText(text).then(
+                    () => done(true),
+                    () => done(false),
+                );
             } else {
                 done(false);
             }
@@ -120,7 +123,11 @@ export const miscBindings: Binding[] = [
             if (names.length) {
                 document.location.hash = `collapsed=${names.join(',')}`;
             } else {
-                window.history.replaceState(null, '', window.location.pathname + window.location.search);
+                window.history.replaceState(
+                    null,
+                    '',
+                    window.location.pathname + window.location.search,
+                );
             }
             return true;
         },
@@ -136,8 +143,9 @@ export const miscBindings: Binding[] = [
         selector: '#namespace-dropdown .namespace-item',
         stop: true,
         handler: (_event, matched) => {
-            const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//
-                .exec((matched as Element).getAttribute('href') || '');
+            const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(
+                (matched as Element).getAttribute('href') || '',
+            );
             if (hrefMatch) {
                 roPrefsSetNamespace(
                     decodeURIComponent(hrefMatch[1]),
@@ -206,6 +214,110 @@ export const miscBindings: Binding[] = [
                 }
             }
             return true;
+        },
+    },
+    // In-cell +N overflow (SPEC §4.9/§4.10): the `.ro-chip.more[data-more]` button
+    // toggles `.expanded` on its OWN `.ro-chips` strip, revealing the `.xtra` chips
+    // in place (the button face flips +N <-> "less" in CSS). Delegated so it
+    // survives every morph; aria-expanded mirrors the state. A refresh morph
+    // re-renders the strip collapsed (server truth) -- expansion is a transient
+    // peek, not persisted state. Was a trailing branch of the monolith big click
+    // listener (C1); kept its early-return (stop:true).
+    {
+        event: 'click',
+        selector: '[data-more]',
+        stop: true,
+        handler: (event, matched) => {
+            event.preventDefault();
+            const chips = (matched as Element).closest('.ro-chips');
+            if (chips) {
+                const expanded = chips.classList.toggle('expanded');
+                (matched as Element).setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            }
+            return true;
+        },
+    },
+    // Long-annotation toggle (SPEC §7.15): a >120-char annotation renders as a
+    // collapsed `key · size` button + a hidden scrollable <pre> payload. The
+    // delegated click flips the [hidden] attribute on the sibling .anno-pre,
+    // mirrors the state into aria-expanded, and rotates the chevron via the .open
+    // class -- CSP-clean and morph-safe (server truth re-renders collapsed; a
+    // transient peek, like the chip overflow above). C1 trailing branch;
+    // early-return (stop:true).
+    {
+        event: 'click',
+        selector: '[data-annolong]',
+        stop: true,
+        handler: (event, matched) => {
+            event.preventDefault();
+            const annoToggle = matched as HTMLElement;
+            const pre = annoToggle.parentElement
+                ? (annoToggle.parentElement.querySelector('.anno-pre') as HTMLElement | null)
+                : null;
+            if (pre) {
+                const open = pre.hidden !== false; // hidden is "until-found" | boolean
+                pre.hidden = !open;
+                annoToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+                annoToggle.classList.toggle('open', open);
+            }
+            return true;
+        },
+    },
+    // .toggle-tools: toggle `is-active` on the control itself and on the element
+    // named by its `data-target`. C1 trailing branch; early-return (stop:true).
+    {
+        event: 'click',
+        selector: '.toggle-tools',
+        stop: true,
+        handler: (event, matched) => {
+            event.preventDefault();
+            const toggle = matched as HTMLElement;
+            toggle.classList.toggle('is-active');
+            const targetEl = toggle.dataset.target
+                ? document.getElementById(toggle.dataset.target)
+                : null;
+            if (targetEl) {
+                targetEl.classList.toggle('is-active');
+            }
+            return true;
+        },
+    },
+    // Search-button enable (change): a checkbox carries `data-toggle-button="<id>"`.
+    // The named button is enabled iff any checkbox sharing that same value is
+    // checked, else disabled. Was the lead branch of the monolith change listener;
+    // early-return (stop:true).
+    {
+        event: 'change',
+        selector: 'input[data-toggle-button]',
+        stop: true,
+        handler: (_event, matched) => {
+            const buttonId = (matched as HTMLElement).dataset.toggleButton;
+            const button = buttonId ? document.getElementById(buttonId) : null;
+            if (button) {
+                const anyChecked =
+                    document.querySelectorAll(`input[data-toggle-button="${buttonId}"]:checked`)
+                        .length > 0;
+                (button as HTMLButtonElement).disabled = !anyChecked;
+            }
+            return true;
+        },
+    },
+    // form.tools-form (the v1 multi-type tools form): on submit, blank the `name`
+    // of empty inputs so they do not become empty query parameters in the
+    // resulting GET URL. Sole branch of the monolith submit listener; it did NOT
+    // early-return (the form still submits), so this binding does NOT stop.
+    {
+        event: 'submit',
+        selector: 'form.tools-form',
+        handler: (_event, matched) => {
+            const form = matched as HTMLFormElement;
+            Array.prototype.slice
+                .call(form.getElementsByTagName('input'))
+                .forEach((input: HTMLInputElement) => {
+                    if (input.name && !input.value) {
+                        input.name = '';
+                    }
+                });
         },
     },
 ];

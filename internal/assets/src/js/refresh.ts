@@ -22,20 +22,25 @@
 // 'dataset.liveUrl === 'location'' / '/_table' / 'xhr.readyState === 4 || 0' /
 // htmx:abort surviving in the bundle -- the FORMS are preserved here.
 
-import { readPrefs, roPrefsSetRefresh, REFRESH_KEY } from './prefs.js';
-import { liveFallbackSeconds } from './live.js';
-import { updateStaleCountdown } from './stale.js';
+import type { Binding } from './events.js';
+import { liveApply, liveFallbackSeconds } from './live.js';
 import {
+    nextFailureStage,
     effectivePollSeconds as policyEffectivePollSeconds,
     refreshDelaySeconds as policyRefreshDelaySeconds,
-    nextFailureStage,
 } from './live-policy.js';
+import { REFRESH_KEY, readPrefs, roPrefsSetRefresh } from './prefs.js';
+import { updateStaleCountdown } from './stale.js';
 
 // htmx is a classic-script global loaded before this bundle; reach it through a
 // typed accessor (the modules are vendor-agnostic otherwise). Only the surfaces
 // the refresh path uses are typed.
 interface Htmx {
-    ajax(method: string, url: string, opts: { source: Element }): { catch?: (cb: () => void) => void } | undefined;
+    ajax(
+        method: string,
+        url: string,
+        opts: { source: Element },
+    ): { catch?: (cb: () => void) => void } | undefined;
     trigger(el: Element, name: string): void;
 }
 function getHtmx(): Htmx | undefined {
@@ -85,9 +90,10 @@ export function pruneSettledListRequests(requests: Set<XMLHttpRequest>): void {
 }
 
 function isPreloadRequest(event: Event): boolean {
-    const cfg = (event as CustomEvent).detail && (event as CustomEvent).detail.requestConfig;
+    const cfg = (event as CustomEvent).detail?.requestConfig;
     return !!cfg && !!cfg.headers && cfg.headers['HX-Preloaded'] === 'true';
 }
+
 // Re-exported for stale.ts (isListRefreshEvent) so the preload exclusion lives
 // in exactly one place.
 export { isPreloadRequest };
@@ -96,7 +102,7 @@ export { isPreloadRequest };
 // target is the container but the issuing element is something else.
 function isUserListRequest(event: Event): boolean {
     const detail = (event as CustomEvent).detail;
-    if (!detail || !detail.elt || !detail.target) {
+    if (!detail?.elt || !detail.target) {
         return false;
     }
     if (detail.elt.id === 'resource-list-content') {
@@ -109,7 +115,7 @@ function isUserListRequest(event: Event): boolean {
 // re-fetch) as non-push: the `_table` handler omits HX-Push-Url for these, so
 // only genuine user gestures create history entries (D6).
 document.addEventListener('htmx:configRequest', (event) => {
-    const elt = (event as CustomEvent).detail && (event as CustomEvent).detail.elt;
+    const elt = (event as CustomEvent).detail?.elt;
     if (elt && elt.id === 'resource-list-content') {
         (event as CustomEvent).detail.headers['RO-No-Push'] = 'true';
     }
@@ -117,14 +123,14 @@ document.addEventListener('htmx:configRequest', (event) => {
 
 document.addEventListener('htmx:beforeRequest', (event) => {
     const detail = (event as CustomEvent).detail;
-    if (detail && detail.xhr && detail.elt && detail.elt.id === 'resource-list-content') {
+    if (detail?.xhr && detail.elt && detail.elt.id === 'resource-list-content') {
         containerListRequestsInFlight.add(detail.xhr);
         return; // container-issued (tick/retry/programmatic) -- tracked, never aborts anything
     }
     if (!isUserListRequest(event)) {
         return;
     }
-    if (detail && detail.xhr) {
+    if (detail?.xhr) {
         userListRequestsInFlight.add(detail.xhr);
     }
     // The user action wins: abort the container's own in-flight request (a tick
@@ -142,7 +148,7 @@ document.addEventListener('htmx:beforeRequest', (event) => {
 // the document the entry is removed here; when it does not (dispatched on a
 // detached element), the readyState pruning in fireRefresh reclaims it instead.
 document.addEventListener('htmx:afterRequest', (event) => {
-    const xhr = (event as CustomEvent).detail && (event as CustomEvent).detail.xhr;
+    const xhr = (event as CustomEvent).detail?.xhr;
     if (xhr) {
         userListRequestsInFlight.delete(xhr);
         containerListRequestsInFlight.delete(xhr);
@@ -184,7 +190,7 @@ export function refreshInterval(): number {
 // the render-time-baked PartialURL contract.
 function listTableURL(): string {
     const u = new URL(window.location.href);
-    return u.pathname.replace(/\/+$/, '') + '/_table' + u.search;
+    return `${u.pathname.replace(/\/+$/, '')}/_table${u.search}`;
 }
 
 // requestListRefresh re-fetches the list fragment through the container's own
@@ -289,13 +295,14 @@ export function syncRefreshUI(): void {
     const secs = refreshInterval();
     const label = document.getElementById('refresh-label');
     if (label) {
-        label.textContent = live ? 'Live' : (secs > 0 ? `${secs}s` : 'Off');
+        label.textContent = live ? 'Live' : secs > 0 ? `${secs}s` : 'Off';
     }
     document.querySelectorAll('.refresh-option').forEach((opt) => {
         const value = (opt as HTMLElement).dataset.interval ?? '';
-        opt.classList.toggle('is-active', live
-            ? value === 'Live'
-            : value !== 'Live' && (parseInt(value, 10) || 0) === secs);
+        opt.classList.toggle(
+            'is-active',
+            live ? value === 'Live' : value !== 'Live' && (parseInt(value, 10) || 0) === secs,
+        );
     });
     const dropdown = document.getElementById('refresh-dropdown');
     if (dropdown) {
@@ -320,7 +327,7 @@ export function noteRefreshRecovery(): void {
     }
     refreshFailureStage = 0;
     scheduleRefreshTick();
-    const toast = (window as unknown as { roToast?: (m: string) => void }).roToast;
+    const toast = window.roToast; // the typed roToast seam (types.ts global)
     if (typeof toast === 'function') {
         toast('Refresh resumed');
     }
@@ -335,3 +342,69 @@ document.addEventListener('visibilitychange', () => {
         fireRefresh();
     }
 });
+
+// --- dispatcher bindings ----------------------------------------------------
+// The two refresh-domain click branches that were the LAST resident tails of the
+// monolith's big click listener (C1). Both early-returned in the monolith ->
+// stop:true. They never co-match (one is .ro-stale-retry, the other
+// .refresh-option), and neither co-matches a row/palette/columns selector, so
+// their position at the END of the dispatcher's leaf list (after the migrated
+// clusters) preserves the C1 contract: every migrated leaf still front-ran the
+// monolith, and these were the monolith's own trailing branches.
+export const refreshBindings: Binding[] = [
+    // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
+    // #resource-list-content through the shared refresh path (the v2 loop derives
+    // the `_table` URL from location.href at click time; the v1 multi-type
+    // container triggers its baked ro:refresh). On success the morph swaps fresh
+    // rows and the afterSwap handler clears the stale dim + re-hides the banner;
+    // on another failure the responseError handler keeps it stale. An in-flight
+    // container request (a HUNG tick is exactly the state this button exists for)
+    // is aborted first -- issuing a second container request would make htmx
+    // QUEUE it, and a queued request replays on the next htmx:abort with its stale
+    // queue-time URL (no queue may ever form). Pure DOM, GET-only -- the
+    // read-only floor is untouched.
+    {
+        event: 'click',
+        selector: '.ro-stale-retry',
+        stop: true,
+        handler: (event) => {
+            event.preventDefault();
+            const content = document.getElementById('resource-list-content');
+            const htmx = getHtmx();
+            if (content && htmx) {
+                htmx.trigger(content, 'htmx:abort');
+            }
+            requestListRefresh();
+            return true;
+        },
+    },
+    // Auto-refresh interval option (navbar #refresh-dropdown): persist the chosen
+    // mode in the ro_prefs cookie (D9), re-arm the poll, and reflect it in the
+    // control. The Live option (Unit 27/D19) persists the literal 'Live' and rides
+    // the same path: liveApply opens/tears down the stream, applyRefresh then arms
+    // the poll chain per the EFFECTIVE seconds (0 while a stream is riding). A
+    // disabled Live option (multi-type/multi-cluster page) never fires (the
+    // browser suppresses clicks on disabled buttons). The dropdown opens through
+    // CSS hover/focus, so there is no open/close handler here -- only the
+    // selection. Kept its early-return (stop:true).
+    {
+        event: 'click',
+        selector: '.refresh-option',
+        stop: true,
+        handler: (event, matched) => {
+            const option = matched as HTMLElement;
+            if (option.dataset.interval === 'Live') {
+                roPrefsSetRefresh('Live');
+            } else {
+                const interval = parseInt(option.dataset.interval ?? '', 10) || 0;
+                roPrefsSetRefresh(interval > 0 ? String(interval) : 'Off');
+            }
+            liveApply(true); // force: an explicit pick re-attempts even after a fallback
+            syncRefreshUI();
+            applyRefresh();
+            option.blur(); // close the hover-dropdown after a keyboard/touch pick
+            event.preventDefault();
+            return true;
+        },
+    },
+];

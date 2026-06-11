@@ -16,17 +16,19 @@
 // `return` in the monolith's one big listener -- it ends the chain for that
 // event instance. A binding WITHOUT a selector matches every event of its type
 // and guards itself in the handler.
-import type { Binding } from './events.js';
-import { contextMenuBindings } from './context-menu.js';
+
 import { bulkBindings } from './bulk-actions.js';
-import { rowSelectionBindings } from './row-selection.js';
-import { paletteBindings } from './palette.js';
-import { keyboardBindings } from './keyboard.js';
 import { columnsBindings } from './columns.js';
+import { contextMenuBindings } from './context-menu.js';
+import type { Binding } from './events.js';
 import { filtersBindings } from './filters.js';
-import { foldBindings } from './yaml-folds.js';
+import { keyboardBindings } from './keyboard.js';
 import { logsBindings } from './logs.js';
 import { miscBindings } from './misc-ui.js';
+import { paletteBindings } from './palette.js';
+import { refreshBindings } from './refresh.js';
+import { rowSelectionBindings } from './row-selection.js';
+import { foldBindings } from './yaml-folds.js';
 
 // Leaf feature modules contribute their bindings here. theme.ts + toasts.ts are
 // leaves with NO delegated document binding (theme's only hook is a matchMedia
@@ -90,6 +92,16 @@ export const bindings: Binding[] = [
     ...logsBindings,
     // misc-ui's click bindings keep their relative monolith order: copy is
     // registered before the section-fold binding (copy stop:true short-circuits
-    // a copy click), so a copy click never folds its section.
+    // a copy click), so a copy click never folds its section. misc-ui now also
+    // carries the trailing presentation toggles ([data-more] / [data-annolong] /
+    // .toggle-tools) and the v1 form glue (the data-toggle-button change + the
+    // tools-form submit) lifted out of the dismantled legacy.js.
     ...miscBindings,
+    // refresh-domain tails LAST (Unit 13): .ro-stale-retry + .refresh-option were
+    // the monolith big click listener's own trailing branches, so registering
+    // them after the migrated leaves preserves the C1 order -- every leaf
+    // front-ran the monolith, and these ran at its end. Neither co-matches any
+    // selector above, so the position is observationally free; LAST documents
+    // their monolith origin.
+    ...refreshBindings,
 ];

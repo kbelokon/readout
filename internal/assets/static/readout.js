@@ -1,764 +1,144 @@
 "use strict";
 (() => {
-  // internal/assets/src/js/theme.ts
-  var PREFERS_DARK = window.matchMedia("(prefers-color-scheme: dark)");
-  function syncThemeTogglePostTarget() {
-    const toggle = document.getElementById("btn-theme-toggle");
-    if (!toggle) {
-      return;
-    }
-    if (toggle.dataset.themeExplicit !== "false") {
-      return;
-    }
-    const form = toggle.form;
-    const input = form && form.querySelector('input[name="theme"]');
-    if (input) {
-      input.value = PREFERS_DARK.matches ? "light" : "dark";
-    }
-  }
-  PREFERS_DARK.addEventListener("change", syncThemeTogglePostTarget);
-
-  // internal/assets/src/js/prefs.ts
-  var PREFS_COOKIE = "ro_prefs";
-  var PREFS_VERSION_PREFIX = "v1.";
-  var PREFS_MAX_ENCODED = 3072;
-  var PREFS_COOKIE_MAX_AGE = 31536e3;
-  var REFRESH_KEY = "roRefresh";
-  function b64urlEncodeUTF8(text) {
-    const bytes = new TextEncoder().encode(text);
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) {
-      bin += String.fromCharCode(bytes[i]);
-    }
-    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  }
-  function b64urlDecodeUTF8(encoded) {
-    const b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
-    const bin = atob(b64 + "====".slice(b64.length % 4 || 4));
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) {
-      bytes[i] = bin.charCodeAt(i);
-    }
-    return new TextDecoder().decode(bytes);
-  }
-  function decodePrefsValue(value) {
-    const empty = { kinds: [], refresh: "", ns: {} };
-    if (!value || value.indexOf(PREFS_VERSION_PREFIX) !== 0) {
-      return { prefs: empty, ok: false };
-    }
-    const payload = value.slice(PREFS_VERSION_PREFIX.length);
-    if (!payload) {
-      return { prefs: empty, ok: false };
-    }
-    try {
-      const decoded = JSON.parse(b64urlDecodeUTF8(payload));
-      if (!decoded || typeof decoded !== "object") {
-        return { prefs: empty, ok: false };
-      }
-      const kinds = [];
-      if (Array.isArray(decoded.kinds)) {
-        decoded.kinds.forEach((e) => {
-          if (!e || typeof e !== "object" || typeof e.k !== "string") {
-            return;
-          }
-          const entry = { k: e.k };
-          if (typeof e.sort === "string") {
-            entry.sort = e.sort;
-          }
-          if (Array.isArray(e.hide) && e.hide.every((name) => typeof name === "string")) {
-            entry.hide = e.hide;
-          }
-          kinds.push(entry);
-        });
-      }
-      const ns = {};
-      if (decoded.ns && typeof decoded.ns === "object" && !Array.isArray(decoded.ns)) {
-        Object.keys(decoded.ns).forEach((cluster) => {
-          if (typeof decoded.ns[cluster] === "string") {
-            ns[cluster] = decoded.ns[cluster];
-          }
-        });
-      }
-      return {
-        prefs: {
-          kinds,
-          refresh: typeof decoded.refresh === "string" ? decoded.refresh : "",
-          ns
-        },
-        ok: true
-      };
-    } catch (e) {
-      return { prefs: empty, ok: false };
-    }
-  }
-  function encodePrefsValue(prefs) {
-    const out = {};
-    if (prefs.kinds && prefs.kinds.length > 0) {
-      out.kinds = prefs.kinds;
-    }
-    if (prefs.refresh) {
-      out.refresh = prefs.refresh;
-    }
-    if (prefs.ns && Object.keys(prefs.ns).length > 0) {
-      out.ns = prefs.ns;
-    }
-    let value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
-    while (value.length > PREFS_MAX_ENCODED && out.kinds && out.kinds.length > 0) {
-      out.kinds = out.kinds.slice(0, -1);
-      if (out.kinds.length === 0) {
-        delete out.kinds;
-      }
-      value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
-    }
-    return value;
-  }
-  function prefsCookieValue() {
-    const parts = document.cookie ? document.cookie.split("; ") : [];
-    for (let i = 0; i < parts.length; i++) {
-      if (parts[i].indexOf(PREFS_COOKIE + "=") === 0) {
-        return parts[i].slice(PREFS_COOKIE.length + 1);
-      }
-    }
-    return "";
-  }
-  function readPrefs() {
-    return decodePrefsValue(prefsCookieValue()).prefs;
-  }
-  function writePrefs(prefs) {
-    try {
-      let cookie = PREFS_COOKIE + "=" + encodePrefsValue(prefs) + "; Path=/; SameSite=Lax; Max-Age=" + PREFS_COOKIE_MAX_AGE;
-      if (window.location.protocol === "https:") {
-        cookie += "; Secure";
-      }
-      document.cookie = cookie;
-    } catch (e) {
-    }
-  }
-  function prefsTouchKind(prefs, plural) {
-    for (let i = 0; i < prefs.kinds.length; i++) {
-      if (prefs.kinds[i].k === plural) {
-        const entry = prefs.kinds.splice(i, 1)[0];
-        prefs.kinds.unshift(entry);
-        return entry;
-      }
-    }
-    const fresh = { k: plural };
-    prefs.kinds.unshift(fresh);
-    return fresh;
-  }
-  function roPrefsSetSort(plural, sort) {
-    const prefs = readPrefs();
-    prefsTouchKind(prefs, plural).sort = sort;
-    writePrefs(prefs);
-  }
-  function roPrefsSetHiddenColumns(plural, names) {
-    const prefs = readPrefs();
-    prefsTouchKind(prefs, plural).hide = Array.isArray(names) ? names : [];
-    writePrefs(prefs);
-  }
-  function roPrefsSetRefresh(mode) {
-    const prefs = readPrefs();
-    prefs.refresh = mode;
-    writePrefs(prefs);
-  }
-  function roPrefsSetNamespace(cluster, namespace) {
-    if (!cluster || !namespace) {
-      return;
-    }
-    const prefs = readPrefs();
-    prefs.ns[cluster] = namespace;
-    writePrefs(prefs);
+  // internal/assets/src/js/htmx-config.ts
+  if (typeof htmx !== "undefined") {
+    htmx.config.globalViewTransitions = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
 
-  // internal/assets/src/js/events.ts
-  function closestElement(event, selector) {
-    let node = event.target;
-    while (node && node.nodeType !== 1) {
-      node = node.parentNode;
-    }
-    return node ? node.closest(selector) : null;
+  // internal/assets/src/js/filters-parse.ts
+  function normalizeFieldName(s) {
+    return (s || "").toLowerCase().replace(/-/g, " ").trim();
   }
-  function dispatch(bindings2, event) {
-    for (let i = 0; i < bindings2.length; i++) {
-      const binding = bindings2[i];
-      let matched = null;
-      if (binding.selector !== void 0) {
-        matched = closestElement(event, binding.selector);
-        if (!matched) {
-          continue;
-        }
+  function fieldSuggestionText(label) {
+    return (label || "").toLowerCase().trim().replace(/\s+/g, "-");
+  }
+  function splitFilterDraft(s) {
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (c === "!" && s[i + 1] === "=") {
+        return { field: s.slice(0, i).trim(), op: "!=", value: s.slice(i + 2) };
       }
-      let result;
-      try {
-        result = binding.handler(event, matched);
-      } catch (e) {
-        console.warn("readout event binding failed", binding.event, binding.selector, e);
-        continue;
+      if (c === ":" || c === ">" || c === "<") {
+        return { field: s.slice(0, i).trim(), op: c, value: s.slice(i + 1) };
       }
-      if (binding.stop && result) {
+    }
+    return null;
+  }
+  function hasModelColumn(fields, normName) {
+    return fields.some((f) => !!f.hint && normalizeFieldName(f.label) === normName);
+  }
+  function filterSuggestionFields(fields) {
+    const out = [];
+    fields.forEach((f) => {
+      if (!f.hint) {
         return;
       }
-    }
-  }
-  function registerBindings(bindings2) {
-    const byType = /* @__PURE__ */ new Map();
-    for (const binding of bindings2) {
-      const list = byType.get(binding.event);
-      if (list) {
-        list.push(binding);
-      } else {
-        byType.set(binding.event, [binding]);
-      }
-    }
-    byType.forEach((list, type) => {
-      document.addEventListener(type, (event) => dispatch(list, event));
-    });
-  }
-
-  // internal/assets/src/js/row-selection.ts
-  var rowSelection = /* @__PURE__ */ new Map();
-  var rowFocusKey = null;
-  function reapplyRowState() {
-    const content = document.getElementById("resource-list-content");
-    if (!content) {
-      return;
-    }
-    let focusedRow = null;
-    content.querySelectorAll("tr[data-key]").forEach((tr) => {
-      const row = tr;
-      row.classList.toggle("is-selected", rowSelection.has(row.dataset.key));
-      const focused = row.dataset.key === rowFocusKey;
-      row.classList.toggle("kfocus", focused);
-      if (focused) {
-        focusedRow = row;
-      }
-    });
-    content.querySelectorAll(".ro-table-wrap").forEach((wrap) => {
-      const fr = focusedRow;
-      if (fr && fr.id && wrap.contains(fr)) {
-        wrap.setAttribute("aria-activedescendant", fr.id);
-      } else {
-        wrap.removeAttribute("aria-activedescendant");
-      }
-    });
-  }
-  function lastKeySegment(key) {
-    const parts = (key || "").split("/");
-    return parts[parts.length - 1] || "";
-  }
-  function rowSelectionEntry(key) {
-    const content = document.getElementById("resource-list-content");
-    let entry = null;
-    if (content) {
-      content.querySelectorAll("tr[data-key]").forEach((tr) => {
-        const row = tr;
-        if (row.dataset.key === key) {
-          entry = { name: row.dataset.name || lastKeySegment(key) };
-        }
-      });
-    }
-    return entry || { name: lastKeySegment(key) };
-  }
-  function setRowSelected(key, on) {
-    if (on) {
-      rowSelection.set(key, rowSelectionEntry(key));
-    } else {
-      rowSelection.delete(key);
-    }
-    reapplyRowState();
-    updateBulkBar();
-  }
-  function clearRowState() {
-    rowSelection.clear();
-    rowFocusKey = null;
-    reapplyRowState();
-    updateBulkBar();
-  }
-  window.roRowState = {
-    setSelected: setRowSelected,
-    setFocus(key) {
-      rowFocusKey = key || null;
-      reapplyRowState();
-    },
-    // focusedKey is the j/k focus seam the windowed walker (virtualizeMoveFocus,
-    // still in legacy.js) reads across the module boundary -- the focused row can
-    // be detached off-window, so the store (not the DOM kfocus class) is the
-    // truth there. Also a debug sim the console can poll.
-    focusedKey() {
-      return rowFocusKey;
-    },
-    clear: clearRowState,
-    selectedKeys() {
-      return Array.from(rowSelection.keys());
-    },
-    // selectedEntries feeds the bulk actions: Copy names reads .name, and the
-    // bulk Download-YAML builds its names list from .key/.name.
-    selectedEntries() {
-      return Array.from(rowSelection, ([key, entry]) => ({ key, name: entry.name }));
-    }
-  };
-  var BULK_NAMES_MAX = 100;
-  var bulkOverCapToasted = false;
-  function updateBulkBar() {
-    const bar = document.getElementById("ro-bulkbar");
-    if (!bar) {
-      return;
-    }
-    const count = rowSelection.size;
-    const label = document.getElementById("ro-bulk-count");
-    if (label && count > 0) {
-      label.textContent = count + " selected";
-    }
-    bar.classList.toggle("is-open", count > 0);
-    bar.toggleAttribute("inert", count === 0);
-    const download = document.getElementById("ro-bulk-download");
-    if (download && bar.dataset.bulkHref) {
-      const over = count > BULK_NAMES_MAX;
-      download.disabled = over;
-      download.title = over ? "Over the " + BULK_NAMES_MAX + "-object bulk download cap" : "";
-      if (over && !bulkOverCapToasted) {
-        roToast("Download refused: " + count + " selected (max " + BULK_NAMES_MAX + ")");
-      }
-      bulkOverCapToasted = over;
-    }
-  }
-  function roToast(message) {
-    const fn = window.roToast;
-    if (typeof fn === "function") {
-      fn(message);
-    }
-  }
-  function roCopyText(text, done) {
-    const fallback = () => {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.top = "-1000px";
-      document.body.appendChild(ta);
-      ta.select();
-      let ok = false;
-      try {
-        ok = document.execCommand("copy");
-      } catch {
-        ok = false;
-      }
-      ta.remove();
-      return ok;
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(() => done(true), () => done(fallback()));
-      return;
-    }
-    done(fallback());
-  }
-  function toggleRowSelection(tr) {
-    const key = tr.dataset.key;
-    if (!key) {
-      return;
-    }
-    if (rowSelection.has(key)) {
-      rowSelection.delete(key);
-    } else {
-      rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key) });
-    }
-    reapplyRowState();
-    updateBulkBar();
-  }
-  var rowSelectionBindings = [
-    {
-      event: "click",
-      selector: "#resource-list-content tr[data-key]",
-      handler: (event, matched) => {
-        const target = event.target;
-        if (target && target.closest("a, button, input, select, textarea, label")) {
-          return;
-        }
-        toggleRowSelection(matched);
-      }
-    }
-  ];
-
-  // internal/assets/src/js/context-menu.ts
-  var CTX_CLAMP_W = 220;
-  var CTX_CLAMP_H = 240;
-  function closeRowMenu() {
-    const menu = document.getElementById("ro-ctxmenu");
-    if (menu) {
-      menu.classList.remove("is-open");
-      menu.setAttribute("aria-hidden", "true");
-    }
-  }
-  function openRowMenu(tr, x, y) {
-    const menu = document.getElementById("ro-ctxmenu");
-    if (!menu) {
-      return;
-    }
-    const bind = (action, href) => {
-      const item = menu.querySelector('[data-ctx="' + action + '"]');
-      if (!item) {
+      const norm = normalizeFieldName(f.label);
+      if (norm === "cpu" || norm === "memory") {
         return;
       }
-      if (href) {
-        item.dataset.href = href;
-        item.hidden = false;
-      } else {
-        delete item.dataset.href;
-        item.hidden = true;
-      }
-    };
-    bind("open", tr.dataset.href || "");
-    bind("yaml", tr.dataset.yaml || "");
-    bind("logs", tr.dataset.logs || "");
-    bind("download", tr.dataset.download || "");
-    menu.dataset.name = tr.dataset.name || lastKeySegment(tr.dataset.key || "");
-    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W)) + "px";
-    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - CTX_CLAMP_H)) + "px";
-    menu.classList.add("is-open");
-    menu.setAttribute("aria-hidden", "false");
-  }
-  var contextMenuBindings = [
-    // Right-click on an identity row opens the menu; anywhere else closes ours
-    // and yields to the native menu.
-    {
-      event: "contextmenu",
-      handler: (event) => {
-        const target = event.target;
-        const tr = target ? target.closest("#resource-list-content tr[data-key]") : null;
-        if (!tr) {
-          closeRowMenu();
-          return;
-        }
-        event.preventDefault();
-        const me = event;
-        openRowMenu(tr, me.clientX, me.clientY);
-      }
-    },
-    // C2 step 1: a context-menu item -> act, then close. Copy stays on the page;
-    // the navigation items go through location.assign with the bound data-href.
-    // Download YAML is a Content-Disposition attachment, so assigning it
-    // downloads WITHOUT leaving the page. Returned in the monolith -> stop:true.
-    {
-      event: "click",
-      selector: "#ro-ctxmenu [data-ctx]",
-      stop: true,
-      handler: (event, matched) => {
-        event.preventDefault();
-        const item = matched;
-        const menu = item.closest("#ro-ctxmenu");
-        const name = menu && menu.dataset.name || "";
-        const href = item.dataset.href || "";
-        closeRowMenu();
-        if (item.dataset.ctx === "copy") {
-          roCopyText(name, () => {
-          });
-        } else if (href) {
-          window.location.assign(href);
-        }
-        return true;
-      }
-    },
-    // C2 step 2: ANY other click dismisses an open menu. UNCONDITIONAL and
-    // NON-stopping -- the click then FALLS THROUGH to the bulk + row-select
-    // bindings (bulk-actions.ts / row-selection.ts), so a click that lands on a
-    // row both dismisses the menu AND toggles selection (compound case 1). No
-    // selector (it runs on every click, like the monolith's step 2); closeRowMenu
-    // on a closed menu is a no-op. NO stop: a stop here would silently drop the
-    // selection while still passing a "menu closed" check.
-    {
-      event: "click",
-      handler: () => {
-        closeRowMenu();
-      }
-    },
-    // K2: Esc closes the context menu. Its own keydown branch (NO preventDefault),
-    // idempotent (closeRowMenu on a closed menu is a no-op).
-    {
-      event: "keydown",
-      handler: (event) => {
-        if (event.key === "Escape") {
-          closeRowMenu();
-        }
-      }
-    }
-  ];
-
-  // internal/assets/src/js/bulk-actions.ts
-  var bulkCopyResetTimer = 0;
-  function bulkCopyNames(button) {
-    const entries = roRowState().selectedEntries();
-    const names = entries.map((entry) => entry.name).join("\n");
-    roCopyText(names, (ok) => {
-      if (!ok) {
-        return;
-      }
-      const label = button.querySelector("span:last-child");
-      if (!label) {
-        return;
-      }
-      window.clearTimeout(bulkCopyResetTimer);
-      label.textContent = "Copied";
-      bulkCopyResetTimer = window.setTimeout(() => {
-        label.textContent = "Copy names";
-      }, 1100);
+      out.push({ text: f.name, hint: f.hint });
     });
-  }
-  function bulkDownloadYAML(bar) {
-    if (!bar || !bar.dataset.bulkHref) {
-      return;
+    out.push({ text: "label", hint: "key=value" });
+    if (hasModelColumn(fields, "cpu usage")) {
+      out.push({ text: "cpu", hint: "quantity" });
     }
-    const entries = roRowState().selectedEntries();
-    if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
-      return;
+    if (hasModelColumn(fields, "memory usage")) {
+      out.push({ text: "memory", hint: "quantity" });
     }
-    const clusterPrefix = (bar.dataset.bulkCluster || "") + "/";
-    const names = entries.map((entry) => {
-      if (bar.dataset.bulkAllns === "true" && entry.key.indexOf(clusterPrefix) === 0) {
-        return entry.key.slice(clusterPrefix.length);
-      }
-      return entry.name;
-    });
-    window.location.assign(bar.dataset.bulkHref + "&names=" + encodeURIComponent(names.join(",")));
+    return out;
   }
-  function roRowState() {
-    return window.roRowState;
-  }
-  var bulkBindings = [
-    {
-      event: "click",
-      selector: "#ro-bulk-download",
-      stop: true,
-      handler: (_event, matched) => {
-        bulkDownloadYAML(matched.closest("#ro-bulkbar"));
-        return true;
-      }
-    },
-    {
-      event: "click",
-      selector: "#ro-bulk-copy",
-      stop: true,
-      handler: (_event, matched) => {
-        bulkCopyNames(matched);
-        return true;
-      }
-    },
-    {
-      event: "click",
-      selector: "#ro-bulk-clear",
-      stop: true,
-      handler: () => {
-        clearRowState();
-        return true;
-      }
-    }
-  ];
-
-  // internal/assets/src/js/palette-rank.ts
-  function roFuzzyScore(query, text) {
-    const source = String(text || "");
-    const q = String(query || "").toLowerCase();
-    const t = source.toLowerCase();
-    if (!q) {
-      return 0;
-    }
-    let from = 0;
-    let first = -1;
-    let last = -1;
-    for (let i = 0; i < q.length; i++) {
-      const at = t.indexOf(q[i], from);
-      if (at === -1) {
-        return -1;
-      }
-      if (first === -1) {
-        first = at;
-      }
-      last = at;
-      from = at + 1;
-    }
-    const gaps = last - first + 1 - q.length;
-    const camelHump = source[first] >= "A" && source[first] <= "Z" && !(source[first - 1] >= "A" && source[first - 1] <= "Z");
-    const wordStart = first === 0 || " -_./:".indexOf(t[first - 1]) !== -1 || camelHump;
-    let tier = 2;
-    if (gaps === 0 && first === 0) {
-      tier = 0;
-    } else if (gaps === 0 && wordStart) {
-      tier = 1;
-    }
-    return tier * 1e5 + gaps * 100 + Math.min(first, 99);
-  }
-  function rankPaletteEntries(list, query, labelOf) {
-    if (!query) {
-      return list.slice();
-    }
-    const scored = [];
-    list.forEach((entry) => {
-      const score = roFuzzyScore(query, labelOf(entry));
-      if (score >= 0) {
-        scored.push({ entry, score });
-      }
-    });
-    scored.sort((a, b) => a.score - b.score);
-    return scored.map((it) => it.entry);
-  }
-  function paletteRecentTarget(entry) {
-    return entry.href ? "href:" + entry.href : "action:" + entry.action;
-  }
-  function dedupeRecents(prior, entry, max) {
-    const kept = prior.filter(
-      (it) => paletteRecentTarget(it) !== paletteRecentTarget(entry)
-    );
-    kept.unshift(entry);
-    return kept.slice(0, max);
-  }
-  var FEED_GROUPS = [
-    { title: "Resource types", key: "kinds" },
-    { title: "Namespaces", key: "namespaces" },
-    { title: "Clusters", key: "clusters" },
-    { title: "Actions", key: "actions" }
-  ];
-  function feedEntryLabel(entry, key) {
-    if (key === "kinds") {
-      return String(entry.kind || entry.plural || "");
-    }
-    return String(entry.name || entry.label || "");
-  }
-  function buildPaletteGroups(query, feed, recents, pageObjects) {
-    const q = (query || "").trim();
-    const groups = [];
-    if (q) {
-      groups.push({ title: "Everywhere", key: "everywhere", entries: [{ query: q }] });
-    } else if (recents.length > 0) {
-      groups.push({ title: "Recents", key: "recents", entries: recents.slice() });
-    }
-    const objects = rankPaletteEntries(pageObjects, q, (o) => o.name);
-    if (objects.length > 0) {
-      groups.push({ title: "On this page", key: "objects", entries: objects });
-    }
-    FEED_GROUPS.forEach((group) => {
-      const list = feed[group.key] || [];
-      const ranked = rankPaletteEntries(list, q, (entry) => feedEntryLabel(entry, group.key));
-      if (ranked.length > 0) {
-        groups.push({ title: group.title, key: group.key, entries: ranked });
-      }
-    });
-    return groups;
-  }
-
-  // internal/assets/src/js/virtualizer-math.ts
-  var VIRT_BUFFER_ROWS = 12;
-  function windowBounds(tbodyTop, innerHeight, rowH, visibleCount, buffer = VIRT_BUFFER_ROWS) {
-    const pitch = rowH || 1;
-    const n = visibleCount;
-    const first = Math.floor((0 - tbodyTop) / pitch);
-    const last = Math.ceil((innerHeight - tbodyTop) / pitch);
-    let start = Math.max(0, first - buffer);
-    let end = Math.min(n, last + buffer);
-    if (start > n) {
-      start = n;
-    }
-    if (end < start) {
-      end = start;
-    }
-    return { start, end };
-  }
-  function spacerHeights(start, end, visibleCount, rowH) {
-    return {
-      top: start * rowH,
-      bottom: Math.max(0, visibleCount - end) * rowH
-    };
-  }
-  function prepareSwapSpacers(priorStart, incomingRowCount, rowH) {
-    const start = Math.min(priorStart, incomingRowCount);
-    return {
-      top: start * rowH,
-      bottom: Math.max(0, incomingRowCount - start) * rowH
-    };
-  }
-  function rowOffsetTop(tbodyTop, index, rowH) {
-    return tbodyTop + index * rowH;
-  }
-  function scrollAdjustToReveal(rowTop, rowH, topMin, innerHeight) {
-    const rowBottom = rowTop + rowH;
-    if (rowTop < topMin) {
-      return rowTop - topMin;
-    }
-    if (rowBottom > innerHeight) {
-      return rowBottom - innerHeight;
-    }
-    return 0;
-  }
-  function clampFocusIndex(current, delta, visibleCount) {
-    return Math.max(0, Math.min(visibleCount - 1, current + delta));
-  }
-
-  // internal/assets/src/js/stale.ts
-  var STALE_DIM_CLASS = "ro-stale";
-  var staleCountdownId = null;
-  function updateStaleCountdown() {
-    const span = document.querySelector(".ro-stale-banner [data-stale-countdown]");
-    if (!span) {
-      return;
-    }
-    const nextAt = refreshNextAtMs();
-    if (!nextAt) {
-      span.textContent = "…";
-      return;
-    }
-    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
-    span.textContent = remaining + "s";
-  }
-  function isListRefreshEvent(event) {
-    const detail = event.detail;
-    if (!detail || isPreloadRequest(event)) {
+  function filterFieldKnown(fields, field) {
+    const want = normalizeFieldName(field);
+    if (!want) {
       return false;
     }
-    const elt = detail.elt;
-    if (!!elt && elt.id === "resource-list-content") {
+    if (want === "label") {
       return true;
     }
-    const target = detail.target;
-    return !!target && target.id === "resource-list-content";
+    if (want === "cpu" || want === "memory") {
+      return hasModelColumn(fields, `${want} usage`);
+    }
+    return fields.some((f) => !!f.hint && normalizeFieldName(f.label) === want);
   }
-  function markListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.add(STALE_DIM_CLASS);
+  function fieldColumnIndex(fields, field) {
+    let want = normalizeFieldName(field);
+    if (want === "cpu" || want === "memory") {
+      want += " usage";
     }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (banner) {
-      banner.hidden = false;
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      if (f.hint && normalizeFieldName(f.label) === want) {
+        return i;
+      }
     }
-    if (staleCountdownId === null) {
-      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
-    }
-    updateStaleCountdown();
+    return -1;
   }
-  function clearListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.remove(STALE_DIM_CLASS);
-    }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (banner) {
-      banner.hidden = true;
-    }
-    if (staleCountdownId !== null) {
-      window.clearInterval(staleCountdownId);
-      staleCountdownId = null;
-    }
+  function rankFieldSuggestions(fields, draft) {
+    const q = normalizeFieldName(draft);
+    const matched = filterSuggestionFields(fields).filter(
+      (f) => normalizeFieldName(f.text).indexOf(q) !== -1
+    );
+    matched.sort((a, b) => {
+      const ap = normalizeFieldName(a.text).indexOf(q) === 0 ? 0 : 1;
+      const bp = normalizeFieldName(b.text).indexOf(q) === 0 ? 0 : 1;
+      return ap - bp;
+    });
+    return matched.map((f) => ({
+      label: f.text,
+      hint: f.hint,
+      insert: `${f.text}:`,
+      kind: "field"
+    }));
   }
-  document.addEventListener("htmx:responseError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
+  function rankValueSuggestions(fields, rows, split) {
+    const idx = fieldColumnIndex(fields, split.field);
+    if (idx < 0) {
+      return [];
     }
-  });
-  document.addEventListener("htmx:sendError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
+    const freq = /* @__PURE__ */ new Map();
+    rows.forEach((row) => {
+      const v = row.cells[idx];
+      if (v) {
+        freq.set(v, (freq.get(v) || 0) + 1);
+      }
+    });
+    const typed = split.value.trim().toLowerCase();
+    let entries = Array.from(freq.entries());
+    if (typed) {
+      entries = entries.filter(([v]) => v.toLowerCase().indexOf(typed) !== -1);
     }
-  });
+    entries.sort((a, b) => b[1] - a[1]);
+    return entries.slice(0, 8).map(([v, n]) => ({
+      label: v,
+      hint: `×${n}`,
+      insert: `${split.field.trim()}:${v}`,
+      kind: "value"
+    }));
+  }
+  function liveNameMatchKeys(rows, draft) {
+    const text = !draft || splitFilterDraft(draft) ? "" : draft.trim().toLowerCase();
+    if (!text) {
+      return null;
+    }
+    const visible = /* @__PURE__ */ new Set();
+    rows.forEach((row) => {
+      if (row.name.toLowerCase().indexOf(text) !== -1) {
+        visible.add(row.key);
+      }
+    });
+    return visible;
+  }
+  function mergeColParams(pathname, search, owned, fields) {
+    const kept = [];
+    search.replace(/^\?/, "").split("&").forEach((pair) => {
+      if (pair && !owned.has(pair.split("=")[0])) {
+        kept.push(pair);
+      }
+    });
+    const query = kept.concat(fields).join("&");
+    return pathname + (query ? `?${query}` : "");
+  }
 
   // internal/assets/src/js/live-policy.ts
   function effectivePollSeconds(mode, intervalSeconds, liveFallbackSeconds2) {
@@ -808,6 +188,75 @@
     return "none";
   }
 
+  // internal/assets/src/js/stale.ts
+  var STALE_DIM_CLASS = "ro-stale";
+  var staleCountdownId = null;
+  function updateStaleCountdown() {
+    const span = document.querySelector(".ro-stale-banner [data-stale-countdown]");
+    if (!span) {
+      return;
+    }
+    const nextAt = refreshNextAtMs();
+    if (!nextAt) {
+      span.textContent = "…";
+      return;
+    }
+    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
+    span.textContent = `${remaining}s`;
+  }
+  function isListRefreshEvent(event) {
+    const detail = event.detail;
+    if (!detail || isPreloadRequest(event)) {
+      return false;
+    }
+    const elt = detail.elt;
+    if (elt && elt.id === "resource-list-content") {
+      return true;
+    }
+    const target = detail.target;
+    return !!target && target.id === "resource-list-content";
+  }
+  function markListStale() {
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.add(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector(".ro-stale-banner");
+    if (banner) {
+      banner.hidden = false;
+    }
+    if (staleCountdownId === null) {
+      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
+    }
+    updateStaleCountdown();
+  }
+  function clearListStale() {
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.remove(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector(".ro-stale-banner");
+    if (banner) {
+      banner.hidden = true;
+    }
+    if (staleCountdownId !== null) {
+      window.clearInterval(staleCountdownId);
+      staleCountdownId = null;
+    }
+  }
+  document.addEventListener("htmx:responseError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+  document.addEventListener("htmx:sendError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+
   // internal/assets/src/js/live.ts
   function getHtmx() {
     return window.htmx;
@@ -830,7 +279,7 @@
   }
   function liveSupported() {
     const content = document.getElementById("resource-list-content");
-    if (!content || content.dataset.liveUrl !== "location") {
+    if (content?.dataset.liveUrl !== "location") {
       return false;
     }
     const option = document.querySelector(
@@ -840,7 +289,7 @@
   }
   function liveStreamBase() {
     const u = new URL(window.location.href);
-    return u.pathname.replace(/\/+$/, "") + "/_stream" + u.search;
+    return `${u.pathname.replace(/\/+$/, "")}/_stream${u.search}`;
   }
   function liveTeardown() {
     const ctrl = liveState.abort;
@@ -872,10 +321,10 @@
     }
     liveState.status = "connecting";
     liveGenSeq += 1;
-    liveState.gen = Date.now().toString(36) + "." + liveGenSeq;
+    liveState.gen = `${Date.now().toString(36)}.${liveGenSeq}`;
     const ctrl = new AbortController();
     liveState.abort = ctrl;
-    const url = base + (base.indexOf("?") === -1 ? "?" : "&") + "g=" + encodeURIComponent(liveState.gen);
+    const url = `${base + (base.indexOf("?") === -1 ? "?" : "&")}g=${encodeURIComponent(liveState.gen)}`;
     scheduleRefreshTick();
     void liveConnect(url, ctrl);
   }
@@ -989,21 +438,26 @@ ${piece}`;
     if (!content || !htmx2 || typeof htmx2.swap !== "function") {
       return;
     }
-    htmx2.swap(content, html, { swapStyle: "morph" }, {
-      contextElement: content,
-      eventInfo: { target: content, roLivePush: true }
-    });
+    htmx2.swap(
+      content,
+      html,
+      { swapStyle: "morph" },
+      {
+        contextElement: content,
+        eventInfo: { target: content, roLivePush: true }
+      }
+    );
   }
   function liveOnListSwap(event) {
     const detail = event.detail;
-    if (detail && detail.roLivePush) {
+    if (detail?.roLivePush) {
       return;
     }
     if (liveState.status !== "open" && liveState.status !== "connecting") {
       return;
     }
     let base = liveStreamBase();
-    const pathInfo = detail && detail.pathInfo;
+    const pathInfo = detail?.pathInfo;
     const requestPath = pathInfo && (pathInfo.finalRequestPath || pathInfo.requestPath);
     if (requestPath && requestPath.indexOf("/_table") !== -1) {
       base = requestPath.replace("/_table", "/_stream");
@@ -1044,6 +498,162 @@ ${piece}`;
     }
   };
 
+  // internal/assets/src/js/prefs.ts
+  var PREFS_COOKIE = "ro_prefs";
+  var PREFS_VERSION_PREFIX = "v1.";
+  var PREFS_MAX_ENCODED = 3072;
+  var PREFS_COOKIE_MAX_AGE = 31536e3;
+  var REFRESH_KEY = "roRefresh";
+  function b64urlEncodeUTF8(text) {
+    const bytes = new TextEncoder().encode(text);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) {
+      bin += String.fromCharCode(bytes[i]);
+    }
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function b64urlDecodeUTF8(encoded) {
+    const b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(b64 + "====".slice(b64.length % 4 || 4));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      bytes[i] = bin.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
+  }
+  function decodePrefsValue(value) {
+    const empty = { kinds: [], refresh: "", ns: {} };
+    if (value?.indexOf(PREFS_VERSION_PREFIX) !== 0) {
+      return { prefs: empty, ok: false };
+    }
+    const payload = value.slice(PREFS_VERSION_PREFIX.length);
+    if (!payload) {
+      return { prefs: empty, ok: false };
+    }
+    try {
+      const decoded = JSON.parse(b64urlDecodeUTF8(payload));
+      if (!decoded || typeof decoded !== "object") {
+        return { prefs: empty, ok: false };
+      }
+      const kinds = [];
+      if (Array.isArray(decoded.kinds)) {
+        decoded.kinds.forEach((raw) => {
+          if (!raw || typeof raw !== "object") {
+            return;
+          }
+          const e = raw;
+          if (typeof e.k !== "string") {
+            return;
+          }
+          const entry = { k: e.k };
+          if (typeof e.sort === "string") {
+            entry.sort = e.sort;
+          }
+          if (Array.isArray(e.hide) && e.hide.every((name) => typeof name === "string")) {
+            entry.hide = e.hide;
+          }
+          kinds.push(entry);
+        });
+      }
+      const ns = {};
+      if (decoded.ns && typeof decoded.ns === "object" && !Array.isArray(decoded.ns)) {
+        Object.keys(decoded.ns).forEach((cluster) => {
+          if (typeof decoded.ns[cluster] === "string") {
+            ns[cluster] = decoded.ns[cluster];
+          }
+        });
+      }
+      return {
+        prefs: {
+          kinds,
+          refresh: typeof decoded.refresh === "string" ? decoded.refresh : "",
+          ns
+        },
+        ok: true
+      };
+    } catch (_e) {
+      return { prefs: empty, ok: false };
+    }
+  }
+  function encodePrefsValue(prefs) {
+    const out = {};
+    if (prefs.kinds && prefs.kinds.length > 0) {
+      out.kinds = prefs.kinds;
+    }
+    if (prefs.refresh) {
+      out.refresh = prefs.refresh;
+    }
+    if (prefs.ns && Object.keys(prefs.ns).length > 0) {
+      out.ns = prefs.ns;
+    }
+    let value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
+    while (value.length > PREFS_MAX_ENCODED && out.kinds && out.kinds.length > 0) {
+      out.kinds = out.kinds.slice(0, -1);
+      if (out.kinds.length === 0) {
+        delete out.kinds;
+      }
+      value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
+    }
+    return value;
+  }
+  function prefsCookieValue() {
+    const parts = document.cookie ? document.cookie.split("; ") : [];
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].indexOf(`${PREFS_COOKIE}=`) === 0) {
+        return parts[i].slice(PREFS_COOKIE.length + 1);
+      }
+    }
+    return "";
+  }
+  function readPrefs() {
+    return decodePrefsValue(prefsCookieValue()).prefs;
+  }
+  function writePrefs(prefs) {
+    try {
+      let cookie = PREFS_COOKIE + "=" + encodePrefsValue(prefs) + "; Path=/; SameSite=Lax; Max-Age=" + PREFS_COOKIE_MAX_AGE;
+      if (window.location.protocol === "https:") {
+        cookie += "; Secure";
+      }
+      document.cookie = cookie;
+    } catch (_e) {
+    }
+  }
+  function prefsTouchKind(prefs, plural) {
+    for (let i = 0; i < prefs.kinds.length; i++) {
+      if (prefs.kinds[i].k === plural) {
+        const entry = prefs.kinds.splice(i, 1)[0];
+        prefs.kinds.unshift(entry);
+        return entry;
+      }
+    }
+    const fresh = { k: plural };
+    prefs.kinds.unshift(fresh);
+    return fresh;
+  }
+  function roPrefsSetSort(plural, sort) {
+    const prefs = readPrefs();
+    prefsTouchKind(prefs, plural).sort = sort;
+    writePrefs(prefs);
+  }
+  function roPrefsSetHiddenColumns(plural, names) {
+    const prefs = readPrefs();
+    prefsTouchKind(prefs, plural).hide = Array.isArray(names) ? names : [];
+    writePrefs(prefs);
+  }
+  function roPrefsSetRefresh(mode) {
+    const prefs = readPrefs();
+    prefs.refresh = mode;
+    writePrefs(prefs);
+  }
+  function roPrefsSetNamespace(cluster, namespace) {
+    if (!cluster || !namespace) {
+      return;
+    }
+    const prefs = readPrefs();
+    prefs.ns[cluster] = namespace;
+    writePrefs(prefs);
+  }
+
   // internal/assets/src/js/refresh.ts
   function getHtmx2() {
     return window.htmx;
@@ -1064,12 +674,12 @@ ${piece}`;
     });
   }
   function isPreloadRequest(event) {
-    const cfg = event.detail && event.detail.requestConfig;
+    const cfg = event.detail?.requestConfig;
     return !!cfg && !!cfg.headers && cfg.headers["HX-Preloaded"] === "true";
   }
   function isUserListRequest(event) {
     const detail = event.detail;
-    if (!detail || !detail.elt || !detail.target) {
+    if (!detail?.elt || !detail.target) {
       return false;
     }
     if (detail.elt.id === "resource-list-content") {
@@ -1078,21 +688,21 @@ ${piece}`;
     return detail.target.id === "resource-list-content" && !isPreloadRequest(event);
   }
   document.addEventListener("htmx:configRequest", (event) => {
-    const elt = event.detail && event.detail.elt;
+    const elt = event.detail?.elt;
     if (elt && elt.id === "resource-list-content") {
       event.detail.headers["RO-No-Push"] = "true";
     }
   });
   document.addEventListener("htmx:beforeRequest", (event) => {
     const detail = event.detail;
-    if (detail && detail.xhr && detail.elt && detail.elt.id === "resource-list-content") {
+    if (detail?.xhr && detail.elt && detail.elt.id === "resource-list-content") {
       containerListRequestsInFlight.add(detail.xhr);
       return;
     }
     if (!isUserListRequest(event)) {
       return;
     }
-    if (detail && detail.xhr) {
+    if (detail?.xhr) {
       userListRequestsInFlight.add(detail.xhr);
     }
     const content = document.getElementById("resource-list-content");
@@ -1102,7 +712,7 @@ ${piece}`;
     }
   });
   document.addEventListener("htmx:afterRequest", (event) => {
-    const xhr = event.detail && event.detail.xhr;
+    const xhr = event.detail?.xhr;
     if (xhr) {
       userListRequestsInFlight.delete(xhr);
       containerListRequestsInFlight.delete(xhr);
@@ -1133,7 +743,7 @@ ${piece}`;
   }
   function listTableURL() {
     const u = new URL(window.location.href);
-    return u.pathname.replace(/\/+$/, "") + "/_table" + u.search;
+    return `${u.pathname.replace(/\/+$/, "")}/_table${u.search}`;
   }
   function requestListRefresh() {
     const content = document.getElementById("resource-list-content");
@@ -1204,7 +814,10 @@ ${piece}`;
     }
     document.querySelectorAll(".refresh-option").forEach((opt) => {
       const value = opt.dataset.interval ?? "";
-      opt.classList.toggle("is-active", live ? value === "Live" : value !== "Live" && (parseInt(value, 10) || 0) === secs);
+      opt.classList.toggle(
+        "is-active",
+        live ? value === "Live" : value !== "Live" && (parseInt(value, 10) || 0) === secs
+      );
     });
     const dropdown = document.getElementById("refresh-dropdown");
     if (dropdown) {
@@ -1231,13 +844,284 @@ ${piece}`;
       fireRefresh();
     }
   });
+  var refreshBindings = [
+    // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
+    // #resource-list-content through the shared refresh path (the v2 loop derives
+    // the `_table` URL from location.href at click time; the v1 multi-type
+    // container triggers its baked ro:refresh). On success the morph swaps fresh
+    // rows and the afterSwap handler clears the stale dim + re-hides the banner;
+    // on another failure the responseError handler keeps it stale. An in-flight
+    // container request (a HUNG tick is exactly the state this button exists for)
+    // is aborted first -- issuing a second container request would make htmx
+    // QUEUE it, and a queued request replays on the next htmx:abort with its stale
+    // queue-time URL (no queue may ever form). Pure DOM, GET-only -- the
+    // read-only floor is untouched.
+    {
+      event: "click",
+      selector: ".ro-stale-retry",
+      stop: true,
+      handler: (event) => {
+        event.preventDefault();
+        const content = document.getElementById("resource-list-content");
+        const htmx2 = getHtmx2();
+        if (content && htmx2) {
+          htmx2.trigger(content, "htmx:abort");
+        }
+        requestListRefresh();
+        return true;
+      }
+    },
+    // Auto-refresh interval option (navbar #refresh-dropdown): persist the chosen
+    // mode in the ro_prefs cookie (D9), re-arm the poll, and reflect it in the
+    // control. The Live option (Unit 27/D19) persists the literal 'Live' and rides
+    // the same path: liveApply opens/tears down the stream, applyRefresh then arms
+    // the poll chain per the EFFECTIVE seconds (0 while a stream is riding). A
+    // disabled Live option (multi-type/multi-cluster page) never fires (the
+    // browser suppresses clicks on disabled buttons). The dropdown opens through
+    // CSS hover/focus, so there is no open/close handler here -- only the
+    // selection. Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: ".refresh-option",
+      stop: true,
+      handler: (event, matched) => {
+        const option = matched;
+        if (option.dataset.interval === "Live") {
+          roPrefsSetRefresh("Live");
+        } else {
+          const interval = parseInt(option.dataset.interval ?? "", 10) || 0;
+          roPrefsSetRefresh(interval > 0 ? String(interval) : "Off");
+        }
+        liveApply(true);
+        syncRefreshUI();
+        applyRefresh();
+        option.blur();
+        event.preventDefault();
+        return true;
+      }
+    }
+  ];
+
+  // internal/assets/src/js/row-selection.ts
+  var rowSelection = /* @__PURE__ */ new Map();
+  var rowFocusKey = null;
+  function reapplyRowState() {
+    const content = document.getElementById("resource-list-content");
+    if (!content) {
+      return;
+    }
+    let focusedRow = null;
+    content.querySelectorAll("tr[data-key]").forEach((tr) => {
+      const row = tr;
+      row.classList.toggle("is-selected", rowSelection.has(row.dataset.key));
+      const focused = row.dataset.key === rowFocusKey;
+      row.classList.toggle("kfocus", focused);
+      if (focused) {
+        focusedRow = row;
+      }
+    });
+    content.querySelectorAll(".ro-table-wrap").forEach((wrap) => {
+      const fr = focusedRow;
+      if (fr?.id && wrap.contains(fr)) {
+        wrap.setAttribute("aria-activedescendant", fr.id);
+      } else {
+        wrap.removeAttribute("aria-activedescendant");
+      }
+    });
+  }
+  function lastKeySegment(key) {
+    const parts = (key || "").split("/");
+    return parts[parts.length - 1] || "";
+  }
+  function rowSelectionEntry(key) {
+    const content = document.getElementById("resource-list-content");
+    let entry = null;
+    if (content) {
+      content.querySelectorAll("tr[data-key]").forEach((tr) => {
+        const row = tr;
+        if (row.dataset.key === key) {
+          entry = { name: row.dataset.name || lastKeySegment(key) };
+        }
+      });
+    }
+    return entry || { name: lastKeySegment(key) };
+  }
+  function setRowSelected(key, on) {
+    if (on) {
+      rowSelection.set(key, rowSelectionEntry(key));
+    } else {
+      rowSelection.delete(key);
+    }
+    reapplyRowState();
+    updateBulkBar();
+  }
+  function clearRowState() {
+    rowSelection.clear();
+    rowFocusKey = null;
+    reapplyRowState();
+    updateBulkBar();
+  }
+  window.roRowState = {
+    setSelected: setRowSelected,
+    setFocus(key) {
+      rowFocusKey = key || null;
+      reapplyRowState();
+    },
+    // focusedKey is the j/k focus seam the windowed walker (virtualizeMoveFocus,
+    // still in legacy.js) reads across the module boundary -- the focused row can
+    // be detached off-window, so the store (not the DOM kfocus class) is the
+    // truth there. Also a debug sim the console can poll.
+    focusedKey() {
+      return rowFocusKey;
+    },
+    clear: clearRowState,
+    selectedKeys() {
+      return Array.from(rowSelection.keys());
+    },
+    // selectedEntries feeds the bulk actions: Copy names reads .name, and the
+    // bulk Download-YAML builds its names list from .key/.name.
+    selectedEntries() {
+      return Array.from(rowSelection, ([key, entry]) => ({ key, name: entry.name }));
+    }
+  };
+  var BULK_NAMES_MAX = 100;
+  var bulkOverCapToasted = false;
+  function updateBulkBar() {
+    const bar = document.getElementById("ro-bulkbar");
+    if (!bar) {
+      return;
+    }
+    const count = rowSelection.size;
+    const label = document.getElementById("ro-bulk-count");
+    if (label && count > 0) {
+      label.textContent = `${count} selected`;
+    }
+    bar.classList.toggle("is-open", count > 0);
+    bar.toggleAttribute("inert", count === 0);
+    const download = document.getElementById("ro-bulk-download");
+    if (download && bar.dataset.bulkHref) {
+      const over = count > BULK_NAMES_MAX;
+      download.disabled = over;
+      download.title = over ? `Over the ${BULK_NAMES_MAX}-object bulk download cap` : "";
+      if (over && !bulkOverCapToasted) {
+        roToast(`Download refused: ${count} selected (max ${BULK_NAMES_MAX})`);
+      }
+      bulkOverCapToasted = over;
+    }
+  }
+  function roToast(message) {
+    const fn = window.roToast;
+    if (typeof fn === "function") {
+      fn(message);
+    }
+  }
+  function roCopyText(text, done) {
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch {
+        ok = false;
+      }
+      ta.remove();
+      return ok;
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => done(true),
+        () => done(fallback())
+      );
+      return;
+    }
+    done(fallback());
+  }
+  function toggleRowSelection(tr) {
+    const key = tr.dataset.key;
+    if (!key) {
+      return;
+    }
+    if (rowSelection.has(key)) {
+      rowSelection.delete(key);
+    } else {
+      rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key) });
+    }
+    reapplyRowState();
+    updateBulkBar();
+  }
+  var rowSelectionBindings = [
+    {
+      event: "click",
+      selector: "#resource-list-content tr[data-key]",
+      handler: (event, matched) => {
+        const target = event.target;
+        if (target?.closest("a, button, input, select, textarea, label")) {
+          return;
+        }
+        toggleRowSelection(matched);
+      }
+    }
+  ];
+
+  // internal/assets/src/js/virtualizer-math.ts
+  var VIRT_BUFFER_ROWS = 12;
+  function windowBounds(tbodyTop, innerHeight, rowH, visibleCount, buffer = VIRT_BUFFER_ROWS) {
+    const pitch = rowH || 1;
+    const n = visibleCount;
+    const first = Math.floor((0 - tbodyTop) / pitch);
+    const last = Math.ceil((innerHeight - tbodyTop) / pitch);
+    let start = Math.max(0, first - buffer);
+    let end = Math.min(n, last + buffer);
+    if (start > n) {
+      start = n;
+    }
+    if (end < start) {
+      end = start;
+    }
+    return { start, end };
+  }
+  function spacerHeights(start, end, visibleCount, rowH) {
+    return {
+      top: start * rowH,
+      bottom: Math.max(0, visibleCount - end) * rowH
+    };
+  }
+  function prepareSwapSpacers(priorStart, incomingRowCount, rowH) {
+    const start = Math.min(priorStart, incomingRowCount);
+    return {
+      top: start * rowH,
+      bottom: Math.max(0, incomingRowCount - start) * rowH
+    };
+  }
+  function rowOffsetTop(tbodyTop, index, rowH) {
+    return tbodyTop + index * rowH;
+  }
+  function scrollAdjustToReveal(rowTop, rowH, topMin, innerHeight) {
+    const rowBottom = rowTop + rowH;
+    if (rowTop < topMin) {
+      return rowTop - topMin;
+    }
+    if (rowBottom > innerHeight) {
+      return rowBottom - innerHeight;
+    }
+    return 0;
+  }
+  function clampFocusIndex(current, delta, visibleCount) {
+    return Math.max(0, Math.min(visibleCount - 1, current + delta));
+  }
 
   // internal/assets/src/js/virtualizer.ts
   var FILTER_HIDE_CLASS = "ro-row-filtered";
   function roRowModel() {
     return window.roRowModel;
   }
-  function roRowState2() {
+  function roRowState() {
     return window.roRowState;
   }
   var virtState = {
@@ -1288,7 +1172,9 @@ ${piece}`;
     virtState.bottomSpacer.firstElementChild.colSpan = cols;
   }
   function virtMeasureRowHeight() {
-    const rendered = virtState.tbody.querySelectorAll(":scope > tr[data-key]");
+    const rendered = virtState.tbody.querySelectorAll(
+      ":scope > tr[data-key]"
+    );
     if (rendered.length === 0) {
       return 0;
     }
@@ -1303,7 +1189,7 @@ ${piece}`;
     try {
       const cs = window.getComputedStyle(document.documentElement);
       py = parseFloat(cs.getPropertyValue("--row-py")) || py;
-      const cell = virtState.tbody && virtState.tbody.querySelector("td");
+      const cell = virtState.tbody?.querySelector("td");
       if (cell) {
         lh = parseFloat(window.getComputedStyle(cell).lineHeight) || lh;
       }
@@ -1317,7 +1203,7 @@ ${piece}`;
       return false;
     }
     ths.forEach((th, i) => {
-      th.style.width = virtState.pinnedWidths[i] + "px";
+      th.style.width = `${virtState.pinnedWidths[i]}px`;
     });
     virtState.table.classList.add("ro-virtualized");
     return true;
@@ -1339,17 +1225,19 @@ ${piece}`;
     s.start = bounds.start;
     s.end = bounds.end;
     const heights = spacerHeights(s.start, s.end, s.visible.length, s.rowH);
-    s.topSpacer.firstElementChild.style.height = heights.top + "px";
-    s.bottomSpacer.firstElementChild.style.height = heights.bottom + "px";
+    s.topSpacer.firstElementChild.style.height = `${heights.top}px`;
+    s.bottomSpacer.firstElementChild.style.height = `${heights.bottom}px`;
     const slice = s.visible.slice(s.start, s.end);
-    slice.forEach((tr) => tr.classList.remove(FILTER_HIDE_CLASS));
+    slice.forEach((tr) => {
+      tr.classList.remove(FILTER_HIDE_CLASS);
+    });
     tbody.replaceChildren(s.topSpacer, ...slice, s.bottomSpacer);
     reapplyRowState();
   }
   function virtBindMounts() {
     const content = document.getElementById("resource-list-content");
-    const wrap = content && content.querySelector(".ro-table-wrap.ro-windowed");
-    const table = wrap && wrap.querySelector("table.ro-table");
+    const wrap = content?.querySelector(".ro-table-wrap.ro-windowed");
+    const table = wrap?.querySelector("table.ro-table");
     const tbody = table && table.tBodies.length > 0 ? table.tBodies[0] : null;
     virtState.table = table || null;
     virtState.tbody = tbody || null;
@@ -1357,7 +1245,7 @@ ${piece}`;
   }
   function virtualizeInit() {
     const content = document.getElementById("resource-list-content");
-    const wrap = content && content.querySelector(".ro-table-wrap.ro-windowed");
+    const wrap = content?.querySelector(".ro-table-wrap.ro-windowed");
     if (!wrap) {
       virtReset();
       return;
@@ -1419,8 +1307,8 @@ ${piece}`;
     const heights = prepareSwapSpacers(priorStart, rows.length, rowH);
     const topSpacer = virtMakeSpacer();
     const bottomSpacer = virtMakeSpacer();
-    topSpacer.firstElementChild.style.height = heights.top + "px";
-    bottomSpacer.firstElementChild.style.height = heights.bottom + "px";
+    topSpacer.firstElementChild.style.height = `${heights.top}px`;
+    bottomSpacer.firstElementChild.style.height = `${heights.bottom}px`;
     tbody.replaceChildren(topSpacer, bottomSpacer);
   }
   function virtualizeAfterSwap() {
@@ -1503,7 +1391,7 @@ ${piece}`;
       return false;
     }
     let current = -1;
-    const focusKey = roRowState2().focusedKey();
+    const focusKey = roRowState().focusedKey();
     for (let i = 0; i < list.length; i++) {
       if (list[i].dataset.key === focusKey) {
         current = i;
@@ -1512,7 +1400,7 @@ ${piece}`;
     }
     const next = clampFocusIndex(current, delta, list.length);
     virtualizeScrollToIndex(next);
-    roRowState2().setFocus(list[next].dataset.key);
+    roRowState().setFocus(list[next].dataset.key);
     return true;
   }
   function virtualizeScrollToIndex(index) {
@@ -1541,23 +1429,32 @@ ${piece}`;
       return;
     }
     const rect = virtState.tbody.getBoundingClientRect();
-    const bounds = windowBounds(rect.top, window.innerHeight, virtState.rowH, virtState.visible.length);
+    const bounds = windowBounds(
+      rect.top,
+      window.innerHeight,
+      virtState.rowH,
+      virtState.visible.length
+    );
     if (bounds.start !== virtState.start || bounds.end !== virtState.end) {
       virtRenderWindow();
     }
   }
-  window.addEventListener("scroll", () => {
-    if (!virtState.active || virtScrollScheduled) {
-      return;
-    }
-    virtScrollScheduled = true;
-    window.requestAnimationFrame(() => {
-      virtScrollScheduled = false;
-      virtOnScroll();
-    });
-  }, { passive: true });
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (!virtState.active || virtScrollScheduled) {
+        return;
+      }
+      virtScrollScheduled = true;
+      window.requestAnimationFrame(() => {
+        virtScrollScheduled = false;
+        virtOnScroll();
+      });
+    },
+    { passive: true }
+  );
   window.addEventListener("resize", virtOnScroll);
-  if (document.fonts && document.fonts.ready && typeof document.fonts.ready.then === "function") {
+  if (document.fonts?.ready && typeof document.fonts.ready.then === "function") {
     document.fonts.ready.then(() => {
       if (!virtualizerActive()) {
         return;
@@ -1588,141 +1485,6 @@ ${piece}`;
     }
   };
 
-  // internal/assets/src/js/filters-parse.ts
-  function normalizeFieldName(s) {
-    return (s || "").toLowerCase().replace(/-/g, " ").trim();
-  }
-  function fieldSuggestionText(label) {
-    return (label || "").toLowerCase().trim().replace(/\s+/g, "-");
-  }
-  function splitFilterDraft(s) {
-    for (let i = 0; i < s.length; i++) {
-      const c = s[i];
-      if (c === "!" && s[i + 1] === "=") {
-        return { field: s.slice(0, i).trim(), op: "!=", value: s.slice(i + 2) };
-      }
-      if (c === ":" || c === ">" || c === "<") {
-        return { field: s.slice(0, i).trim(), op: c, value: s.slice(i + 1) };
-      }
-    }
-    return null;
-  }
-  function hasModelColumn(fields, normName) {
-    return fields.some((f) => !!f.hint && normalizeFieldName(f.label) === normName);
-  }
-  function filterSuggestionFields(fields) {
-    const out = [];
-    fields.forEach((f) => {
-      if (!f.hint) {
-        return;
-      }
-      const norm = normalizeFieldName(f.label);
-      if (norm === "cpu" || norm === "memory") {
-        return;
-      }
-      out.push({ text: f.name, hint: f.hint });
-    });
-    out.push({ text: "label", hint: "key=value" });
-    if (hasModelColumn(fields, "cpu usage")) {
-      out.push({ text: "cpu", hint: "quantity" });
-    }
-    if (hasModelColumn(fields, "memory usage")) {
-      out.push({ text: "memory", hint: "quantity" });
-    }
-    return out;
-  }
-  function filterFieldKnown(fields, field) {
-    const want = normalizeFieldName(field);
-    if (!want) {
-      return false;
-    }
-    if (want === "label") {
-      return true;
-    }
-    if (want === "cpu" || want === "memory") {
-      return hasModelColumn(fields, want + " usage");
-    }
-    return fields.some((f) => !!f.hint && normalizeFieldName(f.label) === want);
-  }
-  function fieldColumnIndex(fields, field) {
-    let want = normalizeFieldName(field);
-    if (want === "cpu" || want === "memory") {
-      want += " usage";
-    }
-    for (let i = 0; i < fields.length; i++) {
-      const f = fields[i];
-      if (f.hint && normalizeFieldName(f.label) === want) {
-        return i;
-      }
-    }
-    return -1;
-  }
-  function rankFieldSuggestions(fields, draft) {
-    const q = normalizeFieldName(draft);
-    const matched = filterSuggestionFields(fields).filter(
-      (f) => normalizeFieldName(f.text).indexOf(q) !== -1
-    );
-    matched.sort((a, b) => {
-      const ap = normalizeFieldName(a.text).indexOf(q) === 0 ? 0 : 1;
-      const bp = normalizeFieldName(b.text).indexOf(q) === 0 ? 0 : 1;
-      return ap - bp;
-    });
-    return matched.map((f) => ({
-      label: f.text,
-      hint: f.hint,
-      insert: f.text + ":",
-      kind: "field"
-    }));
-  }
-  function rankValueSuggestions(fields, rows, split) {
-    const idx = fieldColumnIndex(fields, split.field);
-    if (idx < 0) {
-      return [];
-    }
-    const freq = /* @__PURE__ */ new Map();
-    rows.forEach((row) => {
-      const v = row.cells[idx];
-      if (v) {
-        freq.set(v, (freq.get(v) || 0) + 1);
-      }
-    });
-    const typed = split.value.trim().toLowerCase();
-    let entries = Array.from(freq.entries());
-    if (typed) {
-      entries = entries.filter(([v]) => v.toLowerCase().indexOf(typed) !== -1);
-    }
-    entries.sort((a, b) => b[1] - a[1]);
-    return entries.slice(0, 8).map(([v, n]) => ({
-      label: v,
-      hint: "×" + n,
-      insert: split.field.trim() + ":" + v,
-      kind: "value"
-    }));
-  }
-  function liveNameMatchKeys(rows, draft) {
-    const text = !draft || splitFilterDraft(draft) ? "" : draft.trim().toLowerCase();
-    if (!text) {
-      return null;
-    }
-    const visible = /* @__PURE__ */ new Set();
-    rows.forEach((row) => {
-      if (row.name.toLowerCase().indexOf(text) !== -1) {
-        visible.add(row.key);
-      }
-    });
-    return visible;
-  }
-  function mergeColParams(pathname, search, owned, fields) {
-    const kept = [];
-    search.replace(/^\?/, "").split("&").forEach((pair) => {
-      if (pair && !owned.has(pair.split("=")[0])) {
-        kept.push(pair);
-      }
-    });
-    const query = kept.concat(fields).join("&");
-    return pathname + (query ? "?" + query : "");
-  }
-
   // internal/assets/src/js/filters.ts
   function getHtmx3() {
     return window.htmx;
@@ -1743,7 +1505,11 @@ ${piece}`;
     const fields = [];
     table.querySelectorAll("thead th").forEach((th) => {
       const label = (th.textContent || "").trim();
-      fields.push({ label, name: fieldSuggestionText(label), hint: th.dataset.hint || "" });
+      fields.push({
+        label,
+        name: fieldSuggestionText(label),
+        hint: th.dataset.hint || ""
+      });
     });
     const rows = [];
     table.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
@@ -1778,7 +1544,10 @@ ${piece}`;
     const visible = liveNameMatchKeys(roRowModel2.rows, draft);
     roRowModel2.visibleKeys = visible;
     content.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
-      tr.classList.toggle(FILTER_HIDE_CLASS2, !!visible && !visible.has(tr.dataset.key));
+      tr.classList.toggle(
+        FILTER_HIDE_CLASS2,
+        !!visible && !visible.has(tr.dataset.key)
+      );
     });
     virtualizeOnFilterChange();
   }
@@ -1791,7 +1560,7 @@ ${piece}`;
       return;
     }
     const u = new URL(href, window.location.href);
-    const partial = u.pathname.replace(/\/+$/, "") + "/_table" + u.search;
+    const partial = `${u.pathname.replace(/\/+$/, "")}/_table${u.search}`;
     const request = htmx2.ajax("GET", partial, {
       source: input,
       target: "#resource-list-content",
@@ -1814,7 +1583,7 @@ ${piece}`;
     }
     const raw = encodeURIComponent(text).replace(/%2C/gi, ",");
     const search = window.location.search;
-    const href = window.location.pathname + (search ? search + "&" : "?") + "f=" + raw;
+    const href = `${window.location.pathname + (search ? `${search}&` : "?")}f=${raw}`;
     clearFilterDraft();
     issueFilterNavigation(href);
   }
@@ -1842,7 +1611,7 @@ ${piece}`;
       return;
     }
     const names = filterSuggestionFields(roRowModel2.fields).slice(0, 3).map((f) => f.text);
-    el.textContent = "no such field — try " + (names.length ? names.join(", ") : "status, node, age") + "…";
+    el.textContent = `no such field — try ${names.length ? names.join(", ") : "status, node, age"}…`;
     el.hidden = false;
   }
   function hideFilterFieldHint() {
@@ -1878,7 +1647,7 @@ ${piece}`;
     filterACActive = 0;
     items.forEach((item, idx) => {
       const row = document.createElement("div");
-      row.className = "ro-ac-item" + (idx === 0 ? " active" : "");
+      row.className = `ro-ac-item${idx === 0 ? " active" : ""}`;
       row.setAttribute("role", "option");
       row.setAttribute("aria-selected", idx === 0 ? "true" : "false");
       row.dataset.acIndex = String(idx);
@@ -2084,6 +1853,120 @@ ${piece}`;
     }
   ];
 
+  // internal/assets/src/js/morph.ts
+  if (Idiomorph?.defaults?.callbacks && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const PRIOR = /* @__PURE__ */ new WeakMap();
+    Idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode) => {
+      if (oldNode && oldNode.nodeType === 1 && oldNode.tagName === "TD") {
+        PRIOR.set(oldNode, oldNode.textContent);
+      }
+    };
+    Idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode) => {
+      if (oldNode?.nodeType !== 1 || oldNode.tagName !== "TD") {
+        return;
+      }
+      const el = oldNode;
+      if (!PRIOR.has(el)) {
+        return;
+      }
+      const before = PRIOR.get(el);
+      PRIOR.delete(el);
+      if (before !== el.textContent) {
+        el.classList.remove("ro-cell-changed");
+        void el.offsetWidth;
+        el.classList.add("ro-cell-changed");
+      }
+    };
+  }
+  if (typeof htmx !== "undefined" && typeof Idiomorph !== "undefined") {
+    htmx.defineExtension("ro-morph", {
+      isInlineSwap: (swapStyle) => swapStyle === "morph",
+      handleSwap: (swapStyle, target, fragment) => {
+        if (swapStyle !== "morph") {
+          return false;
+        }
+        if (target && target.id === "resource-list-content") {
+          captureRowModel(fragment);
+          virtualizePrepareSwap(fragment);
+        }
+        return Idiomorph.morph(target, fragment.children, {
+          morphStyle: "innerHTML",
+          ignoreActiveValue: true
+        });
+      }
+    });
+  }
+
+  // internal/assets/src/js/bulk-actions.ts
+  var bulkCopyResetTimer = 0;
+  function bulkCopyNames(button) {
+    const entries = roRowState2().selectedEntries();
+    const names = entries.map((entry) => entry.name).join("\n");
+    roCopyText(names, (ok) => {
+      if (!ok) {
+        return;
+      }
+      const label = button.querySelector("span:last-child");
+      if (!label) {
+        return;
+      }
+      window.clearTimeout(bulkCopyResetTimer);
+      label.textContent = "Copied";
+      bulkCopyResetTimer = window.setTimeout(() => {
+        label.textContent = "Copy names";
+      }, 1100);
+    });
+  }
+  function bulkDownloadYAML(bar) {
+    if (!bar?.dataset.bulkHref) {
+      return;
+    }
+    const entries = roRowState2().selectedEntries();
+    if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
+      return;
+    }
+    const clusterPrefix = `${bar.dataset.bulkCluster || ""}/`;
+    const names = entries.map((entry) => {
+      if (bar.dataset.bulkAllns === "true" && entry.key.indexOf(clusterPrefix) === 0) {
+        return entry.key.slice(clusterPrefix.length);
+      }
+      return entry.name;
+    });
+    window.location.assign(`${bar.dataset.bulkHref}&names=${encodeURIComponent(names.join(","))}`);
+  }
+  function roRowState2() {
+    return window.roRowState;
+  }
+  var bulkBindings = [
+    {
+      event: "click",
+      selector: "#ro-bulk-download",
+      stop: true,
+      handler: (_event, matched) => {
+        bulkDownloadYAML(matched.closest("#ro-bulkbar"));
+        return true;
+      }
+    },
+    {
+      event: "click",
+      selector: "#ro-bulk-copy",
+      stop: true,
+      handler: (_event, matched) => {
+        bulkCopyNames(matched);
+        return true;
+      }
+    },
+    {
+      event: "click",
+      selector: "#ro-bulk-clear",
+      stop: true,
+      handler: () => {
+        clearRowState();
+        return true;
+      }
+    }
+  ];
+
   // internal/assets/src/js/columns.ts
   function getHtmx4() {
     return window.htmx;
@@ -2139,7 +2022,7 @@ ${piece}`;
       }
       owned.add(el.name);
       if (el.value) {
-        fields.push(el.name + "=" + encodeURIComponent(el.value));
+        fields.push(`${el.name}=${encodeURIComponent(el.value)}`);
       }
     });
     return mergeColParams(window.location.pathname, window.location.search, owned, fields);
@@ -2217,6 +2100,110 @@ ${piece}`;
     }
   ];
 
+  // internal/assets/src/js/context-menu.ts
+  var CTX_CLAMP_W = 220;
+  var CTX_CLAMP_H = 240;
+  function closeRowMenu() {
+    const menu = document.getElementById("ro-ctxmenu");
+    if (menu) {
+      menu.classList.remove("is-open");
+      menu.setAttribute("aria-hidden", "true");
+    }
+  }
+  function openRowMenu(tr, x, y) {
+    const menu = document.getElementById("ro-ctxmenu");
+    if (!menu) {
+      return;
+    }
+    const bind = (action, href) => {
+      const item = menu.querySelector(`[data-ctx="${action}"]`);
+      if (!item) {
+        return;
+      }
+      if (href) {
+        item.dataset.href = href;
+        item.hidden = false;
+      } else {
+        delete item.dataset.href;
+        item.hidden = true;
+      }
+    };
+    bind("open", tr.dataset.href || "");
+    bind("yaml", tr.dataset.yaml || "");
+    bind("logs", tr.dataset.logs || "");
+    bind("download", tr.dataset.download || "");
+    menu.dataset.name = tr.dataset.name || lastKeySegment(tr.dataset.key || "");
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - CTX_CLAMP_H))}px`;
+    menu.classList.add("is-open");
+    menu.setAttribute("aria-hidden", "false");
+  }
+  var contextMenuBindings = [
+    // Right-click on an identity row opens the menu; anywhere else closes ours
+    // and yields to the native menu.
+    {
+      event: "contextmenu",
+      handler: (event) => {
+        const target = event.target;
+        const tr = target ? target.closest("#resource-list-content tr[data-key]") : null;
+        if (!tr) {
+          closeRowMenu();
+          return;
+        }
+        event.preventDefault();
+        const me = event;
+        openRowMenu(tr, me.clientX, me.clientY);
+      }
+    },
+    // C2 step 1: a context-menu item -> act, then close. Copy stays on the page;
+    // the navigation items go through location.assign with the bound data-href.
+    // Download YAML is a Content-Disposition attachment, so assigning it
+    // downloads WITHOUT leaving the page. Returned in the monolith -> stop:true.
+    {
+      event: "click",
+      selector: "#ro-ctxmenu [data-ctx]",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        const item = matched;
+        const menu = item.closest("#ro-ctxmenu");
+        const name = menu?.dataset.name || "";
+        const href = item.dataset.href || "";
+        closeRowMenu();
+        if (item.dataset.ctx === "copy") {
+          roCopyText(name, () => {
+          });
+        } else if (href) {
+          window.location.assign(href);
+        }
+        return true;
+      }
+    },
+    // C2 step 2: ANY other click dismisses an open menu. UNCONDITIONAL and
+    // NON-stopping -- the click then FALLS THROUGH to the bulk + row-select
+    // bindings (bulk-actions.ts / row-selection.ts), so a click that lands on a
+    // row both dismisses the menu AND toggles selection (compound case 1). No
+    // selector (it runs on every click, like the monolith's step 2); closeRowMenu
+    // on a closed menu is a no-op. NO stop: a stop here would silently drop the
+    // selection while still passing a "menu closed" check.
+    {
+      event: "click",
+      handler: () => {
+        closeRowMenu();
+      }
+    },
+    // K2: Esc closes the context menu. Its own keydown branch (NO preventDefault),
+    // idempotent (closeRowMenu on a closed menu is a no-op).
+    {
+      event: "keydown",
+      handler: (event) => {
+        if (event.key === "Escape") {
+          closeRowMenu();
+        }
+      }
+    }
+  ];
+
   // internal/assets/src/js/keyboard.ts
   var PALETTE_ID = "ro-palette";
   function roRowState3() {
@@ -2224,7 +2211,7 @@ ${piece}`;
   }
   function keyboardTargetIsTextEntry(target) {
     const el = target;
-    if (!el || el.nodeType !== 1) {
+    if (el?.nodeType !== 1) {
       return false;
     }
     const tag = el.tagName;
@@ -2232,15 +2219,15 @@ ${piece}`;
   }
   function keyboardSurfaceBusy() {
     const palette = document.getElementById(PALETTE_ID);
-    if (palette && palette.classList.contains("open")) {
+    if (palette?.classList.contains("open")) {
       return true;
     }
     const menu = document.getElementById("ro-ctxmenu");
-    if (menu && menu.classList.contains("is-open")) {
+    if (menu?.classList.contains("is-open")) {
       return true;
     }
     const nsDropdown = document.getElementById("namespace-dropdown");
-    if (nsDropdown && nsDropdown.classList.contains("is-active")) {
+    if (nsDropdown?.classList.contains("is-active")) {
       return true;
     }
     return colsPopOpen();
@@ -2277,7 +2264,7 @@ ${piece}`;
         row = tr;
       }
     }
-    if (!row || !row.dataset.href) {
+    if (!row?.dataset.href) {
       return false;
     }
     window.location.assign(row.dataset.href);
@@ -2364,7 +2351,7 @@ ${piece}`;
         }
         if (e.key === "Enter") {
           const target = e.target;
-          if (target && target.closest && target.closest("a, button, summary")) {
+          if (target?.closest?.("a, button, summary")) {
             return;
           }
           if (openFocusedRow()) {
@@ -2374,6 +2361,644 @@ ${piece}`;
       }
     }
   ];
+
+  // internal/assets/src/js/logs.ts
+  function logsScrollToTail() {
+    const pre = document.querySelector("pre.ro-logpre");
+    if (pre) {
+      pre.scrollTop = pre.scrollHeight;
+    }
+  }
+  function logsPinTailIfFollowing() {
+    const follow = document.getElementById("logFollow");
+    if (follow && !follow.classList.contains("quiet")) {
+      logsScrollToTail();
+    }
+  }
+  function initLogsFollow() {
+    logsPinTailIfFollowing();
+  }
+  var logsBindings = [
+    // Logs Follow toggle (D25): the active accent "Following" sticks the stream
+    // to its tail; clicking flips to the quiet "Follow" (and back). Re-activating
+    // snaps the stream to the tail immediately. Pure class + label flips -- no
+    // request, the read-only floor is untouched. Kept its monolith early-return
+    // (stop:true).
+    {
+      event: "click",
+      selector: "#logFollow",
+      stop: true,
+      handler: (_event, matched) => {
+        const logFollow = matched;
+        const following = !logFollow.classList.toggle("quiet");
+        logFollow.setAttribute("aria-pressed", following ? "true" : "false");
+        const label = logFollow.querySelector(".follow-label");
+        if (label) {
+          label.textContent = following ? "Following" : "Follow";
+        }
+        if (following) {
+          logsScrollToTail();
+        }
+        return true;
+      }
+    },
+    // Logs display toggles (D25): CLIENT-SIDE only, no refetch. The timestamps
+    // checkbox shows/hides the .log-ts spans via the stream's `hide-ts` class.
+    // Both flips reflow the stream, so while Following is active the tail is
+    // re-pinned afterwards. The monolith #logTs branch early-returned (stop:true).
+    {
+      event: "change",
+      selector: "#logTs",
+      stop: true,
+      handler: (_event, matched) => {
+        const logTs = matched;
+        const pre = document.querySelector("pre.ro-logpre");
+        if (pre) {
+          pre.classList.toggle("hide-ts", !logTs.checked);
+          logsPinTailIfFollowing();
+        }
+        return true;
+      }
+    },
+    // The wrap checkbox toggles `wrap` (pre-wrap + break-word). In the monolith
+    // this was the LAST change branch (no branch follows it), so stop:true is the
+    // faithful mirror.
+    {
+      event: "change",
+      selector: "#logWrap",
+      stop: true,
+      handler: (_event, matched) => {
+        const logWrap = matched;
+        const pre = document.querySelector("pre.ro-logpre");
+        if (pre) {
+          pre.classList.toggle("wrap", logWrap.checked);
+          logsPinTailIfFollowing();
+        }
+        return true;
+      }
+    }
+  ];
+
+  // internal/assets/src/js/collapse-hash.ts
+  function parseCollapsedNames(hash) {
+    if (!hash) {
+      return [];
+    }
+    const names = [];
+    hash.replace(/^#/, "").split(";").forEach((param) => {
+      const keyVal = param.split("=");
+      if (keyVal[0] === "collapsed" && keyVal[1]) {
+        keyVal[1].split(",").forEach((name) => {
+          if (name) {
+            names.push(name);
+          }
+        });
+      }
+    });
+    return names;
+  }
+
+  // internal/assets/src/js/yaml-folds.ts
+  function yamlEffectiveIndent(text) {
+    const stripped = text.replace(/^\n+/, "");
+    let i = 0;
+    while (i < stripped.length && stripped[i] === " ") {
+      i++;
+    }
+    const rest = stripped.slice(i);
+    if (rest === "-" || rest.startsWith("- ") || rest.startsWith("-	")) {
+      return i + 2;
+    }
+    return i;
+  }
+  function yamlCodeText(codeCell) {
+    if (!codeCell.querySelector(".ro-fold-toggle, .ro-fold-note")) {
+      return codeCell.textContent || "";
+    }
+    const clone = codeCell.cloneNode(true);
+    clone.querySelectorAll(".ro-fold-toggle, .ro-fold-note").forEach((el) => {
+      el.remove();
+    });
+    return clone.textContent || "";
+  }
+  function toggleYamlFold(toggle) {
+    const id = toggle.dataset.fold;
+    if (!id) {
+      return;
+    }
+    const pre = toggle.closest("pre");
+    if (!pre) {
+      return;
+    }
+    const folded = !toggle.classList.contains("is-folded");
+    toggle.classList.toggle("is-folded", folded);
+    toggle.setAttribute("aria-expanded", folded ? "false" : "true");
+    pre.querySelectorAll("[data-fold-of]").forEach((line) => {
+      const owners = (line.dataset.foldOf || "").split(" ");
+      if (owners.indexOf(id) !== -1) {
+        line.classList.toggle("ro-line-folded", folded);
+      }
+    });
+  }
+  function injectFoldControls(lineSpan, bodyCount) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ro-fold-toggle";
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.setAttribute("aria-label", "Toggle block");
+    toggle.dataset.fold = lineSpan.id;
+    const note = document.createElement("span");
+    note.className = "ro-fold-note";
+    const lineWord = bodyCount === 1 ? "line" : "lines";
+    note.textContent = ` … ${bodyCount} ${lineWord}`;
+    const anchor = lineSpan.querySelector("a");
+    if (anchor?.nextSibling) {
+      lineSpan.insertBefore(toggle, anchor.nextSibling);
+    } else if (anchor) {
+      lineSpan.appendChild(toggle);
+    } else {
+      lineSpan.insertBefore(toggle, lineSpan.firstChild);
+    }
+    const last = lineSpan.lastChild;
+    if (last && last.nodeType === 3 && (last.textContent || "").indexOf("\n") !== -1) {
+      lineSpan.insertBefore(note, last);
+    } else {
+      lineSpan.appendChild(note);
+    }
+  }
+  function buildYamlFolds() {
+    document.querySelectorAll(".highlighttable td.code pre").forEach((pre) => {
+      if (pre.dataset.roFolds) {
+        return;
+      }
+      try {
+        const lines = Array.prototype.filter.call(
+          pre.children,
+          (el) => el.tagName === "SPAN" && el.id && el.id.indexOf("line-") !== -1
+        );
+        pre.dataset.roFolds = "1";
+        if (lines.length < 3) {
+          return;
+        }
+        const indents = lines.map((el) => yamlEffectiveIndent(el.textContent || ""));
+        const isBlank = lines.map((el) => (el.textContent || "").trim() === "");
+        for (let i = 0; i < lines.length; i++) {
+          if (isBlank[i]) {
+            continue;
+          }
+          let j = i + 1;
+          while (j < lines.length && isBlank[j]) {
+            j++;
+          }
+          if (j >= lines.length || indents[j] <= indents[i]) {
+            continue;
+          }
+          let end = i + 1;
+          let bodyCount = 0;
+          while (end < lines.length) {
+            if (isBlank[end]) {
+              end++;
+              continue;
+            }
+            if (indents[end] > indents[i]) {
+              const cur = lines[end];
+              cur.dataset.foldOf = cur.dataset.foldOf ? `${cur.dataset.foldOf} ${lines[i].id}` : lines[i].id;
+              bodyCount++;
+              end++;
+            } else {
+              break;
+            }
+          }
+          if (bodyCount === 0) {
+            continue;
+          }
+          injectFoldControls(lines[i], bodyCount);
+        }
+      } catch (_e) {
+      }
+    });
+  }
+  function highlightYamlLine() {
+    const fragment = location.hash;
+    if (!fragment) {
+      return;
+    }
+    document.querySelectorAll("pre > span.yaml-line-highlight").forEach((el) => {
+      el.classList.remove("yaml-line-highlight");
+    });
+    const element = document.getElementById(`yaml-${fragment.substring(1)}`);
+    if (element) {
+      element.classList.add("yaml-line-highlight");
+      element.scrollIntoView({ block: "center" });
+    }
+  }
+  var foldBindings = [
+    // .ro-fold-toggle (NESTED YAML block fold): toggle the deeper-indented child
+    // lines of a `key:`/`- key:` block in place. Matched BEFORE the section-fold
+    // + gutter-anchor handlers (registration order) so a nested-fold click never
+    // collapses the whole section or jumps a line anchor. The monolith called
+    // preventDefault + stopPropagation + return; we keep stopPropagation (inert
+    // for document siblings per the inventory, but preserved 1:1) and stop:true
+    // mirrors the early return.
+    {
+      event: "click",
+      selector: ".ro-fold-toggle",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleYamlFold(matched);
+        return true;
+      }
+    },
+    // YAML line-number anchors (.linenos a): set the URL hash to the clicked
+    // line, re-highlight, and suppress the default anchor jump. In the monolith
+    // this branch sits AFTER the section-fold branch; here it shares the leaf
+    // list and the section-fold handler (misc-ui) is registered separately. The
+    // two never co-match (an anchor in the gutter is not a section title), so
+    // relative order is immaterial -- but it keeps its own early-return.
+    {
+      event: "click",
+      selector: ".linenos a",
+      stop: true,
+      handler: (event, matched) => {
+        const anchor = matched;
+        location.hash = `#${anchor.href.split("#")[1]}`;
+        highlightYamlLine();
+        event.preventDefault();
+        return true;
+      }
+    }
+  ];
+
+  // internal/assets/src/js/misc-ui.ts
+  function collapseSectionsFromHash() {
+    parseCollapsedNames(document.location.hash).forEach((name) => {
+      document.querySelectorAll(`main .collapsible[data-name="${CSS.escape(name)}"]`).forEach((el) => {
+        el.classList.add("is-collapsed");
+      });
+    });
+  }
+  var miscBindings = [
+    // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
+    // sidebar by toggling `.is-active` on `.ro-sidebar`. No-op when no sidebar is
+    // present (e.g. the Clusters entry page). Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: ".menu-toggle",
+      stop: true,
+      handler: (event) => {
+        event.preventDefault();
+        const sidebar = document.querySelector(".ro-sidebar");
+        if (sidebar) {
+          sidebar.classList.toggle("is-active");
+        }
+        return true;
+      }
+    },
+    // .ro-copy-btn (per-section YAML copy): copy THIS section's raw YAML to the
+    // clipboard via navigator.clipboard.writeText -- CSP-clean. The raw text is
+    // read from the section's Pygments `td.code` cell (the gutter lives in a
+    // separate `td.linenos`), with any injected fold controls stripped first
+    // (yamlCodeText) so the copy is the full source YAML in any fold state. The
+    // button briefly flips its label to "copied". Matched (and stop:true) BEFORE
+    // the section-fold binding so a copy click never toggles the section fold.
+    {
+      event: "click",
+      selector: ".ro-copy-btn",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        const copyBtn = matched;
+        const section = copyBtn.closest(".collapsible");
+        const codeCell = section?.querySelector(".highlighttable td.code");
+        const text = codeCell ? yamlCodeText(codeCell) : "";
+        const label = copyBtn.querySelector(".ro-copy-text");
+        const done = (ok) => {
+          if (!label) {
+            return;
+          }
+          label.textContent = ok ? "copied" : "press ⌘C";
+          window.setTimeout(() => {
+            label.textContent = "copy";
+          }, 1500);
+        };
+        if (navigator.clipboard?.writeText && text) {
+          navigator.clipboard.writeText(text).then(
+            () => done(true),
+            () => done(false)
+          );
+        } else {
+          done(false);
+        }
+        return true;
+      }
+    },
+    // .collapsible h4.title: toggle `is-collapsed` on the section and sync the
+    // URL fragment (collapsed=<names>) with all currently-collapsed sections. The
+    // section is resolved via closest('.collapsible') (NOT parentElement) so a
+    // Unit-10 YAML card (h4.title nested in .ro-card-head) folds the right node.
+    // Registered AFTER the copy binding (copy's stop:true short-circuits a copy
+    // click), reproducing the monolith order. Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: "main .collapsible h4.title",
+      stop: true,
+      handler: (_event, matched) => {
+        const section = matched.closest(".collapsible");
+        if (!section) {
+          return true;
+        }
+        section.classList.toggle("is-collapsed");
+        const names = [];
+        document.querySelectorAll("main .is-collapsed").forEach((el) => {
+          const name = el.dataset.name;
+          if (name !== void 0) {
+            names.push(name);
+          }
+        });
+        if (names.length) {
+          document.location.hash = `collapsed=${names.join(",")}`;
+        } else {
+          window.history.replaceState(
+            null,
+            "",
+            window.location.pathname + window.location.search
+          );
+        }
+        return true;
+      }
+    },
+    // Namespace switch (D9): picking a namespace in the topbar dropdown records it
+    // as this cluster's last-used namespace in the ro_prefs cookie (server-read
+    // only, for cluster-entry hrefs -- never a redirect). The click is
+    // deliberately NOT prevented; the boosted navigation proceeds. The cookie
+    // write rides the prefs.ts surface directly (the same seam legacy uses).
+    // Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: "#namespace-dropdown .namespace-item",
+      stop: true,
+      handler: (_event, matched) => {
+        const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(
+          matched.getAttribute("href") || ""
+        );
+        if (hrefMatch) {
+          roPrefsSetNamespace(
+            decodeURIComponent(hrefMatch[1]),
+            decodeURIComponent(hrefMatch[2])
+          );
+        }
+        return true;
+      }
+    },
+    // #namespace-dropdown .context-trigger: toggle `is-active`; focus the
+    // searchbox when opening. Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: "#namespace-dropdown .context-trigger",
+      stop: true,
+      handler: (_event, matched) => {
+        const nsDropdown = matched.closest("#namespace-dropdown");
+        if (!nsDropdown) {
+          return true;
+        }
+        nsDropdown.classList.toggle("is-active");
+        if (nsDropdown.classList.contains("is-active")) {
+          const searchbox = document.getElementById("namespace-searchbox");
+          if (searchbox) {
+            searchbox.focus();
+          }
+        }
+        return true;
+      }
+    },
+    // #namespace-searchbox input: filter the .namespace-item links by
+    // case-insensitive substring. Terminal branch in the monolith input listener
+    // (no branch followed it), reproduced as stop:true.
+    {
+      event: "input",
+      selector: "#namespace-searchbox",
+      stop: true,
+      handler: (_event, matched) => {
+        const filterText = matched.value.toLowerCase();
+        document.querySelectorAll(".namespace-item").forEach((element) => {
+          const text = (element.innerText || "").toLowerCase();
+          if (text.indexOf(filterText) === -1) {
+            element.classList.add("is-hidden");
+          } else {
+            element.classList.remove("is-hidden");
+          }
+        });
+        return true;
+      }
+    },
+    // #namespace-searchbox keyup: Enter selects the first still-visible match.
+    // Sole branch of the monolith keyup listener; stop:true mirrors its return.
+    {
+      event: "keyup",
+      selector: "#namespace-searchbox",
+      stop: true,
+      handler: (event) => {
+        if (event.key !== "Enter") {
+          return true;
+        }
+        const elements = document.querySelectorAll(".namespace-item");
+        for (let i = 0; i < elements.length; i++) {
+          if (!elements[i].classList.contains("is-hidden")) {
+            elements[i].click();
+            break;
+          }
+        }
+        return true;
+      }
+    },
+    // In-cell +N overflow (SPEC §4.9/§4.10): the `.ro-chip.more[data-more]` button
+    // toggles `.expanded` on its OWN `.ro-chips` strip, revealing the `.xtra` chips
+    // in place (the button face flips +N <-> "less" in CSS). Delegated so it
+    // survives every morph; aria-expanded mirrors the state. A refresh morph
+    // re-renders the strip collapsed (server truth) -- expansion is a transient
+    // peek, not persisted state. Was a trailing branch of the monolith big click
+    // listener (C1); kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: "[data-more]",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        const chips = matched.closest(".ro-chips");
+        if (chips) {
+          const expanded = chips.classList.toggle("expanded");
+          matched.setAttribute("aria-expanded", expanded ? "true" : "false");
+        }
+        return true;
+      }
+    },
+    // Long-annotation toggle (SPEC §7.15): a >120-char annotation renders as a
+    // collapsed `key · size` button + a hidden scrollable <pre> payload. The
+    // delegated click flips the [hidden] attribute on the sibling .anno-pre,
+    // mirrors the state into aria-expanded, and rotates the chevron via the .open
+    // class -- CSP-clean and morph-safe (server truth re-renders collapsed; a
+    // transient peek, like the chip overflow above). C1 trailing branch;
+    // early-return (stop:true).
+    {
+      event: "click",
+      selector: "[data-annolong]",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        const annoToggle = matched;
+        const pre = annoToggle.parentElement ? annoToggle.parentElement.querySelector(".anno-pre") : null;
+        if (pre) {
+          const open = pre.hidden !== false;
+          pre.hidden = !open;
+          annoToggle.setAttribute("aria-expanded", open ? "true" : "false");
+          annoToggle.classList.toggle("open", open);
+        }
+        return true;
+      }
+    },
+    // .toggle-tools: toggle `is-active` on the control itself and on the element
+    // named by its `data-target`. C1 trailing branch; early-return (stop:true).
+    {
+      event: "click",
+      selector: ".toggle-tools",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        const toggle = matched;
+        toggle.classList.toggle("is-active");
+        const targetEl = toggle.dataset.target ? document.getElementById(toggle.dataset.target) : null;
+        if (targetEl) {
+          targetEl.classList.toggle("is-active");
+        }
+        return true;
+      }
+    },
+    // Search-button enable (change): a checkbox carries `data-toggle-button="<id>"`.
+    // The named button is enabled iff any checkbox sharing that same value is
+    // checked, else disabled. Was the lead branch of the monolith change listener;
+    // early-return (stop:true).
+    {
+      event: "change",
+      selector: "input[data-toggle-button]",
+      stop: true,
+      handler: (_event, matched) => {
+        const buttonId = matched.dataset.toggleButton;
+        const button = buttonId ? document.getElementById(buttonId) : null;
+        if (button) {
+          const anyChecked = document.querySelectorAll(`input[data-toggle-button="${buttonId}"]:checked`).length > 0;
+          button.disabled = !anyChecked;
+        }
+        return true;
+      }
+    },
+    // form.tools-form (the v1 multi-type tools form): on submit, blank the `name`
+    // of empty inputs so they do not become empty query parameters in the
+    // resulting GET URL. Sole branch of the monolith submit listener; it did NOT
+    // early-return (the form still submits), so this binding does NOT stop.
+    {
+      event: "submit",
+      selector: "form.tools-form",
+      handler: (_event, matched) => {
+        const form = matched;
+        Array.prototype.slice.call(form.getElementsByTagName("input")).forEach((input) => {
+          if (input.name && !input.value) {
+            input.name = "";
+          }
+        });
+      }
+    }
+  ];
+
+  // internal/assets/src/js/palette-rank.ts
+  function roFuzzyScore(query, text) {
+    const source = String(text || "");
+    const q = String(query || "").toLowerCase();
+    const t = source.toLowerCase();
+    if (!q) {
+      return 0;
+    }
+    let from = 0;
+    let first = -1;
+    let last = -1;
+    for (let i = 0; i < q.length; i++) {
+      const at = t.indexOf(q[i], from);
+      if (at === -1) {
+        return -1;
+      }
+      if (first === -1) {
+        first = at;
+      }
+      last = at;
+      from = at + 1;
+    }
+    const gaps = last - first + 1 - q.length;
+    const camelHump = source[first] >= "A" && source[first] <= "Z" && !(source[first - 1] >= "A" && source[first - 1] <= "Z");
+    const wordStart = first === 0 || " -_./:".indexOf(t[first - 1]) !== -1 || camelHump;
+    let tier = 2;
+    if (gaps === 0 && first === 0) {
+      tier = 0;
+    } else if (gaps === 0 && wordStart) {
+      tier = 1;
+    }
+    return tier * 1e5 + gaps * 100 + Math.min(first, 99);
+  }
+  function rankPaletteEntries(list, query, labelOf) {
+    if (!query) {
+      return list.slice();
+    }
+    const scored = [];
+    list.forEach((entry) => {
+      const score = roFuzzyScore(query, labelOf(entry));
+      if (score >= 0) {
+        scored.push({ entry, score });
+      }
+    });
+    scored.sort((a, b) => a.score - b.score);
+    return scored.map((it) => it.entry);
+  }
+  function paletteRecentTarget(entry) {
+    return entry.href ? `href:${entry.href}` : `action:${entry.action}`;
+  }
+  function dedupeRecents(prior, entry, max) {
+    const kept = prior.filter((it) => paletteRecentTarget(it) !== paletteRecentTarget(entry));
+    kept.unshift(entry);
+    return kept.slice(0, max);
+  }
+  var FEED_GROUPS = [
+    { title: "Resource types", key: "kinds" },
+    { title: "Namespaces", key: "namespaces" },
+    { title: "Clusters", key: "clusters" },
+    { title: "Actions", key: "actions" }
+  ];
+  function feedEntryLabel(entry, key) {
+    if (key === "kinds") {
+      return String(entry.kind || entry.plural || "");
+    }
+    return String(entry.name || entry.label || "");
+  }
+  function buildPaletteGroups(query, feed, recents, pageObjects) {
+    const q = (query || "").trim();
+    const groups = [];
+    if (q) {
+      groups.push({ title: "Everywhere", key: "everywhere", entries: [{ query: q }] });
+    } else if (recents.length > 0) {
+      groups.push({ title: "Recents", key: "recents", entries: recents.slice() });
+    }
+    const objects = rankPaletteEntries(pageObjects, q, (o) => o.name);
+    if (objects.length > 0) {
+      groups.push({ title: "On this page", key: "objects", entries: objects });
+    }
+    FEED_GROUPS.forEach((group) => {
+      const list = feed[group.key] || [];
+      const ranked = rankPaletteEntries(list, q, (entry) => feedEntryLabel(entry, group.key));
+      if (ranked.length > 0) {
+        groups.push({ title: group.title, key: group.key, entries: ranked });
+      }
+    });
+    return groups;
+  }
 
   // internal/assets/src/js/palette.ts
   var PALETTE_ID2 = "ro-palette";
@@ -2437,7 +3062,9 @@ ${piece}`;
       if (!Array.isArray(list)) {
         return [];
       }
-      return list.filter((entry) => entry && typeof entry === "object" && typeof entry.label === "string" && entry.label !== "" && (typeof entry.href === "string" && paletteHrefSafe(entry.href) !== "" || typeof entry.action === "string" && entry.action !== "")).slice(0, PALETTE_RECENTS_MAX);
+      return list.filter(
+        (entry) => entry && typeof entry === "object" && typeof entry.label === "string" && entry.label !== "" && (typeof entry.href === "string" && paletteHrefSafe(entry.href) !== "" || typeof entry.action === "string" && entry.action !== "")
+      ).slice(0, PALETTE_RECENTS_MAX);
     } catch {
       return [];
     }
@@ -2497,7 +3124,7 @@ ${piece}`;
       meta.textContent = String(entry.group || "core");
       row.appendChild(meta);
       const scope = document.createElement("span");
-      scope.className = "pal-scope " + (entry.namespaced ? "ns" : "cluster");
+      scope.className = `pal-scope ${entry.namespaced ? "ns" : "cluster"}`;
       scope.textContent = entry.namespaced ? "namespaced" : "cluster";
       row.appendChild(scope);
     }
@@ -2516,15 +3143,15 @@ ${piece}`;
     row.className = "ro-pal-item";
     row.setAttribute("role", "option");
     row.setAttribute("aria-selected", "false");
-    const glyph = document.querySelector("#" + PALETTE_ID2 + " .ro-pal-search .ico");
+    const glyph = document.querySelector(`#${PALETTE_ID2} .ro-pal-search .ico`);
     if (glyph) {
       row.appendChild(glyph.cloneNode(true));
     }
     const label = document.createElement("span");
     label.className = "pal-label";
-    label.textContent = "Search all clusters for “" + query + "”";
+    label.textContent = `Search all clusters for “${query}”`;
     row.appendChild(label);
-    row.dataset.href = "/search?q=" + encodeURIComponent(query);
+    row.dataset.href = `/search?q=${encodeURIComponent(query)}`;
     row.dataset.label = label.textContent;
     return row;
   }
@@ -2586,7 +3213,7 @@ ${piece}`;
     row.appendChild(label);
     if (o.status) {
       const st = document.createElement("span");
-      st.className = "pal-status" + (o.tone ? " " + String(o.tone) : "");
+      st.className = `pal-status${o.tone ? ` ${String(o.tone)}` : ""}`;
       st.textContent = String(o.status);
       row.appendChild(st);
     }
@@ -2625,7 +3252,12 @@ ${piece}`;
     };
     const groups = buildPaletteGroups(
       q,
-      { clusters: data.clusters, namespaces: data.namespaces, kinds: data.kinds, actions: data.actions },
+      {
+        clusters: data.clusters,
+        namespaces: data.namespaces,
+        kinds: data.kinds,
+        actions: data.actions
+      },
       readPaletteRecents(),
       harvestPageObjects()
     );
@@ -2784,7 +3416,7 @@ ${piece}`;
     // NOT close it -- the monolith's exact `target.id === PALETTE_ID` test.
     {
       event: "click",
-      selector: "#" + PALETTE_ID2,
+      selector: `#${PALETTE_ID2}`,
       stop: true,
       handler: (event) => {
         if (event.target.id === PALETTE_ID2) {
@@ -2842,7 +3474,7 @@ ${piece}`;
           return;
         }
         const palette = document.getElementById(PALETTE_ID2);
-        if (!palette || !palette.classList.contains("open")) {
+        if (!palette?.classList.contains("open")) {
           return;
         }
         if (e.key === "Escape") {
@@ -2885,450 +3517,6 @@ ${piece}`;
     }
   ];
 
-  // internal/assets/src/js/yaml-folds.ts
-  function yamlEffectiveIndent(text) {
-    const stripped = text.replace(/^\n+/, "");
-    let i = 0;
-    while (i < stripped.length && stripped[i] === " ") {
-      i++;
-    }
-    const rest = stripped.slice(i);
-    if (rest === "-" || rest.startsWith("- ") || rest.startsWith("-	")) {
-      return i + 2;
-    }
-    return i;
-  }
-  function yamlCodeText(codeCell) {
-    if (!codeCell.querySelector(".ro-fold-toggle, .ro-fold-note")) {
-      return codeCell.textContent || "";
-    }
-    const clone = codeCell.cloneNode(true);
-    clone.querySelectorAll(".ro-fold-toggle, .ro-fold-note").forEach((el) => {
-      el.remove();
-    });
-    return clone.textContent || "";
-  }
-  function toggleYamlFold(toggle) {
-    const id = toggle.dataset.fold;
-    if (!id) {
-      return;
-    }
-    const pre = toggle.closest("pre");
-    if (!pre) {
-      return;
-    }
-    const folded = !toggle.classList.contains("is-folded");
-    toggle.classList.toggle("is-folded", folded);
-    toggle.setAttribute("aria-expanded", folded ? "false" : "true");
-    pre.querySelectorAll("[data-fold-of]").forEach((line) => {
-      const owners = (line.dataset.foldOf || "").split(" ");
-      if (owners.indexOf(id) !== -1) {
-        line.classList.toggle("ro-line-folded", folded);
-      }
-    });
-  }
-  function injectFoldControls(lineSpan, bodyCount) {
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "ro-fold-toggle";
-    toggle.setAttribute("aria-expanded", "true");
-    toggle.setAttribute("aria-label", "Toggle block");
-    toggle.dataset.fold = lineSpan.id;
-    const note = document.createElement("span");
-    note.className = "ro-fold-note";
-    const lineWord = bodyCount === 1 ? "line" : "lines";
-    note.textContent = ` … ${bodyCount} ${lineWord}`;
-    const anchor = lineSpan.querySelector("a");
-    if (anchor && anchor.nextSibling) {
-      lineSpan.insertBefore(toggle, anchor.nextSibling);
-    } else if (anchor) {
-      lineSpan.appendChild(toggle);
-    } else {
-      lineSpan.insertBefore(toggle, lineSpan.firstChild);
-    }
-    const last = lineSpan.lastChild;
-    if (last && last.nodeType === 3 && (last.textContent || "").indexOf("\n") !== -1) {
-      lineSpan.insertBefore(note, last);
-    } else {
-      lineSpan.appendChild(note);
-    }
-  }
-  function buildYamlFolds() {
-    document.querySelectorAll(".highlighttable td.code pre").forEach((pre) => {
-      if (pre.dataset.roFolds) {
-        return;
-      }
-      try {
-        const lines = Array.prototype.filter.call(
-          pre.children,
-          (el) => el.tagName === "SPAN" && el.id && el.id.indexOf("line-") !== -1
-        );
-        pre.dataset.roFolds = "1";
-        if (lines.length < 3) {
-          return;
-        }
-        const indents = lines.map((el) => yamlEffectiveIndent(el.textContent || ""));
-        const isBlank = lines.map((el) => (el.textContent || "").trim() === "");
-        for (let i = 0; i < lines.length; i++) {
-          if (isBlank[i]) {
-            continue;
-          }
-          let j = i + 1;
-          while (j < lines.length && isBlank[j]) {
-            j++;
-          }
-          if (j >= lines.length || indents[j] <= indents[i]) {
-            continue;
-          }
-          let end = i + 1;
-          let bodyCount = 0;
-          while (end < lines.length) {
-            if (isBlank[end]) {
-              end++;
-              continue;
-            }
-            if (indents[end] > indents[i]) {
-              const cur = lines[end];
-              cur.dataset.foldOf = cur.dataset.foldOf ? `${cur.dataset.foldOf} ${lines[i].id}` : lines[i].id;
-              bodyCount++;
-              end++;
-            } else {
-              break;
-            }
-          }
-          if (bodyCount === 0) {
-            continue;
-          }
-          injectFoldControls(lines[i], bodyCount);
-        }
-      } catch (e) {
-      }
-    });
-  }
-  function highlightYamlLine() {
-    const fragment = location.hash;
-    if (!fragment) {
-      return;
-    }
-    document.querySelectorAll("pre > span.yaml-line-highlight").forEach((el) => {
-      el.classList.remove("yaml-line-highlight");
-    });
-    const element = document.getElementById(`yaml-${fragment.substring(1)}`);
-    if (element) {
-      element.classList.add("yaml-line-highlight");
-      element.scrollIntoView({ block: "center" });
-    }
-  }
-  var foldBindings = [
-    // .ro-fold-toggle (NESTED YAML block fold): toggle the deeper-indented child
-    // lines of a `key:`/`- key:` block in place. Matched BEFORE the section-fold
-    // + gutter-anchor handlers (registration order) so a nested-fold click never
-    // collapses the whole section or jumps a line anchor. The monolith called
-    // preventDefault + stopPropagation + return; we keep stopPropagation (inert
-    // for document siblings per the inventory, but preserved 1:1) and stop:true
-    // mirrors the early return.
-    {
-      event: "click",
-      selector: ".ro-fold-toggle",
-      stop: true,
-      handler: (event, matched) => {
-        event.preventDefault();
-        event.stopPropagation();
-        toggleYamlFold(matched);
-        return true;
-      }
-    },
-    // YAML line-number anchors (.linenos a): set the URL hash to the clicked
-    // line, re-highlight, and suppress the default anchor jump. In the monolith
-    // this branch sits AFTER the section-fold branch; here it shares the leaf
-    // list and the section-fold handler (misc-ui) is registered separately. The
-    // two never co-match (an anchor in the gutter is not a section title), so
-    // relative order is immaterial -- but it keeps its own early-return.
-    {
-      event: "click",
-      selector: ".linenos a",
-      stop: true,
-      handler: (event, matched) => {
-        const anchor = matched;
-        location.hash = `#${anchor.href.split("#")[1]}`;
-        highlightYamlLine();
-        event.preventDefault();
-        return true;
-      }
-    }
-  ];
-
-  // internal/assets/src/js/logs.ts
-  function logsScrollToTail() {
-    const pre = document.querySelector("pre.ro-logpre");
-    if (pre) {
-      pre.scrollTop = pre.scrollHeight;
-    }
-  }
-  function logsPinTailIfFollowing() {
-    const follow = document.getElementById("logFollow");
-    if (follow && !follow.classList.contains("quiet")) {
-      logsScrollToTail();
-    }
-  }
-  function initLogsFollow() {
-    logsPinTailIfFollowing();
-  }
-  var logsBindings = [
-    // Logs Follow toggle (D25): the active accent "Following" sticks the stream
-    // to its tail; clicking flips to the quiet "Follow" (and back). Re-activating
-    // snaps the stream to the tail immediately. Pure class + label flips -- no
-    // request, the read-only floor is untouched. Kept its monolith early-return
-    // (stop:true).
-    {
-      event: "click",
-      selector: "#logFollow",
-      stop: true,
-      handler: (_event, matched) => {
-        const logFollow = matched;
-        const following = !logFollow.classList.toggle("quiet");
-        logFollow.setAttribute("aria-pressed", following ? "true" : "false");
-        const label = logFollow.querySelector(".follow-label");
-        if (label) {
-          label.textContent = following ? "Following" : "Follow";
-        }
-        if (following) {
-          logsScrollToTail();
-        }
-        return true;
-      }
-    },
-    // Logs display toggles (D25): CLIENT-SIDE only, no refetch. The timestamps
-    // checkbox shows/hides the .log-ts spans via the stream's `hide-ts` class.
-    // Both flips reflow the stream, so while Following is active the tail is
-    // re-pinned afterwards. The monolith #logTs branch early-returned (stop:true).
-    {
-      event: "change",
-      selector: "#logTs",
-      stop: true,
-      handler: (_event, matched) => {
-        const logTs = matched;
-        const pre = document.querySelector("pre.ro-logpre");
-        if (pre) {
-          pre.classList.toggle("hide-ts", !logTs.checked);
-          logsPinTailIfFollowing();
-        }
-        return true;
-      }
-    },
-    // The wrap checkbox toggles `wrap` (pre-wrap + break-word). In the monolith
-    // this was the LAST change branch (no branch follows it), so stop:true is the
-    // faithful mirror.
-    {
-      event: "change",
-      selector: "#logWrap",
-      stop: true,
-      handler: (_event, matched) => {
-        const logWrap = matched;
-        const pre = document.querySelector("pre.ro-logpre");
-        if (pre) {
-          pre.classList.toggle("wrap", logWrap.checked);
-          logsPinTailIfFollowing();
-        }
-        return true;
-      }
-    }
-  ];
-
-  // internal/assets/src/js/collapse-hash.ts
-  function parseCollapsedNames(hash) {
-    if (!hash) {
-      return [];
-    }
-    const names = [];
-    hash.replace(/^#/, "").split(";").forEach((param) => {
-      const keyVal = param.split("=");
-      if (keyVal[0] === "collapsed" && keyVal[1]) {
-        keyVal[1].split(",").forEach((name) => {
-          if (name) {
-            names.push(name);
-          }
-        });
-      }
-    });
-    return names;
-  }
-
-  // internal/assets/src/js/misc-ui.ts
-  function collapseSectionsFromHash() {
-    parseCollapsedNames(document.location.hash).forEach((name) => {
-      document.querySelectorAll(`main .collapsible[data-name="${CSS.escape(name)}"]`).forEach((el) => {
-        el.classList.add("is-collapsed");
-      });
-    });
-  }
-  var miscBindings = [
-    // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
-    // sidebar by toggling `.is-active` on `.ro-sidebar`. No-op when no sidebar is
-    // present (e.g. the Clusters entry page). Kept its early-return (stop:true).
-    {
-      event: "click",
-      selector: ".menu-toggle",
-      stop: true,
-      handler: (event) => {
-        event.preventDefault();
-        const sidebar = document.querySelector(".ro-sidebar");
-        if (sidebar) {
-          sidebar.classList.toggle("is-active");
-        }
-        return true;
-      }
-    },
-    // .ro-copy-btn (per-section YAML copy): copy THIS section's raw YAML to the
-    // clipboard via navigator.clipboard.writeText -- CSP-clean. The raw text is
-    // read from the section's Pygments `td.code` cell (the gutter lives in a
-    // separate `td.linenos`), with any injected fold controls stripped first
-    // (yamlCodeText) so the copy is the full source YAML in any fold state. The
-    // button briefly flips its label to "copied". Matched (and stop:true) BEFORE
-    // the section-fold binding so a copy click never toggles the section fold.
-    {
-      event: "click",
-      selector: ".ro-copy-btn",
-      stop: true,
-      handler: (event, matched) => {
-        event.preventDefault();
-        const copyBtn = matched;
-        const section = copyBtn.closest(".collapsible");
-        const codeCell = section && section.querySelector(".highlighttable td.code");
-        const text = codeCell ? yamlCodeText(codeCell) : "";
-        const label = copyBtn.querySelector(".ro-copy-text");
-        const done = (ok) => {
-          if (!label) {
-            return;
-          }
-          label.textContent = ok ? "copied" : "press ⌘C";
-          window.setTimeout(() => {
-            label.textContent = "copy";
-          }, 1500);
-        };
-        if (navigator.clipboard && navigator.clipboard.writeText && text) {
-          navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
-        } else {
-          done(false);
-        }
-        return true;
-      }
-    },
-    // .collapsible h4.title: toggle `is-collapsed` on the section and sync the
-    // URL fragment (collapsed=<names>) with all currently-collapsed sections. The
-    // section is resolved via closest('.collapsible') (NOT parentElement) so a
-    // Unit-10 YAML card (h4.title nested in .ro-card-head) folds the right node.
-    // Registered AFTER the copy binding (copy's stop:true short-circuits a copy
-    // click), reproducing the monolith order. Kept its early-return (stop:true).
-    {
-      event: "click",
-      selector: "main .collapsible h4.title",
-      stop: true,
-      handler: (_event, matched) => {
-        const section = matched.closest(".collapsible");
-        if (!section) {
-          return true;
-        }
-        section.classList.toggle("is-collapsed");
-        const names = [];
-        document.querySelectorAll("main .is-collapsed").forEach((el) => {
-          const name = el.dataset.name;
-          if (name !== void 0) {
-            names.push(name);
-          }
-        });
-        if (names.length) {
-          document.location.hash = `collapsed=${names.join(",")}`;
-        } else {
-          window.history.replaceState(null, "", window.location.pathname + window.location.search);
-        }
-        return true;
-      }
-    },
-    // Namespace switch (D9): picking a namespace in the topbar dropdown records it
-    // as this cluster's last-used namespace in the ro_prefs cookie (server-read
-    // only, for cluster-entry hrefs -- never a redirect). The click is
-    // deliberately NOT prevented; the boosted navigation proceeds. The cookie
-    // write rides the prefs.ts surface directly (the same seam legacy uses).
-    // Kept its early-return (stop:true).
-    {
-      event: "click",
-      selector: "#namespace-dropdown .namespace-item",
-      stop: true,
-      handler: (_event, matched) => {
-        const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(matched.getAttribute("href") || "");
-        if (hrefMatch) {
-          roPrefsSetNamespace(
-            decodeURIComponent(hrefMatch[1]),
-            decodeURIComponent(hrefMatch[2])
-          );
-        }
-        return true;
-      }
-    },
-    // #namespace-dropdown .context-trigger: toggle `is-active`; focus the
-    // searchbox when opening. Kept its early-return (stop:true).
-    {
-      event: "click",
-      selector: "#namespace-dropdown .context-trigger",
-      stop: true,
-      handler: (_event, matched) => {
-        const nsDropdown = matched.closest("#namespace-dropdown");
-        if (!nsDropdown) {
-          return true;
-        }
-        nsDropdown.classList.toggle("is-active");
-        if (nsDropdown.classList.contains("is-active")) {
-          const searchbox = document.getElementById("namespace-searchbox");
-          if (searchbox) {
-            searchbox.focus();
-          }
-        }
-        return true;
-      }
-    },
-    // #namespace-searchbox input: filter the .namespace-item links by
-    // case-insensitive substring. Terminal branch in the monolith input listener
-    // (no branch followed it), reproduced as stop:true.
-    {
-      event: "input",
-      selector: "#namespace-searchbox",
-      stop: true,
-      handler: (_event, matched) => {
-        const filterText = matched.value.toLowerCase();
-        document.querySelectorAll(".namespace-item").forEach((element) => {
-          const text = (element.innerText || "").toLowerCase();
-          if (text.indexOf(filterText) === -1) {
-            element.classList.add("is-hidden");
-          } else {
-            element.classList.remove("is-hidden");
-          }
-        });
-        return true;
-      }
-    },
-    // #namespace-searchbox keyup: Enter selects the first still-visible match.
-    // Sole branch of the monolith keyup listener; stop:true mirrors its return.
-    {
-      event: "keyup",
-      selector: "#namespace-searchbox",
-      stop: true,
-      handler: (event) => {
-        if (event.key !== "Enter") {
-          return true;
-        }
-        const elements = document.querySelectorAll(".namespace-item");
-        for (let i = 0; i < elements.length; i++) {
-          if (!elements[i].classList.contains("is-hidden")) {
-            elements[i].click();
-            break;
-          }
-        }
-        return true;
-      }
-    }
-  ];
-
   // internal/assets/src/js/bindings.ts
   var bindings = [
     ...contextMenuBindings,
@@ -3342,9 +3530,82 @@ ${piece}`;
     ...logsBindings,
     // misc-ui's click bindings keep their relative monolith order: copy is
     // registered before the section-fold binding (copy stop:true short-circuits
-    // a copy click), so a copy click never folds its section.
-    ...miscBindings
+    // a copy click), so a copy click never folds its section. misc-ui now also
+    // carries the trailing presentation toggles ([data-more] / [data-annolong] /
+    // .toggle-tools) and the v1 form glue (the data-toggle-button change + the
+    // tools-form submit) lifted out of the dismantled legacy.js.
+    ...miscBindings,
+    // refresh-domain tails LAST (Unit 13): .ro-stale-retry + .refresh-option were
+    // the monolith big click listener's own trailing branches, so registering
+    // them after the migrated leaves preserves the C1 order -- every leaf
+    // front-ran the monolith, and these ran at its end. Neither co-matches any
+    // selector above, so the position is observationally free; LAST documents
+    // their monolith origin.
+    ...refreshBindings
   ];
+
+  // internal/assets/src/js/events.ts
+  function closestElement(event, selector) {
+    let node = event.target;
+    while (node && node.nodeType !== 1) {
+      node = node.parentNode;
+    }
+    return node ? node.closest(selector) : null;
+  }
+  function dispatch(bindings2, event) {
+    for (let i = 0; i < bindings2.length; i++) {
+      const binding = bindings2[i];
+      let matched = null;
+      if (binding.selector !== void 0) {
+        matched = closestElement(event, binding.selector);
+        if (!matched) {
+          continue;
+        }
+      }
+      let result;
+      try {
+        result = binding.handler(event, matched);
+      } catch (e) {
+        console.warn("readout event binding failed", binding.event, binding.selector, e);
+        continue;
+      }
+      if (binding.stop && result) {
+        return;
+      }
+    }
+  }
+  function registerBindings(bindings2) {
+    const byType = /* @__PURE__ */ new Map();
+    for (const binding of bindings2) {
+      const list = byType.get(binding.event);
+      if (list) {
+        list.push(binding);
+      } else {
+        byType.set(binding.event, [binding]);
+      }
+    }
+    byType.forEach((list, type) => {
+      document.addEventListener(type, (event) => dispatch(list, event));
+    });
+  }
+
+  // internal/assets/src/js/theme.ts
+  var PREFERS_DARK = window.matchMedia("(prefers-color-scheme: dark)");
+  function syncThemeTogglePostTarget() {
+    const toggle = document.getElementById("btn-theme-toggle");
+    if (!toggle) {
+      return;
+    }
+    if (toggle.dataset.themeExplicit !== "false") {
+      return;
+    }
+    const form = toggle.form;
+    const input = form?.querySelector('input[name="theme"]');
+    if (input) {
+      input.value = PREFERS_DARK.matches ? "light" : "dark";
+    }
+  }
+  PREFERS_DARK.addEventListener("change", syncThemeTogglePostTarget);
 
   // internal/assets/src/js/toasts.ts
   var TOAST_VISIBLE_MS = 3500;
@@ -3377,13 +3638,11 @@ ${piece}`;
     if (!content || !template || !listRegionIsEmpty(content)) {
       return;
     }
-    content.replaceChildren(
-      ...Array.from(template.children, (node) => node.cloneNode(true))
-    );
+    content.replaceChildren(...Array.from(template.children, (node) => node.cloneNode(true)));
   });
   function clearListSkeleton() {
     const content = document.getElementById("resource-list-content");
-    const skel = content && content.querySelector(":scope > .ro-skel");
+    const skel = content?.querySelector(":scope > .ro-skel");
     if (skel) {
       skel.remove();
     }
@@ -3399,141 +3658,11 @@ ${piece}`;
     }
   });
 
-  // internal/assets/src/js/legacy.js
-  registerBindings(bindings);
-  if (typeof htmx !== "undefined") {
-    htmx.config.globalViewTransitions = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  }
-  if (typeof Idiomorph !== "undefined" && Idiomorph.defaults && Idiomorph.defaults.callbacks && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    const PRIOR = /* @__PURE__ */ new WeakMap();
-    Idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode) => {
-      if (oldNode && oldNode.nodeType === 1 && oldNode.tagName === "TD") {
-        PRIOR.set(oldNode, oldNode.textContent);
-      }
-    };
-    Idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode) => {
-      if (!oldNode || oldNode.nodeType !== 1 || oldNode.tagName !== "TD") {
-        return;
-      }
-      if (!PRIOR.has(oldNode)) {
-        return;
-      }
-      const before = PRIOR.get(oldNode);
-      PRIOR.delete(oldNode);
-      if (before !== oldNode.textContent) {
-        oldNode.classList.remove("ro-cell-changed");
-        void oldNode.offsetWidth;
-        oldNode.classList.add("ro-cell-changed");
-      }
-    };
-  }
-  if (typeof htmx !== "undefined" && typeof Idiomorph !== "undefined") {
-    htmx.defineExtension("ro-morph", {
-      isInlineSwap: (swapStyle) => swapStyle === "morph",
-      handleSwap: (swapStyle, target, fragment) => {
-        if (swapStyle !== "morph") {
-          return false;
-        }
-        if (target && target.id === "resource-list-content") {
-          captureRowModel(fragment);
-          virtualizePrepareSwap(fragment);
-        }
-        return Idiomorph.morph(target, fragment.children, {
-          morphStyle: "innerHTML",
-          ignoreActiveValue: true
-        });
-      }
-    });
-  }
-  document.addEventListener("click", (event) => {
-    const target = event.target;
-    const staleRetry = target.closest(".ro-stale-retry");
-    if (staleRetry) {
-      event.preventDefault();
-      const content = document.getElementById("resource-list-content");
-      if (content && typeof htmx !== "undefined") {
-        htmx.trigger(content, "htmx:abort");
-      }
-      requestListRefresh();
-      return;
-    }
-    const moreChips = target.closest("[data-more]");
-    if (moreChips) {
-      event.preventDefault();
-      const chips = moreChips.closest(".ro-chips");
-      if (chips) {
-        const expanded = chips.classList.toggle("expanded");
-        moreChips.setAttribute("aria-expanded", expanded ? "true" : "false");
-      }
-      return;
-    }
-    const annoToggle = target.closest("[data-annolong]");
-    if (annoToggle) {
-      event.preventDefault();
-      const pre = annoToggle.parentElement && annoToggle.parentElement.querySelector(".anno-pre");
-      if (pre) {
-        const open = pre.hidden;
-        pre.hidden = !open;
-        annoToggle.setAttribute("aria-expanded", open ? "true" : "false");
-        annoToggle.classList.toggle("open", open);
-      }
-      return;
-    }
-    const refreshOption = target.closest(".refresh-option");
-    if (refreshOption) {
-      if (refreshOption.dataset.interval === "Live") {
-        roPrefsSetRefresh("Live");
-      } else {
-        const interval = parseInt(refreshOption.dataset.interval, 10) || 0;
-        roPrefsSetRefresh(interval > 0 ? String(interval) : "Off");
-      }
-      liveApply(true);
-      syncRefreshUI();
-      applyRefresh();
-      refreshOption.blur();
-      event.preventDefault();
-      return;
-    }
-    const toggle = target.closest(".toggle-tools");
-    if (toggle) {
-      event.preventDefault();
-      toggle.classList.toggle("is-active");
-      const targetEl = document.getElementById(toggle.dataset.target);
-      if (targetEl) {
-        targetEl.classList.toggle("is-active");
-      }
-      return;
-    }
-  });
-  document.addEventListener("change", (event) => {
-    const checkbox = event.target.closest("input[data-toggle-button]");
-    if (checkbox) {
-      const buttonId = checkbox.dataset.toggleButton;
-      const button = document.getElementById(buttonId);
-      if (button) {
-        const anyChecked = document.querySelectorAll(
-          `input[data-toggle-button="${buttonId}"]:checked`
-        ).length > 0;
-        button.disabled = !anyChecked;
-      }
-      return;
-    }
-  });
-  document.addEventListener("input", (event) => {
-  });
-  document.addEventListener("submit", (event) => {
-    const form = event.target.closest("form.tools-form");
-    if (form) {
-      Array.prototype.slice.call(form.getElementsByTagName("input")).forEach((input) => {
-        if (input.name && !input.value) {
-          input.name = "";
-        }
-      });
-    }
-  });
+  // internal/assets/src/js/init.ts
+  window.roToast = showToast;
   document.addEventListener("htmx:beforeRequest", (event) => {
     const detail = event.detail;
-    const cfg = detail && detail.requestConfig;
+    const cfg = detail?.requestConfig;
     if (!cfg || !detail.elt || !detail.target || detail.target.id !== "resource-list-content") {
       return;
     }
@@ -3550,7 +3679,7 @@ ${piece}`;
     let sort = "";
     try {
       sort = new URL(cfg.path, window.location.href).searchParams.get("sort") || "";
-    } catch (e) {
+    } catch {
       return;
     }
     const plural = decodeURIComponent(pathMatch[1]);
@@ -3575,9 +3704,9 @@ ${piece}`;
       liveOnListSwap(event);
     }
   });
-  window.roToast = showToast;
   document.addEventListener("htmx:beforeSwap", (event) => {
-    if (event.detail && event.detail.target === document.body) {
+    const detail = event.detail;
+    if (detail && detail.target === document.body) {
       closeRowMenu();
       clearRowState();
       clearListStale();
@@ -3593,8 +3722,11 @@ ${piece}`;
   function setupStickyNamespace() {
     document.querySelectorAll(".ro-table-wrap table.ro-table").forEach((table) => {
       const firstCell = table.querySelector("tbody tr:not(.ro-vspacer) td:first-child");
-      if (firstCell && firstCell.classList.contains("cell-ns")) {
-        table.style.setProperty("--ns-col-w", firstCell.getBoundingClientRect().width + "px");
+      if (firstCell?.classList.contains("cell-ns")) {
+        table.style.setProperty(
+          "--ns-col-w",
+          `${firstCell.getBoundingClientRect().width}px`
+        );
         table.classList.add("ro-sticky2");
       } else {
         table.classList.remove("ro-sticky2");
@@ -3636,8 +3768,8 @@ ${piece}`;
       // boosted body swap (rendered closed) never leaves a stale-open flag.
       syncColsPopState,
       // Row state is keyed by OBJECT identity; the store clears when an
-      // hx-boost navigation swaps the body (the Unit-16 htmx:beforeSwap
-      // hook), so this init re-paint scrubs any stale is-selected classes a
+      // hx-boost navigation swaps the body (the htmx:beforeSwap hook above),
+      // so this init re-paint scrubs any stale is-selected classes a
       // cached/boosted body carried in -- and the bulk bar re-syncs to the
       // same store right after.
       reapplyRowState,
@@ -3648,4 +3780,7 @@ ${piece}`;
   document.addEventListener("htmx:load", runInit);
   document.addEventListener("htmx:afterSettle", setupStickyNamespace);
   window.addEventListener("resize", setupStickyNamespace);
+
+  // internal/assets/src/js/readout.ts
+  registerBindings(bindings);
 })();

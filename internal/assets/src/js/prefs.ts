@@ -89,7 +89,7 @@ function b64urlDecodeUTF8(encoded: string): string {
 // clean cookie and the two readers converge again (self-heal).
 export function decodePrefsValue(value: string): { prefs: Prefs; ok: boolean } {
     const empty: Prefs = { kinds: [], refresh: '', ns: {} };
-    if (!value || value.indexOf(PREFS_VERSION_PREFIX) !== 0) {
+    if (value?.indexOf(PREFS_VERSION_PREFIX) !== 0) {
         return { prefs: empty, ok: false };
     }
     const payload = value.slice(PREFS_VERSION_PREFIX.length);
@@ -103,15 +103,27 @@ export function decodePrefsValue(value: string): { prefs: Prefs; ok: boolean } {
         }
         const kinds: KindPrefs[] = [];
         if (Array.isArray(decoded.kinds)) {
-            decoded.kinds.forEach((e: any) => {
-                if (!e || typeof e !== 'object' || typeof e.k !== 'string') {
+            decoded.kinds.forEach((raw: unknown) => {
+                if (!raw || typeof raw !== 'object') {
+                    return;
+                }
+                // raw is an untyped JSON object; narrow each field on read (Go's
+                // decodePrefs rejects the WHOLE payload on one mistyped field, so
+                // the JS reader keeps only well-typed fields -> the next write
+                // self-heals the cookie). The field guards below are the pinned
+                // needle contract (prefs_test.go), kept verbatim.
+                const e = raw as { k?: unknown; sort?: unknown; hide?: unknown };
+                if (typeof e.k !== 'string') {
                     return;
                 }
                 const entry: KindPrefs = { k: e.k };
                 if (typeof e.sort === 'string') {
                     entry.sort = e.sort;
                 }
-                if (Array.isArray(e.hide) && e.hide.every((name: unknown) => typeof name === 'string')) {
+                if (
+                    Array.isArray(e.hide) &&
+                    e.hide.every((name: unknown) => typeof name === 'string')
+                ) {
                     entry.hide = e.hide;
                 }
                 kinds.push(entry);
@@ -133,7 +145,7 @@ export function decodePrefsValue(value: string): { prefs: Prefs; ok: boolean } {
             },
             ok: true,
         };
-    } catch (e) {
+    } catch (_e) {
         return { prefs: empty, ok: false };
     }
 }
@@ -170,7 +182,7 @@ export function encodePrefsValue(prefs: Prefs): string {
 function prefsCookieValue(): string {
     const parts = document.cookie ? document.cookie.split('; ') : [];
     for (let i = 0; i < parts.length; i++) {
-        if (parts[i].indexOf(PREFS_COOKIE + '=') === 0) {
+        if (parts[i].indexOf(`${PREFS_COOKIE}=`) === 0) {
             return parts[i].slice(PREFS_COOKIE.length + 1);
         }
     }
@@ -186,13 +198,17 @@ export function readPrefs(): Prefs {
 
 export function writePrefs(prefs: Prefs): void {
     try {
-        let cookie = PREFS_COOKIE + '=' + encodePrefsValue(prefs)
-            + '; Path=/; SameSite=Lax; Max-Age=' + PREFS_COOKIE_MAX_AGE;
+        let cookie =
+            PREFS_COOKIE +
+            '=' +
+            encodePrefsValue(prefs) +
+            '; Path=/; SameSite=Lax; Max-Age=' +
+            PREFS_COOKIE_MAX_AGE;
         if (window.location.protocol === 'https:') {
             cookie += '; Secure';
         }
         document.cookie = cookie;
-    } catch (e) {
+    } catch (_e) {
         // cookies unavailable -> the preference just will not persist
     }
 }
