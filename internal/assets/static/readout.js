@@ -1,5 +1,23 @@
 "use strict";
 (() => {
+  // internal/assets/src/js/theme.ts
+  var PREFERS_DARK = window.matchMedia("(prefers-color-scheme: dark)");
+  function syncThemeTogglePostTarget() {
+    const toggle = document.getElementById("btn-theme-toggle");
+    if (!toggle) {
+      return;
+    }
+    if (toggle.dataset.themeExplicit !== "false") {
+      return;
+    }
+    const form = toggle.form;
+    const input = form && form.querySelector('input[name="theme"]');
+    if (input) {
+      input.value = PREFERS_DARK.matches ? "light" : "dark";
+    }
+  }
+  PREFERS_DARK.addEventListener("change", syncThemeTogglePostTarget);
+
   // internal/assets/src/js/prefs.ts
   var PREFS_COOKIE = "ro_prefs";
   var PREFS_VERSION_PREFIX = "v1.";
@@ -152,7 +170,56 @@
     writePrefs(prefs);
   }
 
+  // internal/assets/src/js/events.ts
+  function closestElement(event, selector) {
+    let node = event.target;
+    while (node && node.nodeType !== 1) {
+      node = node.parentNode;
+    }
+    return node ? node.closest(selector) : null;
+  }
+  function dispatch(bindings2, event) {
+    for (let i = 0; i < bindings2.length; i++) {
+      const binding = bindings2[i];
+      let matched = null;
+      if (binding.selector !== void 0) {
+        matched = closestElement(event, binding.selector);
+        if (!matched) {
+          continue;
+        }
+      }
+      let result;
+      try {
+        result = binding.handler(event, matched);
+      } catch (e) {
+        console.warn("readout event binding failed", binding.event, binding.selector, e);
+        continue;
+      }
+      if (binding.stop && result) {
+        return;
+      }
+    }
+  }
+  function registerBindings(bindings2) {
+    const byType = /* @__PURE__ */ new Map();
+    for (const binding of bindings2) {
+      const list = byType.get(binding.event);
+      if (list) {
+        list.push(binding);
+      } else {
+        byType.set(binding.event, [binding]);
+      }
+    }
+    byType.forEach((list, type) => {
+      document.addEventListener(type, (event) => dispatch(list, event));
+    });
+  }
+
+  // internal/assets/src/js/bindings.ts
+  var bindings = [];
+
   // internal/assets/src/js/legacy.js
+  registerBindings(bindings);
   if (typeof htmx !== "undefined") {
     htmx.config.globalViewTransitions = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
@@ -2930,21 +2997,6 @@ ${piece}`;
       closeFilterAC();
     }
   });
-  var PREFERS_DARK = window.matchMedia("(prefers-color-scheme: dark)");
-  function syncThemeTogglePostTarget() {
-    const toggle = document.getElementById("btn-theme-toggle");
-    if (!toggle) {
-      return;
-    }
-    if (toggle.dataset.themeExplicit !== "false") {
-      return;
-    }
-    const input = toggle.form && toggle.form.querySelector('input[name="theme"]');
-    if (input) {
-      input.value = PREFERS_DARK.matches ? "light" : "dark";
-    }
-  }
-  PREFERS_DARK.addEventListener("change", syncThemeTogglePostTarget);
   function setupStickyNamespace() {
     document.querySelectorAll(".ro-table-wrap table.ro-table").forEach((table) => {
       const firstCell = table.querySelector("tbody tr:not(.ro-vspacer) td:first-child");

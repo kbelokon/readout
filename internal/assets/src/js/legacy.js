@@ -33,6 +33,20 @@ import {
     REFRESH_KEY,
 } from './prefs.js';
 
+// Delegated-event dispatcher (Unit 9). The ordered binding list (bindings.ts)
+// is registered HERE, at the top of the legacy body, BEFORE any of the
+// monolith's own `document.addEventListener` calls below -- so the migrated leaf
+// bindings front-run the not-yet-migrated monolith listeners (the dispatch
+// contract's "registered first"). esbuild inlines both modules into the IIFE.
+import { registerBindings } from './events.js';
+import { bindings } from './bindings.js';
+registerBindings(bindings);
+
+// Theme-toggle POST target (Unit 9 leaf): the function below is an idempotent
+// runInit step consumed by the runInit chain; importing the module also attaches
+// its one-time matchMedia change listener.
+import { syncThemeTogglePostTarget } from './theme.js';
+
 // ---------------------------------------------------------------------------
 // HTMX config: native View Transitions, reduced-motion-aware
 // ---------------------------------------------------------------------------
@@ -4389,49 +4403,6 @@ document.addEventListener('click', (event) => {
         closeFilterAC();
     }
 });
-
-// ---------------------------------------------------------------------------
-// Theme-toggle POST target (prefers-aware, cookieless-safe)
-// ---------------------------------------------------------------------------
-// The navbar theme toggle POSTs /preferences with a hidden `theme` value that
-// must flip the EFFECTIVE palette. With an explicit choice (a theme cookie or
-// ?theme=) the server already renders the correct opposite value AND pins
-// data-theme on <html>, so we leave it alone (data-theme-explicit="true").
-//
-// With NO explicit choice (data-theme-explicit="false") the palette is driven
-// by prefers-color-scheme, NOT the server theme.name -- under the dark default
-// a cookieless light-OS user is theme.name="dark" server-side (so the server
-// pre-fills theme="light") while their real palette is LIGHT, which would make
-// the first click a no-op. So we derive the value here from the effective
-// palette: post the OPPOSITE of matchMedia('(prefers-color-scheme: dark)'). The
-// matching icon is chosen purely in CSS (both glyphs render); this only fixes
-// the POST target, which CSS cannot reach. Pure CSP-clean DOM writes (no eval,
-// no inline handler).
-const PREFERS_DARK = window.matchMedia('(prefers-color-scheme: dark)');
-
-function syncThemeTogglePostTarget() {
-    const toggle = document.getElementById('btn-theme-toggle');
-    if (!toggle) {
-        return;
-    }
-    // Explicit choice -> the server value is authoritative; never override it.
-    if (toggle.dataset.themeExplicit !== 'false') {
-        return;
-    }
-    const input = toggle.form && toggle.form.querySelector('input[name="theme"]');
-    if (input) {
-        // Effective palette is dark -> the toggle should switch to light, and
-        // vice versa (post the opposite of the current effective scheme).
-        input.value = PREFERS_DARK.matches ? 'light' : 'dark';
-    }
-}
-
-// Re-derive the cookieless toggle target if the OS scheme changes while the page
-// is open (so the no-cookie toggle keeps matching the live effective palette).
-// Attached ONCE at module load -- not inside runInit -- so hx-boost re-init never
-// stacks duplicate listeners. addEventListener is the modern matchMedia API
-// (addListener is deprecated); the listener body is idempotent.
-PREFERS_DARK.addEventListener('change', syncThemeTogglePostTarget);
 
 // _all-view sticky offset. CSS pins the FIRST column at left:0; in the _all view
 // the first column is the namespace, so the NAME column (2nd) must pin right after
