@@ -64,3 +64,32 @@ jobs:
             tests/e2e/playwright-report
             tests/e2e/test-results
           if-no-files-found: ignore
+
+  # Frontend asset gate: lints + typechecks the src tree and proves the committed
+  # static/ artifacts are fresh. Node 24 (matches package.json engines), npm cache
+  # keyed off the root package-lock.json. Both typecheckers run (tsgo = TS7 native
+  # preview, tsc = stable cross-check) until TS7 is stable. The node-test step is a
+  # deterministic no-op until the first *.test.ts lands (and stays correct after).
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install deps
+        run: npm ci
+      - name: Gate - Biome lint/format
+        run: npx biome check internal/assets/src scripts
+      - name: Gate - typecheck (tsgo, TS7 native preview)
+        run: npx tsgo --noEmit
+      - name: Gate - typecheck (tsc, stable cross-check)
+        run: npx tsc --noEmit
+      - name: JS unit tests (guarded -- no-op until the first *.test.ts lands)
+        run: find internal/assets/src/js -name '*.test.ts' | grep -q . && node --test 'internal/assets/src/js/**/*.test.ts' || echo 'no JS tests yet — step skipped'
+      - name: Gate - embedded assets are fresh
+        run: |
+          node scripts/build-assets.mjs
+          git diff --exit-code -- internal/assets/static

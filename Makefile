@@ -15,7 +15,7 @@ PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.60.0-noble
 
 .DEFAULT_GOAL := ci
 
-.PHONY: ci tools generate templ-check lint test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-update
+.PHONY: ci tools generate templ-check lint test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-update assets assets-check
 
 ## ci: the REQUIRED gates -- templ freshness, lint, race tests (matches .github/workflows/ci.yaml)
 ci: templ-check lint race
@@ -56,6 +56,24 @@ vet:
 ## fmt: apply the configured formatters in place
 fmt:
 	golangci-lint fmt ./...
+
+## assets: rebuild the embedded frontend artifacts from internal/assets/src and typecheck them (npm ci on first run)
+# Frontend build gate, the mirror of templ codegen for the static/ artifacts:
+# esbuild + Lightning CSS regenerate internal/assets/static/readout.{js,css} from
+# the src tree, then BOTH typecheckers run (tsgo is the fast TS7 native preview,
+# tsc is the stable cross-check -- kept until TS7 is stable). Deliberately NOT a
+# `make ci` gate -- `make ci` stays Go-only; the frontend lives in CI's separate
+# `frontend` job. node_modules is installed via `npm ci` only when absent.
+assets:
+	@test -d node_modules || npm ci
+	node scripts/build-assets.mjs
+	npx tsgo --noEmit
+	npx tsc --noEmit
+
+## assets-check: rebuild the artifacts and fail if they drift from what is committed (the freshness gate)
+assets-check: assets
+	@git diff --exit-code -- internal/assets/static \
+		|| { echo 'ERROR: asset output is stale -- run `make assets` and commit the result.'; exit 1; }
 
 ## e2e: build readout and run the Playwright suite against the fakeapi harness (deliberately NOT part of `make ci`)
 e2e: e2e-deps
