@@ -51,6 +51,12 @@ import { syncThemeTogglePostTarget } from './theme.js';
 // legacy calls it directly (bulk over-cap) and bridges it to window.roToast.
 import { showToast } from './toasts.js';
 
+// YAML folds + line-highlight (Unit 9 leaf): buildYamlFolds + highlightYamlLine
+// are runInit steps; yamlCodeText is still used by the not-yet-migrated
+// per-section copy branch in the big click listener. The .ro-fold-toggle and
+// .linenos a click branches now live as dispatcher bindings (bindings.ts).
+import { buildYamlFolds, highlightYamlLine, yamlCodeText } from './yaml-folds.js';
+
 // ---------------------------------------------------------------------------
 // HTMX config: native View Transitions, reduced-motion-aware
 // ---------------------------------------------------------------------------
@@ -392,25 +398,10 @@ document.addEventListener('click', (event) => {
         return;
     }
 
-    // .ro-fold-toggle (NESTED YAML block fold): toggle the deeper-indented child
-    // lines of a `key:`/`- key:` block in place. The toggle is a <button>
-    // injected by buildYamlFolds() at load INTO the opener line's span, carrying
-    // `data-fold="<lineId>"`; every child line span carries `data-fold-of` listing
-    // the opener ids it nests under, so ONE delegated handler toggles the matching
-    // children's `ro-line-folded` class (CSS display:none) and flips the opener's
-    // `is-folded` + aria-expanded. The raw child lines stay in the DOM (only hidden),
-    // so the per-section copy still yields the full YAML (it clones + strips the
-    // injected fold controls before reading text -- see below). Presentation only;
-    // no hash sync, no server. Matched BEFORE the section-fold + gutter-anchor
-    // handlers so a nested-fold click never collapses the whole section or jumps a
-    // line anchor. event.target.closest covers a click on the caret pseudo too.
-    const foldToggle = target.closest('.ro-fold-toggle');
-    if (foldToggle) {
-        event.preventDefault();
-        event.stopPropagation();
-        toggleYamlFold(foldToggle);
-        return;
-    }
+    // .ro-fold-toggle (NESTED YAML block fold) migrated to yaml-folds.ts (Unit 9
+    // leaf): registered as a stop:true dispatcher binding ahead of this listener,
+    // so the nested-fold click is handled before the section-fold/gutter branches
+    // below ever run.
 
     // .ro-copy-btn (per-section YAML copy): copy THIS section's raw YAML to the
     // clipboard via navigator.clipboard.writeText -- CSP-clean (no inline handler,
@@ -472,15 +463,9 @@ document.addEventListener('click', (event) => {
         return;
     }
 
-    // YAML line-number anchors (.linenos a): set the URL hash to the clicked
-    // line, re-highlight, and suppress the default anchor jump.
-    const lineNumber = target.closest('.linenos a');
-    if (lineNumber) {
-        location.hash = `#${lineNumber.href.split('#')[1]}`;
-        highlightYamlLine();
-        event.preventDefault();
-        return;
-    }
+    // YAML line-number anchors (.linenos a) migrated to yaml-folds.ts (Unit 9
+    // leaf): handled by a stop:true dispatcher binding registered ahead of this
+    // listener.
 
     // Namespace switch (D9): picking a namespace in the topbar dropdown records
     // it as this cluster's last-used namespace in the ro_prefs cookie. The
@@ -780,23 +765,8 @@ document.addEventListener('submit', (event) => {
 // Init-time (NOT event-driven) logic -- idempotent, re-runnable after swaps.
 // ---------------------------------------------------------------------------
 
-// Highlight the YAML line named by location.hash (#<id>): clear prior
-// highlights, then add the highlight class to `#yaml-<id>` and scroll it into
-// view. Toggling a class (vs el.style.background) keeps the colour in CSS.
-function highlightYamlLine() {
-    const fragment = location.hash;
-    if (!fragment) {
-        return;
-    }
-    document.querySelectorAll('pre > span.yaml-line-highlight').forEach((el) => {
-        el.classList.remove('yaml-line-highlight');
-    });
-    const element = document.getElementById(`yaml-${fragment.substring(1)}`);
-    if (element) {
-        element.classList.add('yaml-line-highlight');
-        element.scrollIntoView({ block: 'center' });
-    }
-}
+// highlightYamlLine migrated to yaml-folds.ts (Unit 9 leaf); imported above for
+// the runInit chain + the section-collapse line-anchor path still here.
 
 // On load, collapse every section named in the URL fragment (collapsed=a,b,c).
 // Idempotent: adding `is-collapsed` to an already-collapsed section is a no-op.
@@ -819,187 +789,10 @@ function collapseSectionsFromHash() {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Nested-YAML-block folding -- CSP-clean, no build, graceful.
-// ---------------------------------------------------------------------------
-// Over the EXISTING Pygments `linenos="table"` output (a `table.highlighttable`
-// whose `td.code > pre` holds one `<span id="yaml-...-line-N">` per source line),
-// we compute each line's indentation at load and inject a fold toggle before any
-// line that OPENS a nested block (a `key:` / `- key:` whose following lines indent
-// deeper). Clicking the toggle hides that block's deeper-indented child lines and
-// shows the faint italic `… N lines` note (the v2 prototype's fold-note) on the
-// opener line -- the `containers: … 5 lines` affordance.
-//
-// Everything is DOM-only (document.createElement, classList, dataset) -- no eval,
-// no innerHTML-with-handlers, no inline style. The whole pass is wrapped in
-// try/catch and bails cleanly (leaving the plain highlighted block) on anything
-// unexpected, so a weird CRD object can never break the page -- it just does not
-// get nested folds. The line anchors (`yaml-...-line-N` ids, the `.linenos a`
-// gutter), the section-level fold, and the per-section copy are all untouched:
-// child lines are HIDDEN (display:none), never removed, and copy strips the
-// injected controls from a clone before reading the raw text.
-
-// YAML indent semantics: leading spaces give the depth, but a YAML block-sequence
-// item ("- ...") sits at the SAME visual indent as its parent key, so we count a
-// leading "- " (or a bare "-") as one extra level (+2). This makes "- name: x"
-// nest under "containers:" exactly as the object structure does.
-function yamlEffectiveIndent(text) {
-    const stripped = text.replace(/^\n+/, '');
-    let i = 0;
-    while (i < stripped.length && stripped[i] === ' ') {
-        i++;
-    }
-    const rest = stripped.slice(i);
-    if (rest === '-' || rest.startsWith('- ') || rest.startsWith('-\t')) {
-        return i + 2;
-    }
-    return i;
-}
-
-// The raw YAML text of a Pygments `td.code` cell, with any injected fold controls
-// removed. Folded child lines stay in the DOM (only hidden), so this is the FULL
-// source YAML in any fold state -- the per-section copy stays correct. Clones the
-// cell (cheap, code-only) so the live DOM is untouched, then drops the toggle +
-// fold-note nodes before reading textContent.
-function yamlCodeText(codeCell) {
-    if (!codeCell.querySelector('.ro-fold-toggle, .ro-fold-note')) {
-        return codeCell.textContent; // no folds injected -> raw text already clean
-    }
-    const clone = codeCell.cloneNode(true);
-    clone.querySelectorAll('.ro-fold-toggle, .ro-fold-note').forEach((el) => {
-        el.remove();
-    });
-    return clone.textContent;
-}
-
-// Toggle one nested block: flip the opener's `is-folded` + aria-expanded and
-// hide/show every child line that lists this opener's id in `data-fold-of`.
-function toggleYamlFold(toggle) {
-    const id = toggle.dataset.fold;
-    if (!id) {
-        return;
-    }
-    const pre = toggle.closest('pre');
-    if (!pre) {
-        return;
-    }
-    const folded = !toggle.classList.contains('is-folded');
-    toggle.classList.toggle('is-folded', folded);
-    toggle.setAttribute('aria-expanded', folded ? 'false' : 'true');
-    pre.querySelectorAll('[data-fold-of]').forEach((line) => {
-        const owners = line.dataset.foldOf.split(' ');
-        if (owners.indexOf(id) !== -1) {
-            line.classList.toggle('ro-line-folded', folded);
-        }
-    });
-}
-
-// Build the nested folds for every YAML code block on the page. Idempotent: a cell
-// already processed carries `data-ro-folds`, so an hx-boost re-init never doubles
-// the controls. Fully guarded -- any error leaves that cell as a plain highlighted
-// block (the accepted graceful fallback to the section-level fold).
-function buildYamlFolds() {
-    document.querySelectorAll('.highlighttable td.code pre').forEach((pre) => {
-        if (pre.dataset.roFolds) {
-            return; // already processed (idempotent across re-inits)
-        }
-        try {
-            // The per-line spans Pygments emits (linespans="yaml-...-line"). Direct
-            // children of <pre>, in source order; their textContent preserves exact
-            // indentation + the trailing newline (the empty <a> anchor adds nothing).
-            const lines = Array.prototype.filter.call(
-                pre.children,
-                (el) => el.tagName === 'SPAN' && el.id && el.id.indexOf('line-') !== -1
-            );
-            pre.dataset.roFolds = '1'; // mark BEFORE work so a throw still bails once
-            if (lines.length < 3) {
-                return; // too small to have a meaningful nested block
-            }
-            const indents = lines.map((el) => yamlEffectiveIndent(el.textContent));
-            const isBlank = lines.map((el) => el.textContent.trim() === '');
-
-            for (let i = 0; i < lines.length; i++) {
-                if (isBlank[i]) {
-                    continue;
-                }
-                // next non-blank line
-                let j = i + 1;
-                while (j < lines.length && isBlank[j]) {
-                    j++;
-                }
-                if (j >= lines.length || indents[j] <= indents[i]) {
-                    continue; // not an opener (no deeper-indented body follows)
-                }
-                // body = contiguous following lines indented deeper than the opener
-                let end = i + 1;
-                let bodyCount = 0;
-                while (end < lines.length) {
-                    if (isBlank[end]) {
-                        end++;
-                        continue;
-                    }
-                    if (indents[end] > indents[i]) {
-                        lines[end].dataset.foldOf = lines[end].dataset.foldOf
-                            ? `${lines[end].dataset.foldOf} ${lines[i].id}`
-                            : lines[i].id;
-                        bodyCount++;
-                        end++;
-                    } else {
-                        break;
-                    }
-                }
-                if (bodyCount === 0) {
-                    continue;
-                }
-                injectFoldControls(lines[i], bodyCount);
-            }
-        } catch (e) {
-            // Anything unexpected -> leave this block plainly highlighted (the
-            // accepted graceful fallback). The cell is already marked, so we do not
-            // retry it; the section-level fold + line anchors keep working.
-        }
-    });
-}
-
-// Inject the fold toggle + collapsed fold-note into an opener line span. The
-// toggle is a real <button> (keyboard-focusable, CSP-clean) placed right after
-// the line's leading <a> anchor so the caret sits at the start of the line; the
-// note is a hidden <span class="ro-fold-note"> ("… N lines", faint italic per
-// the v2 prototype) appended at the line's end, shown by CSS only when folded.
-// Both carry a class the copy path strips, so neither pollutes the copied raw
-// YAML.
-function injectFoldControls(lineSpan, bodyCount) {
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'ro-fold-toggle';
-    toggle.setAttribute('aria-expanded', 'true');
-    toggle.setAttribute('aria-label', 'Toggle block');
-    toggle.dataset.fold = lineSpan.id;
-
-    const note = document.createElement('span');
-    note.className = 'ro-fold-note';
-    const lineWord = bodyCount === 1 ? 'line' : 'lines';
-    note.textContent = ` … ${bodyCount} ${lineWord}`;
-
-    // Place the toggle after the leading anchor (so it reads at the line start,
-    // left of the key); fall back to prepend if no anchor is present.
-    const anchor = lineSpan.querySelector('a');
-    if (anchor && anchor.nextSibling) {
-        lineSpan.insertBefore(toggle, anchor.nextSibling);
-    } else if (anchor) {
-        lineSpan.appendChild(toggle);
-    } else {
-        lineSpan.insertBefore(toggle, lineSpan.firstChild);
-    }
-    // Append the note at the very end of the line content, BEFORE the trailing
-    // newline text node so the collapsed note renders on the opener's own line.
-    const last = lineSpan.lastChild;
-    if (last && last.nodeType === 3 && last.textContent.indexOf('\n') !== -1) {
-        lineSpan.insertBefore(note, last);
-    } else {
-        lineSpan.appendChild(note);
-    }
-}
+// Nested-YAML-block folding migrated to yaml-folds.ts (Unit 9 leaf):
+// yamlEffectiveIndent / yamlCodeText / toggleYamlFold / buildYamlFolds /
+// injectFoldControls. legacy imports buildYamlFolds (runInit step) and
+// yamlCodeText (the still-resident per-section copy branch).
 
 // ---------------------------------------------------------------------------
 // Logs page Follow (D25) -- stick the stream to its tail.

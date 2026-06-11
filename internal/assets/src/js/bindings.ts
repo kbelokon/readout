@@ -17,10 +17,16 @@
 // event instance. A binding WITHOUT a selector matches every event of its type
 // and guards itself in the handler.
 import type { Binding } from './events.js';
+import { foldBindings } from './yaml-folds.js';
 
-// Leaf feature modules contribute their bindings here. theme.ts is a leaf with
-// NO delegated document binding (its only hook is a matchMedia change listener,
-// attached at module load), so it does not appear in this list -- it is wired
-// purely through the runInit step legacy.js imports.
-
-export const bindings: Binding[] = [];
+// Leaf feature modules contribute their bindings here. theme.ts + toasts.ts are
+// leaves with NO delegated document binding (theme's only hook is a matchMedia
+// change listener; toasts is a pure function), so they do not appear in this
+// list -- they are wired through the runInit step / direct calls in legacy.js.
+//
+// REGISTRATION ORDER (read top-to-bottom): yaml-folds' two click branches
+// (.ro-fold-toggle, .linenos a) front-run the monolith's big click listener,
+// reproducing their position ahead of the section-fold / gutter-anchor branches.
+export const bindings: Binding[] = [
+    ...foldBindings,
+];

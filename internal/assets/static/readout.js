@@ -215,8 +215,183 @@
     });
   }
 
+  // internal/assets/src/js/yaml-folds.ts
+  function yamlEffectiveIndent(text) {
+    const stripped = text.replace(/^\n+/, "");
+    let i = 0;
+    while (i < stripped.length && stripped[i] === " ") {
+      i++;
+    }
+    const rest = stripped.slice(i);
+    if (rest === "-" || rest.startsWith("- ") || rest.startsWith("-	")) {
+      return i + 2;
+    }
+    return i;
+  }
+  function yamlCodeText(codeCell) {
+    if (!codeCell.querySelector(".ro-fold-toggle, .ro-fold-note")) {
+      return codeCell.textContent || "";
+    }
+    const clone = codeCell.cloneNode(true);
+    clone.querySelectorAll(".ro-fold-toggle, .ro-fold-note").forEach((el) => {
+      el.remove();
+    });
+    return clone.textContent || "";
+  }
+  function toggleYamlFold(toggle) {
+    const id = toggle.dataset.fold;
+    if (!id) {
+      return;
+    }
+    const pre = toggle.closest("pre");
+    if (!pre) {
+      return;
+    }
+    const folded = !toggle.classList.contains("is-folded");
+    toggle.classList.toggle("is-folded", folded);
+    toggle.setAttribute("aria-expanded", folded ? "false" : "true");
+    pre.querySelectorAll("[data-fold-of]").forEach((line) => {
+      const owners = (line.dataset.foldOf || "").split(" ");
+      if (owners.indexOf(id) !== -1) {
+        line.classList.toggle("ro-line-folded", folded);
+      }
+    });
+  }
+  function injectFoldControls(lineSpan, bodyCount) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ro-fold-toggle";
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.setAttribute("aria-label", "Toggle block");
+    toggle.dataset.fold = lineSpan.id;
+    const note = document.createElement("span");
+    note.className = "ro-fold-note";
+    const lineWord = bodyCount === 1 ? "line" : "lines";
+    note.textContent = ` … ${bodyCount} ${lineWord}`;
+    const anchor = lineSpan.querySelector("a");
+    if (anchor && anchor.nextSibling) {
+      lineSpan.insertBefore(toggle, anchor.nextSibling);
+    } else if (anchor) {
+      lineSpan.appendChild(toggle);
+    } else {
+      lineSpan.insertBefore(toggle, lineSpan.firstChild);
+    }
+    const last = lineSpan.lastChild;
+    if (last && last.nodeType === 3 && (last.textContent || "").indexOf("\n") !== -1) {
+      lineSpan.insertBefore(note, last);
+    } else {
+      lineSpan.appendChild(note);
+    }
+  }
+  function buildYamlFolds() {
+    document.querySelectorAll(".highlighttable td.code pre").forEach((pre) => {
+      if (pre.dataset.roFolds) {
+        return;
+      }
+      try {
+        const lines = Array.prototype.filter.call(
+          pre.children,
+          (el) => el.tagName === "SPAN" && el.id && el.id.indexOf("line-") !== -1
+        );
+        pre.dataset.roFolds = "1";
+        if (lines.length < 3) {
+          return;
+        }
+        const indents = lines.map((el) => yamlEffectiveIndent(el.textContent || ""));
+        const isBlank = lines.map((el) => (el.textContent || "").trim() === "");
+        for (let i = 0; i < lines.length; i++) {
+          if (isBlank[i]) {
+            continue;
+          }
+          let j = i + 1;
+          while (j < lines.length && isBlank[j]) {
+            j++;
+          }
+          if (j >= lines.length || indents[j] <= indents[i]) {
+            continue;
+          }
+          let end = i + 1;
+          let bodyCount = 0;
+          while (end < lines.length) {
+            if (isBlank[end]) {
+              end++;
+              continue;
+            }
+            if (indents[end] > indents[i]) {
+              const cur = lines[end];
+              cur.dataset.foldOf = cur.dataset.foldOf ? `${cur.dataset.foldOf} ${lines[i].id}` : lines[i].id;
+              bodyCount++;
+              end++;
+            } else {
+              break;
+            }
+          }
+          if (bodyCount === 0) {
+            continue;
+          }
+          injectFoldControls(lines[i], bodyCount);
+        }
+      } catch (e) {
+      }
+    });
+  }
+  function highlightYamlLine() {
+    const fragment = location.hash;
+    if (!fragment) {
+      return;
+    }
+    document.querySelectorAll("pre > span.yaml-line-highlight").forEach((el) => {
+      el.classList.remove("yaml-line-highlight");
+    });
+    const element = document.getElementById(`yaml-${fragment.substring(1)}`);
+    if (element) {
+      element.classList.add("yaml-line-highlight");
+      element.scrollIntoView({ block: "center" });
+    }
+  }
+  var foldBindings = [
+    // .ro-fold-toggle (NESTED YAML block fold): toggle the deeper-indented child
+    // lines of a `key:`/`- key:` block in place. Matched BEFORE the section-fold
+    // + gutter-anchor handlers (registration order) so a nested-fold click never
+    // collapses the whole section or jumps a line anchor. The monolith called
+    // preventDefault + stopPropagation + return; we keep stopPropagation (inert
+    // for document siblings per the inventory, but preserved 1:1) and stop:true
+    // mirrors the early return.
+    {
+      event: "click",
+      selector: ".ro-fold-toggle",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleYamlFold(matched);
+        return true;
+      }
+    },
+    // YAML line-number anchors (.linenos a): set the URL hash to the clicked
+    // line, re-highlight, and suppress the default anchor jump. In the monolith
+    // this branch sits AFTER the section-fold branch; here it shares the leaf
+    // list and the section-fold handler (misc-ui) is registered separately. The
+    // two never co-match (an anchor in the gutter is not a section title), so
+    // relative order is immaterial -- but it keeps its own early-return.
+    {
+      event: "click",
+      selector: ".linenos a",
+      stop: true,
+      handler: (event, matched) => {
+        const anchor = matched;
+        location.hash = `#${anchor.href.split("#")[1]}`;
+        highlightYamlLine();
+        event.preventDefault();
+        return true;
+      }
+    }
+  ];
+
   // internal/assets/src/js/bindings.ts
-  var bindings = [];
+  var bindings = [
+    ...foldBindings
+  ];
 
   // internal/assets/src/js/toasts.ts
   var TOAST_VISIBLE_MS = 3500;
@@ -430,13 +605,6 @@
       }
       return;
     }
-    const foldToggle = target.closest(".ro-fold-toggle");
-    if (foldToggle) {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleYamlFold(foldToggle);
-      return;
-    }
     const copyBtn = target.closest(".ro-copy-btn");
     if (copyBtn) {
       event.preventDefault();
@@ -473,13 +641,6 @@
       } else {
         window.history.replaceState(null, "", window.location.pathname + window.location.search);
       }
-      return;
-    }
-    const lineNumber = target.closest(".linenos a");
-    if (lineNumber) {
-      location.hash = `#${lineNumber.href.split("#")[1]}`;
-      highlightYamlLine();
-      event.preventDefault();
       return;
     }
     const nsItem = target.closest("#namespace-dropdown .namespace-item");
@@ -665,20 +826,6 @@
       });
     }
   });
-  function highlightYamlLine() {
-    const fragment = location.hash;
-    if (!fragment) {
-      return;
-    }
-    document.querySelectorAll("pre > span.yaml-line-highlight").forEach((el) => {
-      el.classList.remove("yaml-line-highlight");
-    });
-    const element = document.getElementById(`yaml-${fragment.substring(1)}`);
-    if (element) {
-      element.classList.add("yaml-line-highlight");
-      element.scrollIntoView({ block: "center" });
-    }
-  }
   function collapseSectionsFromHash() {
     const hash = document.location.hash;
     if (!hash) {
@@ -694,124 +841,6 @@
         });
       }
     });
-  }
-  function yamlEffectiveIndent(text) {
-    const stripped = text.replace(/^\n+/, "");
-    let i = 0;
-    while (i < stripped.length && stripped[i] === " ") {
-      i++;
-    }
-    const rest = stripped.slice(i);
-    if (rest === "-" || rest.startsWith("- ") || rest.startsWith("-	")) {
-      return i + 2;
-    }
-    return i;
-  }
-  function yamlCodeText(codeCell) {
-    if (!codeCell.querySelector(".ro-fold-toggle, .ro-fold-note")) {
-      return codeCell.textContent;
-    }
-    const clone = codeCell.cloneNode(true);
-    clone.querySelectorAll(".ro-fold-toggle, .ro-fold-note").forEach((el) => {
-      el.remove();
-    });
-    return clone.textContent;
-  }
-  function toggleYamlFold(toggle) {
-    const id = toggle.dataset.fold;
-    if (!id) {
-      return;
-    }
-    const pre = toggle.closest("pre");
-    if (!pre) {
-      return;
-    }
-    const folded = !toggle.classList.contains("is-folded");
-    toggle.classList.toggle("is-folded", folded);
-    toggle.setAttribute("aria-expanded", folded ? "false" : "true");
-    pre.querySelectorAll("[data-fold-of]").forEach((line) => {
-      const owners = line.dataset.foldOf.split(" ");
-      if (owners.indexOf(id) !== -1) {
-        line.classList.toggle("ro-line-folded", folded);
-      }
-    });
-  }
-  function buildYamlFolds() {
-    document.querySelectorAll(".highlighttable td.code pre").forEach((pre) => {
-      if (pre.dataset.roFolds) {
-        return;
-      }
-      try {
-        const lines = Array.prototype.filter.call(
-          pre.children,
-          (el) => el.tagName === "SPAN" && el.id && el.id.indexOf("line-") !== -1
-        );
-        pre.dataset.roFolds = "1";
-        if (lines.length < 3) {
-          return;
-        }
-        const indents = lines.map((el) => yamlEffectiveIndent(el.textContent));
-        const isBlank = lines.map((el) => el.textContent.trim() === "");
-        for (let i = 0; i < lines.length; i++) {
-          if (isBlank[i]) {
-            continue;
-          }
-          let j = i + 1;
-          while (j < lines.length && isBlank[j]) {
-            j++;
-          }
-          if (j >= lines.length || indents[j] <= indents[i]) {
-            continue;
-          }
-          let end = i + 1;
-          let bodyCount = 0;
-          while (end < lines.length) {
-            if (isBlank[end]) {
-              end++;
-              continue;
-            }
-            if (indents[end] > indents[i]) {
-              lines[end].dataset.foldOf = lines[end].dataset.foldOf ? `${lines[end].dataset.foldOf} ${lines[i].id}` : lines[i].id;
-              bodyCount++;
-              end++;
-            } else {
-              break;
-            }
-          }
-          if (bodyCount === 0) {
-            continue;
-          }
-          injectFoldControls(lines[i], bodyCount);
-        }
-      } catch (e) {
-      }
-    });
-  }
-  function injectFoldControls(lineSpan, bodyCount) {
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "ro-fold-toggle";
-    toggle.setAttribute("aria-expanded", "true");
-    toggle.setAttribute("aria-label", "Toggle block");
-    toggle.dataset.fold = lineSpan.id;
-    const note = document.createElement("span");
-    note.className = "ro-fold-note";
-    const lineWord = bodyCount === 1 ? "line" : "lines";
-    note.textContent = ` … ${bodyCount} ${lineWord}`;
-    const anchor = lineSpan.querySelector("a");
-    if (anchor && anchor.nextSibling) {
-      lineSpan.insertBefore(toggle, anchor.nextSibling);
-    } else if (anchor) {
-      lineSpan.appendChild(toggle);
-    } else {
-      lineSpan.insertBefore(toggle, lineSpan.firstChild);
-    }
-    const last = lineSpan.lastChild;
-    if (last && last.nodeType === 3 && last.textContent.indexOf("\n") !== -1) {
-      lineSpan.insertBefore(note, last);
-    } else {
-      lineSpan.appendChild(note);
-    }
   }
   function logsScrollToTail() {
     const pre = document.querySelector("pre.ro-logpre");
