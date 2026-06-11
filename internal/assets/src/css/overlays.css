@@ -1,0 +1,234 @@
+/* overlays.css -- body-level overlays appended outside the content subtree -- the command palette, the row context menu + bulk bar, toasts, the keyboard-map card -- plus the global prefers-reduced-motion guard (LAST import, so its animation:none overrides win). Bundled by scripts/build-assets.mjs; cascade
+   order is set by readout.css's @import list. */
+
+@layer app {
+    /* ================================================================ ⌘K PALETTE (redesign canonical .ro-pal-*)
+       The redesign palette is an OVERLAY appended to <body>, OUTSIDE the `.ro-rd`
+       content subtree -- so its container rules cannot be gated by an ancestor marker.
+       Instead the redesign palette ROOT (the backdrop) carries `ro-rd` itself (Unit 4
+       adds it): the canonical `.ro-palette-backdrop` / `.ro-palette` container names
+       are gated by `.ro-rd` ON / UNDER that root, which differentiates the redesign
+       palette from the OLD `.ro-palette` / `.ro-palette-panel` / `-row` overlay (left
+       untouched here; Unit 4 retires it). The inner `.ro-pal-*` vocabulary is net-new
+       (no old conflict) and stays bare below. */
+    .ro-rd.ro-palette-backdrop { position: fixed; inset: 0; z-index: 200; background: var(--overlay-bg);
+        backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center;
+        padding-top: 12vh; opacity: 0; pointer-events: none; transition: opacity .12s; }
+    .ro-rd.ro-palette-backdrop.open { opacity: 1; pointer-events: auto; }
+    .ro-rd .ro-palette { width: min(640px, 92vw); max-height: 64vh; display: flex; flex-direction: column;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: 13px;
+        box-shadow: var(--shadow-pop); overflow: hidden; transform: translateY(-6px); transition: transform .12s; }
+    .ro-rd.ro-palette-backdrop.open .ro-palette { transform: translateY(0); }
+    .ro-pal-search { display: flex; align-items: center; gap: 11px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .ro-pal-search .ico { color: var(--text-faint); }
+    .ro-pal-search input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text);
+        font-family: var(--font-ui); font-size: 15px; }
+    .ro-pal-search input::placeholder { color: var(--text-faint); }
+    .ro-pal-scope { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+        border: 1px solid var(--border); border-radius: 5px; padding: 2px 7px; }
+    .ro-pal-list { overflow-y: auto; padding: 6px; }
+    .ro-pal-empty { padding: 18px 12px 20px; text-align: center; font-family: var(--font-mono);
+        font-size: 11px; color: var(--text-faint); }
+    .ro-pal-group { padding: 9px 10px 4px; font-family: var(--font-mono); font-size: 9.5px;
+        letter-spacing: .12em; text-transform: uppercase; color: var(--text-faint); }
+    .ro-pal-item { display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 8px;
+        cursor: pointer; color: var(--text); }
+    .ro-pal-item .ico, .ro-pal-item .ico svg { width: 16px; height: 16px; color: var(--text-muted); }
+    .ro-pal-item .pal-label { font-size: 13.5px; flex: 1; min-width: 0; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; }
+    .ro-pal-item .pal-label .pal-ctx { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; margin-left: 8px; }
+    .ro-pal-item .pal-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+    /* compact namespaced/cluster scope badge on resource-type rows -- the Unit 3
+       `.scope-badge` vocabulary (D3 colour law: a categorical scope stays a
+       quiet neutral badge; only the cluster variant earns the amber-mixed
+       border, matching resource_types.templ). The prototype's info-tinted `ns`
+       variant is deliberately NOT carried -- D3 takes precedence over the demo
+       CSS. */
+    .ro-pal-item .pal-scope { font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em;
+        padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-faint);
+        white-space: nowrap; }
+    .ro-pal-item .pal-scope.cluster { color: var(--st-warn); border-color: color-mix(in oklab, var(--st-warn) 35%, var(--border)); }
+    /* short status on a harvested page-object row, tinted by tone */
+    .ro-pal-item .pal-status { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
+    .ro-pal-item .pal-status.ok { color: var(--st-ok); }
+    .ro-pal-item .pal-status.warn { color: var(--st-warn); }
+    .ro-pal-item .pal-status.err { color: var(--st-err); }
+    .ro-pal-item .pal-status.info { color: var(--st-info); }
+    .ro-pal-item .pal-status.mute { color: var(--text-faint); }
+    .ro-pal-item .ro-kbd { margin-left: 4px; }
+    .ro-pal-item.active { background: var(--accent-weak); }
+    .ro-pal-item.active .ico, .ro-pal-item.active .ico svg { color: var(--accent); }
+    .ro-pal-item.active .pal-meta { color: var(--text-muted); }
+    .ro-pal-foot { display: flex; align-items: center; gap: 16px; padding: 9px 14px; border-top: 1px solid var(--border);
+        font-size: 11px; color: var(--text-faint); }
+    .ro-pal-foot .hint { display: inline-flex; align-items: center; gap: 5px; }
+    .ro-pal-foot .spacer { flex: 1; }
+
+
+    /* ================================================================ CONTEXT MENU + BULK BAR (Unit 16 / D10) */
+    /* Right-click row context menu -- lifted from the v2 prototype chrome.css
+       (.ro-ctxmenu), net-new class (no v1 collision, no .ro-rd marker needed).
+       Fixed and viewport-clamped by readout.js; `is-open` reveals. Items are
+       <button>s (the app reset keeps font/color but not background/border, so
+       both zero out here); a row-dependent item (View logs, pods only) hides
+       via [hidden], which must beat the display:flex item rule below. */
+    .ro-ctxmenu { position: fixed; z-index: 95; min-width: 200px; display: none;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+        box-shadow: var(--shadow-pop); padding: 5px; }
+    .ro-ctxmenu.is-open { display: block; }
+    .ro-ctxmenu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px;
+        border: 0; background: none; border-radius: var(--radius-sm); font-size: 12.5px;
+        color: var(--text); text-align: left; }
+    .ro-ctxmenu button[hidden] { display: none; }
+    .ro-ctxmenu button .ico { color: var(--text-muted); }
+    .ro-ctxmenu button:hover { background: var(--surface-2); }
+    .ro-ctxmenu hr { border: 0; border-top: 1px solid var(--border-soft); margin: 5px 0; }
+    .ro-ctxmenu .ro-kbd { margin-left: auto; }
+
+    /* Bottom-center bulk-selection pill -- lifted from the v2 prototype
+       data.css (.ro-bulkbar). Closed = faded out via the is-open transition
+       (the markup also goes `inert`, so the invisible controls drop out of
+       focus order and the a11y tree); the count is the accent voice (§6.4). */
+    .ro-bulkbar { position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 8px);
+        z-index: 80; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 16px;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: 11px;
+        box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none;
+        transition: opacity var(--dur), transform var(--dur); }
+    .ro-bulkbar.is-open { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+    .ro-bulkbar .bulk-count { font-size: 12px; font-weight: 550; color: var(--accent-text); padding-right: 6px; }
+    .ro-bulkbar .bulk-x { display: inline-flex; align-items: center; justify-content: center;
+        width: 26px; height: 26px; border: 0; background: none; border-radius: 6px; color: var(--text-faint); }
+    .ro-bulkbar .bulk-x:hover { background: var(--surface-2); color: var(--text); }
+
+
+    /* Toasts (D24 / SPEC §8.8): bottom-right, 3.5s, mono caption voice. Only
+       async results detached from their trigger toast (bulk download refused
+       over the cap, refresh resumed); inline feedback (copy -> "Copied")
+       never does. The #ro-toasts host is layout chrome outside the swap
+       targets; readout.js appends one .ro-toast per message and removes it
+       after 3.5s (.is-leaving fades it out first). pointer-events:none on the
+       host keeps the corner click-through; toasts are announcements, not
+       controls. */
+    .ro-toasts { position: fixed; right: 18px; bottom: 18px; z-index: 90; display: flex;
+        flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+    .ro-toast { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted);
+        background: var(--surface); border: 1px solid var(--border-strong);
+        border-radius: var(--radius); box-shadow: var(--shadow-pop); padding: 8px 12px;
+        max-width: 360px; animation: ro-toast-in var(--dur) ease-out;
+        transition: opacity .2s ease, transform .2s ease; }
+    .ro-toast.is-leaving { opacity: 0; transform: translateY(4px); }
+    @keyframes ro-toast-in { from { opacity: 0; transform: translateY(6px); } }
+
+
+    /* ================================================================ "?" KEYBOARD OVERLAY (Unit 18 / D10) */
+    /* The keyboard-map card -- lifted verbatim from the v2 prototype data.css
+       (.kbd-overlay block). Global layout chrome (kbdOverlayC) revealed via
+       `open` on the backdrop; readout.js owns toggle/esc/backdrop-close and
+       the focus trap (the card is the dialog's only focus stop). z-index 210
+       keeps it above the palette (200-tier) like the prototype. */
+    .kbd-overlay { position: fixed; inset: 0; z-index: 210; background: var(--overlay-bg);
+        backdrop-filter: blur(2px); display: none; place-items: center; }
+    .kbd-overlay.open { display: grid; }
+    .kbd-card { width: 480px; background: var(--surface); border: 1px solid var(--border-strong);
+        border-radius: 13px; box-shadow: var(--shadow-pop); padding: 22px 24px 14px; }
+    .kbd-card h3 { font-size: 15px; font-weight: 650; margin: 0 0 14px; }
+    .kbd-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px; }
+    .kbd-grp { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--text-faint); margin: 4px 0 8px; }
+    .kbd-row { display: flex; align-items: center; gap: 7px; padding: 4px 0;
+        font-size: 12.5px; color: var(--text-muted); }
+    .kbd-row span:last-child { margin-left: 2px; }
+    .kbd-foot { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border-soft);
+        font-size: 10.5px; color: var(--text-ghost); text-align: center; }
+
+    /* ================================================================ RESPONSIVE
+       The mobile/rail media blocks live here (the LAST-imported module) so their
+       equal-specificity overrides beat the base rules they target across shell.css
+       and table.css (the .ro-cardlist display flip, the .menu-toggle reveal, the
+       sidebar/topbar mobile collapse). */
+    /* base .menu-toggle box (no media query) -- the hamburger chrome lifted from
+       the Pods Mobile artboard; the reveal media queries below flip its display. */
+    .menu-toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px;
+        height: 32px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); }
+
+    /* icon rail (Unit 23 / SPEC §8.5 / D22): between the mobile card layer
+       (≤760px) and the full sidebar (>1100px) the sidebar collapses to an
+       icon-only rail. The `.ro-rail` modifier rides on the aside markup at every
+       width (the `.has-cards` pattern); THIS media query decides when it bites:
+       labels + counts hide (each entry's label survives as its `title` tooltip,
+       layout.templ), kind icons center in a 52px strip, group labels become thin
+       dividers, and the active entry keeps the accent-weak fill + the left accent
+       bar (::before re-anchored to the narrower 6px padding). The content column
+       (.ro-main, flex:1 min-width:0) reflows into the reclaimed width; wide tables
+       keep scrolling horizontally inside .ro-table-wrap with the sticky first
+       column, so the name column never leaves reach. The ns pill clamps harder so
+       a long namespace ellipsises instead of crowding the topbar (its
+       .context-name already carries text-overflow: ellipsis). The 760.02px floor
+       keeps the rail clear of the ≤760px mobile block below (fractional viewport
+       widths at the seam fall back to the full sidebar -- never to overlap). */
+    @media (min-width: 760.02px) and (max-width: 1100px) {
+        .ro-sidebar.ro-rail { width: 52px; padding: 14px 6px 24px; overflow-x: hidden; }
+        .ro-sidebar.ro-rail .menu-label {
+            height: 0; padding: 0; margin: 10px 6px 8px; overflow: hidden;
+            border-top: 1px solid var(--border-soft);
+        }
+        .ro-sidebar.ro-rail .menu-label:first-child { display: none; }
+        .ro-sidebar.ro-rail .menu-list a { justify-content: center; gap: 0; padding: 8px 0; }
+        .ro-sidebar.ro-rail .menu-list a .nav-label,
+        .ro-sidebar.ro-rail .menu-list a .menu-count { display: none; }
+        .ro-sidebar.ro-rail .menu-list a.is-active::before { left: -6px; }
+        .ctx-dd { max-width: min(22rem, 26vw); }
+    }
+
+    /* responsive switch (from base.css @media max-width:760px) -- drives the mobile
+       card layout the Pods Mobile artboard shows. Below 760px the sidebar is hidden
+       and the `.menu-toggle` hamburger (Unit 15, topbar) reveals it: the delegated
+       readout.js click handler toggles `.is-active` on `.ro-sidebar`, and the
+       `.is-active` rule below floats it as a fixed overlay panel under the sticky
+       topbar (so it does not shove the card list). The inline ⌘K search box is
+       hidden too (the palette still opens via ⌘K / Ctrl+K). */
+    @media (max-width: 760px) {
+        .ro-sidebar { display: none; }
+        .ro-sidebar.is-active {
+            display: block;
+            position: fixed; top: var(--topbar-h); left: 0; bottom: 0; z-index: 60;
+            width: min(var(--sidebar-w), 82vw);
+            box-shadow: var(--shadow-pop);
+        }
+        .ro-main { padding: 16px 13px 60px; }
+        header.ro-topbar { gap: 10px; padding: 0 11px; }
+        .ctx-dd { max-width: 32vw; }
+        .topnav,
+        .refresh-label { display: none; }
+        .ro-search { display: none; }
+        .ro-title { font-size: 21px; }
+        .ro-mobile-hide { display: none !important; }
+        .ro-table-wrap.has-cards { display: none; }
+        .ro-cardlist { display: flex; }
+    }
+    @media (max-width: 420px) {
+        header.ro-topbar .brand-name { display: none; }
+        header.ro-topbar .brand-item { padding-right: 0; }
+    }
+    /* The hamburger is mobile-only chrome: hidden at the desktop width where the
+       sidebar is always present, shown by the media query default below 760px (its
+       base .menu-toggle box styling is lifted from the Pods Mobile artboard above). */
+    .menu-toggle { display: none; }
+    @media (max-width: 760px) { .menu-toggle { display: inline-flex; } }
+
+    /* Respect prefers-reduced-motion for the ported pulse / skeleton / morph
+       animations (D-reduced-motion). The static look is kept; only the looping /
+       sweeping / pulsing motion is dropped. */
+    @media (prefers-reduced-motion: reduce) {
+        /* Matches the active-state pulse selector above (the id-weighted rule
+           would out-rank a bare .ro-livedot override). Only the motion drops:
+           the brand colour keeps carrying the live signal. */
+        #refresh-dropdown.refresh-on .ro-livedot { animation: none; }
+        .ro-dot.pulse { animation: none; }
+        .rep .rep-track i.updating { animation: none; }
+        .ro-rd .ro-palette { transition: none; }
+        .ro-bulkbar { transition: none; }
+        .ro-toast { animation: none; transition: none; }
+        .skel { animation: none; }
+        .ro-fold-toggle { transition: none; }
+}

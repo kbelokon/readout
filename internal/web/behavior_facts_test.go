@@ -83,15 +83,15 @@ func TestBehaviorAppChromeAndJSContract(t *testing.T) {
 	// Single-type pages carry the D8 columns popover in the title row (it
 	// replaced the v1 toggle-tools + tools form there; multi-type pages keep
 	// the old chrome -- pinned in TestColsPopoverSingleTypeGate).
-	p.wantAttr("button#ro-cols-btn[data-cols-toggle]", "title", "Columns")
+	p.wantAttr("button#ro-cols-btn[data-ro-cols-toggle]", "title", "Columns")
 	p.wantHas("#ro-cols-pop .col-toggle")
 	p.wantAbsent("a.toggle-tools")
 
-	// Auto-refresh dropdown: each option carries data-interval (10 replaced 15
+	// Auto-refresh dropdown: each option carries data-ro-interval (10 replaced 15
 	// per D18/SPEC §8.3; Live joined in Unit 27/D19); the handler stores that
 	// value and re-arms the poll (or opens the stream for Live).
-	if got := p.attrs("#refresh-dropdown .refresh-option", "data-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
-		t.Fatalf("refresh-option data-interval set = %v, want [0 5 10 30 60 Live]", got)
+	if got := p.attrs("#refresh-dropdown .refresh-option", "data-ro-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
+		t.Fatalf("refresh-option data-ro-interval set = %v, want [0 5 10 30 60 Live]", got)
 	}
 	p.wantHas("#refresh-label")
 
@@ -198,7 +198,7 @@ func TestPaletteRendersGroupedDataDriven(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Clusters list: the cluster rows (the ro-cell-name cells), the search-select
-// checkboxes with data-toggle-button, and the disabled search button they gate.
+// checkboxes with data-ro-toggle-button, and the disabled search button they gate.
 // ---------------------------------------------------------------------------
 
 func TestBehaviorClustersPage(t *testing.T) {
@@ -230,9 +230,9 @@ func TestBehaviorClustersPage(t *testing.T) {
 	p.wantAbsent(".menu-label")
 	p.wantAbsent(".ro-sidebar")
 
-	// Search-select contract: a per-row checkbox carries data-toggle-button
+	// Search-select contract: a per-row checkbox carries data-ro-toggle-button
 	// pointing at the (initially disabled, until >=1 selected) primary search CTA.
-	p.wantAttr(`input.ro-check[type="checkbox"][name="cluster"]`, "data-toggle-button", "search-clusters-button")
+	p.wantAttr(`input.ro-check[type="checkbox"][name="cluster"]`, "data-ro-toggle-button", "search-clusters-button")
 	p.wantHas("button.ro-btn#search-clusters-button[disabled]")
 }
 
@@ -255,11 +255,11 @@ func TestBehaviorClusterOverview(t *testing.T) {
 
 	// Namespace rows ride the BORROWED clusters `.ro-select-table` treatment (D11):
 	// the name cell is the canonical `.cl-name` mono link. Cell VALUES + the
-	// search-select data-toggle-button.
+	// search-select data-ro-toggle-button.
 	if got := p.texts("td.cl-name"); strings.Join(got, "|") != "default|kube-system|my-app" {
 		t.Fatalf("namespace rows = %v, want [default kube-system my-app]", got)
 	}
-	p.wantAttr(`input.ro-check[type="checkbox"][name="namespace"]`, "data-toggle-button", "search-namespaces-button")
+	p.wantAttr(`input.ro-check[type="checkbox"][name="namespace"]`, "data-ro-toggle-button", "search-namespaces-button")
 	p.wantHas("button.ro-btn#search-namespaces-button[disabled]")
 	// Clicking a namespace drops into its pods (the redesign contract).
 	p.wantAttr("td.cl-name a", "href", "/clusters/test/namespaces/default/pods")
@@ -602,7 +602,7 @@ func TestBehaviorPodListAllNamespaces(t *testing.T) {
 		t.Fatalf("all-namespaces first header = %q, want Namespace (headers=%v)", headers[0], headers)
 	}
 	// Breadcrumb middle crumb is the all-namespaces link.
-	p.wantHas(`nav.breadcrumb a[href="/clusters/test/namespaces"]`)
+	p.wantHas(`nav.ro-breadcrumb a[href="/clusters/test/namespaces"]`)
 }
 
 // TestBehaviorListQueryMatrix walks the query-variant matrix and pins, per
@@ -974,14 +974,14 @@ func TestBehaviorDetailBreadcrumb(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
 
-	crumbs := p.texts("nav.breadcrumb li a")
+	crumbs := p.texts("nav.ro-breadcrumb li a")
 	if strings.Join(crumbs, "|") != "test|default|pods|nginx" {
 		t.Fatalf("detail breadcrumb crumbs = %v, want [test default pods nginx]", crumbs)
 	}
-	p.wantHas(`nav.breadcrumb a[href="/clusters/test"]`)
-	p.wantHas(`nav.breadcrumb a[href="/clusters/test/namespaces/default"]`)
-	p.wantHas(`nav.breadcrumb a[href="/clusters/test/namespaces/default/pods"]`)
-	p.wantText("nav.breadcrumb li.is-active a", "nginx")
+	p.wantHas(`nav.ro-breadcrumb a[href="/clusters/test"]`)
+	p.wantHas(`nav.ro-breadcrumb a[href="/clusters/test/namespaces/default"]`)
+	p.wantHas(`nav.ro-breadcrumb a[href="/clusters/test/namespaces/default/pods"]`)
+	p.wantText("nav.ro-breadcrumb li.is-active a", "nginx")
 }
 
 // ---------------------------------------------------------------------------
@@ -1057,9 +1057,9 @@ func TestSearchRender(t *testing.T) {
 	// The "Refine · ⌘K" affordance: a type=button (never a submit) carrying the
 	// query for the delegated readout.js listener that opens the ⌘K palette
 	// prefilled. The TOPBAR search affordance stays the palette trigger.
-	p.wantAttr(`.ro-title-actions button[data-search-refine]`, "data-query", "nginx")
-	p.wantAttr(`.ro-title-actions button[data-search-refine]`, "type", "button")
-	p.wantHas(`.ro-topbar .ro-search[data-palette-open]`)
+	p.wantAttr(`.ro-title-actions button[data-ro-search-refine]`, "data-query", "nginx")
+	p.wantAttr(`.ro-title-actions button[data-ro-search-refine]`, "type", "button")
+	p.wantHas(`.ro-topbar .ro-search[data-ro-palette-open]`)
 
 	// Scope-opts line: a `.ok` cluster chip naming the single cluster + the
 	// namespace + the type summary.

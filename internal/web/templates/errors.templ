@@ -119,5 +119,5 @@ templ emptyPlain(d ListData, table TableData) {
 // armed (interval Off). The Retry now button re-fires the read-only refresh
 // GET.
 templ staleBanner() {
-	<div class="ro-banner warn ro-stale-banner" role="alert" hidden><span class="bn-ico ico sm">@iconC("rotate-cw")</span><div class="bn-body"><p class="bn-title">Auto-refresh failed — showing the last good data</p><p class="bn-text">Retrying in <span class="mono" data-stale-countdown>…</span>. The rows below are the last good data.</p></div><div class="bn-actions"><button type="button" class="ro-btn quiet sm ro-stale-retry">Retry now</button></div></div>
+	<div class="ro-banner warn ro-stale-banner" role="alert" hidden><span class="bn-ico ico sm">@iconC("rotate-cw")</span><div class="bn-body"><p class="bn-title">Auto-refresh failed — showing the last good data</p><p class="bn-text">Retrying in <span class="mono" data-stale-countdown>…</span>. The rows below are the last good data.</p></div><div class="bn-actions"><button type="button" class="ro-btn quiet sm ro-stale-retry" data-ro-action="retry">Retry now</button></div></div>
 }

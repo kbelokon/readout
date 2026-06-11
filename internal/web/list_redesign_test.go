@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -836,11 +834,7 @@ func TestListPartialPushURLContract(t *testing.T) {
 // the RO-No-Push programmatic marker, the user-request in-flight suppression,
 // and the identity-keyed row-state store re-applied after swaps.
 func TestListLoopReadoutJSContract(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
-	if err != nil {
-		t.Fatalf("read readout.js: %v", err)
-	}
-	js := string(src)
+	js := readoutJS(t)
 	for _, needle := range []string{
 		"htmx.defineExtension('ro-morph'", // the JS-config morph path (no attribute eval)
 		"ignoreActiveValue: true",         // filter draft/focus survives a mid-typing morph
@@ -894,11 +888,7 @@ func TestListLoopReadoutJSContract(t *testing.T) {
 // pinned needle-style here (no headless JS runner in this suite; the
 // roLive.discards seam is exercised end to end by live.spec.ts).
 func TestLiveWrongPageGateReadoutJSContract(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
-	if err != nil {
-		t.Fatalf("read readout.js: %v", err)
-	}
-	js := string(src)
+	js := readoutJS(t)
 	// Layer 1: the morph-time page-identity gate in liveHandleFrame — a frame
 	// whose stream identity no longer matches the live location is discarded,
 	// and every discard branch feeds the observability counter + seam.

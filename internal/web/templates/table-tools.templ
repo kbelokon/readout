@@ -1,0 +1,141 @@
+package templates
+
+// table-tools.templ holds the per-table tools chrome: the v1 label-columns /
+// selector / filter tools form (toolsForm), the D8 ⊞ column-visibility popover
+// (colsPopover + colsPopoverForm), and the Filters v2 chips editor (filterBar +
+// its placeholder helper). They mount into the title-actions row rendered by
+// table-chrome.templ.
+
+// toolsForm renders the per-table label-columns / selector / filter tools form.
+templ toolsForm(t TableTools, tableIndex int) {
+	<form action="#" method="get" id={ toolsTableID(tableIndex) } class={ "tools-form" + activeSuffix(t.Active) }>
+		for _, in := range t.HiddenInputs {
+			<input type="hidden" name={ in.Name } value={ in.Value }>
+		}
+		<div class="ro-tools-grid">
+			<label class="ro-tools-field">
+				<span class="ro-tools-label">Label Columns</span>
+				<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(t.TableIcon)</span><input class="ro-input" type="text" placeholder="Labels to show as columns (comma separated) or '*' to show all labels" name="labelcols" value={ t.LabelColsVal }></span>
+			</label>
+			<label class="ro-tools-field">
+				<span class="ro-tools-label">Label Selector</span>
+				<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(t.TagsIcon)</span><input class="ro-input" type="text" placeholder="Label selector (label=value)" name="selector" value={ t.SelectorVal }></span>
+			</label>
+			<label class="ro-tools-field">
+				<span class="ro-tools-label">Filter</span>
+				<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(t.FilterIcon)</span><input class="ro-input" type="text" placeholder="Filter by any column (Column=value) or text" name="filter" value={ t.FilterVal }></span>
+			</label>
+			<div class="ro-tools-actions"><button class="ro-btn quiet" type="submit">Submit</button></div>
+		</div>
+	</form>
+}
+
+func toolsTableID(tableIndex int) string {
+	return "tools-table-" + itoa(tableIndex+1)
+}
+
+// colsPopover renders the ⊞ column-visibility popover (D8): one checkbox row
+// per column of the FULL universe (hidden columns included; the identity
+// column checked + disabled), then the labelcols / selector form absorbed from
+// the v1 tools form. It lives inside the morphed fragment, so every toggle's
+// partial re-render refreshes the checkbox states from server truth;
+// readout.js owns the open state (`.is-open`, re-applied after each morph) and
+// the toggle gesture (cookie write + RO-No-Push `_table` re-render -- never a
+// history entry). The stable ids let idiomorph match the popover and its
+// inputs across morphs (ignoreActiveValue keeps a focused draft).
+templ colsPopover(c ColsPopover) {
+	<div class="ro-pop" id="ro-cols-pop" data-plural={ c.Plural }>
+		<div class="pop-head">Columns</div>
+		for _, entry := range c.Entries {
+			<button
+				type="button"
+				class="col-toggle"
+				data-ro-action="toggle-column"
+				data-col={ entry.Name }
+				if entry.Identity {
+					disabled
+					title="The identity column cannot be hidden"
+				}
+			><input
+				type="checkbox"
+				class="ro-check"
+				tabindex="-1"
+				if !entry.Hidden {
+					checked
+				}
+				if entry.Identity {
+					disabled
+				}
+			><span>{ entry.Name }</span></button>
+		}
+		@colsPopoverForm(c)
+	</div>
+}
+
+// colsPopoverForm is the labelcols + selector half of the popover: the same
+// read-only GET form mechanics the v1 tools form used (hidden inputs
+// round-trip the other params; readout.js blanks empty input names on submit
+// so they never pollute the URL). Capabilities kept: the `labelcols` /
+// `selector` params and their config defaults are untouched -- only the input
+// chrome moved here.
+templ colsPopoverForm(c ColsPopover) {
+	// hx-boost="false": the body-level boost would otherwise intercept this
+	// submit ahead of the document-level JS merge handler and race it with a
+	// form-fields-only GET (last-write-wins wiped the f= chips
+	// nondeterministically); the JS submit handler owns this form, the native
+	// GET stays as the no-JS floor.
+	<form action="#" method="get" class="ro-pop-form" hx-boost="false">
+		for _, in := range c.Tools.HiddenInputs {
+			<input type="hidden" name={ in.Name } value={ in.Value }>
+		}
+		// The section heads above each input already NAME the field, so the
+		// placeholders carry only a short worked example that fits the popover
+		// width un-clipped; the full explanation lives in the title tooltip
+		// (a clipped placeholder is unreadable -- field report 2026-06-11).
+		<div class="pop-head">Label columns</div>
+		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TableIcon)</span><input id="ro-cols-labelcols" class="ro-input" type="text" placeholder="app, team — or *" name="labelcols" value={ c.Tools.LabelColsVal } aria-label="Label columns" title="Comma-separated label keys to show as table columns; * shows every label"></span>
+		<div class="pop-head">Label selector</div>
+		<span class="ro-input-wrap"><span class="ico sm ro-field-icon" aria-hidden="true">@templ.Raw(c.Tools.TagsIcon)</span><input id="ro-cols-selector" class="ro-input" type="text" placeholder="app=nginx,tier!=cache" name="selector" value={ c.Tools.SelectorVal } aria-label="Label selector" title="Kubernetes label selector — only rows whose labels match are listed"></span>
+		<div class="ro-tools-actions"><button class="ro-btn quiet" type="submit">Apply</button></div>
+	</form>
+}
+
+// filterBar renders the Filters v2 chips editor (D7): the `.ro-tools-filter`
+// field with the active `?f=` chips (server-rendered, so shareable URLs land
+// with chips visible), the free-text/autocomplete input readout.js drives, the
+// inline unknown-field hint mount, and the filter-hint legend. The input
+// carries a STABLE id so idiomorph matches it across morphs (the v2 loop runs
+// ignoreActiveValue:true -- a focused draft and its caret survive every tick).
+// Each chip's ✕ is a real link (no-JS fallback); readout.js intercepts it to
+// ride the partial loop. The `.ro-filter-ac` mount is the JS-owned autocomplete
+// dropdown (rendered empty + hidden here so morphs keep a stable anchor).
+templ filterBar(fb FilterBarData) {
+	<div class="tools-row ro-filterbar">
+		<div class="ro-tools-filter" id="ro-filter-field">
+			<span class="ico sm" aria-hidden="true">@templ.Raw(fb.FilterIcon)</span>
+			for _, chip := range fb.Chips {
+				<span class="ro-scope-chip">
+					if chip.Field != "" {
+						<span class="ck">{ chip.Field }</span><b>{ chip.Op }</b><span class="v">{ chip.Value }</span>
+					} else {
+						<span class="v">{ chip.Label }</span>
+					}
+					<a class="chip-x" data-ro-action="remove-chip" href={ templ.SafeURL(chip.RemoveHref) } title="remove" aria-label={ "Remove filter " + chip.Label }>✕</a>
+				</span>
+			}
+			<input id="ro-filter-input" type="text" autocomplete="off" spellcheck="false" placeholder={ filterPlaceholder(fb) } aria-label="Filter">
+			<div class="ro-filter-ac" id="ro-filter-ac" hidden></div>
+		</div>
+	</div>
+	<div class="ro-filter-error" id="ro-filter-error" hidden></div>
+	<div class="filter-hint"><span><b>filter</b>{ " free text matches the name" }</span> <span><b>field:value</b>{ " ⏎ adds a removable chip" }</span> <span><b>⌫</b>{ " on empty input removes the last chip" }</span></div>
+}
+
+// filterPlaceholder is the editor input's placeholder: the worked-example copy
+// when no chips are active, empty once chips exist (the prototype contract).
+func filterPlaceholder(fb FilterBarData) string {
+	if len(fb.Chips) > 0 {
+		return ""
+	}
+	return "Filter " + fb.Plural + "…   status:Running   node:worker   ⏎ makes a chip"
+}

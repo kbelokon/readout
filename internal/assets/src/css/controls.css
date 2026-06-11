@@ -1,0 +1,59 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Type split (the redesign's core move): CALM CHROME / LOUD DATA.
+
+       CHROME is the quiet grotesk (--font-ui): the whole page inherits it from
+       <body>, so nav, sidebar, sidebar labels, titles and prose are grotesk
+       without being named one by one. DATA is the monospace face (--font-mono):
+       identifiers, namespaces, YAML, numbers, ages, kind/label tags and the
+       breadcrumb path are opted INTO mono so columns of identifiers and numerics
+       align (tabular figures are baked into the Geist Mono @font-face, so mono
+       elements get aligned numerals for free). Both vars carry a fallback stack
+       (declared on :root) so text stays readable while the woff2 loads.
+
+       <body> is the page shell: it carries the grotesk UI face AND the theme
+       foundation (page surface + base text colour) from tokens, so the whole
+       app picks up the right palette per theme. The one blue / off-white
+       identifier hue (--id-color) is wired onto links here -- the token comment
+       defines it as "identifiers + links", and it is the only saturated colour
+       in the chrome. Component surfaces (navbar/table/sidebar fills) are later
+       units; this is just the shared root. */
+    body {
+        font-family: var(--font-ui);
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+    }
+    a { color: var(--id-color); text-decoration: none; }
+
+    /* DATA -> mono. Code/pre/highlight (YAML + resource blocks), kind/label tags,
+       and table cells (identifiers + numerics + ages). (Unit 17: the breadcrumb
+       mono now rides the single `.ro-rd .ro-breadcrumb` contract in shell.css; the
+       `nav.breadcrumb` legacy hook was removed here with the legacy rules below.) */
+    code,
+    pre,
+    .highlight,
+    .highlight pre,
+    .tag,
+    table.table th,
+    table.table td { font-family: var(--font-mono); }
+
+    /* (Unit 17) the legacy `nav.breadcrumb.ro-breadcrumb` rules were removed: the
+       breadcrumb is now a SINGLE `.ro-rd .ro-breadcrumb` contract (shell.css) that
+       carries the exact values these rules were painting. */
+
+    /* Inline-SVG icons (Lucide) emitted by the partials/icons.html `icon()` macro.
+       The SVGs carry no width/height of their own, so they size to the owned
+       `.icon` span here; stroke="currentColor" makes them follow the surrounding
+       (theme-aware) text colour. Replaces the FontAwesome-JS runtime. */
+    .icon svg.lucide-icon {
+        width: 1.25em;
+        height: 1.25em;
+        vertical-align: middle;
+    }
+
+}

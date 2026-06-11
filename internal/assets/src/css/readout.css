@@ -1,0 +1,53 @@
+/* readout.css -- the single app stylesheet (ENTRY POINT).
+ *
+ * This file owns ZERO style rules. It owns the cascade ORDER: the @layer
+ * pre-declaration sets layer precedence, and the @import list below sets the
+ * rule order WITHIN each layer (Lightning CSS concatenates each imported
+ * `@layer app {...}` / `@layer theme {...}` block in import order). The former
+ * redesign.css port module has been DISSOLVED (Unit 16): its chrome zones moved
+ * into the thematic modules they belong to (top bar / layout / icons / dots ->
+ * shell; table / virtualization / list cells -> table; detail -> detail; logs ->
+ * logs; states -> states; overlays + the reduced-motion guard -> overlays). The
+ * redesign rules win over the bare twins they coexist with by specificity, so the
+ * move was order-safe. overlays.css is imported LAST so its prefers-reduced-motion
+ * `animation: none` overrides win over every base animation across the tree.
+ *
+ * Cascade layers. The order below is the cascade order: later-named layers
+ * WIN over earlier ones regardless of selector specificity. So:
+ *
+ *     theme   -- theme-scoped colours + the Pygments syntax-highlight palette
+ *                (light default, dark under [data-theme=dark] / prefers dark);
+ *     app     -- the owned reset, native controls, and component rules.
+ *
+ * The @layer statement MUST come before any style rule (only comments may
+ * precede it). There is no frontend build step at runtime and no external
+ * stylesheet -- scripts/build-assets.mjs bundles this tree to static/readout.css.
+ *
+ * @font-face + the font-token :root live in fonts.css, imported FIRST and kept
+ * OUTSIDE the cascade layers (global descriptors; only @layer/@import may
+ * precede them). Lightning CSS hoists the layers and emits the un-layered font
+ * block after them -- this is order-preserving, not a rule change.
+ */
+@layer theme, app;
+
+/* Self-hosted fonts (un-layered) -- must precede the layer modules. */
+@import "fonts.css";
+
+/* @layer app -- owned reset, native controls, and component rules, in cascade
+   order. Each module re-opens `@layer app { ... }`; the bundler concatenates
+   them in THIS order. */
+@import "reset.css";
+@import "controls.css";
+@import "shell.css";
+@import "table.css";
+@import "cards-yaml.css";
+@import "detail.css";
+@import "search.css";
+@import "logs.css";
+@import "states.css";
+@import "overlays.css";
+
+/* @layer theme -- design tokens + dynamic colours, then the Pygments palette
+   (isolated as a vendor-like module). */
+@import "theme.css";
+@import "pygments.css";

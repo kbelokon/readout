@@ -1,0 +1,35 @@
+{
+  "doc": "Decode-direction fixtures: malformed cookie values that must yield empty prefs (ok=false), never an error -- the page renders as if no preferences existed. Mirrors readout.js readPrefs leniency.",
+  "decode_cases": [
+    {
+      "why": "no version prefix",
+      "value": "eyJraW5kcyI6W119",
+      "want_ok": false
+    },
+    {
+      "why": "foreign version",
+      "value": "v2.eyJraW5kcyI6W119",
+      "want_ok": false
+    },
+    {
+      "why": "empty after prefix",
+      "value": "v1.",
+      "want_ok": false
+    },
+    {
+      "why": "invalid base64url",
+      "value": "v1.@@@not-base64@@@",
+      "want_ok": false
+    },
+    {
+      "why": "valid base64 but not JSON",
+      "value": "v1.bm90IGpzb24gYXQgYWxs",
+      "want_ok": false
+    },
+    {
+      "why": "mistyped inner field (all-or-nothing)",
+      "value": "v1.eyJraW5kcyI6W3siayI6InBvZHMiLCJzb3J0Ijo1fV19",
+      "want_ok": false
+    }
+  ]
+}

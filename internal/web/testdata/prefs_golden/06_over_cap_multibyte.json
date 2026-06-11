@@ -1,0 +1,78 @@
+{
+  "doc": "Over-cap with multibyte (CJK) names. Edge case: Go caps on len(value) (bytes), JS on value.length (UTF-16 code units) -- but the ENCODED string is pure ASCII, so both metrics agree and eviction picks the same victims (drops 五覧 then 四覧). Pins the byte-vs-codeunit equivalence.",
+  "payload": {
+    "kinds": [
+      {
+        "k": "一覧",
+        "sort": "名前",
+        "hide": [
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列"
+        ]
+      },
+      {
+        "k": "二覧",
+        "sort": "名前",
+        "hide": [
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列"
+        ]
+      },
+      {
+        "k": "三覧",
+        "sort": "名前",
+        "hide": [
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列"
+        ]
+      },
+      {
+        "k": "四覧",
+        "sort": "名前",
+        "hide": [
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列"
+        ]
+      },
+      {
+        "k": "五覧",
+        "sort": "名前",
+        "hide": [
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列",
+          "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列"
+        ]
+      }
+    ],
+    "refresh": "30"
+  },
+  "evicted": [
+    "五覧",
+    "四覧"
+  ],
+  "kept": [
+    "一覧",
+    "二覧",
+    "三覧"
+  ],
+  "encoded": "v1.eyJraW5kcyI6W3siayI6IuS4gOimpyIsInNvcnQiOiLlkI3liY0iLCJoaWRlIjpbIuWIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIlyIsIuWIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIlyIsIuWIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIlyIsIuWIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIlyIsIuWIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIlyIsIuWIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIl-WIlyJdfSx7ImsiOiLkuozopqciLCJzb3J0Ijoi5ZCN5YmNIiwiaGlkZSI6WyLliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJciLCLliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJciLCLliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJciLCLliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJciLCLliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJciLCLliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJfliJciXX0seyJrIjoi5LiJ6KanIiwic29ydCI6IuWQjeWJjSIsImhpZGUiOlsi5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiXIiwi5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiXIiwi5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiXIiwi5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiXIiwi5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiXIiwi5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiX5YiXIl19XSwicmVmcmVzaCI6IjMwIn0"
+}

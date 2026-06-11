@@ -1,0 +1,21 @@
+{
+  "name": "readout-assets",
+  "private": true,
+  "description": "Frontend asset build for readout: esbuild bundles internal/assets/src/js -> static/readout.js (IIFE), Lightning CSS bundles internal/assets/src/css -> static/readout.css. The Go binary embeds the static/ artifacts and builds with NO Node toolchain.",
+  "engines": {
+    "node": ">=24"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-assets.mjs",
+    "lint": "biome check internal/assets/src scripts",
+    "typecheck": "tsgo --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.16",
+    "@typescript/native-preview": "7.0.0-dev.20260611.2",
+    "esbuild": "0.28.0",
+    "lightningcss": "1.32.0",
+    "typescript": "6.0.3"
+  }
+}

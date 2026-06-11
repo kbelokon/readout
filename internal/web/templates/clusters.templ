@@ -3,7 +3,7 @@ package templates
 // clusters.templ is the clusters-entry page body (D4/D11/D13): the redesign
 // title row + count, the `.tools-row` filter form, and the
 // `.ro-table.ro-select-table` search-select table with the per-row checkbox
-// (data-toggle-button="search-clusters-button") + the bottom primary `.ro-btn`
+// (data-ro-toggle-button="search-clusters-button") + the bottom primary `.ro-btn`
 // "Search in N selected" (disabled until >=1 checkbox). The page has NO sidebar
 // and NO namespace context -- the layout omits them because the clusters route
 // carries no cluster scope (handler-side: buildSidebarView/buildNavbarView gate
@@ -56,7 +56,7 @@ type ExternalClusterRow struct {
 
 templ Clusters(d ClustersData) {
 	<div class="ro-rd">
-		<div class="ro-title-row"><h1 class="ro-title">Clusters</h1><span class="ro-count">{ itoa(d.Count) }</span></div>
+		@titleRow("Clusters", d.Count, true)
 		if d.FirstRun {
 			@firstRun()
 		} else {
@@ -95,11 +95,11 @@ templ clustersBody(d ClustersData) {
 		}
 		<form action="/search" method="get"><div class="ro-table-wrap"><table class="ro-table ro-select-table"><thead><tr><th></th><th>Name</th><th>API URL</th><th>Labels</th></tr></thead><tbody>
 			for _, row := range d.Rows {
-				<tr><td><input class="ro-check" type="checkbox" name="cluster" value={ row.Name } data-toggle-button="search-clusters-button"></td><td class="cl-name"><a href={ templ.SafeURL(row.Href) }>{ row.Name }</a></td><td class="ro-cell-url">{ row.URL }</td><td>
+				<tr><td><input class="ro-check" type="checkbox" name="cluster" value={ row.Name } data-ro-toggle-button="search-clusters-button"></td><td class="cl-name"><a href={ templ.SafeURL(row.Href) }>{ row.Name }</a></td><td class="ro-cell-url">{ row.URL }</td><td>
 					if len(row.Chips) > 0 {
 						<div class="ro-chips">
 							for _, chip := range row.Chips {
-								<span class="ro-chip"><span class="ck">{ chip.Key }</span><span class="cs">:</span><span class="cv">{ chip.Val }</span></span>
+								@labelChip(chip.Key, chip.Val)
 							}
 							</div>
 					}

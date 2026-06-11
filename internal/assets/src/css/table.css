@@ -1,0 +1,416 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Phase strip: a thin semantic tally band ABOVE the list table.
+       A PURE INDICATOR -- the chips carry no links (no click-to-filter). Each chip
+       is a reused .ro-status-dot (coloured by its has-text-* class, same palette
+       as the per-row stripes) + a label + a mono count; the right side is the
+       visible-row total. The dot rule itself lives in @layer theme (shared with the
+       Status cell); this rule only owns the band's layout and the mono numerals. */
+    /* Single contract (Unit 17): the former `.ro-rd .ro-phase-strip/-tally/-chip/
+       -count` overrides are folded into these bare rules -- the phase strip is only
+       emitted inside a `.ro-rd` content root (resource_table / search), so the
+       de-scoped rules paint the same pixels the scoped overrides did. Properties the
+       scoped rules did not restate (font-size on the strip, min-width on the tally,
+       white-space on the chip, font-family/color on the count, the whole -label /
+       -total rules) are kept here. */
+    .ro-phase-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin: 0 0 12px;
+        padding: 8px 12px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        font-size: 0.8125rem;
+    }
+    .ro-phase-tally {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 18px;
+        min-width: 0;
+    }
+    .ro-phase-chip {
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+        gap: 7px;
+        font-size: 12.5px;
+        color: var(--text-muted);
+    }
+    .ro-phase-label { color: var(--text-muted); }
+    .ro-phase-count {
+        margin-left: 0;
+        font-family: var(--font-mono);
+        font-weight: 550;
+        color: var(--text);
+    }
+    .ro-phase-total {
+        flex: 0 0 auto;
+        font-family: var(--font-mono);
+        color: var(--text-faint);
+        white-space: nowrap;
+    }
+    .ro-phase-total .ro-phase-count { margin-left: 0; }
+
+    .bottom-controls { margin-bottom: 1.5rem; }
+
+    /* ---------------------------------------------------------------------------
+       Clusters list / single-cluster overview / Resource Types.
+       The clusters page is sidebar-less by design (no sidebar_menu in its context,
+       so partials/sidebar.html renders empty -- nothing to add here). These pages
+       reuse the redesign .ro-table look and the .ro-chip;
+       this block adds only the bits unique to them: the title count badge, the one
+       accent action button, the cluster-meta header, and the resource-type
+       group/version/scope cells + the CRD badge. App wins by layer order.
+       --------------------------------------------------------------------------- */
+
+    /* (Unit 17) the dead `h1.title .ro-count` rule was removed: every `.ro-count`
+       in markup is a SIBLING of the title (`.ro-title-row > h1 + .ro-count` on
+       Clusters / Resource Types / list tables, `.search-cluster > .ro-count` on
+       search), never a DESCENDANT of an `h1.title`, so the descendant rule matched
+       nothing. The two live count badges are owned by `.ro-title-row .ro-count`
+       (shell.css) and `.search-cluster .ro-count` (search.css). */
+
+    /* =====================================================================
+       Redesign chrome dissolved here from the former redesign.css module
+       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       bare twins above by specificity (.ro-rd-scoped / element-qualified),
+       so concatenation order is not load-bearing for them.
+       ===================================================================== */
+    /* ---------------------------------------------------------------- TABLE (redesign) */
+    .ro-table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; background: var(--surface); }
+    table.ro-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .ro-table thead th {
+        background: var(--thead-bg);
+        text-align: left; font-family: var(--font-mono);
+        font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+        font-weight: 500; color: var(--text-faint);
+        padding: 9px var(--cell-px); white-space: nowrap;
+        border-bottom: 1px solid var(--border);
+        user-select: none;
+    }
+    .ro-table thead th a { color: inherit; display: inline-flex; align-items: center; gap: 4px; }
+    .ro-table thead th a:hover { color: var(--text-muted); }
+    .ro-table thead th.sorted a { color: var(--text); }
+    .ro-table thead th .sort-ico { opacity: .9; }
+    /* ascending reuses the down chevron rotated 180° (no separate up glyph) */
+    .ro-table thead th .sort-ico.sort-asc { display: inline-flex; transform: rotate(180deg); }
+    .ro-table thead th.num, .ro-table td.num { text-align: right; }
+    .ro-table tbody td {
+        padding: var(--row-py) var(--cell-px);
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: middle; white-space: nowrap;
+        font-family: var(--font-mono); font-size: 12.5px; color: var(--text-muted);
+    }
+    .ro-table tbody tr:last-child td { border-bottom: 0; }
+    .ro-table tbody tr { transition: background .08s ease; }
+    .ro-table tbody tr:hover { background: var(--row-hover); }
+    .ro-table tbody tr.is-selected { background: var(--row-sel); }
+    /* j/k keyboard row focus (Unit 18 / D10) -- prototype data.css order:
+       kfocus is declared AFTER is-selected so a focused+selected row reads as
+       the focused one (hover tint + the accent bar on the sticky cell). */
+    .ro-table tbody tr.kfocus { background: var(--row-hover); }
+
+    /* Sticky identifier column(s). The FIRST column is always sticky so the header
+       and body pin the SAME column -- the name in a single-namespace list, the
+       namespace in the _all view. Opaque tint-over-surface (no smear on scroll). */
+    .ro-table th:first-child,
+    .ro-table td:first-child {
+        position: sticky; left: 0; z-index: 1;
+        background: var(--surface);
+        border-right: 1px solid var(--border-soft);
+    }
+    .ro-table thead th:first-child { background: var(--thead-bg); z-index: 3; }
+    /* _all view (first column = namespace): the NAME column is sticky too, offset
+       by the namespace column's width. readout.js adds `.ro-sticky2` and sets
+       --ns-col-w (the width is content-driven, so CSS cannot know it). Without JS,
+       the class is absent and only the first column pins -- no header/body skew. */
+    .ro-table.ro-sticky2 thead th:nth-child(2),
+    .ro-table.ro-sticky2 tbody td.cell-name {
+        position: sticky; left: var(--ns-col-w, 0); z-index: 1;
+        background: var(--surface);
+        border-right: 1px solid var(--border-soft);
+    }
+    .ro-table.ro-sticky2 thead th:nth-child(2) { background: var(--thead-bg); z-index: 3; }
+    .ro-table tbody tr:hover td:first-child,
+    .ro-table.ro-sticky2 tbody tr:hover td.cell-name { background: var(--row-hover); }
+    .ro-table tbody tr.kfocus td:first-child,
+    .ro-table.ro-sticky2 tbody tr.kfocus td.cell-name { background: var(--row-hover); }
+    .ro-table tbody tr.is-selected td:first-child,
+    .ro-table.ro-sticky2 tbody tr.is-selected td.cell-name {
+        background-color: var(--surface);
+        background-image: linear-gradient(var(--row-sel), var(--row-sel));
+    }
+    .ro-table tbody tr.is-selected:hover td:first-child,
+    .ro-table.ro-sticky2 tbody tr.is-selected:hover td.cell-name {
+        background-color: var(--row-hover);
+        background-image: linear-gradient(var(--row-sel), var(--row-sel));
+    }
+    /* green selected marker pinned on the sticky cell */
+    .ro-table tbody tr.is-selected td:first-child { box-shadow: inset 2.5px 0 0 var(--accent); }
+    /* keyboard-focus accent bar (prototype: declared last, so it also reads
+       over the selected marker and the row-status stripes from @layer theme) */
+    .ro-table tbody tr.kfocus td:first-child { box-shadow: inset 2.5px 0 0 var(--accent); }
+
+    /* name cell -- the loud identifier. NEVER truncated. */
+    td.cell-name { color: var(--id-color); }
+    td.cell-name a { color: var(--id-color); font-weight: 500; }
+    td.cell-name a:hover .pn-head { color: var(--accent); }
+    .pn-head { color: var(--id-color); }
+    .pn-tail { color: var(--text-faint); }
+
+    td.cell-node a { color: var(--text-muted); }
+    td.cell-node a:hover { color: var(--accent); }
+    .ro-table td.faint { color: var(--text-faint); }
+    /* (Unit 16) `.faint` utility for the empty-placeholder em-dash. Migrated
+       content emits a bare `<span class="faint">—</span>` for empty node
+       roles/conditions + namespace label chips + the Search "no namespace" cell;
+       only `.ro-table td.faint` existed, so a bare span read at full text colour.
+       Scoped under the `.ro-rd` content marker (every emitter is inside it). */
+    .ro-rd .faint { color: var(--text-faint); }
+
+    /* truncation reserved for long secondary free-text ONLY -- never identifiers. */
+    .ro-table .trunc { display: inline-block; max-width: 360px; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+    .ro-table .trunc.w-img { max-width: 420px; }
+    .ro-table .trunc.w-label { max-width: 280px; }
+
+    /* status cell */
+    .cell-status { display: inline-flex; align-items: center; gap: 7px; }
+    .cell-status.ok { color: var(--st-ok); }
+    .cell-status.warn { color: var(--st-warn); }
+    .cell-status.err { color: var(--st-err); }
+    .cell-status.info { color: var(--st-info); }
+    .cell-status.mute { color: var(--st-mute); }
+
+    /* ready fraction */
+    .ready { font-variant-numeric: tabular-nums; }
+    .ready.full { color: var(--st-ok); }
+    .ready.partial { color: var(--st-warn); }
+    .ready.zero { color: var(--text-faint); }
+
+    /* restarts */
+    .restarts.zero { color: var(--text-faint); }
+    .restarts.some { color: var(--st-warn); }
+    /* The "(… ago)" suffix is an ADJACENT SIBLING of .restarts in the cell
+       (restartsCell emits `<span class="restarts some">N</span> <span
+       class="ago">(…)</span>`), so the muting must match the sibling, not a
+       descendant -- the old `.restarts .ago` descendant selector never applied. */
+    .restarts + .ago { color: var(--text-faint); }
+
+    /* age buckets (redesign bare variant; same --age-* tokens, recoloured) */
+    .age-fresh { color: var(--age-fresh); }
+    .age-recent { color: var(--age-recent); }
+    .age-day { color: var(--age-day); }
+    .age-week { color: var(--age-week); }
+    .age-old { color: var(--age-old); }
+
+    /* checkbox */
+    .ro-check { appearance: none; width: 15px; height: 15px; border-radius: 4px;
+        border: 1.5px solid var(--border-strong); background: var(--surface);
+        cursor: pointer; position: relative; flex: none; }
+    .ro-check:hover { border-color: var(--accent); }
+    .ro-check:checked { background: var(--accent); border-color: var(--accent); }
+    .ro-check:checked::after { content: ""; position: absolute; left: 4px; top: 1px;
+        width: 4px; height: 8px; border: solid var(--accent-on); border-width: 0 2px 2px 0;
+        transform: rotate(45deg); }
+
+    /* footer meta under table */
+    .ro-table-meta { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .ro-table-meta a { color: var(--link); }
+    .ro-foundline { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+
+    /* chips (labels) -- redesign, canonical names under the .ro-rd content
+       marker. NEUTRAL by design (D3 colour law: green is earned -- action /
+       live health / freshness / link -- and labels are data): the key (.ck)
+       reads faint, the ghost separator (.cs) fainter, the value (.cv) firm at
+       weight 550 -- ink weight differentiates, never hue. The legacy green
+       `.app` chip accent is retired; no chip rule may tint by label key. */
+    /* Single contract (Unit 17): the chip skin is de-scoped from `.ro-rd` to bare
+       here -- `.ro-chip`/`.ro-chips` are only emitted inside a `.ro-rd` content root
+       (cluster / clusters / resource_table / resource_view), so the de-scoped rules
+       paint the same pixels. The chip LAYOUT props the skin does not restate
+       (display: inline-flex / flex / align-items on `.ro-chips`) live in detail.css.
+       The dead `.ro-chip .tag` tag-based skin was removed (`.tag` is no longer
+       emitted). */
+    .ro-chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: flex-start; }
+    .ro-chip {
+        font-family: var(--font-mono); font-size: 11px;
+        padding: 2px 7px; border-radius: var(--pill-radius);
+        background: var(--chip-bg); border: 1px solid var(--chip-border);
+        color: var(--text-muted); white-space: nowrap;
+        max-width: none;
+    }
+    .ro-chip .ck { color: var(--chip-key); }
+    .ro-chip .cs { color: var(--text-ghost); }
+    .ro-chip .cv { color: var(--chip-val); font-weight: 550; }
+    /* a LINK chip (detail-page selector filter) earns the green hover -- a
+       navigable identifier is one of the four sanctioned greens (D3: link). */
+    a.ro-chip:hover { border-color: var(--border-strong); }
+    a.ro-chip:hover .cv { color: var(--accent-text); }
+    .ro-chip.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+    .ro-chip.anno { max-width: 320px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+
+    /* long annotations (SPEC §7.15): a >120-char value renders as a collapsed
+       `key · size` toggle chip; the payload expands into a scrollable <pre>
+       capped at 300px (the only place a long annotation value renders whole).
+       readout.js flips [hidden] on the .anno-pre + .open on the toggle. */
+    .anno-long { margin-top: 7px; }
+    .ro-chip.anno-toggle { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    .ro-chip.anno-toggle:hover { border-color: var(--border-strong); }
+    .ro-chip.anno-toggle .anno-chev { display: inline-flex; color: var(--text-faint); transition: transform var(--dur); }
+    .ro-chip.anno-toggle.open .anno-chev { transform: rotate(180deg); }
+    .anno-pre { margin: 7px 0 0; padding: 11px 14px; background: var(--code-bg);
+        border: 1px solid var(--border); border-radius: var(--radius-sm);
+        font: 11px/1.65 var(--font-mono); color: var(--text-muted);
+        max-height: 300px; max-width: 720px; overflow: auto; }
+    /* In a list TABLE the label chips must WRAP inside a bounded column instead
+       of blowing it out to max-content (which widened the table past the viewport
+       and clipped the last chip at the scroll edge). Bounding the chip CONTAINER
+       is what makes flex-wrap actually wrap in an auto-layout cell; the chips stay
+       full and stack on multiple lines, and only a single chip wider than the
+       column ellipsises. Detail-page chips (outside .ro-table-wrap) are unbounded. */
+    .ro-table-wrap .ro-chips { max-width: 34rem; }
+    .ro-table-wrap .ro-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+    /* in-cell +N overflow (SPEC §4.9 label/selector chips, §4.10 data keys):
+       chips past the threshold carry `.xtra` and stay hidden until the strip
+       gains `.expanded` (toggled by the delegated readout.js click on the
+       `.ro-chip.more[data-more]` button -- no inline handlers under the CSP).
+       The button face swaps `+N` <-> "less" purely in CSS via .more-n/.more-less.
+       UNIT-24 HOOK: `.expanded` is set ONLY by the user toggle, so a parent
+       scope can disable in-cell expansion under virtualization by hiding the
+       button (e.g. `.ro-rd .ro-windowed .ro-chip.more { display: none; }`) --
+       no JS change needed. */
+    .ro-chip.more { color: var(--text-faint); cursor: pointer; }
+    .ro-chip.more:hover { color: var(--text-muted); border-color: var(--border-strong); }
+    .ro-chips .xtra { display: none; }
+    .ro-chips.expanded .xtra { display: inline-flex; }
+    .ro-chip.more .more-less { display: none; }
+    .ro-chips.expanded .more-n { display: none; }
+    .ro-chips.expanded .more-less { display: inline; }
+
+    /* ------------------------------------------------ VIRTUALIZATION (Unit 24 / D20)
+       Above ~500 rows the server marks the wrap `.ro-windowed` (it replaces
+       `has-cards`; resource_table.templ owns the threshold) and readout.js
+       windows the tbody: only the viewport's rows render, framed by two
+       `.ro-vspacer` rows whose heights stand in for the off-window rows.
+
+       The fixed-height row law (recorded SPEC deviation): while windowed the
+       events msg clamps to ONE line (full text in its title) and chip strips
+       never wrap -- variable-height rows would break the spacer offset math
+       exactly where virtualization first engages. Below the threshold the
+       full SPEC behavior (msg wrap + in-cell expand) is untouched. */
+
+    /* spacer rows: pure height carriers -- no padding/border (their height is
+       set exactly by JS), no hover tint, and ABOVE ALL no sticky/background
+       from the first-column rules (a colspan spacer cell would otherwise pin
+       a surface-coloured bar over horizontal scrolls). */
+    .ro-table tbody tr.ro-vspacer,
+    .ro-table tbody tr.ro-vspacer:hover { background: none; }
+    .ro-table tbody tr.ro-vspacer > td {
+        padding: 0; border: 0;
+        position: static; background: transparent;
+    }
+    /* the browser's scroll anchoring would fight the spacer-height swaps that
+       windowing performs above the viewport (classic virtualization jitter);
+       anchor selection skips an overflow-anchor:none subtree entirely */
+    .ro-rd .ro-table-wrap.ro-windowed { overflow-anchor: none; }
+    /* readout.js pins the header widths it measured from the FULL render and
+       flips the table to fixed layout, so the window's content can never
+       re-derive column widths scroll-step by scroll-step */
+    .ro-rd .ro-windowed table.ro-table.ro-virtualized { table-layout: fixed; }
+    /* the fixed-height law: one-line msg (title recovers the full text),
+       non-wrapping chip strips, and a static +N (title carries the list) */
+    .ro-rd .ro-windowed td.ro-event-msg {
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        max-width: 520px;
+    }
+    .ro-rd .ro-windowed .ro-chips { flex-wrap: nowrap; }
+    .ro-rd .ro-chip.more.more-static { cursor: help; }
+    .ro-rd .ro-chip.more.more-static:hover { color: var(--text-faint); border-color: var(--border); }
+
+    /* events Age second layer ("(first 41h ago)"): faint 11px next to the
+       bucket-coloured leading token (SPEC §4 evage). */
+    .ro-rd .evage-rest { font-size: 11px; }
+
+
+    /* ================================================================ SELECT TABLE (redesign) */
+    .ro-rd .ro-select-table td:first-child, .ro-rd .ro-select-table th:first-child { width: 40px; text-align: center; }
+    .ro-bottom-controls { margin-top: 14px; }
+    .ro-rd .ro-cell-url { color: var(--text-faint); }
+    .ro-rd .ro-ext-link { display: inline-flex; align-items: center; gap: 6px; }
+
+
+    /* ================================================================ MOBILE CARDS (redesign) */
+    .ro-cardlist { display: none; flex-direction: column; gap: 8px; }
+    .ro-pcard { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+        padding: 11px 13px; display: flex; flex-direction: column; gap: 8px; }
+    .ro-pcard .pc-top { display: flex; align-items: flex-start; gap: 9px; }
+    .ro-pcard .pc-name { font-family: var(--font-mono); font-size: 13px; color: var(--id-color);
+        font-weight: 500; word-break: break-all; line-height: 1.4; flex: 1; }
+    .ro-pcard .pc-name .pn-tail { color: var(--text-faint); }
+    .ro-pcard .pc-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; font-family: var(--font-mono);
+        font-size: 11.5px; color: var(--text-muted); }
+    .ro-pcard .pc-meta .m { display: inline-flex; gap: 5px; }
+    .ro-pcard .pc-meta .m .k { color: var(--text-faint); }
+    .ro-pcard .pc-status { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono);
+        font-size: 11.5px; flex: none; }
+    /* events message in a card meta row: the same muted wrap treatment as the
+       table's td.ro-event-msg (that rule is td-scoped and cannot reach a card
+       <span>); min-width lets the span shrink-wrap inside the inline-flex .m */
+    .ro-pcard .pc-meta .ro-event-msg { white-space: normal; min-width: 0; color: var(--text-muted); }
+
+
+    /* ================================================================ LIST-SPECIFIC CELLS (redesign) */
+    /* roles (nodes) -- redesign, canonical name under the .ro-rd content marker */
+    .ro-rd .ro-role-chip { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+        background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted); }
+    .ro-rd .ro-role-chip.cp { background: var(--accent-weak); border-color: transparent; color: var(--accent); }
+
+    /* capacity bars (nodes) */
+    .cap { display: inline-flex; align-items: center; gap: 8px; }
+    .cap .cap-bar { width: 58px; height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; flex: none; }
+    .cap .cap-bar > i { display: block; height: 100%; border-radius: 3px; }
+    .cap.lo .cap-bar > i { background: var(--st-ok); } .cap.mid .cap-bar > i { background: var(--st-warn); }
+    .cap.hi .cap-bar > i { background: var(--st-err); }
+    .cap .cap-val { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); min-width: 64px; }
+
+    /* replicas bar (deployments) */
+    .rep { display: inline-flex; align-items: center; gap: 9px; }
+    .rep .rep-track { display: inline-flex; gap: 2px; }
+    .rep .rep-track i { width: 7px; height: 14px; border-radius: 2px; background: var(--st-ok); display: block; }
+    .rep .rep-track i.pending { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
+    .rep .rep-track i.updating { background: var(--st-warn); animation: ro-dot-pulse 1.4s ease-in-out infinite; }
+    .rep .rep-num { font-family: var(--font-mono); font-size: 12px; }
+    .rollout { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 12px; }
+    .rollout.done { color: var(--st-ok); } .rollout.prog { color: var(--st-warn); } .rollout.paused { color: var(--text-faint); }
+
+
+    /* ----------------------------------------------------------------------------
+       PER-SCREEN classes that live in the mockups' inline <style> blocks (NOT in
+       base.css). Lifted EXACT from each screen so Clusters / Search / Pods Mobile
+       render styled. Source: design/screens/{Clusters,Search,Pods Mobile}.html.
+       ---------------------------------------------------------------------------- */
+
+
+    /* Clusters.html inline <style> */
+    .ro-page { max-width: 1180px; margin: 0 auto; padding: 30px 26px 80px; }
+    .tools-row { display: flex; gap: 8px; margin: 0 0 18px; }
+    .tools-row .ro-tools-filter { position: relative; flex: 1; }
+    .tools-row .ro-tools-filter .ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
+    .tools-row input { width: 100%; height: 36px; padding: 0 12px 0 34px; background: var(--surface);
+        border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; }
+    .tools-row input:focus { border-color: var(--accent); }
+    .cl-name a { font-family: var(--font-mono); color: var(--id-color); font-weight: 500; }
+    .cl-name a:hover { color: var(--accent); }
+
+}

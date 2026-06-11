@@ -515,11 +515,7 @@ func TestLoadingSkeletonStateHooks(t *testing.T) {
 	// request clears it. There is no headless JS runner in this suite, so pin
 	// the source wiring exactly like the stale-handler test does; the behavior
 	// itself is driven end to end by the designed-states e2e skeleton case.
-	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
-	if err != nil {
-		t.Fatalf("read readout.js: %v", err)
-	}
-	js := string(src)
+	js := readoutJS(t)
 	for _, needle := range []string{
 		"ro-skel-template",        // the inert source template
 		"listRegionIsEmpty",       // the empty-target gate
@@ -582,20 +578,16 @@ func TestStatesStaleMarkupHooks(t *testing.T) {
 // read-only retry trigger. There is no headless JS runner in this suite, so this
 // asserts the source wires the exact hooks the rendered markup exposes.
 func TestStatesStaleHandlerInReadoutJS(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
-	if err != nil {
-		t.Fatalf("read readout.js: %v", err)
-	}
-	js := string(src)
+	js := readoutJS(t)
 	for _, needle := range []string{
-		"htmx:responseError",    // a non-2xx refresh reply -> stale
-		"htmx:sendError",        // a transport failure on refresh -> stale
-		"htmx:afterSwap",        // a recovered refresh clears stale
-		"ro-stale",              // the dim class on #resource-list-content
-		"ro-stale-banner",       // the hidden banner the handler reveals
-		"ro-stale-retry",        // the read-only retry control
-		"resource-list-content", // the dim target / refresh element id
-		"ro:refresh",            // the read-only GET the retry re-fires
+		"htmx:responseError",     // a non-2xx refresh reply -> stale
+		"htmx:sendError",         // a transport failure on refresh -> stale
+		"htmx:afterSwap",         // a recovered refresh clears stale
+		"ro-stale",               // the dim class on #resource-list-content
+		"ro-stale-banner",        // the hidden banner the handler reveals
+		"data-ro-action='retry'", // the read-only retry control hook
+		"resource-list-content",  // the dim target / refresh element id
+		"ro:refresh",             // the read-only GET the retry re-fires
 	} {
 		if !strings.Contains(js, needle) {
 			t.Fatalf("readout.js stale path missing %q", needle)
@@ -603,8 +595,10 @@ func TestStatesStaleHandlerInReadoutJS(t *testing.T) {
 	}
 	// The stale path keeps the rows (it must NOT swap on error): the handlers mark
 	// stale rather than blanking, and the retry triggers the existing ro:refresh
-	// (a read-only GET), never a write.
-	if strings.Contains(js, "innerHTML = ''") {
+	// (a read-only GET), never a write. Spacing-insensitive so a compacted
+	// `innerHTML=''` emitted by a future bundler setting cannot slip past the
+	// guard (js is already quote-normalized by readoutJS).
+	if regexp.MustCompile(`innerHTML\s*=\s*''`).MatchString(js) {
 		t.Fatalf("stale path must not blank the rows")
 	}
 

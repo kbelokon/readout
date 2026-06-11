@@ -1,0 +1,57 @@
+/* logs.css -- the resource-logs stream (form, tabs, the scrollable log <pre> with follow/wrap/timestamp toggles). Bundled by scripts/build-assets.mjs; cascade
+   order is set by readout.css's @import list. */
+
+@layer app {
+    /* ================================================================ LOGS (redesign) */
+    .ro-rd .ro-logs-form { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+        font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
+    .ro-rd .ro-logs-form input { height: 32px; background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 0 10px; }
+    .ro-rd .ro-logs-form input:focus { border-color: var(--accent); }
+    .ro-rd .ro-logs-form .tail { width: 74px; }
+    .ro-rd .ro-logs-form .flt { width: 200px; }
+    /* The client-side display toggles (D25): checkbox labels read as one unit,
+       the spacer pushes the Follow button to the row's far end (prototype). The
+       generic `.ro-logs-form input` text-input sizing above out-specifies the
+       bare `.ro-check` rules, so the checkbox geometry + checked accent are
+       re-stated at input.ro-check specificity. */
+    .ro-rd .ro-logs-form label { display: inline-flex; align-items: center; gap: 7px; }
+    .ro-rd .ro-logs-form input.ro-check { width: 15px; height: 15px; padding: 0;
+        border: 1.5px solid var(--border-strong); border-radius: 4px; }
+    .ro-rd .ro-logs-form input.ro-check:hover { border-color: var(--accent); }
+    .ro-rd .ro-logs-form input.ro-check:checked { background: var(--accent); border-color: var(--accent); }
+    .ro-rd .ro-logs-form .spacer { flex: 1; }
+
+    /* buttons (redesign) */
+    .ro-btn { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 14px;
+        border-radius: var(--radius-sm); border: 1px solid transparent; font-size: 12.5px; font-weight: 550;
+        cursor: pointer; background: var(--accent); color: var(--accent-on); }
+    .ro-btn:hover { filter: brightness(1.06); }
+    .ro-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+    .ro-btn-primary:hover { color: var(--accent-on); }
+    .ro-btn.quiet { background: var(--surface); color: var(--text-muted); border-color: var(--border); }
+    .ro-btn.quiet:hover { color: var(--text); border-color: var(--border-strong); }
+    .ro-btn.sm { height: 28px; padding: 0 10px; font-size: 12px; }
+    .ro-btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+
+    .ro-logtabs { display: flex; gap: 2px; margin: 0 0 12px; }
+    .ro-logtabs a { font-family: var(--font-mono); font-size: 12px; padding: 4px 11px; border-radius: 999px;
+        color: var(--text-muted); }
+    .ro-logtabs a:hover { background: var(--surface-2); color: var(--text); }
+    .ro-logtabs a.is-active { background: var(--accent-weak); color: var(--accent); }
+
+    /* The stream is its own scroll container (prototype: max-height + overflow
+       auto) so the Follow toggle has a tail to stick to. */
+    .ro-rd .ro-logpre { margin: 0; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
+        font-family: var(--font-mono); font-size: 12px; line-height: 1.7; padding: 12px 0;
+        overflow: auto; max-height: calc(100vh - 280px); }
+    .ro-rd .ro-logpre .log-line { display: block; white-space: pre; padding: 0 16px; }
+    /* wrap toggle (D25): long lines soft-wrap instead of scrolling sideways. */
+    .ro-rd .ro-logpre.wrap .log-line { white-space: pre-wrap; word-break: break-word; }
+    .ro-rd .ro-logpre .log-line:hover { background: var(--row-hover); }
+    /* timestamps toggle (D25): hide the .log-ts spans client-side -- the spans
+       stay in the DOM, no refetch. */
+    .ro-rd .ro-logpre.hide-ts .log-ts { display: none; }
+    .log-src { color: var(--text-faint); }
+    .log-ts { color: var(--text-faint); }
+}

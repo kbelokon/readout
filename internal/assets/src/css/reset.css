@@ -1,0 +1,168 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    html {
+        box-sizing: border-box;
+        overflow: scroll;
+        line-height: 1.5;
+        -webkit-text-size-adjust: 100%;
+    }
+    *,
+    *::before,
+    *::after { box-sizing: inherit; }
+
+    body,
+    h1, h2, h3, h4, h5, h6,
+    p, blockquote, figure,
+    ul, ol, li,
+    dl, dd,
+    pre { margin: 0; padding: 0; }
+    ul, ol { list-style: none; }
+    img, video { max-width: 100%; height: auto; }
+    table { border-collapse: collapse; border-spacing: 0; }
+    th, td { padding: 0; text-align: left; }
+    button,
+    input,
+    select,
+    textarea {
+        margin: 0;
+        font: inherit;
+        color: inherit;
+    }
+    button,
+    select { text-transform: none; }
+    button { cursor: pointer; }
+    button:disabled,
+    input:disabled,
+    select:disabled,
+    textarea:disabled {
+        cursor: not-allowed;
+    }
+    .is-hidden { display: none !important; }
+
+    .title {
+        color: var(--text);
+        font-weight: 600;
+        line-height: 1.125;
+        margin: 0 0 1rem;
+    }
+    h1.title:not(.ro-title) { font-size: 2rem; }
+    h2.title:not(.ro-title) { font-size: 1.5rem; }
+    h3.title:not(.ro-title) { font-size: 1.25rem; }
+    h4.title:not(.ro-card-title):not(.ro-section-title) { font-size: 1rem; }
+    /* Related-subtable heading (e.g. the "Pods" section on a Deployment/RS/STS/DS/Job
+       detail page): preserves the old Bulma `.title.is-5` size (1.25rem) after the Bulma
+       drop -- the markup moved from `title is-5` to `title ro-section-title` but the size
+       was orphaned by the :not() exclusion above. */
+    h4.title.ro-section-title { font-size: 1.25rem; }
+    .section { padding: 3rem 1.5rem; }
+    .container { width: 100%; margin: 0 auto; }
+    .footer { padding: 1.5rem; }
+    .box {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+        padding: 1.25rem;
+    }
+    .label {
+        display: block;
+        margin-bottom: 0.5rem;
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        font-weight: 600;
+    }
+    .content p:not(:last-child),
+    .content ul:not(:last-child),
+    .content ol:not(:last-child),
+    .content pre:not(:last-child) { margin-bottom: 1em; }
+    .content ul { list-style: disc outside; margin-left: 1.5em; }
+    .content ol { list-style: decimal outside; margin-left: 1.5em; }
+    .icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.5em;
+        height: 1.5em;
+        color: inherit;
+        vertical-align: middle;
+    }
+    .icon.is-small {
+        width: 1em;
+        height: 1em;
+        font-size: 0.75rem;
+    }
+    .button,
+    .input {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        color: var(--text);
+        box-shadow: none;
+        line-height: 1.5;
+    }
+    .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.375rem;
+        min-height: 2.5em;
+        padding: calc(0.5em - 1px) 0.75em;
+        white-space: nowrap;
+    }
+    .button:hover,
+    .button:focus {
+        border-color: var(--border-strong);
+        background: var(--surface-2);
+        color: var(--text);
+    }
+    .button[disabled],
+    .button:disabled {
+        opacity: 0.55;
+        filter: none;
+    }
+    .input {
+        width: 100%;
+        height: 2.5em;
+        padding: calc(0.5em - 1px) 0.75em;
+    }
+    .input::placeholder { color: var(--text-faint); }
+    .input:hover { border-color: var(--border-strong); }
+    .input:focus { border-color: var(--accent); background: var(--surface); }
+    /* (Unit 17) the `.breadcrumb ul` / `.breadcrumb li` reset rules were removed:
+       the `breadcrumb` legacy class is no longer emitted (single `.ro-breadcrumb`
+       contract), and the ul/li flex layout is fully restated by the
+       `.ro-rd .ro-breadcrumb ul` / `li` rules in shell.css. The inert current-crumb
+       guard survives on the canonical selector below. */
+    .ro-rd .ro-breadcrumb li.is-active a {
+        pointer-events: none;
+        cursor: default;
+    }
+    .menu-list { list-style: none; margin: 0; padding: 0; }
+    .menu-label { display: block; }
+
+    /* Accessibility: a VISIBLE keyboard focus ring on every interactive element
+       (acceptance: "keyboard focus is visible"). Several controls only carry a
+       :focus surface/colour tint (navbar items, buttons, the copy/fold controls)
+       and a few carry no focus feedback at all (sort-header links, ⌘K palette
+       rows, in-content links) -- so a keyboard user could not always SEE where
+       focus is. This baseline draws an accent outline ONLY for keyboard focus
+       (:focus-visible, so a mouse click does not ring), using the theme --accent
+       token so it is high-contrast in BOTH palettes (near-black on light, blue on
+       dark). Component :focus rules below still add their surface tints; this just
+       guarantees the ring. No forced-priority override needed -- the app layer
+       already wins by cascade order. */
+    a:focus-visible,
+    button:focus-visible,
+    select:focus-visible,
+    input:focus-visible,
+    [tabindex]:focus-visible,
+    summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
+    }
+
+}

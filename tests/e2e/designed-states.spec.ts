@@ -200,7 +200,7 @@ test('a failed auto-refresh dims the last-good rows and reveals the stale banner
 
   // Arm a 5s refresh, then break every list: the next tick errors (non-2xx).
   await page.locator('#refresh-dropdown').hover();
-  await page.locator('.refresh-option[data-interval="5"]').click();
+  await page.locator('.refresh-option[data-ro-interval="5"]').click();
   // Park the cursor mid-page: the hover-opened refresh menu would otherwise
   // stay open over the banner and intercept the Retry-now click below.
   await page.mouse.move(200, 400);

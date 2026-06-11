@@ -17,8 +17,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -398,21 +396,21 @@ func TestPrefsRefreshModeRendered(t *testing.T) {
 	p := prefsGet(t, app, "/clusters", "", nil)
 	p.wantText("#refresh-label", "Off")
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown")
-	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option is-active")
+	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option is-active")
 
 	// Persisted interval: label + active option + the refresh-on hook.
 	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "30"}), nil)
 	p.wantText("#refresh-label", "30s")
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown refresh-on")
-	p.wantAttr(`.refresh-option[data-interval="30"]`, "class", "refresh-option is-active")
-	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option")
+	p.wantAttr(`.refresh-option[data-ro-interval="30"]`, "class", "refresh-option is-active")
+	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option")
 
 	// Persisted Off: an explicit choice renders like the default (and the
 	// legacy "0" never reaches the cookie -- the JS writes "Off").
 	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "Off"}), nil)
 	p.wantText("#refresh-label", "Off")
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown")
-	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option is-active")
+	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option is-active")
 
 	// Persisted Live (Unit 27/D19): the label says Live, the Live option is the
 	// active one (NOT Off, even though Live arms no polling interval), and the
@@ -420,8 +418,8 @@ func TestPrefsRefreshModeRendered(t *testing.T) {
 	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "Live"}), nil)
 	p.wantText("#refresh-label", "Live")
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown refresh-on")
-	p.wantAttr(`.refresh-option[data-interval="Live"]`, "class", "refresh-option is-active")
-	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option")
+	p.wantAttr(`.refresh-option[data-ro-interval="Live"]`, "class", "refresh-option is-active")
+	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option")
 }
 
 // TestLiveOptionScopeGate pins the server-rendered Live availability (Unit 27/
@@ -431,7 +429,7 @@ func TestPrefsRefreshModeRendered(t *testing.T) {
 // pages (detail) keep it enabled-but-inert, like the interval options.
 func TestLiveOptionScopeGate(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
-	live := `.refresh-option[data-interval="Live"]`
+	live := `.refresh-option[data-ro-interval="Live"]`
 
 	// Single-type, single-cluster list: enabled.
 	p := prefsGet(t, app, "/clusters/test/namespaces/default/pods", "", nil)
@@ -466,27 +464,23 @@ func TestLiveOptionScopeGate(t *testing.T) {
 // switch), the programmatic do-not-write guards, and the roRefresh migration
 // (read-once fallback only -- the legacy localStorage WRITE is retired).
 func TestPrefsReadoutJSContract(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
-	if err != nil {
-		t.Fatalf("read readout.js: %v", err)
-	}
-	js := string(src)
+	js := readoutJS(t)
 	for _, needle := range []string{
 		"'ro_prefs'",                            // the cookie name
 		"'v1.'",                                 // the pinned version prefix
 		"PREFS_MAX_ENCODED = 3072",              // the eviction cap
 		"Path=/; SameSite=Lax; Max-Age=",        // the pinned attributes
-		"PREFS_COOKIE_MAX_AGE = 31536000",       // one-year Max-Age
+		"PREFS_COOKIE_MAX_AGE = 31536e3",        // one-year Max-Age (esbuild emits the shortest numeric form)
 		"window.location.protocol === 'https:'", // Secure on https only
 		"'; Secure'",
-		"roPrefsSetSort",                      // sort-click write
-		"roPrefsSetHiddenColumns",             // Unit 9's column-toggle surface
-		"roPrefsSetRefresh",                   // interval pick (+ Unit 27 Live)
-		"roPrefsSetNamespace",                 // namespace switch
-		"closest('thead th')",                 // sort writes ONLY from header gestures
-		"#namespace-dropdown .namespace-item", // the namespace-switch surface
-		"localStorage.getItem(REFRESH_KEY)",   // the read-once roRefresh migration
-		"refreshMode",                         // cookie-canonical mode reader
+		"roPrefsSetSort",          // sort-click write
+		"roPrefsSetHiddenColumns", // Unit 9's column-toggle surface
+		"roPrefsSetRefresh",       // interval pick (+ Unit 27 Live)
+		"roPrefsSetNamespace",     // namespace switch
+		"closest('thead th')",     // sort writes ONLY from header gestures
+		"#namespace-dropdown [data-ro-action='pick-namespace']", // the namespace-switch surface
+		"localStorage.getItem(REFRESH_KEY)",                     // the read-once roRefresh migration
+		"refreshMode",                                           // cookie-canonical mode reader
 		// readPrefs drops wrongly-typed INNER fields instead of perpetuating
 		// them: Go's decodePrefs rejects the whole payload on one mistyped
 		// field (json.Unmarshal is all-or-nothing), so a passthrough JS reader
@@ -501,24 +495,16 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 		}
 	}
 	// The sort-write hook treats programmatic traffic as do-not-write: the
-	// RO-No-Push marker and preload warm-ups are both guarded in the same
-	// beforeRequest hook that discriminates on the thead ancestor.
-	start := strings.Index(js, "Sort-click pref write")
-	if start < 0 {
-		t.Fatalf("readout.js lost the sort-write hook section marker")
+	// RO-No-Push marker and preload warm-ups are guarded in the SAME
+	// beforeRequest gate (one expression) that then discriminates on the
+	// thead ancestor before writing. The generated bundle strips section
+	// comments, so pin the guard expression and the write call themselves
+	// rather than comment anchors.
+	if !strings.Contains(js, "cfg.headers['RO-No-Push'] || cfg.headers['HX-Preloaded'] === 'true'") {
+		t.Fatalf("sort-write hook lost its combined RO-No-Push/HX-Preloaded do-not-write guard")
 	}
-	// The closing marker is the NEXT section header after the hook ("Auto-
-	// refresh interval" also names an earlier click-handler comment, so the
-	// search must begin at the hook).
-	length := strings.Index(js[start:], "Auto-refresh interval")
-	if length < 0 {
-		t.Fatalf("readout.js lost the section header after the sort-write hook")
-	}
-	hook := js[start : start+length]
-	for _, guard := range []string{"RO-No-Push", "HX-Preloaded"} {
-		if !strings.Contains(hook, guard) {
-			t.Fatalf("sort-write hook lost its %q do-not-write guard", guard)
-		}
+	if !strings.Contains(js, "roPrefsSetSort(plural, sort)") {
+		t.Fatalf("sort-write hook lost its roPrefsSetSort write")
 	}
 	// The legacy roRefresh localStorage WRITE is gone: the cookie is canonical
 	// (the key survives only as refreshMode()'s migration read).

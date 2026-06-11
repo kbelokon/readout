@@ -1,0 +1,252 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer theme {
+    /* ===========================================================================
+       Design tokens (the redesign). Surfaces, accent, identifier hue, the
+       five-status palette, age scale, YAML syntax colours, plus shared
+       geometry/density. Names are theme-NEUTRAL: only the VALUES differ per
+       theme. Light (:root) is the default; dark applies under BOTH an explicit
+       [data-theme="dark"] choice AND @media (prefers-color-scheme: dark) -- so a
+       cookieless user on a dark OS (no data-theme on <html>) follows their OS,
+       while an explicit [data-theme="light"] still wins. This follows the same
+       age/log/Pygments mechanism already in this layer.
+
+       --font-ui / --font-mono are declared on :root above (alongside the
+       @font-face block); the geometry tokens here are SHARED by both themes
+       (that shared frame is what makes light + dark feel like one design). The
+       component rules that CONSUME these vars live in @layer app (this unit
+       wires the type split; later units add navbar/table/etc.).
+       --------------------------------------------------------------------------- */
+
+    :root {
+        /* geometry + density -- SHARED by both themes. Values byte-exact from
+           the v2 handoff (docs/design_handoff_readout_v2/styles/tokens.css, the
+           token source of truth): cell-px 14px, radius 7px (sm 5px / pill 5px),
+           topbar 52px, sidebar 224px. v2 default density is COZY (row-py 11px);
+           the [data-density="compact"] override below returns ultra-dense. */
+        --row-py: 11px;
+        --cell-px: 14px;
+        --radius: 7px;
+        --radius-sm: 5px;
+        --pill-radius: 5px;
+        --topbar-h: 52px;
+        --sidebar-w: 224px;
+
+        /* motion -- the one shared easing curve + duration for transitions */
+        --ease: cubic-bezier(.32,.72,0,1);
+        --dur: .14s;
+
+        /* brand -- promoted from logo-only into accents (shared by both themes) */
+        --brand: #56E0BC;
+        --brand-ink: #04140f;
+
+        /* LIGHT palette "Contrast+" -- default. Real surface ladder (bg /
+           surface / surface-2 / surface-3), tiered borders, an honest 3-step
+           shadow scale; --header-bg is translucent so the sticky topbar's
+           backdrop blur shows content scrolling under it. */
+        --bg: #ffffff;
+        --surface: #ffffff;
+        --surface-2: #f4f5f6;
+        --surface-3: #e9ebed;
+        --header-bg: rgba(255,255,255,.84);
+        --sidebar-bg: #fafbfb;
+        --thead-bg: #fafbfb;
+        --card-head-bg: #fafafa;
+        --code-bg: #fafafa;
+        --row-hover: #f5f8f7;
+        --row-sel: rgba(20,150,120,.07);
+        --overlay-bg: rgba(15,20,25,.28);
+
+        --text: #0b0c0e;
+        --text-muted: #51555c;
+        --text-faint: #898d94;
+        --text-ghost: #b8bbc0;
+
+        --border: #e7e8ea;
+        --border-soft: #f0f0f2;
+        --border-strong: #d3d5d8;
+
+        --accent: #0c8f6e;            /* darkened green -- reads as the one saturated action */
+        --accent-on: #ffffff;
+        --accent-weak: rgba(12,143,110,.10);
+        --accent-text: #0c8f6e;       /* accent used as TEXT (readout-specific token) */
+        --id-color: #14181d;          /* identifiers + name links */
+        --link: #146a52;
+
+        /* label chips -- NEUTRAL (v2 colour law: green = action / live health /
+           freshness / active nav, nothing else; key and value differ by ink
+           weight, not hue) */
+        --chip-bg: #f4f5f6;
+        --chip-border: #e7e8ea;
+        --chip-key: #6c7076;
+        --chip-val: #2c3036;
+
+        --st-ok:   #11824a; --st-ok-bg:   #e7f6ee;
+        --st-warn: #9a5d04; --st-warn-bg: #f8f0e0;
+        --st-err:  #c42b2b; --st-err-bg:  #fbeaea;
+        --st-info: #1a52c8; --st-info-bg: #ebf1fe;
+        --st-mute: #6a7078; --st-mute-bg: #eef0f2;
+
+        /* age scale -- the freshest-to-oldest age cell colours (fresh = darkened
+           brand -> old grey). The 5 buckets stay. */
+        --age-fresh: #0c8f6e; --age-recent: #3f7a64; --age-day: #5f6f66; --age-week: #777777; --age-old: #a3a6ab;
+
+        /* YAML / Pygments syntax. nt->key num->m bool->kc string->s2/.l comment->c. */
+        --tok-key: #1a46c2; --tok-str: #117a3d; --tok-num: #8a5a06; --tok-bool: #7a3fd1;
+
+        /* honest 3-step shadow scale; pop always rings with the border */
+        --shadow-sm: 0 1px 2px rgba(15,20,25,.05), 0 1px 1px rgba(15,20,25,.03);
+        --shadow-md: 0 4px 12px -2px rgba(15,20,25,.10), 0 2px 4px -2px rgba(15,20,25,.06);
+        --shadow-pop: 0 16px 40px -12px rgba(15,20,25,.22), 0 0 0 1px var(--border);
+    }
+
+    /* DARK palette "Terminal" -- repo values kept, separation deepened one
+       notch (bg -> surface -> surface-2 -> surface-3). Values byte-exact from
+       the v2 handoff tokens.css. */
+    [data-theme="dark"] {
+        --bg: #0b0d11;
+        --surface: #0f1217;
+        --surface-2: #161a21;
+        --surface-3: #1e232c;
+        --header-bg: rgba(11,13,17,.80);
+        --sidebar-bg: #0a0c0f;
+        --thead-bg: #0f1217;
+        --card-head-bg: #161a21;
+        --code-bg: #090b0e;
+        --row-hover: #14181f;
+        --row-sel: rgba(86,224,188,.08);
+        --overlay-bg: rgba(0,0,0,.62);
+
+        --text: #dbe1e8;
+        --text-muted: #98a1ae;
+        --text-faint: #5d6675;
+        --text-ghost: #3e4654;
+
+        --border: #1d222b;
+        --border-soft: #161b22;
+        --border-strong: #2c333f;
+
+        --accent: #56E0BC;            /* brand green promoted into active/focus/selected */
+        --accent-on: #04140f;
+        --accent-weak: rgba(86,224,188,.12);
+        --accent-text: #56E0BC;       /* accent used as TEXT (readout-specific token) */
+        --id-color: #d2d8df;          /* identifiers / row name links -- off-white */
+        --link: #7fe9cd;
+
+        --chip-bg: #161a21;
+        --chip-border: #232a34;
+        --chip-key: #828d9c;
+        --chip-val: #c2cad4;
+
+        --st-ok:   #3ddc97; --st-ok-bg:   rgba(61,220,151,.13);
+        --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);
+        --st-err:  #ff6b6b; --st-err-bg:  rgba(255,107,107,.13);
+        --st-info: #74a9ff; --st-info-bg: rgba(116,169,255,.13);
+        --st-mute: #6b7686; --st-mute-bg: rgba(120,130,148,.13);
+
+        --age-fresh: #56E0BC; --age-recent: #6fcfae; --age-day: #8aa39a; --age-week: #8b94a0; --age-old: #5d6675;
+
+        --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
+
+        --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+        --shadow-md: 0 6px 16px -4px rgba(0,0,0,.5);
+        --shadow-pop: 0 12px 40px -8px rgba(0,0,0,.6), 0 0 0 1px var(--border);
+    }
+
+    /* Cookieless users on a dark OS get the dark palette; an explicit light
+       choice still wins (same rule the app already uses for age/log/Pygments).
+       This block MUST stay value-identical to [data-theme="dark"] above -- a
+       stale mirror silently hands system-dark users old values (the Unit 2
+       acceptance script checks the mirror). */
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+            --bg: #0b0d11; --surface: #0f1217; --surface-2: #161a21; --surface-3: #1e232c;
+            --header-bg: rgba(11,13,17,.80); --sidebar-bg: #0a0c0f; --thead-bg: #0f1217;
+            --card-head-bg: #161a21; --code-bg: #090b0e; --row-hover: #14181f; --row-sel: rgba(86,224,188,.08); --overlay-bg: rgba(0,0,0,.62);
+            --text: #dbe1e8; --text-muted: #98a1ae; --text-faint: #5d6675; --text-ghost: #3e4654;
+            --border: #1d222b; --border-soft: #161b22; --border-strong: #2c333f;
+            --accent: #56E0BC; --accent-on: #04140f; --accent-weak: rgba(86,224,188,.12); --accent-text: #56E0BC; --id-color: #d2d8df; --link: #7fe9cd;
+            --chip-bg: #161a21; --chip-border: #232a34; --chip-key: #828d9c; --chip-val: #c2cad4;
+            --st-ok: #3ddc97; --st-ok-bg: rgba(61,220,151,.13);
+            --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);
+            --st-err: #ff6b6b; --st-err-bg: rgba(255,107,107,.13);
+            --st-info: #74a9ff; --st-info-bg: rgba(116,169,255,.13);
+            --st-mute: #6b7686; --st-mute-bg: rgba(120,130,148,.13);
+            --age-fresh: #56E0BC; --age-recent: #6fcfae; --age-day: #8aa39a; --age-week: #8b94a0; --age-old: #5d6675;
+            --tok-key: #6ab8ff; --tok-str: #3ddc97; --tok-num: #ffb454; --tok-bool: #b197fc;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+            --shadow-md: 0 6px 16px -4px rgba(0,0,0,.5);
+            --shadow-pop: 0 12px 40px -8px rgba(0,0,0,.6), 0 0 0 1px var(--border);
+        }
+    }
+
+    /* density -- CSS-only attribute override (v2 default is cozy 11px). NO UI
+       control ships for it (D2): flipping it means setting data-density on
+       <html> by hand. */
+    [data-density="compact"] { --row-py: 7px; }
+
+    /* ---------------------------------------------------------------------------
+       Dynamic colours, de-inlined (CSP).
+       These classes replace the former per-row/per-line inline colour styles, so a
+       strict CSP (default-src 'self'; no style-src 'unsafe-inline') no longer
+       blocks them.
+
+       Class names are theme-NEUTRAL: only the colours differ per theme. Light is
+       the default rule; dark is overridden under BOTH an explicit [data-theme=dark]
+       choice AND @media (prefers-color-scheme: dark) so system-dark users without a
+       theme cookie (no data-theme on <html>) still get the dark palette.
+
+       age-* : timestamp/age cells, freshest -> oldest
+       log-cN: per-pod log-line identity colour; NOT severity.
+       --------------------------------------------------------------------------- */
+
+    /* Age buckets (timestamp/age cells, freshest -> oldest). Driven by the
+       --age-* tokens declared at the top of this layer: the token already
+       carries the right value per theme (light :root / [data-theme=dark] /
+       prefers-dark), so ONE rule set is correct in every theme -- no separate
+       dark/light age overrides needed (single source of truth). */
+    td.age-fresh  { color: var(--age-fresh); }
+    td.age-recent { color: var(--age-recent); }
+    td.age-day    { color: var(--age-day); }
+    td.age-week   { color: var(--age-week); }
+    td.age-old    { color: var(--age-old); }
+
+    /* Status colour, re-skinned to the redesign palette.
+       The cell class resolver still returns legacy has-text-* tone strings (the
+       render contract pins them); we only re-point those classes at the five-status
+       tokens so Status words, Restarts and the Ready fraction read in the redesign
+       palette. has-text-grey is the explicit "muted" cell (Restarts==0, zero
+       CPU/Mem) -> the faint token. */
+    .has-text-danger  { color: var(--st-err); }
+    .has-text-warning { color: var(--st-warn); }
+    .has-text-success { color: var(--st-ok); }
+    .has-text-info    { color: var(--st-info); }
+    .has-text-grey    { color: var(--text-faint); }
+
+    /* (Unit 16) the old `.ro-status-dot` (pre-redesign list status dot) rule was
+       removed -- it is emitted by no template / generated Go / readout.js; the
+       redesign status dot is `.ro-dot.<ok|warn|err|info|mute>` (defined in
+       @layer app). */
+
+    /* Per-row left status stripe: a thin inset bar down the row's leading
+       edge in the matching status colour. Painted as an inset box-shadow on the
+       row's first cell so it does not consume layout width or move any column.
+       SPEC §3: the producer (kube.RowStatusClass) emits row-status-* for err
+       and warn rows ONLY -- ok/mute rows carry no class and no stripe -- so
+       only these two rules exist. */
+    tr.row-status-warn > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-warn); }
+    tr.row-status-err  > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-err); }
+
+    /* Per-pod log line colours -- light (on the <pre> light background) */
+    .log-line .log-c0 { color: #c0392b; }
+    .log-line .log-c1 { color: #b9530a; }
+    .log-line .log-c2 { color: #897a00; }
+    .log-line .log-c3 { color: #1f8b4c; }
+    .log-line .log-c4 { color: #0e7c86; }
+    .log-line .log-c5 { color: #2362c0; }
+    .log-line .log-c6 { color: #7d3cc0; }
+    .log-line .log-c7 { color: #b03088; }
+
+}

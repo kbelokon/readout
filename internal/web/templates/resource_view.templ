@@ -315,21 +315,14 @@ templ ResourceView(d DetailData) {
 				if d.NameTitle != "" {
 					title={ d.NameTitle }
 				}
-			>
-			if d.NameHead != "" && d.NameTail != "" {
-				<span class="pn-head">{ d.NameHead }</span><span class="pn-tail">{ d.NameTail }</span>
-			} else if d.NameHead != "" {
-				<span class="pn-head">{ d.NameHead }</span>
-			} else {
-				{ d.Name }
-			}
+			>@nameSplit(d.NameHead, d.NameTail, d.Name)
 			// The download anchor opts out of hx-boost: boost would swap the
 			// attachment body into <body> instead of downloading (htmx 2.0.4).
 			</h1> <span class="ro-kind-badge">{ d.Kind }</span><div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } hx-boost="false" title="Download resource object as YAML" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
 				for _, link := range d.Links {
 					<a href={ templ.SafeURL(link.Href) } class="ro-iconbtn" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
 				}</div><span class="ro-detail-meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></div>
-			<div class="ro-tabs">@detailTab(d.DefaultTabActive, "?", "Default")@detailTab(d.YAMLTabActive, "?view=yaml", "YAML")@detailTab(d.EventsTabActive, "?view=events", "Events")
+			<div class="ro-tabs">@tabLink(d.DefaultTabActive, "?", "Default")@tabLink(d.YAMLTabActive, "?view=yaml", "YAML")@tabLink(d.EventsTabActive, "?view=events", "Events")
 				if d.LogsHref != "" {
 					<a href={ templ.SafeURL(d.LogsHref) }>Logs</a>
 				}
@@ -368,7 +361,7 @@ templ detailBody(d DetailData) {
 					</div>
 			}
 			for i, long := range d.AnnotationsLong {
-				<div class="anno-long"><button type="button" class="ro-chip anno-toggle" data-annolong={ itoa(i) } aria-expanded="false"><span class="ck">{ long.Key }</span><span class="cs">·</span><span class="cv">{ long.Size }</span><span class="anno-chev">@templ.Raw(long.ChevIcon)</span></button><pre class="anno-pre" hidden>{ long.Value }</pre></div>
+				<div class="anno-long"><button type="button" class="ro-chip anno-toggle" data-ro-annolong={ itoa(i) } aria-expanded="false"><span class="ck">{ long.Key }</span><span class="cs">·</span><span class="cv">{ long.Size }</span><span class="anno-chev">@templ.Raw(long.ChevIcon)</span></button><pre class="anno-pre" hidden>{ long.Value }</pre></div>
 			}
 			</div>
 	}
@@ -397,7 +390,7 @@ templ detailBody(d DetailData) {
 			</dl></div>
 	}
 	for _, card := range d.YAMLCards {
-		<div class={ yamlCardClass(card.Collapsed) } data-name={ card.Name }><div class="ro-card-head"><h4 class="title ro-card-title">{ card.Title }</h4><button type="button" class="ro-copy-btn" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="ro-card-content">@templ.Raw(card.Content)</div></div>
+		<div class={ yamlCardClass(card.Collapsed) } data-name={ card.Name }><div class="ro-card-head"><h4 class="title ro-card-title">{ card.Title }</h4><button type="button" class="ro-copy-btn" data-ro-action="copy" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="ro-card-content">@templ.Raw(card.Content)</div></div>
 	}
 	if d.ShowNamespaceLinks {
 		<div class="ro-section"><a href={ templ.SafeURL(d.AllObjectsHref) }>Show all objects in this namespace</a></div>
@@ -526,23 +519,13 @@ templ kvList(l KVList) {
 }
 
 templ detailBreadcrumb(b DetailBreadcrumb) {
-	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul><li><a href={ templ.SafeURL(b.ClusterHref) }>{ b.Cluster }</a></li>
+	<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul>@crumb(b.ClusterHref, b.Cluster)
 		if b.ShowNamespace {
-			<li><a href={ templ.SafeURL(b.NamespaceHref) }>{ b.Namespace }</a></li><li><a href={ templ.SafeURL(b.PluralHref) }>{ b.Plural }</a></li>
+			@crumb(b.NamespaceHref, b.Namespace)@crumb(b.PluralHref, b.Plural)
 		} else {
-			<li><a href={ templ.SafeURL(b.PluralHref) }>{ b.Plural }</a></li>
+			@crumb(b.PluralHref, b.Plural)
 		}
-		<li class="is-active"><a href="#">{ b.Name }</a></li></ul></nav>
-}
-
-// detailTab renders one redesign detail-page tab anchor; the active tab carries
-// the is-active class (the .ro-tabs underline marker).
-templ detailTab(active bool, href, label string) {
-	if active {
-		<a href={ templ.SafeURL(href) } class="is-active">{ label }</a>
-	} else {
-		<a href={ templ.SafeURL(href) }>{ label }</a>
-	}
+		@crumbActive(b.Name)</ul></nav>
 }
 
 // subtableC renders the related-pods subtable as a collapsible section (the

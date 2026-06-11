@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
 // The SPEC §7.15 long-annotation toggle on the pod detail page: a >120-char
-// annotation value renders as a collapsed `key · size` button (`[data-annolong]`)
+// annotation value renders as a collapsed `key · size` button (`[data-ro-annolong]`)
 // with a hidden scrollable <pre class="anno-pre"> payload. The toggle is
 // all-new delegated JS (readout.js flips the [hidden] attribute + mirrors
 // aria-expanded + rotates the chevron via .open) with no other behavioral
@@ -28,7 +28,7 @@ test('a long annotation expands to its <pre> payload and collapses back', async 
   await page.goto(POD);
 
   const block = page.locator('.anno-long');
-  const toggle = block.locator('button[data-annolong]');
+  const toggle = block.locator('button[data-ro-annolong]');
   const pre = block.locator('pre.anno-pre');
 
   // Collapsed render: the toggle names the key, the payload is hidden, and the

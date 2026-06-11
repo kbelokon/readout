@@ -1,0 +1,17 @@
+{
+  "doc": "Column names containing < > & -- the exact divergence: Go json.Marshal HTML-escapes these to \\u003c \\u003e \\u0026 while JS JSON.stringify leaves them literal. The encoded value is hand-derived from the JS (literal) form; the pre-fix Go codec FAILS this fixture.",
+  "payload": {
+    "kinds": [
+      {
+        "k": "gadgets",
+        "sort": "Name",
+        "hide": [
+          "<script>",
+          "a&b",
+          "x>y"
+        ]
+      }
+    ]
+  },
+  "encoded": "v1.eyJraW5kcyI6W3siayI6ImdhZGdldHMiLCJzb3J0IjoiTmFtZSIsImhpZGUiOlsiPHNjcmlwdD4iLCJhJmIiLCJ4PnkiXX1dfQ"
+}

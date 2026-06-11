@@ -1,0 +1,384 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Edge states: full-page error, empty, in-flight progress,
+       auto-refresh changed-cell flash. Tokens only; no inline style, no overrides.
+       --------------------------------------------------------------------------- */
+
+    /* Full-page error (error.html). A calm centered column: a big status code in
+       the error hue, a short title, the REAL apiserver message verbatim in a mono
+       code block (the most useful thing for a read-only RBAC tool -- never hidden),
+       a plain-language hint, then Back (quiet) + Retry (accent) actions. */
+    .ro-error {
+        max-width: 42rem;
+        margin: 3.5rem auto 0;
+        text-align: center;
+    }
+    .ro-error-code {
+        font-family: var(--font-mono);
+        font-size: 4rem;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.03em;
+        color: var(--st-err);
+    }
+    .ro-error-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text);
+        margin: 0.5rem 0 1.25rem;
+    }
+    .ro-error-message {
+        text-align: left;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-left: 0.1875rem solid var(--st-err);
+        border-radius: var(--radius);
+        padding: 0.75rem 0.875rem;
+        margin-bottom: 1rem;
+        overflow-x: auto;
+    }
+    .ro-error-message code {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text);
+        background: transparent;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .ro-error-hint {
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        margin-bottom: 1.5rem;
+    }
+    .ro-error-hint code {
+        font-family: var(--font-mono);
+        background: var(--surface-2);
+        color: var(--text);
+        border-radius: var(--radius-sm);
+        padding: 0 0.25rem;
+    }
+    .ro-error-actions {
+        display: flex;
+        gap: 0.625rem;
+        justify-content: center;
+    }
+    .ro-error-card {
+        max-width: 42rem;
+        margin: 3.5rem auto 0;
+        padding: 1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 0.1875rem solid var(--st-err);
+        border-radius: var(--radius);
+        color: var(--text);
+    }
+    .ro-error-card h2 {
+        margin: 0 0 0.5rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text);
+    }
+    .ro-error-card p {
+        margin: 0;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    /* Empty state (resource-list-content.html). Not an error -- a calm, expected
+       state: the literal "No <Kind> ... found." title plus a quiet nudge. The cell
+       spans the table; the inner block is centered with breathing room so an empty
+       table reads as intentional, not broken. (Unit 16: the dead
+       `.ro-list-table tr.ro-empty-row` hover/border rules were removed -- the
+       redesign empty row rides in a `.ro-table`, and the `.ro-empty-lg` card owns
+       the empty state.) */
+    .ro-empty {
+        text-align: center;
+        padding: 2.5rem 1rem;
+        color: var(--text-muted);
+    }
+    .ro-empty-title {
+        font-family: var(--font-mono);
+        font-size: 0.9375rem;
+        color: var(--text);
+        margin-bottom: 0.35rem;
+    }
+    .ro-empty-hint {
+        font-size: 0.8125rem;
+        color: var(--text-faint);
+    }
+
+    /* Global in-flight progress bar. A thin rail fixed across the very top of the
+       viewport (over the sticky topbar) that fades in while ANY request is in
+       flight and sweeps a bar left-to-right. It lives in the layout (one per page)
+       and is the indicator for BOTH every hx-boost navigation (the body sets
+       hx-indicator="#ro-progress") AND the in-place list auto-refresh
+       (#resource-list-content points its hx-indicator here too) -- so it is
+       consistent on every page change, not just when leaving a list. Reuses
+       .htmx-indicator for show/hide (opacity:0 at rest -> 1 on .htmx-request). The
+       sweep is dropped under reduced-motion (media block below); the bar still
+       fades. */
+    .ro-progress {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        z-index: 200;
+        background: var(--surface-2);
+        overflow: hidden;
+        pointer-events: none;
+    }
+    .ro-progress .ro-progress-bar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        width: 40%;
+        background: var(--accent);
+        border-radius: 1px;
+        animation: ro-progress-sweep 1.1s ease-in-out infinite;
+    }
+    @keyframes ro-progress-sweep {
+        0%   { left: -40%; width: 40%; }
+        50%  { width: 55%; }
+        100% { left: 100%; width: 40%; }
+    }
+
+    /* Auto-refresh changed-cell flash. readout.js adds .ro-cell-changed to a
+       table cell whose text actually changed across a morph refresh; this plays one
+       brief tint fade so the eye is drawn to the delta. The page never jumps (the
+       morph diffs in place); the class is added only off-reduced-motion (the JS
+       hook is not registered under prefers-reduced-motion), and the animation is
+       additionally disabled in the media block below as defence-in-depth.
+       (Unit 16: retargeted from the retired `.ro-list-table` to the redesign
+       `.ro-table` so the JS-driven flash actually lands on the live table cells --
+       readout.js adds `.ro-cell-changed` to `.ro-table` `<td>`s on morph.) */
+    .ro-table tbody td.ro-cell-changed {
+        animation: ro-cell-flash 1s ease-out;
+    }
+    @keyframes ro-cell-flash {
+        0%   { background: var(--accent-weak); }
+        100% { background: transparent; }
+    }
+
+    /* Reduced-motion: disable every decorative animation -- the navbar refresh-spin,
+       the in-flight progress sweep, and the changed-cell flash glow. The
+       progress bar still FADES in/out (a static rail) and the table still morphs in
+       place; users who asked for less motion just get no looping/sweeping/flashing.
+       Honoured purely in CSS so it holds even where the JS hook did register. */
+    @media (prefers-reduced-motion: reduce) {
+        #refresh-dropdown.refresh-on .refresh-icon svg { animation: none; }
+        .ro-progress .ro-progress-bar {
+            animation: none;
+            left: 0;
+            width: 100%;
+            opacity: 0.6;
+        }
+        .ro-table tbody td.ro-cell-changed { animation: none; }
+    }
+
+    /* ---------------------------------------------------------------------------
+       ⌘K jump-to palette -- RETIRED here (Unit 4).
+
+       The pre-redesign overlay (`.ro-palette` / `.ro-palette-panel` / `-head` /
+       `-input` / `-list` / `-row` / `-tag` / `-label` / `-path` / `-empty` + the
+       `ro-palette-in` keyframe) is gone. Its markup was deleted in
+       components.templ and its bare `.ro-palette` selector collided with the
+       redesign inner panel (`.ro-rd .ro-palette`, defined further below). Unit 2
+       lifted the redesign palette under the `.ro-rd.ro-palette-backdrop` marker
+       and noted "Unit 4 retires it" -- this is that retirement. The redesign
+       palette + its reduced-motion guard live in the REDESIGN COMPONENT PORT
+       block below (search the `⌘K PALETTE (redesign canonical .ro-pal-*)`
+       banner). */
+
+    /* =====================================================================
+       Redesign chrome dissolved here from the former redesign.css module
+       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       bare twins above by specificity (.ro-rd-scoped / element-qualified),
+       so concatenation order is not load-bearing for them.
+       ===================================================================== */
+    /* ================================================================ STATES (redesign) */
+
+    /* banners (info / warn / error / success) */
+    .ro-banner { display: flex; align-items: flex-start; gap: 11px; padding: 11px 14px;
+        border: 1px solid var(--border); border-radius: var(--radius); margin: 0 0 16px;
+        background: var(--surface); font-size: 13px; }
+    .ro-banner .bn-ico { flex: none; margin-top: 1px; }
+    .ro-banner .bn-body { flex: 1; min-width: 0; }
+    .ro-banner .bn-title { font-weight: 600; color: var(--text); margin: 0 0 2px; }
+    .ro-banner .bn-text { color: var(--text-muted); margin: 0; }
+    .ro-banner .bn-text .mono { color: var(--text); }
+    .ro-banner .bn-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+    .ro-banner.warn { border-color: color-mix(in oklab, var(--st-warn) 40%, var(--border));
+        background: color-mix(in oklab, var(--st-warn-bg) 60%, var(--surface)); }
+    .ro-banner.warn .bn-ico { color: var(--st-warn); }
+    .ro-banner.err { border-color: color-mix(in oklab, var(--st-err) 40%, var(--border));
+        background: color-mix(in oklab, var(--st-err-bg) 60%, var(--surface)); }
+    .ro-banner.err .bn-ico { color: var(--st-err); }
+    .ro-banner.info .bn-ico { color: var(--st-info); }
+    .ro-banner.ok .bn-ico { color: var(--st-ok); }
+    .ro-banner .ro-btn { height: 28px; }
+
+    /* cluster scope chips (which clusters answered / failed) -- redesign variant.
+       The live Search markup still uses bare `<span class="ro-scope-chip">` (inside a
+       `<div class="ro-scope">`) styled by the existing app rules, so the redesign
+       scope + chip rules use the canonical names scoped under the redesign CONTENT
+       marker `.ro-rd` (D13) -- the migrated Search content carries `ro-rd`, so the
+       redesign chip look applies only there while live Search keeps its app rule. */
+    .ro-rd .ro-scope { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 16px; font-size: 12px; }
+    .ro-rd .ro-scope .lbl { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
+    /* `background: transparent` OVERRIDES the leaking old bare `.ro-scope-chip
+       { background: var(--accent-weak) }`: base.css wants a transparent bordered
+       pill (only `.err` carries its own bg, re-asserted by `.ro-rd .ro-scope-chip.err`
+       below). Fixes the unwanted faint-green fill on the Search `.ok` chips + the
+       empty-filtered filter chips. */
+    .ro-rd .ro-scope-chip { background: transparent; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+        border: 1px solid var(--border); font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); }
+    .ro-rd .ro-scope-chip .ro-dot { box-shadow: none; width: 6px; height: 6px; }
+    .ro-rd .ro-scope-chip.ok { color: var(--text); }
+    .ro-rd .ro-scope-chip.err { color: var(--st-err); border-color: color-mix(in oklab, var(--st-err) 35%, var(--border));
+        background: var(--st-err-bg); }
+    .ro-rd .ro-scope-chip.err .retry { color: var(--st-err); text-decoration: underline; cursor: pointer; }
+
+    /* ----------------------------------------------------------------------------
+       Filters v2 chips editor (D7) -- the tools-row filter field that hosts the
+       server-rendered `?f=` chips + the free-text/autocomplete input. Ported from
+       the prototype's chrome.css (.ro-tools-filter / .ro-scope-chip / .filter-hint)
+       and scoped under the `.ro-rd` content marker so the Clusters page's simpler
+       bare `.tools-row input` form is untouched. */
+    .ro-rd .tools-row { display: flex; gap: 8px; margin: 0 0 12px; align-items: flex-start; }
+    .ro-rd .ro-tools-filter { position: relative; flex: 1; display: flex; align-items: center; gap: 6px;
+        flex-wrap: wrap; min-height: 36px; padding: 4px 8px 4px 34px;
+        background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+        transition: border-color var(--dur), box-shadow var(--dur); }
+    .ro-rd .ro-tools-filter > .ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
+    .ro-rd .ro-tools-filter:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+    .ro-rd .ro-tools-filter input { flex: 1; width: auto; min-width: 140px; height: 26px; margin: 0; padding: 0;
+        border: 0; outline: 0; background: none; font-size: 13px; color: var(--text); }
+    .ro-rd .ro-tools-filter input::placeholder { color: var(--text-faint); }
+    /* editor chips: the canonical .ro-scope-chip pill + the .ck/operator/.v split
+       and the ✕ button (padding tightens on the right to seat the round ✕). */
+    .ro-rd .ro-tools-filter .ro-scope-chip { padding: 3px 4px 3px 9px; }
+    .ro-rd .ro-scope-chip .ck { color: var(--chip-key); }
+    .ro-rd .ro-scope-chip b { color: var(--accent-text); font-weight: 600; }
+    .ro-rd .ro-scope-chip .v { color: var(--text); }
+    .ro-rd .ro-scope-chip .chip-x { display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; border-radius: 50%; color: var(--text-faint);
+        font-size: 10px; line-height: 1; text-decoration: none; }
+    .ro-rd .ro-scope-chip .chip-x:hover { background: var(--surface-3); color: var(--text); }
+    /* the legend line under the field */
+    .ro-rd .filter-hint { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+        margin: -4px 2px 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .ro-rd .filter-hint b { color: var(--text-muted); font-weight: 600; }
+    /* the inline unknown-field hint ("no such field — try …", revealed by JS) */
+    .ro-rd .ro-filter-error { font-family: var(--font-mono); font-size: 11.5px; color: var(--st-warn);
+        margin: -6px 2px 10px; }
+    /* rows hidden by the live free-text name match (model-driven, no request) */
+    .ro-rd tr.ro-row-filtered { display: none; }
+    /* client-side autocomplete dropdown (JS-owned children, CSP-clean DOM) */
+    .ro-rd .ro-filter-ac { position: absolute; left: 0; top: calc(100% + 4px); z-index: 60;
+        min-width: 260px; max-width: 420px; max-height: 260px; overflow: auto; padding: 4px;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+        box-shadow: var(--shadow-pop); }
+    .ro-rd .ro-ac-item { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
+        border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 12px;
+        color: var(--text); cursor: pointer; }
+    .ro-rd .ro-ac-item .ac-hint { margin-left: auto; color: var(--text-faint); font-size: 11px; }
+    .ro-rd .ro-ac-item.active { background: var(--accent-weak); }
+
+    /* ----------------------------------------------------------------------------
+       Column-visibility popover (D8) -- the ⊞ title-row action's dropdown:
+       one checkbox row per column (the identity row disabled) plus the
+       labelcols / selector form absorbed from the v1 tools form. Ported from
+       the prototype's chrome.css (.rel / .ro-pop / .pop-head / .col-toggle)
+       and scoped under the `.ro-rd` content marker like the chips editor. */
+    .ro-rd .rel { position: relative; }
+    .ro-rd .ro-pop { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 70;
+        width: 260px; padding: 5px; background: var(--surface); border: 1px solid var(--border-strong);
+        border-radius: var(--radius); box-shadow: var(--shadow-pop); }
+    .ro-rd .ro-pop.is-open { display: block; }
+    .ro-rd .ro-pop .pop-head { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--text-faint); padding: 7px 9px 4px; }
+    .ro-rd .col-toggle { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 9px;
+        border: 0; background: none; border-radius: var(--radius-sm); font-family: var(--font-ui);
+        font-size: 12.5px; color: var(--text); cursor: pointer; text-align: left; }
+    .ro-rd .col-toggle:hover { background: var(--surface-2); }
+    .ro-rd .col-toggle .ro-check { pointer-events: none; }
+    /* the identity row: locked on -- muted, no hover affordance */
+    .ro-rd .col-toggle:disabled { cursor: default; }
+    .ro-rd .col-toggle:disabled:hover { background: none; }
+    .ro-rd .col-toggle:disabled span { color: var(--text-faint); }
+    .ro-rd .col-toggle .ro-check:checked:disabled { background: var(--st-mute); border-color: var(--st-mute); }
+    /* the absorbed labelcols / selector form under a hairline */
+    .ro-rd .ro-pop-form { display: flex; flex-direction: column; gap: 4px; margin-top: 5px;
+        padding: 0 4px 6px; border-top: 1px solid var(--border-soft); }
+    .ro-rd .ro-pop-form .pop-head { padding-left: 5px; }
+    .ro-rd .ro-pop-form .ro-tools-actions { margin-top: 6px; }
+
+    /* big empty / failure state (prototype VIEW.states markup, D16) */
+    .ro-empty-lg { display: flex; flex-direction: column; align-items: center; justify-content: center;
+        text-align: center; padding: 72px 24px; }
+    .ro-empty-glyph { width: 52px; height: 52px; border-radius: 13px; display: flex; align-items: center;
+        justify-content: center; background: var(--surface-2); border: 1px solid var(--border); margin-bottom: 18px; }
+    .ro-empty-glyph .ico svg { width: 24px; height: 24px; color: var(--text-faint); }
+    .ro-empty-glyph.err { background: var(--st-err-bg); border-color: transparent; }
+    .ro-empty-glyph.err .ico svg { color: var(--st-err); }
+    .ro-empty-glyph.warn { background: var(--st-warn-bg); border-color: transparent; }
+    .ro-empty-glyph.warn .ico svg { color: var(--st-warn); }
+    .ro-empty-lg h3 { font-size: 16px; font-weight: 600; margin: 0 0 6px; color: var(--text); }
+    .ro-empty-lg p { font-size: 13px; color: var(--text-muted); margin: 0 0 4px; max-width: 460px; }
+    .ro-empty-lg .hint { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+    /* the VERBATIM apiserver/transport string (SPEC §1.5): mono, code surface,
+       breaks anywhere -- the real error is never clipped into a cute message */
+    .ro-empty-lg .errdetail { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted);
+        background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+        padding: 8px 12px; margin-top: 10px; max-width: 560px; word-break: break-all; white-space: normal; }
+    .ro-empty-lg .errdetail .note { opacity: .55; }
+    .ro-empty-lg .ro-btn { margin-top: 18px; }
+    /* State action row (Retry / Back to clusters / Clear filters): a centred row
+       of buttons under the empty-state copy. Margin lives here (not per-button) so
+       multiple buttons share one top gap. */
+    .ro-empty-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+    .ro-empty-actions .ro-btn { margin-top: 0; }
+    /* the empty-FILTERED card's inline active-chips strip (prototype) */
+    .ro-empty-chips { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+    .ro-empty-inline { padding: 36px 20px; text-align: center; color: var(--text-faint);
+        font-size: 13px; font-family: var(--font-ui); }
+
+    /* first-run (SPEC §7.2, D17): the instruction screen at zero configured
+       clusters -- the command block reads as a terminal, so it left-aligns
+       inside the centred card */
+    .ro-firstrun .errdetail { text-align: left; }
+
+    /* Stale (client-side, D11). readout.js reveals the pre-rendered hidden
+       `.ro-stale-banner` and adds `.ro-stale` to #resource-list-content on an
+       auto-refresh error -- it never blanks the rows. `.ro-banner` sets
+       display:flex, which overrides the UA [hidden]{display:none}, so the hidden
+       banner needs an explicit display:none until JS clears the attribute. The dim
+       keeps the last-good data visible-but-muted (~.72) so the user reads it as
+       stale, not gone; the morph that lands fresh rows clears the class. */
+    .ro-banner.ro-stale-banner[hidden] { display: none; }
+    #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
+
+    /* Loading skeleton (D16 / SPEC §7.19). Rows mirror the visible column
+       widths (inline width per .skel bar, baked server-side in
+       #ro-skel-template) and fade toward the bottom (inline opacity).
+       readout.js clones the rows into #resource-list-content ONLY when the
+       swap target region is empty -- a populated table NEVER gets a skeleton
+       (data never disappears). The shimmer dies under prefers-reduced-motion
+       (the media block at the end of this layer). */
+    .skel-row { display: flex; gap: 14px; padding: var(--row-py) var(--cell-px);
+        border-bottom: 1px solid var(--border-soft); }
+    .skel { height: 11px; border-radius: 4px;
+        background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
+        background-size: 400% 100%; animation: skel-shimmer 1.4s linear infinite; }
+    @keyframes skel-shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+
+}

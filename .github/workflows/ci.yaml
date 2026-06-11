@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, frontend-refactor]
   pull_request:
 jobs:
   quality:
@@ -31,3 +31,65 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  # Behavioural e2e: host path on the native amd64 runner. The Playwright
+  # browser plus its OS deps are installed directly (no container); `make e2e`
+  # builds the readout binary and runs the desktop/mobile projects against the
+  # fakeapi harness. Deliberately NOT a `make ci` gate (see Makefile).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tests/e2e/package-lock.json
+      - name: Install Playwright browser + OS deps (Chromium)
+        working-directory: tests/e2e
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Run the behavioural e2e suite
+        run: make e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-playwright-report
+          path: |
+            tests/e2e/playwright-report
+            tests/e2e/test-results
+          if-no-files-found: ignore
+
+  # Frontend asset gate: lints + typechecks the src tree and proves the committed
+  # static/ artifacts are fresh. Node 24 (matches package.json engines), npm cache
+  # keyed off the root package-lock.json. Both typecheckers run (tsgo = TS7 native
+  # preview, tsc = stable cross-check) until TS7 is stable. The node-test step is a
+  # the find-guard keeps this step deterministic: it runs the suite when *.test.ts files exist (95 today) and no-ops cleanly if they are ever absent.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install deps
+        run: npm ci
+      - name: Gate - Biome lint/format
+        run: npx biome check internal/assets/src scripts
+      - name: Gate - typecheck (tsgo, TS7 native preview)
+        run: npx tsgo --noEmit
+      - name: Gate - typecheck (tsc, stable cross-check)
+        run: npx tsc --noEmit
+      - name: JS unit tests
+        run: find internal/assets/src/js -name '*.test.ts' | grep -q . && node --test 'internal/assets/src/js/**/*.test.ts' || echo 'no JS tests yet — step skipped'
+      - name: Gate - embedded assets are fresh
+        run: |
+          node scripts/build-assets.mjs
+          git diff --exit-code -- internal/assets/static

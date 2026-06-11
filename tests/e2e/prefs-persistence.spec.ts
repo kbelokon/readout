@@ -51,7 +51,7 @@ function rowNames(page: Page) {
 // The navbar interval menu opens on hover (CSS :hover/:focus-within).
 async function pickInterval(page: Page, secs: number): Promise<void> {
   await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-interval="${secs}"]`).click();
+  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
 }
 
 test.beforeEach(async ({}, testInfo) => {
@@ -91,10 +91,10 @@ test('an interval pick persists: a reload renders 30s active from the cookie', a
   // the active option, and ONLY that option active.
   await page.reload();
   await expect(page.locator('#refresh-label')).toHaveText('30s');
-  await expect(page.locator('.refresh-option[data-interval="30"]')).toHaveClass(
+  await expect(page.locator('.refresh-option[data-ro-interval="30"]')).toHaveClass(
     /is-active/
   );
-  await expect(page.locator('.refresh-option[data-interval="0"]')).not.toHaveClass(
+  await expect(page.locator('.refresh-option[data-ro-interval="0"]')).not.toHaveClass(
     /is-active/
   );
 });

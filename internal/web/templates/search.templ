@@ -24,7 +24,7 @@ package templates
 // checkboxes round-trip the scope), and every retry (the banner "Retry failed" +
 // each `.ro-scope-chip.err` `.retry`) is a read-only GET that re-runs the SAME
 // search scoped to the failed cluster(s) -- never a write path. The "Refine ·
-// ⌘K" button is type="button": readout.js (delegated [data-search-refine]
+// ⌘K" button is type="button": readout.js (delegated [data-ro-search-refine]
 // listener) opens the ⌘K palette prefilled with the query -- no inline handler,
 // no form side effects. Every value is resolved in the package-web assembly
 // layer (buildSearchView -> toSearchData); the renderer touches no request and
@@ -162,7 +162,7 @@ templ Search(d SearchData) {
 		@searchBreadcrumb(d.Breadcrumb)
 		<div class="search-hero"><div class="ro-title-row"><h1 class="ro-title">Search</h1>
 			if d.HasQuery {
-				<span style="flex:1"></span><div class="ro-title-actions"><button type="button" class="ro-btn quiet sm" data-search-refine data-query={ d.Query } title="Refine in the command palette"><span class="ico sm" aria-hidden="true">@iconC("search")</span><span>Refine · ⌘K</span></button></div>
+				<span style="flex:1"></span><div class="ro-title-actions"><button type="button" class="ro-btn quiet sm" data-ro-search-refine data-query={ d.Query } title="Refine in the command palette"><span class="ico sm" aria-hidden="true">@iconC("search")</span><span>Refine · ⌘K</span></button></div>
 			}
 			</div><form action="/search" method="get"><input type="hidden" name="cluster" value={ d.Cluster }><input type="hidden" name="namespace" value={ d.Namespace }><div class="search-big"><span class="ico">@templ.Raw(d.SearchIcon)</span><input type="text" name="q" value={ d.Query } placeholder="Search query text" spellcheck="false"></div>
 			if len(d.Types) > 0 {
@@ -261,16 +261,16 @@ templ searchResultRow(row SearchResultRow) {
 // searchBreadcrumb renders the search-page breadcrumb (all / cluster /
 // namespace / search).
 templ searchBreadcrumb(b SearchBreadcrumb) {
-	<nav class="breadcrumb ro-breadcrumb" aria-label="breadcrumbs"><ul>
+	<nav class="ro-breadcrumb" aria-label="breadcrumbs"><ul>
 		if b.IsAllClusters {
-			<li><a href="/clusters">all</a></li>
+			@crumb("/clusters", "all")
 		} else if b.Cluster != "" {
-			<li><a href={ templ.SafeURL(b.ClusterHref) }>{ b.Cluster }</a></li>
+			@crumb(b.ClusterHref, b.Cluster)
 			if b.ShowAllNamespace {
-				<li><a href={ templ.SafeURL(b.AllNamespaces) }>all</a></li>
+				@crumb(b.AllNamespaces, "all")
 			} else if b.ShowNamespace {
-				<li><a href={ templ.SafeURL(b.NamespaceHref) }>{ b.Namespace }</a></li>
+				@crumb(b.NamespaceHref, b.Namespace)
 			}
 		}
-		<li class="is-active"><a href="#">search</a></li></ul></nav>
+		@crumbActive("search")</ul></nav>
 }

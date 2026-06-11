@@ -1,0 +1,88 @@
+{
+  "doc": "Over-cap input: five most-recent-first kinds exceed the 3072 cap. Tail eviction drops 'epsilons' then 'deltas' (the two least-recently-used), keeping alphas,betas,gammas. Both codecs must pick the SAME victims -- 'encoded' is the post-eviction value; 'evicted' records the dropped kinds for documentation.",
+  "payload": {
+    "kinds": [
+      {
+        "k": "alphas",
+        "sort": "Name",
+        "hide": [
+          "AaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+          "AaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+          "AaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+          "AaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+          "AaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+          "AaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+          "AaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+          "AaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa"
+        ]
+      },
+      {
+        "k": "betas",
+        "sort": "Name",
+        "hide": [
+          "BbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb",
+          "BbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb",
+          "BbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb",
+          "BbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb",
+          "BbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb",
+          "BbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb",
+          "BbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb",
+          "BbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb"
+        ]
+      },
+      {
+        "k": "gammas",
+        "sort": "Name",
+        "hide": [
+          "CcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCc",
+          "CcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCc",
+          "CcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCc",
+          "CcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCc",
+          "CcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCc",
+          "CcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCc",
+          "CcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCc",
+          "CcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCc"
+        ]
+      },
+      {
+        "k": "deltas",
+        "sort": "Name",
+        "hide": [
+          "DdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDd",
+          "DdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDd",
+          "DdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDd",
+          "DdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDd",
+          "DdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDd",
+          "DdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDd",
+          "DdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDd",
+          "DdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDdDd"
+        ]
+      },
+      {
+        "k": "epsilons",
+        "sort": "Name",
+        "hide": [
+          "EeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe",
+          "EeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe",
+          "EeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe",
+          "EeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe",
+          "EeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe",
+          "EeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe",
+          "EeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe",
+          "EeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe"
+        ]
+      }
+    ],
+    "refresh": "60"
+  },
+  "evicted": [
+    "epsilons",
+    "deltas"
+  ],
+  "kept": [
+    "alphas",
+    "betas",
+    "gammas"
+  ],
+  "encoded": "v1.eyJraW5kcyI6W3siayI6ImFscGhhcyIsInNvcnQiOiJOYW1lIiwiaGlkZSI6WyJBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYSIsIkFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhIiwiQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWEiLCJBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYSIsIkFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhIiwiQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWEiLCJBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYSIsIkFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhQWFBYUFhIl19LHsiayI6ImJldGFzIiwic29ydCI6Ik5hbWUiLCJoaWRlIjpbIkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiIiwiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmIiLCJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYiIsIkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiIiwiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmIiLCJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYiIsIkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiIiwiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmJCYkJiQmIiXX0seyJrIjoiZ2FtbWFzIiwic29ydCI6Ik5hbWUiLCJoaWRlIjpbIkNjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjIiwiQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2MiLCJDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDYyIsIkNjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjIiwiQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2MiLCJDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDYyIsIkNjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjIiwiQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2NDY0NjQ2MiXX1dLCJyZWZyZXNoIjoiNjAifQ"
+}

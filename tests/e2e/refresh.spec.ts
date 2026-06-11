@@ -64,7 +64,7 @@ function rowNames(page: Page) {
 // The navbar interval menu opens on hover (CSS :hover/:focus-within).
 async function pickInterval(page: Page, secs: number): Promise<void> {
   await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-interval="${secs}"]`).click();
+  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
 }
 
 // Resolve a CSS custom property to the computed rgb() serialization toHaveCSS
@@ -193,7 +193,7 @@ test('the interval choice (the new 10s option) survives reload via the prefs coo
     'Every 60s',
     'Live',
   ]);
-  await expect(page.locator('.refresh-option[data-interval="15"]')).toHaveCount(0);
+  await expect(page.locator('.refresh-option[data-ro-interval="15"]')).toHaveCount(0);
 
   await pickInterval(page, 10);
   await expect(page.locator('#refresh-label')).toHaveText('10s');
@@ -202,7 +202,7 @@ test('the interval choice (the new 10s option) survives reload via the prefs coo
   // cookie is the only carrier across this reload).
   await page.reload();
   await expect(page.locator('#refresh-label')).toHaveText('10s');
-  await expect(page.locator('.refresh-option[data-interval="10"]')).toHaveClass(/is-active/);
+  await expect(page.locator('.refresh-option[data-ro-interval="10"]')).toHaveClass(/is-active/);
 });
 
 test('the refresh menu opens on hover and survives the pointer travelling into it', async ({
@@ -211,7 +211,7 @@ test('the refresh menu opens on hover and survives the pointer travelling into i
   await page.goto(PODS);
   const trigger = page.locator('#refresh-dropdown .refresh-trigger');
   const menu = page.locator('.refresh-menu');
-  const option = page.locator('.refresh-option[data-interval="30"]');
+  const option = page.locator('.refresh-option[data-ro-interval="30"]');
 
   // Hover alone reveals the menu -- no click required.
   await trigger.hover();

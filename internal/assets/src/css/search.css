@@ -1,0 +1,356 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Search results. The live API list+filter, the GET form
+       (q/cluster/type), the `.search-result` blocks and the backend `<em>` match
+       highlight are all KEPT -- this only restyles them into the token system: a
+       mono kind-tag, a mono identifier link, a quiet meta line, and the matched
+       term as a calm accent-weak highlight (not the old loud yellow). App wins by
+       layer order; no forced priority.
+       --------------------------------------------------------------------------- */
+
+    /* Scope chips: the active cluster(s) + a muted type-scope chip. Reflects the
+       resolved search_clusters / resource_types passed to the template. */
+    .ro-scope {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.375rem;
+        margin-bottom: 1rem;
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+    }
+    .ro-scope .ro-scope-label { color: var(--text-faint); margin-right: 0.125rem; }
+    .ro-scope-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.125rem 0.5rem;
+        border-radius: var(--radius-sm);
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        white-space: nowrap;
+    }
+    .ro-scope-chip.is-muted {
+        background: var(--surface-2);
+        color: var(--text-faint);
+        border: 1px solid var(--border);
+    }
+
+    /* (D3 colour law) the dead `.ro-ktag` green kind-tag rule was removed: no
+       template emits it any more (the kind-tile icon system replaced it), and
+       its green tint died with the retired --label-app-* tokens. */
+
+    /* Each result: a main column (mono name link, meta, snippets). */
+    .search-result {
+        display: flex;
+        gap: 0.75rem;
+        align-items: flex-start;
+        padding: 0.6875rem 0;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 0;
+    }
+    .search-result:last-of-type { border-bottom: 0; }
+    .search-result .r-main { flex: 1 1 auto; min-width: 0; }
+    .search-result .r-title {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--id-color);
+    }
+    .search-result .r-title:hover { text-decoration: underline; text-underline-offset: 2px; }
+    .search-result .r-meta {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 0 0.3125rem;
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        color: var(--text-faint);
+        margin-top: 0.1875rem;
+    }
+    .search-result .r-meta .r-kind { color: var(--text-muted); }
+    .search-result .r-meta .r-path {
+        color: var(--text-faint);
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .search-result .r-meta .r-path:hover { color: var(--text-muted); }
+    .search-result .r-meta .sep { opacity: 0.5; }
+    .search-result .r-snip {
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        color: var(--text-muted);
+        margin-top: 0.375rem;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 0.3125rem 0.5rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    /* the backend <em> highlight -> calm accent-weak token, no loud colour */
+    .search-result em {
+        font-style: normal;
+        background: var(--accent-weak);
+        color: var(--accent-text);
+        border-radius: 2px;
+        padding: 0 0.125rem;
+    }
+    .search-result .r-labels { margin-top: 0.5rem; }
+
+    /* Calm result-count line + no-results state. */
+    .ro-search-count {
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        color: var(--text-faint);
+        margin-top: 1rem;
+    }
+    .ro-search-count a { color: var(--id-color); }
+    .ro-noresults {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+        padding: 1.5rem 0;
+    }
+
+    /* YAML line-number anchor highlight. readout.js toggles this class on the
+       `#yaml-<line>` <span> when a .linenos anchor is clicked or the URL hash
+       names a line, instead of setting el.style.background -- so the colour
+       stays in CSS (tidier; the class swap is also unambiguous under a CSP). */
+    pre > span.yaml-line-highlight { background: hsl(48, 100%, 67%); }
+
+    /* Logs filter form inputs (resource-logs.html). De-inlined from the former
+       inline width + vertical-align attributes so a strict style-src 'self'
+       -- which blocks ALL inline style attributes, not just colours --
+       no longer rejects them. */
+    .logs-tail-input { width: 7rem; vertical-align: baseline; }
+    .logs-filter-input { width: 10rem; vertical-align: baseline; }
+
+    /* Logs screen. The filter form, the container tabs
+       and the <pre> stream consume the redesign tokens. The per-pod identity
+       colour stays on the pod-name prefix via .log-line .log-cN (declared in
+       @layer theme -- a per-pod identity colour, NOT severity); these rules only
+       skin the surrounding chrome + the muted body + a presentation-only
+       WARN/ERROR emphasis that lands on the MESSAGE span, never the pod prefix. */
+    form.ro-logs-form {
+        display: flex; align-items: center; flex-wrap: wrap;
+        gap: 0.5rem; margin-bottom: 1rem;
+        font-family: var(--font-mono); font-size: 0.8125rem;
+        color: var(--text-muted);
+    }
+    form.ro-logs-form .input { vertical-align: baseline; }
+
+    .ro-log-tabs { font-family: var(--font-mono); }
+
+    /* The log stream. Body text is muted so the leading RFC3339 timestamp on each
+       line recedes; the identity-coloured pod prefix and any WARN/ERROR message
+       stand out against it. */
+    pre.ro-logpre {
+        font-family: var(--font-mono);
+        font-size: 0.78125rem; line-height: 1.7;
+        color: var(--text-muted);
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 0.75rem 0.875rem;
+        white-space: pre-wrap; word-break: break-word; overflow: hidden;
+    }
+    /* (Unit 16) the dead per-severity log rules (`.log-ctr`, `.log-msg`,
+       `.log-msg.log-lvl-warn|err`) were removed: the redesign log stream renders
+       bare messages (`.log-line > .log-src/.log-cN/.log-ts` + plain text), so none
+       of those classes is emitted. The per-pod identity colour lives on `.log-cN`
+       (@layer theme) and `.log-src`/`.log-ts` are styled in the redesign block. */
+    pre.ro-logpre em { color: var(--text-faint); font-style: normal; }
+
+    /* "Container logs disabled" warning state, re-skinned as a token notice. */
+    .ro-notice {
+        border: 1px solid var(--border);
+        border-left: 0.1875rem solid var(--st-warn);
+        background: var(--st-warn-bg);
+        border-radius: var(--radius);
+        padding: 0.75rem 0.875rem; margin-bottom: 1rem;
+        color: var(--text-muted); font-size: 0.875rem;
+    }
+    .ro-notice .ro-notice-title {
+        color: var(--st-warn); font-weight: 600; margin-bottom: 0.25rem;
+    }
+    .ro-notice code {
+        font-family: var(--font-mono);
+        background: var(--code-bg); color: var(--text);
+        border-radius: var(--radius-sm); padding: 0 0.25rem;
+        white-space: pre-wrap; word-break: break-word;
+    }
+    /* Error-tinted variant: the per-cluster partial-error block. Same notice
+       geometry, err palette instead of warn (left accent + tint + title hue). */
+    .ro-notice.ro-notice-err {
+        border-left-color: var(--st-err);
+        background: var(--st-err-bg);
+    }
+    .ro-notice.ro-notice-err .ro-notice-title { color: var(--st-err); }
+    .ro-notice.ro-notice-err p { margin-bottom: 0.2rem; }
+    /* Info / neutral variant: the Secret masked-data banner. Same notice
+       geometry, info palette instead of warn (left accent + tint + title hue). */
+    .ro-notice.ro-notice-info {
+        border-left-color: var(--st-info);
+        background: var(--st-info-bg);
+    }
+    .ro-notice.ro-notice-info .ro-notice-title { color: var(--st-info); }
+    .ro-notice.ro-notice-info p { margin-bottom: 0.2rem; }
+
+    /* Secret masked-data block: mono key names over masked value rows.
+       There is deliberately NO reveal / decode / copy control -- the backend
+       never sends the real value, so the row only ever shows a masked indicator. */
+    .ro-secret-rows {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+        background: var(--surface);
+    }
+    .ro-secret-row {
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+        padding: 0.5rem 0.875rem;
+        border-top: 1px solid var(--border);
+    }
+    .ro-secret-row:first-child { border-top: 0; }
+    .ro-secret-key {
+        flex: 0 0 auto;
+        min-width: 14rem;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        font-weight: 600;
+        color: var(--text);
+        word-break: break-all;
+    }
+    .ro-secret-val {
+        flex: 1 1 auto;
+        margin: 0;
+    }
+    .ro-secret-mask {
+        font-family: var(--font-mono);
+        letter-spacing: 0.15em;
+        color: var(--text-faint);
+        user-select: none;
+    }
+
+    /* Node detail summary blocks. Node is the ONE kind
+       with bespoke summary blocks; every other kind relies on the generic
+       scaffold + YAML. These sit ADDITIVE above the generic YAML cards.
+
+       Condition pills: a bordered surface pill with a leading status dot + the
+       condition name + a bold True/False value. The pill carries one of the
+       .ro-st-* tone classes, which set `color` -- the .ro-status-dot reuses
+       that via `background: currentColor` (same mechanism as the list-table
+       status dot), so dot + value share the tone with no extra rules. Neutral
+       conditions fall back to the muted faint colour. */
+    .ro-cond-pills { gap: 0.375rem; }
+    .ro-cond-pill {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 0.375rem;
+        padding: 0.1875rem 0.5rem;
+        border-radius: var(--pill-radius);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        font-family: var(--font-mono);
+        font-size: 0.71875rem;
+        line-height: 1.4;
+        color: var(--text-faint);
+    }
+    .ro-cond-pill .ro-cond-name { color: var(--text-muted); }
+    .ro-cond-pill .ro-cond-val { font-weight: 600; color: currentColor; }
+    .ro-cond-pill.ro-st-ok      { color: var(--st-ok);   border-color: var(--st-ok);   background: var(--st-ok-bg); }
+    .ro-cond-pill.ro-st-warn    { color: var(--st-warn); border-color: var(--st-warn); background: var(--st-warn-bg); }
+    .ro-cond-pill.ro-st-err     { color: var(--st-err);  border-color: var(--st-err);  background: var(--st-err-bg); }
+    .ro-cond-pill.ro-st-neutral { color: var(--text-faint); }
+
+    /* Capacity / Allocatable + System Info key/value grids: a mono kv list with a
+       faint key column and the value in body text. .ro-kv-cols lays the two
+       Capacity / Allocatable lists side by side on wide viewports and stacks
+       them when narrow. */
+    .ro-kv-cols {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+        gap: 0.25rem 2.5rem;
+    }
+    .ro-kv { margin: 0; }
+    .ro-kv-row {
+        display: grid;
+        grid-template-columns: minmax(9rem, max-content) 1fr;
+        gap: 0.5rem 1.5rem;
+        padding: 0.1875rem 0;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        line-height: 1.45;
+    }
+    .ro-kv-row dt { color: var(--text-faint); word-break: break-word; }
+    .ro-kv-row dd { margin: 0; color: var(--text); word-break: break-all; }
+
+    /* Honest partial-results footer line: a quiet warn-toned note that the
+       multi-cluster list is degraded (N of M clusters answered). */
+    .ro-partial-note {
+        color: var(--st-warn);
+        font-size: 0.8125rem;
+        margin-top: 0.25rem;
+    }
+
+    /* HTMX request-indicator styles, vendored. htmx normally INJECTS these
+       as an inline <style> at init, which a strict style-src 'self' blocks; we
+       set includeIndicatorStyles:false in the <meta name="htmx-config"> tag (so
+       htmx skips that injection) and ship the equivalent rules here instead, so
+       hx-indicator request spinners still fade in/out. These match htmx's own
+       injected rules verbatim. */
+    .htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+    .htmx-request .htmx-indicator { opacity: 1; }
+    .htmx-request.htmx-indicator { opacity: 1; }
+
+    /* =====================================================================
+       Redesign chrome dissolved here from the former redesign.css module
+       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       bare twins above by specificity (.ro-rd-scoped / element-qualified),
+       so concatenation order is not load-bearing for them.
+       ===================================================================== */
+    /* Search.html inline <style> */
+    .search-hero { max-width: 760px; }
+    .search-big { position: relative; margin: 4px 0 14px; }
+    .search-big input { width: 100%; height: 44px; padding: 0 16px 0 44px; font-size: 15px;
+        background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--text);
+        font-family: var(--font-mono); }
+    .search-big input:focus { border-color: var(--accent); }
+    .search-big .ico { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
+    .search-opts { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-bottom: 4px; font-size: 12px; color: var(--text-muted); }
+    td.cell-clu a, td.cell-ns a { color: var(--text-muted); }
+    td.cell-clu a:hover { color: var(--accent); }
+    .res-kind { display: inline-flex; align-items: center; gap: 8px; }
+
+    /* Search v2 (D12, prototype VIEW.search + data.css SEARCH RESULTS):
+       restored resource-type checkboxes, per-cluster result groups, and the
+       match highlight. `.search-types`/`.search-group`/`.search-cluster` are
+       net-new (bare, like the other search classes); `mark` is an ELEMENT
+       selector so it is scoped under the `.ro-rd` content marker -- only the
+       migrated search body emits it, and the browser's yellow default must not
+       leak anywhere else. The group count chip reuses the title-row count-chip
+       recipe (the prototype emits `.ro-count` here but never styles it outside
+       the title row -- a prototype gap, resolved toward the chip the SPEC names). */
+    .search-types { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin: 0 0 12px; }
+    .search-types .search-type { display: inline-flex; align-items: center; gap: 6px;
+        font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+    .search-types .search-type:hover { color: var(--text); }
+    .search-group { margin-bottom: 22px; }
+    .search-cluster { display: flex; align-items: center; gap: 9px; margin: 0 0 9px;
+        font-size: 13px; color: var(--text); }
+    .search-cluster .mono { font-weight: 500; }
+    .search-cluster .ro-count { font-family: var(--font-mono); font-size: 11.5px; font-weight: 500;
+        color: var(--text-muted); background: var(--surface-2);
+        border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; }
+    .ro-rd mark { background: var(--accent-weak); color: var(--accent-text); border-radius: 3px;
+        padding: 0 1px; font-weight: 600; }
+    .ro-rd .ro-phase-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+
+}

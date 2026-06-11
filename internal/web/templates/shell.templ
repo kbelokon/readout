@@ -1,0 +1,127 @@
+package templates
+
+// shell.templ holds the app-shell chrome extracted from layout.templ: the sticky
+// blurred topbar, the namespace context dropdown that rides in it, the sticky
+// grouped sidebar (and its single-link primitive), and the footer slot. These are
+// the named page-frame blocks; layout.templ keeps only the document skeleton
+// (head/body, scripts, slots) and composes these. The render output stays
+// byte-identical to the markup these replaced -- the SPEC §9 visual grid + the
+// behavior-fact net are the arbiters, so element/attribute order and inter-node
+// whitespace are load-bearing and must not be "tidied" here.
+
+// topbarC is the redesign sticky blurred topbar. It MUST be a <header
+// class="ro-topbar"> (D13) so the header.ro-topbar CSS applies. It carries: the
+// brand mark on its SPEC 2.5 dark chip (.brand-chip wrapping the .brand-logo
+// mask over readout-logo.svg, inheriting --brand -- the chip stays #0d1117 in
+// BOTH themes so the light-green mark reads on the light header) + name; the
+// Clusters .topnav link; the namespace context dropdown (.ctx-dd, only with a
+// cluster in scope) keeping the readout.js hooks (#namespace-dropdown /
+// #namespace-searchbox / .namespace-item / .context-name); a flexible spacer; the
+// read-only .ro-search box that OPENS ⌘K on click (data-ro-palette-open, consumed by
+// Unit 4) -- it is a plain box, NOT a submitting form; the live-refresh control
+// (.tb-btn.refresh-trigger with the .ro-livedot + #refresh-label; the dot is
+// ghost-grey and goes brand+pulse ONLY under #refresh-dropdown.refresh-on, the
+// one live-state owner -- colour law §1.1) keeping the existing
+// #refresh-dropdown / .refresh-option[data-ro-interval] interval hooks; and
+// the theme toggle, which stays a server POST /preferences that opts OUT of
+// hx-boost (D5) -- NOT a client-JS toggle (#btn-theme-toggle + .theme-icon-*).
+//
+// The leading `.menu-toggle` hamburger (D11) is mobile chrome: hidden by the
+// readout.css media query above 760px, it reveals below 760px where the sidebar
+// is hidden, toggling `.ro-sidebar.is-active` via the delegated readout.js click
+// handler (Unit 4). It is a real <button> so the app-layer button:focus-visible
+// ring applies, and renders only when ShowSidebar (there must be a sidebar for
+// it to reveal -- the Clusters entry page has none).
+templ topbarC(n Navbar) {
+	<header class="ro-topbar" aria-label="main navigation">
+		if n.ShowSidebar {
+			<button type="button" class="menu-toggle" data-ro-action="toggle-sidebar" aria-label="Toggle navigation menu" aria-controls="aside-menu"><span class="ico sm" aria-hidden="true">@iconC("sliders")</span></button>
+		}
+		<a class="brand-item" href="/clusters" aria-label="readout home"><span class="brand-chip" aria-hidden="true"><span class="brand-logo"></span></span><span class="brand-name">readout</span></a><nav class="topnav"><a class="is-active" href="/clusters">Clusters</a></nav>
+		if n.ShowContext {
+			@namespaceDropdownC(n)
+		}
+		<span class="topbar-spacer"></span><div class="ro-search" data-ro-palette-open="true" role="button" tabindex="0" aria-label="Search Kubernetes objects (opens command palette)"><span class="s-ico ico sm" aria-hidden="true">@iconC("search")</span><input type="text" placeholder="Search Kubernetes objects.." aria-hidden="true" tabindex="-1" readonly><span class="kbd-hint" aria-hidden="true"><kbd class="ro-kbd">&#8984;K</kbd></span></div><div class="tb-group"><div id="refresh-dropdown" class={ refreshDropdownClass(n.RefreshMode) }><button type="button" class="tb-btn refresh-trigger" title="Auto-refresh interval" aria-label="Auto-refresh interval"><span class="ro-livedot" aria-hidden="true"></span><span class="ico refresh-icon" aria-hidden="true">@iconC("rotate-cw")</span><span id="refresh-label" class="refresh-label">{ refreshLabel(n.RefreshMode) }</span></button><div class="refresh-menu"><button type="button" class={ refreshOptionClass("0", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="0">Off</button><button type="button" class={ refreshOptionClass("5", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="5">Every 5s</button><button type="button" class={ refreshOptionClass("10", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="10">Every 10s</button><button type="button" class={ refreshOptionClass("30", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="30">Every 30s</button><button type="button" class={ refreshOptionClass("60", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="60">Every 60s</button>
+			if n.LiveDisabled {
+				<button type="button" class={ refreshOptionClass("Live", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="Live" disabled title="Live updates cover single-type, single-cluster lists">Live</button>
+			} else {
+				<button type="button" class={ refreshOptionClass("Live", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="Live">Live</button>
+			}
+		</div></div><form method="post" action="/preferences" hx-boost="false"><input type="hidden" name="theme" value={ n.NextTheme }><input type="hidden" name="next" value={ n.ToggleNextURL }><button type="submit" class="tb-btn" title="Toggle light/dark theme" aria-label="Toggle light/dark theme" id="btn-theme-toggle" data-theme-explicit={ boolStr(n.ThemeExplicit) }><span class="ico theme-icon-dark" aria-hidden="true">@iconC("moon")</span><span class="ico theme-icon-light" aria-hidden="true">@iconC("sun")</span></button></form></div></header>
+}
+
+// namespaceDropdownC is the topbar namespace context switcher (#namespace-dropdown),
+// rendered only with a cluster in scope (Navbar.ShowContext). It keeps the
+// readout.js hooks verbatim: the #namespace-dropdown root, the .ctx-dd trigger
+// with the .context-name label + scope dot, the #namespace-searchbox filter
+// input, and one .namespace-item anchor per link carrying data-ro-action="pick-namespace".
+templ namespaceDropdownC(n Navbar) {
+	<div id="namespace-dropdown"><button type="button" class="ctx-dd context-trigger" aria-haspopup="true" aria-label="Switch namespace"><span class={ ctxDotClass(n.ContextName) } aria-hidden="true"></span><span class="context-name">{ n.ContextName }</span><span class="ctx-caret ico sm" aria-hidden="true">@iconC("chevron-down")</span></button><div class="ctx-menu"><div class="ctx-search"><input id="namespace-searchbox" type="text" placeholder="type to filter" autocomplete="off"></div>
+		for _, ns := range n.NamespaceLinks {
+			<a class="namespace-item" data-ro-action="pick-namespace" href={ templ.SafeURL(ns.Href) }>{ ns.Text }</a>
+		}
+		</div></div>
+}
+
+// sidebarC is the redesign sticky sidebar: an <aside class="ro-sidebar"> (so the
+// .ro-shell grid + .ro-sidebar CSS apply) whose grouped entries each carry a
+// resolved kind icon (the Unit-1 resolver, pre-rendered onto NavItem.Icon) and
+// the .is-active marker on the current path. It renders only when ShowMenu (the
+// Clusters entry page omits it, D11). The #aside-menu id + the .menu-item class
+// are kept (readout.js mobile reveal + the existing nav-harvest contract). Meta
+// entries (Resource Types / Events) get a chrome glyph via icons.MetaIcon so they
+// match the icon-slot + label row shape.
+//
+// The `ro-rail` modifier (Unit 23 / SPEC §8.5) is ALWAYS present (the
+// `.has-cards` pattern): readout.css's 760-1100px media query keys on it to
+// collapse the sidebar into the icon-only rail; outside that range the class is
+// inert. The label-as-tooltip half lives on each link's title attribute
+// (sidebarLinkC).
+templ sidebarC(s Sidebar) {
+	if s.ShowMenu {
+		<aside class="ro-sidebar ro-rail"><div id="aside-menu">
+			for _, group := range s.Groups {
+				<p class="menu-label">{ group.Label }</p><ul class="menu-list">
+					for _, link := range group.Links {
+						<li>@sidebarLinkC(link, link.Icon)</li>
+					}
+					</ul>
+			}
+			if len(s.Meta) > 0 {
+				<p class="menu-label">Meta</p><ul class="menu-list">
+					for _, link := range s.Meta {
+						<li>@sidebarLinkC(link, metaIcon(link.Text))</li>
+					}
+					</ul>
+			}
+			</div></aside>
+	}
+}
+
+// sidebarLinkC renders one sidebar entry: the icon slot (emitted raw -- the
+// resolver markup is trusted-shape) + the label + the optional trailing mono
+// count (D13: absent on a failed fetch or out of single-cluster scope; a real
+// zero renders "0"), with the .menu-item class and the .is-active accent on
+// the current path. iconMarkup may be empty (no slot). The title attribute
+// carries the label so the 760-1100px icon rail (Unit 23 / SPEC §8.5), which
+// hides .nav-label, still names every entry via the native tooltip; at full
+// width it is a harmless restatement of the visible label.
+templ sidebarLinkC(link NavItem, iconMarkup string) {
+	<a class={ menuItemClass(link.Active) } href={ templ.SafeURL(link.Href) } title={ link.Text }>
+		if iconMarkup != "" {
+			@templ.Raw(iconMarkup)
+		}
+		<span class="nav-label">{ link.Text }</span>
+		if link.HasCount {
+			<span class="menu-count">{ link.Count }</span>
+		}
+	</a>
+}
+
+templ footerC(custom string) {
+	if custom != "" {
+		@templ.Raw(custom)
+	} else {
+		@defaultFooter()
+	}
+}

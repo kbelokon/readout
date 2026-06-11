@@ -1,0 +1,246 @@
+/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
+   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
+   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+
+@layer app {
+    /* ---------------------------------------------------------------------------
+       Resource-DETAIL header + body. These rules skin the parts no other unit owns:
+       the header (kind badge · mono name · meta · Download-YAML + configured
+       link-outs), labels/annotations chips, owner line, Default/YAML/Logs tabs,
+       body tables (controller Pods subtable + Events) and the global footer. The
+       header stays READ-ONLY: the only actions are Download-YAML and the operator-
+       configured object/label link-outs (the link loop), rendered as quiet
+       `.ro-iconbtn` icon buttons (the single authoritative icon-button skin).
+
+       The legacy detail page <h1> keeps bare `class="title"` (a pinned offline guard
+       matches `<h1 class="title">name` verbatim), so the mono-name treatment is
+       scoped to a title that CONTAINS a kind badge -- i.e. only the detail header,
+       never the list page's plain "Pods" title. */
+    /* Kind badge: a small uppercase mono pill in the accent-weak wash (matches the
+       sidebar active tint), sitting just after the mono resource name. Single
+       contract (Unit 17): the former `.ro-rd .ro-kind-badge` override and the bare
+       twin are merged here -- `.ro-kind-badge` is only ever emitted inside a
+       `.ro-rd` content root (resource_view / logs), so the de-scoped rule paints
+       the same pixels the scoped rule did. The dead `h1.title:has(.ro-kind-badge)`
+       header rules were removed: the detail <h1> is `.ro-title` (not `.title`) and
+       the badge is its SIBLING (inside `.ro-detail-title`), never a descendant. */
+    .ro-kind-badge {
+        display: inline-flex;
+        align-items: center;
+        height: 1.375rem;
+        white-space: nowrap;
+        order: 0;
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 400;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 5px;
+        background: var(--accent-weak);
+        color: var(--accent);
+    }
+    /* the containers-table `init` badge is MUTE, not accent (D14): an init
+       container is a fact, not a call to action. */
+    .ro-kind-badge.init { background: var(--st-mute-bg); color: var(--st-mute); }
+
+    /* Labels / Annotations sections: a quiet uppercase mono caption (matching the
+       sidebar group labels) over a wrapped row of chips. Single contract (Unit 17):
+       the bare twin and the `.ro-rd`-scoped override are merged (the `.ro-section`
+       / `.ro-section-label` markup is only emitted under `.ro-rd`). */
+    .ro-section { margin: 0 0 22px; }
+    .ro-section-label {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 400;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        margin: 0 0 9px;
+    }
+    /* Chips. Single contract (Unit 17): the chip SKIN + `.ro-chips` layout are owned
+       by table.css; the dead `.ro-chip .tag` / `.tag.ro-chip` tag-based skin was
+       removed (`.tag` is no longer emitted in any template). Only the chip box
+       layout the skin rule does not restate (display / flex) stays here. */
+    .ro-chip {
+        display: inline-flex;
+        flex: 0 0 auto;
+    }
+    /* (D3 colour law) the legacy `.ro-chip.ro-label-app` green accent rules were
+       removed: labels are neutral, key/value differ by ink weight, never hue. */
+
+    /* Owner line: a quiet mono line. Single contract (Unit 17): the bare twin and
+       the `.ro-rd`-scoped override are merged -- `.ro-owner` is only emitted under
+       `.ro-rd` (resource_view), so the de-scoped rule paints the same pixels. The
+       prefix text reads in the body UI font; the links read on the neutral link
+       colour (matching the other secondary resource links), not accent green. */
+    .ro-owner {
+        font-family: inherit;
+        font-size: 13px;
+        color: var(--text-muted);
+    }
+    .ro-owner a { font-family: var(--font-mono); color: var(--text-muted); }
+    .ro-owner .kind { color: var(--text-faint); }
+
+    /* Global footer -> a quiet hairline-topped strip on the page surface. The
+       codeberg link keeps the id-colour. */
+    footer.footer.ro-footer {
+        background: var(--bg);
+        border-top: 1px solid var(--border);
+        padding: 1.5rem;
+        color: var(--text-faint);
+        font-size: 0.8125rem;
+    }
+    footer.footer.ro-footer a { color: var(--id-color); }
+    .ro-footer-copy { text-align: center; }
+
+    a.toggle-tools.is-active span {
+        transform: rotate(180deg);
+    }
+    form.tools-form {
+        display: none;
+        margin-bottom: 1rem;
+        padding: 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+    }
+    form.tools-form.is-active { display: block; }
+    form .checkboxes label { margin-right: 0.5rem; padding-top: 0.375em; }
+    .ro-tools-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 0.625rem;
+    }
+    .ro-tools-field {
+        display: grid;
+        grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
+        gap: 0.75rem;
+        align-items: center;
+    }
+    .ro-tools-label {
+        font-family: var(--font-mono);
+        font-size: 0.6875rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+    }
+    .ro-input-wrap {
+        position: relative;
+        display: block;
+        min-width: 0;
+    }
+    .ro-field-icon {
+        position: absolute;
+        left: 0.625rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-faint);
+        pointer-events: none;
+    }
+    .ro-input {
+        width: 100%;
+        height: 2.125rem;
+        padding: 0 0.625rem 0 2rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        color: var(--text);
+        font-family: var(--font-mono);
+        font-size: 0.78125rem;
+        box-shadow: none;
+    }
+    .ro-input::placeholder { color: var(--text-faint); }
+    .ro-input:hover { border-color: var(--border-strong); }
+    .ro-input:focus { border-color: var(--accent); background: var(--surface); }
+    .ro-tools-actions {
+        display: flex;
+        justify-content: flex-end;
+    }
+    @media (max-width: 760px) {
+        .ro-tools-field {
+            grid-template-columns: 1fr;
+            gap: 0.375rem;
+        }
+        .ro-tools-actions { justify-content: stretch; }
+        .ro-tools-actions .ro-btn { width: 100%; justify-content: center; }
+    }
+
+    /* =====================================================================
+       Redesign chrome dissolved here from the former redesign.css module
+       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       bare twins above by specificity (.ro-rd-scoped / element-qualified),
+       so concatenation order is not load-bearing for them.
+       ===================================================================== */
+    /* ================================================================ DETAIL VIEW (redesign)
+       Colliding canonical names (ro-kind-badge, ro-section, ro-section-label, ro-kv*,
+       ro-cond-pill, ro-owner, ro-yaml-card, ro-card-head, ro-copy-btn, ro-event-msg)
+       are scoped under the redesign CONTENT marker `.ro-rd` (D13): a migrated content
+       template adds `ro-rd` to its outermost content element, so the redesign look
+       applies only to migrated screens while the live (unmarked) markup keeps its
+       existing app rule. Non-colliding net-new names stay bare. */
+    .ro-detail-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 2px 0 14px; }
+    .ro-detail-title .ro-title { font-size: 23px; }
+    /* SPEC §6.6: the hash tail stays faint even in the title; the tail also
+       sheds the heading weight so the workload head leads (prototype). The
+       colours ride the global .pn-head/.pn-tail rules. */
+    .ro-detail-title .ro-title .pn-tail { font-weight: 500; }
+    .ro-detail-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); margin-left: auto; }
+    .ro-detail-actions { display: flex; gap: 4px; }
+
+    /* tabs (Default / YAML / Logs) -- redesign bare variant */
+    .ro-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 0 20px; }
+    .ro-tabs a { padding: 8px 14px; font-size: 13px; color: var(--text-muted); position: relative; font-weight: 500; }
+    .ro-tabs a:hover { color: var(--text); }
+    .ro-tabs a.is-active { color: var(--text); }
+    .ro-tabs a.is-active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
+        height: 2px; background: var(--accent); border-radius: 2px; }
+
+    /* key/value lists (node capacity, system info) -- redesign */
+    .ro-rd .ro-kv-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; }
+    .ro-rd .ro-kv { margin: 0; display: flex; flex-direction: column; gap: 1px; }
+    .ro-rd .ro-kv-row { display: flex; justify-content: space-between; gap: 16px; padding: 5px 0;
+        border-bottom: 1px solid var(--border-soft); }
+    .ro-rd .ro-kv-row dt { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); margin: 0; }
+    .ro-rd .ro-kv-row dd { font-family: var(--font-mono); font-size: 12px; color: var(--text); margin: 0; text-align: right; }
+
+    /* node condition pills (redesign). Tone-complete: the pill BODY is tinted per
+       tone (ok/warn/err/info/mute) and the DOT carries its own tone class
+       (`<span class="ro-dot <tone>">`), so the global `.ro-dot.<tone>` background
+       rules paint it -- previously the dot was bare and the overlay only tinted
+       ok/warn, so an `err`/`mute` condition (e.g. a NotReady node) rendered with an
+       invisible dot + untinted pill (the most severe state was the least marked). */
+    .ro-rd .ro-cond-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
+        border-radius: 999px; font-family: var(--font-mono); font-size: 11.5px; border: 1px solid var(--border); }
+    .ro-rd .ro-cond-pill .ro-cond-name { color: var(--text-muted); }
+    /* `font-weight: 400` OVERRIDES the leaking old bare `.ro-cond-pill .ro-cond-val
+       { font-weight: 600 }`: base.css sets no weight on the value, so the condition
+       value reads at normal weight, not bold. */
+    .ro-rd .ro-cond-pill .ro-cond-val { color: var(--text); font-weight: 400; }
+    .ro-rd .ro-cond-pill.ok   { background: var(--st-ok-bg);   border-color: transparent; }
+    .ro-rd .ro-cond-pill.warn { background: var(--st-warn-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill.err  { background: var(--st-err-bg);  border-color: transparent; }
+    .ro-rd .ro-cond-pill.info { background: var(--st-info-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill.mute { background: var(--st-mute-bg); border-color: transparent; }
+    .ro-rd .ro-cond-pill .ro-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: none; }
+
+    /* YAML cards: the card chrome (`.ro-yaml-card` / `.ro-card-head` / `.ro-copy-btn`)
+       is owned as a SINGLE contract by cards-yaml.css (Unit 17); only the YAML body
+       token rules stay here. */
+
+    /* YAML / code block (redesign bare variant) */
+    .ro-yaml { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
+        background: var(--code-bg); color: var(--text); overflow-x: auto; }
+    .ro-rd .ro-yaml-card .ro-yaml { background: transparent; }
+    .ro-yaml .ln { display: flex; }
+    .ro-yaml .gutter { flex: none; width: 44px; text-align: right; padding-right: 14px; color: var(--text-faint);
+        user-select: none; opacity: .6; }
+    .ro-yaml .code { white-space: pre; padding-right: 16px; }
+    .ro-yaml.full { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 0; }
+    .yk { color: var(--tok-key); } .ys { color: var(--tok-str); } .yn { color: var(--tok-num); }
+    .yb { color: var(--tok-bool); } .yc { color: var(--text-faint); font-style: italic; } .yd { color: var(--text-faint); }
+
+    /* events table message truncates with tooltip (redesign) */
+    .ro-rd td.ro-event-msg { white-space: normal; max-width: 520px; color: var(--text-muted); }
+
+}

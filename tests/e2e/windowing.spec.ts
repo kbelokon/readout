@@ -56,7 +56,7 @@ function waitForTick(page: Page): Promise<Response> {
 
 async function pickInterval(page: Page, secs: number): Promise<void> {
   await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-interval="${secs}"]`).click();
+  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
   await page.mouse.move(200, 400); // park the cursor: close the hover menu
 }
 

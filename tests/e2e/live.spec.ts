@@ -89,7 +89,7 @@ function podRow(page: Page, n: number) {
 // menu never intercepts later clicks (the refresh.spec.ts pattern).
 async function pickLive(page: Page): Promise<void> {
   await page.locator('#refresh-dropdown').hover();
-  await page.locator('.refresh-option[data-interval="Live"]').click();
+  await page.locator('.refresh-option[data-ro-interval="Live"]').click();
   await page.mouse.move(200, 400);
 }
 
@@ -125,7 +125,7 @@ test('Live opens the stream: livedot pulses, a status change lands as a push and
   const gen = streamGen((await streamReq).url());
   expect(gen).not.toBe(''); // the client minted a generation onto the URL
   await expect(page.locator('#refresh-label')).toHaveText('Live');
-  await expect(page.locator('.refresh-option[data-interval="Live"]')).toHaveClass(/is-active/);
+  await expect(page.locator('.refresh-option[data-ro-interval="Live"]')).toHaveClass(/is-active/);
   await expect(page.locator('#refresh-dropdown .ro-livedot')).toHaveCSS(
     'animation-name',
     'ro-pulse'
@@ -163,7 +163,7 @@ test('Live opens the stream: livedot pulses, a status change lands as a push and
   const reopened = page.waitForRequest((r) => isStreamRequest(r.url()), { timeout: 10_000 });
   await page.reload();
   await expect(page.locator('#refresh-label')).toHaveText('Live');
-  await expect(page.locator('.refresh-option[data-interval="Live"]')).toHaveClass(/is-active/);
+  await expect(page.locator('.refresh-option[data-ro-interval="Live"]')).toHaveClass(/is-active/);
   await reopened;
 });
 
@@ -430,7 +430,7 @@ test('a Live push while windowed keeps the window: no duplicates, stable scroll,
 test('the Live option is disabled on multi-type and multi-cluster pages, enabled on single-type', async ({
   page,
 }) => {
-  const live = page.locator('.refresh-option[data-interval="Live"]');
+  const live = page.locator('.refresh-option[data-ro-interval="Live"]');
 
   // Multi-type page (plural "all"): disabled with the scope title.
   await page.goto('/clusters/e2e/namespaces/default/all');

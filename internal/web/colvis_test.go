@@ -17,8 +17,6 @@ package web
 
 import (
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -192,11 +190,7 @@ func TestColsPopoverFilterRoundTrip(t *testing.T) {
 // submit is intercepted and MERGED into the live query so active `?f=` chips
 // survive a labelcols/selector apply byte-exact.
 func TestColsPopoverSubmitMergeJSContract(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "assets", "static", "readout.js"))
-	if err != nil {
-		t.Fatalf("read readout.js: %v", err)
-	}
-	js := string(src)
+	js := readoutJS(t)
 	for _, needle := range []string{
 		"popFormMergedHref", // the merge builder (keeps un-owned pairs byte-exact)
 		"form.ro-pop-form",  // the intercepted form

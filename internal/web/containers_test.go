@@ -350,9 +350,9 @@ func TestAnnotationLongCollapsedToggle(t *testing.T) {
 	if long.Length() != 1 {
 		t.Fatalf("expected one .anno-long block, got %d", long.Length())
 	}
-	toggle := long.Find("button.ro-chip.anno-toggle[data-annolong]")
+	toggle := long.Find("button.ro-chip.anno-toggle[data-ro-annolong]")
 	if toggle.Length() != 1 {
-		t.Fatalf("long annotation missing its [data-annolong] toggle button")
+		t.Fatalf("long annotation missing its [data-ro-annolong] toggle button")
 	}
 	if expanded, _ := toggle.Attr("aria-expanded"); expanded != "false" {
 		t.Fatalf("toggle aria-expanded = %q, want false (collapsed by default)", expanded)
