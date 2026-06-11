@@ -187,6 +187,7 @@ const paletteScope: { cluster: string | null; namespace: string | null } = {
 function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLElement {
     const row = document.createElement('div');
     row.className = 'ro-pal-item';
+    row.dataset.roAction = 'pick-palette-row';
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', 'false');
 
@@ -248,6 +249,7 @@ function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLEleme
 function buildEverywhereRow(query: string): HTMLElement {
     const row = document.createElement('div');
     row.className = 'ro-pal-item';
+    row.dataset.roAction = 'pick-palette-row';
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', 'false');
     const glyph = document.querySelector(`#${PALETTE_ID} .ro-pal-search .ico`);
@@ -268,6 +270,7 @@ function buildEverywhereRow(query: string): HTMLElement {
 function buildRecentRow(entry: RecentEntry): HTMLElement {
     const row = document.createElement('div');
     row.className = 'ro-pal-item';
+    row.dataset.roAction = 'pick-palette-row';
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', 'false');
     const label = document.createElement('span');
@@ -325,6 +328,7 @@ function harvestPageObjects(): PageObject[] {
 function buildObjectRow(o: PageObject): HTMLElement {
     const row = document.createElement('div');
     row.className = 'ro-pal-item';
+    row.dataset.roAction = 'pick-palette-row';
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', 'false');
     const label = document.createElement('span');
@@ -487,7 +491,7 @@ function activatePaletteSelection(): void {
 let palettePriorFocus: Element | null = null;
 
 // True only while closePalette is handing focus back to the prior element: when
-// that element is the topbar [data-palette-open] box, the focus restore itself
+// that element is the topbar [data-ro-palette-open] box, the focus restore itself
 // fires focusin, which would re-open the palette the user just closed.
 let paletteRestoringFocus = false;
 
@@ -510,7 +514,7 @@ export function openPalette(prefill?: string): void {
     input.focus(); // focus after it is shown so the caret lands in the box
 }
 // The deliberate external seam (e2e / console): programmatic palette opening,
-// optionally prefilled. The search page's Refine·⌘K rides the [data-search-refine]
+// optionally prefilled. The search page's Refine·⌘K rides the [data-ro-search-refine]
 // click binding below.
 (window as unknown as { roOpenPalette: typeof openPalette }).roOpenPalette = openPalette;
 
@@ -549,7 +553,7 @@ export const paletteBindings: Binding[] = [
     // palette never falls through to a page handler. (C1 head, returned.)
     {
         event: 'click',
-        selector: '.ro-pal-item',
+        selector: '[data-ro-action="pick-palette-row"]',
         stop: true,
         handler: (event, matched) => {
             event.preventDefault();
@@ -557,11 +561,11 @@ export const paletteBindings: Binding[] = [
             return true;
         },
     },
-    // The read-only topbar search box ([data-palette-open]) opens the palette on
+    // The read-only topbar search box ([data-ro-palette-open]) opens the palette on
     // click instead of typing inline. (C1, returned.)
     {
         event: 'click',
-        selector: '[data-palette-open]',
+        selector: '[data-ro-palette-open]',
         stop: true,
         handler: (event) => {
             event.preventDefault();
@@ -573,7 +577,7 @@ export const paletteBindings: Binding[] = [
     // with the query the page searched (server-baked data-query). (C1, returned.)
     {
         event: 'click',
-        selector: '[data-search-refine]',
+        selector: '[data-ro-search-refine]',
         stop: true,
         handler: (event, matched) => {
             event.preventDefault();
@@ -682,7 +686,7 @@ export const paletteBindings: Binding[] = [
     // the box FROM closePalette fires this very binding.
     {
         event: 'focusin',
-        selector: '[data-palette-open]',
+        selector: '[data-ro-palette-open]',
         handler: (event) => {
             if (paletteRestoringFocus) {
                 return;

@@ -199,14 +199,14 @@ func Search(d SearchData) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		if d.HasQuery {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<span style=\"flex:1\"></span><div class=\"ro-title-actions\"><button type=\"button\" class=\"ro-btn quiet sm\" data-search-refine data-query=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<span style=\"flex:1\"></span><div class=\"ro-title-actions\"><button type=\"button\" class=\"ro-btn quiet sm\" data-ro-search-refine data-query=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(d.Query)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/search.templ`, Line: 165, Col: 147}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/search.templ`, Line: 165, Col: 150}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 			if templ_7745c5c3_Err != nil {

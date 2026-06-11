@@ -1057,9 +1057,9 @@ func TestSearchRender(t *testing.T) {
 	// The "Refine · ⌘K" affordance: a type=button (never a submit) carrying the
 	// query for the delegated readout.js listener that opens the ⌘K palette
 	// prefilled. The TOPBAR search affordance stays the palette trigger.
-	p.wantAttr(`.ro-title-actions button[data-search-refine]`, "data-query", "nginx")
-	p.wantAttr(`.ro-title-actions button[data-search-refine]`, "type", "button")
-	p.wantHas(`.ro-topbar .ro-search[data-palette-open]`)
+	p.wantAttr(`.ro-title-actions button[data-ro-search-refine]`, "data-query", "nginx")
+	p.wantAttr(`.ro-title-actions button[data-ro-search-refine]`, "type", "button")
+	p.wantHas(`.ro-topbar .ro-search[data-ro-palette-open]`)
 
 	// Scope-opts line: a `.ok` cluster chip naming the single cluster + the
 	// namespace + the type summary.

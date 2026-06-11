@@ -46,7 +46,7 @@ func TestShellTopbarChrome(t *testing.T) {
 	// and a data hook the palette JS keys off, and is NOT a submitting <form>.
 	p.wantHas("header.ro-topbar .ro-search input")
 	p.wantHas("header.ro-topbar .ro-search .kbd-hint .ro-kbd")
-	p.wantAttr("header.ro-topbar .ro-search", "data-palette-open", "true")
+	p.wantAttr("header.ro-topbar .ro-search", "data-ro-palette-open", "true")
 
 	// Refresh control: the five interval options (10 replaced 15 per D18/SPEC
 	// §8.3) plus the Live mode (Unit 27/D19), the #refresh-label, the

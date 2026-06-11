@@ -3095,6 +3095,7 @@ ${piece}`;
   function buildPaletteRow(entry, key) {
     const row = document.createElement("div");
     row.className = "ro-pal-item";
+    row.dataset.roAction = "pick-palette-row";
     row.setAttribute("role", "option");
     row.setAttribute("aria-selected", "false");
     if (key === "kinds" && entry.icon) {
@@ -3141,6 +3142,7 @@ ${piece}`;
   function buildEverywhereRow(query) {
     const row = document.createElement("div");
     row.className = "ro-pal-item";
+    row.dataset.roAction = "pick-palette-row";
     row.setAttribute("role", "option");
     row.setAttribute("aria-selected", "false");
     const glyph = document.querySelector(`#${PALETTE_ID2} .ro-pal-search .ico`);
@@ -3158,6 +3160,7 @@ ${piece}`;
   function buildRecentRow(entry) {
     const row = document.createElement("div");
     row.className = "ro-pal-item";
+    row.dataset.roAction = "pick-palette-row";
     row.setAttribute("role", "option");
     row.setAttribute("aria-selected", "false");
     const label = document.createElement("span");
@@ -3205,6 +3208,7 @@ ${piece}`;
   function buildObjectRow(o) {
     const row = document.createElement("div");
     row.className = "ro-pal-item";
+    row.dataset.roAction = "pick-palette-row";
     row.setAttribute("role", "option");
     row.setAttribute("aria-selected", "false");
     const label = document.createElement("span");
@@ -3377,7 +3381,7 @@ ${piece}`;
     // palette never falls through to a page handler. (C1 head, returned.)
     {
       event: "click",
-      selector: ".ro-pal-item",
+      selector: '[data-ro-action="pick-palette-row"]',
       stop: true,
       handler: (event, matched) => {
         event.preventDefault();
@@ -3385,11 +3389,11 @@ ${piece}`;
         return true;
       }
     },
-    // The read-only topbar search box ([data-palette-open]) opens the palette on
+    // The read-only topbar search box ([data-ro-palette-open]) opens the palette on
     // click instead of typing inline. (C1, returned.)
     {
       event: "click",
-      selector: "[data-palette-open]",
+      selector: "[data-ro-palette-open]",
       stop: true,
       handler: (event) => {
         event.preventDefault();
@@ -3401,7 +3405,7 @@ ${piece}`;
     // with the query the page searched (server-baked data-query). (C1, returned.)
     {
       event: "click",
-      selector: "[data-search-refine]",
+      selector: "[data-ro-search-refine]",
       stop: true,
       handler: (event, matched) => {
         event.preventDefault();
@@ -3503,7 +3507,7 @@ ${piece}`;
     // the box FROM closePalette fires this very binding.
     {
       event: "focusin",
-      selector: "[data-palette-open]",
+      selector: "[data-ro-palette-open]",
       handler: (event) => {
         if (paletteRestoringFocus) {
           return;

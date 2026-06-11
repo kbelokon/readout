@@ -570,7 +570,7 @@ func topbarC(n Navbar) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, "<span class=\"topbar-spacer\"></span><div class=\"ro-search\" data-palette-open=\"true\" role=\"button\" tabindex=\"0\" aria-label=\"Search Kubernetes objects (opens command palette)\"><span class=\"s-ico ico sm\" aria-hidden=\"true\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, "<span class=\"topbar-spacer\"></span><div class=\"ro-search\" data-ro-palette-open=\"true\" role=\"button\" tabindex=\"0\" aria-label=\"Search Kubernetes objects (opens command palette)\"><span class=\"s-ico ico sm\" aria-hidden=\"true\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -615,7 +615,7 @@ func topbarC(n Navbar) templ.Component {
 		var templ_7745c5c3_Var20 string
 		templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(refreshLabel(n.RefreshMode))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/layout.templ`, Line: 206, Col: 852}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/layout.templ`, Line: 206, Col: 855}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 		if templ_7745c5c3_Err != nil {

@@ -162,7 +162,7 @@ templ Search(d SearchData) {
 		@searchBreadcrumb(d.Breadcrumb)
 		<div class="search-hero"><div class="ro-title-row"><h1 class="ro-title">Search</h1>
 			if d.HasQuery {
-				<span style="flex:1"></span><div class="ro-title-actions"><button type="button" class="ro-btn quiet sm" data-search-refine data-query={ d.Query } title="Refine in the command palette"><span class="ico sm" aria-hidden="true">@iconC("search")</span><span>Refine · ⌘K</span></button></div>
+				<span style="flex:1"></span><div class="ro-title-actions"><button type="button" class="ro-btn quiet sm" data-ro-search-refine data-query={ d.Query } title="Refine in the command palette"><span class="ico sm" aria-hidden="true">@iconC("search")</span><span>Refine · ⌘K</span></button></div>
 			}
 			</div><form action="/search" method="get"><input type="hidden" name="cluster" value={ d.Cluster }><input type="hidden" name="namespace" value={ d.Namespace }><div class="search-big"><span class="ico">@templ.Raw(d.SearchIcon)</span><input type="text" name="q" value={ d.Query } placeholder="Search query text" spellcheck="false"></div>
 			if len(d.Types) > 0 {
