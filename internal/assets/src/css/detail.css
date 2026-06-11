@@ -57,30 +57,6 @@
         font-size: 0.8125rem;
     }
 
-    /* Tabs (Default / YAML / Logs) -> a quiet underline tab strip: a hairline
-       baseline, muted labels, the active tab marked by an accent underline + accent
-       text. The <a>s are real navigation links (kept verbatim). */
-    .tabs.ro-detail-tabs {
-        margin-bottom: 1rem;
-        font-size: 0.8125rem;
-    }
-    .tabs.ro-detail-tabs ul {
-        border-bottom: 1px solid var(--border);
-    }
-    .tabs.ro-detail-tabs li a {
-        color: var(--text-muted);
-        border-bottom: 2px solid transparent;
-        padding: 0.5rem 0.75rem;
-    }
-    .tabs.ro-detail-tabs li a:hover {
-        color: var(--text);
-        border-bottom-color: var(--border-strong);
-    }
-    .tabs.ro-detail-tabs li.is-active a {
-        color: var(--accent-text);
-        border-bottom-color: var(--accent);
-    }
-
     /* Labels / Annotations sections: a quiet uppercase mono caption (matching the
        sidebar group labels) over a wrapped row of chips. */
     .ro-section { margin-bottom: 1rem; }
@@ -141,25 +117,6 @@
     }
     .ro-owner a { color: var(--accent-text); }
     .ro-owner .kind { color: var(--text-faint); }
-
-    /* Detail body subtables (controller Pods subtable + Events) -- the
-       pre-redesign `.ro-subtable` skin. NOTE (Unit 16): the migrated detail page
-       (resource_view.templ `subtableC` / `eventsSection`) renders the subtable as a
-       `.ro-table-wrap > .ro-table` (the same redesign table the list uses), NOT
-       `table.table.ro-subtable`, so these `.ro-subtable` rules no longer match the
-       emitted markup. They are LEFT IN PLACE here (out of this unit's teardown
-       scope -- `.ro-subtable` is not in the colliding-family list and is not a
-       net-new retired class), but they are effectively inert. */
-    table.table.ro-subtable {
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        overflow: hidden;
-        background: var(--surface);
-    }
-    /* the card border already draws the bottom edge -- drop the last row's rule */
-    table.table.ro-subtable tbody tr:last-child td { border-bottom: 0; }
-    /* the Events message column takes the remaining width and ellipsizes */
-    table.table.ro-subtable td.ro-event-msg { width: 100%; color: var(--text-muted); }
 
     /* Global footer -> a quiet hairline-topped strip on the page surface. The
        codeberg link keeps the id-colour. */

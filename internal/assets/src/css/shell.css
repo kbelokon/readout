@@ -1,35 +1,15 @@
-/* AUTO-LAYOUT: this module is one zone of the cascade; the cascade ORDER
-   lives in readout.css (the @import list). Bundled by scripts/build-assets.mjs.
-   ONLY rule MOVEMENT vs the former monolith -- no selector/value changes. */
+/* shell.css -- app-shell chrome that is NOT part of the redesign topbar/sidebar
+   port (those live in redesign.css and own header.ro-topbar / aside.ro-sidebar).
+   What remains here are the live shell rules with no redesign twin: the ⌘K kbd
+   chip, the refresh-on icon affordance + theme-toggle glyph swap, the brand mask,
+   the main/heading layout, and the numeric-column alignment. Bundled by
+   scripts/build-assets.mjs; cascade order is set by readout.css's @import list. */
 
 @layer app {
-    /* ---------------------------------------------------------------------------
-       Slim quiet topbar. The legacy navbar is re-skinned into a calm technical bar
-       driven by the token system: surface fill + a hairline bottom border, muted
-       text, near-black/blue accent only on focus + the cluster status dot. Structure
-       (burger, has-dropdown, the pinned control ids/forms) is unchanged -- only
-       appearance.
-       --------------------------------------------------------------------------- */
-    nav.navbar.ro-topbar {
-        min-height: 3.125rem;            /* slim 50px bar */
-        align-items: center;
-        padding: 0 0.875rem;
-        background: var(--header-bg);
-        border-bottom: 1px solid var(--border);
-        box-shadow: none;
-    }
-    nav.navbar.ro-topbar .navbar-menu { background: transparent; box-shadow: none; }
-    nav.navbar.ro-topbar .navbar-start,
-    nav.navbar.ro-topbar .navbar-end { align-items: center; }
-    /* a quiet hairline gap between the brand and the rest of the bar */
-    nav.navbar.ro-topbar .navbar-start { gap: 0.25rem; }
-
-    /* Brand: the readout logo (green r + rows) + the mono wordmark. The mark is a
-       CSS mask of /assets/readout-logo.svg filled per theme: bright green
-       (#56E0BC) on the dark header, a darker teal of the same hue (#169873) on
-       the light header so it stays readable on white. No chip. */
-    .navbar-brand .brand-item { padding: 0 0.5rem 0 0.25rem; }
-    .navbar-brand .brand-item:hover { background: transparent; }
+    /* Brand mark mask. The redesign topbar (redesign.css) owns the brand-item /
+       brand-chip layout + sizing under header.ro-topbar; these bare rules carry the
+       theme-aware mask fill of /assets/readout-logo.svg (darker teal on the light
+       header, bright green on the dark one) and the mono wordmark. */
     .brand-logo {
         width: 1.625rem; height: 1.625rem; flex: 0 0 auto;
         background: #169873;
@@ -46,62 +26,8 @@
         margin-left: 0.5rem;
     }
 
-    /* Top-level text link(s) -- "Clusters". Muted by default, full text + a faint
-       surface wash on hover; the active page reads as plain text (no fill). */
-    .navbar-item.toplink {
-        color: var(--text-muted);
-        border-radius: var(--radius-sm);
-    }
-    .navbar-item.toplink:hover,
-    .navbar-item.toplink:focus { color: var(--text); background: var(--surface-2); }
-    .navbar-item.toplink.is-active { color: var(--text); background: transparent; }
-
-    /* Cluster/namespace context pill (#namespace-dropdown trigger): a bordered
-       surface chip with a status dot + chevron. The dot reuses --st-ok (cluster
-       reachable). Hover firms the border via --border-strong. */
-    .context-dd .navbar-link.context-trigger {
-        display: inline-flex; align-items: center; gap: 0.4375rem;
-        height: 1.875rem; padding: 0 0.5625rem;
-        border: 1px solid var(--border); border-radius: var(--radius-sm);
-        background: var(--surface); color: var(--text);
-        font-family: var(--font-mono); font-size: 0.75rem;
-    }
-    .context-dd .navbar-link.context-trigger:hover,
-    .context-dd .navbar-link.context-trigger:focus { border-color: var(--border-strong); }
-    .context-dd .status-dot {
-        width: 0.375rem; height: 0.375rem; border-radius: 50%;
-        background: var(--st-ok); flex: 0 0 auto;
-    }
-    .context-caret.icon { color: var(--text-faint); }
-    .context-caret.icon svg.lucide-icon { width: 0.75rem; height: 0.75rem; }
-
-    /* Search field: a surface chip on the right with a left search glyph and a
-       decorative kbd hint, sized to a comfortable fixed width; max-width:100%
-       lets it shrink on narrow viewports. */
-    .navbar-end .search-item { justify-content: flex-end; }
-    .navbar-end .search-item form,
-    .navbar-end .search-item .field,
-    .navbar-end .search-item .control { width: 22rem; max-width: 100%; margin-bottom: 0; }
-    .navbar-end .search-item .input {
-        color: var(--text);
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        box-shadow: none;
-        font-size: 0.8125rem;
-    }
-    .navbar-end .search-item .input::placeholder { color: var(--text-faint); }
-    .navbar-end .search-item .input:hover { border-color: var(--border-strong); }
-    .navbar-end .search-item .input:focus {
-        border-color: var(--accent);
-        background: var(--surface);
-    }
-    .navbar-end .search-item .control .icon { color: var(--text-faint); }
-    /* the kbd hint sits at the right of the field; pointer-events:none so a click
-       in that zone still lands on the input (it is purely a visual affordance) */
-    .navbar-end .search-item .control.has-icons-right .search-kbd-hint {
-        width: auto; right: 0.4rem; pointer-events: none;
-    }
+    /* ⌘K hint chip: the keycap shown in the topbar search box and the row context
+       menu (a small mono surface chip). */
     .ro-kbd {
         font-family: var(--font-mono); font-size: 0.625rem; line-height: 1;
         padding: 0.125rem 0.3125rem; border-radius: 3px;
@@ -109,32 +35,13 @@
         color: var(--text-muted);
     }
 
-    /* Icon controls (refresh trigger + theme toggle) read as square ghost buttons
-       that fill with a faint surface wash on hover and inherit the muted text. */
-    .navbar-end .navbar-icon.button,
-    .navbar-end .refresh-trigger {
-        background: transparent;
-        border: 1px solid transparent;
-        box-shadow: none;
-        color: var(--text-muted);
-        border-radius: var(--radius-sm);
-    }
-    .navbar-end .navbar-icon.button:hover,
-    .navbar-end .navbar-icon.button:focus,
-    .navbar-end .refresh-trigger:hover,
-    .navbar-end .refresh-trigger:focus { background: var(--surface-2); color: var(--text); }
-
-    /* Theme toggle (#btn-theme-toggle): the icon must follow the EFFECTIVE
-       (prefers-aware) palette, NOT the server theme.name -- under the dark
-       default a cookieless light-OS user is theme.name="dark" server-side but
-       LIGHT in reality. So the button renders BOTH glyphs and CSS shows the one
-       that matches the effective palette with zero JS (and the cookieless case
-       resolves for free via the same prefers-color-scheme query the tokens use):
-         - light (default :root, or explicit [data-theme=light]) -> show the moon
-           ("switch to dark");
-         - dark (explicit [data-theme=dark], or system-dark with no data-theme)
-           -> show the sun ("switch to light").
-       Hiding via display:none keeps exactly one glyph in the layout box. */
+    /* Theme toggle (#btn-theme-toggle): the icon follows the EFFECTIVE
+       (prefers-aware) palette, not the server theme.name -- so a cookieless
+       light-OS user under the dark default still sees the moon ("switch to dark").
+       Both glyphs render; CSS shows the one matching the effective palette with
+       zero JS (display:none keeps exactly one glyph in the layout box):
+         - light (default :root / explicit [data-theme=light]) -> moon;
+         - dark (explicit [data-theme=dark] / system-dark, no data-theme) -> sun. */
     #btn-theme-toggle .theme-icon-light { display: none; }
     #btn-theme-toggle .theme-icon-dark { display: inline-flex; }
     [data-theme="dark"] #btn-theme-toggle .theme-icon-light { display: inline-flex; }
@@ -144,158 +51,15 @@
         :root:not([data-theme="light"]) #btn-theme-toggle .theme-icon-dark { display: none; }
     }
 
-    /* Quiet token-driven action button (object-links / detail-header download /
-       TSV / per-table tools + search). Replaces the old server button-class colour
-       coupling, which mapped to theme-name-driven variants instead of the effective
-       palette. This reads correctly in BOTH palettes off tokens: a hairline-bordered
-       surface chip with muted icon text that firms on hover. */
-    .button.ro-btn-quiet {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        box-shadow: none;
-        color: var(--text-muted);
-        border-radius: var(--radius-sm);
-    }
-    .button.ro-btn-quiet:hover,
-    .button.ro-btn-quiet:focus {
-        border-color: var(--border-strong);
-        color: var(--text);
-        background: var(--surface-2);
-    }
-
-    /* Accent-filled legacy button variant: the one saturated call-to-action
-       against quiet secondary actions. Uses the accent token pair so it reads
-       correctly in both themes. */
-    .button.ro-btn-primary {
-        border: 1px solid var(--accent);
-        background: var(--accent);
-        color: var(--accent-on);
-        border-radius: var(--radius-sm);
-    }
-    .button.ro-btn-primary:hover,
-    .button.ro-btn-primary:focus {
-        border-color: var(--accent);
-        background: var(--accent);
-        color: var(--accent-on);
-        filter: brightness(1.08);
-    }
-    .button.ro-btn-primary .icon svg.lucide-icon { width: 1em; height: 1em; }
-
-    /* Auto-refresh interval picker (navbar #refresh-dropdown). The trigger shows
-       the rotate icon + the current interval ("Off"/"30s"); when refresh is on,
-       the icon spins slowly and the control reads as active (accent wash). The
-       chosen option is emphasised in the dropdown. */
+    /* Auto-refresh control affordance (navbar #refresh-dropdown). When refresh is
+       on, the trigger reads as active (accent wash) and the rotate icon spins
+       slowly. #refresh-dropdown.refresh-on is the one live-state owner (set at SSR,
+       toggled by syncRefreshUI on an interval pick). The .ro-livedot pulse in
+       redesign.css carries the same live signal on the dot. */
     .refresh-label { margin-left: 0.4rem; font-size: 0.8125rem; }
     #refresh-dropdown.refresh-on .refresh-trigger { color: var(--accent-text); background: var(--accent-weak); }
     #refresh-dropdown.refresh-on .refresh-icon svg { animation: refresh-spin 3s linear infinite; }
-    .navbar-dropdown .refresh-option.is-active { font-weight: 700; }
     @keyframes refresh-spin { to { transform: rotate(360deg); } }
-
-    /* Dropdown panels (namespace context list + refresh-interval menu) are themed
-       surfaces, so they read correctly in dark. Items are muted text that firm up
-       on hover; the namespace filter input matches the topbar search chip. */
-    nav.navbar.ro-topbar .navbar-dropdown {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        box-shadow: none;
-    }
-    nav.navbar.ro-topbar .navbar-dropdown .navbar-item {
-        color: var(--text-muted);
-        font-family: var(--font-mono);
-        font-size: 0.8125rem;
-    }
-    nav.navbar.ro-topbar .navbar-dropdown a.navbar-item:hover,
-    nav.navbar.ro-topbar .navbar-dropdown a.navbar-item:focus {
-        color: var(--text);
-        background: var(--surface-2);
-    }
-    #namespace-dropdown .navbar-dropdown .control { padding: 0.375rem 0.75rem; }
-    #namespace-searchbox.input {
-        color: var(--text);
-        background: var(--surface-2);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        box-shadow: none;
-        font-family: var(--font-mono);
-    }
-    #namespace-searchbox.input::placeholder { color: var(--text-faint); }
-
-    @keyframes reload {
-        0% { background-image: linear-gradient(to top, #2366d1ff 0%, #2366d100 10%); }
-        10% { background-image: linear-gradient(to top, #2366d1ff 10%, #2366d100 20%); }
-        20% { background-image: linear-gradient(to top, #2366d1ff 20%, #2366d100 30%); }
-        30% { background-image: linear-gradient(to top, #2366d1ff 30%, #2366d100 40%); }
-        40% { background-image: linear-gradient(to top, #2366d1ff 40%, #2366d100 50%); }
-        50% { background-image: linear-gradient(to top, #2366d1ff 50%, #2366d100 60%); }
-        60% { background-image: linear-gradient(to top, #2366d1ff 60%, #2366d100 70%); }
-        70% { background-image: linear-gradient(to top, #2366d1ff 70%, #2366d100 80%); }
-        80% { background-image: linear-gradient(to top, #2366d1ff 80%, #2366d100 90%); }
-        90% { background-image: linear-gradient(to top, #2366d1ff 90%, #2366d100 100%); }
-        100% { background-image: linear-gradient(to top, #2366d1ff 100%, #2366d1ff 100%); }
-    }
-
-    .container.is-fluid { margin-left: 0; padding: 1.5rem 0; }
-
-
-    /* aside menu has toggle for mobile */
-    aside.menu { padding: 1.5rem; margin-top: -1.5rem; }
-
-    /* ---------------------------------------------------------------------------
-       Sidebar -> grouped TEXT navigation. The legacy menu structure is kept
-       (menu / menu-label / menu-list); appearance is driven by tokens.
-
-       - Group label (menu-label): a quiet uppercase mono caption -- the only role
-         of "Custom Resources" is to be one more such label; it is NOT special-cased
-         (same rule paints every built-in group and the configured CRD group alike,
-         so the nav scales to any configured group / any CRD for free).
-       - Item (menu-item): plain text link, no per-type icon, no count; muted by
-         default, warms to full text + a faint surface wash on hover.
-       - Active item: the link whose target path == the current request path gets
-         .is-active (set in sidebar.html) -> a subtle accent tint PLUS an accent
-         left-bar drawn with ::before (no extra markup, no inline style). */
-    aside.menu .menu-label {
-        font-family: var(--font-mono);
-        font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.09em;
-        text-transform: uppercase;
-        color: var(--text-faint);
-        margin-bottom: 0.5rem;
-    }
-    aside.menu .menu-list a.menu-item {
-        position: relative;
-        display: block;
-        padding: 0.4375rem 0.75rem;
-        border-radius: var(--radius-sm);
-        color: var(--text-muted);
-        background: transparent;
-        font-size: 0.9375rem;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        transition: background .1s, color .1s;
-    }
-    aside.menu .menu-list a.menu-item:hover {
-        background: var(--surface-2);
-        color: var(--text);
-    }
-    aside.menu .menu-list a.menu-item.is-active {
-        background: var(--accent-weak);
-        color: var(--accent-text);
-        font-weight: 500;
-    }
-    aside.menu .menu-list a.menu-item.is-active::before {
-        content: "";
-        position: absolute;
-        left: 0;
-        top: 50%;
-        transform: translateY(-50%);
-        width: 2px;
-        height: 0.8125rem;
-        background: var(--accent);
-        border-radius: 1px;
-    }
 
     main { flex-grow: 1; flex-shrink: 1; }
 
@@ -312,42 +76,9 @@
         padding-top: 0.5rem;
     }
 
-    /* desktop+ */
-    @media screen and (min-width: 1024px) {
-        aside.menu { flex-grow: 0; flex-shrink: 0; flex-basis: 12rem; padding: 1.5rem; margin-right: 1.5rem; margin-top: -1.5rem; }
-    }
-    /* mobile & touch */
+    /* mobile & touch: heading meta drops below the title */
     @media screen and (max-width: 1023px) {
-
-        /* the open mobile menu is a themed surface panel (matches the bar), so the
-           token-driven search field stays legible -- no hardcoded white override */
-        nav.navbar.ro-topbar .navbar-menu {
-            background: var(--header-bg);
-            border-bottom: 1px solid var(--border);
-        }
-        .navbar-end .search-item form,
-        .navbar-end .search-item .field,
-        .navbar-end .search-item .control { max-width: none; }
-
-        aside.menu { padding: 0.5rem 1.5rem; margin-bottom: 1.5rem; }
-        /* NOTE (Unit 23): the legacy Bulma-era `aside #aside-menu { display: none }`
-           + `#aside-menu.is-active { display: block }` reveal pair was REMOVED here:
-           the descendant selector matched the REDESIGN sidebar's #aside-menu div
-           too, blanking the sidebar content at every viewport ≤1023px (empty rail
-           strip at 761-1023px, empty hamburger overlay below 760px -- readout.js
-           toggles `.is-active` on `.ro-sidebar`, never on #aside-menu, so the
-           legacy show-rule could never fire). The redesign owns this range now:
-           the `.ro-rail` icon rail (760-1100px) and the ≤760px card/hamburger
-           blocks near the end of this layer. */
-
-        aside a[role="button"] { display: block; height: 1rem;}
-        aside a[role="button"] span { display: block; background: hsl(0, 0%, 71%); position: relative; height: 1px; margin: 0 auto; width: 66%; }
-        aside a[role="button"] span:nth-child(1) { top: calc(50% - 1px); }
-        aside a[role="button"] span:nth-child(2) { top: calc(50% + 1px); }
-
         main { padding: 0 1.5rem; }
-
-        /* show meta created below title */
         h1 { display: block; }
         h1 .meta,
         h2 .meta {
@@ -356,19 +87,7 @@
         }
     }
 
+    /* numeric columns right-align unless an explicit align attribute overrides */
     table th.num:not([align]),
     table td.num:not([align]) { text-align: right; }
-
-    /* NOTE (Unit 16): the pre-redesign `.ro-list-table` table system (the bare
-       `table.table.ro-list-table` density/header/cell/name rules + its
-       `.ro-cell-name`/`.ro-cell-url`/`.ro-cell-kind`/`.ro-ext-link`/`.ro-link-out`/
-       `.ro-empty-row`/`.ro-cell-changed` descendants) was REMOVED here: every
-       migrated screen now renders the redesign `.ro-table` (in `.ro-table-wrap`),
-       and `.ro-list-table` is emitted by no template / generated Go / readout.js
-       (verified by grep), so those rules matched nothing. The redesign `.ro-table`
-       system + the `.ro-rd .ro-cell-url`/`.ro-rd .ro-ext-link`/`.res-kind` rules
-       below own these screens now. The `.ro-status-dot` (old list status dot) and
-       `.log-msg`/`.log-ctr`/`.log-lvl-*` (old per-severity log spans) classes were
-       likewise removed -- nothing emits them. */
-
 }
