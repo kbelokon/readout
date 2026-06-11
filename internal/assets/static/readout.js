@@ -465,10 +465,208 @@
     }
   ];
 
+  // internal/assets/src/js/collapse-hash.ts
+  function parseCollapsedNames(hash) {
+    if (!hash) {
+      return [];
+    }
+    const names = [];
+    hash.replace(/^#/, "").split(";").forEach((param) => {
+      const keyVal = param.split("=");
+      if (keyVal[0] === "collapsed" && keyVal[1]) {
+        keyVal[1].split(",").forEach((name) => {
+          if (name) {
+            names.push(name);
+          }
+        });
+      }
+    });
+    return names;
+  }
+
+  // internal/assets/src/js/misc-ui.ts
+  function collapseSectionsFromHash() {
+    parseCollapsedNames(document.location.hash).forEach((name) => {
+      document.querySelectorAll(`main .collapsible[data-name="${CSS.escape(name)}"]`).forEach((el) => {
+        el.classList.add("is-collapsed");
+      });
+    });
+  }
+  var miscBindings = [
+    // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
+    // sidebar by toggling `.is-active` on `.ro-sidebar`. No-op when no sidebar is
+    // present (e.g. the Clusters entry page). Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: ".menu-toggle",
+      stop: true,
+      handler: (event) => {
+        event.preventDefault();
+        const sidebar = document.querySelector(".ro-sidebar");
+        if (sidebar) {
+          sidebar.classList.toggle("is-active");
+        }
+        return true;
+      }
+    },
+    // .ro-copy-btn (per-section YAML copy): copy THIS section's raw YAML to the
+    // clipboard via navigator.clipboard.writeText -- CSP-clean. The raw text is
+    // read from the section's Pygments `td.code` cell (the gutter lives in a
+    // separate `td.linenos`), with any injected fold controls stripped first
+    // (yamlCodeText) so the copy is the full source YAML in any fold state. The
+    // button briefly flips its label to "copied". Matched (and stop:true) BEFORE
+    // the section-fold binding so a copy click never toggles the section fold.
+    {
+      event: "click",
+      selector: ".ro-copy-btn",
+      stop: true,
+      handler: (event, matched) => {
+        event.preventDefault();
+        const copyBtn = matched;
+        const section = copyBtn.closest(".collapsible");
+        const codeCell = section && section.querySelector(".highlighttable td.code");
+        const text = codeCell ? yamlCodeText(codeCell) : "";
+        const label = copyBtn.querySelector(".ro-copy-text");
+        const done = (ok) => {
+          if (!label) {
+            return;
+          }
+          label.textContent = ok ? "copied" : "press ⌘C";
+          window.setTimeout(() => {
+            label.textContent = "copy";
+          }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText && text) {
+          navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+        } else {
+          done(false);
+        }
+        return true;
+      }
+    },
+    // .collapsible h4.title: toggle `is-collapsed` on the section and sync the
+    // URL fragment (collapsed=<names>) with all currently-collapsed sections. The
+    // section is resolved via closest('.collapsible') (NOT parentElement) so a
+    // Unit-10 YAML card (h4.title nested in .ro-card-head) folds the right node.
+    // Registered AFTER the copy binding (copy's stop:true short-circuits a copy
+    // click), reproducing the monolith order. Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: "main .collapsible h4.title",
+      stop: true,
+      handler: (_event, matched) => {
+        const section = matched.closest(".collapsible");
+        if (!section) {
+          return true;
+        }
+        section.classList.toggle("is-collapsed");
+        const names = [];
+        document.querySelectorAll("main .is-collapsed").forEach((el) => {
+          const name = el.dataset.name;
+          if (name !== void 0) {
+            names.push(name);
+          }
+        });
+        if (names.length) {
+          document.location.hash = `collapsed=${names.join(",")}`;
+        } else {
+          window.history.replaceState(null, "", window.location.pathname + window.location.search);
+        }
+        return true;
+      }
+    },
+    // Namespace switch (D9): picking a namespace in the topbar dropdown records it
+    // as this cluster's last-used namespace in the ro_prefs cookie (server-read
+    // only, for cluster-entry hrefs -- never a redirect). The click is
+    // deliberately NOT prevented; the boosted navigation proceeds. The cookie
+    // write rides the prefs.ts surface directly (the same seam legacy uses).
+    // Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: "#namespace-dropdown .namespace-item",
+      stop: true,
+      handler: (_event, matched) => {
+        const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(matched.getAttribute("href") || "");
+        if (hrefMatch) {
+          roPrefsSetNamespace(
+            decodeURIComponent(hrefMatch[1]),
+            decodeURIComponent(hrefMatch[2])
+          );
+        }
+        return true;
+      }
+    },
+    // #namespace-dropdown .context-trigger: toggle `is-active`; focus the
+    // searchbox when opening. Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: "#namespace-dropdown .context-trigger",
+      stop: true,
+      handler: (_event, matched) => {
+        const nsDropdown = matched.closest("#namespace-dropdown");
+        if (!nsDropdown) {
+          return true;
+        }
+        nsDropdown.classList.toggle("is-active");
+        if (nsDropdown.classList.contains("is-active")) {
+          const searchbox = document.getElementById("namespace-searchbox");
+          if (searchbox) {
+            searchbox.focus();
+          }
+        }
+        return true;
+      }
+    },
+    // #namespace-searchbox input: filter the .namespace-item links by
+    // case-insensitive substring. Terminal branch in the monolith input listener
+    // (no branch followed it), reproduced as stop:true.
+    {
+      event: "input",
+      selector: "#namespace-searchbox",
+      stop: true,
+      handler: (_event, matched) => {
+        const filterText = matched.value.toLowerCase();
+        document.querySelectorAll(".namespace-item").forEach((element) => {
+          const text = (element.innerText || "").toLowerCase();
+          if (text.indexOf(filterText) === -1) {
+            element.classList.add("is-hidden");
+          } else {
+            element.classList.remove("is-hidden");
+          }
+        });
+        return true;
+      }
+    },
+    // #namespace-searchbox keyup: Enter selects the first still-visible match.
+    // Sole branch of the monolith keyup listener; stop:true mirrors its return.
+    {
+      event: "keyup",
+      selector: "#namespace-searchbox",
+      stop: true,
+      handler: (event) => {
+        if (event.key !== "Enter") {
+          return true;
+        }
+        const elements = document.querySelectorAll(".namespace-item");
+        for (let i = 0; i < elements.length; i++) {
+          if (!elements[i].classList.contains("is-hidden")) {
+            elements[i].click();
+            break;
+          }
+        }
+        return true;
+      }
+    }
+  ];
+
   // internal/assets/src/js/bindings.ts
   var bindings = [
     ...foldBindings,
-    ...logsBindings
+    ...logsBindings,
+    // misc-ui's click bindings keep their relative monolith order: copy is
+    // registered before the section-fold binding (copy stop:true short-circuits
+    // a copy click), so a copy click never folds its section.
+    ...miscBindings
   ];
 
   // internal/assets/src/js/toasts.ts
@@ -636,15 +834,6 @@
       }
       return;
     }
-    const menuToggle = target.closest(".menu-toggle");
-    if (menuToggle) {
-      event.preventDefault();
-      const sidebar = document.querySelector(".ro-sidebar");
-      if (sidebar) {
-        sidebar.classList.toggle("is-active");
-      }
-      return;
-    }
     const refreshOption = target.closest(".refresh-option");
     if (refreshOption) {
       if (refreshOption.dataset.interval === "Live") {
@@ -667,64 +856,6 @@
       const targetEl = document.getElementById(toggle.dataset.target);
       if (targetEl) {
         targetEl.classList.toggle("is-active");
-      }
-      return;
-    }
-    const copyBtn = target.closest(".ro-copy-btn");
-    if (copyBtn) {
-      event.preventDefault();
-      const section = copyBtn.closest(".collapsible");
-      const codeCell = section && section.querySelector(".highlighttable td.code");
-      const text = codeCell ? yamlCodeText(codeCell) : "";
-      const label = copyBtn.querySelector(".ro-copy-text");
-      const done = (ok) => {
-        if (!label) {
-          return;
-        }
-        label.textContent = ok ? "copied" : "press ⌘C";
-        window.setTimeout(() => {
-          label.textContent = "copy";
-        }, 1500);
-      };
-      if (navigator.clipboard && navigator.clipboard.writeText && text) {
-        navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
-      } else {
-        done(false);
-      }
-      return;
-    }
-    const collapsibleTitle = target.closest("main .collapsible h4.title");
-    if (collapsibleTitle) {
-      const section = collapsibleTitle.closest(".collapsible");
-      section.classList.toggle("is-collapsed");
-      const names = [];
-      document.querySelectorAll("main .is-collapsed").forEach((el) => {
-        names.push(el.dataset.name);
-      });
-      if (names.length) {
-        document.location.hash = `collapsed=${names.join(",")}`;
-      } else {
-        window.history.replaceState(null, "", window.location.pathname + window.location.search);
-      }
-      return;
-    }
-    const nsItem = target.closest("#namespace-dropdown .namespace-item");
-    if (nsItem) {
-      const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(nsItem.getAttribute("href") || "");
-      if (hrefMatch) {
-        roPrefsSetNamespace(decodeURIComponent(hrefMatch[1]), decodeURIComponent(hrefMatch[2]));
-      }
-      return;
-    }
-    const nsTrigger = target.closest("#namespace-dropdown .context-trigger");
-    if (nsTrigger) {
-      const nsDropdown = nsTrigger.closest("#namespace-dropdown");
-      nsDropdown.classList.toggle("is-active");
-      if (nsDropdown.classList.contains("is-active")) {
-        const searchbox = document.getElementById("namespace-searchbox");
-        if (searchbox) {
-          searchbox.focus();
-        }
       }
       return;
     }
@@ -755,32 +886,6 @@
       applyLiveNameFilter();
       updateFilterAC();
       return;
-    }
-    const searchbox = event.target.closest("#namespace-searchbox");
-    if (searchbox) {
-      const filterText = searchbox.value.toLowerCase();
-      document.querySelectorAll(".namespace-item").forEach((element) => {
-        if ((element.innerText || "").toLowerCase().indexOf(filterText) === -1) {
-          element.classList.add("is-hidden");
-        } else {
-          element.classList.remove("is-hidden");
-        }
-      });
-    }
-  });
-  document.addEventListener("keyup", (event) => {
-    const searchbox = event.target.closest("#namespace-searchbox");
-    if (searchbox) {
-      if (event.key !== "Enter") {
-        return;
-      }
-      const elements = document.querySelectorAll(".namespace-item");
-      for (let i = 0; i < elements.length; i++) {
-        if (!elements[i].classList.contains("is-hidden")) {
-          elements[i].click();
-          break;
-        }
-      }
     }
   });
   document.addEventListener("keydown", (event) => {
@@ -874,22 +979,6 @@
       });
     }
   });
-  function collapseSectionsFromHash() {
-    const hash = document.location.hash;
-    if (!hash) {
-      return;
-    }
-    hash.substring(1).split(";").forEach((param) => {
-      const keyVal = param.split("=");
-      if (keyVal[0] === "collapsed" && keyVal[1]) {
-        keyVal[1].split(",").forEach((name) => {
-          document.querySelectorAll(`main .collapsible[data-name="${CSS.escape(name)}"]`).forEach((el) => {
-            el.classList.add("is-collapsed");
-          });
-        });
-      }
-    });
-  }
   var PALETTE_ID = "ro-palette";
   var PALETTE_GROUPS = [
     { title: "Resource types", key: "kinds" },

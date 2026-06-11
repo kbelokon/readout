@@ -29,7 +29,6 @@ import {
     roPrefsSetSort,
     roPrefsSetHiddenColumns,
     roPrefsSetRefresh,
-    roPrefsSetNamespace,
     REFRESH_KEY,
 } from './prefs.js';
 
@@ -60,6 +59,11 @@ import { buildYamlFolds, highlightYamlLine, yamlCodeText } from './yaml-folds.js
 // Logs page leaf (Unit 9): initLogsFollow is a runInit step; the Follow toggle
 // and ts/wrap display toggles are dispatcher bindings (bindings.ts).
 import { initLogsFollow } from './logs.js';
+
+// Misc UI leaves (Unit 9): collapseSectionsFromHash is a runInit step; the
+// sidebar / copy / section-fold / namespace-dropdown branches are dispatcher
+// bindings (bindings.ts). roPrefsSetNamespace now rides misc-ui directly.
+import { collapseSectionsFromHash } from './misc-ui.js';
 
 // ---------------------------------------------------------------------------
 // HTMX config: native View Transitions, reduced-motion-aware
@@ -332,19 +336,8 @@ document.addEventListener('click', (event) => {
         }
         return;
     }
-    // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
-    // sidebar by toggling `.is-active` on `.ro-sidebar` (the <760px reveal CSS +
-    // the button itself are owned by Unit 15; this is the JS half of D11). No-op
-    // when no sidebar is present (e.g. the Clusters entry page).
-    const menuToggle = target.closest('.menu-toggle');
-    if (menuToggle) {
-        event.preventDefault();
-        const sidebar = document.querySelector('.ro-sidebar');
-        if (sidebar) {
-            sidebar.classList.toggle('is-active');
-        }
-        return;
-    }
+    // Mobile hamburger (.menu-toggle) migrated to misc-ui.ts (Unit 9 leaf):
+    // handled by a stop:true dispatcher binding registered ahead of this listener.
 
     // Auto-refresh interval option (navbar #refresh-dropdown): persist the
     // chosen mode in the ro_prefs cookie (D9 -- the legacy roRefresh
@@ -392,99 +385,23 @@ document.addEventListener('click', (event) => {
     // so the nested-fold click is handled before the section-fold/gutter branches
     // below ever run.
 
-    // .ro-copy-btn (per-section YAML copy): copy THIS section's raw YAML to the
-    // clipboard via navigator.clipboard.writeText -- CSP-clean (no inline handler,
-    // no eval). The raw text is read from the section's Pygments `td.code` cell:
-    // with linenos="table" the line-number gutter lives in a SEPARATE `td.linenos`
-    // column, so textContent of `td.code` is exactly the source YAML (indentation
-    // + newlines preserved, no gutter digits) -- no duplicated hidden payload. When
-    // the nested-fold controls have been injected into the code cell, they are
-    // STRIPPED from a shallow clone first (yamlCodeText) so the copied text is the
-    // raw YAML regardless of fold state (folded child lines stay in the DOM, only
-    // hidden, so their text is still copied). The button briefly flips its label to
-    // "copied". Matched BEFORE the section-fold handler and returns, so a copy click
-    // never toggles the section fold.
-    const copyBtn = target.closest('.ro-copy-btn');
-    if (copyBtn) {
-        event.preventDefault();
-        const section = copyBtn.closest('.collapsible');
-        const codeCell = section && section.querySelector('.highlighttable td.code');
-        const text = codeCell ? yamlCodeText(codeCell) : '';
-        const label = copyBtn.querySelector('.ro-copy-text');
-        const done = (ok) => {
-            if (!label) {
-                return;
-            }
-            label.textContent = ok ? 'copied' : 'press ⌘C';
-            window.setTimeout(() => { label.textContent = 'copy'; }, 1500);
-        };
-        if (navigator.clipboard && navigator.clipboard.writeText && text) {
-            navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
-        } else {
-            done(false);
-        }
-        return;
-    }
+    // .ro-copy-btn (per-section YAML copy) migrated to misc-ui.ts (Unit 9 leaf):
+    // a stop:true dispatcher binding registered ahead of this listener (and
+    // ahead of the section-fold binding, so a copy click never folds the section).
 
-    // .collapsible h4.title: toggle `is-collapsed` on the section and sync the
-    // URL fragment (collapsed=<names>) with all currently-collapsed sections. The
-    // section is resolved via closest('.collapsible') (NOT parentElement): in a
-    // Unit-10 YAML card the h4.title is nested inside .ro-card-head, so
-    // parentElement is that head, not the [data-name] .collapsible card -- which
-    // left the card fold toggling is-collapsed on the wrong node (no visual fold,
-    // and a bogus empty `collapsed=` hash). closest() walks up to the actual
-    // collapsible; for the bare Pods/Events collapsibles (h4.title is a direct
-    // child) it resolves to the SAME element parentElement did, so their fold is
-    // unchanged. This finds its section the same way the copy handler above does.
-    const collapsibleTitle = target.closest('main .collapsible h4.title');
-    if (collapsibleTitle) {
-        const section = collapsibleTitle.closest('.collapsible');
-        section.classList.toggle('is-collapsed');
-        const names = [];
-        document.querySelectorAll('main .is-collapsed').forEach((el) => {
-            names.push(el.dataset.name);
-        });
-        if (names.length) {
-            document.location.hash = `collapsed=${names.join(',')}`;
-        } else {
-            window.history.replaceState(null, '', window.location.pathname + window.location.search);
-        }
-        return;
-    }
+    // .collapsible h4.title (section collapse + hash sync) migrated to misc-ui.ts
+    // (Unit 9 leaf): a stop:true dispatcher binding registered ahead of this
+    // listener.
 
     // YAML line-number anchors (.linenos a) migrated to yaml-folds.ts (Unit 9
     // leaf): handled by a stop:true dispatcher binding registered ahead of this
     // listener.
 
-    // Namespace switch (D9): picking a namespace in the topbar dropdown records
-    // it as this cluster's last-used namespace in the ro_prefs cookie. The
-    // server consumes it ONLY when building cluster-entry hrefs (the clusters
-    // page rows + the palette cluster nav) -- never as a redirect. The click is
-    // deliberately NOT prevented: the boosted navigation proceeds as before,
-    // the write is a side record of the gesture.
-    const nsItem = target.closest('#namespace-dropdown .namespace-item');
-    if (nsItem) {
-        const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//
-            .exec(nsItem.getAttribute('href') || '');
-        if (hrefMatch) {
-            roPrefsSetNamespace(decodeURIComponent(hrefMatch[1]), decodeURIComponent(hrefMatch[2]));
-        }
-        return;
-    }
-
-    // #namespace-dropdown .context-trigger: toggle `is-active`; focus the searchbox when opening.
-    const nsTrigger = target.closest('#namespace-dropdown .context-trigger');
-    if (nsTrigger) {
-        const nsDropdown = nsTrigger.closest('#namespace-dropdown');
-        nsDropdown.classList.toggle('is-active');
-        if (nsDropdown.classList.contains('is-active')) {
-            const searchbox = document.getElementById('namespace-searchbox');
-            if (searchbox) {
-                searchbox.focus();
-            }
-        }
-        return;
-    }
+    // Namespace switch + .context-trigger toggle (D9) migrated to misc-ui.ts
+    // (Unit 9 leaf): stop:true dispatcher bindings registered ahead of this
+    // listener. The dropdown's `.is-active` flag (read by keyboardSurfaceBusy
+    // below) is set on the same element, so the gesture keydown's DOM guard is
+    // unchanged.
 });
 
 // ---------------------------------------------------------------------------
@@ -535,39 +452,14 @@ document.addEventListener('input', (event) => {
         return;
     }
 
-    // #namespace-searchbox: filter the .namespace-item links by case-insensitive substring.
-    const searchbox = event.target.closest('#namespace-searchbox');
-    if (searchbox) {
-        const filterText = searchbox.value.toLowerCase();
-        document.querySelectorAll('.namespace-item').forEach((element) => {
-            if ((element.innerText || '').toLowerCase().indexOf(filterText) === -1) {
-                element.classList.add('is-hidden');
-            } else {
-                element.classList.remove('is-hidden');
-            }
-        });
-    }
+    // #namespace-searchbox input (substring filter) migrated to misc-ui.ts
+    // (Unit 9 leaf): a stop:true dispatcher input-binding registered ahead of
+    // this listener.
 });
 
-// ---------------------------------------------------------------------------
-// Delegated KEYUP handlers
-// ---------------------------------------------------------------------------
-document.addEventListener('keyup', (event) => {
-    // #namespace-searchbox: Enter selects the first still-visible match.
-    const searchbox = event.target.closest('#namespace-searchbox');
-    if (searchbox) {
-        if (event.key !== 'Enter') {
-            return;
-        }
-        const elements = document.querySelectorAll('.namespace-item');
-        for (let i = 0; i < elements.length; i++) {
-            if (!elements[i].classList.contains('is-hidden')) {
-                elements[i].click();
-                break;
-            }
-        }
-    }
-});
+// Delegated KEYUP handlers: the sole monolith branch (#namespace-searchbox
+// Enter-selects-first-visible) migrated to misc-ui.ts (Unit 9 leaf) as a
+// dispatcher keyup-binding, so this listener is retired entirely.
 
 // ---------------------------------------------------------------------------
 // Delegated KEYDOWN handlers (⌘K / Ctrl-K palette open + in-palette navigation)
@@ -737,26 +629,8 @@ document.addEventListener('submit', (event) => {
 // highlightYamlLine migrated to yaml-folds.ts (Unit 9 leaf); imported above for
 // the runInit chain + the section-collapse line-anchor path still here.
 
-// On load, collapse every section named in the URL fragment (collapsed=a,b,c).
-// Idempotent: adding `is-collapsed` to an already-collapsed section is a no-op.
-function collapseSectionsFromHash() {
-    const hash = document.location.hash;
-    if (!hash) {
-        return;
-    }
-    hash.substring(1).split(';').forEach((param) => {
-        const keyVal = param.split('=');
-        if (keyVal[0] === 'collapsed' && keyVal[1]) {
-            keyVal[1].split(',').forEach((name) => {
-                document
-                    .querySelectorAll(`main .collapsible[data-name="${CSS.escape(name)}"]`)
-                    .forEach((el) => {
-                        el.classList.add('is-collapsed');
-                    });
-            });
-        }
-    });
-}
+// collapseSectionsFromHash (on-load section collapse from the URL fragment)
+// migrated to misc-ui.ts (Unit 9 leaf); imported above for the runInit chain.
 
 // Nested-YAML-block folding migrated to yaml-folds.ts (Unit 9 leaf):
 // yamlEffectiveIndent / yamlCodeText / toggleYamlFold / buildYamlFolds /

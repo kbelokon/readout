@@ -19,6 +19,7 @@
 import type { Binding } from './events.js';
 import { foldBindings } from './yaml-folds.js';
 import { logsBindings } from './logs.js';
+import { miscBindings } from './misc-ui.js';
 
 // Leaf feature modules contribute their bindings here. theme.ts + toasts.ts are
 // leaves with NO delegated document binding (theme's only hook is a matchMedia
@@ -31,4 +32,8 @@ import { logsBindings } from './logs.js';
 export const bindings: Binding[] = [
     ...foldBindings,
     ...logsBindings,
+    // misc-ui's click bindings keep their relative monolith order: copy is
+    // registered before the section-fold binding (copy stop:true short-circuits
+    // a copy click), so a copy click never folds its section.
+    ...miscBindings,
 ];
