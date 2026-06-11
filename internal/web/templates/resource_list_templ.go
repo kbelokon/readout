@@ -23,7 +23,7 @@ import templruntime "github.com/a-h/templ/runtime"
 //     explicit JS config object -- attribute-spec morph config would be
 //     eval'd by the vendored extension and blocked by CSP). The gesture chrome
 //     (Unit 16: the #ro-bulkbar selection pill + the #ro-ctxmenu right-click
-//     menu, both defined in layout.templ) mounts HERE, OUTSIDE the swap
+//     menu, both defined in overlays.templ) mounts HERE, OUTSIDE the swap
 //     target, so it survives every morph untouched -- and only on single-type
 //     pages, the D1 boundary the gestures share with the loop.
 //

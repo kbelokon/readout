@@ -1,0 +1,126 @@
+package templates
+
+// overlays.templ holds the global overlay/popover chrome extracted from
+// layout.templ: the toast host, the "?" keyboard-map overlay, the right-click row
+// context menu, and the bulk-selection bar (with its server-resolved download
+// wiring). These ride OUTSIDE every swap target -- the toast host + kbd overlay
+// mount once per page in layout.templ; the context menu + bulk bar mount next to
+// (never inside) the #resource-list-content swap target in resource_list.templ on
+// single-type pages. They are not part of the resource_table.templ decomposition.
+// The render output stays byte-identical to the markup these replaced -- the SPEC
+// §9 visual grid + the behavior-fact net are the arbiters, so element/attribute
+// order and inter-node whitespace are load-bearing and must not be "tidied" here.
+
+// toastHostC is the toast host (D24 / SPEC §8.8): layout chrome OUTSIDE every
+// swap target (#resource-list-content morphs never touch it, so an active toast
+// survives refresh ticks; a boosted body swap replaces it, correctly -- a
+// navigation is a screen change). readout.js appends one .ro-toast per message,
+// only for the two sanctioned detached-result triggers.
+templ toastHostC() {
+	<div id="ro-toasts" class="ro-toasts" role="status" aria-live="polite"></div>
+}
+
+// kbdOverlayC is the "?" keyboard-map overlay (Unit 18 / D10): GLOBAL chrome
+// (it rides every page next to the palette -- the j/k/⏎ gestures themselves
+// stay single-type-page behaviors, but the map is discoverable everywhere).
+// Markup mirrors the prototype card (Readout v2.html #kbdOverlay): Navigate /
+// Act columns of `.kbd-row` entries, the mono `.kbd-foot` caption. readout.js
+// owns open/close ("open" class + aria-hidden, the palette pattern): "?"
+// toggles, esc/backdrop-click close and restore the prior focus. The card
+// carries tabindex="-1" so the overlay can move focus INTO the dialog on open
+// (it has no other focusable content -- Tab is trapped by the keydown handler,
+// so focus can never reach the page behind the modal).
+templ kbdOverlayC() {
+	<div class="kbd-overlay" id="ro-kbd-overlay" aria-hidden="true">
+		<div class="kbd-card" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1">
+			<h3>Keyboard</h3>
+			<div class="kbd-cols">
+				<div>
+					<div class="kbd-grp">Navigate</div>
+					<div class="kbd-row"><kbd class="ro-kbd">&#8984;K</kbd><span>Jump to anything</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">j</kbd><kbd class="ro-kbd">k</kbd><span>Move row focus</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">&#9166;</kbd><span>Open focused row</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">esc</kbd><span>Close / back out</span></div>
+				</div>
+				<div>
+					<div class="kbd-grp">Act</div>
+					<div class="kbd-row"><kbd class="ro-kbd">click</kbd><span>Select row (bulk bar)</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">rmb</kbd><span>Row context menu</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">&#9166;</kbd><span>Filter &#8594; make chip</span></div>
+					<div class="kbd-row"><kbd class="ro-kbd">&#9003;</kbd><span>Remove last chip</span></div>
+				</div>
+			</div>
+			<div class="kbd-foot mono">? toggles this card</div>
+		</div>
+	</div>
+}
+
+// rowCtxMenuC is the right-click row context menu (Unit 16 / D10): ONE fixed,
+// viewport-clamped popover, mounted by resource_list.templ NEXT TO (never
+// inside) the #resource-list-content swap target on single-type pages only --
+// the D1 boundary; only those rows carry the data-key identity + per-row href
+// data attributes the menu binds. readout.js owns open/close (`is-open` +
+// aria-hidden), positioning, and writes each item's data-href from the
+// right-clicked row at open time; an item with no target for the row hides
+// (View logs is pods-only). Items are BUTTONS navigated via location.assign
+// (the palette pattern): htmx captures a boosted anchor's href at PROCESS
+// time, so runtime-bound anchor hrefs would go stale. Item order is the D10
+// contract: Open ⏎ · Copy name · View YAML · View logs · ── · Download YAML.
+templ rowCtxMenuC() {
+	<div class="ro-ctxmenu" id="ro-ctxmenu" role="menu" aria-label="Row actions" aria-hidden="true">
+		<button type="button" role="menuitem" data-ro-action="open"><span class="ico sm" aria-hidden="true">@iconC("external-link")</span><span>Open</span><span class="ro-kbd">&#9166;</span></button>
+		<button type="button" role="menuitem" data-ro-action="copy"><span class="ico sm" aria-hidden="true">@iconC("copy")</span><span>Copy name</span></button>
+		<button type="button" role="menuitem" data-ro-action="yaml"><span class="ico sm" aria-hidden="true">@iconC("file")</span><span>View YAML</span></button>
+		<button type="button" role="menuitem" data-ro-action="logs" hidden><span class="ico sm" aria-hidden="true">@iconC("terminal")</span><span>View logs</span></button>
+		<hr>
+		<button type="button" role="menuitem" data-ro-action="download"><span class="ico sm" aria-hidden="true">@iconC("download")</span><span>Download YAML</span></button>
+	</div>
+}
+
+// BulkBar is the bulk bar's server-resolved download wiring (Unit 17 / D11).
+// DownloadHref is the CLEAN bulk GET base (`<canonical list path>?download=yaml`,
+// no filter/sort params) readout.js appends `&names=` to; empty means the bulk
+// download is unavailable (multi-cluster scope) and the button renders disabled
+// with an explanatory title. Cluster is the list's cluster name -- on
+// AllNamespaces lists readout.js strips it off each selection key
+// (cluster/ns/name) to derive the `ns/name` names grammar.
+type BulkBar struct {
+	DownloadHref  string
+	Cluster       string
+	AllNamespaces bool
+}
+
+// bulkBarC is the bottom-center bulk-selection pill (Unit 16 / SPEC §6.4),
+// mounted by resource_list.templ OUTSIDE the #resource-list-content swap
+// target on single-type pages only, so selection chrome survives every morph
+// untouched (multi-type pages render no bar -- pinned by
+// TestListLoopSurfaceBoundary). Closed = faded out (prototype `is-open`
+// opacity/transform transition) AND `inert`, so the invisible controls can
+// never take focus or clicks; readout.js toggles both at >=1 selected and
+// keeps #ro-bulk-count at "N selected". The Download YAML button (Unit 17 /
+// D11) is live only when the bar carries data-bulk-href (single-cluster
+// lists); readout.js additionally disables it above the 100-name cap (with
+// the refusal toast -- the server rejects >100 with 400 either way).
+templ bulkBarC(b BulkBar) {
+	<div
+		class="ro-bulkbar"
+		id="ro-bulkbar"
+		inert
+		if b.DownloadHref != "" {
+			data-bulk-href={ b.DownloadHref }
+			data-bulk-cluster={ b.Cluster }
+		}
+		if b.AllNamespaces {
+			data-bulk-allns="true"
+		}
+	>
+		<span class="bulk-count mono" id="ro-bulk-count">0 selected</span>
+		if b.DownloadHref != "" {
+			<button type="button" class="ro-btn quiet sm" id="ro-bulk-download"><span class="ico sm" aria-hidden="true">@iconC("download")</span><span>Download YAML</span></button>
+		} else {
+			<button type="button" class="ro-btn quiet sm" id="ro-bulk-download" disabled title="Bulk YAML download is unavailable across clusters — open a single cluster's list"><span class="ico sm" aria-hidden="true">@iconC("download")</span><span>Download YAML</span></button>
+		}
+		<button type="button" class="ro-btn quiet sm" id="ro-bulk-copy"><span class="ico sm" aria-hidden="true">@iconC("copy")</span><span>Copy names</span></button>
+		<button type="button" class="bulk-x" id="ro-bulk-clear" title="Clear selection" aria-label="Clear selection"><span class="ico sm" aria-hidden="true">@iconC("x")</span></button>
+	</div>
+}
