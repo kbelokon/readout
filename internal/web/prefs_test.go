@@ -413,6 +413,50 @@ func TestPrefsRefreshModeRendered(t *testing.T) {
 	p.wantText("#refresh-label", "Off")
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown")
 	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option is-active")
+
+	// Persisted Live (Unit 27/D19): the label says Live, the Live option is the
+	// active one (NOT Off, even though Live arms no polling interval), and the
+	// refresh-on hook keeps the livedot pulsing at SSR.
+	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "Live"}), nil)
+	p.wantText("#refresh-label", "Live")
+	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown refresh-on")
+	p.wantAttr(`.refresh-option[data-interval="Live"]`, "class", "refresh-option is-active")
+	p.wantAttr(`.refresh-option[data-interval="0"]`, "class", "refresh-option")
+}
+
+// TestLiveOptionScopeGate pins the server-rendered Live availability (Unit 27/
+// D19 scope cut): the dropdown's Live option is DISABLED (with an explanatory
+// title) on multi-type and multi-cluster list pages -- the `_stream` endpoint
+// 404s that scope -- and enabled on single-type single-cluster lists. Non-list
+// pages (detail) keep it enabled-but-inert, like the interval options.
+func TestLiveOptionScopeGate(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	live := `.refresh-option[data-interval="Live"]`
+
+	// Single-type, single-cluster list: enabled.
+	p := prefsGet(t, app, "/clusters/test/namespaces/default/pods", "", nil)
+	p.wantHas(live)
+	p.wantAbsent(live + "[disabled]")
+
+	// Multi-type list (plural "all"): disabled with the scope title.
+	p = prefsGet(t, app, "/clusters/test/namespaces/default/all", "", nil)
+	p.wantHas(live + "[disabled]")
+	if title := p.attr(live, "title"); !strings.Contains(title, "single-type") {
+		t.Fatalf("disabled Live option title = %q, want a single-type scope explanation", title)
+	}
+
+	// CSV multi-type list: disabled too.
+	p = prefsGet(t, app, "/clusters/test/namespaces/default/pods,services", "", nil)
+	p.wantHas(live + "[disabled]")
+
+	// Multi-cluster list (_all union): disabled.
+	p = prefsGet(t, app, "/clusters/_all/pods", "", nil)
+	p.wantHas(live + "[disabled]")
+
+	// A detail page is not a list: the option stays enabled (inert client-side,
+	// exactly like picking an interval there).
+	p = prefsGet(t, app, "/clusters/test/namespaces/default/pods/nginx", "", nil)
+	p.wantAbsent(live + "[disabled]")
 }
 
 // TestPrefsReadoutJSContract pins the JS writer half needle-style (the suite

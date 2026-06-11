@@ -81,28 +81,38 @@ func refreshSeconds(mode string) int {
 }
 
 // refreshLabel is the topbar #refresh-label text for a persisted refresh mode:
-// "Ns" for an active interval, else "Off" (matching readout.js syncRefreshUI).
+// "Live" for the Live stream mode (Unit 27/D19), "Ns" for an active interval,
+// else "Off" (matching readout.js syncRefreshUI).
 func refreshLabel(mode string) string {
+	if mode == "Live" {
+		return "Live"
+	}
 	if secs := refreshSeconds(mode); secs > 0 {
 		return strconv.Itoa(secs) + "s"
 	}
 	return "Off"
 }
 
-// refreshOptionClass marks the interval option matching the persisted refresh
+// refreshOptionClass marks the dropdown option matching the persisted refresh
 // mode as is-active ("Off"/none activates the data-interval="0" option, like
-// the JS sync does).
+// the JS sync does). Mode "Live" activates ONLY the Live option -- without the
+// special case the Off option would match it (refreshSeconds("Live") is 0).
 func refreshOptionClass(interval, mode string) string {
-	if interval == strconv.Itoa(refreshSeconds(mode)) {
+	active := interval == strconv.Itoa(refreshSeconds(mode))
+	if interval == "Live" || mode == "Live" {
+		active = interval == mode
+	}
+	if active {
 		return "refresh-option is-active"
 	}
 	return "refresh-option"
 }
 
 // refreshDropdownClass adds the refresh-on styling hook when a positive
-// interval is persisted (the spinning-icon state readout.js otherwise toggles).
+// interval OR the Live mode is persisted (the pulsing-livedot state readout.js
+// otherwise toggles -- Live pulses through the same hook, Unit 21/27 rule).
 func refreshDropdownClass(mode string) string {
-	if refreshSeconds(mode) > 0 {
+	if mode == "Live" || refreshSeconds(mode) > 0 {
 		return "refresh-dropdown refresh-on"
 	}
 	return "refresh-dropdown"

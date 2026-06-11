@@ -89,6 +89,7 @@ func toNavbar(n *navbarView) templates.Navbar {
 		ToggleNextURL:   n.ToggleNextURL,
 		ThemeExplicit:   n.ThemeExplicit,
 		RefreshMode:     n.RefreshMode,
+		LiveDisabled:    n.LiveDisabled,
 	}
 }
 

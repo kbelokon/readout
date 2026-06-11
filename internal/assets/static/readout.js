@@ -319,12 +319,23 @@ document.addEventListener('click', (event) => {
     // chosen mode in the ro_prefs cookie (D9 -- the legacy roRefresh
     // localStorage write is retired; refreshMode() still reads that key once as
     // a migration fallback), re-arm the poll, and reflect it in the control.
-    // The dropdown opens through CSS hover/focus, so there is no open/close
-    // handler here -- only the selection.
+    // The Live option (Unit 27/D19) persists the literal 'Live' (schema-valid
+    // per D9) and rides the same path: liveApply opens/tears down the stream,
+    // applyRefresh then arms the poll chain per the EFFECTIVE seconds (0 while
+    // a stream is riding -- "enabling Live stops the polling timer"). A
+    // disabled Live option (multi-type/multi-cluster page) never fires: the
+    // browser suppresses clicks on disabled buttons. The dropdown opens
+    // through CSS hover/focus, so there is no open/close handler here -- only
+    // the selection.
     const refreshOption = target.closest('.refresh-option');
     if (refreshOption) {
-        const interval = parseInt(refreshOption.dataset.interval, 10) || 0;
-        roPrefsSetRefresh(interval > 0 ? String(interval) : 'Off');
+        if (refreshOption.dataset.interval === 'Live') {
+            roPrefsSetRefresh('Live');
+        } else {
+            const interval = parseInt(refreshOption.dataset.interval, 10) || 0;
+            roPrefsSetRefresh(interval > 0 ? String(interval) : 'Off');
+        }
+        liveApply(true); // force: an explicit pick re-attempts even after a fallback
         syncRefreshUI();
         applyRefresh();
         refreshOption.blur(); // close the hover-dropdown after a keyboard/touch pick
@@ -2114,12 +2125,25 @@ function fireRefresh() {
     requestListRefresh();
 }
 
-// refreshDelaySeconds is the wait until the NEXT tick: the chosen interval
+// effectivePollSeconds is the poll cadence the tick chain actually arms:
+// the chosen interval, or the Live mode's 5s FALLBACK cadence while the
+// stream is degraded to polling (Unit 27/D19 taxonomy: terminal / 429 / 204 /
+// unsupported page). Plain 'Live' with a riding stream stays 0 -- enabling
+// Live stops the polling timer; the chain self-disarms.
+function effectivePollSeconds() {
+    const secs = refreshInterval();
+    if (secs > 0) {
+        return secs;
+    }
+    return refreshMode() === 'Live' ? liveFallbackSecs : 0;
+}
+
+// refreshDelaySeconds is the wait until the NEXT tick: the effective cadence
 // while healthy (stage 0) and after the FIRST failure (stage 1 retries at the
 // base cadence, 1x), then 2x / 4x of it for repeated failures, the backoff
 // wait capped at 60s (SPEC §8.3: 1x -> 2x -> 4x, cap 60s, reset on success).
 function refreshDelaySeconds() {
-    const secs = refreshInterval();
+    const secs = effectivePollSeconds();
     if (secs <= 0) {
         return 0;
     }
@@ -2167,27 +2191,38 @@ function applyRefresh() {
 }
 
 // Reflect the stored preference in the navbar control (label + active option +
-// an "on" class for the spinning-icon styling). Re-run on every init pass because
-// an hx-boost swap re-renders the navbar.
+// an "on" class for the spinning-icon/livedot styling). Live (Unit 27) labels
+// "Live", activates ONLY the Live option (parseInt('Live') is NaN -> 0, which
+// would otherwise light Off), and pulses the livedot through the same
+// refresh-on hook in EVERY Live substate (stream riding or polling fallback)
+// -- the mode is "on" either way; the server's refreshDropdownClass renders
+// the identical state at SSR. Re-run on every init pass because an hx-boost
+// swap re-renders the navbar.
 function syncRefreshUI() {
+    const live = refreshMode() === 'Live';
     const secs = refreshInterval();
     const label = document.getElementById('refresh-label');
     if (label) {
-        label.textContent = secs > 0 ? `${secs}s` : 'Off';
+        label.textContent = live ? 'Live' : (secs > 0 ? `${secs}s` : 'Off');
     }
     document.querySelectorAll('.refresh-option').forEach((opt) => {
-        opt.classList.toggle('is-active', parseInt(opt.dataset.interval, 10) === secs);
+        const value = opt.dataset.interval;
+        opt.classList.toggle('is-active', live
+            ? value === 'Live'
+            : value !== 'Live' && (parseInt(value, 10) || 0) === secs);
     });
     const dropdown = document.getElementById('refresh-dropdown');
     if (dropdown) {
-        dropdown.classList.toggle('refresh-on', secs > 0);
+        dropdown.classList.toggle('refresh-on', live || secs > 0);
     }
 }
 
 // Refresh once immediately when returning to a backgrounded tab, so stale data
-// updates right away instead of waiting up to a full interval.
+// updates right away instead of waiting up to a full poll cadence (the Live
+// fallback's 5s counts -- effectivePollSeconds; a RIDING stream needs no
+// catch-up poll: its reopen pushes a fresh full frame).
 document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && refreshInterval() > 0) {
+    if (!document.hidden && effectivePollSeconds() > 0) {
         fireRefresh();
     }
 });
@@ -2352,11 +2387,18 @@ document.addEventListener('htmx:afterSwap', (event) => {
         if (colsPopOpen) {
             setColsPopOpen(true);
         }
-        // Re-window (Unit 24/D20) -- EVERY swap source lands here (tick, sort/
-        // filter swap, retry; Live joins in its own wave). LAST, so the
-        // adoption render consumes the visibleKeys applyLiveNameFilter just
-        // re-derived; it ends in its own reapplyRowState over the fresh slice.
+        // Re-window (Unit 24/D20) -- EVERY swap source lands here: tick, sort/
+        // filter swap, retry, AND the Live push (htmx.swap dispatches this
+        // same event with target=container + the roLivePush marker, so pushes
+        // ride the identical post-swap pipeline). LAST among the repairs, so
+        // the adoption render consumes the visibleKeys applyLiveNameFilter
+        // just re-derived; it ends in its own reapplyRowState over the slice.
         virtualizeAfterSwap();
+        // Live (Unit 27/D19): a REQUEST swap of the container while a stream
+        // rides is a param change (`f`/sort via URL, columns via cookie) --
+        // tear the stream down and reopen it against the new query under a
+        // fresh generation. Pushes themselves (roLivePush) never reopen.
+        liveOnListSwap(event);
     }
 });
 
@@ -2415,6 +2457,353 @@ document.addEventListener('htmx:responseError', (event) => {
 document.addEventListener('htmx:sendError', (event) => {
     if (isListRefreshEvent(event)) {
         clearListSkeleton();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Live mode (Unit 27 / D19, client half) -- a fetch-based SSE bridge.
+// ---------------------------------------------------------------------------
+// 'Live' is the 6th refresh-dropdown mode: instead of polling, the client
+// opens the read-only `GET …/{plural}/_stream` SSE endpoint and morphs every
+// pushed `_table` fragment through the SAME ro-morph pipeline the polling
+// ticks ride -- htmx.swap routes the 'morph' swap style through the
+// extension's handleSwap (row-model capture, windowing adoption, idiomorph
+// cell flash) and dispatches htmx:afterSwap on the container, so the standard
+// post-swap repairs (stale clear, row state, live filter, re-window) run
+// untouched; the event carries a roLivePush marker so a push never triggers
+// the param-change reopen below.
+//
+// Native EventSource is deliberately NOT used: EventSource cannot observe the
+// non-200 connect statuses the D19 wire contract assigns meaning to (204
+// watch-less, 429 stream cap -- it only ever surfaces a generic error), and
+// its built-in auto-reconnect fights the close-reason taxonomy (`ro-terminal`
+// must close WITHOUT reconnecting). The vendored htmx SSE extension is
+// equally unsuitable: it swaps every message sight-unseen, but stale frames
+// must be discarded BEFORE morphing. A streaming fetch plus a ~20-line SSE
+// line parser gives full control with no new dependency, and the strict CSP
+// is untouched (fetch falls under connect-src, covered by default-src
+// 'self').
+//
+// Generation discard (D19): the CLIENT mints a generation, sends it as the
+// stream's `?g=` query param, and checks the echo in every frame AT MORPH
+// TIME. A frame with a stale generation, or one arriving while any `_table`
+// request is in flight (user sort/filter OR a container re-render -- both
+// would race the push's older render), is DISCARDED, never deferred: every
+// push is a full snapshot, so the next one carries everything a dropped one
+// did.
+//
+// Close-reason taxonomy (D19):
+//   - `ro-terminal` (idle / auth / watch-failed / shutdown): close WITHOUT
+//     reconnecting -> 5s polling + the stale banner (the first successful
+//     poll clears it, exactly like every other stale episode).
+//   - 204 on connect (watch-less kind) and 429 on connect (stream cap):
+//     SILENT 5s polling, no banner. Other connect failures degrade the same
+//     silent way -- if polling then fails too, the standard failure machinery
+//     raises the honest banner itself.
+//   - document.hidden: close the stream; returning visibility reopens ONLY
+//     after such a hidden-close -- never after a terminal/429/204 fallback
+//     (sticky until a fresh page init or an explicit dropdown re-pick) and
+//     never under user-selected polling.
+//   - Any `f`/`sort`/columns change tears the stream down and reopens it with
+//     the new query under a fresh generation (liveOnListSwap, hooked on the
+//     container afterSwap -- each such change lands as exactly one container
+//     request swap, cookie-only column changes included).
+//
+// Multi-type and multi-cluster pages render the Live option DISABLED (server
+// truth, mirroring the `_stream` 404 scope); liveSupported() consults that
+// rendered option plus the v2 container marker, so a persisted 'Live' on such
+// a page silently degrades to 5s polling instead of dialing a dead endpoint.
+const liveState = {
+    status: 'idle', // 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden'
+    abort: null,    // AbortController of the current stream fetch
+    gen: '',        // the minted generation every frame must echo (string compare)
+    streamPath: '', // the stream URL sans ?g= -- the page/params identity
+};
+let liveGenSeq = 0;
+// The Live FALLBACK poll cadence (seconds): 0 while a stream rides (or Live
+// is off), 5 while degraded to polling. effectivePollSeconds() feeds it into
+// the shared tick chain.
+let liveFallbackSecs = 0;
+
+// liveSupported: can THIS page stream? The v2 single-type container must be
+// present (data-live-url="location" -- the D1/D6 loop marker) and the
+// server-rendered Live option must not be disabled (the D19 scope cut:
+// multi-type/multi-cluster pages 404 the endpoint). Server truth drives the
+// client; no URL parsing here.
+function liveSupported() {
+    const content = document.getElementById('resource-list-content');
+    if (!content || content.dataset.liveUrl !== 'location') {
+        return false;
+    }
+    const option = document.querySelector('.refresh-option[data-interval="Live"]');
+    return !!option && !option.disabled;
+}
+
+// liveStreamBase derives the stream URL from the LIVE document URL at open
+// time (the listTableURL pattern): path + "/_stream" + the RAW query -- raw
+// string concat, never a URLSearchParams round-trip, so an `f` chip's
+// wire-significant raw OR-commas survive byte-exactly.
+function liveStreamBase() {
+    const u = new URL(window.location.href);
+    return u.pathname.replace(/\/+$/, '') + '/_stream' + u.search;
+}
+
+// liveTeardown aborts the current stream fetch (if any). The per-stream
+// AbortController doubles as the supersession token: every async resumption
+// in liveConnect checks `liveState.abort === ctrl` and goes inert when a
+// newer stream (or a teardown) replaced it.
+function liveTeardown() {
+    const ctrl = liveState.abort;
+    liveState.abort = null;
+    if (ctrl) {
+        try {
+            ctrl.abort();
+        } catch (e) {
+            // already settled -- nothing to abort
+        }
+    }
+}
+
+// liveEngageFallback degrades Live to 5s polling: silently (204/429/connect
+// failure) or with the stale banner (terminal, transport drop). The banner
+// rides the SAME markListStale machinery every stale episode uses -- the
+// armed 5s tick shows in its countdown, and the first successful poll clears
+// it via the standard afterSwap recovery. Without a list container (Live
+// persisted on a detail page) the cadence stays 0: there is nothing to poll.
+function liveEngageFallback(banner) {
+    liveTeardown();
+    liveState.status = 'fallback';
+    liveFallbackSecs = document.getElementById('resource-list-content') ? 5 : 0;
+    scheduleRefreshTick();
+    if (banner) {
+        markListStale();
+    }
+}
+
+// liveOpen tears down any current stream and opens a fresh one against
+// `base` (the stream URL sans generation). An empty base means "this page
+// cannot stream": silent polling fallback. Minting the generation HERE --
+// one per open -- is what makes the morph-time echo check sufficient: a
+// frame from any superseded stream can never carry the current value.
+function liveOpen(base) {
+    liveTeardown();
+    liveFallbackSecs = 0;
+    liveState.streamPath = base;
+    if (!base) {
+        liveEngageFallback(false);
+        return;
+    }
+    liveState.status = 'connecting';
+    liveGenSeq += 1;
+    liveState.gen = Date.now().toString(36) + '.' + liveGenSeq;
+    const ctrl = new AbortController();
+    liveState.abort = ctrl;
+    const url = base + (base.indexOf('?') === -1 ? '?' : '&')
+        + 'g=' + encodeURIComponent(liveState.gen);
+    scheduleRefreshTick(); // effective cadence is 0 now -> the poll chain disarms
+    liveConnect(url, ctrl);
+}
+
+// liveConnect is the transport core: a streaming fetch + an SSE line parser.
+// Frames are `event: <name>` + `data: <one JSON line>` + a blank line (the
+// Unit 26 wire contract JSON-escapes newlines, so multi-line data: only
+// exists for spec-defensive completeness). Every await resumption re-checks
+// the supersession token; all exits funnel into the taxonomy above.
+async function liveConnect(url, ctrl) {
+    let res = null;
+    try {
+        res = await fetch(url, { signal: ctrl.signal });
+    } catch (e) {
+        if (liveState.abort !== ctrl) {
+            return; // superseded/torn down -- our own abort
+        }
+        liveEngageFallback(false); // could not connect: silent polling
+        return;
+    }
+    if (liveState.abort !== ctrl) {
+        return;
+    }
+    if (res.status !== 200 || !res.body) {
+        // 204 watch-less / 429 cap / anything unexpected: silent 5s polling.
+        liveEngageFallback(false);
+        return;
+    }
+    liveState.status = 'open';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = '';
+    let eventName = '';
+    let dataText = '';
+    try {
+        for (;;) {
+            const chunk = await reader.read();
+            if (liveState.abort !== ctrl) {
+                return; // torn down while awaiting -- go inert
+            }
+            if (chunk.done) {
+                break;
+            }
+            buffered += decoder.decode(chunk.value, { stream: true });
+            let nl = buffered.indexOf('\n');
+            while (nl !== -1) {
+                const line = buffered.slice(0, nl).replace(/\r$/, '');
+                buffered = buffered.slice(nl + 1);
+                if (line === '') {
+                    const ended = liveHandleFrame(eventName, dataText, ctrl);
+                    eventName = '';
+                    dataText = '';
+                    if (ended || liveState.abort !== ctrl) {
+                        return; // terminal handled (or superseded mid-frame)
+                    }
+                } else if (line.indexOf('event:') === 0) {
+                    eventName = line.slice(6).trim();
+                } else if (line.indexOf('data:') === 0) {
+                    const piece = line.slice(5).replace(/^ /, '');
+                    dataText = dataText === '' ? piece : `${dataText}\n${piece}`;
+                }
+                nl = buffered.indexOf('\n');
+            }
+        }
+    } catch (e) {
+        if (liveState.abort !== ctrl) {
+            return; // our own abort surfaced as a read error
+        }
+        liveEngageFallback(true); // transport drop mid-stream: banner + polling
+        return;
+    }
+    if (liveState.abort !== ctrl) {
+        return;
+    }
+    // The server closed without a terminal frame (its graceful paths always
+    // send one): treat it like a terminal -- banner + 5s polling.
+    liveEngageFallback(true);
+}
+
+// liveHandleFrame dispatches one parsed SSE frame. Returns true when the
+// stream must stop reading (a terminal was handled). THE morph-time gates
+// live here: the generation echo and the in-flight `_table` check both run at
+// dispatch -- which IS morph time, synchronously before htmx.swap -- so a
+// stale or racing push is dropped whole, never queued.
+function liveHandleFrame(name, text, ctrl) {
+    if (liveState.abort !== ctrl || text === '') {
+        return false;
+    }
+    let payload = null;
+    try {
+        payload = JSON.parse(text);
+    } catch (e) {
+        return false; // malformed frame -> skipped (the next push is a full snapshot)
+    }
+    if (!payload || typeof payload !== 'object') {
+        return false;
+    }
+    if (name === 'ro-terminal') {
+        // idle / auth / watch-failed / shutdown: close WITHOUT reconnecting.
+        liveEngageFallback(true);
+        return true;
+    }
+    if (name !== 'ro-table') {
+        return false;
+    }
+    if (String(payload.g) !== liveState.gen) {
+        return false; // STALE GENERATION -> discarded at morph time
+    }
+    pruneSettledListRequests(userListRequestsInFlight);
+    pruneSettledListRequests(containerListRequestsInFlight);
+    if (userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0) {
+        return false; // a _table request is in flight -> the push is discarded
+    }
+    liveMorph(String(payload.html));
+    return false;
+}
+
+// liveMorph swaps one pushed fragment into the list container through the
+// htmx swap pipeline with the 'morph' style: htmx resolves the container's
+// hx-ext="ro-morph" extension, whose handleSwap runs the EXACT tick path
+// (captureRowModel -> virtualizePrepareSwap -> Idiomorph with the explicit
+// config), then htmx dispatches htmx:afterSwap on the container -- the
+// standard post-swap pipeline (clearListStale, reapplyRowState,
+// applyLiveNameFilter, virtualizeAfterSwap) runs through the existing
+// listener. eventInfo carries target (so isListRefreshEvent matches; htmx
+// overwrites detail.elt with the dispatch element, which is the container
+// too) and the roLivePush marker (so the reopen hook skips pushes).
+function liveMorph(html) {
+    const content = document.getElementById('resource-list-content');
+    if (!content || typeof htmx === 'undefined' || typeof htmx.swap !== 'function') {
+        return;
+    }
+    htmx.swap(content, html, { swapStyle: 'morph' }, {
+        contextElement: content,
+        eventInfo: { target: content, roLivePush: true },
+    });
+}
+
+// liveOnListSwap is the param-change reopen (called from the container
+// afterSwap pipeline): while a stream rides, ANY request swap of the
+// container is a query/cookie change (`f`/sort via the URL, column
+// visibility via the prefs cookie), so the stream reopens against the new
+// state under a fresh generation. The new query is taken from the REQUEST
+// path (byte-exact, raw f= commas included) rather than location, which may
+// not have received the canonical push yet at afterSwap time. In FALLBACK
+// (terminal/429/204) nothing reopens -- polling swaps land here too, and the
+// taxonomy pins the fallback sticky.
+function liveOnListSwap(event) {
+    const detail = event && event.detail;
+    if (detail && detail.roLivePush) {
+        return; // a push is not a param change
+    }
+    if (liveState.status !== 'open' && liveState.status !== 'connecting') {
+        return;
+    }
+    let base = liveStreamBase();
+    const pathInfo = detail && detail.pathInfo;
+    const requestPath = pathInfo && (pathInfo.finalRequestPath || pathInfo.requestPath);
+    if (requestPath && requestPath.indexOf('/_table') !== -1) {
+        base = requestPath.replace('/_table', '/_stream');
+    }
+    liveOpen(base);
+}
+
+// liveApply is the init-time (and dropdown-pick) reconciliation: open, keep,
+// degrade, or tear down the stream per the persisted mode and THIS page's
+// capability. Idempotent across the htmx:load re-inits every swap fires --
+// with an unchanged page/params identity the standing state is respected
+// (a riding stream keeps riding; a fallback stays sticky; a hidden-close
+// waits for the visibility handler). `force` (the explicit dropdown pick)
+// always reopens: a deliberate re-pick of Live is the sanctioned way to
+// re-attempt after a fallback without leaving the page.
+function liveApply(force) {
+    if (refreshMode() !== 'Live') {
+        if (liveState.status !== 'idle') {
+            liveTeardown();
+            liveState.status = 'idle';
+            liveState.streamPath = '';
+            liveFallbackSecs = 0;
+        }
+        return;
+    }
+    const base = liveSupported() ? liveStreamBase() : '';
+    if (!force && base === liveState.streamPath && liveState.status !== 'idle') {
+        return; // same page + params: the standing state holds
+    }
+    liveOpen(base);
+}
+
+// Visibility close/reopen (D19): hiding the tab closes a riding stream (no
+// background streaming, matching the polling pause); returning reopens ONLY
+// after such a hidden-close. A terminal/429/204 fallback ('fallback') and
+// user-selected polling ('idle') never reopen here -- the catch-up poll on
+// the shared visibilitychange handler above covers those.
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        if (liveState.status === 'open' || liveState.status === 'connecting') {
+            liveTeardown();
+            liveState.status = 'hidden';
+        }
+        return;
+    }
+    if (liveState.status === 'hidden' && refreshMode() === 'Live') {
+        liveOpen(liveSupported() ? liveStreamBase() : '');
     }
 });
 
@@ -4211,6 +4600,10 @@ function runInitStep(step) {
 function runInit() {
     [
         syncRefreshUI,
+        // Live stream reconciliation (Unit 27/D19), BEFORE applyRefresh so
+        // the poll chain arms against fresh live state: a riding stream
+        // disarms it (effective 0), a fallback sets the 5s cadence.
+        liveApply,
         applyRefresh,
         buildYamlFolds,
         collapseSectionsFromHash,

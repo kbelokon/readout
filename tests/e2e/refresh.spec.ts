@@ -167,13 +167,15 @@ test('the interval choice (the new 10s option) survives reload via the prefs coo
   page,
 }) => {
   await page.goto(PODS);
-  // D18: 10s replaced 15s -- the dropdown offers exactly Off/5/10/30/60.
+  // D18: 10s replaced 15s -- the dropdown offers exactly Off/5/10/30/60, plus
+  // the Live stream mode (Unit 27/D19).
   await expect(page.locator('.refresh-menu .refresh-option')).toHaveText([
     'Off',
     'Every 5s',
     'Every 10s',
     'Every 30s',
     'Every 60s',
+    'Live',
   ]);
   await expect(page.locator('.refresh-option[data-interval="15"]')).toHaveCount(0);
 

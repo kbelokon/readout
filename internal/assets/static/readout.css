@@ -2009,6 +2009,16 @@
         color: var(--accent-text);
         font-weight: 600;
     }
+    /* a disabled option (Live on multi-type/multi-cluster pages, Unit 27/D19)
+       reads as unavailable: faded, no hover wash, the title explains why. */
+    .refresh-option:disabled,
+    .refresh-option:disabled:hover,
+    .refresh-option:disabled:focus {
+        background: transparent;
+        color: var(--text-muted);
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
 
     /* namespace filter input inside the panel: matches the topbar search chip. */
     .ctx-search { padding: 3px 3px 6px; }

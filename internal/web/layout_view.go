@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
@@ -75,10 +76,17 @@ type navbarView struct {
 
 	// RefreshMode is the persisted auto-refresh mode from the ro_prefs cookie
 	// (D9): "" (no preference) / "Off" / an interval in seconds as a string /
-	// the future "Live". The topbar renders the refresh label + active option
+	// "Live" (Unit 27). The topbar renders the refresh label + active option
 	// from it at SSR so the persisted choice paints without the JS sync flash;
 	// readout.js re-derives the same state from the same cookie on init.
 	RefreshMode string
+
+	// LiveDisabled disables the dropdown's Live option (Unit 27/D19 scope
+	// cut): set on multi-type and multi-cluster LIST pages, the scope the
+	// `_stream` endpoint 404s. Mirrors resourceStream's gate exactly
+	// (isSingleListType + the all/CSV cluster check) so the rendered option is
+	// the single client-consumable truth about Live availability.
+	LiveDisabled bool
 }
 
 // sidebarView is the resolved sidebar: the grouped resource-type links (each
@@ -414,6 +422,7 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 		ToggleNextURL:   r.URL.RequestURI(),
 		ThemeExplicit:   explicit,
 		RefreshMode:     prefsFromRequest(r).Refresh,
+		LiveDisabled:    liveOptionDisabled(r, cluster),
 	}
 	if cluster != "" && cluster != kube.AllClusters {
 		if clusterObj, ok := s.manager.Get(cluster); ok {
@@ -432,6 +441,22 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 		}
 	}
 	return v
+}
+
+// liveOptionDisabled decides the topbar Live option's disabled state (Unit
+// 27/D19): true exactly on LIST pages outside the `_stream` scope cut --
+// multi-type plurals ("all"/"_all"/CSV) or multi-cluster scope ("_all"/CSV
+// cluster). Detail pages ({name} bound) and non-resource pages keep the
+// option enabled; it is inert there, like the interval options (no
+// #resource-list-content to refresh). The predicate restates resourceStream's
+// 404 gate so the server renders the availability the endpoint will enforce.
+func liveOptionDisabled(r *http.Request, cluster string) bool {
+	plural := r.PathValue("plural")
+	if plural == "" || r.PathValue("name") != "" {
+		return false // not a list page: enabled-but-inert
+	}
+	multiCluster := cluster == kube.AllClusters || strings.Contains(cluster, ",")
+	return !isSingleListType(plural) || multiCluster
 }
 
 func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, clients requestKubeClients) sidebarView {
