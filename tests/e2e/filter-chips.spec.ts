@@ -189,6 +189,39 @@ test('restarts>0 ⏎ commits an operator chip', async ({ page }) => {
   await expect(visibleNames(page)).toHaveText(['crashed']);
 });
 
+test('a second chip ANDs with the first; ⌫ pops only the last chip', async ({ page }) => {
+  await addPod('crashed', ['crashed', '0/1', 'CrashLoopBackOff', '3', '2m']);
+  await addPod('restarted', ['restarted', '1/1', 'Running', '2', '5m']);
+  await page.goto(PODS);
+  await expect(visibleNames(page)).toHaveText(['nginx', 'my-app', 'crashed', 'restarted']);
+
+  await filterInput(page).click();
+  await filterInput(page).pressSequentially('status:Running');
+  await commitDraft(page);
+  await expect(visibleNames(page)).toHaveText(['nginx', 'my-app', 'restarted']);
+
+  // The second chip AND-combines (SPEC §8.1 / §9): only the row matching BOTH
+  // survives, and the canonical URL carries both repeatable f= params.
+  await filterInput(page).click();
+  await filterInput(page).pressSequentially('restarts>0');
+  await commitDraft(page);
+  await expect(editorChips(page)).toHaveCount(2);
+  await expect(visibleNames(page)).toHaveText(['restarted']);
+  await expect(page).toHaveURL(/f=status%3ARunning/);
+  await expect(page).toHaveURL(/f=restarts%3E0/);
+
+  // ⌫ pops only the LAST chip: the first keeps filtering.
+  await filterInput(page).click();
+  const swapped = page.waitForResponse(isUserTableResponse);
+  await filterInput(page).press('Backspace');
+  await swapped;
+  await expect(editorChips(page)).toHaveCount(1);
+  await expect(editorChips(page).first()).toContainText('status');
+  await expect(visibleNames(page)).toHaveText(['nginx', 'my-app', 'restarted']);
+  await expect(page).toHaveURL(/f=status%3ARunning/);
+  await expect(page).not.toHaveURL(/f=restarts%3E0/);
+});
+
 test('⌫ on empty input pops the chip and restores the rows', async ({ page }) => {
   await addPod('crashed', ['crashed', '0/1', 'CrashLoopBackOff', '3', '2m']);
   await page.goto(`${PODS}?f=status%3ARunning`);

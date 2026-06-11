@@ -159,6 +159,21 @@ test('right-click on a pod row opens the 5-action menu bound to that row; esc cl
   await expect(page.locator('.ro-topbar')).toBeVisible();
 });
 
+test('name click opens the detail page (the open gesture, not the toggle)', async ({ page }) => {
+  await page.goto(PODS);
+
+  // The OPEN gesture (SPEC §5): the sticky name cell's anchor lands on the
+  // object detail. (Its distinctness from the row-click TOGGLE is carried by
+  // the selection tests: their row clicks hit a plain td and select without
+  // navigating; this one navigates.)
+  await page.locator('tr[data-key="e2e/default/nginx"] td.cell-name a').click();
+  await page.waitForURL(`**${POD_BASE}`);
+  await expect(page.locator('.ro-topbar')).toBeVisible();
+  await expect(page.locator('.ro-detail-title .pn-head')).toHaveText('nginx');
+  // A boosted navigation, and the detail page mounts no bulk bar.
+  await expect(page.locator('#ro-bulkbar')).toHaveCount(0);
+});
+
 test('right-click on a service row shows 4 actions -- View logs is pods-only', async ({ page }) => {
   await page.goto(SERVICES);
   await page.locator('tr[data-key="e2e/default/frontend"]').click({ button: 'right' });
