@@ -30,7 +30,7 @@ test('+N keys expands the data chips in-cell and collapses back', async ({ page 
   );
   const chips = strip.locator('.ro-chip:not(.more)');
   const extras = strip.locator('.ro-chip.xtra');
-  const more = strip.locator('button.ro-chip.more[data-more]');
+  const more = strip.locator('button.ro-chip.more[data-ro-more]');
 
   // Collapsed render: all 5 key chips are in the DOM, the 2 past the
   // threshold are hidden, and the button face reads "+2 keys".

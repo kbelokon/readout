@@ -567,14 +567,14 @@ func resourceTables(d ListData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<a href=\"#\" class=\"ro-iconbtn toggle-tools\" title=\"Columns &amp; filters\" data-target=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<a href=\"#\" class=\"ro-iconbtn toggle-tools\" data-ro-action=\"toggle-tools\" title=\"Columns &amp; filters\" data-target=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var6 string
 				templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.ResolveAttributeValue(toolsTableID(i))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/resource_table.templ`, Line: 456, Col: 108}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/resource_table.templ`, Line: 456, Col: 138}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var6)
 				if templ_7745c5c3_Err != nil {
@@ -5396,7 +5396,7 @@ func keysChips(keys []KeyChip, windowed bool) templ.Component {
 }
 
 // moreChip is the in-cell overflow toggle (SPEC §4.9/§4.10): a real <button>
-// (keyboard-reachable) carrying `data-more` for the delegated readout.js
+// (keyboard-reachable) carrying `data-ro-more` for the delegated readout.js
 // toggle -- the strict CSP forbids inline handlers. Collapsed it shows
 // "+N<suffix>"; once the strip carries `.expanded` the CSS hides `.more-n`
 // and reveals `.more-less` ("less"). aria-expanded mirrors the state (the JS
@@ -5422,14 +5422,14 @@ func moreChip(n int, suffix string) templ.Component {
 			templ_7745c5c3_Var302 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 433, "<button type=\"button\" class=\"ro-chip more\" data-more aria-expanded=\"false\"><span class=\"more-n\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 433, "<button type=\"button\" class=\"ro-chip more\" data-ro-more aria-expanded=\"false\"><span class=\"more-n\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var303 string
 		templ_7745c5c3_Var303, templ_7745c5c3_Err = templ.JoinStringErrs("+" + itoa(n) + suffix)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/resource_table.templ`, Line: 1148, Col: 121}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/resource_table.templ`, Line: 1148, Col: 124}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var303))
 		if templ_7745c5c3_Err != nil {
@@ -5443,7 +5443,7 @@ func moreChip(n int, suffix string) templ.Component {
 	})
 }
 
-// moreChipStatic is the WINDOWED overflow chip (Unit 24/D20): no data-more
+// moreChipStatic is the WINDOWED overflow chip (Unit 24/D20): no data-ro-more
 // hook (the delegated expand handler can never match it -- expansion is
 // disabled by construction, not by suppression), no button semantics; the
 // full chip list rides the title instead.

@@ -198,7 +198,7 @@ func TestPaletteRendersGroupedDataDriven(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Clusters list: the cluster rows (the ro-cell-name cells), the search-select
-// checkboxes with data-toggle-button, and the disabled search button they gate.
+// checkboxes with data-ro-toggle-button, and the disabled search button they gate.
 // ---------------------------------------------------------------------------
 
 func TestBehaviorClustersPage(t *testing.T) {
@@ -230,9 +230,9 @@ func TestBehaviorClustersPage(t *testing.T) {
 	p.wantAbsent(".menu-label")
 	p.wantAbsent(".ro-sidebar")
 
-	// Search-select contract: a per-row checkbox carries data-toggle-button
+	// Search-select contract: a per-row checkbox carries data-ro-toggle-button
 	// pointing at the (initially disabled, until >=1 selected) primary search CTA.
-	p.wantAttr(`input.ro-check[type="checkbox"][name="cluster"]`, "data-toggle-button", "search-clusters-button")
+	p.wantAttr(`input.ro-check[type="checkbox"][name="cluster"]`, "data-ro-toggle-button", "search-clusters-button")
 	p.wantHas("button.ro-btn#search-clusters-button[disabled]")
 }
 
@@ -255,11 +255,11 @@ func TestBehaviorClusterOverview(t *testing.T) {
 
 	// Namespace rows ride the BORROWED clusters `.ro-select-table` treatment (D11):
 	// the name cell is the canonical `.cl-name` mono link. Cell VALUES + the
-	// search-select data-toggle-button.
+	// search-select data-ro-toggle-button.
 	if got := p.texts("td.cl-name"); strings.Join(got, "|") != "default|kube-system|my-app" {
 		t.Fatalf("namespace rows = %v, want [default kube-system my-app]", got)
 	}
-	p.wantAttr(`input.ro-check[type="checkbox"][name="namespace"]`, "data-toggle-button", "search-namespaces-button")
+	p.wantAttr(`input.ro-check[type="checkbox"][name="namespace"]`, "data-ro-toggle-button", "search-namespaces-button")
 	p.wantHas("button.ro-btn#search-namespaces-button[disabled]")
 	// Clicking a namespace drops into its pods (the redesign contract).
 	p.wantAttr("td.cl-name a", "href", "/clusters/test/namespaces/default/pods")

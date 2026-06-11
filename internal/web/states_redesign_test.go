@@ -580,14 +580,14 @@ func TestStatesStaleMarkupHooks(t *testing.T) {
 func TestStatesStaleHandlerInReadoutJS(t *testing.T) {
 	js := readoutJS(t)
 	for _, needle := range []string{
-		"htmx:responseError",    // a non-2xx refresh reply -> stale
-		"htmx:sendError",        // a transport failure on refresh -> stale
-		"htmx:afterSwap",        // a recovered refresh clears stale
-		"ro-stale",              // the dim class on #resource-list-content
-		"ro-stale-banner",       // the hidden banner the handler reveals
-		"ro-stale-retry",        // the read-only retry control
-		"resource-list-content", // the dim target / refresh element id
-		"ro:refresh",            // the read-only GET the retry re-fires
+		"htmx:responseError",     // a non-2xx refresh reply -> stale
+		"htmx:sendError",         // a transport failure on refresh -> stale
+		"htmx:afterSwap",         // a recovered refresh clears stale
+		"ro-stale",               // the dim class on #resource-list-content
+		"ro-stale-banner",        // the hidden banner the handler reveals
+		"data-ro-action='retry'", // the read-only retry control hook
+		"resource-list-content",  // the dim target / refresh element id
+		"ro:refresh",             // the read-only GET the retry re-fires
 	} {
 		if !strings.Contains(js, needle) {
 			t.Fatalf("readout.js stale path missing %q", needle)

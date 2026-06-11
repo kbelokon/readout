@@ -453,7 +453,7 @@ templ resourceTables(d ListData) {
 						@colsPopover(*table.Cols)
 					</span>
 				} else {
-					<a href="#" class="ro-iconbtn toggle-tools" title="Columns &amp; filters" data-target={ toolsTableID(i) }><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
+					<a href="#" class="ro-iconbtn toggle-tools" data-ro-action="toggle-tools" title="Columns &amp; filters" data-target={ toolsTableID(i) }><span class="icon">@templ.Raw(table.ToolsIcon)</span></a>
 				}
 				<a href={ templ.SafeURL(table.SearchHref) } class="ro-iconbtn" title="Search this type"><span class="icon">@templ.Raw(table.SearchIcon)</span></a>
 			</div>
@@ -1139,16 +1139,16 @@ templ keysChips(keys []KeyChip, windowed bool) {
 }
 
 // moreChip is the in-cell overflow toggle (SPEC §4.9/§4.10): a real <button>
-// (keyboard-reachable) carrying `data-more` for the delegated readout.js
+// (keyboard-reachable) carrying `data-ro-more` for the delegated readout.js
 // toggle -- the strict CSP forbids inline handlers. Collapsed it shows
 // "+N<suffix>"; once the strip carries `.expanded` the CSS hides `.more-n`
 // and reveals `.more-less` ("less"). aria-expanded mirrors the state (the JS
 // flips it with the class).
 templ moreChip(n int, suffix string) {
-	<button type="button" class="ro-chip more" data-more aria-expanded="false"><span class="more-n">{ "+" + itoa(n) + suffix }</span><span class="more-less">less</span></button>
+	<button type="button" class="ro-chip more" data-ro-more aria-expanded="false"><span class="more-n">{ "+" + itoa(n) + suffix }</span><span class="more-less">less</span></button>
 }
 
-// moreChipStatic is the WINDOWED overflow chip (Unit 24/D20): no data-more
+// moreChipStatic is the WINDOWED overflow chip (Unit 24/D20): no data-ro-more
 // hook (the delegated expand handler can never match it -- expansion is
 // disabled by construction, not by suppression), no button semantics; the
 // full chip list rides the title instead.

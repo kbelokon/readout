@@ -353,7 +353,7 @@ func TestKeysCellChipsAndSecretSafety(t *testing.T) {
 	if normSpace(first.Find(".cv").Text()) != "MONGODB_HOST" || normSpace(first.Find(".ck").Text()) != "34 B" {
 		t.Fatalf("first key chip = %q, want name MONGODB_HOST (.cv) · size 34 B (.ck)", normSpace(first.Text()))
 	}
-	more := td.Find("button.ro-chip.more[data-more]")
+	more := td.Find("button.ro-chip.more[data-ro-more]")
 	if more.Length() != 1 || normSpace(more.Find(".more-n").Text()) != "+3 keys" {
 		t.Fatalf("keys overflow button = %q, want '+3 keys'", normSpace(more.Text()))
 	}
@@ -500,7 +500,7 @@ func TestMsgCellWrapsAndEscapes(t *testing.T) {
 // TestChipsCellOverflowInTable pins SPEC §4.9 through the REAL namespaces
 // pipeline (decorateNamespaceColumns -> buildListView -> templ): a 5-label row
 // renders 2 visible chips, 3 extras carrying the hidden .xtra class, and the
-// +N button (a real keyboard-reachable <button> with data-more for the
+// +N button (a real keyboard-reachable <button> with data-ro-more for the
 // delegated CSP-safe toggle) whose face flips +3 <-> "less" via the
 // .more-n/.more-less pair. A 2-label row renders NO overflow machinery.
 func TestChipsCellOverflowInTable(t *testing.T) {
@@ -556,9 +556,9 @@ func TestChipsCellOverflowInTable(t *testing.T) {
 			t.Errorf("unexpected overflow chip %q (the first 2 sorted keys must stay visible)", key)
 		}
 	})
-	more := strip.Find("button.ro-chip.more[data-more]")
+	more := strip.Find("button.ro-chip.more[data-ro-more]")
 	if more.Length() != 1 {
-		t.Fatalf("the +N expand button is missing (must be a real <button> with data-more)")
+		t.Fatalf("the +N expand button is missing (must be a real <button> with data-ro-more)")
 	}
 	if got, _ := more.Attr("type"); got != "button" {
 		t.Fatalf("expand button type = %q, want button (never submits)", got)

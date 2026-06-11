@@ -16,7 +16,7 @@ package templates
 // behavior tests assert them.
 //
 // The behavior-fact net pins the namespace rows, the search-select hook
-// (data-toggle-button="search-namespaces-button"), the per-bucket age cell
+// (data-ro-toggle-button="search-namespaces-button"), the per-bucket age cell
 // class (the row's LAST <td>), and the cluster-scoped kind links.
 
 // ClusterData is the resolved cluster-overview input. ClusterChips are the
@@ -73,7 +73,7 @@ templ Cluster(d ClusterData) {
 			<div class="ro-meta-line"><span class="ro-meta-key">API URL</span> { d.URL }</div></div>
 		<div class="ro-section"><div class="ro-section-label">Namespaces</div><form action="/search" method="get"><input type="hidden" name="cluster" value={ d.Name }><div class="ro-table-wrap"><table class="ro-table ro-select-table"><thead><tr><th></th><th>Name</th><th>Labels</th><th>Created</th></tr></thead><tbody>
 			for _, ns := range d.Namespaces {
-				<tr><td><input class="ro-check" type="checkbox" name="namespace" value={ ns.Name } data-toggle-button="search-namespaces-button"></td><td class="cl-name"><a href={ templ.SafeURL(ns.PodsHref) }>{ ns.Name }</a></td><td>
+				<tr><td><input class="ro-check" type="checkbox" name="namespace" value={ ns.Name } data-ro-toggle-button="search-namespaces-button"></td><td class="cl-name"><a href={ templ.SafeURL(ns.PodsHref) }>{ ns.Name }</a></td><td>
 					if len(ns.Chips) > 0 {
 						<div class="ro-chips">
 							for _, chip := range ns.Chips {

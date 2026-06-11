@@ -32,7 +32,7 @@ import templruntime "github.com/a-h/templ/runtime"
 // checkboxes round-trip the scope), and every retry (the banner "Retry failed" +
 // each `.ro-scope-chip.err` `.retry`) is a read-only GET that re-runs the SAME
 // search scoped to the failed cluster(s) -- never a write path. The "Refine ·
-// ⌘K" button is type="button": readout.js (delegated [data-search-refine]
+// ⌘K" button is type="button": readout.js (delegated [data-ro-search-refine]
 // listener) opens the ⌘K palette prefilled with the query -- no inline handler,
 // no form side effects. Every value is resolved in the package-web assembly
 // layer (buildSearchView -> toSearchData); the renderer touches no request and

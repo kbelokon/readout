@@ -473,14 +473,14 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 		"PREFS_COOKIE_MAX_AGE = 31536e3",        // one-year Max-Age (esbuild emits the shortest numeric form)
 		"window.location.protocol === 'https:'", // Secure on https only
 		"'; Secure'",
-		"roPrefsSetSort",                      // sort-click write
-		"roPrefsSetHiddenColumns",             // Unit 9's column-toggle surface
-		"roPrefsSetRefresh",                   // interval pick (+ Unit 27 Live)
-		"roPrefsSetNamespace",                 // namespace switch
-		"closest('thead th')",                 // sort writes ONLY from header gestures
-		"#namespace-dropdown .namespace-item", // the namespace-switch surface
-		"localStorage.getItem(REFRESH_KEY)",   // the read-once roRefresh migration
-		"refreshMode",                         // cookie-canonical mode reader
+		"roPrefsSetSort",          // sort-click write
+		"roPrefsSetHiddenColumns", // Unit 9's column-toggle surface
+		"roPrefsSetRefresh",       // interval pick (+ Unit 27 Live)
+		"roPrefsSetNamespace",     // namespace switch
+		"closest('thead th')",     // sort writes ONLY from header gestures
+		"#namespace-dropdown [data-ro-action='pick-namespace']", // the namespace-switch surface
+		"localStorage.getItem(REFRESH_KEY)",                     // the read-once roRefresh migration
+		"refreshMode",                                           // cookie-canonical mode reader
 		// readPrefs drops wrongly-typed INNER fields instead of perpetuating
 		// them: Go's decodePrefs rejects the whole payload on one mistyped
 		// field (json.Unmarshal is all-or-nothing), so a passthrough JS reader

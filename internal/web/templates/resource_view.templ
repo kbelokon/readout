@@ -368,7 +368,7 @@ templ detailBody(d DetailData) {
 					</div>
 			}
 			for i, long := range d.AnnotationsLong {
-				<div class="anno-long"><button type="button" class="ro-chip anno-toggle" data-annolong={ itoa(i) } aria-expanded="false"><span class="ck">{ long.Key }</span><span class="cs">·</span><span class="cv">{ long.Size }</span><span class="anno-chev">@templ.Raw(long.ChevIcon)</span></button><pre class="anno-pre" hidden>{ long.Value }</pre></div>
+				<div class="anno-long"><button type="button" class="ro-chip anno-toggle" data-ro-annolong={ itoa(i) } aria-expanded="false"><span class="ck">{ long.Key }</span><span class="cs">·</span><span class="cv">{ long.Size }</span><span class="anno-chev">@templ.Raw(long.ChevIcon)</span></button><pre class="anno-pre" hidden>{ long.Value }</pre></div>
 			}
 			</div>
 	}

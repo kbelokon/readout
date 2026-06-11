@@ -175,12 +175,12 @@ templ layoutBody(d LayoutData, body templ.Component) {
 // Clusters .topnav link; the namespace context dropdown (.ctx-dd, only with a
 // cluster in scope) keeping the readout.js hooks (#namespace-dropdown /
 // #namespace-searchbox / .namespace-item / .context-name); a flexible spacer; the
-// read-only .ro-search box that OPENS ⌘K on click (data-palette-open, consumed by
+// read-only .ro-search box that OPENS ⌘K on click (data-ro-palette-open, consumed by
 // Unit 4) -- it is a plain box, NOT a submitting form; the live-refresh control
 // (.tb-btn.refresh-trigger with the .ro-livedot + #refresh-label; the dot is
 // ghost-grey and goes brand+pulse ONLY under #refresh-dropdown.refresh-on, the
 // one live-state owner -- colour law §1.1) keeping the existing
-// #refresh-dropdown / .refresh-option[data-interval] interval hooks; and
+// #refresh-dropdown / .refresh-option[data-ro-interval] interval hooks; and
 // the theme toggle, which stays a server POST /preferences that opts OUT of
 // hx-boost (D5) -- NOT a client-JS toggle (#btn-theme-toggle + .theme-icon-*).
 //
@@ -193,13 +193,13 @@ templ layoutBody(d LayoutData, body templ.Component) {
 templ topbarC(n Navbar) {
 	<header class="ro-topbar" aria-label="main navigation">
 		if n.ShowSidebar {
-			<button type="button" class="menu-toggle" aria-label="Toggle navigation menu" aria-controls="aside-menu"><span class="ico sm" aria-hidden="true">@iconC("sliders")</span></button>
+			<button type="button" class="menu-toggle" data-ro-action="toggle-sidebar" aria-label="Toggle navigation menu" aria-controls="aside-menu"><span class="ico sm" aria-hidden="true">@iconC("sliders")</span></button>
 		}
 		<a class="brand-item" href="/clusters" aria-label="readout home"><span class="brand-chip" aria-hidden="true"><span class="brand-logo"></span></span><span class="brand-name">readout</span></a><nav class="topnav"><a class="is-active" href="/clusters">Clusters</a></nav>
 		if n.ShowContext {
 			<div id="namespace-dropdown"><button type="button" class="ctx-dd context-trigger" aria-haspopup="true" aria-label="Switch namespace"><span class={ ctxDotClass(n.ContextName) } aria-hidden="true"></span><span class="context-name">{ n.ContextName }</span><span class="ctx-caret ico sm" aria-hidden="true">@iconC("chevron-down")</span></button><div class="ctx-menu"><div class="ctx-search"><input id="namespace-searchbox" type="text" placeholder="type to filter" autocomplete="off"></div>
 				for _, ns := range n.NamespaceLinks {
-					<a class="namespace-item" href={ templ.SafeURL(ns.Href) }>{ ns.Text }</a>
+					<a class="namespace-item" data-ro-action="pick-namespace" href={ templ.SafeURL(ns.Href) }>{ ns.Text }</a>
 				}
 				</div></div>
 		}

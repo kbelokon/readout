@@ -93,11 +93,11 @@ export const bindings: Binding[] = [
     // misc-ui's click bindings keep their relative monolith order: copy is
     // registered before the section-fold binding (copy stop:true short-circuits
     // a copy click), so a copy click never folds its section. misc-ui now also
-    // carries the trailing presentation toggles ([data-more] / [data-annolong] /
-    // .toggle-tools) and the v1 form glue (the data-toggle-button change + the
-    // tools-form submit) lifted out of the dismantled legacy.js.
+    // carries the trailing presentation toggles ([data-ro-more] / [data-ro-annolong] /
+    // [data-ro-action="toggle-tools"]) and the v1 form glue (the data-ro-toggle-button
+    // change + the tools-form submit) lifted out of the dismantled legacy.js.
     ...miscBindings,
-    // refresh-domain tails LAST (Unit 13): .ro-stale-retry + .refresh-option were
+    // refresh-domain tails LAST: the retry + set-refresh hooks were
     // the monolith big click listener's own trailing branches, so registering
     // them after the migrated leaves preserves the C1 order -- every leaf
     // front-ran the monolith, and these ran at its end. Neither co-matches any

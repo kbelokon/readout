@@ -360,9 +360,9 @@ func TestConfigMapListRendersKeyChips(t *testing.T) {
 	if got := normSpace(caDer.Find(".ck").Text()); got != "64 B" {
 		t.Fatalf("ca.der size = %q, want the DECODED 64 B", got)
 	}
-	// The +N button: a real keyboard-reachable <button> with the data-more
+	// The +N button: a real keyboard-reachable <button> with the data-ro-more
 	// hook, collapsed face "+2 keys", expanded face "less" (CSS swap).
-	more := strip.Find("button.ro-chip.more[data-more]")
+	more := strip.Find("button.ro-chip.more[data-ro-more]")
 	if more.Length() != 1 {
 		t.Fatalf("app-config must render exactly one +N keys button, got %d", more.Length())
 	}
@@ -381,7 +381,7 @@ func TestConfigMapListRendersKeyChips(t *testing.T) {
 	if got := rootCA.Find(".ro-chips .ro-chip").Not(".more").Length(); got != 1 {
 		t.Fatalf("kube-root-ca.crt chips = %d, want 1", got)
 	}
-	if rootCA.Find("[data-more]").Length() != 0 {
+	if rootCA.Find("[data-ro-more]").Length() != 0 {
 		t.Fatalf("a 1-key configmap must not render the +N button")
 	}
 	if got := normSpace(rootCA.Find(".ro-chip .ck").Text()); got != "94 B" {
@@ -457,7 +457,7 @@ func TestSecretListNeverRendersValues(t *testing.T) {
 	if got := parseProd.Find(".ro-chips .ro-chip").Not(".more").Length(); got != 4 {
 		t.Fatalf("parse-prod key chips = %d, want 4", got)
 	}
-	if got := normSpace(parseProd.Find("[data-more] .more-n").Text()); got != "+1 keys" {
+	if got := normSpace(parseProd.Find("[data-ro-more] .more-n").Text()); got != "+1 keys" {
 		t.Fatalf("parse-prod overflow = %q, want +1 keys", got)
 	}
 	// The empty rotation marker renders the muted "—".

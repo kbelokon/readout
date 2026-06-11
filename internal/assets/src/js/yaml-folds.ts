@@ -17,7 +17,7 @@
 // injected controls from a clone before reading the raw text.
 //
 // LEAF per the listener inventory: the two delegated click branches
-// (`.ro-fold-toggle`, `.linenos a`) have no inter-listener dependency. The
+// (`[data-ro-action="toggle-fold"]`, `.linenos a`) have no inter-listener dependency. The
 // fold-toggle branch in the monolith called stopPropagation()+return; the
 // inventory records that stopPropagation is INERT for the sibling document
 // listeners (it only halts bubbling, not dispatch to other document listeners),
@@ -54,9 +54,11 @@ export function yamlCodeText(codeCell: Element): string {
         return codeCell.textContent || ''; // no folds injected -> raw text already clean
     }
     const clone = codeCell.cloneNode(true) as Element;
-    clone.querySelectorAll('[data-ro-action="toggle-fold"], [data-ro-fold-control]').forEach((el) => {
-        el.remove();
-    });
+    clone
+        .querySelectorAll('[data-ro-action="toggle-fold"], [data-ro-fold-control]')
+        .forEach((el) => {
+            el.remove();
+        });
     return clone.textContent || '';
 }
 

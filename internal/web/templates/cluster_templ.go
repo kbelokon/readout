@@ -24,7 +24,7 @@ import templruntime "github.com/a-h/templ/runtime"
 // behavior tests assert them.
 //
 // The behavior-fact net pins the namespace rows, the search-select hook
-// (data-toggle-button="search-namespaces-button"), the per-bucket age cell
+// (data-ro-toggle-button="search-namespaces-button"), the per-bucket age cell
 // class (the row's LAST <td>), and the cluster-scoped kind links.
 
 // ClusterData is the resolved cluster-overview input. ClusterChips are the
@@ -216,14 +216,14 @@ func Cluster(d ClusterData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "\" data-toggle-button=\"search-namespaces-button\"></td><td class=\"cl-name\"><a href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "\" data-ro-toggle-button=\"search-namespaces-button\"></td><td class=\"cl-name\"><a href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var10 templ.SafeURL
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(ns.PodsHref))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/cluster.templ`, Line: 76, Col: 194}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/cluster.templ`, Line: 76, Col: 197}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -236,7 +236,7 @@ func Cluster(d ClusterData) templ.Component {
 			var templ_7745c5c3_Var11 string
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(ns.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/cluster.templ`, Line: 76, Col: 206}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/cluster.templ`, Line: 76, Col: 209}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {

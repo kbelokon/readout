@@ -11,7 +11,7 @@ import templruntime "github.com/a-h/templ/runtime"
 // clusters.templ is the clusters-entry page body (D4/D11/D13): the redesign
 // title row + count, the `.tools-row` filter form, and the
 // `.ro-table.ro-select-table` search-select table with the per-row checkbox
-// (data-toggle-button="search-clusters-button") + the bottom primary `.ro-btn`
+// (data-ro-toggle-button="search-clusters-button") + the bottom primary `.ro-btn`
 // "Search in N selected" (disabled until >=1 checkbox). The page has NO sidebar
 // and NO namespace context -- the layout omits them because the clusters route
 // carries no cluster scope (handler-side: buildSidebarView/buildNavbarView gate
@@ -317,14 +317,14 @@ func clustersBody(d ClustersData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "\" data-toggle-button=\"search-clusters-button\"></td><td class=\"cl-name\"><a href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "\" data-ro-toggle-button=\"search-clusters-button\"></td><td class=\"cl-name\"><a href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var12 templ.SafeURL
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(row.Href))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/clusters.templ`, Line: 98, Col: 188}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/clusters.templ`, Line: 98, Col: 191}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -337,7 +337,7 @@ func clustersBody(d ClustersData) templ.Component {
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(row.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/clusters.templ`, Line: 98, Col: 201}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/clusters.templ`, Line: 98, Col: 204}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -350,7 +350,7 @@ func clustersBody(d ClustersData) templ.Component {
 			var templ_7745c5c3_Var14 string
 			templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(row.URL)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/clusters.templ`, Line: 98, Col: 245}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/clusters.templ`, Line: 98, Col: 248}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 			if templ_7745c5c3_Err != nil {

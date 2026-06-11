@@ -43,12 +43,12 @@ export function collapseSectionsFromHash(): void {
 // --- dispatcher bindings ---------------------------------------------------
 
 export const miscBindings: Binding[] = [
-    // Mobile hamburger: a delegated click on `.menu-toggle` reveals/hides the
+    // Mobile hamburger: a delegated click on [data-ro-action="toggle-sidebar"] reveals/hides the
     // sidebar by toggling `.is-active` on `.ro-sidebar`. No-op when no sidebar is
     // present (e.g. the Clusters entry page). Kept its early-return (stop:true).
     {
         event: 'click',
-        selector: '.menu-toggle',
+        selector: '[data-ro-action="toggle-sidebar"]',
         stop: true,
         handler: (event) => {
             event.preventDefault();
@@ -140,7 +140,7 @@ export const miscBindings: Binding[] = [
     // Kept its early-return (stop:true).
     {
         event: 'click',
-        selector: '#namespace-dropdown .namespace-item',
+        selector: '#namespace-dropdown [data-ro-action="pick-namespace"]',
         stop: true,
         handler: (_event, matched) => {
             const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(
@@ -176,7 +176,7 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // #namespace-searchbox input: filter the .namespace-item links by
+    // #namespace-searchbox input: filter the [data-ro-action="pick-namespace"] links by
     // case-insensitive substring. Terminal branch in the monolith input listener
     // (no branch followed it), reproduced as stop:true.
     {
@@ -185,7 +185,7 @@ export const miscBindings: Binding[] = [
         stop: true,
         handler: (_event, matched) => {
             const filterText = (matched as HTMLInputElement).value.toLowerCase();
-            document.querySelectorAll('.namespace-item').forEach((element) => {
+            document.querySelectorAll('[data-ro-action="pick-namespace"]').forEach((element) => {
                 const text = ((element as HTMLElement).innerText || '').toLowerCase();
                 if (text.indexOf(filterText) === -1) {
                     element.classList.add('is-hidden');
@@ -206,7 +206,7 @@ export const miscBindings: Binding[] = [
             if ((event as KeyboardEvent).key !== 'Enter') {
                 return true;
             }
-            const elements = document.querySelectorAll('.namespace-item');
+            const elements = document.querySelectorAll('[data-ro-action="pick-namespace"]');
             for (let i = 0; i < elements.length; i++) {
                 if (!elements[i].classList.contains('is-hidden')) {
                     (elements[i] as HTMLElement).click();
@@ -216,7 +216,7 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // In-cell +N overflow (SPEC §4.9/§4.10): the `.ro-chip.more[data-more]` button
+    // In-cell +N overflow (SPEC §4.9/§4.10): the `.ro-chip.more[data-ro-more]` button
     // toggles `.expanded` on its OWN `.ro-chips` strip, revealing the `.xtra` chips
     // in place (the button face flips +N <-> "less" in CSS). Delegated so it
     // survives every morph; aria-expanded mirrors the state. A refresh morph
@@ -225,7 +225,7 @@ export const miscBindings: Binding[] = [
     // listener (C1); kept its early-return (stop:true).
     {
         event: 'click',
-        selector: '[data-more]',
+        selector: '[data-ro-more]',
         stop: true,
         handler: (event, matched) => {
             event.preventDefault();
@@ -246,7 +246,7 @@ export const miscBindings: Binding[] = [
     // early-return (stop:true).
     {
         event: 'click',
-        selector: '[data-annolong]',
+        selector: '[data-ro-annolong]',
         stop: true,
         handler: (event, matched) => {
             event.preventDefault();
@@ -263,11 +263,11 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // .toggle-tools: toggle `is-active` on the control itself and on the element
+    // data-ro-action="toggle-tools": toggle `is-active` on the control itself and on the element
     // named by its `data-target`. C1 trailing branch; early-return (stop:true).
     {
         event: 'click',
-        selector: '.toggle-tools',
+        selector: '[data-ro-action="toggle-tools"]',
         stop: true,
         handler: (event, matched) => {
             event.preventDefault();
@@ -282,20 +282,20 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // Search-button enable (change): a checkbox carries `data-toggle-button="<id>"`.
+    // Search-button enable (change): a checkbox carries `data-ro-toggle-button="<id>"`.
     // The named button is enabled iff any checkbox sharing that same value is
     // checked, else disabled. Was the lead branch of the monolith change listener;
     // early-return (stop:true).
     {
         event: 'change',
-        selector: 'input[data-toggle-button]',
+        selector: 'input[data-ro-toggle-button]',
         stop: true,
         handler: (_event, matched) => {
-            const buttonId = (matched as HTMLElement).dataset.toggleButton;
+            const buttonId = (matched as HTMLElement).dataset.roToggleButton;
             const button = buttonId ? document.getElementById(buttonId) : null;
             if (button) {
                 const anyChecked =
-                    document.querySelectorAll(`input[data-toggle-button="${buttonId}"]:checked`)
+                    document.querySelectorAll(`input[data-ro-toggle-button="${buttonId}"]:checked`)
                         .length > 0;
                 (button as HTMLButtonElement).disabled = !anyChecked;
             }
