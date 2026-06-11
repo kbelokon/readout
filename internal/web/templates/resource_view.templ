@@ -397,7 +397,7 @@ templ detailBody(d DetailData) {
 			</dl></div>
 	}
 	for _, card := range d.YAMLCards {
-		<div class={ yamlCardClass(card.Collapsed) } data-name={ card.Name }><div class="ro-card-head"><h4 class="title ro-card-title">{ card.Title }</h4><button type="button" class="ro-copy-btn" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="ro-card-content">@templ.Raw(card.Content)</div></div>
+		<div class={ yamlCardClass(card.Collapsed) } data-name={ card.Name }><div class="ro-card-head"><h4 class="title ro-card-title">{ card.Title }</h4><button type="button" class="ro-copy-btn" data-ro-action="copy" title="Copy this section as YAML" aria-label={ "Copy " + card.Title + " as YAML" }><span class="icon">@templ.Raw(card.CopyIcon)</span><span class="ro-copy-text">copy</span></button></div><div class="ro-card-content">@templ.Raw(card.Content)</div></div>
 	}
 	if d.ShowNamespaceLinks {
 		<div class="ro-section"><a href={ templ.SafeURL(d.AllObjectsHref) }>Show all objects in this namespace</a></div>

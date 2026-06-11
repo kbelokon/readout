@@ -59,7 +59,7 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // .ro-copy-btn (per-section YAML copy): copy THIS section's raw YAML to the
+    // data-ro-action="copy" (per-section YAML copy): copy THIS section's raw YAML to the
     // clipboard via navigator.clipboard.writeText -- CSP-clean. The raw text is
     // read from the section's Pygments `td.code` cell (the gutter lives in a
     // separate `td.linenos`), with any injected fold controls stripped first
@@ -68,7 +68,7 @@ export const miscBindings: Binding[] = [
     // the section-fold binding so a copy click never toggles the section fold.
     {
         event: 'click',
-        selector: '.ro-copy-btn',
+        selector: '[data-ro-action="copy"]',
         stop: true,
         handler: (event, matched) => {
             event.preventDefault();

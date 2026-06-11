@@ -2473,11 +2473,11 @@ ${piece}`;
     return i;
   }
   function yamlCodeText(codeCell) {
-    if (!codeCell.querySelector(".ro-fold-toggle, .ro-fold-note")) {
+    if (!codeCell.querySelector('[data-ro-action="toggle-fold"], [data-ro-fold-control]')) {
       return codeCell.textContent || "";
     }
     const clone = codeCell.cloneNode(true);
-    clone.querySelectorAll(".ro-fold-toggle, .ro-fold-note").forEach((el) => {
+    clone.querySelectorAll('[data-ro-action="toggle-fold"], [data-ro-fold-control]').forEach((el) => {
       el.remove();
     });
     return clone.textContent || "";
@@ -2505,11 +2505,13 @@ ${piece}`;
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "ro-fold-toggle";
+    toggle.dataset.roAction = "toggle-fold";
     toggle.setAttribute("aria-expanded", "true");
     toggle.setAttribute("aria-label", "Toggle block");
     toggle.dataset.fold = lineSpan.id;
     const note = document.createElement("span");
     note.className = "ro-fold-note";
+    note.dataset.roFoldControl = "note";
     const lineWord = bodyCount === 1 ? "line" : "lines";
     note.textContent = ` … ${bodyCount} ${lineWord}`;
     const anchor = lineSpan.querySelector("a");
@@ -2594,7 +2596,7 @@ ${piece}`;
     }
   }
   var foldBindings = [
-    // .ro-fold-toggle (NESTED YAML block fold): toggle the deeper-indented child
+    // data-ro-action="toggle-fold" (NESTED YAML block fold): toggle the deeper-indented child
     // lines of a `key:`/`- key:` block in place. Matched BEFORE the section-fold
     // + gutter-anchor handlers (registration order) so a nested-fold click never
     // collapses the whole section or jumps a line anchor. The monolith called
@@ -2603,7 +2605,7 @@ ${piece}`;
     // mirrors the early return.
     {
       event: "click",
-      selector: ".ro-fold-toggle",
+      selector: '[data-ro-action="toggle-fold"]',
       stop: true,
       handler: (event, matched) => {
         event.preventDefault();
@@ -2657,7 +2659,7 @@ ${piece}`;
         return true;
       }
     },
-    // .ro-copy-btn (per-section YAML copy): copy THIS section's raw YAML to the
+    // data-ro-action="copy" (per-section YAML copy): copy THIS section's raw YAML to the
     // clipboard via navigator.clipboard.writeText -- CSP-clean. The raw text is
     // read from the section's Pygments `td.code` cell (the gutter lives in a
     // separate `td.linenos`), with any injected fold controls stripped first
@@ -2666,7 +2668,7 @@ ${piece}`;
     // the section-fold binding so a copy click never toggles the section fold.
     {
       event: "click",
-      selector: ".ro-copy-btn",
+      selector: '[data-ro-action="copy"]',
       stop: true,
       handler: (event, matched) => {
         event.preventDefault();

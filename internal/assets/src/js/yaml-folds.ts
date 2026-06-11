@@ -50,11 +50,11 @@ export function yamlEffectiveIndent(text: string): number {
 // controls removed. Folded child lines stay in the DOM (only hidden), so this is
 // the FULL source YAML in any fold state -- the per-section copy stays correct.
 export function yamlCodeText(codeCell: Element): string {
-    if (!codeCell.querySelector('.ro-fold-toggle, .ro-fold-note')) {
+    if (!codeCell.querySelector('[data-ro-action="toggle-fold"], [data-ro-fold-control]')) {
         return codeCell.textContent || ''; // no folds injected -> raw text already clean
     }
     const clone = codeCell.cloneNode(true) as Element;
-    clone.querySelectorAll('.ro-fold-toggle, .ro-fold-note').forEach((el) => {
+    clone.querySelectorAll('[data-ro-action="toggle-fold"], [data-ro-fold-control]').forEach((el) => {
         el.remove();
     });
     return clone.textContent || '';
@@ -86,18 +86,21 @@ function toggleYamlFold(toggle: HTMLElement): void {
 // toggle is a real <button> (keyboard-focusable, CSP-clean) placed right after
 // the line's leading <a> anchor so the caret sits at the start of the line; the
 // note is a hidden <span class="ro-fold-note"> ("… N lines") appended at the
-// line's end, shown by CSS only when folded. Both carry a class the copy path
-// strips, so neither pollutes the copied raw YAML.
+// line's end, shown by CSS only when folded. Both carry a data-ro-* hook the copy
+// path strips (data-ro-action="toggle-fold" / data-ro-fold-control), so neither
+// pollutes the copied raw YAML even after a CSS-class rename.
 function injectFoldControls(lineSpan: Element, bodyCount: number): void {
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'ro-fold-toggle';
+    toggle.dataset.roAction = 'toggle-fold';
     toggle.setAttribute('aria-expanded', 'true');
     toggle.setAttribute('aria-label', 'Toggle block');
     toggle.dataset.fold = lineSpan.id;
 
     const note = document.createElement('span');
     note.className = 'ro-fold-note';
+    note.dataset.roFoldControl = 'note';
     const lineWord = bodyCount === 1 ? 'line' : 'lines';
     note.textContent = ` … ${bodyCount} ${lineWord}`;
 
@@ -212,7 +215,7 @@ export function highlightYamlLine(): void {
 // foldBindings are appended to the ordered registration list in bindings.ts.
 // Both are LEAF branches lifted verbatim from the monolith's big click listener.
 export const foldBindings: Binding[] = [
-    // .ro-fold-toggle (NESTED YAML block fold): toggle the deeper-indented child
+    // data-ro-action="toggle-fold" (NESTED YAML block fold): toggle the deeper-indented child
     // lines of a `key:`/`- key:` block in place. Matched BEFORE the section-fold
     // + gutter-anchor handlers (registration order) so a nested-fold click never
     // collapses the whole section or jumps a line anchor. The monolith called
@@ -221,7 +224,7 @@ export const foldBindings: Binding[] = [
     // mirrors the early return.
     {
         event: 'click',
-        selector: '.ro-fold-toggle',
+        selector: '[data-ro-action="toggle-fold"]',
         stop: true,
         handler: (event, matched) => {
             event.preventDefault();
