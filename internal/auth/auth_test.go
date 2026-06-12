@@ -1344,3 +1344,55 @@ func TestLogoutRejectsCrossSite(t *testing.T) {
 		}
 	}
 }
+
+func TestOIDCDiscoveryBoundedByTimeout(t *testing.T) {
+	prev := oidcDiscoveryTimeout
+	oidcDiscoveryTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { oidcDiscoveryTimeout = prev })
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	hits := make(chan struct{}, 8)
+	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- struct{}{}
+		// Stall well past oidcDiscoveryTimeout. The handler unblocks only on
+		// test teardown so a leaked goroutine cannot outlive the test.
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(issuer.Close)
+
+	a := newAuth(t, &config.Config{OIDCIssuerURL: issuer.URL})
+
+	start := time.Now()
+	if _, err := a.oidcDiscover(); err == nil {
+		t.Fatal("oidcDiscover returned nil error against a stalled issuer")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("oidcDiscover hung %v past the %v timeout instead of failing fast", elapsed, oidcDiscoveryTimeout)
+	}
+
+	// The mutex must be released after the bounded failure: a second call has
+	// to be able to proceed (and itself reach the issuer) rather than block
+	// forever behind oidcMu.
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.oidcDiscover()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("second oidcDiscover returned nil error against a stalled issuer")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second oidcDiscover blocked: oidcMu was not released after the bounded failure")
+	}
+
+	// Both calls reached the issuer, confirming no failure was cached.
+	if len(hits) < 2 {
+		t.Fatalf("expected both discovery attempts to hit the issuer, got %d", len(hits))
+	}
+}

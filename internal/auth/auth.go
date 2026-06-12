@@ -79,6 +79,11 @@ type Authenticator struct {
 	oidcProvider *oidc.Provider
 }
 
+// oidcDiscoveryTimeout bounds the OIDC discovery-document fetch. It is a package
+// var (not a const) so tests can shrink it to verify that a stalled issuer
+// releases oidcMu within the timeout instead of hanging.
+var oidcDiscoveryTimeout = 10 * time.Second
+
 // New builds an Authenticator from the resolved config, the session secret
 // (READOUT_SESSION_SECRET), an injectable clock, and the shared hooks client. A
 // nil clock falls back to time.Now. The config is copied into the Authenticator
@@ -514,20 +519,29 @@ func (a *Authenticator) oauth2Config(ctx context.Context, r *http.Request) (*oau
 }
 
 // oidcDiscover returns the process-wide cached OIDC provider, building it on
-// first use and on every prior failure. Construction is pinned to
-// context.Background() on purpose: go-oidc binds the remote key-set fetcher used
-// by every later token verification to the context passed here, so a request
-// context (which can be canceled when the client disconnects) would later break
-// verification for unrelated requests. A failed construction is not stored, so
-// the next caller retries discovery rather than inheriting a poisoned cache from
-// a transient issuer outage.
+// first use and on every prior failure. Construction is rooted at
+// context.Background(), not a request context, on purpose: go-oidc binds the
+// remote key-set fetcher used by every later token verification to the context
+// passed here, so a request context (which can be canceled when the client
+// disconnects) would later break verification for unrelated requests. The
+// background context is bounded by oidcDiscoveryTimeout via WithTimeout, and a
+// discovery HTTP client with the same timeout is injected through
+// oidc.ClientContext, so a stalled issuer cannot hold oidcMu indefinitely and
+// queue every login behind it. The timeout only bounds the discovery-document
+// fetch (NewProvider returns before the key set is used), so it does not poison
+// the long-lived key-set fetcher on success. A failed construction is not
+// stored, so the next caller retries discovery rather than inheriting a poisoned
+// cache from a transient issuer outage.
 func (a *Authenticator) oidcDiscover() (*oidc.Provider, error) {
 	a.oidcMu.Lock()
 	defer a.oidcMu.Unlock()
 	if a.oidcProvider != nil {
 		return a.oidcProvider, nil
 	}
-	provider, err := oidc.NewProvider(context.Background(), a.cfg.OIDCIssuerURL)
+	ctx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
+	defer cancel()
+	client := &http.Client{Timeout: oidcDiscoveryTimeout}
+	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), a.cfg.OIDCIssuerURL)
 	if err != nil {
 		return nil, err
 	}
