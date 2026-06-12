@@ -88,9 +88,7 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | `podDisruptionBudget` | `{enabled: false, minAvailable: "", maxUnavailable: ""}` | PodDisruptionBudget for readout pods. Set exactly one of `minAvailable`/`maxUnavailable` (Kubernetes rejects both). |
 | `extraObjects` | `[]` | Escape hatch for arbitrary Helm-owned objects (platform CRs, extra Secrets). Each entry is one YAML map; string values run through `tpl` with the chart root context. See [Exposure recipes](#exposure-recipes). |
 | `unsafe` | `{allowNoAuth: false, allowEphemeralSessionSecret: false}` | Acknowledgements that silence the chart's safety gates. See [Safety gates and the env boundary](#safety-gates-and-the-env-boundary). |
-
-> Note: a `testFramework` key is added by a later chart unit and is not yet
-> present in `values.yaml`; it will appear in this table once it lands.
+| `testFramework` | `{enabled: false, image: {repository: curlimages/curl, tag: "8.11.1"}}` | Opt-in `helm test` connectivity pod. When enabled, `helm test <release>` runs a curl pod against the Service's `/readyz`. |
 
 ## Exposure recipes
 

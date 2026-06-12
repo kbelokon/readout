@@ -95,3 +95,29 @@ jobs:
         run: |
           node scripts/build-assets.mjs
           git diff --exit-code -- internal/assets/static
+
+  # Helm chart gate. Users run helm 3, so CI pins helm 3 (local dev runs helm 4;
+  # both must pass). Validates: lint, default + every example render through
+  # kubeconform -strict (core types from the upstream schema, the three CR kinds
+  # from the schemas vendored in chart/ci/schemas/ -- never -ignore-missing-schemas),
+  # then the template safety-gate and values.schema.json matrix as exit-code asserts.
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.21.0
+      - name: Install kubeconform
+        run: |
+          curl -fsSL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+      - name: Gate - helm lint
+        run: helm lint chart
+      - name: Gate - render + kubeconform (default + every example)
+        run: bash scripts/chart-kubeconform.sh chart
+      - name: Gate - safety gate + schema matrix
+        run: bash scripts/chart-gate-matrix.sh chart

@@ -303,3 +303,13 @@ unsafe:
   # chart can see), that combination is a template error -- each replica would
   # sign sessions with its own ephemeral key and break OIDC login affinity.
   allowEphemeralSessionSecret: false
+
+# Opt-in connectivity smoke test rendered only as a `helm.sh/hook: test` Pod.
+# When enabled, `helm test <release>` runs a curl pod that hits the Service's
+# /readyz. Off by default: it requires a reachable, running release.
+testFramework:
+  enabled: false
+  # Image for the test pod. curl exits non-zero on an unhealthy /readyz.
+  image:
+    repository: curlimages/curl
+    tag: "8.11.1"

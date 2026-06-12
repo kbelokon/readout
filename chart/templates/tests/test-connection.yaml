@@ -1,0 +1,26 @@
+{{- if (.Values.testFramework).enabled }}
+# Opt-in connectivity smoke test for a deployed release. Runs only under
+# `helm test`: the pod curls the in-cluster Service's /readyz and exits non-zero
+# if it is not ready, which marks the test as failed. Off by default because it
+# requires a reachable, running release.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "readout.fullname" . }}-test-connection"
+  labels:
+    {{- include "readout.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: test-connection
+      image: "{{ .Values.testFramework.image.repository }}:{{ .Values.testFramework.image.tag }}"
+      command: ["curl"]
+      args:
+        - "--fail"
+        - "--silent"
+        - "--show-error"
+        - "http://{{ include "readout.fullname" . }}:{{ .Values.service.port }}/readyz"
+{{- end }}
