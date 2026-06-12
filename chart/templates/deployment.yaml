@@ -1,27 +1,47 @@
+{{- include "readout.validate" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "readout.name" . }}
+  name: {{ include "readout.fullname" . }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
+  {{- $ann := include "readout.annotations" (dict "context" .) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      application: {{ include "readout.name" . }}
+      {{- include "readout.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "readout.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       annotations:
-        checksum/config: {{ toYaml .Values.config | sha256sum }}
+        checksum/config: {{ include "readout.config" . | sha256sum }}
+        {{- $podAnn := include "readout.annotations" (dict "context" . "local" .Values.podAnnotations) }}
+        {{- with $podAnn }}
+        {{- . | nindent 8 }}
+        {{- end }}
     spec:
-      serviceAccountName: {{ include "readout.name" . }}
+      serviceAccountName: {{ include "readout.serviceAccountName" . }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: readout
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "readout.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --config
@@ -30,13 +50,40 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.env }}
+          {{- $session := .Values.auth.sessionSecret }}
+          {{- $oidc := .Values.auth.oidc }}
+          {{- if or $session.existingSecret $oidc.existingSecret .Values.env }}
           env:
+            {{- with $session.existingSecret }}
+            - name: READOUT_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $session.key }}
+            {{- end }}
+            {{- with $oidc.existingSecret }}
+            - name: READOUT_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $oidc.clientIdKey }}
+            - name: READOUT_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $oidc.clientSecretKey }}
+            {{- end }}
+            {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.config.port | default 8080 }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -53,7 +100,32 @@ spec:
             - name: config
               mountPath: /etc/readout
               readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       volumes:
         - name: config
           configMap:
-            name: {{ include "readout.name" . }}
+            name: {{ include "readout.fullname" . }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

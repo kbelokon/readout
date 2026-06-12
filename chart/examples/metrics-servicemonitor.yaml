@@ -1,0 +1,28 @@
+# metrics-servicemonitor.yaml -- expose Prometheus metrics on a separate port and
+# scrape them through a Prometheus Operator ServiceMonitor.
+#
+# Deploys: readout with a dedicated metrics listener, a <fullname>-metrics
+# Service, and a ServiceMonitor (monitoring.coreos.com/v1) selecting that Service.
+#
+# Cluster prerequisites:
+#   - Prometheus Operator installed (provides the ServiceMonitor CRD)
+#   - a Prometheus instance whose serviceMonitorSelector matches the label below
+#   - no Secrets are consumed by this example
+#
+# After install:
+#   kubectl get servicemonitor readout-metrics
+#   kubectl get svc readout-metrics
+#   # confirm the target shows up in Prometheus -> Status -> Targets
+#
+# Note: do NOT set config.metricsPort here -- the chart derives it from
+# metrics.port, and setting both is a template error.
+metrics:
+  enabled: true
+  port: 9090
+  serviceMonitor:
+    enabled: true
+    labels:
+      # Match your Prometheus Operator's serviceMonitorSelector. The common
+      # "release" convention selects ServiceMonitors by the Prometheus release
+      # name; change "prometheus" to whatever your operator selects on.
+      release: prometheus

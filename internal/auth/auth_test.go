@@ -189,11 +189,8 @@ func TestOAuthLoginLogoutAndURLHelpers(t *testing.T) {
 		OAuth2TokenURL:     "https://auth.example.test/token",
 		OAuth2Scope:        "openid email",
 		SessionSecret:      "test-secret",
-		AuthMode:           config.AuthModeNone,
+		AuthMode:           config.AuthModeOIDC,
 	})
-	if !a.oauthConfigured() || a.EffectiveAuthMode() != config.AuthModeOIDC {
-		t.Fatalf("oauth should be auto-enabled from endpoint config")
-	}
 
 	rec := httptest.NewRecorder()
 	a.Login(rec, httptest.NewRequest(http.MethodGet, "/oauth2/login?next=https://evil.example/path", nil))
@@ -253,6 +250,63 @@ func TestOAuthLoginLogoutAndURLHelpers(t *testing.T) {
 	}
 	if firstForwarded(" a, b ") != "a" || !secureCookie(req) {
 		t.Fatalf("forwarded helpers mismatch")
+	}
+}
+
+// TestRedirectURLPrecedence pins the callback-URL resolution order: an explicit
+// oidc.redirectUrl wins outright; with it empty a configured publicUrl yields a
+// stable origin+CallbackPath callback that ignores request headers; with both
+// empty the redirect falls back to the per-request X-Forwarded reconstruction
+// (the retained dev convenience).
+func TestRedirectURLPrecedence(t *testing.T) {
+	const proto, host = "https", "fwd.example.test"
+	reqWithForwarded := func() *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "http://internal.example/clusters", nil)
+		r.Header.Set("X-Forwarded-Proto", proto)
+		r.Header.Set("X-Forwarded-Host", host)
+		return r
+	}
+	cases := []struct {
+		name        string
+		redirectURL string
+		publicURL   string
+		want        string
+	}{
+		{
+			name:        "explicit redirectUrl wins over publicUrl",
+			redirectURL: "https://explicit.example/oauth2/callback",
+			publicURL:   "https://public.example",
+			want:        "https://explicit.example/oauth2/callback",
+		},
+		{
+			name:      "publicUrl derives callback when redirectUrl empty",
+			publicURL: "https://public.example",
+			want:      "https://public.example" + CallbackPath,
+		},
+		{
+			name: "falls back to X-Forwarded when both empty",
+			want: proto + "://" + host + CallbackPath,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAuth(t, &config.Config{
+				AuthMode:           config.AuthModeOIDC,
+				OIDCClientID:       "client-id",
+				OAuth2AuthorizeURL: "https://auth.example/authorize",
+				OAuth2TokenURL:     "https://auth.example/token",
+				OIDCRedirectURL:    tc.redirectURL,
+				PublicURL:          tc.publicURL,
+				SessionSecret:      "test-secret",
+			})
+			cfg, _, err := a.oauth2Config(context.Background(), reqWithForwarded())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.RedirectURL != tc.want {
+				t.Fatalf("RedirectURL = %q, want %q", cfg.RedirectURL, tc.want)
+			}
+		})
 	}
 }
 
@@ -619,7 +673,7 @@ func TestAuthModesHeadersOIDCAndBearerSources(t *testing.T) {
 	}
 
 	a = newAuth(t, &config.Config{
-		AuthMode:           config.AuthModeNone,
+		AuthMode:           config.AuthModeOIDC,
 		OIDCClientID:       "client",
 		OAuth2AuthorizeURL: "https://auth.example/authorize",
 		OAuth2TokenURL:     "https://auth.example/token",

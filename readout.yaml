@@ -20,6 +20,15 @@ port: 8080
 # this port and is disabled on the main app listener.
 metricsPort: 0
 
+# Externally-visible origin readout is reached at (scheme + host, no path).
+# When set, it is the base for the OIDC redirect URL (publicUrl + /oauth2/callback)
+# in place of reconstructing it from per-request X-Forwarded headers, and it
+# satisfies the OIDC redirect requirement without an explicit auth.oidc.redirectUrl.
+# Must be an origin only -- readout serves on its own host root, so a path
+# (https://example.com/readout) is a startup error. A single trailing slash is
+# accepted and normalized away.
+publicUrl: ""
+
 # Namespace allow/deny. Regular expressions (RE2). Exclude wins over include;
 # an empty include list means "all namespaces". Cluster-scoped objects are
 # never excluded by namespace.
@@ -219,10 +228,20 @@ search:
     - configmaps
   maxConcurrency: 100
 
+# Session-signing secret read from a mounted file (an alternative to the
+# READOUT_SESSION_SECRET env var; the env var wins when both are set). The secret
+# itself is never written inline in this file -- only a path to it. Leave empty
+# to rely on the env var alone.
+sessionSecretFile: ""
+
 # Authentication.
 #   mode: none | headers | oidc
 #   headers: trust reverse-proxy identity headers
 #   oidc:    OpenID Connect login (client secret comes from the environment)
+#
+# OIDC requires a callback (redirect) URL: set either auth.oidc.redirectUrl
+# (or READOUT_OIDC_REDIRECT_URL) or the top-level publicUrl above. Setting OIDC
+# fields here while leaving mode at "none" is a startup error -- set mode: oidc.
 auth:
   mode: none
   trustedHeaders:

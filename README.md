@@ -30,6 +30,21 @@ about behavior lives in the YAML config:
 A documented, copy-pasteable example config lives at
 [`readout.yaml`](readout.yaml). Start from it.
 
+### Validating a config offline
+
+```sh
+readout config validate --config readout.yaml
+```
+
+`config validate` loads the config exactly as startup would — strict parsing,
+semantic checks, and the same secret/endpoint resolution — then exits `0` and
+prints `config OK`, or exits `1` with the identical error message startup would
+print. It performs no cluster or network calls. Because it is faithful to a real
+startup, the same `READOUT_*` environment variables in your shell affect the
+result (env values override the file), so validate in the environment the
+process will actually run in. A bare `readout config`, or an unknown
+sub-subcommand, prints usage and exits `2`.
+
 ## Configuration
 
 Everything that used to be a flag is a field in `readout.yaml`, parsed with
@@ -128,6 +143,14 @@ and the environment **overrides** the file:
 | `READOUT_AUTHORIZATION_HOOK_URL`      | authorization hook URL           |
 | `READOUT_RESOURCE_PRERENDER_HOOK_URL` | resource-prerender hook URL      |
 
+The session secret can also be read from a mounted file via the top-level
+`sessionSecretFile:` config key (the env var wins when both are set). For OIDC,
+set the top-level `publicUrl:` (origin only, e.g. `https://readout.example`) to
+pin the externally-visible origin; readout then derives the OIDC callback as
+`publicUrl` + `/oauth2/callback`, so an explicit `auth.oidc.redirectUrl` is not
+required. Leaving `auth.mode` at `none` while OIDC fields are set is a startup
+error — set `auth.mode: oidc`. See [`readout.yaml`](readout.yaml) for both keys.
+
 ## Endpoints
 
 - read-only HTTP edge; the only state-changing route is the allowlisted
@@ -173,14 +196,26 @@ docker run --rm -p 8080:8080 -v "$PWD/readout.yaml:/readout.yaml" ghcr.io/kbelok
 
 ### Helm chart (OCI, from GHCR)
 
+The chart is the supported Kubernetes install path:
+
 ```sh
 helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.7.0
 ```
 
-## Deploy
+See [`chart/README.md`](chart/README.md) for values, RBAC, and a breaking-upgrade
+note when moving from a ≤ 0.6 release.
 
-A kustomize base also lives in [`deploy/kustomize`](deploy/kustomize). The
-chart's `image.tag` / `appVersion` track the app release they target; the
+If you want raw manifests instead of a Helm release — to commit them to git, pipe
+them into another tool, or just read them — render the chart locally:
+
+```sh
+helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.7.0 > readout.yaml
+```
+
+readout deploys on its own host (its own domain or subdomain); it builds
+root-absolute URLs everywhere and does not support being served under a subpath.
+
+The chart's `image.tag` / `appVersion` track the app release they target; the
 chart's own version moves independently.
 
 ## License & attribution

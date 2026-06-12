@@ -1,18 +1,164 @@
 image:
   repository: ghcr.io/kbelokon/readout
-  tag: 0.7.0
+  # defaults to chart appVersion when empty
+  tag: ""
+  # when set, the digest wins and the tag is ignored
+  digest: ""
   pullPolicy: IfNotPresent
+
+# overrides for generated resource names
+nameOverride: ""
+fullnameOverride: ""
+
+# Labels merged into the metadata.labels of every resource this chart renders.
+# Applied last, so a key here overrides the standard chart label of the same name.
+commonLabels: {}
+
+# Annotations merged into the metadata.annotations of every resource this chart
+# renders. Per-resource annotation blocks (serviceAccount.annotations,
+# ingress.annotations, gateway.annotations, service.annotations, podAnnotations)
+# take precedence on key conflicts. Note: common metadata is intentionally NOT
+# part of the pod config checksum, so changing it does not roll pods.
+commonAnnotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Cluster read access for the in-cluster (Live) mode. The app discovers and
+# lists resources through the ServiceAccount above; these objects grant that
+# access. Verbs are always get/list/watch only -- this chart never grants a
+# mutating verb on any resource.
+rbac:
+  # When false, NO RBAC objects render (ClusterRole, ClusterRoleBinding, and
+  # the argoCD Role/RoleBinding are all omitted). The ServiceAccount still
+  # renders; binding it to your own roles is then your responsibility.
+  create: true
+  # preset selects the read scope:
+  #   wildcard   - get/list/watch on every apiGroup and resource, including any
+  #                CRD the cluster serves. This is what makes "discover anything"
+  #                work out of the box.
+  #   restricted - least privilege: grants follow .Values.config (the single
+  #                source of truth). secrets and pods/log are granted only when
+  #                config.includeSecrets / config.showContainerLogs ask for them.
+  #
+  # TRADE-OFF (wildcard): the wildcard preset grants API-level read on Secrets
+  # even when config.includeSecrets is false. The app's own gate still refuses
+  # to admit the Secret type in that case, but a compromise of the SA token
+  # exposes every Secret in the cluster through the apiserver directly. Choose
+  # restricted when that exposure is unacceptable.
+  preset: wildcard
+  # Extra rules appended to the ClusterRole under either preset. Use this to
+  # widen read access (e.g. a resource the restricted preset omits, or an
+  # argoCD host whose credentials live in a local Secret). values.schema.json
+  # rejects any verb outside get/list/watch (the read-only contract); rules
+  # that pass the schema are appended verbatim.
+  extraRules: []
+  #  - apiGroups: ["example.com"]
+  #    resources: ["widgets"]
+  #    verbs: ["get", "list", "watch"]
 
 replicaCount: 1
 
 service:
   type: ClusterIP
   port: 80
+  # Extra labels/annotations for the Service only (merged over commonLabels /
+  # commonAnnotations). Use annotations for cloud load-balancer controls etc.
+  labels: {}
+  annotations: {}
+
+# Metrics listener. When enabled, the chart renders config.metricsPort =
+# metrics.port, which makes the app start a SEPARATE metrics listener and move
+# /metrics off the main port. It also adds a dedicated container port and a
+# `<fullname>-metrics` Service, plus an optional ServiceMonitor.
+# READOUT_* env does not override metricsPort, so this rendered file value is
+# the single source of truth for the metrics port.
+metrics:
+  enabled: false
+  # Container/listener port the app binds metrics on. Rendered into the app
+  # config as metricsPort. Setting config.metricsPort directly to a DIFFERENT
+  # value (or while metrics is disabled) is a template error.
+  port: 9090
+  # The metrics Service. targetPort always tracks the `metrics` container port.
+  service:
+    port: 9090
+    # Extra labels/annotations for the metrics Service only (merged over
+    # commonLabels / commonAnnotations).
+    annotations: {}
+    labels: {}
+  # ServiceMonitor (monitoring.coreos.com/v1) for Prometheus Operator. Off by
+  # default: it requires the third-party CRD. The ServiceMonitor selects the
+  # metrics Service by the stable app.kubernetes.io/name + /instance labels plus
+  # any metrics.service.labels, and scrapes the named `metrics` endpoint port --
+  # so labels added under metrics.service.labels also become selector keys.
+  serviceMonitor:
+    enabled: false
+    # Extra labels on the ServiceMonitor object itself (e.g. a `release` label
+    # so a Prometheus Operator instance picks it up).
+    labels: {}
+    # Scrape interval and timeout. Empty string omits the field, letting the
+    # operator/Prometheus default apply.
+    interval: 30s
+    scrapeTimeout: ""
+
+# Expose readout through a Kubernetes Ingress (networking.k8s.io/v1). The
+# backend always targets this chart's Service on service.port above.
+ingress:
+  enabled: false
+  # IngressClass to use. Leave empty to let the cluster pick its default class.
+  className: ""
+  annotations: {}
+  # At least one host is required when enabled. A host entry with no `paths`
+  # gets a single default path "/" with pathType Prefix.
+  hosts: []
+    # - host: readout.example.com
+    #   paths:
+    #     - path: /
+    #       pathType: Prefix
+  # Passed through verbatim into spec.tls.
+  tls: []
+    # - hosts:
+    #     - readout.example.com
+    #   secretName: readout-tls
+
+# Expose readout through Gateway API by attaching an HTTPRoute to an existing
+# Gateway. This chart never creates a Gateway or GatewayClass -- those are
+# platform infrastructure. backendRefs always target this chart's Service on
+# service.port above.
+gateway:
+  enabled: false
+  # HTTPRoute API version. Override to gateway.networking.k8s.io/v1beta1 on
+  # clusters pinned to the older API.
+  apiVersion: gateway.networking.k8s.io/v1
+  # Required when enabled: the Gateway(s) this route attaches to. An HTTPRoute
+  # with no parentRefs is invalid, so the template fails fast when this is empty.
+  parentRefs: []
+    # - name: public-gateway
+    #   namespace: gateway-system
+    #   sectionName: https
+  # Optional. Omit to attach to all of the parent Gateway's listener hostnames.
+  hostnames: []
+    # - readout.example.com
+  annotations: {}
+  # Optional. Write rules only to add matches or filters. When empty, a single
+  # catch-all rule routes everything to this chart's Service.
+  rules: []
+    # - matches:
+    #     - path:
+    #         type: PathPrefix
+    #         value: /
+    #   backendRefs:
+    #     - name: readout
+    #       port: 80
 
 # readout configuration. This whole block is serialized verbatim into a
 # ConfigMap as readout.yaml and mounted at /etc/readout/readout.yaml; the
-# container runs with --config /etc/readout/readout.yaml. The schema matches
-# readout.yaml. Secrets are NOT placed here -- they come from READOUT_* env
+# container runs with --config /etc/readout/readout.yaml. Helm only checks
+# that this block is an object -- key/value validation happens at app startup
+# (strict parse, unknown keys rejected) and via `readout config validate`.
+# Secrets are NOT placed here -- they come from READOUT_* env
 # (see env / envFrom below), which override the file at startup.
 config:
   port: 8080
@@ -20,6 +166,21 @@ config:
     - kube-.*
   showContainerLogs: false
   includeSecrets: false
+  # Argo CD cluster-Secret discovery (optional, omitted by default). When set,
+  # readout lists Argo's cluster Secrets and turns each into a connection.
+  #   hostCluster: a cluster named under config.clusters to list Secrets FROM.
+  #                Empty/unset means the in-cluster ServiceAccount where readout
+  #                runs -- and ONLY then does the restricted preset render a
+  #                namespaced Role + RoleBinding granting secrets read in the
+  #                argoCD namespace below. That namespace must already exist at
+  #                install time (the chart does not create it). When hostCluster
+  #                names a remote cluster the chart grants nothing locally;
+  #                widen via rbac.extraRules if that host's credentials live in
+  #                a local Secret.
+  #   namespace:   where Argo's cluster Secrets live (default: argocd).
+  # argoCD:
+  #   hostCluster: ""
+  #   namespace: argocd
   auth:
     mode: none   # safe default: no identity trusted. Set behind a real auth layer.
     # mode: headers
@@ -31,10 +192,33 @@ config:
     #   email: X-Forwarded-Email
     #   groups: X-Forwarded-Groups
 
+# Typed secret wiring. Point these at Secrets you already created (the chart
+# never creates Secret objects and holds no secret values itself) and it renders
+# the matching READOUT_* env vars via secretKeyRef. Leave existingSecret empty to
+# skip; then nothing is wired and you can do it by hand through env / envFrom.
+auth:
+  # Session signing secret -> READOUT_SESSION_SECRET.
+  sessionSecret:
+    # Name of an existing Secret. Empty disables this wiring.
+    existingSecret: ""
+    # Key within that Secret holding the session secret value.
+    key: session-secret
+  # OIDC client credentials -> READOUT_OIDC_CLIENT_ID + READOUT_OIDC_CLIENT_SECRET.
+  oidc:
+    # Name of an existing Secret. Empty disables this wiring.
+    existingSecret: ""
+    # Keys within that Secret for the client id and client secret.
+    clientIdKey: client-id
+    clientSecretKey: client-secret
+
 # READOUT_* secret environment. `env` adds literal name/value pairs;
 # `envFrom` references existing Secrets/ConfigMaps (e.g. a Secret holding
 # READOUT_SESSION_SECRET / READOUT_OIDC_CLIENT_SECRET). Secrets never go in the
-# ConfigMap above.
+# ConfigMap above. Precedence: the typed `auth` entries above are rendered
+# FIRST, then these `env` entries; because Kubernetes lets the last entry with
+# a given name win, an `env` entry here overrides a typed entry of the same
+# name. Explicit entries (typed or `env`) always beat `envFrom` -- Kubernetes
+# resolves envFrom first and explicit env vars shadow it.
 env: []
 #  - name: READOUT_SESSION_SECRET
 #    valueFrom:
@@ -58,3 +242,78 @@ securityContext:
   capabilities:
     drop:
       - ALL
+
+# Annotations/labels added to the pod template only (in addition to the chart's
+# standard pod labels and commonLabels/commonAnnotations).
+podAnnotations: {}
+podLabels: {}
+
+# Standard scheduling and placement pass-throughs. All rendered verbatim only
+# when set, so the default render carries none of them.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+# Extra volumes and volume mounts for the readout container. extraVolumeMounts
+# are appended to the readout container; extraVolumes to the pod.
+extraVolumes: []
+# - name: cache
+#   emptyDir: {}
+extraVolumeMounts: []
+# - name: cache
+#   mountPath: /var/cache/readout
+
+# Extra init containers and sidecar containers, rendered verbatim into the pod.
+initContainers: []
+extraContainers: []
+
+# PodDisruptionBudget for the readout pods. minAvailable and maxUnavailable are
+# mutually exclusive -- set exactly one; the chart fails the render when both
+# are set. The selector always targets this chart's pods.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: ""
+  maxUnavailable: ""
+
+# Escape hatch for arbitrary Helm-owned objects this chart does not model
+# (platform CRs, extra Secrets, etc.). Each list entry is one YAML map for a
+# single object -- multi-document strings are not supported. Entries are emitted
+# verbatim (no chart labels or annotations are injected, so immutable fields are
+# never mutated), but string values are run through tpl with the chart root
+# context, so they may embed expressions such as {{ .Release.Name }} or
+# {{ include "readout.fullname" $ }}. These objects share the release lifecycle
+# and are deleted when the release is uninstalled.
+extraObjects: []
+# - apiVersion: v1
+#   kind: Secret
+#   metadata:
+#     name: '{{ include "readout.fullname" $ }}-extra'
+#   stringData:
+#     key: value
+
+# Acknowledgements that silence the chart's safety gates. These gates see
+# CHART VALUES ONLY: secrets and auth config delivered through env / envFrom
+# (opaque references the chart cannot read) bypass them entirely and are caught
+# instead by the app's startup checks and `readout config validate`. The gates
+# exist to catch the obvious local-values mistakes, not to be authoritative.
+unsafe:
+  # Set true to allow exposing readout (ingress/gateway) while config.auth.mode
+  # is none. Without this, exposing a no-auth instance is a template error.
+  allowNoAuth: false
+  # Set true to allow multi-replica OIDC without a stable session secret wired
+  # through chart values. Without it (and with no session-secret wiring the
+  # chart can see), that combination is a template error -- each replica would
+  # sign sessions with its own ephemeral key and break OIDC login affinity.
+  allowEphemeralSessionSecret: false
+
+# Opt-in connectivity smoke test rendered only as a `helm.sh/hook: test` Pod.
+# When enabled, `helm test <release>` runs a curl pod that hits the Service's
+# /readyz. Off by default: it requires a reachable, running release.
+testFramework:
+  enabled: false
+  # Image for the test pod. curl exits non-zero on an unhealthy /readyz.
+  image:
+    repository: curlimages/curl
+    tag: "8.11.1"

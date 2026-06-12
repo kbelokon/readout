@@ -228,51 +228,23 @@ func TestResolveReadsOAuthSecretFilesAndValidatesErrors(t *testing.T) {
 }
 
 func TestOIDCRequiresRedirectURL(t *testing.T) {
-	cases := []struct {
-		name    string
-		content string
-	}{
-		{
-			name: "explicit oidc mode",
-			content: `
+	// In explicit oidc mode, neither redirectUrl nor publicUrl present is a load
+	// error naming both as the fix.
+	explicitNoRedirect := `
 auth:
   mode: oidc
   oidc:
     clientId: client
     issuerUrl: https://issuer.example
-`,
-		},
-		{
-			name: "implicit issuer config",
-			content: `
-auth:
-  oidc:
-    clientId: client
-    issuerUrl: https://issuer.example
-`,
-		},
-		{
-			name: "implicit generic oauth config",
-			content: `
-auth:
-  oidc:
-    clientId: client
-    authorizeUrl: https://issuer.example/authorize
-    tokenUrl: https://issuer.example/token
-`,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := Parse([]string{"--config", writeConfig(t, tc.content)})
-			if err == nil || !strings.Contains(err.Error(), "auth.oidc.redirectUrl") {
-				t.Fatalf("Parse() error = %v, want auth.oidc.redirectUrl requirement", err)
-			}
-		})
+`
+	_, err := Parse([]string{"--config", writeConfig(t, explicitNoRedirect)})
+	if err == nil || !strings.Contains(err.Error(), "auth.oidc.redirectUrl or publicUrl") {
+		t.Fatalf("Parse() error = %v, want redirectUrl-or-publicUrl requirement", err)
 	}
 
 	ok := `
 auth:
+  mode: oidc
   oidc:
     clientId: client
     issuerUrl: https://issuer.example
@@ -282,9 +254,24 @@ auth:
 		t.Fatalf("OIDC config with redirectUrl should parse: %v", err)
 	}
 
+	// publicUrl alone satisfies the requirement (it derives the callback at
+	// request time), so this is the new pass case with no redirectUrl set.
+	okPublic := `
+publicUrl: https://readout.example
+auth:
+  mode: oidc
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+`
+	if _, err := Parse([]string{"--config", writeConfig(t, okPublic)}); err != nil {
+		t.Fatalf("OIDC config with publicUrl (no redirectUrl) should parse: %v", err)
+	}
+
 	t.Setenv("READOUT_OIDC_REDIRECT_URL", "https://env.example/oauth2/callback")
 	cfg, err := Parse([]string{"--config", writeConfig(t, `
 auth:
+  mode: oidc
   oidc:
     clientId: client
     issuerUrl: https://issuer.example
@@ -294,6 +281,178 @@ auth:
 	}
 	if cfg.OIDCRedirectURL != "https://env.example/oauth2/callback" {
 		t.Fatalf("env redirectUrl = %q", cfg.OIDCRedirectURL)
+	}
+}
+
+// TestOIDCPromotionRemoved pins that OIDC is never auto-enabled from endpoint
+// config: a none-mode config carrying OIDC fields (issuer, or the
+// authorize/token pair) is a load error naming the one-line fix, while none-mode
+// with no OIDC fields, and explicit oidc mode, both still load. The ordering
+// sub-case pins that for a promoted config the promotion message wins over the
+// redirectUrl-required message.
+func TestOIDCPromotionRemoved(t *testing.T) {
+	errorCases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "none mode + issuer",
+			content: `
+auth:
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+`,
+		},
+		{
+			name: "none mode + authorize/token pair",
+			content: `
+auth:
+  oidc:
+    clientId: client
+    authorizeUrl: https://issuer.example/authorize
+    tokenUrl: https://issuer.example/token
+`,
+		},
+	}
+	for _, tc := range errorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]string{"--config", writeConfig(t, tc.content)})
+			if err == nil || !strings.Contains(err.Error(), `auth.mode is "none"`) {
+				t.Fatalf("Parse() error = %v, want promotion-removed error", err)
+			}
+		})
+	}
+
+	// none mode with no OIDC fields loads fine (the field is inert).
+	if _, err := Parse([]string{"--config", writeConfig(t, "auth:\n  mode: none\n")}); err != nil {
+		t.Fatalf("none mode without OIDC fields should load: %v", err)
+	}
+
+	// A lone authorizeUrl (or tokenUrl) is NOT a configured OAuth2 pair: only
+	// issuer, or authorize AND token together, trip the error. Half a pair is
+	// inert, matching the old promotion predicate exactly.
+	halfPairs := []struct {
+		name, content string
+	}{
+		{"authorize only", "auth:\n  oidc:\n    authorizeUrl: https://issuer.example/authorize\n"},
+		{"token only", "auth:\n  oidc:\n    tokenUrl: https://issuer.example/token\n"},
+	}
+	for _, tc := range halfPairs {
+		t.Run(tc.name+" is inert", func(t *testing.T) {
+			if _, err := Parse([]string{"--config", writeConfig(t, tc.content)}); err != nil {
+				t.Fatalf("half-configured OAuth2 pair should stay inert: %v", err)
+			}
+		})
+	}
+
+	// Ordering: a promoted config that ALSO lacks redirectUrl trips both checks;
+	// the promotion message must win because it is the actionable one. The
+	// redirectUrl set here proves we are not seeing the redirect error by accident.
+	ordering := `
+auth:
+  oidc:
+    clientId: client
+    issuerUrl: https://issuer.example
+    redirectUrl: https://readout.example/oauth2/callback
+`
+	_, err := Parse([]string{"--config", writeConfig(t, ordering)})
+	if err == nil || !strings.Contains(err.Error(), `auth.mode is "none"`) {
+		t.Fatalf("Parse() error = %v, want promotion message to win", err)
+	}
+	if strings.Contains(err.Error(), "redirectUrl or publicUrl is required") {
+		t.Fatalf("redirectUrl message leaked ahead of promotion message: %v", err)
+	}
+}
+
+// TestPublicURLShape pins the origin-only validation of publicUrl: a bare origin
+// loads as-is, a single trailing slash is normalized away, and a path-bearing,
+// query-bearing, or non-http(s) value is a load error. publicUrl is inert beyond
+// shape validation when OIDC is unused.
+func TestPublicURLShape(t *testing.T) {
+	valid := []struct {
+		raw, want string
+	}{
+		{"https://readout.example", "https://readout.example"},
+		{"https://readout.example/", "https://readout.example"},
+		{"http://readout.example:8080", "http://readout.example:8080"},
+		// IPv6 hosts survive normalization verbatim.
+		{"https://[::1]:8080", "https://[::1]:8080"},
+	}
+	for _, tc := range valid {
+		t.Run("valid "+tc.raw, func(t *testing.T) {
+			cfg, err := Parse([]string{"--config", writeConfig(t, "publicUrl: "+tc.raw+"\n")})
+			if err != nil {
+				t.Fatalf("publicUrl %q should load: %v", tc.raw, err)
+			}
+			if cfg.PublicURL != tc.want {
+				t.Fatalf("publicUrl %q normalized to %q, want %q", tc.raw, cfg.PublicURL, tc.want)
+			}
+		})
+	}
+
+	invalid := []string{
+		"https://readout.example/readout",   // subpath
+		"https://readout.example/?x=1",      // query
+		"ftp://readout.example",             // wrong scheme
+		"/just/a/path",                      // no scheme/host
+		"https://user:pass@readout.example", // credentials in an origin
+	}
+	for _, raw := range invalid {
+		t.Run("invalid "+raw, func(t *testing.T) {
+			if _, err := Parse([]string{"--config", writeConfig(t, "publicUrl: \""+raw+"\"\n")}); err == nil {
+				t.Fatalf("publicUrl %q should be rejected", raw)
+			}
+		})
+	}
+
+	// A typo of the key is rejected by strict parse (not silently ignored).
+	if _, err := Parse([]string{"--config", writeConfig(t, "publickUrl: https://x.example\n")}); err == nil {
+		t.Fatal("typo'd publicUrl key should be rejected by strict parse")
+	}
+}
+
+// TestSessionSecretFile pins the file-secret lane for the session secret: the
+// file is read when no env secret is set, the env var wins over the file, a
+// missing file is a load error, and a typo of the key is rejected by strict
+// parse.
+func TestSessionSecretFile(t *testing.T) {
+	dir := t.TempDir()
+	secretFile := filepath.Join(dir, "session-secret")
+	if err := os.WriteFile(secretFile, []byte("file-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Parse([]string{"--config", writeConfig(t, "sessionSecretFile: "+secretFile+"\n")})
+	if err != nil {
+		t.Fatalf("sessionSecretFile should be read: %v", err)
+	}
+	if cfg.SessionSecret != "file-secret" {
+		t.Fatalf("SessionSecret = %q, want file-secret", cfg.SessionSecret)
+	}
+
+	// env wins over the file value. Scoped to a subtest so t.Setenv's cleanup
+	// restores the env before the missing-file case runs (which needs it unset).
+	t.Run("env wins over file", func(t *testing.T) {
+		t.Setenv("READOUT_SESSION_SECRET", "env-secret")
+		cfg, err := Parse([]string{"--config", writeConfig(t, "sessionSecretFile: "+secretFile+"\n")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.SessionSecret != "env-secret" {
+			t.Fatalf("SessionSecret = %q, want env-secret (env must win over file)", cfg.SessionSecret)
+		}
+	})
+
+	// A missing file is a load error (same lane as clientSecretFile).
+	missing := filepath.Join(dir, "missing")
+	if _, err := Parse([]string{"--config", writeConfig(t, "sessionSecretFile: "+missing+"\n")}); err == nil {
+		t.Fatal("missing sessionSecretFile should be a load error")
+	}
+
+	// A typo of the key is rejected by strict parse, never an inline secret key.
+	if _, err := Parse([]string{"--config", writeConfig(t, "sessionSecret: inline\n")}); err == nil {
+		t.Fatal("inline sessionSecret key must not exist (only sessionSecretFile)")
 	}
 }
 

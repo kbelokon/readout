@@ -485,12 +485,12 @@ func TestNamespaceAllowedStatusErrorAndErrorPage(t *testing.T) {
 	}
 }
 
-// TestSessionSecretWarning pins the startup warning: when the effective auth
-// mode resolves to OIDC and READOUT_SESSION_SECRET (cfg.SessionSecret) is
-// empty, warnMissingSessionSecret emits a slog WARN. It covers explicit OIDC,
-// implicit OIDC (AuthModeNone + OIDC config resolved via effectiveAuthMode),
-// and the no-warn modes (none/headers). Not parallel: it mutates the
-// process-global default logger.
+// TestSessionSecretWarning pins the startup warning: when auth mode is OIDC and
+// READOUT_SESSION_SECRET (cfg.SessionSecret) is empty, warnMissingSessionSecret
+// emits a slog WARN. It covers explicit OIDC and the no-warn modes; a none-mode
+// config carrying OIDC fields never reaches this warning (it is rejected at
+// config load now that implicit promotion is gone), so here it does NOT warn.
+// Not parallel: it mutates the process-global default logger.
 func TestSessionSecretWarning(t *testing.T) {
 	prev := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prev) })
@@ -519,9 +519,9 @@ func TestSessionSecretWarning(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "implicit OIDC (none + OIDC config) no secret warns",
+			name: "none mode with OIDC fields does not warn (no implicit promotion)",
 			cfg:  config.Config{AuthMode: config.AuthModeNone, OIDCIssuerURL: "https://issuer.example"},
-			want: true,
+			want: false,
 		},
 		{
 			name: "explicit OIDC with secret does not warn",

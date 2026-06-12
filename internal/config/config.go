@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -136,6 +137,8 @@ type Config struct {
 	OAuth2TokenURL             string
 	OAuth2Scope                string
 	SessionSecret              string
+	SessionSecretFile          string
+	PublicURL                  string
 	AuthorizationHookURL       string
 	ResourcePrerenderHookURL   string
 }
@@ -218,6 +221,15 @@ type fileArgoCD struct {
 type fileConfig struct {
 	Port        int `json:"port"`
 	MetricsPort int `json:"metricsPort"`
+
+	// PublicURL pins the externally-visible origin readout is reached at
+	// (scheme + host, no path). When set it is the base for the OIDC redirect URL
+	// in place of the per-request X-Forwarded reconstruction. SessionSecretFile
+	// reads the session-signing secret from a mounted file when the
+	// READOUT_SESSION_SECRET env var is unset. Both are top-level keys so they sit
+	// next to port, not under auth.
+	PublicURL         string `json:"publicUrl"`
+	SessionSecretFile string `json:"sessionSecretFile"`
 
 	IncludeNamespaces []string `json:"includeNamespaces"`
 	ExcludeNamespaces []string `json:"excludeNamespaces"`
@@ -379,6 +391,8 @@ func resolve(file *fileConfig) (Config, error) {
 		OAuth2AuthorizeURL:         file.Auth.OIDC.AuthorizeURL,
 		OAuth2TokenURL:             file.Auth.OIDC.TokenURL,
 		OAuth2Scope:                file.Auth.OIDC.Scope,
+		SessionSecretFile:          file.SessionSecretFile,
+		PublicURL:                  file.PublicURL,
 		AuthorizationHookURL:       file.Hooks.AuthorizationURL,
 		ResourcePrerenderHookURL:   file.Hooks.ResourcePrerenderURL,
 	}
@@ -412,12 +426,34 @@ func resolve(file *fileConfig) (Config, error) {
 			return Config{}, fmt.Errorf("oidc clientSecretFile: %w", err)
 		}
 	}
+	// The env var wins; the file is consulted only when the secret is still empty
+	// after env application, mirroring the clientIdFile/clientSecretFile lane.
+	if cfg.SessionSecret == "" && cfg.SessionSecretFile != "" {
+		if cfg.SessionSecret, err = readSecretFile(cfg.SessionSecretFile); err != nil {
+			return Config{}, fmt.Errorf("sessionSecretFile: %w", err)
+		}
+	}
+
+	if cfg.PublicURL != "" {
+		if cfg.PublicURL, err = normalizePublicURL(cfg.PublicURL); err != nil {
+			return Config{}, err
+		}
+	}
 
 	if cfg.AuthMode != AuthModeNone && cfg.AuthMode != AuthModeHeaders && cfg.AuthMode != AuthModeOIDC {
 		return Config{}, fmt.Errorf("invalid auth mode %q", cfg.AuthMode)
 	}
-	if oidcEnabled(&cfg) && cfg.OIDCRedirectURL == "" {
-		return Config{}, errors.New("auth.oidc.redirectUrl is required when OIDC is enabled")
+	// OIDC is never auto-enabled from endpoint config: a config that carries OIDC
+	// settings but leaves auth.mode at "none" is a misconfiguration, not a silent
+	// promotion. Fail fast and name the one-line fix. This check runs BEFORE the
+	// redirectUrl/publicUrl-required check so that a promoted config (which would
+	// also trip that check) reports the actionable mode fix instead.
+	if cfg.AuthMode == AuthModeNone &&
+		(cfg.OIDCIssuerURL != "" || (cfg.OAuth2AuthorizeURL != "" && cfg.OAuth2TokenURL != "")) {
+		return Config{}, errors.New(`oidc settings present but auth.mode is "none"; set auth.mode: oidc (implicit promotion was removed)`)
+	}
+	if oidcEnabled(&cfg) && cfg.OIDCRedirectURL == "" && cfg.PublicURL == "" {
+		return Config{}, errors.New("auth.oidc.redirectUrl or publicUrl is required when OIDC is enabled")
 	}
 	if cfg.SearchMaxConcurrency <= 0 {
 		return Config{}, errors.New("search maxConcurrency must be positive")
@@ -450,9 +486,11 @@ func firstNonZero(values ...int) int {
 	return 0
 }
 
+// oidcEnabled reports whether OIDC login is active. With implicit promotion
+// removed, this is exactly the explicit mode: a none-mode config carrying OIDC
+// fields is rejected at load before this is consulted.
 func oidcEnabled(cfg *Config) bool {
-	return cfg.AuthMode == AuthModeOIDC ||
-		(cfg.AuthMode == AuthModeNone && (cfg.OIDCIssuerURL != "" || (cfg.OAuth2AuthorizeURL != "" && cfg.OAuth2TokenURL != "")))
+	return cfg.AuthMode == AuthModeOIDC
 }
 
 func mapOrEmpty(m map[string]string) map[string]string {
@@ -601,6 +639,35 @@ func resolveSidebar(groups []fileSidebarGroup) []SidebarGroup {
 		result = append(result, SidebarGroup(g))
 	}
 	return result
+}
+
+// normalizePublicURL validates publicUrl as an ORIGIN: an absolute http(s) URL
+// with a host and no path beyond an optional single "/", no query, no fragment.
+// A path-bearing value would imply a subpath deployment (readout served under
+// /readout on a shared host), which readout cannot serve -- it owns its host
+// root -- so that is rejected. The returned value is the origin with any single
+// trailing slash stripped, so callers can append a rooted path directly.
+func normalizePublicURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("publicUrl is not a valid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("publicUrl must be an absolute http(s) URL, got %q", raw)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("publicUrl must include a host, got %q", raw)
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("publicUrl must not carry credentials; it is an origin (scheme://host), got %q", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("publicUrl must not carry a query or fragment, got %q", raw)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("publicUrl must be an origin (no path); readout serves on its own host, got %q", raw)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 func readSecretFile(path string) (string, error) {

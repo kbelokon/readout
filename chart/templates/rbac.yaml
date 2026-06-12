@@ -1,28 +1,123 @@
+{{- if .Values.rbac.create }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "readout.name" . }}
+  name: {{ include "readout.fullname" . }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
+  {{- $ann := include "readout.annotations" (dict "context" .) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
 rules:
+{{- if eq .Values.rbac.preset "wildcard" }}
+  {{- /* Default preset: read-only on every resource the app discovers,
+     including arbitrary CRDs. Verbs are get/list/watch only -- no mutating
+     verb is ever granted. This grants API-level read on Secrets too; the
+     app's own gate still refuses to admit the Secret type unless
+     config.includeSecrets is set, but the SA token can read Secrets via the
+     apiserver. Use the restricted preset for least privilege. */}}
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+{{- else if eq .Values.rbac.preset "restricted" }}
+  {{- /* Least-privilege preset: grants follow the rendered app config. The
+     core and named-group base lists below are the resources the app reads by
+     default; pods/log and secrets are excluded here and added only by their
+     config conditions. Verbs are get/list/watch only. */}}
   - apiGroups: [""]
-    resources: ["configmaps", "endpoints", "events", "limitranges", "namespaces", "nodes", "persistentvolumeclaims", "persistentvolumes", "pods", "pods/log", "replicationcontrollers", "resourcequotas", "services"]
-    verbs: ["get", "list"]
+    resources: ["configmaps", "endpoints", "events", "limitranges", "namespaces", "nodes", "persistentvolumeclaims", "persistentvolumes", "pods", "replicationcontrollers", "resourcequotas", "services"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["apps", "batch", "autoscaling", "networking.k8s.io", "policy", "rbac.authorization.k8s.io", "storage.k8s.io", "apiextensions.k8s.io", "gateway.networking.k8s.io", "cert-manager.io", "metrics.k8s.io"]
     resources: ["*"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
+  {{- if .Values.config.includeSecrets }}
+  {{- /* config.includeSecrets re-admits the Secret type, so the SA needs API
+     read on Secrets. */}}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
+  {{- if .Values.config.showContainerLogs }}
+  {{- /* The container-logs tab reads pod logs; get is sufficient. */}}
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  {{- end }}
+{{- else }}
+  {{- fail (printf "rbac.preset must be \"wildcard\" or \"restricted\", got %q" .Values.rbac.preset) }}
+{{- end }}
+{{- with .Values.rbac.extraRules }}
+  {{- /* Operator-supplied rules appended verbatim to either preset. The
+     widening path for resources a preset does not cover. */}}
+  {{- toYaml . | nindent 2 }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "readout.name" . }}
+  name: {{ include "readout.fullname" . }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
+  {{- $ann := include "readout.annotations" (dict "context" .) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "readout.name" . }}
+  name: {{ include "readout.fullname" . }}
 subjects:
   - kind: ServiceAccount
-    name: {{ include "readout.name" . }}
+    name: {{ include "readout.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if and (eq .Values.rbac.preset "restricted") (hasKey .Values.config "argoCD") (not (.Values.config.argoCD).hostCluster) }}
+{{- /* Argo CD cluster-Secret discovery from the in-cluster ServiceAccount
+   (hostCluster empty/unset). The SA reads Argo's cluster Secrets in the argo
+   namespace, so grant a namespaced Role there rather than widening the
+   cluster-scoped read. When hostCluster names a remote cluster the chart
+   grants nothing locally -- widen via rbac.extraRules if that host's
+   credentials live in a local Secret. */}}
+{{- $argoNs := .Values.config.argoCD.namespace | default "argocd" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "readout.fullname.suffixed" (dict "context" . "suffix" "argocd") }}
+  namespace: {{ $argoNs }}
+  labels:
+    {{- include "readout.labels" . | nindent 4 }}
+  {{- $ann := include "readout.annotations" (dict "context" .) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "readout.fullname.suffixed" (dict "context" . "suffix" "argocd") }}
+  namespace: {{ $argoNs }}
+  labels:
+    {{- include "readout.labels" . | nindent 4 }}
+  {{- $ann := include "readout.annotations" (dict "context" .) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "readout.fullname.suffixed" (dict "context" . "suffix" "argocd") }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "readout.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}
