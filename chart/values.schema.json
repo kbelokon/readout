@@ -591,6 +591,9 @@
             "tag": {
               "type": "string",
               "minLength": 1
+            },
+            "digest": {
+              "type": "string"
             }
           }
         }

@@ -16,7 +16,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: test-connection
-      image: "{{ .Values.testFramework.image.repository }}:{{ .Values.testFramework.image.tag }}"
+      image: "{{ if .Values.testFramework.image.digest }}{{ .Values.testFramework.image.repository }}@{{ .Values.testFramework.image.digest }}{{ else }}{{ .Values.testFramework.image.repository }}:{{ .Values.testFramework.image.tag }}{{ end }}"
       command: ["curl"]
       args:
         - "--fail"

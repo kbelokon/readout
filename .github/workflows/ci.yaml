@@ -119,6 +119,9 @@ jobs:
         run: |
           curl -fsSL -o kubeconform.tar.gz \
             https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          # Published SHA256 from the v0.8.0 release CHECKSUMS file. Verify the
+          # tarball BEFORE untar/install so no tampered binary enters the chain.
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tar.gz" | sha256sum -c -
           tar -xzf kubeconform.tar.gz kubeconform
           sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
           kubeconform -v
