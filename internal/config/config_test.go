@@ -329,6 +329,23 @@ auth:
 		t.Fatalf("none mode without OIDC fields should load: %v", err)
 	}
 
+	// A lone authorizeUrl (or tokenUrl) is NOT a configured OAuth2 pair: only
+	// issuer, or authorize AND token together, trip the error. Half a pair is
+	// inert, matching the old promotion predicate exactly.
+	halfPairs := []struct {
+		name, content string
+	}{
+		{"authorize only", "auth:\n  oidc:\n    authorizeUrl: https://issuer.example/authorize\n"},
+		{"token only", "auth:\n  oidc:\n    tokenUrl: https://issuer.example/token\n"},
+	}
+	for _, tc := range halfPairs {
+		t.Run(tc.name+" is inert", func(t *testing.T) {
+			if _, err := Parse([]string{"--config", writeConfig(t, tc.content)}); err != nil {
+				t.Fatalf("half-configured OAuth2 pair should stay inert: %v", err)
+			}
+		})
+	}
+
 	// Ordering: a promoted config that ALSO lacks redirectUrl trips both checks;
 	// the promotion message must win because it is the actionable one. The
 	// redirectUrl set here proves we are not seeing the redirect error by accident.
@@ -359,6 +376,11 @@ func TestPublicURLShape(t *testing.T) {
 		{"https://readout.example", "https://readout.example"},
 		{"https://readout.example/", "https://readout.example"},
 		{"http://readout.example:8080", "http://readout.example:8080"},
+		// IPv6 hosts survive normalization verbatim.
+		{"https://[::1]:8080", "https://[::1]:8080"},
+		// Userinfo is stripped to the bare origin so embedded credentials can
+		// never leak into a derived OIDC callback URL.
+		{"https://user:pass@readout.example", "https://readout.example"},
 	}
 	for _, tc := range valid {
 		t.Run("valid "+tc.raw, func(t *testing.T) {

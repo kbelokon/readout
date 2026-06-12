@@ -98,6 +98,34 @@ func TestRunConfigUsage(t *testing.T) {
 	}
 }
 
+// TestRunConfigValidateEnvOverlay pins the faithful-to-startup contract: a
+// config that is invalid on file alone (OIDC mode without redirectUrl or
+// publicUrl) validates clean when the READOUT_* env overlay supplies the
+// missing value, exactly as startup would. Without env the same file fails.
+// This guards against validate ever switching to a file-only parse path.
+func TestRunConfigValidateEnvOverlay(t *testing.T) {
+	content := "auth:\n  mode: oidc\n  oidc:\n    issuerUrl: https://issuer.example\n    clientId: client\n"
+	cfgPath := writeConfig(t, content)
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"config", "validate", "--config", cfgPath}, &stdout, &stderr); code != 1 {
+		t.Fatalf("without env: exit code = %d, want 1; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "redirectUrl or publicUrl is required") {
+		t.Fatalf("without env: stderr = %q, want redirect-required error", stderr.String())
+	}
+
+	t.Setenv("READOUT_OIDC_REDIRECT_URL", "https://readout.example/oauth2/callback")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"config", "validate", "--config", cfgPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("with env: exit code = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "config OK") {
+		t.Fatalf("with env: stdout = %q, want %q", stdout.String(), "config OK")
+	}
+}
+
 // TestRunConfigValidateNoEnvFlag pins that validate accepts no --config (env-only
 // configs are loadable) and returns 0; an empty config is valid at startup too.
 func TestRunConfigValidateNoConfig(t *testing.T) {
