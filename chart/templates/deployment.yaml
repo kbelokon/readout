@@ -49,9 +49,32 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.env }}
+          {{- $session := .Values.auth.sessionSecret }}
+          {{- $oidc := .Values.auth.oidc }}
+          {{- if or $session.existingSecret $oidc.existingSecret .Values.env }}
           env:
+            {{- with $session.existingSecret }}
+            - name: READOUT_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $session.key }}
+            {{- end }}
+            {{- with $oidc.existingSecret }}
+            - name: READOUT_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $oidc.clientIdKey }}
+            - name: READOUT_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $oidc.clientSecretKey }}
+            {{- end }}
+            {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           ports:
             - name: http

@@ -142,10 +142,31 @@ config:
     #   email: X-Forwarded-Email
     #   groups: X-Forwarded-Groups
 
+# Typed secret wiring. Point these at Secrets you already created (the chart
+# never creates Secret objects and holds no secret values itself) and it renders
+# the matching READOUT_* env vars via secretKeyRef. Leave existingSecret empty to
+# skip; then nothing is wired and you can do it by hand through env / envFrom.
+auth:
+  # Session signing secret -> READOUT_SESSION_SECRET.
+  sessionSecret:
+    # Name of an existing Secret. Empty disables this wiring.
+    existingSecret: ""
+    # Key within that Secret holding the session secret value.
+    key: session-secret
+  # OIDC client credentials -> READOUT_OIDC_CLIENT_ID + READOUT_OIDC_CLIENT_SECRET.
+  oidc:
+    # Name of an existing Secret. Empty disables this wiring.
+    existingSecret: ""
+    # Keys within that Secret for the client id and client secret.
+    clientIdKey: client-id
+    clientSecretKey: client-secret
+
 # READOUT_* secret environment. `env` adds literal name/value pairs;
 # `envFrom` references existing Secrets/ConfigMaps (e.g. a Secret holding
 # READOUT_SESSION_SECRET / READOUT_OIDC_CLIENT_SECRET). Secrets never go in the
-# ConfigMap above.
+# ConfigMap above. The typed `auth` entries above are rendered FIRST, then these
+# `env` entries; because Kubernetes lets the last entry with a given name win, an
+# `env` entry here overrides a typed entry of the same name.
 env: []
 #  - name: READOUT_SESSION_SECRET
 #    valueFrom:
