@@ -540,13 +540,22 @@ func (a *Authenticator) RequestBearer(r *http.Request) string {
 	return ""
 }
 
-// IsPublicPath reports whether a path bypasses auth (health/metrics probes, the
-// OAuth routes, and static assets).
+// IsPublicPath reports whether a path bypasses auth (health probes, the OAuth
+// routes, and static assets).
+//
+// /metrics is conditional on the metrics listener layout: when MetricsPort != 0
+// metrics are served on a dedicated listener (which never passes through this
+// middleware), so /metrics stays public here only so the main mux can return its
+// disabled-404. When MetricsPort == 0 metrics are served on the main mux, so
+// /metrics is auth-gated to avoid leaking cluster names/paths/kinds to anonymous
+// callers.
 func (a *Authenticator) IsPublicPath(path string) bool {
+	if path == "/metrics" {
+		return a.cfg.MetricsPort != 0
+	}
 	return path == "/health" ||
 		path == "/healthz" ||
 		path == "/readyz" ||
-		path == "/metrics" ||
 		path == CallbackPath ||
 		path == "/oauth2/login" ||
 		path == "/oauth2/logout" ||

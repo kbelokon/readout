@@ -135,14 +135,11 @@ func TestMetricsEndpointCountsRoutedRequests(t *testing.T) {
 }
 
 func TestMetricsSeparatePort(t *testing.T) {
+	// metricsPort == 0: /metrics is served on the main mux and must be
+	// AUTH-GATED, so IsPublicPath must NOT exempt it from auth.
 	mainPort := newTestServer(t)
-	if !mainPort.auth.IsPublicPath("/metrics") {
-		t.Fatal("metrics should be public on the main mux when metricsPort is unset")
-	}
-	rec := httptest.NewRecorder()
-	mainPort.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unset metricsPort /metrics status = %d body=%s", rec.Code, rec.Body.String())
+	if mainPort.auth.IsPublicPath("/metrics") {
+		t.Fatal("metrics must be auth-gated on the main mux when metricsPort is unset")
 	}
 
 	separate := newTestServerWithConfig(t, &config.Config{
@@ -151,10 +148,12 @@ func TestMetricsSeparatePort(t *testing.T) {
 		Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme: "dark",
 	})
+	// metricsPort != 0: /metrics stays public so the main mux can return its
+	// disabled-404 (the dedicated listener serves the real metrics).
 	if !separate.auth.IsPublicPath("/metrics") {
 		t.Fatal("metrics must bypass auth so the main mux can return the disabled 404 when metricsPort is set")
 	}
-	rec = httptest.NewRecorder()
+	rec := httptest.NewRecorder()
 	separate.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("separate metricsPort main /metrics status = %d, want 404 body=%s", rec.Code, rec.Body.String())
@@ -181,6 +180,49 @@ func TestMetricsSeparatePort(t *testing.T) {
 	authenticatedMain.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rec.Code != http.StatusNotFound || rec.Header().Get("Location") != "" {
 		t.Fatalf("authenticated main /metrics status=%d location=%q body=%s, want 404 without auth redirect", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+}
+
+// TestMetricsMainPortAuthGated proves that when metrics are served on the main
+// mux (metricsPort == 0) and auth is on, /metrics does not leak through: headers
+// mode returns 401/403 directly, and OIDC mode redirects to the IdP instead of
+// serving the metrics payload.
+func TestMetricsMainPortAuthGated(t *testing.T) {
+	headers := newTestServerWithConfig(t, &config.Config{
+		Port:               8080,
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:       "dark",
+		AuthMode:           config.AuthModeHeaders,
+		TrustedHeaderUser:  "X-Forwarded-User",
+		TrustedHeaderEmail: "X-Forwarded-Email",
+	})
+	rec := httptest.NewRecorder()
+	headers.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
+		t.Fatalf("headers-mode main /metrics status=%d, want 401/403 body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "# HELP readout_up") {
+		t.Fatalf("headers-mode main /metrics leaked metrics payload: %s", rec.Body.String())
+	}
+
+	oidc := newTestServerWithConfig(t, &config.Config{
+		Port:               8080,
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:       "dark",
+		AuthMode:           config.AuthModeOIDC,
+		OIDCClientID:       "client-id",
+		OAuth2AuthorizeURL: "https://auth.example.test/authorize",
+		OAuth2TokenURL:     "https://auth.example.test/token",
+		OIDCRedirectURL:    "https://readout.example.test/oauth2/callback",
+		SessionSecret:      "test-secret",
+	})
+	rec = httptest.NewRecorder()
+	oidc.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("oidc-mode main /metrics status=%d, want 302 redirect body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "# HELP readout_up") {
+		t.Fatalf("oidc-mode main /metrics leaked metrics payload: %s", rec.Body.String())
 	}
 }
 
