@@ -183,6 +183,40 @@ func (c *Client) Denied() *Client {
 	}
 }
 
+// discoveryResult carries one outcome of the blocking discovery call back from
+// its goroutine.
+type discoveryResult struct {
+	lists []*metav1.APIResourceList
+	err   error
+}
+
+// discoverResources runs client-go's ServerGroupsAndResources -- which takes no
+// context and blocks until the OS reaps a dead connection (a TCP-blackholed
+// cluster can hold it for one to two minutes) -- and races it against ctx so a
+// caller's deadline actually cuts the call. On ctx expiry it returns ctx.Err()
+// wrapped with %w so the chain still classifies as a timeout.
+//
+// The discovery call runs in a goroutine that delivers its result on a buffered
+// channel, so when ctx wins the race the goroutine can still send and exit
+// instead of leaking blocked on the send. The goroutine itself keeps running
+// against the dead connection until the OS TCP timeout reaps it; that one leaked
+// goroutine per timed-out discovery is an accepted trade -- there is no way to
+// interrupt the context-less client-go call, and the alternative (holding the
+// caller until the OS gives up) is exactly the hang we are removing.
+func (c *Client) discoverResources(ctx context.Context) ([]*metav1.APIResourceList, error) {
+	resultCh := make(chan discoveryResult, 1)
+	go func() {
+		_, lists, err := c.discovery.ServerGroupsAndResources()
+		resultCh <- discoveryResult{lists: lists, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("kube discovery: %w", ctx.Err())
+	case res := <-resultCh:
+		return res.lists, res.err
+	}
+}
+
 func (c *Client) ResourceTypes(ctx context.Context) ([]ResourceType, []ResourceType, error) {
 	if c.denied != nil {
 		return nil, nil, c.denied
@@ -206,7 +240,7 @@ func (c *Client) ResourceTypes(ctx context.Context) ([]ResourceType, []ResourceT
 	}
 	c.mu.Unlock()
 
-	_, lists, err := c.discovery.ServerGroupsAndResources()
+	lists, err := c.discoverResources(ctx)
 	if err != nil && len(lists) == 0 {
 		return nil, nil, err
 	}
