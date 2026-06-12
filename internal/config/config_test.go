@@ -378,9 +378,6 @@ func TestPublicURLShape(t *testing.T) {
 		{"http://readout.example:8080", "http://readout.example:8080"},
 		// IPv6 hosts survive normalization verbatim.
 		{"https://[::1]:8080", "https://[::1]:8080"},
-		// Userinfo is stripped to the bare origin so embedded credentials can
-		// never leak into a derived OIDC callback URL.
-		{"https://user:pass@readout.example", "https://readout.example"},
 	}
 	for _, tc := range valid {
 		t.Run("valid "+tc.raw, func(t *testing.T) {
@@ -395,10 +392,11 @@ func TestPublicURLShape(t *testing.T) {
 	}
 
 	invalid := []string{
-		"https://readout.example/readout", // subpath
-		"https://readout.example/?x=1",    // query
-		"ftp://readout.example",           // wrong scheme
-		"/just/a/path",                    // no scheme/host
+		"https://readout.example/readout",   // subpath
+		"https://readout.example/?x=1",      // query
+		"ftp://readout.example",             // wrong scheme
+		"/just/a/path",                      // no scheme/host
+		"https://user:pass@readout.example", // credentials in an origin
 	}
 	for _, raw := range invalid {
 		t.Run("invalid "+raw, func(t *testing.T) {

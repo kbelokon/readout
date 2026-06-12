@@ -658,6 +658,9 @@ func normalizePublicURL(raw string) (string, error) {
 	if u.Host == "" {
 		return "", fmt.Errorf("publicUrl must include a host, got %q", raw)
 	}
+	if u.User != nil {
+		return "", fmt.Errorf("publicUrl must not carry credentials; it is an origin (scheme://host), got %q", raw)
+	}
 	if u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("publicUrl must not carry a query or fragment, got %q", raw)
 	}

@@ -270,8 +270,8 @@ initContainers: []
 extraContainers: []
 
 # PodDisruptionBudget for the readout pods. minAvailable and maxUnavailable are
-# mutually exclusive -- set exactly one; Kubernetes rejects a PDB with both. The
-# selector always targets this chart's pods.
+# mutually exclusive -- set exactly one; the chart fails the render when both
+# are set. The selector always targets this chart's pods.
 podDisruptionBudget:
   enabled: false
   minAvailable: ""

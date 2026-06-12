@@ -29,7 +29,7 @@ AUTH POSTURE
   {{- $wired := false -}}
   {{- if .Values.auth.sessionSecret.existingSecret }}{{- $wired = true -}}{{- end -}}
   {{- if .Values.config.sessionSecretFile }}{{- $wired = true -}}{{- end -}}
-  {{- range .Values.env }}{{- if eq .name "READOUT_SESSION_SECRET" }}{{- $wired = true -}}{{- end -}}{{- end -}}
+  {{- range .Values.env }}{{- if and (eq .name "READOUT_SESSION_SECRET") (or .value .valueFrom) }}{{- $wired = true -}}{{- end -}}{{- end -}}
   {{- if $wired }}
   auth.mode is "oidc" with a chart-visible session secret. Good.
   {{- else if gt (int .Values.replicaCount) 1 }}

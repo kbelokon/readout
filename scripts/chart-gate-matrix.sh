@@ -57,6 +57,19 @@ expect_fail "schema rejects mutating extraRules verb" \
   --set 'rbac.extraRules[0].resources[0]=y' \
   --set 'rbac.extraRules[0].verbs[0]=create'
 
+# Gate: selector-identity labels cannot be overridden via label knobs.
+expect_fail "gate rejects commonLabels overriding selector identity" \
+  --set 'commonLabels.app\.kubernetes\.io/instance=evil'
+# Gate: a PDB with both budget fields set is rejected at render time.
+expect_fail "gate rejects PDB with both minAvailable and maxUnavailable" \
+  --set podDisruptionBudget.enabled=true \
+  --set podDisruptionBudget.minAvailable=1 \
+  --set podDisruptionBudget.maxUnavailable=1
+# Gate: a name-only env husk does not count as a session-secret source.
+expect_fail "gate rejects name-only READOUT_SESSION_SECRET env entry" \
+  --set replicaCount=3 --set config.auth.mode=oidc \
+  --set 'env[0].name=READOUT_SESSION_SECRET'
+
 # Schema conditional (if/then) branches -- the constructs most likely to
 # diverge between the helm 3 and helm 4 schema engines, so probe them on both.
 expect_fail "schema rejects ingress.enabled with zero hosts" \
