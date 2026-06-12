@@ -31,6 +31,15 @@ import (
 
 const discoveryTTL = 60 * time.Second
 
+// Read caps bound the two otherwise-unbounded apiserver reads so a huge list
+// object or a chatty container cannot OOM the process. The body is read through
+// a LimitReader at cap+1: a length over the cap means the response exceeded the
+// limit and is rejected rather than buffered whole.
+const (
+	maxTableBytes = 64 << 20 // 64 MiB cap on a single server-side Table response
+	maxLogBytes   = 4 << 20  // 4 MiB cap on a single container log fetch
+)
+
 var ErrResourceTypeNotFound = errors.New("resource type not found")
 
 // ErrWatchGone is the typed 410: the watch's resourceVersion fell out of the
@@ -461,9 +470,12 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 		return Table{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTableBytes+1))
 	if err != nil {
 		return Table{}, err
+	}
+	if len(body) > maxTableBytes {
+		return Table{}, fmt.Errorf("table response exceeds %d byte cap", maxTableBytes)
 	}
 	if resp.StatusCode >= 400 {
 		return Table{}, tableResponseError(resp.StatusCode, resp.Status, body)
@@ -679,9 +691,12 @@ func (c *Client) Logs(ctx context.Context, opts LogOptions) (logs string, err er
 		return "", err
 	}
 	defer func() { _ = stream.Close() }()
-	data, err := io.ReadAll(stream)
+	data, err := io.ReadAll(io.LimitReader(stream, maxLogBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(data) > maxLogBytes {
+		return "", fmt.Errorf("log stream exceeds %d byte cap", maxLogBytes)
 	}
 	return string(data), nil
 }

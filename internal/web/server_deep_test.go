@@ -217,7 +217,7 @@ func TestTailLinesClamp(t *testing.T) {
 	}{
 		{"tail_lines=bad", "200"},
 		{"tail_lines=-5", "1"},
-		{"tail_lines=100001", "100000"},
+		{"tail_lines=100001", "5000"},
 	}
 	for _, tc := range cases {
 		before := len(logQuery.values())
@@ -338,7 +338,7 @@ func TestLogsDisabledAndFilteredBranches(t *testing.T) {
 		want  string
 	}{
 		{"tail_lines=-5", `name="tail_lines" value="1"`},
-		{"tail_lines=100001", `name="tail_lines" value="100000"`},
+		{"tail_lines=100001", `name="tail_lines" value="5000"`},
 	} {
 		rec := httptest.NewRecorder()
 		enabled.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?container=nginx&"+tc.query, nil))

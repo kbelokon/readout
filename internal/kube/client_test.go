@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -446,6 +447,100 @@ func TestLogsUsePlainPodLogSubresource(t *testing.T) {
 	if !strings.Contains(logs, "GET / 200") {
 		t.Fatalf("unexpected log payload %q", logs)
 	}
+}
+
+// bodyServer is an httptest server that answers every request with the same
+// fixed body and status, letting the byte-cap tests drive an exact-size
+// response straight into the Table/Logs reads.
+func bodyServer(t *testing.T, status int, body []byte) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func podsResourceType() *ResourceType {
+	return &ResourceType{Version: "v1", APIVersion: "v1", Plural: "pods", Namespaced: true}
+}
+
+// TestTableReadCap pins the bounded Table read: a body over maxTableBytes is
+// rejected with an error (never buffered whole), while a body at the cap is
+// read and decoded normally.
+func TestTableReadCap(t *testing.T) {
+	t.Run("over cap errors", func(t *testing.T) {
+		oversized := make([]byte, maxTableBytes+1)
+		srv := bodyServer(t, http.StatusOK, oversized)
+		client, err := NewClient(&rest.Config{Host: srv.URL}, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.Table(context.Background(), podsResourceType(), ListOptions{Namespace: "default"})
+		if err == nil {
+			t.Fatal("expected an error for an over-cap Table response, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("expected a cap error, got %v", err)
+		}
+	})
+
+	t.Run("at cap ok", func(t *testing.T) {
+		atCap := []byte(`{"columnDefinitions":[{"name":"Name"}],"rows":[]}`)
+		if len(atCap) > maxTableBytes {
+			t.Fatalf("fixture body %d exceeds cap %d", len(atCap), maxTableBytes)
+		}
+		srv := bodyServer(t, http.StatusOK, atCap)
+		client, err := NewClient(&rest.Config{Host: srv.URL}, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		table, err := client.Table(context.Background(), podsResourceType(), ListOptions{Namespace: "default"})
+		if err != nil {
+			t.Fatalf("under-cap Table read should succeed: %v", err)
+		}
+		if len(table.Columns) != 1 || table.Columns[0].Name != "Name" {
+			t.Fatalf("unexpected decoded columns: %#v", table.Columns)
+		}
+	})
+}
+
+// TestLogsReadCap pins the bounded log read: a stream over maxLogBytes returns a
+// cap error rather than a giant string, while an under-cap stream is returned
+// whole.
+func TestLogsReadCap(t *testing.T) {
+	t.Run("over cap errors", func(t *testing.T) {
+		oversized := make([]byte, maxLogBytes+1)
+		srv := bodyServer(t, http.StatusOK, oversized)
+		client, err := NewClient(&rest.Config{Host: srv.URL}, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		logs, err := client.Logs(context.Background(), LogOptions{Namespace: "default", Pod: "nginx", Container: "nginx", TailLines: 20})
+		if err == nil {
+			t.Fatalf("expected an error for an over-cap log stream, got %d bytes", len(logs))
+		}
+		if !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("expected a cap error, got %v", err)
+		}
+	})
+
+	t.Run("under cap ok", func(t *testing.T) {
+		payload := []byte("hello log\n")
+		srv := bodyServer(t, http.StatusOK, payload)
+		client, err := NewClient(&rest.Config{Host: srv.URL}, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		logs, err := client.Logs(context.Background(), LogOptions{Namespace: "default", Pod: "nginx", Container: "nginx", TailLines: 20})
+		if err != nil {
+			t.Fatalf("under-cap log read should succeed: %v", err)
+		}
+		if logs != string(payload) {
+			t.Fatalf("unexpected log payload %q", logs)
+		}
+	})
 }
 
 func TestTableURLPreservesAPIServerBasePath(t *testing.T) {

@@ -17,6 +17,24 @@ import (
 	"github.com/kbelokon/readout/internal/yamlview"
 )
 
+// maxTailLines caps the requested log tail so a single request cannot ask the
+// apiserver (and this process) to buffer an unbounded number of lines. A larger
+// requested value is clamped down to this ceiling rather than rejected.
+const maxTailLines = 5000
+
+// clampTailLines bounds a requested log tail to [1, maxTailLines]. A value above
+// the ceiling is clamped down (not rejected) so an over-large request still
+// returns logs, just capped.
+func clampTailLines(n int64) int64 {
+	if n < 1 {
+		return 1
+	}
+	if n > maxTailLines {
+		return maxTailLines
+	}
+	return n
+}
+
 // logLine is one rendered log entry (a timestamp-grouped block): the message
 // text and the source pod/container. It feeds logPreHTML, which derives the
 // level class from the text at render time.
@@ -318,11 +336,7 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 			tail = n
 		}
 	}
-	if tail < 1 {
-		tail = 1
-	} else if tail > 100000 {
-		tail = 100000
-	}
+	tail = clampTailLines(tail)
 	filterText := r.URL.Query().Get("filter")
 	selectedContainer := r.URL.Query().Get("container")
 	var lines []logLine
