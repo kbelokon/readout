@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.8.0
-appVersion: 0.8.0
+version: 0.8.1
+appVersion: 0.8.1
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,13 +29,7 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.8.0
+      image: ghcr.io/kbelokon/readout:0.8.1
   artifacthub.io/changes: |
     - kind: changed
-      description: "Resource identity moved to app.kubernetes.io/name+instance with release-scoped names; upgrade from <=0.6 requires helm uninstall && helm install (stateless, no data loss)"
-    - kind: added
-      description: "Full chart surface: RBAC presets (wildcard/restricted), Ingress and Gateway API exposure, metrics listener with optional ServiceMonitor, typed secret wiring, PodDisruptionBudget, and an extraObjects escape hatch"
-    - kind: added
-      description: "Cross-field safety gates for no-auth exposure, multi-replica OIDC session secrets, and metrics port conflicts, each with an unsafe.* override"
-    - kind: added
-      description: "Hand-written README, AGENTS.md deployment guidance, and seven runnable example values files"
+      description: "Kube API metrics label renamed cluster -> target_cluster so externally injected cluster labels (external_labels, remote-write) no longer collide with readout's per-connection dimension"
