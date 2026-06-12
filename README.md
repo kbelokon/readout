@@ -196,14 +196,26 @@ docker run --rm -p 8080:8080 -v "$PWD/readout.yaml:/readout.yaml" ghcr.io/kbelok
 
 ### Helm chart (OCI, from GHCR)
 
+The chart is the supported Kubernetes install path:
+
 ```sh
 helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.7.0
 ```
 
-## Deploy
+See [`chart/README.md`](chart/README.md) for values, RBAC, and a breaking-upgrade
+note when moving from a ≤ 0.6 release.
 
-A kustomize base also lives in [`deploy/kustomize`](deploy/kustomize). The
-chart's `image.tag` / `appVersion` track the app release they target; the
+If you want raw manifests instead of a Helm release — to commit them to git, pipe
+them into another tool, or just read them — render the chart locally:
+
+```sh
+helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.7.0 > readout.yaml
+```
+
+readout deploys on its own host (its own domain or subdomain); it builds
+root-absolute URLs everywhere and does not support being served under a subpath.
+
+The chart's `image.tag` / `appVersion` track the app release they target; the
 chart's own version moves independently.
 
 ## License & attribution
