@@ -88,10 +88,13 @@ func TestPostJSONTimeout(t *testing.T) {
 	}
 }
 
-// TestPostJSONResponseCap pins that a body comfortably over the old 1 MiB cap
-// still decodes under the 4 MiB cap.
-func TestPostJSONResponseCap(t *testing.T) {
-	big := strings.Repeat("a", 2<<20) // 2 MiB, over the old 1 MiB cap.
+// TestPostJSONResponseCapUnderLimit pins that a JSON body comfortably under the
+// response cap decodes in full: the cap does not clip a legitimately large hook
+// reply (a single Kubernetes object can approach the etcd object ceiling).
+func TestPostJSONResponseCapUnderLimit(t *testing.T) {
+	// 3 MiB blob: the encoded body stays under the responseCap (4 MiB) with room
+	// for the surrounding JSON, so the whole reply must come back intact.
+	big := strings.Repeat("a", 3<<20)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"blob": big})
 	}))
@@ -100,10 +103,34 @@ func TestPostJSONResponseCap(t *testing.T) {
 	c := NewClient()
 	var out map[string]string
 	if err := c.postJSON(context.Background(), server.URL, map[string]string{}, &out); err != nil {
-		t.Fatalf("2 MiB body err = %v", err)
+		t.Fatalf("under-cap body err = %v", err)
 	}
 	if out["blob"] != big {
-		t.Fatalf("2 MiB body decoded length = %d, want %d", len(out["blob"]), len(big))
+		t.Fatalf("under-cap body decoded length = %d, want %d", len(out["blob"]), len(big))
+	}
+}
+
+// TestPostJSONResponseCapTruncates pins that the cap actually engages: a body
+// past responseCap is silently truncated by the LimitReader, so the decode of a
+// now-incomplete JSON document fails with an unmarshal error rather than
+// returning a partially-read object as success.
+func TestPostJSONResponseCapTruncates(t *testing.T) {
+	// 5 MiB blob: the encoded body exceeds responseCap (4 MiB), so the JSON is cut
+	// mid-string and can no longer parse.
+	big := strings.Repeat("a", 5<<20)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"blob": big})
+	}))
+	defer server.Close()
+
+	c := NewClient()
+	var out map[string]string
+	err := c.postJSON(context.Background(), server.URL, map[string]string{}, &out)
+	if err == nil {
+		t.Fatal("over-cap body unexpectedly decoded; the response cap did not truncate")
+	}
+	if !strings.Contains(err.Error(), "unexpected end of JSON input") {
+		t.Fatalf("over-cap body err = %v, want an unmarshal/end-of-input error", err)
 	}
 }
 

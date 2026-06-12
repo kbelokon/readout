@@ -89,3 +89,95 @@ func TestDomainMetricsScrape(t *testing.T) {
 		}
 	}
 }
+
+// TestDomainMetricsScrapeErrorLabels is the error-side sibling of
+// TestDomainMetricsScrape: it drives a failing kube list (the fakeapi
+// fail-lists 500 mode, which the client classifies as upstream_5xx) and a
+// failing hook (the resource-prerender hook pointed at a server that always
+// returns 500), then scrapes /metrics and asserts the error-side label values
+// are present. Without this, an observer that recorded result="ok"
+// unconditionally would still pass the ok-only scrape test.
+func TestDomainMetricsScrapeErrorLabels(t *testing.T) {
+	fake, err := fakeapi.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fake.Close)
+
+	// The authorization hook allows every request through, so the kube list and
+	// the prerender hook below are actually reached.
+	authHook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"allowed":true}`))
+	}))
+	t.Cleanup(authHook.Close)
+
+	// The prerender hook always fails: a 500 makes the hook call error, which the
+	// observer must record as result="error".
+	prerenderHook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(prerenderHook.Close)
+
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                     8080,
+		Clusters:                 []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:             "dark",
+		AuthMode:                 config.AuthModeHeaders,
+		TrustedHeaderUser:        "X-Forwarded-User",
+		AuthorizationHookURL:     authHook.URL,
+		ResourcePrerenderHookURL: prerenderHook.URL,
+	})
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	// 1) A detail render fires the prerender hook. The object GET succeeds, the
+	// hook returns 500, so the request itself fails -- but the hook observer
+	// records result="error" before the error propagates.
+	detailReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/nginx", nil)
+	detailReq.Header.Set("X-Forwarded-User", "alice")
+	detailResp, err := http.DefaultClient.Do(detailReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = detailResp.Body.Close()
+
+	// 2) Arm the fail-lists 500 mode, then issue a list page: the kube list call
+	// reaches the apiserver and gets a 5xx Status, classified as upstream_5xx.
+	armReq, _ := http.NewRequest(http.MethodGet, fake.URL+"/__control/fail-lists?mode=500", nil)
+	armResp, err := http.DefaultClient.Do(armReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = armResp.Body.Close()
+	if armResp.StatusCode != http.StatusOK {
+		t.Fatalf("arm fail-lists status = %d", armResp.StatusCode)
+	}
+
+	listReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods", nil)
+	listReq.Header.Set("X-Forwarded-User", "alice")
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = listResp.Body.Close()
+
+	// 3) Scrape /metrics and assert the error-side label values are present.
+	rec := httptest.NewRecorder()
+	app.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	wantSeries := []string{
+		// kube list against the configured cluster, classified as a 5xx upstream.
+		`readout_kube_requests_total{cluster="test",operation="list",result="upstream_5xx"}`,
+		// prerender hook duration histogram with the error result.
+		`readout_hook_duration_seconds_count{hook="prerender",result="error"}`,
+	}
+	for _, needle := range wantSeries {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("metrics missing series %q in:\n%s", needle, body)
+		}
+	}
+}
