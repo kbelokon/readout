@@ -288,3 +288,18 @@ extraObjects: []
 #     name: '{{ include "readout.fullname" $ }}-extra'
 #   stringData:
 #     key: value
+
+# Acknowledgements that silence the chart's safety gates. These gates see
+# CHART VALUES ONLY: secrets and auth config delivered through env / envFrom
+# (opaque references the chart cannot read) bypass them entirely and are caught
+# instead by the app's startup checks and `readout config validate`. The gates
+# exist to catch the obvious local-values mistakes, not to be authoritative.
+unsafe:
+  # Set true to allow exposing readout (ingress/gateway) while config.auth.mode
+  # is none. Without this, exposing a no-auth instance is a template error.
+  allowNoAuth: false
+  # Set true to allow multi-replica OIDC without a stable session secret wired
+  # through chart values. Without it (and with no session-secret wiring the
+  # chart can see), that combination is a template error -- each replica would
+  # sign sessions with its own ephemeral key and break OIDC login affinity.
+  allowEphemeralSessionSecret: false
