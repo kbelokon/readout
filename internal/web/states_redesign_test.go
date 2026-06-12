@@ -559,7 +559,7 @@ func TestStatesStaleMarkupHooks(t *testing.T) {
 		t.Fatalf("stale banner must be hidden on first paint (JS reveals it)")
 	}
 	if title := normSpace(banner.Find(".bn-title").Text()); title != "Auto-refresh failed — showing the last good data" {
-		t.Fatalf("stale banner title = %q, want the D16 copy", title)
+		t.Fatalf("stale banner title = %q, want the designed stale-state copy", title)
 	}
 	if !strings.Contains(banner.Find(".bn-text").Text(), "Retrying in") {
 		t.Fatalf("stale banner text = %q, want the Retrying-in line", banner.Find(".bn-text").Text())
@@ -784,12 +784,12 @@ func TestFirstRunHasNoLoginUI(t *testing.T) {
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/clusters" {
-		t.Fatalf("GET /login = %d -> %q, want the catch-all 302 to /clusters (no login page exists, D17)", rec.Code, rec.Header().Get("Location"))
+		t.Fatalf("GET /login = %d -> %q, want the catch-all 302 to /clusters (no login page exists)", rec.Code, rec.Header().Get("Location"))
 	}
 	post := httptest.NewRecorder()
 	app.Handler().ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/login", nil))
 	if post.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("POST /login = %d, want 405 (no login submission surface, D17)", post.Code)
+		t.Fatalf("POST /login = %d, want 405 (no login submission surface)", post.Code)
 	}
 	p := get(t, app, "/clusters", http.StatusOK)
 	p.wantAbsent("input[type=password]")

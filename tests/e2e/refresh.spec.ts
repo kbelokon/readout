@@ -84,7 +84,7 @@ function resolvedToken(page: Page, token: string): Promise<string> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the auto-refresh chrome is a desktop surface (below 760px the card layer replaces the table, D22)'
+    'the auto-refresh chrome is a desktop surface (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
 });

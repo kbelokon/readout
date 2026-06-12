@@ -377,7 +377,7 @@ func TestImpersonation(t *testing.T) {
 		}
 	})
 
-	t.Run("passthrough clears Act-As (D4 cross-check)", func(t *testing.T) {
+	t.Run("passthrough clears Act-As (impersonation cross-check)", func(t *testing.T) {
 		// A fresh server+recorder so the clear is observed on this request alone,
 		// not confused with the accumulated impersonating requests above. Build a
 		// fresh base client off its own connection (the one above has cached

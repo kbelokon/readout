@@ -215,7 +215,7 @@ func TestServiceCellsPendingAndExternalNameRender(t *testing.T) {
 		t.Fatalf("pending LB cell = %q, want the warn 'pending' status cell", normSpace(pendingCell.Text()))
 	}
 	if pendingCell.Find(".ro-dot.warn.pulse").Length() != 1 {
-		t.Fatalf("pending LB dot must PULSE (a transitioning state, law §1.3)")
+		t.Fatalf("pending LB dot must PULSE (a transitioning state)")
 	}
 
 	extName := doc.Find(`table.ro-table tr:has(td.cell-name a:contains("legacy-billing"))`)

@@ -110,7 +110,7 @@ async function expectFocus(page: Page, key: string): Promise<void> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'keyboard row navigation is a desktop surface (below 760px the card layer replaces the table, D22)'
+    'keyboard row navigation is a desktop surface (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
 });

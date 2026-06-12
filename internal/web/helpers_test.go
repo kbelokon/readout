@@ -162,7 +162,7 @@ func TestStatusToneSpecTableCrossPackage(t *testing.T) {
 			t.Fatalf("transientStatus(%q) = %t, want %t", c.value, got, c.pulse)
 		}
 		if c.tone == "err" && transientStatus(c.value) {
-			t.Fatalf("err state %q must never pulse (law §1.3)", c.value)
+			t.Fatalf("err state %q must never pulse (only in-flight states animate)", c.value)
 		}
 	}
 }

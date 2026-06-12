@@ -14,7 +14,7 @@ const CONFIGMAPS = '/clusters/e2e/namespaces/default/configmaps';
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the keys cell rides the table layer; below 760px the card layer replaces it (D22)'
+    'the keys cell rides the table layer; below 760px the card layer replaces it'
   );
   const res = await fetch(`${controlURL}/__control/reset`);
   if (!res.ok) {

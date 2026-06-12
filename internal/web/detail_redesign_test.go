@@ -100,7 +100,7 @@ func TestResourceViewDetailSpine(t *testing.T) {
 	doc := renderDetailView(t, buildDefaultDetailView(t, obj))
 
 	if doc.Find(".ro-rd").Length() == 0 {
-		t.Fatalf("detail view missing the .ro-rd content marker (D13)")
+		t.Fatalf("detail view missing the .ro-rd content marker")
 	}
 	if doc.Find(".ro-rd .ro-detail-title").Length() == 0 {
 		t.Fatalf(".ro-detail-title is not under the .ro-rd marker")
@@ -164,7 +164,7 @@ func TestDetailLabelChipsNeutral(t *testing.T) {
 	// NEGATIVE (the regression net for the retired class): no rendered chip on
 	// the detail page carries the .app accent -- not even for app.kubernetes.io/*.
 	if got := doc.Find(".ro-chip.app").Length(); got != 0 {
-		t.Fatalf("retired .ro-chip.app accent rendered %d time(s); labels are neutral (D3)", got)
+		t.Fatalf("retired .ro-chip.app accent rendered %d time(s); labels are neutral", got)
 	}
 
 	// The app.kubernetes.io/* label is an ordinary neutral chip: addressed by its

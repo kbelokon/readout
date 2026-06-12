@@ -50,7 +50,7 @@ function selectedKeys(page: Page): Promise<string[]> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the row/keyboard/palette gesture surfaces are desktop-only (below 760px the card layer replaces the table, D22)'
+    'the row/keyboard/palette gesture surfaces are desktop-only (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
 });

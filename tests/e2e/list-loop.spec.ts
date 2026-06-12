@@ -106,7 +106,7 @@ async function pickInterval(page: Page, secs: number): Promise<void> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the v2 list loop is a desktop surface (below 760px the card layer replaces the sortable table, D22)'
+    'the v2 list loop is a desktop surface (below 760px the card layer replaces the sortable table)'
   );
   await control('/__control/reset');
 });

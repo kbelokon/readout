@@ -38,7 +38,7 @@ async function selectRow(page: Page, key: string): Promise<void> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the download buttons ride the table chrome (below 760px the card layer replaces it, D22)'
+    'the download buttons ride the table chrome (below 760px the card layer replaces it)'
   );
   await control('/__control/reset');
 });

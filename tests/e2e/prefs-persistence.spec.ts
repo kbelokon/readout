@@ -57,7 +57,7 @@ async function pickInterval(page: Page, secs: number): Promise<void> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the prefs write surfaces are desktop chrome (below 760px the card layer replaces the sortable table, D22)'
+    'the prefs write surfaces are desktop chrome (below 760px the card layer replaces the sortable table)'
   );
   await control('/__control/reset');
 });

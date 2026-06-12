@@ -265,7 +265,7 @@ func TestContainerStateToneByReason(t *testing.T) {
 		t.Fatalf("waiting-reason state = %q, want CrashLoopBackOff toned err", got)
 	}
 	if boom.Find(".ro-dot.err.pulse").Length() != 0 {
-		t.Fatalf("CrashLoopBackOff must NOT pulse (errors never animate, law §1.3)")
+		t.Fatalf("CrashLoopBackOff must NOT pulse (errors never animate)")
 	}
 	if got := normSpace(boom.Find("span.ready.partial").Text()); got != "not ready" {
 		t.Fatalf("crashing container ready cell = %q, want not ready/partial", got)
@@ -319,7 +319,7 @@ func TestContainersLiveMetricsThroughHandler(t *testing.T) {
 		t.Fatalf("the containers section must precede the Spec YAML card")
 	}
 	if p.doc.Find(`.ro-yaml-card[data-name="status"].is-collapsed`).Length() != 1 {
-		t.Fatalf("the Status YAML card must start is-collapsed (SPEC §7.15)")
+		t.Fatalf("the Status YAML card must start is-collapsed")
 	}
 	if p.doc.Find(`.ro-yaml-card[data-name="spec"].is-collapsed`).Length() != 0 {
 		t.Fatalf("the Spec YAML card must start OPEN")

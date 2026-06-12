@@ -76,7 +76,7 @@ async function roPrefsCookie(page: Page): Promise<string | undefined> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the columns popover is a desktop surface (below 760px the card layer replaces the table, D22)'
+    'the columns popover is a desktop surface (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
 });

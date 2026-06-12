@@ -60,7 +60,7 @@ func TestLogsRedesignChrome(t *testing.T) {
 	})
 
 	if doc.Find(".ro-rd").Length() == 0 {
-		t.Fatalf("logs view missing the .ro-rd content marker (D13)")
+		t.Fatalf("logs view missing the .ro-rd content marker")
 	}
 	if doc.Find(".ro-rd .ro-detail-title").Length() == 0 {
 		t.Fatalf(".ro-detail-title is not under the .ro-rd marker")

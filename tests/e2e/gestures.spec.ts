@@ -115,7 +115,7 @@ const menuItems = '#ro-ctxmenu [data-ro-action]:not([hidden])';
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'row gestures are a desktop surface (below 760px the card layer replaces the table, D22)'
+    'row gestures are a desktop surface (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
 });

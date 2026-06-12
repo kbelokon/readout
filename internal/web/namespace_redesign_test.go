@@ -202,7 +202,7 @@ func TestNamespaceLabelChipsThroughRender(t *testing.T) {
 	// projection, chrome -- no element ever carries the retired `.ro-chip.app`
 	// green accent. Any surface re-emitting it trips this count.
 	if got := doc.Find(".ro-chip.app").Length(); got != 0 {
-		t.Fatalf("retired .ro-chip.app accent rendered %d time(s); every label chip must be neutral (D3)", got)
+		t.Fatalf("retired .ro-chip.app accent rendered %d time(s); every label chip must be neutral", got)
 	}
 
 	// The load-bearing constraint: NO pod-count column is fabricated. A Namespace

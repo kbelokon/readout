@@ -116,7 +116,7 @@ func TestFilterBarSingleTypeOnly(t *testing.T) {
 	v := podsListView(t, "/clusters/test/namespaces/default/all?f=status%3ARunning", "all")
 	doc := renderListView(t, v)
 	if doc.Find("#ro-filter-field").Length() != 0 {
-		t.Fatalf("multi-type page rendered the chips editor; the D1 boundary forbids it")
+		t.Fatalf("multi-type page rendered the chips editor; it is a single-type-page surface")
 	}
 	if doc.Find("input#ro-filter-input").Length() != 0 {
 		t.Fatalf("multi-type page rendered the editor input")

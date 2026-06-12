@@ -103,7 +103,7 @@ async function commitDraft(page: Page): Promise<void> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the chips editor is a desktop surface (below 760px the card layer replaces the table, D22)'
+    'the chips editor is a desktop surface (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
 });

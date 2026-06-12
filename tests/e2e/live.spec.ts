@@ -109,7 +109,7 @@ async function setHidden(page: Page, hidden: boolean): Promise<void> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the Live chrome (refresh dropdown, chips editor, windowing) is a desktop surface (below 760px the card layer replaces the table, D22)'
+    'the Live chrome (refresh dropdown, chips editor, windowing) is a desktop surface (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
 });
