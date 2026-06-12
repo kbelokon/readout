@@ -61,11 +61,11 @@ templ resourceTables(d ListData) {
 		}
 		// The wrap is keyboard-reachable (tabindex) -- required for a scrollable
 		// region anyway -- and carries role="group", which supports the JS-managed
-		// aria-activedescendant that mirrors the j/k row focus (D23/SPEC §8.6:
-		// "j/k focus moves aria-activedescendant"). readout.js writes/clears the
+		// aria-activedescendant that mirrors the j/k row focus (j/k focus moves
+		// aria-activedescendant). readout.js writes/clears the
 		// attribute from the identity-keyed focus store after every morph.
 		// Above the windowing threshold the wrap carries `ro-windowed` instead
-		// of `has-cards` (Unit 24/D20): the virtualizer engages off it, the
+		// of `has-cards`: the virtualizer engages off it, the
 		// fixed-height clamp CSS keys off it, and <760px keeps the table
 		// visible because the card projection below is suppressed.
 		<div class={ tableWrapClass(tableWindowed(&table)) } role="group" tabindex="0" aria-label={ table.Kind }><table class="ro-table"><thead><tr>
@@ -149,10 +149,10 @@ templ resourceTables(d ListData) {
 					</td></tr>
 			}
 			</tbody></table></div>
-		// Card suppression above the windowing threshold (Unit 24/D20): the
+		// Card suppression above the windowing threshold: the
 		// server-rendered mobile projection would ride EVERY morph as 600
 		// hidden .ro-pcard subtrees. Below the threshold the card layer is
-		// unchanged (D22).
+		// unchanged.
 		if !tableWindowed(&table) {
 			@cardList(d, table)
 		}

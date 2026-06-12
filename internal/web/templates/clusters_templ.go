@@ -8,7 +8,7 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-// clusters.templ is the clusters-entry page body (D4/D11/D13): the redesign
+// clusters.templ is the clusters-entry page body: the redesign
 // title row + count, the `.tools-row` filter form, and the
 // `.ro-table.ro-select-table` search-select table with the per-row checkbox
 // (data-ro-toggle-button="search-clusters-button") + the bottom primary `.ro-btn`
@@ -17,7 +17,7 @@ import templruntime "github.com/a-h/templ/runtime"
 // carries no cluster scope (handler-side: buildSidebarView/buildNavbarView gate
 // on cluster != ""), so no option is threaded here.
 //
-// The OUTERMOST content element carries the `ro-rd` content marker (D13): the
+// The OUTERMOST content element carries the `ro-rd` content marker: the
 // colliding redesign classes used below -- .ro-select-table, .ro-cell-url,
 // .ro-chips, .ro-chip -- are scoped under .ro-rd in readout.css, so they only
 // resolve when this content root carries the marker. The API URL cell is the
@@ -29,7 +29,7 @@ import templruntime "github.com/a-h/templ/runtime"
 // touches no request.
 
 // ClustersData is the resolved clusters-entry input. FirstRun flips the body to
-// the SPEC §7.2 first-run instruction screen (D17): true only when ZERO
+// the first-run instruction screen: true only when ZERO
 // clusters are configured anywhere (no loaded clusters, no broken clusters, no
 // external clusters) -- a broken-but-configured cluster is a different problem
 // and must not see the nothing-configured headline.
@@ -44,11 +44,11 @@ type ClustersData struct {
 }
 
 // ClusterRow is one in-cluster row: name + API URL + the label chips. Each chip
-// is a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3
+// is a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (the
 // colour law: the green app.kubernetes.io/* accent is retired). Href is the
 // resolved cluster-entry link (clusterEntryHref in package web): the plain
 // /clusters/<name> overview, or the persisted namespace's pods list when the
-// ro_prefs cookie carries one for this cluster (D9 -- link construction only).
+// ro_prefs cookie carries one for this cluster (link construction only).
 type ClusterRow struct {
 	Name  string
 	Href  string
@@ -110,14 +110,14 @@ func Clusters(d ClustersData) templ.Component {
 	})
 }
 
-// firstRun is the SPEC §7.2 first-run screen (D17): zero clusters configured is
+// firstRun is the first-run screen: zero clusters configured is
 // an INSTRUCTION, not emptiness. The headline copy matches the prototype
 // literally; the command block uses the binary's REAL config surface --
 // `KUBECONFIG=~/.kube/config readout` plus the `--config` file alternative
 // (the prototype's `--kubeconfig` flag does not exist in readout: an unknown
 // flag exits at config.Parse). Setup docs links the README's cluster-connection
 // section; Re-check is a plain read-only GET reload of /clusters. There is NO
-// login screen anywhere (D17: auth stays config-only).
+// login screen anywhere (auth stays config-only).
 func firstRun() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context

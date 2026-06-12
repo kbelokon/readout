@@ -12,9 +12,9 @@ import templruntime "github.com/a-h/templ/runtime"
 // in-flight progress bar, and the persistent #resource-list-content htmx
 // container wrapping the ResourceTable fragment.
 //
-// The container comes in TWO variants (D1 surface boundary):
+// The container comes in TWO variants (single-type/multi-type surface boundary):
 //
-//   - Single-type pages (SingleType) run the v2 interaction loop (D6): the
+//   - Single-type pages (SingleType) run the v2 interaction loop: the
 //     container carries NO baked request URL -- the refresh tick and every
 //     programmatic re-fetch derive the `_table` URL from location.href at fire
 //     time (readout.js, marked by data-live-url="location"), so a sort/filter
@@ -22,10 +22,10 @@ import templruntime "github.com/a-h/templ/runtime"
 //     CSP-safe `ro-morph` extension (hx-swap="morph": idiomorph with an
 //     explicit JS config object -- attribute-spec morph config would be
 //     eval'd by the vendored extension and blocked by CSP). The gesture chrome
-//     (Unit 16: the #ro-bulkbar selection pill + the #ro-ctxmenu right-click
+//     (the #ro-bulkbar selection pill + the #ro-ctxmenu right-click
 //     menu, both defined in overlays.templ) mounts HERE, OUTSIDE the swap
 //     target, so it survives every morph untouched -- and only on single-type
-//     pages, the D1 boundary the gestures share with the loop.
+//     pages, the surface boundary the gestures share with the loop.
 //
 //   - Multi-type pages (plural=all / CSV / _all union) keep the v1 contract:
 //     the render-time-baked PartialURL hx-get re-fetched on the ro:refresh
@@ -33,8 +33,8 @@ import templruntime "github.com/a-h/templ/runtime"
 
 // ListPageData is the full resource-list page input: the breadcrumb crumbs, the
 // `_table` partial URL for the v1 multi-type htmx container (unused on
-// single-type pages, which derive it from location at fire time -- D6), the
-// SingleType loop flag (D1), the bulk bar's download wiring (Unit 17 / D11),
+// single-type pages, which derive it from location at fire time), the
+// SingleType loop flag, the bulk bar's download wiring,
 // and the table fragment data.
 type ListPageData struct {
 	Breadcrumb ListBreadcrumb
@@ -60,7 +60,7 @@ type ListBreadcrumb struct {
 
 // ResourceList wraps the breadcrumb, the in-flight progress bar, and the
 // persistent #resource-list-content htmx container in a single `ro-rd` content
-// root. `ro-rd` is the redesign CONTENT MARKER (D13): it routes the colliding
+// root. `ro-rd` is the redesign CONTENT MARKER: it routes the colliding
 // class names (.ro-breadcrumb, .ro-phase-strip, .ro-phase-chip) emitted below to
 // the redesign CSS rules. It sits on the outermost element this engine puts
 // inside the layout's `.ro-main`, so every descendant (breadcrumb + the morphed
@@ -170,7 +170,7 @@ func ResourceList(d ListPageData) templ.Component {
 	})
 }
 
-// listSkeleton is the loading-skeleton SOURCE (D16/SPEC §7.19): a hidden,
+// listSkeleton is the loading-skeleton SOURCE: a hidden,
 // inert block of schema-mirroring placeholder rows -- one `.skel` bar per
 // VISIBLE column (widths from skelWidths), fading toward the bottom. It lives
 // OUTSIDE the #resource-list-content morph target so it survives swaps and is

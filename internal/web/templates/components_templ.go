@@ -52,20 +52,20 @@ func iconC(name string) templ.Component {
 
 // CommandPalette is the ⌘K jump-to overlay, included once per page in the
 // layout. It owns no data: readout.js reads the server-built #ro-palette-data
-// JSON blob (D10) and builds the grouped rows into #ro-palette-list at open
-// time, in the SPEC §6.3 + D21 group order -- while typing: Everywhere (the
+// JSON blob and builds the grouped rows into #ro-palette-list at open
+// time, in this group order -- while typing: Everywhere (the
 // pinned /search?q= row) / On this page / Resource types / Namespaces /
 // Clusters / Actions; on an empty query the persisted Recents group leads
 // instead. The overlay ROOT carries BOTH `ro-rd` AND `ro-palette-backdrop`
-// (D13: the redesign palette container rules are gated by the `ro-rd` marker
+// (the redesign palette container rules are gated by the `ro-rd` marker
 // ON the backdrop root, since the overlay lives OUTSIDE the `.ro-rd` content
 // subtree); readout.js toggles the `open` class to reveal it. The ids/classes/
 // roles here are a hard JS contract -- the search input, the list container,
 // and the `.ro-pal-*` row vocabulary the JS writes into (the `pal-label` text,
 // the `pal-status` tone on page objects, the `pal-meta` API group and the
-// quiet `pal-scope` namespaced/cluster badge on resource types -- the Unit 3
-// `.scope-badge` wording, per the D3 colour law) must match readout.css + the
-// JS. The footer keeps the D21 key hints (↑↓ / ⏎ / esc).
+// quiet `pal-scope` namespaced/cluster badge on resource types -- the
+// `.scope-badge` wording, per the colour law) must match readout.css + the
+// JS. The footer keeps the key hints (↑↓ / ⏎ / esc).
 func CommandPalette() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context

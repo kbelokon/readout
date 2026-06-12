@@ -16,11 +16,11 @@ import templruntime "github.com/a-h/templ/runtime"
 // tableCell renders one body cell, branching on Kind. The Name branch is its own
 // sticky `td.cell-name` (with the pn-head/pn-tail split); the rest share the
 // (cellClass + colClass) <td> wrapper and reskin into the redesign vocabulary.
-// A middle-truncated name (head > 42 chars, SPEC §4.2) renders its truncated
+// A middle-truncated name (head > 42 chars) renders its truncated
 // head with the FULL name in the link's title; a short name keeps the exact
 // v1 markup (bare value when there is no hash tail).
 //
-// windowed (Unit 24/D20, true above the virtualization threshold) flips the
+// windowed (true above the virtualization threshold) flips the
 // fixed-height variants: the events msg cell gains a full-text title (CSS
 // clamps it to one line off the wrap's ro-windowed class) and the chip/keys
 // strips render their +N as a static title-carrying chip instead of the
@@ -1676,9 +1676,9 @@ func tableCell(cell TableCell, windowed bool) templ.Component {
 }
 
 // rowChip renders one label chip in a table cell (and its mobile-card mirror):
-// a click-to-filter anchor when Href is set (single-type pages, D7/SPEC §8.1),
-// an inert span otherwise. Both keep the NEUTRAL `.ck`/`.cs`/`.cv` split (D3).
-// extra marks an overflow chip past the SPEC §4.9 in-cell threshold: it
+// a click-to-filter anchor when Href is set (single-type pages),
+// an inert span otherwise. Both keep the NEUTRAL `.ck`/`.cs`/`.cv` split.
+// extra marks an overflow chip past the in-cell threshold: it
 // carries `.xtra` and stays hidden until the strip expands.
 func rowChip(chip RowChip, extra bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -1830,14 +1830,14 @@ func rowChip(chip RowChip, extra bool) templ.Component {
 	})
 }
 
-// chipsStrip renders a label/selector chip strip with the SPEC §4.9 in-cell
+// chipsStrip renders a label/selector chip strip with the in-cell
 // overflow: the first chipsCellMax chips show, the extras carry `.xtra`
 // (hidden until the `.ro-chips` strip gains `.expanded`), and the trailing +N
 // button toggles the expansion IN-CELL (its text flips to "less" via the
 // `.more-n`/`.more-less` CSS swap). Callers branch the empty case ("—")
 // themselves.
 //
-// While windowed (Unit 24/D20) expansion is DISABLED -- expanding a strip
+// While windowed expansion is DISABLED -- expanding a strip
 // in-cell would break the fixed row height exactly where virtualization
 // engages -- so the overflow chips are not emitted at all and the +N renders
 // static with the full list in its title.
@@ -1895,7 +1895,7 @@ func chipsStrip(chips []RowChip, windowed bool) templ.Component {
 	})
 }
 
-// keysChips renders a configmap/secret data-keys strip (SPEC §4.10): one
+// keysChips renders a configmap/secret data-keys strip: one
 // `name · size` chip per key (name firm `.cv`, size faint `.ck`), the first
 // keysCellMax shown, the rest behind the `+N keys` expand -- the SAME
 // `.xtra`/`.expanded` machinery the label chips use. Secret VALUES are absent
@@ -1999,7 +1999,7 @@ func keysChips(keys []KeyChip, windowed bool) templ.Component {
 	})
 }
 
-// moreChip is the in-cell overflow toggle (SPEC §4.9/§4.10): a real <button>
+// moreChip is the in-cell overflow toggle: a real <button>
 // (keyboard-reachable) carrying `data-ro-more` for the delegated readout.js
 // toggle -- the strict CSP forbids inline handlers. Collapsed it shows
 // "+N<suffix>"; once the strip carries `.expanded` the CSS hides `.more-n`
@@ -2047,7 +2047,7 @@ func moreChip(n int, suffix string) templ.Component {
 	})
 }
 
-// moreChipStatic is the WINDOWED overflow chip (Unit 24/D20): no data-ro-more
+// moreChipStatic is the WINDOWED overflow chip: no data-ro-more
 // hook (the delegated expand handler can never match it -- expansion is
 // disabled by construction, not by suppression), no button semantics; the
 // full chip list rides the title instead.

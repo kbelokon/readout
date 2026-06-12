@@ -68,7 +68,7 @@ func metaIcon(label string) string {
 }
 
 // ctxDotClass is the topbar namespace-pill dot: green only when a namespace is
-// actually SET (SPEC §6.1 "green dot when set" + law §1.1); the "None" state
+// actually SET (green dot when a namespace is set); the "None" state
 // adds the .none variant the prototype greys (chrome.css:77).
 func ctxDotClass(contextName string) string {
 	if contextName == "None" {
@@ -77,11 +77,11 @@ func ctxDotClass(contextName string) string {
 	return "ctx-dot"
 }
 
-// refreshSeconds maps a persisted ro_prefs refresh mode (D9 string vocabulary:
-// "Off", an interval in seconds, future "Live") to polling seconds. "" / "Off"
+// refreshSeconds maps a persisted ro_prefs refresh mode (string vocabulary:
+// "Off", an interval in seconds, "Live") to polling seconds. "" / "Off"
 // / "Live" / junk all yield 0 -- exactly what readout.js's refreshInterval()
 // derives from the same cookie, so the SSR'd topbar state and the JS init sync
-// always agree (Live gains its own rendering in Unit 27).
+// always agree (Live gains its own rendering elsewhere).
 func refreshSeconds(mode string) int {
 	n, err := strconv.Atoi(mode)
 	if err != nil || n < 0 {
@@ -91,7 +91,7 @@ func refreshSeconds(mode string) int {
 }
 
 // refreshLabel is the topbar #refresh-label text for a persisted refresh mode:
-// "Live" for the Live stream mode (Unit 27/D19), "Ns" for an active interval,
+// "Live" for the Live stream mode, "Ns" for an active interval,
 // else "Off" (matching readout.js syncRefreshUI).
 func refreshLabel(mode string) string {
 	if mode == "Live" {
@@ -120,7 +120,7 @@ func refreshOptionClass(interval, mode string) string {
 
 // refreshDropdownClass adds the refresh-on styling hook when a positive
 // interval OR the Live mode is persisted (the pulsing-livedot state readout.js
-// otherwise toggles -- Live pulses through the same hook, Unit 21/27 rule).
+// otherwise toggles -- Live pulses through the same hook).
 func refreshDropdownClass(mode string) string {
 	if mode == "Live" || refreshSeconds(mode) > 0 {
 		return "refresh-dropdown refresh-on"
@@ -262,7 +262,7 @@ func restartsClassRD(tone string) string {
 
 // chipClass is the label/data chip class: `ro-chip`, plus the `.xtra` marker
 // on a chip past the in-cell overflow threshold -- hidden by CSS until its
-// `.ro-chips` strip gains `.expanded` (SPEC §4.9/§4.10).
+// `.ro-chips` strip gains `.expanded`.
 func chipClass(extra bool) string {
 	if extra {
 		return "ro-chip xtra"
@@ -282,7 +282,7 @@ func containersLabel(count, initCount int) string {
 }
 
 // yamlCardClass is the per-section YAML card class: the collapsible card
-// triple, plus `is-collapsed` when the card starts folded (SPEC §7.15 -- the
+// triple, plus `is-collapsed` when the card starts folded (the
 // Status card collapses by default; the readout.js fold toggle reopens it).
 func yamlCardClass(collapsed bool) string {
 	if collapsed {
@@ -301,7 +301,7 @@ func thClass(colClass string, sorted bool) string {
 	return parts
 }
 
-// ariaSort derives the sorted header's aria-sort value (D23/SPEC §8.6) from
+// ariaSort derives the sorted header's aria-sort value from
 // the pre-rendered sort icon markup -- the SAME single source the visual
 // direction uses (sortIcon emits `sort-asc` for ascending, the plain chevron
 // for descending), so the announced direction can never drift from the drawn
@@ -409,7 +409,7 @@ func rolloutClass(state string) string {
 const skelRowCount = 12
 
 // skelWidths mirrors the VISIBLE column layout of the list's first table into
-// the skeleton cell widths (D16: rows mirror the column schema widths): the
+// the skeleton cell widths (rows mirror the column schema widths): the
 // optional leading Cluster/Namespace columns, every kube column that survived
 // the hide set, and the synthetic Created column unless hidden. Widths follow
 // the prototype renderSkeleton mapping (identity 220 / age 40 / default 80).
@@ -463,7 +463,7 @@ func warnIcon() string {
 }
 
 // emptyColspan computes the empty-row <td> colspan: the kube.Table column count
-// + 1 for the Created column (unless the D8 hide set suppressed it), plus the
+// + 1 for the Created column (unless the column-visibility hide set suppressed it), plus the
 // optional Cluster / Namespace columns.
 func emptyColspan(columnCount int, multiCluster, allNamespaces, hideCreated bool) int {
 	colspan := columnCount
@@ -490,7 +490,7 @@ func emptyNamespaceText(namespace string, allNamespaces bool) string {
 }
 
 // emptyTitle is the full plainly-empty sentence per the prototype VIEW.states
-// copy ("No <Kind> found in namespace “<ns>”", D16), returned as one trusted
+// copy ("No <Kind> found in namespace “<ns>”"), returned as one trusted
 // HTML string so the templ card emits it via a single @templ.Raw -- a text node
 // after @templ.Raw is parsed as that call's children (and templ.Raw drops
 // children), so the sentence must be one piece. kindPlural is the pluralized

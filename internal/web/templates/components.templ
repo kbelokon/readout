@@ -19,20 +19,20 @@ templ iconC(name string) {
 
 // CommandPalette is the ⌘K jump-to overlay, included once per page in the
 // layout. It owns no data: readout.js reads the server-built #ro-palette-data
-// JSON blob (D10) and builds the grouped rows into #ro-palette-list at open
-// time, in the SPEC §6.3 + D21 group order -- while typing: Everywhere (the
+// JSON blob and builds the grouped rows into #ro-palette-list at open
+// time, in this group order -- while typing: Everywhere (the
 // pinned /search?q= row) / On this page / Resource types / Namespaces /
 // Clusters / Actions; on an empty query the persisted Recents group leads
 // instead. The overlay ROOT carries BOTH `ro-rd` AND `ro-palette-backdrop`
-// (D13: the redesign palette container rules are gated by the `ro-rd` marker
+// (the redesign palette container rules are gated by the `ro-rd` marker
 // ON the backdrop root, since the overlay lives OUTSIDE the `.ro-rd` content
 // subtree); readout.js toggles the `open` class to reveal it. The ids/classes/
 // roles here are a hard JS contract -- the search input, the list container,
 // and the `.ro-pal-*` row vocabulary the JS writes into (the `pal-label` text,
 // the `pal-status` tone on page objects, the `pal-meta` API group and the
-// quiet `pal-scope` namespaced/cluster badge on resource types -- the Unit 3
-// `.scope-badge` wording, per the D3 colour law) must match readout.css + the
-// JS. The footer keeps the D21 key hints (↑↓ / ⏎ / esc).
+// quiet `pal-scope` namespaced/cluster badge on resource types -- the
+// `.scope-badge` wording, per the colour law) must match readout.css + the
+// JS. The footer keeps the key hints (↑↓ / ⏎ / esc).
 templ CommandPalette() {
 	<div id="ro-palette" class="ro-rd ro-palette-backdrop" role="dialog" aria-modal="true" aria-label="Jump to" aria-hidden="true"><div class="ro-palette" role="document"><div class="ro-pal-search"><span class="ico" aria-hidden="true">@iconC("search")</span><input id="ro-palette-input" type="text" placeholder="Jump to an object, kind, namespace, cluster… or search everywhere" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="ro-palette-list" aria-autocomplete="list" aria-label="Jump to"><span id="ro-palette-scope" class="ro-pal-scope" aria-hidden="true" hidden></span></div><div id="ro-palette-list" class="ro-pal-list" role="listbox" aria-label="Jump targets"></div><div class="ro-pal-foot"><span class="hint"><kbd class="ro-kbd">&#8593;</kbd><kbd class="ro-kbd">&#8595;</kbd> navigate</span><span class="hint"><kbd class="ro-kbd">&#8629;</kbd> open</span><span class="hint"><kbd class="ro-kbd">esc</kbd> close</span><span class="spacer"></span><span class="hint">readout</span></div></div></div>
 }

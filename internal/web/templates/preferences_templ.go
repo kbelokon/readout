@@ -16,7 +16,7 @@ import templruntime "github.com/a-h/templ/runtime"
 //
 // The form now uses native controls plus owned `.ro-*` classes. The select caret,
 // focus ring, surface, and accent Save action are authored in readout.css, with no
-// framework form wrapper. No `.ro-rd` content marker is needed (D13): the page
+// framework form wrapper. No `.ro-rd` content marker is needed: the page
 // emits no redesign class that collides and is scoped under `.ro-rd`.
 
 // PreferencesData is the resolved preferences input.

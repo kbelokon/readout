@@ -1,6 +1,6 @@
 package templates
 
-// search.templ is the redesign multi-cluster search page body (D4/D11/D12/D13).
+// search.templ is the redesign multi-cluster search page body.
 // It renders the breadcrumb, the title row (with the "Refine · ⌘K" palette
 // trigger when a query ran), the `.search-hero` (the big `.search-big` query
 // input + the restored resource-type checkbox row + the `.search-opts` scope
@@ -8,11 +8,11 @@ package templates
 // N of M clusters"), the per-cluster `.ro-scope-chip.ok|err` strip (the `.err`
 // chip carries an inline read-only `.retry` GET link), the totals strip
 // ("N objects · M clusters · K kinds" + "searched M clusters in T s"), and the
-// results grouped per cluster (D12): one `.search-group` per answering cluster
+// results grouped per cluster: one `.search-group` per answering cluster
 // -- header = health dot + mono cluster name + count chip -- each holding its
 // own `.ro-table` (Kind / Name / Namespace / Age).
 //
-// The OUTERMOST content element carries the `ro-rd` content marker (D13): the
+// The OUTERMOST content element carries the `ro-rd` content marker: the
 // colliding redesign classes here -- .ro-breadcrumb, .ro-scope / .ro-scope-chip,
 // .ro-table, .ro-phase-strip -- are scoped under .ro-rd in readout.css, so they
 // resolve only when this content root carries the marker. The net-new
@@ -45,7 +45,7 @@ type SearchData struct {
 
 	HasQuery bool
 
-	// Types are the restored resource-type checkboxes (D12): plural = input
+	// Types are the restored resource-type checkboxes: plural = input
 	// value, Kind = label, Checked marks the plurals of the current selection.
 	// They submit with the same GET form as the query box.
 	Types []SearchTypeOption
@@ -85,9 +85,9 @@ type SearchTypeOption struct {
 	Checked bool
 }
 
-// SearchGroup is one cluster's result block (D12): the header (health dot +
+// SearchGroup is one cluster's result block: the header (health dot +
 // mono cluster name + count chip) and the cluster's result rows. DotTone is
-// live health per colour law D3: "ok" for a cluster that answered fully, "err"
+// live health per the colour law: "ok" for a cluster that answered fully, "err"
 // when the same cluster also carries failure records (a partial answer).
 type SearchGroup struct {
 	Cluster string
@@ -136,8 +136,8 @@ type SearchScopeChip struct {
 }
 
 // SearchResultRow is one row in a group's `.ro-table`: the Kind cell (resolved
-// kind icon + kind name), the Name cell (the object link, carrying the Unit 10
-// pn-head/pn-tail split with the D12 NamePre/<mark>NameMark</mark>/NamePost
+// kind icon + kind name), the Name cell (the object link, carrying the
+// pn-head/pn-tail split with the NamePre/<mark>NameMark</mark>/NamePost
 // head segments -- each an escaped text node), the Namespace cell (its own
 // link), and the Age cell (the formatted created timestamp coloured by its age
 // bucket). NameTitle is the full-name tooltip when the head middle-truncated.
@@ -199,7 +199,7 @@ templ Search(d SearchData) {
 	</div>
 }
 
-// searchGroupBlock renders one cluster's result group (D12): the
+// searchGroupBlock renders one cluster's result group: the
 // `.search-cluster` header -- the live-health dot, the mono cluster name, the
 // count chip -- and the group's own results `.ro-table`.
 templ searchGroupBlock(group SearchGroup) {

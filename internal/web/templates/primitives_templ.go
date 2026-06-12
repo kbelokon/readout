@@ -13,7 +13,7 @@ import templruntime "github.com/a-h/templ/runtime"
 // here had >=2 byte-identical call sites across the page templates; routing them
 // through one definition means a markup change lands in one place instead of N
 // copies. The render output of every primitive MUST stay byte-identical to the
-// markup it replaced -- the SPEC §9 visual grid + the behavior-fact net are the
+// markup it replaced -- the visual grid + the behavior-fact net are the
 // arbiters, so element/attribute order and inter-node whitespace are load-bearing
 // and must not be "tidied" here.
 //
@@ -115,7 +115,7 @@ func tabLink(active bool, href, label string) templ.Component {
 }
 
 // labelChip renders one NEUTRAL label pill -- the `.ro-chip` with the
-// `.ck`/`.cs`/`.cv` ink-weight split (D3 colour law: every label chip is
+// `.ck`/`.cs`/`.cv` ink-weight split (the colour law: every label chip is
 // neutral; the green app.kubernetes.io/* accent is retired). This is the
 // non-link span form shared by the cluster-overview meta chips, the namespace
 // row chips, and the clusters-entry row chips. The link form (detail-page
@@ -353,7 +353,7 @@ func titleRow(title string, count int, showCount bool) templ.Component {
 }
 
 // nameSplit renders the object-name display inside the detail/logs `h1.ro-title`
-// (SPEC §6.6 + Unit 10/13): the bright workload prefix in `.pn-head`, the muted
+// the bright workload prefix in `.pn-head`, the muted
 // hash tail in `.pn-tail`, falling back to the plain name when the build layer
 // did not split it. Shared verbatim by the resource-view detail title and the
 // logs title; the enclosing `<h1>` (with its conditional title= tooltip) stays

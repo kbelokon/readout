@@ -5,31 +5,31 @@ package templates
 // grouped sidebar (and its single-link primitive), and the footer slot. These are
 // the named page-frame blocks; layout.templ keeps only the document skeleton
 // (head/body, scripts, slots) and composes these. The render output stays
-// byte-identical to the markup these replaced -- the SPEC §9 visual grid + the
+// byte-identical to the markup these replaced -- the visual grid + the
 // behavior-fact net are the arbiters, so element/attribute order and inter-node
 // whitespace are load-bearing and must not be "tidied" here.
 
 // topbarC is the redesign sticky blurred topbar. It MUST be a <header
-// class="ro-topbar"> (D13) so the header.ro-topbar CSS applies. It carries: the
-// brand mark on its SPEC 2.5 dark chip (.brand-chip wrapping the .brand-logo
+// class="ro-topbar"> so the header.ro-topbar CSS applies. It carries: the
+// brand mark on its dark chip (.brand-chip wrapping the .brand-logo
 // mask over readout-logo.svg, inheriting --brand -- the chip stays #0d1117 in
 // BOTH themes so the light-green mark reads on the light header) + name; the
 // Clusters .topnav link; the namespace context dropdown (.ctx-dd, only with a
 // cluster in scope) keeping the readout.js hooks (#namespace-dropdown /
 // #namespace-searchbox / .namespace-item / .context-name); a flexible spacer; the
 // read-only .ro-search box that OPENS ⌘K on click (data-ro-palette-open, consumed by
-// Unit 4) -- it is a plain box, NOT a submitting form; the live-refresh control
+// the palette controller) -- it is a plain box, NOT a submitting form; the live-refresh control
 // (.tb-btn.refresh-trigger with the .ro-livedot + #refresh-label; the dot is
 // ghost-grey and goes brand+pulse ONLY under #refresh-dropdown.refresh-on, the
 // one live-state owner -- colour law §1.1) keeping the existing
 // #refresh-dropdown / .refresh-option[data-ro-interval] interval hooks; and
 // the theme toggle, which stays a server POST /preferences that opts OUT of
-// hx-boost (D5) -- NOT a client-JS toggle (#btn-theme-toggle + .theme-icon-*).
+// hx-boost -- NOT a client-JS toggle (#btn-theme-toggle + .theme-icon-*).
 //
-// The leading `.menu-toggle` hamburger (D11) is mobile chrome: hidden by the
+// The leading `.menu-toggle` hamburger is mobile chrome: hidden by the
 // readout.css media query above 760px, it reveals below 760px where the sidebar
 // is hidden, toggling `.ro-sidebar.is-active` via the delegated readout.js click
-// handler (Unit 4). It is a real <button> so the app-layer button:focus-visible
+// handler. It is a real <button> so the app-layer button:focus-visible
 // ring applies, and renders only when ShowSidebar (there must be a sidebar for
 // it to reveal -- the Clusters entry page has none).
 templ topbarC(n Navbar) {
@@ -67,12 +67,12 @@ templ namespaceDropdownC(n Navbar) {
 // .ro-shell grid + .ro-sidebar CSS apply) whose grouped entries each carry a
 // resolved kind icon (the Unit-1 resolver, pre-rendered onto NavItem.Icon) and
 // the .is-active marker on the current path. It renders only when ShowMenu (the
-// Clusters entry page omits it, D11). The #aside-menu id + the .menu-item class
+// Clusters entry page omits it). The #aside-menu id + the .menu-item class
 // are kept (readout.js mobile reveal + the existing nav-harvest contract). Meta
 // entries (Resource Types / Events) get a chrome glyph via icons.MetaIcon so they
 // match the icon-slot + label row shape.
 //
-// The `ro-rail` modifier (Unit 23 / SPEC §8.5) is ALWAYS present (the
+// The `ro-rail` modifier is ALWAYS present (the
 // `.has-cards` pattern): readout.css's 760-1100px media query keys on it to
 // collapse the sidebar into the icon-only rail; outside that range the class is
 // inert. The label-as-tooltip half lives on each link's title attribute
@@ -100,10 +100,10 @@ templ sidebarC(s Sidebar) {
 
 // sidebarLinkC renders one sidebar entry: the icon slot (emitted raw -- the
 // resolver markup is trusted-shape) + the label + the optional trailing mono
-// count (D13: absent on a failed fetch or out of single-cluster scope; a real
+// count (absent on a failed fetch or out of single-cluster scope; a real
 // zero renders "0"), with the .menu-item class and the .is-active accent on
 // the current path. iconMarkup may be empty (no slot). The title attribute
-// carries the label so the 760-1100px icon rail (Unit 23 / SPEC §8.5), which
+// carries the label so the 760-1100px icon rail, which
 // hides .nav-label, still names every entry via the native tooltip; at full
 // width it is a harmless restatement of the visible label.
 templ sidebarLinkC(link NavItem, iconMarkup string) {
