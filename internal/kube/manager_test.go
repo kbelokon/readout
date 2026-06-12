@@ -120,7 +120,6 @@ func TestDiscoverStaticBuildsConnectionThroughClientcmd(t *testing.T) {
 // anonymous (the old discoverStatic dropped it). Verified end-to-end against the
 // auth-capturing TLS server.
 func TestStaticAuthThreadsBearerToken(t *testing.T) {
-	allowLoopbackClusterURLs(t)
 	srv, rec := newAuthCapturingTLSServer(t)
 	cfg := &appconfig.Config{Clusters: []appconfig.ClusterConnection{{
 		Name:                     "prod",
@@ -147,7 +146,6 @@ func TestStaticAuthThreadsBearerToken(t *testing.T) {
 // TestStaticAnonymousLoads pins that a static cluster with no auth still loads as
 // an anonymous connection (identity supplied per request) -- no Authorization.
 func TestStaticAnonymousLoads(t *testing.T) {
-	allowLoopbackClusterURLs(t)
 	srv, rec := newAuthCapturingTLSServer(t)
 	cfg := &appconfig.Config{Clusters: []appconfig.ClusterConnection{{
 		Name:                     "anon",
@@ -196,7 +194,6 @@ func TestStaticNonHTTPSWithAuthIsBroken(t *testing.T) {
 // sources COEXIST (no longer mutually exclusive), and a malformed cluster is
 // skipped-with-error without failing its siblings.
 func TestLoadMultiSourceCoexistAndPerContextError(t *testing.T) {
-	allowLoopbackClusterURLs(t)
 	good := newTLSFakeAPIServer(t)
 	kubeconfigPath := writeKubeconfig(t, map[string]string{"ctx-a": "https://a"})
 
@@ -230,7 +227,6 @@ func TestLoadMultiSourceCoexistAndPerContextError(t *testing.T) {
 // names that sanitize to the same key must not silently collapse -- the second is
 // surfaced as a collision error, the first stays loaded.
 func TestDuplicateSanitizedCollision(t *testing.T) {
-	allowLoopbackClusterURLs(t)
 	srv := newTLSFakeAPIServer(t)
 	ca := serverCAPEM(t, srv)
 	cfg := &appconfig.Config{Clusters: []appconfig.ClusterConnection{

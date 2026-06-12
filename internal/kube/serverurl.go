@@ -21,22 +21,16 @@ var clusterHostResolver = func(ctx context.Context, host string) ([]net.IPAddr, 
 // server URL so a slow/hostile resolver cannot stall startup discovery.
 const clusterURLResolveTimeout = 5 * time.Second
 
-// clusterURLAllowLoopback is a TEST-ONLY seam (mirroring clusterHostResolver):
-// the in-process discovery tests run real TLS apiservers on a 127.0.0.1 httptest
-// port and need their loopback server URLs to pass discovery. Production NEVER
-// flips this -- it defaults false, so the loopback/metadata reject set is fully
-// enforced at runtime. It is scoped narrowly to loopback (link-local/metadata
-// stays rejected even when set) so a test cannot accidentally mask the metadata
-// guard it is meant to protect.
-var clusterURLAllowLoopback = false
-
 // validateClusterServerURL rejects a cluster API-server URL whose host is (or
-// resolves to) a loopback or link-local/metadata address. Its policy is
-// DELIBERATELY different from the hook-URL validator (internal/config): a real
-// apiserver legitimately sits on a private/RFC1918 IP and on the in-cluster
-// ClusterIP, so this validator ALLOWS private ranges and only blocks loopback
-// (127.0.0.0/8, ::1) and link-local/metadata (169.254.0.0/16, fe80::/10). The two
-// validators must not be merged.
+// resolves to) a link-local/metadata address. Its policy is DELIBERATELY
+// different from the hook-URL validator (internal/config): a real apiserver
+// legitimately sits on a private/RFC1918 IP, on the in-cluster ClusterIP, AND on
+// loopback -- kind / minikube / k3d all put the apiserver on 127.0.0.1 in the
+// kubeconfig, so loopback is a normal apiserver location for local development.
+// This validator therefore ALLOWS private AND loopback ranges and blocks ONLY
+// link-local/metadata (169.254.0.0/16, fe80::/10), which is the real SSRF target
+// (cloud metadata) and never a legitimate apiserver. The two validators must not
+// be merged.
 //
 // A literal IP host is checked directly. A hostname is RESOLVED and EVERY
 // resolved IP is checked, so a name that resolves to 169.254.169.254 is rejected
@@ -84,16 +78,13 @@ func validateClusterServerURL(server string) error {
 }
 
 // rejectedClusterIP reports a non-empty reason when an IP is in the cluster-URL
-// reject set: loopback (127.0.0.0/8, ::1) or link-local/metadata (169.254.0.0/16,
-// fe80::/10). Private/RFC1918 addresses are NOT rejected -- real apiservers live
-// there. An empty string means the IP is acceptable.
+// reject set: ONLY link-local/metadata (169.254.0.0/16, fe80::/10), which is the
+// real SSRF target (cloud metadata) and never a legitimate apiserver. Loopback
+// (127.0.0.0/8, ::1) is NOT rejected -- kind/minikube/k3d put the apiserver on
+// 127.0.0.1 in the kubeconfig -- and neither is private/RFC1918, where real
+// apiservers live. An empty string means the IP is acceptable.
 func rejectedClusterIP(ip net.IP) string {
 	switch {
-	case ip.IsLoopback():
-		if clusterURLAllowLoopback {
-			return ""
-		}
-		return "loopback"
 	case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast():
 		return "link-local/metadata"
 	default:

@@ -27,7 +27,6 @@ import (
 // rather than aborting the whole reload. A non-existent host cluster forces the
 // source error deterministically (no in-cluster env dependency).
 func TestArgoSourceFailureNonFatalToOtherSources(t *testing.T) {
-	allowLoopbackClusterURLs(t)
 	good := newTLSFakeAPIServer(t)
 	cfg := &appconfig.Config{
 		Clusters: []appconfig.ClusterConnection{

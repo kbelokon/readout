@@ -31,18 +31,19 @@ func stubResolver(t *testing.T, table map[string][]string) {
 	t.Cleanup(func() { clusterHostResolver = prev })
 }
 
-// TestValidateClusterServerURL_LiteralIPs pins the literal-IP policy: loopback and
-// link-local/metadata are rejected; RFC1918/private is ACCEPTED (real apiservers
-// live there -- this is where the policy DIFFERS from the hook validator).
+// TestValidateClusterServerURL_LiteralIPs pins the literal-IP policy: ONLY
+// link-local/metadata is rejected; loopback AND RFC1918/private are ACCEPTED
+// (kind/minikube/k3d apiservers live on 127.0.0.1, real apiservers live on
+// RFC1918 -- this is where the policy DIFFERS from the hook validator).
 func TestValidateClusterServerURL_LiteralIPs(t *testing.T) {
 	cases := []struct {
 		name    string
 		server  string
 		wantErr bool
 	}{
-		{"loopback v4", "https://127.0.0.1:6443", true},
-		{"loopback v4 range", "https://127.5.5.5:6443", true},
-		{"loopback v6", "https://[::1]:6443", true},
+		{"loopback v4 ACCEPTED", "https://127.0.0.1:6443", false},
+		{"loopback v4 range ACCEPTED", "https://127.5.5.5:6443", false},
+		{"loopback v6 ACCEPTED", "https://[::1]:6443", false},
 		{"metadata", "https://169.254.169.254", true},
 		{"link-local v4", "https://169.254.0.1:6443", true},
 		{"link-local v6", "https://[fe80::1]:6443", true},
@@ -80,7 +81,7 @@ func TestValidateClusterServerURL_ResolveAndCheck(t *testing.T) {
 	}{
 		{"name -> metadata rejected", "https://evil.example.com", true},
 		{"name -> one bad IP rejected", "https://sneaky.example.com:6443", true},
-		{"name -> loopback rejected", "https://loopback-name.example:6443", true},
+		{"name -> loopback accepted", "https://loopback-name.example:6443", false},
 		{"svc -> clusterIP accepted", "https://kubernetes.default.svc", false},
 		{"private name accepted", "https://apiserver.internal:6443", false},
 		{"unresolvable name accepted (availability not SSRF)", "https://nope.example.com:6443", false},
@@ -118,11 +119,11 @@ func TestValidateClusterServerURL_Malformed(t *testing.T) {
 }
 
 // TestStaticServerURLRejectedMarksBroken proves the wiring end-to-end through
-// discoverStatic: a static cluster whose server URL targets the metadata IP (or
-// loopback) is marked BROKEN (Config nil, typed Err) -- the broken-cluster
-// mechanism, not a usable connection -- while an RFC1918 apiserver is ACCEPTED
-// (Config built). Insecure TLS does not block: an RFC1918 cluster with
-// insecureSkipTLSVerify still loads.
+// discoverStatic: a static cluster whose server URL targets the metadata IP is
+// marked BROKEN (Config nil, typed Err) -- the broken-cluster mechanism, not a
+// usable connection -- while an RFC1918 apiserver AND a loopback apiserver
+// (kind/minikube/k3d) are ACCEPTED (Config built). Insecure TLS does not block:
+// an RFC1918 cluster with insecureSkipTLSVerify still loads.
 func TestStaticServerURLRejectedMarksBroken(t *testing.T) {
 	cfg := &appconfig.Config{
 		Clusters: []appconfig.ClusterConnection{
@@ -138,7 +139,7 @@ func TestStaticServerURLRejectedMarksBroken(t *testing.T) {
 		byName[dc.Name] = dc
 	}
 
-	for _, bad := range []string{"metadata", "loopback"} {
+	for _, bad := range []string{"metadata"} {
 		dc, ok := byName[bad]
 		if !ok {
 			t.Fatalf("%s cluster missing from results: %#v", bad, got)
@@ -151,13 +152,13 @@ func TestStaticServerURLRejectedMarksBroken(t *testing.T) {
 		}
 	}
 
-	for _, good := range []string{"private", "private-insecure"} {
+	for _, good := range []string{"private", "private-insecure", "loopback"} {
 		dc, ok := byName[good]
 		if !ok {
 			t.Fatalf("%s cluster missing from results: %#v", good, got)
 		}
 		if dc.Err != nil {
-			t.Fatalf("RFC1918 server URL must be ACCEPTED (real apiservers live there): %v", dc.Err)
+			t.Fatalf("%s server URL must be ACCEPTED (real apiservers live on RFC1918/loopback): %v", good, dc.Err)
 		}
 		if dc.Config == nil {
 			t.Fatalf("%s cluster must carry a built Config", good)

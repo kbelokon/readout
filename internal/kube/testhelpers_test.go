@@ -42,19 +42,6 @@ func discoveryHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/apis", j(`{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`))
 }
 
-// allowLoopbackClusterURLs flips the test-only loopback seam in
-// validateClusterServerURL for the duration of a test, so a discovery test that
-// runs a real apiserver on a 127.0.0.1 httptest port does not get its own server
-// rejected by the loopback guard. It restores the strict default on cleanup, so
-// the loopback-reject coverage in serverurl_test.go stays honest. Link-local /
-// metadata stays rejected even while this is set.
-func allowLoopbackClusterURLs(t *testing.T) {
-	t.Helper()
-	prev := clusterURLAllowLoopback
-	clusterURLAllowLoopback = true
-	t.Cleanup(func() { clusterURLAllowLoopback = prev })
-}
-
 // newTLSFakeAPIServer is an httptest TLS server answering discovery/version. Its
 // self-signed cert is its own CA; serverCAPEM extracts it for CAData.
 func newTLSFakeAPIServer(t *testing.T) *httptest.Server {
