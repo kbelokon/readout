@@ -796,6 +796,15 @@ func ClassifyError(err error) FailureKind {
 		}
 	}
 
+	// The resource-type-not-found sentinel from FindResource is not an apiserver
+	// Status, so it would otherwise fall through to internal -- but it is a
+	// not-found (IsNotFound treats it so). The precise sentinel check restores the
+	// pre-refactor not-found routing without folding in kerrors 404 (already
+	// handled by the APIStatus block above).
+	if errors.Is(err, ErrResourceTypeNotFound) {
+		return FailureNotFound
+	}
+
 	// A context deadline is a timeout; a context cancellation means the client
 	// went away and carries no special kind.
 	if errors.Is(err, context.DeadlineExceeded) {

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -105,6 +106,18 @@ func failureRows() []failureRow {
 			listState:    "unreachable",
 			streamStatus: http.StatusBadGateway,
 		},
+		{
+			// The wrapped resource-type-not-found sentinel from FindResource: not
+			// an apiserver Status, but IsNotFound treats it as not-found. It must
+			// render NO list/detail card (the secret-barrier path keeps its own
+			// "resource type not found" handling) and hand the stream a 404 -- the
+			// pre-refactor mapping, restored by the sentinel check in ClassifyError.
+			name:         "wrapped resource-type-not-found sentinel",
+			err:          fmt.Errorf("no such type: %w", kube.ErrResourceTypeNotFound),
+			searchChip:   "failed",
+			listState:    "",
+			streamStatus: http.StatusNotFound,
+		},
 	}
 }
 
@@ -135,6 +148,45 @@ func observedListState(t *testing.T, err error) string {
 	default:
 		t.Fatalf("unexpected state kind %v", v.State.Kind)
 		return ""
+	}
+}
+
+// observedBuildListState drives the OTHER list-state seam -- buildListState, the
+// whole-list failure path -- and reports its resolved state the same way
+// observedListState reports detailState's. The two must agree per error (they
+// share failureListState); this is the executable half of the shared-seam claim.
+func observedBuildListState(t *testing.T, err error) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/clusters/c/namespaces/default/pods", nil)
+	lc := &listContext{Cluster: "c", Namespace: "default", Plural: "pods", Errors: []error{err}}
+	v := (&Server{}).buildListState(req, lc)
+	if v == nil {
+		return ""
+	}
+	switch v.Kind {
+	case stateForbidden:
+		return "forbidden"
+	case stateUnreachable:
+		return "unreachable"
+	default:
+		t.Fatalf("unexpected state kind %v", v.Kind)
+		return ""
+	}
+}
+
+// TestListStateSeamsAgree pins that buildListState (whole-list) and detailState
+// (detail) resolve a representative error to the SAME state kind -- the shared
+// failureListState seam, made executable. The detail-only contract table drives
+// detailState; this proves the whole-list path reads the identical mapping.
+func TestListStateSeamsAgree(t *testing.T) {
+	err := apiStatus(http.StatusInternalServerError, metav1.StatusReasonInternalError, "Internal error occurred: boom")
+	detail := observedListState(t, err)
+	list := observedBuildListState(t, err)
+	if detail != list {
+		t.Fatalf("detailState resolved %q but buildListState resolved %q for the same 500 -- the list-state seam is not shared", detail, list)
+	}
+	if list != "unreachable" {
+		t.Fatalf("buildListState 500 = %q, want unreachable", list)
 	}
 }
 

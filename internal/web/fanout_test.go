@@ -565,6 +565,15 @@ func TestSearchFanoutBudgetCutsHungCluster(t *testing.T) {
 	if doc.Find(".ro-scope .ro-scope-chip.err").Length() == 0 {
 		t.Fatalf("hung cluster `.err` scope chip missing after budget cut: %s", rec.Body.String())
 	}
+	// The positive half: cutting the hung cluster must NOT discard the healthy
+	// cluster's results -- the good cluster's search group still renders.
+	groups := doc.Find(".search-group")
+	if groups.Length() != 1 {
+		t.Fatalf(".search-group count = %d, want 1 (the good cluster's results survive the cut): %s", groups.Length(), rec.Body.String())
+	}
+	if got := normSpace(groups.Find(".search-cluster .mono").Text()); got != "good" {
+		t.Fatalf("surviving group header = %q, want good", got)
+	}
 }
 
 // TestFanoutSlotsPreservesOrder runs fanoutSlots with a randomized per-item

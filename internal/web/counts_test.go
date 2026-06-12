@@ -216,6 +216,52 @@ func TestCountsCallerCancellationIsNotNegativeCached(t *testing.T) {
 	}
 }
 
+// TestCountsPerFetchDeadlineIsNegativeCached pins the complementary law to
+// TestCountsCallerCancellationIsNotNegativeCached: a fetch that fails because
+// the PER-FETCH deadline fired (countFetchTimeout, surfacing as
+// DeadlineExceeded) while the CALLER's context is still alive DOES get
+// negative-cached -- a dead-slow kind costs one probe per TTL window, not one
+// per render. The backend stalls the limit=1 request until its fetch context is
+// cancelled, so the count fetch returns DeadlineExceeded.
+func TestCountsPerFetchDeadlineIsNegativeCached(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	target, err := url.Parse(fake.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := httputil.NewSingleHostReverseProxy(target)
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("limit") == "1" {
+			<-r.Context().Done() // the count fetch hit its per-fetch deadline
+			http.Error(w, "stalled", http.StatusInternalServerError)
+			return
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	t.Cleanup(slow.Close)
+	app := newServer(t, configForFixture(slow.URL), time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
+	cluster, ok := app.manager.Get("test")
+	if !ok {
+		t.Fatal("fixture cluster missing")
+	}
+	resource := kube.ResourceType{APIVersion: "v1", Version: "v1", Kind: "Pod", Plural: "pods", Namespaced: true}
+	targets := []countTarget{{item: &navItem{}, resource: resource, namespace: "default"}}
+
+	// The parent context stays alive; only the per-fetch countFetchTimeout fires.
+	app.attachSidebarCounts(context.Background(), cluster.Client, "test", targets)
+	if targets[0].item.HasCount {
+		t.Fatalf("a deadline-failed fetch cannot produce a count, got %q", targets[0].item.Count)
+	}
+	key := countKey{cluster: "test", apiVersion: "v1", plural: "pods", namespace: "default"}
+	entry, hit := app.counts.lookup(key, app.clock())
+	if !hit {
+		t.Fatalf("the per-fetch deadline was NOT cached -- a dead-slow kind would re-probe every render")
+	}
+	if entry.ok {
+		t.Fatalf("the deadline failure was cached as a success %+v, want a negative entry", entry)
+	}
+}
+
 // TestSidebarCountsAbsentInMultiClusterScope pins the single-cluster-only
 // rule: the `_all` (multi-cluster) sidebar renders its entries but NO counts.
 func TestSidebarCountsAbsentInMultiClusterScope(t *testing.T) {

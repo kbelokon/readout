@@ -90,6 +90,7 @@ func TestClassifyErrorWrappedChains(t *testing.T) {
 		{"wrapped 500", apiStatusErr(http.StatusInternalServerError, metav1.StatusReasonInternalError, "boom"), FailureUpstream5xx},
 		{"wrapped deadline", context.DeadlineExceeded, FailureTimeout},
 		{"wrapped refused", &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}, FailureUnreachable},
+		{"wrapped resource-type-not-found sentinel", ErrResourceTypeNotFound, FailureNotFound},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,6 +103,18 @@ func TestClassifyErrorWrappedChains(t *testing.T) {
 				t.Errorf("ClassifyError(doubleWrapped) = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestClassifyErrorResourceTypeNotFound pins that the plain wrapped
+// ErrResourceTypeNotFound sentinel from FindResource (which IsNotFound treats as
+// not-found) classifies to FailureNotFound and not FailureInternal. The sentinel
+// is not an apiserver APIStatus, so without an explicit check it would fall
+// through to the internal fallback and break the not-found rendering contract.
+func TestClassifyErrorResourceTypeNotFound(t *testing.T) {
+	err := fmt.Errorf("no such type: %w", ErrResourceTypeNotFound)
+	if got := ClassifyError(err); got != FailureNotFound {
+		t.Errorf("ClassifyError(wrapped ErrResourceTypeNotFound) = %q, want %q", got, FailureNotFound)
 	}
 }
 
