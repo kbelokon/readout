@@ -147,7 +147,10 @@ nothing is hand-rolled. There are two sources, which may be combined:
     identity for that cluster's base connection.
   - Cluster names must be unique; a duplicate name is a startup error.
 - **kubeconfig** — `kubeconfigPath` (empty uses the usual kubeconfig resolution)
-  and `kubeconfigContexts` (narrow to named contexts; empty = all).
+  and `kubeconfigContexts` (narrow to named contexts; empty = all). The common
+  multi-cluster deployment — a CI/Vault-rendered multi-context kubeconfig mounted
+  from a Secret and pointed at via `kubeconfigPath` — is a worked Helm example in
+  [`chart/examples/kubeconfig-multicluster.yaml`](chart/examples/kubeconfig-multicluster.yaml).
 
 #### Viewer identity (token passthrough)
 

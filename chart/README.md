@@ -300,11 +300,12 @@ Two complementary checks:
 
 ## Examples
 
-Seven runnable values files in [`examples/`](examples):
+Eight runnable values files in [`examples/`](examples):
 
 | File | What it deploys |
 | --- | --- |
 | [`minimal.yaml`](examples/minimal.yaml) | Smallest honest install: single ClusterIP pod, restricted preset (default), auth none, no exposure (reach via port-forward). |
+| [`kubeconfig-multicluster.yaml`](examples/kubeconfig-multicluster.yaml) | A CI/Vault-rendered multi-context kubeconfig mounted from a Secret via `extraVolumes`, with `config.kubeconfigPath` pointing at the file so every context becomes a cluster. Allowlisted cloud exec plugins (aws, gke-gcloud-auth-plugin, ...) survive the default kubeconfig-source policy. |
 | [`ingress-nginx.yaml`](examples/ingress-nginx.yaml) | readout behind a `networking.k8s.io/v1` Ingress on the nginx class. |
 | [`gateway-api.yaml`](examples/gateway-api.yaml) | readout exposed by attaching an HTTPRoute to an existing Gateway API Gateway. |
 | [`oidc-existing-secret.yaml`](examples/oidc-existing-secret.yaml) | OIDC login behind an Ingress, with session and client Secrets wired from pre-created Secrets. The recommended exposed setup. |
