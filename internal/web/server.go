@@ -137,6 +137,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	s.warnMissingSessionSecret()
 	s.warnUnauthenticatedExposure()
 	s.warnUntrustedHeaderProxy()
+	s.warnSessionTokenDeniesViewers()
 	return s, nil
 }
 
@@ -191,6 +192,40 @@ func (s *Server) warnUnauthenticatedExposure() {
 	}
 	slog.Warn("serving unauthenticated cluster data on "+addr,
 		"authMode", s.cfg.AuthMode, "addr", addr, "clusters", contexts)
+}
+
+// warnSessionTokenDeniesViewers warns at startup when session-token passthrough
+// is on AND a cluster base connection carries a real (non-anonymous) credential.
+// In that posture a viewer who arrives without a forwardable bearer token is
+// DENIED, not silently served under the broad base identity -- so a deployment
+// that looks like it enforces per-viewer RBAC does not quietly fall back to the
+// base SA. It never fails: same loud-warn-no-gate posture as the other startup
+// warnings. Mirrors warnUnauthenticatedExposure -- it lists the affected base
+// clusters so the operator sees exactly which identities will not be served.
+func (s *Server) warnSessionTokenDeniesViewers() {
+	warnSessionTokenDeniesViewers(s.cfg.ClusterAuthUseSessionToken, s.manager.Clusters())
+}
+
+// warnSessionTokenDeniesViewers is the pure body of the startup warning: it emits
+// a loud WARN listing the non-anonymous base clusters whose bearer-less viewers
+// will be denied. Extracted from the method so it can be exercised with a
+// hand-built cluster list (no Manager wiring) the same way the predicate runs at
+// startup. No-op when passthrough is off or every base is anonymous.
+func warnSessionTokenDeniesViewers(passthrough bool, clusters []*kube.Cluster) {
+	if !passthrough {
+		return
+	}
+	bases := make([]string, 0)
+	for _, c := range clusters {
+		if c.Client != nil && !c.Client.IsAnonymous() {
+			bases = append(bases, c.Name)
+		}
+	}
+	if len(bases) == 0 {
+		return
+	}
+	slog.Warn("session-token passthrough is on; viewers without a bearer will be denied, not served as the base credential",
+		"clusterAuthUseSessionToken", true, "baseClusters", bases)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -249,14 +284,13 @@ func (s *Server) kubeClient(r *http.Request, cluster *kube.Cluster) *kube.Client
 	}
 	token := s.auth.RequestBearer(r)
 	if token == "" {
-		// No viewer token. Fall through to the base identity -- an in-cluster
-		// SA, a token-file, or a static cluster with its own credential is a real
-		// identity, not silent anonymous. Deny ONLY when the base is itself
-		// anonymous: serving that as anonymous would be a silent downgrade.
-		if cluster.Client.IsAnonymous() {
-			return cluster.Client.Denied()
-		}
-		return cluster.Client
+		// No viewer token. With passthrough on, a deployment that looks like it
+		// enforces per-viewer RBAC must NOT silently serve data under the broad
+		// base identity (in-cluster SA, token-file, static credential). Deny
+		// unconditionally -- including when the base is itself anonymous. The
+		// matching startup warning (warnSessionTokenDeniesViewers) tells the
+		// operator that bearer-less viewers are denied, not served as the base.
+		return cluster.Client.Denied()
 	}
 	var (
 		client *kube.Client

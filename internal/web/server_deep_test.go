@@ -16,6 +16,7 @@ import (
 	"github.com/kbelokon/readout/internal/hooks"
 	"github.com/kbelokon/readout/internal/kube"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/rest"
 )
 
 // The resource-view + resource-list render contract is pinned by named goquery
@@ -543,6 +544,75 @@ func TestSessionSecretWarning(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := warned(t, tc.cfg); got != tc.want {
 				t.Fatalf("warned=%v want=%v for cfg=%#v", got, tc.want, tc.cfg)
+			}
+		})
+	}
+}
+
+// TestSessionTokenDeniesViewersWarning pins the startup warning for strict
+// session-token passthrough: when clusterAuthUseSessionToken is on AND a cluster
+// base credential is non-anonymous, warnSessionTokenDeniesViewers emits a loud
+// WARN that bearer-less viewers will be DENIED, not served as the base. It does
+// NOT warn when passthrough is off, or when every base is anonymous (nothing is
+// silently downgraded in that case -- those requests are denied with no hidden
+// fallback identity to surprise the operator). Not parallel: it mutates the
+// process-global default logger.
+func TestSessionTokenDeniesViewersWarning(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	anonBase, err := kube.NewClient(&rest.Config{Host: "http://anon.example"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saBase, err := kube.NewClient(&rest.Config{Host: "http://sa.example", BearerToken: "sa-token"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	warned := func(t *testing.T, passthrough bool, clusters []*kube.Cluster) bool {
+		t.Helper()
+		var buf bytes.Buffer
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		warnSessionTokenDeniesViewers(passthrough, clusters)
+		return strings.Contains(buf.String(), "will be denied, not served as the base credential")
+	}
+
+	cases := []struct {
+		name        string
+		passthrough bool
+		clusters    []*kube.Cluster
+		want        bool
+	}{
+		{
+			name:        "passthrough on + non-anonymous base warns",
+			passthrough: true,
+			clusters:    []*kube.Cluster{{Name: "sa", Client: saBase}},
+			want:        true,
+		},
+		{
+			name:        "passthrough on + anonymous base does not warn",
+			passthrough: true,
+			clusters:    []*kube.Cluster{{Name: "anon", Client: anonBase}},
+			want:        false,
+		},
+		{
+			name:        "passthrough on + mixed bases warns (lists only the non-anonymous one)",
+			passthrough: true,
+			clusters:    []*kube.Cluster{{Name: "anon", Client: anonBase}, {Name: "sa", Client: saBase}},
+			want:        true,
+		},
+		{
+			name:        "passthrough off + non-anonymous base does not warn",
+			passthrough: false,
+			clusters:    []*kube.Cluster{{Name: "sa", Client: saBase}},
+			want:        false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := warned(t, tc.passthrough, tc.clusters); got != tc.want {
+				t.Fatalf("warned=%v want=%v", got, tc.want)
 			}
 		})
 	}

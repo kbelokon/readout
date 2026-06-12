@@ -158,6 +158,15 @@ evaluated under the viewer's RBAC. Passthrough takes precedence for that request
 the connection's static token **and** `impersonate` are dropped, so a passthrough
 request is always evaluated as the viewer, never as the static act-as identity.
 
+With passthrough on, a request that carries **no** forwardable viewer bearer token
+is **denied**, never silently served under the connection's base identity (an
+in-cluster SA, a token file, or a static credential). This keeps a deployment that
+looks like it enforces per-viewer RBAC from quietly falling back to the broad base
+SA. Readout warns loudly at startup when passthrough is on and any base connection
+carries a real credential, naming the clusters whose bearer-less viewers will be
+denied. (Headers auth mode forwards no bearer, so every request is denied under
+passthrough — intended; the same startup warning fires.)
+
 #### `exec` credential plugins (binary prerequisite)
 
 An `exec`-style credential plugin (the kubeconfig `users[].user.exec` mechanism
