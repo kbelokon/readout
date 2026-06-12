@@ -1,6 +1,6 @@
 package kube
 
-// watch_test.go pins the kube half of D19: Table-format watches resumed from
+// watch_test.go pins the kube half of watch resumption: Table-format watches resumed from
 // a captured list resourceVersion. The fakeapi control surface
 // (/__control/watch-script) drives every branch with scripted sequences —
 // data events with the first-event-only columnDefinitions rule, bookmarks
@@ -70,7 +70,7 @@ func nextWatchEvent(t *testing.T, w *TableWatch) WatchEvent {
 
 // listPodsTable fetches the default pods Table and asserts the decode
 // captured the list resourceVersion (the watch has nothing to start from
-// without it — the seam D19 needs).
+// without it — the seam watch resumption needs).
 func listPodsTable(t *testing.T, client *Client) (ResourceType, Table) {
 	t.Helper()
 	rt, err := client.FindResource(context.Background(), "pods", true, "")
@@ -249,7 +249,7 @@ func TestWatchTableGoneYieldsTypedError(t *testing.T) {
 // TestWatchTableEOFDistinctFromContextCancel pins the two stream ends apart:
 // a scripted upstream EOF is io.EOF (the consumer re-watches from the last
 // RV), while caller cancellation is the context error (the consumer stops) —
-// conflating them would make Unit 26's lifecycle spin or leak.
+// conflating them would make the watch consumer's lifecycle spin or leak.
 func TestWatchTableEOFDistinctFromContextCancel(t *testing.T) {
 	f := newFakeAPIServer(t)
 	client := f.client(t, false)
@@ -357,7 +357,7 @@ func TestWatchTableReplayFromListResourceVersion(t *testing.T) {
 	}
 }
 
-// TestWatchTableDeniedClientForbidden pins that the D8d denied clone refuses
+// TestWatchTableDeniedClientForbidden pins that the denied clone refuses
 // WatchTable like every other request method.
 func TestWatchTableDeniedClientForbidden(t *testing.T) {
 	base, err := NewClient(&rest.Config{Host: "https://x"}, nil, false)
@@ -370,8 +370,8 @@ func TestWatchTableDeniedClientForbidden(t *testing.T) {
 	}
 }
 
-// TestWatchTableUpstreamUnauthorizedTyped pins the auth-expiry seam Unit 26's
-// terminal taxonomy branches on: an upstream 401 at connect time is a typed
+// TestWatchTableUpstreamUnauthorizedTyped pins the auth-expiry seam the watch
+// consumer's terminal taxonomy branches on: an upstream 401 at connect time is a typed
 // Status error IsForbidden recognizes (it covers Unauthorized).
 func TestWatchTableUpstreamUnauthorizedTyped(t *testing.T) {
 	f := newFakeAPIServer(t)

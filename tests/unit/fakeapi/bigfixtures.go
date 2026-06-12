@@ -1,8 +1,8 @@
 package fakeapi
 
-// bigfixtures.go generates the D20 virtualization fixtures: a dedicated "big"
+// bigfixtures.go generates the list-virtualization fixtures: a dedicated "big"
 // namespace whose pods and events collections carry 600 rows each. The data is
-// ORDINARY seeded store state (Unit 24 -- no injection endpoint): every LIST
+// ORDINARY seeded store state (no injection endpoint): every LIST
 // response (first paint, refresh tick, sort swap) serves the complete dataset,
 // exactly like the hand-written JSON fixtures, and the /__control/watch-script
 // mutation surface applies to it the same way. Generated in Go instead of
@@ -11,7 +11,7 @@ package fakeapi
 
 import "fmt"
 
-// bigRowCount is the fixture size: comfortably above the D20 windowing
+// bigRowCount is the fixture size: comfortably above the windowing
 // threshold (~500) so the client-side virtualizer engages on these lists.
 const bigRowCount = 600
 
@@ -75,8 +75,8 @@ func bigPodsTable() map[string]any {
 
 // bigEventsTable is the 600-row events Table for namespace "big": every row
 // carries a LONG multi-clause message (it would wrap to several lines at the
-// 520px msg clamp) so the windowed one-line clamp + title recovery (the D20
-// fixed-height law) is provable against real material.
+// 520px msg clamp) so the windowed one-line clamp + title recovery (the
+// fixed-height row law) is provable against real material.
 func bigEventsTable() map[string]any {
 	rows := make([]any, 0, bigRowCount)
 	for i := 1; i <= bigRowCount; i++ {

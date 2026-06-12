@@ -113,8 +113,8 @@ func TestParseLoadsYAMLConfigEnvOverridesAndDefaults(t *testing.T) {
 	}
 }
 
-// TestHiddenColumnsShipV2DefaultsAndFileOverrides pins the D8 default-hidden
-// sets: an empty config ships the v2 noise-off defaults (nodes + pods), a file
+// TestHiddenColumnsShipV2DefaultsAndFileOverrides pins the default-hidden
+// sets: an empty config ships the noise-off defaults (nodes + pods), a file
 // entry for a kind REPLACES that kind's default outright (an explicit empty
 // value re-shows everything), and untouched kinds keep their shipped default.
 func TestHiddenColumnsShipV2DefaultsAndFileOverrides(t *testing.T) {
@@ -369,7 +369,7 @@ resources:
 }
 
 // TestClusterSchemaParsesTripleFields pins the new kubeconfig-semantics cluster
-// surface (D2): per-cluster server/CA-data/TLS/token/clientcert/impersonate
+// surface: per-cluster server/CA-data/TLS/token/clientcert/impersonate
 // parse into the runtime ClusterConnection, base64 *Data decodes like kubeconfig,
 // and the one retained cluster/auth key (clusterAuthUseSessionToken) still parses.
 func TestClusterSchemaParsesTripleFields(t *testing.T) {
@@ -410,7 +410,7 @@ clusters:
 	}
 }
 
-// TestClusterDuplicateNameRejected pins D8c (config-parse half): two byte-identical
+// TestClusterDuplicateNameRejected pins the config-parse half: two byte-identical
 // cluster names are a startup error naming the cluster, not silent last-write-wins.
 func TestClusterDuplicateNameRejected(t *testing.T) {
 	const content = `
@@ -429,8 +429,8 @@ clusters:
 	}
 }
 
-// TestRemovedClusterKeysRejected pins that the old cluster/auth keys removed in
-// D2/D5 are no longer in the schema, so strict parse rejects them rather than
+// TestRemovedClusterKeysRejected pins that the old cluster/auth keys dropped in
+// the schema redesign are no longer in the schema, so strict parse rejects them rather than
 // silently ignoring a stale config.
 func TestRemovedClusterKeysRejected(t *testing.T) {
 	for _, key := range []string{

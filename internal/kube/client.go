@@ -34,7 +34,7 @@ var ErrResourceTypeNotFound = errors.New("resource type not found")
 // ErrWatchGone is the typed 410: the watch's resourceVersion fell out of the
 // apiserver's history window — either an HTTP 410 response at connect time or
 // an in-stream ERROR event with reason Expired/Gone. The caller must relist
-// to capture a fresh resourceVersion and re-watch from it (D19).
+// to capture a fresh resourceVersion and re-watch from it.
 var ErrWatchGone = errors.New("watch resource version expired")
 
 type Client struct {
@@ -45,7 +45,7 @@ type Client struct {
 	core           kubernetes.Interface
 	includeSecrets bool
 	// denied, when set, makes every request method short-circuit with this error
-	// instead of reaching the apiserver. It backs the D8d anonymous-base denial:
+	// instead of reaching the apiserver. It backs the anonymous-base denial:
 	// a denied client is returned by the web layer when passthrough is on, the
 	// viewer presented no token, and the base connection is itself anonymous, so
 	// serving the request as anonymous (a silent identity downgrade) is refused.
@@ -123,7 +123,7 @@ func (c *Client) WithBearer(token string) (*Client, error) {
 	// static Impersonate, and client-go's impersonating round-tripper keys off
 	// Impersonate.UserName (NOT the Authorization header), so without this clear a
 	// passthrough request against a cluster with a static impersonation identity
-	// would silently get that identity's RBAC instead of the viewer's (D4).
+	// would silently get that identity's RBAC instead of the viewer's.
 	cfg.Impersonate = rest.ImpersonationConfig{}
 	// Snapshot preferred under the lock: ResourceTypes reassigns c.preferred
 	// under c.mu after discovery, so an unguarded read here (NewClient ranges
@@ -145,7 +145,7 @@ func (c *Client) RESTMapper() *restmapper.DeferredDiscoveryRESTMapper {
 // credential (bearer token inline/file, client cert, exec, auth-provider, basic
 // auth). Impersonation is ignored: it is not a credential to authenticate WITH,
 // so an impersonate-only connection with no base credential is still anonymous.
-// Used by the web layer's passthrough denial predicate (D8d).
+// Used by the web layer's passthrough denial predicate.
 func (c *Client) IsAnonymous() bool {
 	cfg := c.config
 	if cfg == nil {
@@ -159,7 +159,7 @@ func (c *Client) IsAnonymous() bool {
 }
 
 // Denied returns a clone of the client whose every request method refuses with a
-// Forbidden error (D8d). It shares the underlying clients (which it never uses,
+// Forbidden error. It shares the underlying clients (which it never uses,
 // since the request methods short-circuit) and takes a fresh mutex, so it copies
 // no lock value.
 func (c *Client) Denied() *Client {
@@ -376,8 +376,8 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 
 // decodeTable decodes a meta.k8s.io Table document — a LIST response body or a
 // watch event's object — into kube.Table. This is the single Table decode
-// seam: list metadata is captured here (resourceVersion for watch resumption,
-// D19; remainingItemCount for the sidebar counts).
+// seam: list metadata is captured here (resourceVersion for watch resumption;
+// remainingItemCount for the sidebar counts).
 func decodeTable(rt *ResourceType, body []byte) (Table, error) {
 	var raw struct {
 		Metadata          metav1.ListMeta                `json:"metadata"`
@@ -442,7 +442,7 @@ func tableResponseError(statusCode int, status string, body []byte) error {
 // (rv = the captured list Table.ResourceVersion). The returned stream yields
 // decoded events through Next. No client-go informer machinery: the Live list
 // screen consumes 1-row Table events, so raw REST against the Table endpoint
-// suffices (D19).
+// suffices.
 func (c *Client) WatchTable(ctx context.Context, rt *ResourceType, opts WatchOptions) (*TableWatch, error) {
 	if c.denied != nil {
 		return nil, c.denied
@@ -493,7 +493,7 @@ func (c *Client) WatchTable(ctx context.Context, rt *ResourceType, opts WatchOpt
 
 // TableWatch is one open Table-format watch stream. Next decodes events until
 // the stream ends; the ending error is typed so the consumer's lifecycle
-// (D19) can branch without string matching:
+// can branch without string matching:
 //
 //   - io.EOF — the upstream closed the stream cleanly (re-watch from the last
 //     seen resourceVersion);
@@ -683,7 +683,7 @@ func IsAPIStatusError(err error) bool {
 
 // IsServerError reports whether err is an apiserver Status with a 5xx code --
 // the apiserver was reached but failed to serve the request. The web layer
-// folds this into the unreachable whole-list/detail state (D16: the card shows
+// folds this into the unreachable whole-list/detail state (the card shows
 // the REAL Status message verbatim); 4xx Statuses (bad selectors, conflicts)
 // keep their existing handling.
 func IsServerError(err error) bool {

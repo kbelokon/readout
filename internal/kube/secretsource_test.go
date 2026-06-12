@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// TestArgoSourceFailureNonFatalToOtherSources pins the D6 invariant that an Argo
+// TestArgoSourceFailureNonFatalToOtherSources pins the invariant that an Argo
 // host-list failure is surfaced but NON-FATAL to other sources: a healthy static
 // cluster still loads, and the Argo source failure becomes a single broken entry
 // rather than aborting the whole reload. A non-existent host cluster forces the
@@ -51,7 +51,7 @@ func TestArgoSourceFailureNonFatalToOtherSources(t *testing.T) {
 // parser test derives its Secret Data map from THIS fixture (not from the
 // parser's own assumption) so it is not a self-alibi (Accepted Risk: "Argo
 // Secret format without a working mirror"). It lives under testdata/ (tracked) --
-// NOT docs/forge/ (gitignored) -- so the test is hermetic in a fresh clone / CI.
+// NOT a gitignored docs directory -- so the test is hermetic in a fresh clone / CI.
 const argoFixturePath = "testdata/argo-cluster-secret.example.yaml"
 
 // loadFixtureSecretData reads the Nth YAML document of the captured fixture and
@@ -109,11 +109,11 @@ func splitYAMLDocs(s string) []string {
 	return out
 }
 
-// TestArgoSecretParsesNestedConfig proves the D6 core: the nested Argo
+// TestArgoSecretParsesNestedConfig proves the parser core: the nested Argo
 // `data.config` shape (server+name top-level; TLS under tlsClientConfig with
 // base64 caData/certData/keyData; bearerToken auth) parses into the canonical
 // Connection, and the produced rest.Config carries the decoded CA, the token, and
-// the client cert -- via Unit 1's proven RESTConfig, with no hand-set fields.
+// the client cert -- via the proven RESTConfig, with no hand-set fields.
 func TestArgoSecretParsesNestedConfig(t *testing.T) {
 	data := loadFixtureSecretData(t, 0) // the bearerToken + TLS prod cluster
 
@@ -162,7 +162,7 @@ func TestArgoSecretParsesNestedConfig(t *testing.T) {
 		t.Fatalf("client key not decoded: %q", conn.AuthInfo.ClientKeyData)
 	}
 
-	// The proven RESTConfig (Unit 1) must carry the same material -- no rest.Config
+	// The proven RESTConfig must carry the same material -- no rest.Config
 	// field is set by hand in the primitive.
 	restCfg, err := conn.RESTConfig()
 	if err != nil {
@@ -213,7 +213,7 @@ func TestArgoSecretParsesExecProviderVariant(t *testing.T) {
 	}
 }
 
-// TestArgoSecretSourceForbiddenHostIsSourceError proves the D3 source-level error
+// TestArgoSecretSourceForbiddenHostIsSourceError proves the source-level error
 // model: when the host LIST is RBAC-forbidden (or the host is down), the source
 // returns a non-nil error rather than a partial set -- which the caller surfaces
 // without blanking the other sources.
@@ -241,7 +241,7 @@ func TestArgoSecretSourceForbiddenHostIsSourceError(t *testing.T) {
 // model: a fake clientset with one well-formed and one malformed cluster Secret
 // yields BOTH as discoveredCluster -- the good one with Config set and Err nil,
 // the bad one with Err set and Config nil -- so a single bad Secret never blanks
-// its siblings (D3).
+// its siblings.
 func TestArgoSecretSourceMalformedSecretSkipped(t *testing.T) {
 	good := argoClusterSecret("good", map[string]string{
 		"name":   "good-cluster",

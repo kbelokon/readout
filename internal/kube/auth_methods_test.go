@@ -16,7 +16,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// Auth-method behavioral tests (D9, Unit 8). Each proves one TLS/auth method at
+// Auth-method behavioral tests. Each proves one TLS/auth method at
 // the cheapest layer that genuinely exercises it, built through the canonical
 // Connection model + RESTConfig (never hand-set rest.Config auth fields) over the
 // shared TLS harness in testhelpers_test.go. These ride the same single sink that
@@ -338,10 +338,10 @@ func TestExecPlugin(t *testing.T) {
 
 // TestImpersonation proves the impersonation header is EMITTED from a static
 // Impersonate identity on the connection (the Act-As header reaches the
-// apiserver), and lightly cross-checks the D4 clear: WithBearer("viewer") on the
+// apiserver), and lightly cross-checks the passthrough clear: WithBearer("viewer") on the
 // same client reaches the server as Bearer viewer with NO Impersonate-User. The
-// clear's deep proof lives in TestImpersonationClearedOnPassthrough (Unit 5,
-// same package); this is a light overlap, not a duplicate.
+// clear's deep proof lives in TestImpersonationClearedOnPassthrough (same
+// package); this is a light overlap, not a duplicate.
 func TestImpersonation(t *testing.T) {
 	srv, rec := newAuthCapturingTLSServer(t)
 	conn := &Connection{

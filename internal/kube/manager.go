@@ -23,7 +23,7 @@ type Manager struct {
 
 // BrokenCluster is a connection that failed to load: it is skipped (never failing
 // its siblings) and surfaced here so the web layer can show a misconfigured /
-// unreachable cluster instead of silently blanking it (D3).
+// unreachable cluster instead of silently blanking it.
 type BrokenCluster struct {
 	Name   string
 	Source Source
@@ -54,9 +54,9 @@ func NewManager(ctx context.Context, cfg *appconfig.Config) (*Manager, error) {
 }
 
 // Reload rebuilds the cluster set from every configured source through one sink
-// (D3). A source-level failure (e.g. an explicit kubeconfig that cannot be read)
+// A source-level failure (e.g. an explicit kubeconfig that cannot be read)
 // is fatal and returned. A per-context failure -- a malformed connection, a
-// post-sanitization name collision (D8c loader-half), or a client build error --
+// post-sanitization name collision (loader-half), or a client build error --
 // is recorded as a BrokenCluster and skipped, never failing its siblings.
 func (m *Manager) Reload(ctx context.Context) error {
 	discovered, err := discoverAll(ctx, &m.cfg)
@@ -72,7 +72,7 @@ func (m *Manager) Reload(ctx context.Context) error {
 			continue
 		}
 		name := SanitizeClusterName(item.Name)
-		// D8c loader-half: two distinct configured names that sanitize to the same
+		// Loader-half: two distinct configured names that sanitize to the same
 		// key must not silently collapse (the old next[name] last-write-wins).
 		if prior, dup := origin[name]; dup {
 			broken = append(broken, BrokenCluster{
@@ -113,7 +113,7 @@ func (m *Manager) Clusters() []*Cluster {
 
 // Broken returns the clusters that failed to load on the last reload, sorted by
 // name. The connection set (Clusters) excludes them; this is the surfaced,
-// non-fatal error channel (D3).
+// non-fatal error channel.
 func (m *Manager) Broken() []BrokenCluster {
 	out := append([]BrokenCluster(nil), m.broken...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -146,7 +146,7 @@ func (m *Manager) Select(nameCSV string) ([]*Cluster, bool, error) {
 
 // discoveredCluster is one connection produced by a source. Err carries a
 // per-context load failure: when set, Config is nil and the cluster is surfaced
-// as broken (D3) rather than aborting the reload.
+// as broken rather than aborting the reload.
 type discoveredCluster struct {
 	Name   string
 	Config *rest.Config
@@ -156,7 +156,7 @@ type discoveredCluster struct {
 	Err    error
 }
 
-// discoverAll funnels every configured source into one list (D3). Static and
+// discoverAll funnels every configured source into one list. Static and
 // kubeconfig clusters coexist (no longer mutually exclusive). When neither a
 // static list nor an explicit kubeconfig is configured, it falls back to the
 // in-cluster ServiceAccount, then the default kubeconfig.
@@ -176,9 +176,9 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 		out = append(out, kc...)
 		explicit = true
 	}
-	// Argo CD cluster-Secret source (D6). It makes a live Secret-list call at
-	// discovery against a host cluster -- a new transitive failure surface. Under
-	// D6/D3 a host that is down / RBAC-forbidden (cannot even be reached or listed)
+	// Argo CD cluster-Secret source. It makes a live Secret-list call at
+	// discovery against a host cluster -- a new transitive failure surface. A
+	// host that is down / RBAC-forbidden (cannot even be reached or listed)
 	// is a source-level failure that is SURFACED BUT NON-FATAL TO OTHER SOURCES: it
 	// becomes a single broken entry, so configured static/kubeconfig clusters still
 	// load. Individual malformed Secrets are skipped-with-error inside
@@ -226,7 +226,7 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 	}
 	// Neither fallback produced a connection: no in-cluster ServiceAccount and
 	// the default/$KUBECONFIG kubeconfig resolves to zero contexts. Zero
-	// configured clusters is a PRESENTABLE state (the first-run screen, D17),
+	// configured clusters is a PRESENTABLE state (the first-run screen),
 	// not a fatal startup error -- the server must come up so the screen and its
 	// Re-check GET can render. (It used to return inErr here, which made
 	// NewManager -> web.New -> main exit before binding the listener.)
@@ -245,7 +245,7 @@ func discoverStatic(cfg *appconfig.Config) []discoveredCluster {
 		}
 		// Non-https hosts make clientcmd skip the TLS/auth merge
 		// (IsConfigTransportTLS), silently dropping configured credentials/CA --
-		// the exact "silent anonymous" class D8 exists to kill, through a
+		// the exact "silent anonymous" class the credential guards exist to kill, through a
 		// different door. Surface it as a typed per-context error instead.
 		if err := guardStaticTransport(cc); err != nil {
 			dc.Err = err
@@ -265,8 +265,8 @@ func discoverStatic(cfg *appconfig.Config) []discoveredCluster {
 }
 
 // discoverArgoCD builds the host kubernetes client the Argo source lists through,
-// then delegates to discoverArgoSecrets (D6). Building the host client is a
-// SOURCE-level prerequisite under D3: a host that cannot even be reached
+// then delegates to discoverArgoSecrets. Building the host client is a
+// SOURCE-level prerequisite: a host that cannot even be reached
 // (no in-cluster SA, an unknown HostCluster name, a host whose connection or
 // client cannot be built) returns an error here -- the source is surfaced as
 // failed but does not blank the other sources. Once the host client exists, the
@@ -341,7 +341,7 @@ func guardStaticTransport(cc *appconfig.ClusterConnection) error {
 // nil when nothing is configured (the anonymous static case where identity is
 // supplied per request). Token and TokenFile pass through as configured: a
 // tokenFile-only cluster keeps AuthInfo.TokenFile set so clientcmd arms the
-// ~1-minute rotation re-read (D8b); an inline token is used verbatim.
+// ~1-minute rotation re-read; an inline token is used verbatim.
 func connectionFromClusterConfig(cc *appconfig.ClusterConnection) *Connection {
 	cluster := &clientcmdapi.Cluster{
 		Server:                   cc.Server,
@@ -386,7 +386,7 @@ func isZeroAuthInfo(a *clientcmdapi.AuthInfo) bool {
 
 // discoverKubeconfig loads kubeconfig contexts as connections. The whole-file
 // load failing is a source-level error (returned); a single context that fails
-// to resolve is surfaced as a typed per-context error and skipped (D3).
+// to resolve is surfaced as a typed per-context error and skipped.
 func discoverKubeconfig(cfg *appconfig.Config) ([]discoveredCluster, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if cfg.KubeconfigPath != "" {

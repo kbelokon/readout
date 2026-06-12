@@ -452,7 +452,7 @@ func seedStore() (*store, error) {
 
 	// Events in "default" carry BOTH forms: the Table form feeds the events
 	// LIST screen (which negotiates as=Table; the dual-API count/timestamp
-	// rows exercise the D15 decode — a core-shape count=141 aggregate, a
+	// rows exercise the events decode — a core-shape count=141 aggregate, a
 	// series-shape event, a single event, and a tight-burst spread ≤60s) and
 	// the List form feeds the detail Events tab (client.List).
 	events, err := newListState("data/events_table.json", "data/render_events_nginx.json")
@@ -467,7 +467,7 @@ func seedStore() (*store, error) {
 	}
 	st.lists["/api/v1/namespaces/default/secrets"] = secrets
 
-	// ConfigMaps in "default" exercise the keys chips (SPEC §4.10): the rows
+	// ConfigMaps in "default" exercise the keys chips: the rows
 	// carry FULL ConfigMap objects (data + binaryData) so the `name · size`
 	// chips and the +N-keys in-cell expand have real key/size material -- the
 	// e2e expand spec clicks the app-config row's +2 keys button.
@@ -486,7 +486,7 @@ func seedStore() (*store, error) {
 	}
 	st.lists["/apis/networking.k8s.io/v1/namespaces/default/ingresses"] = ingresses
 
-	// CronJobs in "default" exercise the SPEC §7.11 cells: schedule verbatim,
+	// CronJobs in "default" exercise the cronjob cells: schedule verbatim,
 	// the Suspend boolean (false→Active ok / true→Suspended mute), and the
 	// Last Schedule lastrun cell incl. the never-ran <none> → <never>.
 	cronjobs, err := newListState("data/cronjobs_table.json", "")
@@ -524,7 +524,7 @@ func seedStore() (*store, error) {
 
 	// Nodes carry BOTH forms: a REAL nodes Table (kubectl -o wide printer
 	// columns incl. External-IP / OS-Image / Kernel-Version, with the full Node
-	// object riding each row -- the D8 column-visibility surface and the rich
+	// object riding each row -- the column-visibility surface and the rich
 	// capacity/conditions cells read it) and the node List form consumed by the
 	// pods `join=nodes` custom-column join. The Table's worker-1 row matches the
 	// /api/v1/nodes/worker-1 object route, so the list page's name click
@@ -536,7 +536,7 @@ func seedStore() (*store, error) {
 	}
 	st.lists["/api/v1/nodes"] = nodes
 
-	// The "big" namespace (Unit 24 / D20): 600-row pods + events Tables,
+	// The "big" namespace (list virtualization): 600-row pods + events Tables,
 	// generated in bigfixtures.go but ordinary store state like every other
 	// fixture -- the windowing e2e matrix (tick-while-windowed, sort, clamp,
 	// out-of-window free text) runs on plain LIST responses, no injection.
