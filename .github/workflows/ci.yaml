@@ -18,6 +18,8 @@ jobs:
         run: |
           templ generate
           git diff --exit-code
+      - name: Gate - comment hygiene
+        run: bash scripts/check-comments.sh
       - name: Gate - go vet
         run: go vet ./...
       - name: Gate - golangci-lint
