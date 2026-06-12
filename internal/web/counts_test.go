@@ -1,7 +1,7 @@
 package web
 
-// counts_test.go pins the sidebar per-kind counts (D13, SPEC §6.2) and the
-// §6.2 sidebar composition delta:
+// counts_test.go pins the sidebar per-kind counts and the
+// sidebar composition delta:
 //
 //   - the count formula `len(rows) + metadata.remainingItemCount` across all
 //     three server shapes -- a paginating apiserver (1 row + remaining 106 ->
@@ -38,7 +38,7 @@ import (
 	"github.com/kbelokon/readout/tests/unit/fakeapi"
 )
 
-// TestCountsTableFormula pins the D13 formula on the decoded Table chunk:
+// TestCountsTableFormula pins the sidebar-count formula on the decoded Table chunk:
 // count = len(rows) + metadata.remainingItemCount, which folds the three
 // server behaviors into one expression.
 func TestCountsTableFormula(t *testing.T) {

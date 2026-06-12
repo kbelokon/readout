@@ -1,13 +1,13 @@
 package web
 
-// states_redesign_test.go drives the Unit-14 list/detail STATE surface (D11)
+// states_redesign_test.go drives the designed list/detail STATE surface
 // through the REAL render pipeline: the whole-list forbidden / unreachable states
 // (a single-cluster list that wholly failed), the genuinely-empty + empty-FILTERED
 // states, the detail-page forbidden / unreachable states, and the client-side
 // stale markup hooks (the hidden `.ro-banner.warn` + the dim target + the
 // readout.js handler). Forbidden names the verb/resource/namespace + 403;
 // unreachable shows the REAL transport error string + a read-only Retry + Back to
-// clusters; the all-cluster partial-failure banner (Unit 5) is NOT involved (the
+// clusters; the all-cluster partial-failure banner is NOT involved (the
 // single-cluster invariant).
 
 import (
@@ -33,13 +33,13 @@ type stateFakeOptions struct {
 	forbidPods bool
 	// serverErrorPods makes the pods endpoints return an apiserver 500
 	// InternalError Status (the fakeapi fail-lists?mode=500 shape) -- the 5xx
-	// half of the unreachable whole-list state (D16).
+	// half of the unreachable whole-list state (a designed error state).
 	serverErrorPods bool
 }
 
 // serverErrorFixtureMessage is the EXACT InternalError Status message the state
 // fake returns in serverErrorPods mode; the unreachable card must carry it
-// verbatim (SPEC §1.5).
+// verbatim (the verbatim-error law: error cards show the real apiserver/transport string).
 const serverErrorFixtureMessage = "Internal error occurred: state fixture 500 mode is active"
 
 // newStateFakeAPI builds a fake kube API with full discovery plus a pods
@@ -178,13 +178,14 @@ func newStateServer(t *testing.T, clusterURL string) *Server {
 }
 
 // forbiddenFixtureMessage is the EXACT apiserver Status message the state fake
-// returns on a forbidden pods list -- the verbatim-error law (SPEC §1.5/D16)
-// demands the card carry it byte-for-byte in the mono errdetail block.
+// returns on a forbidden pods list -- the verbatim-error law (designed error
+// cards show the real apiserver string) demands the card carry it byte-for-byte
+// in the mono errdetail block.
 const forbiddenFixtureMessage = `pods is forbidden: User "viewer" cannot list resource "pods" in API group "" in the namespace "default"`
 
 // TestForbiddenListState proves a single-cluster pods list whose backend returns
 // a 403 renders the forbidden whole-list state (no table) with the prototype
-// markup (D16): the warn lock tile, the headline naming the verb/resource/
+// markup (the designed forbidden state): the warn lock tile, the headline naming the verb/resource/
 // namespace, ONE plain-language line, the VERBATIM 403 Status message in the
 // mono `.errdetail` block, Retry + Back to clusters -- AND it does NOT render
 // the all-cluster partial-failure banner (the single-cluster invariant).
@@ -223,10 +224,10 @@ func TestForbiddenListState(t *testing.T) {
 }
 
 // TestUnreachableListState proves a single-cluster list pointed at a dead backend
-// renders the unreachable state with the prototype markup (D16): the err unplug
+// renders the unreachable state with the prototype markup (the designed unreachable state): the err unplug
 // tile, "Can’t reach <cluster>" naming the cluster, the plain transport line,
 // the REAL transport error string in the mono `.errdetail` block (never a cute
-// message, SPEC §1.5) + a read-only Retry GET + Back to clusters.
+// message -- the verbatim-error law) + a read-only Retry GET + Back to clusters.
 func TestUnreachableListState(t *testing.T) {
 	app := newStateServer(t, newDeadCluster(t))
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
@@ -258,7 +259,7 @@ func TestUnreachableListState(t *testing.T) {
 }
 
 // TestApiserver500ListStateIsUnreachable pins the 5xx half of the unreachable
-// classification (D16, the e2e fail-lists?mode=500 contract): an apiserver that
+// classification (the designed unreachable state, the e2e fail-lists?mode=500 contract): an apiserver that
 // answers the list with an InternalError STATUS (HTTP 500 + a Status body)
 // renders the SAME unreachable card -- the verbatim Status message in the mono
 // errdetail block -- with the truthful apiserver-answered plain line. 4xx
@@ -382,7 +383,7 @@ func TestEmptyListState(t *testing.T) {
 	p.wantAttr(".ro-empty-row .ro-empty-lg .ro-empty-actions a", "href", "/clusters/test/namespaces/_all/pods?")
 }
 
-// TestClusterScopedListStateHasNoNamespaceCrumbOrLink pins the SPEC §5/§9
+// TestClusterScopedListStateHasNoNamespaceCrumbOrLink pins the
 // clusterScoped rule on the shipped engine: a cluster-scoped kind (nodes)
 // renders NO namespace breadcrumb segment and NO "across all namespaces" link
 // -- the canonical route carries no namespace, so neither affordance may
@@ -445,7 +446,7 @@ func TestEmptyFilterListState(t *testing.T) {
 // in the layout) is the loading indicator for BOTH every hx-boost navigation (the
 // body carries hx-indicator="#ro-progress") AND the in-place list auto-refresh
 // (#resource-list-content points its hx-indicator at it). The v1 always-on
-// per-list skeleton stays retired (it flashed on every navigation); the D16
+// per-list skeleton stays retired (it flashed on every navigation); the designed
 // skeleton is a DIFFERENT, gated mechanism -- an inert template outside the
 // swap target, cloned only into an EMPTY region (TestLoadingSkeletonStateHooks).
 func TestGlobalProgressBar(t *testing.T) {
@@ -464,7 +465,7 @@ func TestGlobalProgressBar(t *testing.T) {
 	p.wantAbsent("#ro-list-skeleton")
 }
 
-// TestLoadingSkeletonStateHooks pins the D16/SPEC §7.19 loading skeleton: the
+// TestLoadingSkeletonStateHooks pins the designed loading skeleton: the
 // full single-type page ships an INERT hidden #ro-skel-template OUTSIDE the
 // #resource-list-content swap target (so it survives morphs and exists when the
 // region is empty), whose rows mirror the VISIBLE column count and fade toward
@@ -539,8 +540,8 @@ func TestLoadingSkeletonStateHooks(t *testing.T) {
 
 // TestStatesStaleMarkupHooks proves the CLIENT-SIDE stale path has its markup
 // hooks in the FIRST server response: a hidden `.ro-banner.warn` readout.js
-// reveals (with the D16 copy: "Auto-refresh failed — showing the last good
-// data", the "Retrying in Ns" countdown hook Unit 21 wires, and the Retry now
+// reveals (with the designed stale copy: "Auto-refresh failed — showing the last good
+// data", the "Retrying in Ns" countdown hook the auto-refresh JS wires, and the Retry now
 // control), and the dim target (#resource-list-content) the JS dims. The
 // server never decides stale (no last-good cache); these are the hooks the JS
 // needs.
@@ -549,7 +550,7 @@ func TestStatesStaleMarkupHooks(t *testing.T) {
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 
 	// A hidden stale banner exists (a `.ro-banner.warn` that is `hidden` on first
-	// paint) and carries the D16 copy + the retry control.
+	// paint) and carries the designed stale copy + the retry control.
 	banner := p.doc.Find(".ro-banner.warn.ro-stale-banner")
 	if banner.Length() != 1 {
 		t.Fatalf("expected exactly one hidden stale banner, found %d", banner.Length())
@@ -563,7 +564,7 @@ func TestStatesStaleMarkupHooks(t *testing.T) {
 	if !strings.Contains(banner.Find(".bn-text").Text(), "Retrying in") {
 		t.Fatalf("stale banner text = %q, want the Retrying-in line", banner.Find(".bn-text").Text())
 	}
-	// The countdown span is a wiring hook for Unit 21 (mono, data-stale-countdown).
+	// The countdown span is a wiring hook for the auto-refresh JS (mono, data-stale-countdown).
 	p.wantHas(".ro-stale-banner .bn-text span.mono[data-stale-countdown]")
 	if got := normSpace(banner.Find(".ro-stale-retry").Text()); got != "Retry now" {
 		t.Fatalf("stale banner retry label = %q, want %q", got, "Retry now")
@@ -711,7 +712,8 @@ func TestDetailNotFoundStaysA404(t *testing.T) {
 // clusters, no explicit kubeconfig, the in-cluster env blanked, and KUBECONFIG
 // pointed at a zero-context kubeconfig -- the exact boot the e2e first-run
 // harness performs. The kube manager must come up empty (not fail) for the
-// screen to be reachable at all (the D17 reachability prerequisite, pinned on
+// screen to be reachable at all (the first-run reachability prerequisite: the
+// binary must serve an empty cluster set instead of exiting, pinned on
 // the kube side by TestZeroContextKubeconfigStartsEmpty).
 func newFirstRunServer(t *testing.T) *Server {
 	t.Helper()
@@ -729,7 +731,7 @@ func newFirstRunServer(t *testing.T) *Server {
 	}, time.Now())
 }
 
-// TestFirstRunScreen proves the SPEC §7.2 first-run screen (D17): a server with
+// TestFirstRunScreen proves the first-run screen: a server with
 // zero configured clusters renders the instruction card on /clusters -- the
 // literal "No clusters configured" headline, the command block carrying the
 // binary's REAL config surface (KUBECONFIG env + the --config file alternative;
@@ -772,8 +774,8 @@ func TestFirstRunScreen(t *testing.T) {
 	}
 }
 
-// TestFirstRunHasNoLoginUI pins the D17 user decision: NO login screen
-// anywhere. The v2 login screen (SPEC §7.1) is deliberately not implemented --
+// TestFirstRunHasNoLoginUI pins the no-login-UI decision: NO login screen
+// anywhere. The v2 login screen is deliberately not implemented --
 // /login is not a route (the "GET /" catch-all just bounces it to /clusters),
 // POST /login does not exist, and no token input / SSO button renders; auth
 // stays config-only.

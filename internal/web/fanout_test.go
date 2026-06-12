@@ -22,8 +22,8 @@ type clusterFakeOptions struct {
 	failList bool
 	// searchFixtures swaps the pods table for the search-shaped fixture
 	// (api-backend / metrics-api / redis-master names) and adds a deployments
-	// route (api-gateway), so the grouped-search tests can assert the D12 mark
-	// highlight + the multi-kind totals. Off by default: existing tests keep the
+	// route (api-gateway), so the grouped-search tests can assert the search
+	// `<mark>` highlight + the multi-kind totals. Off by default: existing tests keep the
 	// nginx/my-app rows and no deployments route.
 	searchFixtures bool
 }
@@ -123,7 +123,7 @@ func clusterConnections(m map[string]string) []config.ClusterConnection {
 // hrefs is the merged row order.
 func clusterCellOrder(body string) []string {
 	// Scope to the .ro-table Cluster column (td.cell-clu): the engine now ALSO emits
-	// the mobile `.ro-cardlist` projection of the same rows (Unit 15), which carries
+	// the mobile `.ro-cardlist` projection of the same rows (the mobile cards layer), which carries
 	// its own `cluster` meta link, so a raw href scan would double-count. Parsing the
 	// table's cluster cells pins the merge order on the table body alone.
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
@@ -283,12 +283,12 @@ func TestMultiClusterSearchFanInIsDeterministicAndPartialSafe(t *testing.T) {
 	}
 }
 
-// TestSearchGroupedByClusterMarksAndTotals pins the D12 grouped search render
+// TestSearchGroupedByClusterMarksAndTotals pins the grouped search render
 // over the proven fan-out: a two-cluster search (the alphabetically-first
 // cluster is the SLOWEST, finishing last) renders one `.search-group` per
 // cluster in fixed cluster-name order across repeated runs, each group header
 // carrying the ok dot + mono cluster name + count chip; the matched query
-// fragment is wrapped in a server-side `<mark>` inside the Unit 10
+// fragment is wrapped in a server-side `<mark>` inside the cell-cookbook
 // pn-head/pn-tail name split; and the totals strip counts
 // objects/clusters/kinds with the searched-clusters timing meta.
 func TestSearchGroupedByClusterMarksAndTotals(t *testing.T) {
@@ -377,7 +377,7 @@ func TestSearchGroupedByClusterMarksAndTotals(t *testing.T) {
 	}
 }
 
-// TestSearchGroupedPartialFailureKeepsFailedChip pins the D12 partial-failure
+// TestSearchGroupedPartialFailureKeepsFailedChip pins the grouped-search partial-failure
 // composition: a failed cluster renders its `.ro-scope-chip.err` (+ inline
 // read-only retry GET) ALONGSIDE the healthy cluster's `.search-group`, and the
 // failed cluster never grows a group.

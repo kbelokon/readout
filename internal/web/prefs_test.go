@@ -1,6 +1,6 @@
 package web
 
-// prefs_test.go pins the D9 ro_prefs cookie contract: the v1.base64url wire
+// prefs_test.go pins the ro_prefs cookie contract: the v1.base64url wire
 // envelope (round-trip incl. column names with spaces and the explicit-empty
 // hide set), the 3KB tail eviction, the URL-beats-cookie precedence on sort,
 // the history-restore bypass (sort un-filled, column visibility KEPT), the
@@ -91,7 +91,7 @@ func TestPrefsEnvelopeRoundTrip(t *testing.T) {
 	if pods == nil || pods.Hide == nil || (*pods.Hide)[0] != "Nominated Node" {
 		t.Fatalf("pods hide round-trip = %+v, want [Nominated Node Readiness Gates]", pods)
 	}
-	// Explicit-empty vs absent hide: the D8 user-override-wins rule needs them
+	// Explicit-empty vs absent hide: the user-override-wins rule needs them
 	// distinguishable (empty suppresses the config default, absent falls to it).
 	if d := out.kind("deployments"); d == nil || d.Hide == nil || len(*d.Hide) != 0 {
 		t.Fatalf("explicit-empty hide decoded as %+v, want a non-nil empty list", out.kind("deployments"))
@@ -126,7 +126,7 @@ func TestPrefsDecodeLenient(t *testing.T) {
 	}
 }
 
-// TestPrefsEvictionDropsTailKinds pins the D9 eviction mechanics: above the
+// TestPrefsEvictionDropsTailKinds pins the cookie eviction mechanics: above the
 // 3KB encoded cap, kind entries drop from the array TAIL (the array is
 // most-recent-first, so the least recently used kinds evict) while the head
 // entries, the refresh mode, and the namespace map survive untouched.
@@ -185,7 +185,7 @@ func TestPrefsEvictionDropsTailKinds(t *testing.T) {
 // TestPrefsSortFillPrecedence pins the URL <-> cookie precedence table for
 // sort: the cookie fills an ABSENT ?sort= at SSR (rows re-ordered, th.sorted +
 // the asc icon rendered, the header href toggling to :desc), an explicit URL
-// ?sort= beats the cookie outright, and multi-type pages (the D1 boundary) see
+// ?sort= beats the cookie outright, and multi-type pages (outside the single-type loop) see
 // no fill at all.
 func TestPrefsSortFillPrecedence(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
@@ -212,7 +212,7 @@ func TestPrefsSortFillPrecedence(t *testing.T) {
 	}
 	p.wantAbsent("th.sorted .sort-ico.sort-asc") // descending icon has no sort-asc
 
-	// Multi-type pages sit outside the loop (D1): no fill, fixture order, no
+	// Multi-type pages sit outside the single-type loop: no fill, fixture order, no
 	// sorted header anywhere.
 	p = prefsGet(t, app, "/clusters/test/namespaces/default/pods,services", cookie, nil)
 	if got := p.texts("table.ro-table td.cell-name"); !strings.HasPrefix(strings.Join(got, "|"), "nginx|my-app") {
@@ -222,7 +222,7 @@ func TestPrefsSortFillPrecedence(t *testing.T) {
 }
 
 // TestPrefsHistoryRestoreSkipsSortKeepsColumns pins the back-button rule
-// (D9): a request carrying htmx's HX-History-Restore-Request header skips the
+// for the prefs cookie: a request carrying htmx's HX-History-Restore-Request header skips the
 // cookie fill for URL-REPRESENTABLE state (sort -- the back button must not be
 // defeated by a freshly written sort pref) while column visibility, which has
 // NO URL form, stays filled -- stripping it would make a back-render differ
@@ -258,7 +258,7 @@ func TestPrefsHistoryRestoreSkipsSortKeepsColumns(t *testing.T) {
 // cookie's hide list renders hidden on the full page AND the `_table` partial;
 // an explicit URL ?hidecols= wins outright (no merging); an explicit EMPTY
 // cookie hide set suppresses the DefaultHiddenColumns config default (user
-// override wins, D8) while an absent one falls back to it.
+// override wins) while an absent one falls back to it.
 func TestPrefsHiddenColumnsRender(t *testing.T) {
 	cfg := baseConfig(t)
 	cfg.DefaultHiddenColumns = map[string]string{"pods": "Status"}
@@ -331,7 +331,7 @@ func TestPrefsPushURLExcludesCookieSort(t *testing.T) {
 }
 
 // TestPrefsNamespaceClusterEntryHrefs pins the namespace-per-cluster CONSUMER
-// surfaces (D9, href-only): the clusters page's row link and the palette's
+// surfaces (the persisted-namespace cookie, href-only): the clusters page's row link and the palette's
 // topbar cluster nav both point into the persisted namespace's pods list
 // (`_all` included); without a pref both keep the plain cluster-overview link.
 func TestPrefsNamespaceClusterEntryHrefs(t *testing.T) {
@@ -412,7 +412,7 @@ func TestPrefsRefreshModeRendered(t *testing.T) {
 	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown")
 	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option is-active")
 
-	// Persisted Live (Unit 27/D19): the label says Live, the Live option is the
+	// Persisted Live (the Live SSE refresh mode): the label says Live, the Live option is the
 	// active one (NOT Off, even though Live arms no polling interval), and the
 	// refresh-on hook keeps the livedot pulsing at SSR.
 	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "Live"}), nil)
@@ -422,8 +422,8 @@ func TestPrefsRefreshModeRendered(t *testing.T) {
 	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option")
 }
 
-// TestLiveOptionScopeGate pins the server-rendered Live availability (Unit 27/
-// D19 scope cut): the dropdown's Live option is DISABLED (with an explanatory
+// TestLiveOptionScopeGate pins the server-rendered Live availability (the Live
+// mode's scope cut): the dropdown's Live option is DISABLED (with an explanatory
 // title) on multi-type and multi-cluster list pages -- the `_stream` endpoint
 // 404s that scope -- and enabled on single-type single-cluster lists. Non-list
 // pages (detail) keep it enabled-but-inert, like the interval options.
@@ -460,7 +460,7 @@ func TestLiveOptionScopeGate(t *testing.T) {
 // TestPrefsReadoutJSContract pins the JS writer half needle-style (the suite
 // has no JS runtime; the e2e layer exercises the live behavior): the cookie
 // name/envelope/cap/attribute constants, the four user-interaction write
-// surfaces (sort click, column toggle for Unit 9, interval pick, namespace
+// surfaces (sort click, column-visibility toggle, interval pick, namespace
 // switch), the programmatic do-not-write guards, and the roRefresh migration
 // (read-once fallback only -- the legacy localStorage WRITE is retired).
 func TestPrefsReadoutJSContract(t *testing.T) {
@@ -474,8 +474,8 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 		"window.location.protocol === 'https:'", // Secure on https only
 		"'; Secure'",
 		"roPrefsSetSort",          // sort-click write
-		"roPrefsSetHiddenColumns", // Unit 9's column-toggle surface
-		"roPrefsSetRefresh",       // interval pick (+ Unit 27 Live)
+		"roPrefsSetHiddenColumns", // the column-visibility toggle surface
+		"roPrefsSetRefresh",       // interval pick (+ Live mode)
 		"roPrefsSetNamespace",     // namespace switch
 		"closest('thead th')",     // sort writes ONLY from header gestures
 		"#namespace-dropdown [data-ro-action='pick-namespace']", // the namespace-switch surface

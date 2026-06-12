@@ -257,7 +257,7 @@ func TestRolesControlPlaneAccent(t *testing.T) {
 	// Render the roles cell and assert the control-plane chip earns .cp while the
 	// worker chip stays plain (the render-side roleClass mapping). Scoped to the
 	// .ro-table: the engine now ALSO emits the mobile `.ro-cardlist` projection of
-	// the same row (Unit 15), repeating the roles as a card meta row;
+	// the same row (the mobile cards layer), repeating the roles as a card meta row;
 	// TestMobileCards pins the card projection.
 	doc := renderRolesCell(t, cv.Roles)
 	cpChip := doc.Find("table.ro-table .ro-role-chip.cp")
@@ -278,7 +278,7 @@ func TestRolesControlPlaneAccent(t *testing.T) {
 	}
 	emptyDoc := renderRolesCell(t, cv.Roles)
 	// Scoped to the .ro-table cell: the engine now ALSO emits the mobile
-	// `.ro-cardlist` projection of the same row (Unit 15), which renders its own
+	// `.ro-cardlist` projection of the same row (the mobile cards layer), which renders its own
 	// muted "—" for the empty roles meta, so an unscoped `.faint` text would
 	// concatenate both; TestMobileCards pins the card projection.
 	if emptyDoc.Find("table.ro-table .ro-role-chip").Length() != 0 || normSpace(emptyDoc.Find("table.ro-table .faint").Text()) != "—" {
@@ -435,7 +435,7 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 	// Ready=err), so the total pill count is 2 -- and asserting exactly one warn +
 	// one err keeps a broadened-tone regression (e.g. condPillClass mapping the
 	// wrong token) trippable. Scoped to the .ro-table: the engine now ALSO emits the
-	// mobile `.ro-cardlist` projection of the same rows (Unit 15), which repeats the
+	// mobile `.ro-cardlist` projection of the same rows (the mobile cards layer), which repeats the
 	// roles + condition pills as card meta rows; TestMobileCards pins the projection.
 	if doc.Find("table.ro-table .ro-role-chip.cp").Length() != 1 {
 		t.Fatalf(".cp chip count = %d, want 1", doc.Find("table.ro-table .ro-role-chip.cp").Length())

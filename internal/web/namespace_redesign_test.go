@@ -17,7 +17,7 @@ import (
 // INDEPENDENT fact about how a Kubernetes Namespace value maps onto the redesign
 // vocabulary, asserted against the documented semantics (Active -> the ok status
 // dot; EVERY label -> a neutral .ro-chip with the .ck/.cs/.cv ink-weight split,
-// the green .app accent being retired by the D3 colour law; NO fabricated
+// the green .app accent being retired by the colour law; NO fabricated
 // pod-count column because a Namespace object carries no pod count), never an
 // echo of the emitted class. The mapping is driven through the REAL pipeline
 // (buildCellView / buildListView), not re-implemented in the test.
@@ -65,14 +65,14 @@ func namespacesCellView(t *testing.T, columns []string, cells []any, obj map[str
 // asserts the resolved view-model in one namespace row: the Status column reuses
 // the status-dot cell (Active -> ok tone), and the synthetic Labels column becomes
 // the label-chips cell carrying the sorted key/value pairs -- with NO class
-// plumbing at all (D3 colour law: every chip is neutral; an app.kubernetes.io/*
+// plumbing at all (under the colour law every chip is neutral; an app.kubernetes.io/*
 // label maps to exactly the same chip shape as any other label). The acceptance
 // proof that the render test then confirms reaches the DOM. The expectations are
 // INDEPENDENT documented facts (Active is the steady ok phase; labels sort by
 // key), never an echo of the emitted markup.
 func TestNamespaceCells(t *testing.T) {
 	// A namespace carrying one app.kubernetes.io/* label and one plain label, in
-	// the Active phase. Under D3 both map to the SAME neutral chip shape.
+	// the Active phase. Under the colour law both map to the SAME neutral chip shape.
 	labels := map[string]any{
 		"app.kubernetes.io/name": "ingress-nginx",
 		"team":                   "platform",
@@ -85,8 +85,8 @@ func TestNamespaceCells(t *testing.T) {
 	cols := []string{"Name", "Status", "Age", "Labels"}
 	cells := []any{"ingress-nginx", "Active", "30d", "app.kubernetes.io/name=ingress-nginx,team=platform"}
 
-	// Status reuse: Active -> the ok status-dot cell (the cellStatus branch shared
-	// from Unit 5), NOT a fabricated namespace-specific branch.
+	// Status reuse: Active -> the ok status-dot cell (the shared cellStatus
+	// branch), NOT a fabricated namespace-specific branch.
 	status := namespacesCellView(t, cols, cells, obj, 1)
 	if status.Kind != cellStatus {
 		t.Fatalf("Status cell kind = %v, want cellStatus (reused, not a new namespace branch)", status.Kind)
@@ -128,7 +128,7 @@ func findChip(chips []chipView, key string) *chipView {
 // TestNamespaceLabelChipsThroughRender drives a namespaces list through the REAL
 // pipeline (decorateNamespaceColumns -> buildListView -> ResourceTable templ) and
 // asserts the redesign DOM: the Active status dot, NEUTRAL label chips with the
-// .ck/.cs/.cv ink-weight split inside .ro-chips (D3 colour law -- the retired
+// .ck/.cs/.cv ink-weight split inside .ro-chips (under the colour law -- the retired
 // .ro-chip.app green accent must NEVER render, asserted negatively across the
 // whole document), a no-label namespace's muted "—", and -- the load-bearing
 // constraint -- that NO pod-count column is fabricated (a Namespace object has
@@ -171,7 +171,7 @@ func TestNamespaceLabelChipsThroughRender(t *testing.T) {
 		t.Fatalf("ingress-nginx status cell missing .cell-status.ok > .ro-dot.ok: %s", normSpace(ingressRow.Text()))
 	}
 	// Labels render as .ro-chips with one neutral chip per label. Each chip
-	// splits its key into .ck and its value into .cv (D3: ink weight, not hue).
+	// splits its key into .ck and its value into .cv (ink weight, not hue, per the colour law).
 	if got := ingressRow.Find(".ro-chips .ro-chip").Length(); got != 2 {
 		t.Fatalf("ingress-nginx label chips = %d, want 2: %s", got, normSpace(ingressRow.Text()))
 	}
@@ -197,7 +197,7 @@ func TestNamespaceLabelChipsThroughRender(t *testing.T) {
 		t.Fatalf("no-label namespace should render the muted —, got %q", got)
 	}
 
-	// THE D3 NEGATIVE ASSERTION (the regression net for the retired class):
+	// THE COLOUR-LAW NEGATIVE ASSERTION (the regression net for the retired class):
 	// across the WHOLE rendered document -- table, mobile `.ro-cardlist`
 	// projection, chrome -- no element ever carries the retired `.ro-chip.app`
 	// green accent. Any surface re-emitting it trips this count.
@@ -256,7 +256,7 @@ func TestNamespaceListPreservesGenerics(t *testing.T) {
 
 	// The synthetic chips column rendered (one .ro-chips block in the table row).
 	// Scoped to the .ro-table: the engine now ALSO emits the mobile `.ro-cardlist`
-	// projection of the same row (Unit 15), which repeats the chips block as a card
+	// projection of the same row (the mobile cards layer), which repeats the chips block as a card
 	// meta row; TestMobileCards pins the card projection.
 	if doc.Find("table.ro-table .ro-chips").Length() != 1 {
 		t.Fatalf("synthetic Labels chips column missing")

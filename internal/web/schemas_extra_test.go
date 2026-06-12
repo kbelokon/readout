@@ -10,9 +10,9 @@ import (
 	"github.com/kbelokon/readout/internal/kube"
 )
 
-// schemas_extra_test.go pins the Unit-11 rich schemas (D5, SPEC §7.8–7.10):
+// schemas_extra_test.go pins the rich curated schemas for the extra kinds:
 // the curated column decorators for services / configmaps / secrets /
-// ingresses and the per-kind cell wiring onto the Unit-10 constructors.
+// ingresses and the per-kind cell wiring onto the cell-cookbook constructors.
 // Every expectation is an INDEPENDENT fact about how the Kubernetes object /
 // printer cell maps onto the redesign vocabulary (ClusterIP None verbatim,
 // ExternalName target in External-IP, <pending> LB pulses, multi-port +N,
@@ -127,7 +127,7 @@ func TestServiceColumnsDecoration(t *testing.T) {
 	}
 }
 
-// TestServiceCells pins the SPEC §7.8 service cell mapping through the real
+// TestServiceCells pins the service cell mapping through the real
 // buildCellView: ClusterIP None stays the verbatim generic cell, the
 // External-IP corner states resolve through the pending cell (none faint /
 // pending pulsing / ExternalName target verbatim), the multi-port list shows
@@ -273,7 +273,7 @@ func TestServiceListThroughHandler(t *testing.T) {
 	}
 }
 
-// TestConfigMapKeysCells pins the configmap keys decode (SPEC §4.10): `data`
+// TestConfigMapKeysCells pins the configmap keys decode (the keys-cell recipe): `data`
 // keys sized by their value's byte length, `binaryData` keys by the DECODED
 // length (the wire form is base64 -- 88 encoded chars of a 64-byte blob must
 // read "64 B"), merged and sorted; an empty configmap yields no chips (the
@@ -329,7 +329,7 @@ func TestConfigMapKeysCells(t *testing.T) {
 // TestConfigMapListRendersKeyChips drives the fakeapi configmaps fixture
 // through the real handler: the app-config row renders one `name · size` chip
 // per key with the first keysCellMax visible and the overflow behind the
-// `+2 keys` button (the SPEC §4.10 in-cell expand the e2e spec clicks), the
+// `+2 keys` button (the keys-cell in-cell expand the e2e spec clicks), the
 // single-key row has no button, the empty row shows the muted "—", and the
 // decorated Data column is NOT right-aligned (decorateConfigMapColumns
 // dropped the count-guessed num class).
@@ -434,8 +434,8 @@ func TestSecretKeysDecodedSizes(t *testing.T) {
 	}
 }
 
-// TestSecretListNeverRendersValues is the values-never-in-DOM proof (SPEC
-// §4.10, D5): the masked-on secrets LIST renders the key names and DECODED
+// TestSecretListNeverRendersValues is the values-never-in-DOM proof (the
+// secret-masking law): the masked-on secrets LIST renders the key names and DECODED
 // sizes -- and NEITHER the raw fixture values NOR their base64 encodings
 // appear ANYWHERE in the rendered HTML (table cells, mobile cards, tooltips,
 // attributes: the search is over the whole body, both encodings). The raw
@@ -511,7 +511,7 @@ func ingressesTable(rows []kube.Row) *kube.Table {
 	}
 }
 
-// TestIngressCells pins the SPEC §7.10 ingress mapping through the real
+// TestIngressCells pins the ingress mapping through the real
 // decorator + buildCellView: the synthetic TLS column derives from spec.tls
 // ("tls" plain cell / earned-green view only when terminated), the Hosts cell
 // shows the first host + "+N hosts" with the full newline-joined list in the
@@ -536,7 +536,7 @@ func TestIngressCells(t *testing.T) {
 		t.Fatalf("unterminated TLS plain cell = %q, want —", got)
 	}
 
-	// TLS view: the earned green ONLY when spec.tls terminates (D3).
+	// TLS view: the earned green ONLY when spec.tls terminates (green means live protection).
 	cv := schemaCellView(t, table, table.Rows[0], tlsIdx)
 	if cv.Kind != cellTLS || cv.Value != "tls" || cv.Tone != "ok" {
 		t.Fatalf("terminated TLS cell = %#v, want the ok tls lock", cv)

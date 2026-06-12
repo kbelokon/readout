@@ -19,7 +19,7 @@ import (
 // ResourceView templ). Each fact is an independent statement about how an object
 // maps onto the redesign detail vocabulary -- the .ro-rd content marker, the
 // .ro-detail-title / .ro-kind-badge header, the Default/YAML/Events(/Logs) tabs,
-// the NEUTRAL label chips (D3: every label is a plain .ro-chip with the
+// the NEUTRAL label chips (under the colour law every label is a plain .ro-chip with the
 // .ck/.cs/.cv ink-weight split; the green .app accent is retired), the
 // collapsible+copyable YAML cards, the toned Events table, and the chroma token
 // spans in the YAML body.
@@ -92,7 +92,7 @@ func buildDefaultDetailView(t *testing.T, obj *kube.Object) *detailView {
 }
 
 // TestResourceViewDetailSpine pins the redesign detail header + content marker:
-// the outermost content element carries .ro-rd (D13), the title is the
+// the outermost content element carries .ro-rd, the title is the
 // .ro-detail-title row with an H1.ro-title name + a .ro-kind-badge + a quiet
 // .ro-detail-actions Download button + the .ro-detail-meta line.
 func TestResourceViewDetailSpine(t *testing.T) {
@@ -147,12 +147,12 @@ func TestResourceViewTabsPodVsNonPod(t *testing.T) {
 	}
 }
 
-// TestDetailLabelChipsNeutral pins the D3 colour law on the detail labels: an
+// TestDetailLabelChipsNeutral pins the colour law on the detail labels: an
 // app.kubernetes.io/* label renders as a PLAIN neutral .ro-chip anchor exactly
 // like any other label -- the retired green .app accent never appears -- and
 // every chip splits its key (.ck), ghost separator (.cs), and value (.cv) so
 // ink weight, not hue, differentiates them. The href is the click-to-filter
-// chip link (D7/SPEC §8.1): this kind's list with `?f=label:key=value`, the
+// chip link (the Filters v2 click-to-filter mechanism): this kind's list with `?f=label:key=value`, the
 // chip text QueryEscape'd whole so '/' and '=' survive literally.
 func TestDetailLabelChipsNeutral(t *testing.T) {
 	obj := detailObject("deployments", "Deployment", true, map[string]any{
@@ -316,7 +316,7 @@ func TestEventsTabTonedTable(t *testing.T) {
 	if got := normSpace(muteRow.Find("td.ro-event-msg").Text()); got != "Successfully assigned default/x to node-1" {
 		t.Fatalf("event message cell = %q", got)
 	}
-	// The detail tab inherits the events-list cells (D15): a countless event
+	// The detail tab inherits the upgraded events-list cells: a countless event
 	// reads the faint ×1 in the Count column.
 	if got := normSpace(muteRow.Find("td.num span.faint").Text()); got != "×1" {
 		t.Fatalf("event count cell = %q, want the faint ×1", got)
@@ -332,7 +332,7 @@ func TestEventsTabTonedTable(t *testing.T) {
 	}
 }
 
-// TestResourceViewYAMLChromaSpans pins D7 end to end: the YAML tab renders the
+// TestResourceViewYAMLChromaSpans pins the chroma YAML highlighting end to end: the YAML tab renders the
 // full manifest through the chroma highlighter (server-side), so the body carries
 // the Pygments token spans (.nt keys, .l unquoted literals) -- the recolour-only
 // path, not a re-tokeniser.

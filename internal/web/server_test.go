@@ -383,7 +383,7 @@ func TestClusterAuthUsesEncryptedSessionToken(t *testing.T) {
 	}
 }
 
-// TestAnonymousBaseDeniedWithoutToken pins the D8d denial: with passthrough on
+// TestAnonymousBaseDeniedWithoutToken pins the anonymous-base denial: with passthrough on
 // and no viewer token, a cluster whose BASE connection is itself anonymous is
 // denied (a forbidden client) rather than silently served as anonymous.
 func TestAnonymousBaseDeniedWithoutToken(t *testing.T) {
@@ -405,7 +405,7 @@ func TestAnonymousBaseDeniedWithoutToken(t *testing.T) {
 	}
 }
 
-// TestPassthroughServesWithViewerToken pins the non-deny side of D8d: a cluster
+// TestPassthroughServesWithViewerToken pins the non-deny side of the anonymous-base rule: a cluster
 // whose base connection carries a real identity (an SA token) is served with that
 // identity when the viewer has no token (NOT denied), and a present viewer token
 // yields a per-request passthrough clone rather than the base client.

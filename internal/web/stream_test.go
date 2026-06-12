@@ -1,6 +1,6 @@
 package web
 
-// stream_test.go pins the `_stream` SSE endpoint (D19, Unit 26) against
+// stream_test.go pins the `_stream` SSE endpoint (the Live refresh mode) against
 // scripted fakeapi fixtures: the handshake + framing (generation echo), the
 // coalescing pacing (floor, ceiling, churn degradation), render-time filter
 // transitions over the unfiltered snapshot, the complete lifecycle (410
@@ -490,7 +490,7 @@ func TestStreamWatchlessKind204(t *testing.T) {
 	}
 }
 
-// TestStreamScope404 pins the D19 scope cut: multi-type plurals (all / CSV)
+// TestStreamScope404 pins the Live-mode scope cut: multi-type plurals (all / CSV)
 // and multi-cluster scope (_all / CSV) get 404 — Live is single-type,
 // single-cluster only.
 func TestStreamScope404(t *testing.T) {
@@ -879,7 +879,7 @@ func TestStreamExcludedFromDurationHistogram(t *testing.T) {
 	}
 }
 
-// TestStreamStatusWriterFlushUnwrap pins the D19 plumbing on statusWriter:
+// TestStreamStatusWriterFlushUnwrap pins the SSE-streaming plumbing on statusWriter:
 // Flush reaches the wrapped writer (the embedded field used to hide
 // http.Flusher, buffering SSE forever) and Unwrap exposes it for
 // http.ResponseController.
