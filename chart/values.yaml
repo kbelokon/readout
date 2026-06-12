@@ -26,6 +26,39 @@ serviceAccount:
   name: ""
   annotations: {}
 
+# Cluster read access for the in-cluster (Live) mode. The app discovers and
+# lists resources through the ServiceAccount above; these objects grant that
+# access. Verbs are always get/list/watch only -- this chart never grants a
+# mutating verb on any resource.
+rbac:
+  # When false, NO RBAC objects render (ClusterRole, ClusterRoleBinding, and
+  # the argoCD Role/RoleBinding are all omitted). The ServiceAccount still
+  # renders; binding it to your own roles is then your responsibility.
+  create: true
+  # preset selects the read scope:
+  #   wildcard   - get/list/watch on every apiGroup and resource, including any
+  #                CRD the cluster serves. This is what makes "discover anything"
+  #                work out of the box.
+  #   restricted - least privilege: grants follow .Values.config (the single
+  #                source of truth). secrets and pods/log are granted only when
+  #                config.includeSecrets / config.showContainerLogs ask for them.
+  #
+  # TRADE-OFF (wildcard): the wildcard preset grants API-level read on Secrets
+  # even when config.includeSecrets is false. The app's own gate still refuses
+  # to admit the Secret type in that case, but a compromise of the SA token
+  # exposes every Secret in the cluster through the apiserver directly. Choose
+  # restricted when that exposure is unacceptable.
+  preset: wildcard
+  # Extra rules appended verbatim to the ClusterRole under either preset. Use
+  # this to widen read access (e.g. a resource the restricted preset omits, or
+  # an argoCD host whose credentials live in a local Secret). Keep verbs within
+  # get/list/watch -- the chart does not police this list, but granting other
+  # verbs defeats the read-only contract.
+  extraRules: []
+  #  - apiGroups: ["example.com"]
+  #    resources: ["widgets"]
+  #    verbs: ["get", "list", "watch"]
+
 replicaCount: 1
 
 service:
@@ -131,6 +164,21 @@ config:
     - kube-.*
   showContainerLogs: false
   includeSecrets: false
+  # Argo CD cluster-Secret discovery (optional, omitted by default). When set,
+  # readout lists Argo's cluster Secrets and turns each into a connection.
+  #   hostCluster: a cluster named under config.clusters to list Secrets FROM.
+  #                Empty/unset means the in-cluster ServiceAccount where readout
+  #                runs -- and ONLY then does the restricted preset render a
+  #                namespaced Role + RoleBinding granting secrets read in the
+  #                argoCD namespace below. That namespace must already exist at
+  #                install time (the chart does not create it). When hostCluster
+  #                names a remote cluster the chart grants nothing locally;
+  #                widen via rbac.extraRules if that host's credentials live in
+  #                a local Secret.
+  #   namespace:   where Argo's cluster Secrets live (default: argocd).
+  # argoCD:
+  #   hostCluster: ""
+  #   namespace: argocd
   auth:
     mode: none   # safe default: no identity trusted. Set behind a real auth layer.
     # mode: headers
