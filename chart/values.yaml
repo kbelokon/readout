@@ -367,18 +367,6 @@ extraObjects: []
 #   stringData:
 #     key: value
 
-# Acknowledgements that silence the chart's safety gates. These gates see
-# CHART VALUES ONLY: secrets and auth config delivered through env / envFrom
-# (opaque references the chart cannot read) bypass them entirely and are caught
-# instead by the app's startup checks and `readout config validate`. The gates
-# exist to catch the obvious local-values mistakes, not to be authoritative.
-unsafe:
-  # Set true to allow multi-replica OIDC without a stable session secret wired
-  # through chart values. Without it (and with no session-secret wiring the
-  # chart can see), that combination is a template error -- each replica would
-  # sign sessions with its own ephemeral key and break OIDC login affinity.
-  allowEphemeralSessionSecret: false
-
 # Opt-in connectivity smoke test rendered only as a `helm.sh/hook: test` Pod.
 # When enabled, `helm test <release>` runs a curl pod that hits the Service's
 # /readyz. Off by default: it requires a reachable, running release.

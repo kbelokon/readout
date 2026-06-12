@@ -564,15 +564,6 @@
         "type": "object"
       }
     },
-    "unsafe": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "allowEphemeralSessionSecret": {
-          "type": "boolean"
-        }
-      }
-    },
     "testFramework": {
       "type": "object",
       "additionalProperties": false,

@@ -59,11 +59,15 @@ config:
 
 Auth posture rules:
 
-- Do not expose (Ingress/Gateway) with `config.auth.mode: none`. The chart blocks
-  it; if the user truly wants an open viewer, they must set
-  `unsafe.allowNoAuth: true` deliberately.
+- Exposing (Ingress/Gateway/LoadBalancer/NodePort) with `config.auth.mode: none`
+  is **not blocked** — the chart installs and prints a loud NOTES warning. It
+  publishes an unauthenticated, cluster-wide read viewer, so set a real
+  `auth.mode` (`oidc`/`headers`) before trusting the exposure.
 - `auth.mode: oidc` with `replicaCount > 1` needs a chart-visible session secret
-  (the typed `auth.sessionSecret` above satisfies it).
+  shared by every replica (the typed `auth.sessionSecret` above satisfies it).
+  Without one the chart still installs but warns in NOTES: each pod signs sessions
+  with its own ephemeral key, so OIDC login breaks under load balancing unless you
+  have sticky sessions.
 - For anything the typed surface misses, use `env` (literal `valueFrom`) or
   `envFrom` (whole-Secret reference).
 
@@ -124,12 +128,16 @@ kubectl describe httproute readout    # check Parents/Conditions: Accepted=True,
 
 ## 7. Troubleshoot (gate failure → the value that fixes it)
 
-The chart fails the render with a specific message. Map it to the fix:
+The chart `fail`s the render ONLY for combinations the Kubernetes API would
+reject anyway (failing early with a clear message). Security/operational postures
+— no-auth exposure, multi-replica OIDC without a shared session secret — are
+**never render-blocked**: they install and warn in NOTES (see §3). Map a render
+failure to its fix:
 
 | Failure message contains | Fix |
 | --- | --- |
-| `exposing readout through ingress/gateway while config.auth.mode is none` | Set `config.auth.mode` to `oidc`/`headers`, or `unsafe.allowNoAuth: true` to expose without auth on purpose. |
-| `config.auth.mode=oidc with replicaCount>1 needs a stable session secret` | Wire `auth.sessionSecret.existingSecret` (+`key`), an `env[]` entry `READOUT_SESSION_SECRET`, or `config.sessionSecretFile`; supply via `envFrom`; or `unsafe.allowEphemeralSessionSecret: true`. |
+| `commonLabels must not set` / `podLabels must not set` (an immutable identity label) | Use any label key other than `app.kubernetes.io/name`/`app.kubernetes.io/instance`; those build the immutable Deployment/Service selectors. |
+| `podDisruptionBudget: minAvailable (...) and maxUnavailable (...) are mutually exclusive` | Set exactly one of `podDisruptionBudget.minAvailable`/`maxUnavailable` — Kubernetes rejects both. |
 | `config.metricsPort (...) conflicts with metrics.port (...)` | Unset `config.metricsPort` and drive the port through `metrics.port`, or make them equal. |
 | `config.metricsPort (...) is set but metrics.enabled is false` | Set `metrics.enabled: true` (and `metrics.port`) instead of setting `config.metricsPort` directly. |
 | HTTPRoute invalid / route never attaches | `gateway.parentRefs` is required when `gateway.enabled` — name the Gateway(s) to attach to. |

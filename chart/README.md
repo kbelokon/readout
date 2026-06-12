@@ -89,7 +89,6 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | `extraContainers` | `[]` | Extra sidecar containers, rendered verbatim into the pod. |
 | `podDisruptionBudget` | `{enabled: false, minAvailable: "", maxUnavailable: ""}` | PodDisruptionBudget for readout pods. Set exactly one of `minAvailable`/`maxUnavailable` (Kubernetes rejects both). |
 | `extraObjects` | `[]` | Escape hatch for arbitrary Helm-owned objects (platform CRs, extra Secrets). Each entry is one YAML map; string values run through `tpl` with the chart root context. See [Exposure recipes](#exposure-recipes). |
-| `unsafe` | `{allowEphemeralSessionSecret: false}` | Acknowledgement that silences the multi-replica OIDC session-secret gate. See [Safety gates and the env boundary](#safety-gates-and-the-env-boundary). |
 | `testFramework` | `{enabled: false, image: {repository: curlimages/curl, tag: "8.11.1"}}` | Opt-in `helm test` connectivity pod. When enabled, `helm test <release>` runs a curl pod against the Service's `/readyz`. |
 
 ## Exposure recipes
@@ -165,13 +164,17 @@ Widen either preset with `rbac.extraRules`, appended verbatim. Keep verbs within
 
 ## Safety gates and the env boundary
 
-The chart's template gates catch dangerous **combinations** at render time. They
-see **chart values only**: config delivered through `env`/`envFrom` (opaque
-references the chart cannot read) bypasses them entirely. The backstop for those
-is the **app's own startup checks** and `readout config validate` (see
-[Validating before install](#validating-before-install)).
+The chart **never refuses to render over a security or operational posture**: a
+valid-but-risky choice (no-auth exposure, multi-replica OIDC without a shared
+session secret) installs and prints a loud NOTES warning. The only render-time
+`fail`s are for **combinations the Kubernetes API itself rejects** — failing
+early with a clear message beats a cryptic apply error, and blocks nothing the
+cluster would have accepted. Every gate sees **chart values only**: config
+delivered through `env`/`envFrom` (opaque references the chart cannot read)
+bypasses them entirely, backstopped by the **app's own startup checks** and
+`readout config validate` (see [Validating before install](#validating-before-install)).
 
-The gates:
+Warnings (install proceeds, NOTES warns):
 
 - **No-auth exposure** — exposing readout while `config.auth.mode` is `none`
   (through Ingress, Gateway, or a `LoadBalancer`/`NodePort` Service) is **never
@@ -179,12 +182,21 @@ The gates:
   An exposed no-auth instance publishes an unauthenticated, cluster-wide read
   viewer; set a real `auth.mode` (`oidc`/`headers`) before trusting the exposure.
 - **Multi-replica OIDC session secret** — `config.auth.mode: oidc` with
-  `replicaCount > 1` and no chart-visible session secret is a template error
-  (each replica would sign with its own ephemeral key and break OIDC login
-  affinity). Wire one via `auth.sessionSecret.existingSecret`, an `env` entry
-  named `READOUT_SESSION_SECRET`, or `config.sessionSecretFile`. An opaque
-  `envFrom` source downgrades this to a NOTES reminder; or acknowledge with
-  `unsafe.allowEphemeralSessionSecret: true`.
+  `replicaCount > 1` and no chart-visible session secret installs but prints a
+  loud NOTES warning (each replica signs with its own ephemeral key, so OIDC
+  login breaks under load balancing unless you have sticky sessions). Wire a
+  shared secret via `auth.sessionSecret.existingSecret`, an `env` entry named
+  `READOUT_SESSION_SECRET`, or `config.sessionSecretFile`; an opaque `envFrom`
+  source is assumed to carry it and the warning softens to a reminder.
+
+Render-time `fail`s (the cluster would reject these anyway):
+
+- **PodDisruptionBudget** — `minAvailable` and `maxUnavailable` both set is
+  rejected by the PDB API; the chart fails early naming the conflict.
+- **Identity-label collision** — overriding `app.kubernetes.io/name` or
+  `app.kubernetes.io/instance` via `commonLabels`/`podLabels` produces an
+  immutable-selector mismatch the API rejects; the chart fails early naming the
+  key.
 - **Metrics guards** — `config.metricsPort` set to a value different from
   `metrics.port` is an error; `config.metricsPort` set while `metrics.enabled` is
   false is an error; a `serviceMonitor` enabled without `metrics.enabled` does not

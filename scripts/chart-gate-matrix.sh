@@ -31,11 +31,13 @@ expect_pass() {
   fi
 }
 
-# Gate: multi-replica OIDC with no chart-visible session secret is rejected.
-expect_fail "oidc multi-replica without session secret" \
+# Multi-replica OIDC with no chart-visible session secret is NEVER render-blocked:
+# it renders and warns via NOTES (each replica would otherwise sign with its own
+# ephemeral key; the operator is warned, not stopped).
+expect_pass "oidc multi-replica without session secret renders (warns, never blocks)" \
   --set replicaCount=3 --set config.auth.mode=oidc
-# ...and accepted once a session secret is wired through chart values.
-expect_pass "oidc multi-replica with session secret" \
+# ...and also renders once a session secret is wired through chart values.
+expect_pass "oidc multi-replica with session secret renders" \
   --set replicaCount=3 --set config.auth.mode=oidc \
   --set auth.sessionSecret.existingSecret=s
 
@@ -65,8 +67,10 @@ expect_fail "gate rejects PDB with both minAvailable and maxUnavailable" \
   --set podDisruptionBudget.enabled=true \
   --set podDisruptionBudget.minAvailable=1 \
   --set podDisruptionBudget.maxUnavailable=1
-# Gate: a name-only env husk does not count as a session-secret source.
-expect_fail "gate rejects name-only READOUT_SESSION_SECRET env entry" \
+# A name-only env husk is not a real session-secret source, but it is NOT
+# render-blocked: the chart renders and NOTES warns (the husk renders an empty
+# env var and the app would fall back to an ephemeral per-pod key).
+expect_pass "oidc multi-replica with name-only env husk renders (warns, never blocks)" \
   --set replicaCount=3 --set config.auth.mode=oidc \
   --set 'env[0].name=READOUT_SESSION_SECRET'
 
