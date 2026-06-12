@@ -19,6 +19,12 @@ type Manager struct {
 	cfg      appconfig.Config
 	clusters map[string]*Cluster
 	broken   []BrokenCluster
+	// observerFor, when set, builds the per-request metrics observer for a given
+	// cluster name. The web layer supplies it (SetRequestObserverFactory) so the
+	// cluster name is baked into each cluster's observer closure; internal/kube
+	// never sees the metrics types. It is reapplied on every Reload so rebuilt
+	// clients stay observed.
+	observerFor func(cluster string) RequestObserver
 }
 
 // BrokenCluster is a connection that failed to load: it is skipped (never failing
@@ -99,7 +105,29 @@ func (m *Manager) Reload(ctx context.Context) error {
 	}
 	m.clusters = next
 	m.broken = broken
+	m.applyObserver()
 	return nil
+}
+
+// SetRequestObserverFactory installs the per-cluster request-observer factory and
+// applies it to the current cluster set immediately. The factory closes over the
+// cluster name so each Client's observer carries no cluster parameter. It is
+// stored on the Manager so a later Reload reapplies it to rebuilt clients.
+func (m *Manager) SetRequestObserverFactory(observerFor func(cluster string) RequestObserver) {
+	m.observerFor = observerFor
+	m.applyObserver()
+}
+
+// applyObserver (re)installs each cluster Client's observer from the stored
+// factory. It is a no-op when no factory is set, so a Manager without metrics
+// wiring leaves its Clients observer-free.
+func (m *Manager) applyObserver() {
+	if m.observerFor == nil {
+		return
+	}
+	for name, cluster := range m.clusters {
+		cluster.Client.SetObserver(m.observerFor(name))
+	}
 }
 
 func (m *Manager) Clusters() []*Cluster {

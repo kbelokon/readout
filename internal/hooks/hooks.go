@@ -30,9 +30,27 @@ const hookTimeout = 10 * time.Second
 // on top; 4 MiB leaves room for that while still stopping a runaway hook.
 const responseCap = 4 << 20
 
+// Observer is the callback the web layer hands a Client so it can record hook
+// call duration without internal/hooks importing Prometheus. It carries the hook
+// name (authorization or prerender), the call error (nil on success), and the
+// elapsed time. It is always nil-safe — a Client without an observer simply
+// makes its calls.
+type Observer func(hook string, err error, elapsed time.Duration)
+
+// Hook names. They are a fixed enum (bounded metric cardinality) naming each
+// observed hook call.
+const (
+	HookAuthorization = "authorization"
+	HookPrerender     = "prerender"
+)
+
 // Client makes the outbound hook calls over a timeout-bounded HTTP client.
 type Client struct {
 	httpClient *http.Client
+	// observe, when set, records each hook call's name, error, and elapsed time.
+	// It is nil by default (the no-hook and test paths build Clients without it)
+	// and every recording goes through the nil-safe observe helper.
+	observe Observer
 }
 
 // NewClient returns a Client whose HTTP calls time out after hookTimeout.
@@ -45,6 +63,21 @@ func NewClient() *Client {
 // full hookTimeout.
 func newClient(timeout time.Duration) *Client {
 	return &Client{httpClient: &http.Client{Timeout: timeout}}
+}
+
+// SetObserver installs the per-call duration callback. The web layer wires it to
+// the metrics histogram; passing nil clears it.
+func (c *Client) SetObserver(observe Observer) {
+	c.observe = observe
+}
+
+// observed records a finished hook call through the observer when one is set. It
+// is nil-safe: with no observer it is a no-op. An empty url means no hook is
+// configured, so the no-op call is NOT recorded — only real outbound calls are.
+func (c *Client) observed(hook string, start time.Time, err error) {
+	if c.observe != nil {
+		c.observe(hook, err, time.Since(start))
+	}
 }
 
 // AuthorizationRequest is the body posted to the authorization hook. Session is
@@ -73,7 +106,10 @@ func (c *Client) Authorization(ctx context.Context, url string, req Authorizatio
 		result.Allowed = &allowed
 		return result, nil
 	}
-	if err := c.postJSON(ctx, url, req, &result); err != nil {
+	start := time.Now()
+	err := c.postJSON(ctx, url, req, &result)
+	c.observed(HookAuthorization, start, err)
+	if err != nil {
 		return AuthorizationResult{}, err
 	}
 	return result, nil
@@ -102,7 +138,10 @@ func (c *Client) Prerender(ctx context.Context, url string, req *PrerenderReques
 	if url == "" {
 		return result, nil
 	}
-	if err := c.postJSON(ctx, url, req, &result); err != nil {
+	start := time.Now()
+	err := c.postJSON(ctx, url, req, &result)
+	c.observed(HookPrerender, start, err)
+	if err != nil {
 		return PrerenderResult{}, err
 	}
 	return result, nil

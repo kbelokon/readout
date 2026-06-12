@@ -603,6 +603,7 @@ func (st *streamSession) push(ctx context.Context) error {
 // terminal writes the named `ro-terminal` frame. Write errors are ignored —
 // the stream is closing either way.
 func (st *streamSession) terminal(reason string) {
+	st.srv.observeStreamTerminal(reason)
 	_ = st.writeEvent("ro-terminal", streamTerminalPayload{G: st.gen, Reason: reason})
 }
 

@@ -39,6 +39,25 @@ var ErrResourceTypeNotFound = errors.New("resource type not found")
 // to capture a fresh resourceVersion and re-watch from it.
 var ErrWatchGone = errors.New("watch resource version expired")
 
+// RequestObserver is the callback the web layer hands a Client so it can record
+// per-request metrics without internal/kube importing Prometheus. The cluster
+// name is NOT a parameter: web bakes it into the closure per cluster, so the
+// callback only carries the operation, the request error (nil on success), and
+// the elapsed time. It is always nil-safe — a Client without an observer simply
+// makes its requests.
+type RequestObserver func(operation string, err error, elapsed time.Duration)
+
+// Request operation labels. They are a fixed enum (bounded metric cardinality)
+// naming each observed Client request method.
+const (
+	OpDiscovery = "discovery"
+	OpList      = "list"
+	OpGet       = "get"
+	OpTable     = "table"
+	OpWatch     = "watch"
+	OpLogs      = "logs"
+)
+
 type Client struct {
 	config         *rest.Config
 	httpClient     *http.Client
@@ -46,6 +65,12 @@ type Client struct {
 	dynamic        dynamic.Interface
 	core           kubernetes.Interface
 	includeSecrets bool
+	// observe, when set, is invoked at the end of every observed request method
+	// with the operation, the request error, and the elapsed time. It is nil by
+	// default (kube tests build Clients without it) and every call goes through
+	// the nil-safe observe helper, so an unset observer is a no-op. Clones
+	// (WithBearer, Denied) copy it so passthrough/denied clients stay observed.
+	observe RequestObserver
 	// denied, when set, makes every request method short-circuit with this error
 	// instead of reaching the apiserver. It backs the anonymous-base denial:
 	// a denied client is returned by the web layer when passthrough is on, the
@@ -111,6 +136,23 @@ func NewClient(cfg *rest.Config, preferred map[string]string, includeSecrets boo
 	}, nil
 }
 
+// SetObserver installs the per-request metrics callback. The web layer calls it
+// per cluster with a closure that closes over the cluster name, so the observer
+// signature never has to carry the cluster. Passing nil clears it.
+func (c *Client) SetObserver(observe RequestObserver) {
+	c.observe = observe
+}
+
+// observed runs an observed request method, recording the operation, the
+// resulting error, and the elapsed time through the observer when one is set. It
+// is nil-safe: with no observer it just returns the result. Long-lived methods
+// (WatchTable) call this around their SETUP only, never the stream lifetime.
+func (c *Client) observed(operation string, start time.Time, err error) {
+	if c.observe != nil {
+		c.observe(operation, err, time.Since(start))
+	}
+}
+
 func (c *Client) WithBearer(token string) (*Client, error) {
 	cfg := rest.CopyConfig(c.config)
 	cfg.BearerToken = strings.TrimPrefix(token, "Bearer ")
@@ -136,7 +178,15 @@ func (c *Client) WithBearer(token string) (*Client, error) {
 		preferred[k] = v
 	}
 	c.mu.Unlock()
-	return NewClient(cfg, preferred, c.includeSecrets)
+	client, err := NewClient(cfg, preferred, c.includeSecrets)
+	if err != nil {
+		return nil, err
+	}
+	// The passthrough clone must stay observed under the SAME cluster: the
+	// observer closes over the cluster name, so copying the field keeps
+	// passthrough requests attributed to the right cluster.
+	client.observe = c.observe
+	return client, nil
 }
 
 func (c *Client) RESTMapper() *restmapper.DeferredDiscoveryRESTMapper {
@@ -180,6 +230,9 @@ func (c *Client) Denied() *Client {
 		includeSecrets: c.includeSecrets,
 		denied:         errAnonymousDenied,
 		preferred:      preferred,
+		// A denied clone is still observed: its short-circuit Forbidden counts as
+		// a request with a forbidden result under the same cluster.
+		observe: c.observe,
 	}
 }
 
@@ -240,7 +293,9 @@ func (c *Client) ResourceTypes(ctx context.Context) ([]ResourceType, []ResourceT
 	}
 	c.mu.Unlock()
 
+	start := time.Now()
 	lists, err := c.discoverResources(ctx)
+	c.observed(OpDiscovery, start, err)
 	if err != nil && len(lists) == 0 {
 		return nil, nil, err
 	}
@@ -348,7 +403,9 @@ func (c *Client) FindResourceByKind(ctx context.Context, apiVersion, kind string
 	return ResourceType{}, fmt.Errorf("%w: %s %s namespaced=%t", ErrResourceTypeNotFound, apiVersion, kind, namespaced)
 }
 
-func (c *Client) List(ctx context.Context, rt *ResourceType, opts ListOptions) (*unstructured.UnstructuredList, error) {
+func (c *Client) List(ctx context.Context, rt *ResourceType, opts ListOptions) (list *unstructured.UnstructuredList, err error) {
+	start := time.Now()
+	defer func() { c.observed(OpList, start, err) }()
 	if c.denied != nil {
 		return nil, c.denied
 	}
@@ -359,7 +416,9 @@ func (c *Client) List(ctx context.Context, rt *ResourceType, opts ListOptions) (
 	return c.dynamic.Resource(rt.GVR()).List(ctx, listOpts)
 }
 
-func (c *Client) Get(ctx context.Context, rt *ResourceType, namespace, name string) (*unstructured.Unstructured, error) {
+func (c *Client) Get(ctx context.Context, rt *ResourceType, namespace, name string) (obj *unstructured.Unstructured, err error) {
+	start := time.Now()
+	defer func() { c.observed(OpGet, start, err) }()
 	if c.denied != nil {
 		return nil, c.denied
 	}
@@ -369,7 +428,9 @@ func (c *Client) Get(ctx context.Context, rt *ResourceType, namespace, name stri
 	return c.dynamic.Resource(rt.GVR()).Get(ctx, name, metav1.GetOptions{})
 }
 
-func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) (Table, error) {
+func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) (result Table, err error) {
+	start := time.Now()
+	defer func() { c.observed(OpTable, start, err) }()
 	if c.denied != nil {
 		return Table{}, c.denied
 	}
@@ -479,7 +540,14 @@ func tableResponseError(statusCode int, status string, body []byte) error {
 // decoded events through Next. No client-go informer machinery: the Live list
 // screen consumes 1-row Table events, so raw REST against the Table endpoint
 // suffices.
-func (c *Client) WatchTable(ctx context.Context, rt *ResourceType, opts WatchOptions) (*TableWatch, error) {
+func (c *Client) WatchTable(ctx context.Context, rt *ResourceType, opts WatchOptions) (watch *TableWatch, err error) {
+	// WatchTable is long-lived: only the SETUP (opening the stream) is observed,
+	// never the watch's lifetime. Observing the held-open stream would poison the
+	// duration histogram exactly like the excluded SSE routes, so the deferred
+	// observe records the time to OPEN the watch (or the setup error) and returns
+	// before any frame is read.
+	start := time.Now()
+	defer func() { c.observed(OpWatch, start, err) }()
 	if c.denied != nil {
 		return nil, c.denied
 	}
@@ -595,7 +663,9 @@ func (w *TableWatch) Close() error {
 	return err
 }
 
-func (c *Client) Logs(ctx context.Context, opts LogOptions) (string, error) {
+func (c *Client) Logs(ctx context.Context, opts LogOptions) (logs string, err error) {
+	start := time.Now()
+	defer func() { c.observed(OpLogs, start, err) }()
 	if c.denied != nil {
 		return "", c.denied
 	}

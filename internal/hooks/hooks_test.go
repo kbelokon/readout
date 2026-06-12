@@ -132,3 +132,69 @@ func TestPrerenderEmptyURL(t *testing.T) {
 		t.Fatalf("empty-url prerender result = %#v", result)
 	}
 }
+
+// hookObservation is one captured observer call: the hook name and whether the
+// call errored.
+type hookObservation struct {
+	hook   string
+	failed bool
+}
+
+// TestObserverRecordsRealCalls pins the hook observer contract: a configured
+// authorization call records an "ok" observation under the authorization name,
+// and a failing prerender call records a failed observation under the prerender
+// name. The hook name and result line up with the metric labels web wires.
+func TestObserverRecordsRealCalls(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ok.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer bad.Close()
+
+	var hits []hookObservation
+	c := NewClient()
+	c.SetObserver(func(hook string, err error, _ time.Duration) {
+		hits = append(hits, hookObservation{hook: hook, failed: err != nil})
+	})
+
+	if _, err := c.Authorization(context.Background(), ok.URL, AuthorizationRequest{}); err != nil {
+		t.Fatalf("authorization call err = %v", err)
+	}
+	if _, err := c.Prerender(context.Background(), bad.URL, &PrerenderRequest{}); err == nil {
+		t.Fatal("prerender against a 500 should fail")
+	}
+
+	want := []hookObservation{
+		{hook: HookAuthorization, failed: false},
+		{hook: HookPrerender, failed: true},
+	}
+	if len(hits) != len(want) {
+		t.Fatalf("observer hits = %#v, want %#v", hits, want)
+	}
+	for i := range want {
+		if hits[i] != want[i] {
+			t.Fatalf("observer hit %d = %#v, want %#v", i, hits[i], want[i])
+		}
+	}
+}
+
+// TestObserverNotCalledForEmptyURL pins that the no-hook short circuit records
+// nothing: only real outbound calls land in the duration histogram.
+func TestObserverNotCalledForEmptyURL(t *testing.T) {
+	c := NewClient()
+	called := false
+	c.SetObserver(func(string, error, time.Duration) { called = true })
+
+	if _, err := c.Authorization(context.Background(), "", AuthorizationRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Prerender(context.Background(), "", &PrerenderRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("observer fired for an unconfigured (empty-url) hook")
+	}
+}

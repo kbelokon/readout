@@ -127,6 +127,12 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		streamSlots:        make(chan struct{}, streamCapMax),
 		shutdownCh:         ctx.Done(),
 	}
+	// Wire domain metrics: the kube Manager bakes the per-cluster request
+	// observer into each Client (cluster name closed over), and the shared hooks
+	// client records call duration. Both observer surfaces are Prometheus-free in
+	// their own packages — the closures here own the metric types.
+	manager.SetRequestObserverFactory(s.metrics.kubeObserverFactory())
+	hooksClient.SetObserver(s.metrics.hookObserver())
 	s.routes()
 	s.warnMissingSessionSecret()
 	return s, nil
