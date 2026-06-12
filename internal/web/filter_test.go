@@ -11,14 +11,14 @@ import (
 	"github.com/kbelokon/readout/internal/kube"
 )
 
-// filter_test.go pins the Filters v2 server engine (D7): the `?f=` chip
+// filter_test.go pins the Filters v2 server engine: the `?f=` chip
 // grammar exactly as pinned in the design decision. Every case here resolves
 // one grammar ambiguity that was a review finding -- the raw-comma OR split,
 // the first-operator field/value split, the quantity alias binding, the
 // kubectl-age two-unit tokens -- so none of them can silently regress.
 
 // filterTestTable is a crafted pods table mirroring the prototype's
-// corner-case rows (docs/design_handoff_readout_v2/js/data-extra.js): a
+// corner-case rows: a
 // decorated restarts cell, a thousands-separator restart count, one- and
 // two-unit age tokens, an Init:N/M status (a value containing the `:`
 // operator), a multi-word column, a comma-bearing cell, and row-object labels.
@@ -291,7 +291,7 @@ func TestFilterFullDatasetBeforeLimit(t *testing.T) {
 	}
 }
 
-// TestFilterMultiTypePagesIgnoreF pins the D1 boundary: a multi-type page that
+// TestFilterMultiTypePagesIgnoreF pins the single-type-page boundary: a multi-type page that
 // receives `f` anyway IGNORES it -- no 500, no surprise-empty tables.
 func TestFilterMultiTypePagesIgnoreF(t *testing.T) {
 	app := newTestServer(t)
@@ -304,8 +304,8 @@ func TestFilterMultiTypePagesIgnoreF(t *testing.T) {
 
 // TestFilterLegacyCoexistence proves both grammars run together: the legacy
 // `?filter=` free text AND an `f` chip both apply, and `?selector=` rides the
-// same request as `f` (forwarded to the API + round-tripped into the D8
-// columns popover's selector input) while f filters the rows.
+// same request as `f` (forwarded to the API + round-tripped into the
+// column-visibility popover's selector input) while f filters the rows.
 func TestFilterLegacyCoexistence(t *testing.T) {
 	app := newTestServer(t)
 

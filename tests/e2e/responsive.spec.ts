@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Responsive breakpoints (Unit 23 / SPEC §8.5 / D22), driven by REAL viewport
+// Responsive breakpoints, driven by REAL viewport
 // switching on one page -- breakpoint behavior is viewport-dependent rendering,
 // so resizing the same Chromium page is the only honest check:
 //
@@ -9,7 +9,7 @@ import { controlURL } from './playwright.config';
 //   760.02-1100px  the `.ro-rail` icon rail: labels/counts hidden, icons stay,
 //                  each entry named via its title tooltip, the table layer
 //                  still renders with the name column reachable;
-//   ≤760px         the shipped mobile card layer (D22 KEEPS it): `.ro-pcard`
+//   ≤760px         the shipped mobile card layer is KEPT: `.ro-pcard`
 //                  cards instead of the table -- never a dead-end note -- plus
 //                  the hamburger that reveals a NON-EMPTY sidebar panel (the
 //                  legacy `aside #aside-menu{display:none}` rule used to blank
@@ -73,7 +73,7 @@ test('sidebar walks full -> icon rail -> mobile cards -> full across the breakpo
   // No hamburger at rail width -- the rail itself is the navigation.
   await expect(page.locator('.menu-toggle')).toBeHidden();
 
-  // --- 700px: the mobile card layer (D22) -- cards, NOT a dead-end note. ---
+  // --- 700px: the mobile card layer -- cards, NOT a dead-end note. ---
   await page.setViewportSize({ width: 700, height: 800 });
   await expect(page.locator('.ro-cardlist .ro-pcard').first()).toBeVisible();
   await expect(page.locator('.ro-table-wrap.has-cards')).toBeHidden();

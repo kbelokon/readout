@@ -105,7 +105,7 @@ type Table struct {
 	RemainingItemCount *int64
 
 	// ResourceVersion mirrors the response's list metadata.resourceVersion —
-	// the consistency point of the list. A Live stream (D19) captures it from
+	// the consistency point of the list. A Live stream captures it from
 	// the initial Table list and starts its watch there; for a decoded watch
 	// event this is the EVENT's resourceVersion instead.
 	ResourceVersion string
@@ -126,7 +126,7 @@ type ListOptions struct {
 // the captured list resourceVersion the watch resumes from
 // (Table.ResourceVersion of the initial list); empty starts at the server's
 // current state with no replay. No FieldSelector: the one watch consumer (the
-// Live stream, D19) scopes by namespace + label selector only.
+// Live stream) scopes by namespace + label selector only.
 type WatchOptions struct {
 	Namespace       string
 	LabelSelector   string
@@ -309,7 +309,7 @@ type ContainerUsage struct {
 }
 
 // PodContainerUsage decodes a PodMetrics item into per-container usage keyed
-// by container name (the pod-detail containers table joins on it, D14). It
+// by container name (the pod-detail containers table joins on it). It
 // lives next to MetricsUsage so the metrics-object -> typed-values conversion
 // stays at this one seam. An undecodable object or one without a containers
 // list yields nil — the caller renders the no-metrics placeholder.

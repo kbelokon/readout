@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { controlURL } from './playwright.config';
 
-// Logs + YAML folding alignment (Unit 22, D25 + D26):
+// Logs toggles + YAML folding alignment:
 //
 //   - The wrap + timestamps toggles are CLIENT-SIDE display flips on the
 //     server-rendered stream (classes on .ro-logpre) -- no refetch ever.
@@ -10,11 +10,11 @@ import { controlURL } from './playwright.config';
 //     the stream scroll to its tail, inactive (quiet) leaves it alone;
 //     re-activating snaps back to the tail.
 //   - Download-logs is a REAL download (plain GET + the hx-boost opt-out --
-//     the Unit 17 lesson: boost would swap the attachment bytes into <body>).
+//     boost would otherwise swap the attachment bytes into <body>).
 //   - YAML folding (detail page): the fold chevron is a hover-revealed gutter
 //     affordance, folding hides the nested block and shows the faint italic
 //     "… N lines" note; Spec renders open and Status collapsed by default
-//     (Unit 13 -- asserted here, not rebuilt).
+//     (the shipped default, asserted here, not rebuilt).
 //
 // The pod_log.txt fixture serves 40 RFC3339-stamped lines (the stream
 // overflows its max-height so Follow has a real tail) including one ~380-char
@@ -138,7 +138,7 @@ test('Download logs is a real plain-GET download with the stream as text; the pa
   expect(body).toContain('nginx nginx 2026-01-01T00:00:00Z Starting nginx');
   expect(body).toContain('GET / 200');
 
-  // hx-boost opt-out: the attachment bytes never replace <body> (Unit 17).
+  // hx-boost opt-out: the attachment bytes never replace <body>.
   expect(page.url()).toContain(LOGS);
   await expect(page.locator('.ro-topbar')).toBeVisible();
   await expect(page.locator('pre.ro-logpre')).toBeVisible();
@@ -149,7 +149,7 @@ test('YAML fold: hover-revealed chevron folds the containers block to the "… N
 }) => {
   await page.goto(POD);
 
-  // Unit 13 defaults, asserted not rebuilt: Spec open, Status collapsed.
+  // The shipped YAML-card defaults, asserted not rebuilt: Spec open, Status collapsed.
   const specCard = page.locator('.ro-yaml-card[data-name="spec"]');
   await expect(specCard).not.toHaveClass(/is-collapsed/);
   await expect(page.locator('.ro-yaml-card[data-name="status"]')).toHaveClass(/is-collapsed/);

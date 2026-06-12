@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -34,8 +36,27 @@ var ErrResourceTypeNotFound = errors.New("resource type not found")
 // ErrWatchGone is the typed 410: the watch's resourceVersion fell out of the
 // apiserver's history window — either an HTTP 410 response at connect time or
 // an in-stream ERROR event with reason Expired/Gone. The caller must relist
-// to capture a fresh resourceVersion and re-watch from it (D19).
+// to capture a fresh resourceVersion and re-watch from it.
 var ErrWatchGone = errors.New("watch resource version expired")
+
+// RequestObserver is the callback the web layer hands a Client so it can record
+// per-request metrics without internal/kube importing Prometheus. The cluster
+// name is NOT a parameter: web bakes it into the closure per cluster, so the
+// callback only carries the operation, the request error (nil on success), and
+// the elapsed time. It is always nil-safe — a Client without an observer simply
+// makes its requests.
+type RequestObserver func(operation string, err error, elapsed time.Duration)
+
+// Request operation labels. They are a fixed enum (bounded metric cardinality)
+// naming each observed Client request method.
+const (
+	OpDiscovery = "discovery"
+	OpList      = "list"
+	OpGet       = "get"
+	OpTable     = "table"
+	OpWatch     = "watch"
+	OpLogs      = "logs"
+)
 
 type Client struct {
 	config         *rest.Config
@@ -44,8 +65,14 @@ type Client struct {
 	dynamic        dynamic.Interface
 	core           kubernetes.Interface
 	includeSecrets bool
+	// observe, when set, is invoked at the end of every observed request method
+	// with the operation, the request error, and the elapsed time. It is nil by
+	// default (kube tests build Clients without it) and every call goes through
+	// the nil-safe observe helper, so an unset observer is a no-op. Clones
+	// (WithBearer, Denied) copy it so passthrough/denied clients stay observed.
+	observe RequestObserver
 	// denied, when set, makes every request method short-circuit with this error
-	// instead of reaching the apiserver. It backs the D8d anonymous-base denial:
+	// instead of reaching the apiserver. It backs the anonymous-base denial:
 	// a denied client is returned by the web layer when passthrough is on, the
 	// viewer presented no token, and the base connection is itself anonymous, so
 	// serving the request as anonymous (a silent identity downgrade) is refused.
@@ -109,6 +136,23 @@ func NewClient(cfg *rest.Config, preferred map[string]string, includeSecrets boo
 	}, nil
 }
 
+// SetObserver installs the per-request metrics callback. The web layer calls it
+// per cluster with a closure that closes over the cluster name, so the observer
+// signature never has to carry the cluster. Passing nil clears it.
+func (c *Client) SetObserver(observe RequestObserver) {
+	c.observe = observe
+}
+
+// observed runs an observed request method, recording the operation, the
+// resulting error, and the elapsed time through the observer when one is set. It
+// is nil-safe: with no observer it just returns the result. Long-lived methods
+// (WatchTable) call this around their SETUP only, never the stream lifetime.
+func (c *Client) observed(operation string, start time.Time, err error) {
+	if c.observe != nil {
+		c.observe(operation, err, time.Since(start))
+	}
+}
+
 func (c *Client) WithBearer(token string) (*Client, error) {
 	cfg := rest.CopyConfig(c.config)
 	cfg.BearerToken = strings.TrimPrefix(token, "Bearer ")
@@ -123,7 +167,7 @@ func (c *Client) WithBearer(token string) (*Client, error) {
 	// static Impersonate, and client-go's impersonating round-tripper keys off
 	// Impersonate.UserName (NOT the Authorization header), so without this clear a
 	// passthrough request against a cluster with a static impersonation identity
-	// would silently get that identity's RBAC instead of the viewer's (D4).
+	// would silently get that identity's RBAC instead of the viewer's.
 	cfg.Impersonate = rest.ImpersonationConfig{}
 	// Snapshot preferred under the lock: ResourceTypes reassigns c.preferred
 	// under c.mu after discovery, so an unguarded read here (NewClient ranges
@@ -134,7 +178,15 @@ func (c *Client) WithBearer(token string) (*Client, error) {
 		preferred[k] = v
 	}
 	c.mu.Unlock()
-	return NewClient(cfg, preferred, c.includeSecrets)
+	client, err := NewClient(cfg, preferred, c.includeSecrets)
+	if err != nil {
+		return nil, err
+	}
+	// The passthrough clone must stay observed under the SAME cluster: the
+	// observer closes over the cluster name, so copying the field keeps
+	// passthrough requests attributed to the right cluster.
+	client.observe = c.observe
+	return client, nil
 }
 
 func (c *Client) RESTMapper() *restmapper.DeferredDiscoveryRESTMapper {
@@ -145,7 +197,7 @@ func (c *Client) RESTMapper() *restmapper.DeferredDiscoveryRESTMapper {
 // credential (bearer token inline/file, client cert, exec, auth-provider, basic
 // auth). Impersonation is ignored: it is not a credential to authenticate WITH,
 // so an impersonate-only connection with no base credential is still anonymous.
-// Used by the web layer's passthrough denial predicate (D8d).
+// Used by the web layer's passthrough denial predicate.
 func (c *Client) IsAnonymous() bool {
 	cfg := c.config
 	if cfg == nil {
@@ -159,7 +211,7 @@ func (c *Client) IsAnonymous() bool {
 }
 
 // Denied returns a clone of the client whose every request method refuses with a
-// Forbidden error (D8d). It shares the underlying clients (which it never uses,
+// Forbidden error. It shares the underlying clients (which it never uses,
 // since the request methods short-circuit) and takes a fresh mutex, so it copies
 // no lock value.
 func (c *Client) Denied() *Client {
@@ -178,6 +230,43 @@ func (c *Client) Denied() *Client {
 		includeSecrets: c.includeSecrets,
 		denied:         errAnonymousDenied,
 		preferred:      preferred,
+		// A denied clone is still observed: its short-circuit Forbidden counts as
+		// a request with a forbidden result under the same cluster.
+		observe: c.observe,
+	}
+}
+
+// discoveryResult carries one outcome of the blocking discovery call back from
+// its goroutine.
+type discoveryResult struct {
+	lists []*metav1.APIResourceList
+	err   error
+}
+
+// discoverResources runs client-go's ServerGroupsAndResources -- which takes no
+// context and blocks until the OS reaps a dead connection (a TCP-blackholed
+// cluster can hold it for one to two minutes) -- and races it against ctx so a
+// caller's deadline actually cuts the call. On ctx expiry it returns ctx.Err()
+// wrapped with %w so the chain still classifies as a timeout.
+//
+// The discovery call runs in a goroutine that delivers its result on a buffered
+// channel, so when ctx wins the race the goroutine can still send and exit
+// instead of leaking blocked on the send. The goroutine itself keeps running
+// against the dead connection until the OS TCP timeout reaps it; that one leaked
+// goroutine per timed-out discovery is an accepted trade -- there is no way to
+// interrupt the context-less client-go call, and the alternative (holding the
+// caller until the OS gives up) is exactly the hang we are removing.
+func (c *Client) discoverResources(ctx context.Context) ([]*metav1.APIResourceList, error) {
+	resultCh := make(chan discoveryResult, 1)
+	go func() {
+		_, lists, err := c.discovery.ServerGroupsAndResources()
+		resultCh <- discoveryResult{lists: lists, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("kube discovery: %w", ctx.Err())
+	case res := <-resultCh:
+		return res.lists, res.err
 	}
 }
 
@@ -204,7 +293,9 @@ func (c *Client) ResourceTypes(ctx context.Context) ([]ResourceType, []ResourceT
 	}
 	c.mu.Unlock()
 
-	_, lists, err := c.discovery.ServerGroupsAndResources()
+	start := time.Now()
+	lists, err := c.discoverResources(ctx)
+	c.observed(OpDiscovery, start, err)
 	if err != nil && len(lists) == 0 {
 		return nil, nil, err
 	}
@@ -312,7 +403,9 @@ func (c *Client) FindResourceByKind(ctx context.Context, apiVersion, kind string
 	return ResourceType{}, fmt.Errorf("%w: %s %s namespaced=%t", ErrResourceTypeNotFound, apiVersion, kind, namespaced)
 }
 
-func (c *Client) List(ctx context.Context, rt *ResourceType, opts ListOptions) (*unstructured.UnstructuredList, error) {
+func (c *Client) List(ctx context.Context, rt *ResourceType, opts ListOptions) (list *unstructured.UnstructuredList, err error) {
+	start := time.Now()
+	defer func() { c.observed(OpList, start, err) }()
 	if c.denied != nil {
 		return nil, c.denied
 	}
@@ -323,7 +416,9 @@ func (c *Client) List(ctx context.Context, rt *ResourceType, opts ListOptions) (
 	return c.dynamic.Resource(rt.GVR()).List(ctx, listOpts)
 }
 
-func (c *Client) Get(ctx context.Context, rt *ResourceType, namespace, name string) (*unstructured.Unstructured, error) {
+func (c *Client) Get(ctx context.Context, rt *ResourceType, namespace, name string) (obj *unstructured.Unstructured, err error) {
+	start := time.Now()
+	defer func() { c.observed(OpGet, start, err) }()
 	if c.denied != nil {
 		return nil, c.denied
 	}
@@ -333,7 +428,9 @@ func (c *Client) Get(ctx context.Context, rt *ResourceType, namespace, name stri
 	return c.dynamic.Resource(rt.GVR()).Get(ctx, name, metav1.GetOptions{})
 }
 
-func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) (Table, error) {
+func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) (result Table, err error) {
+	start := time.Now()
+	defer func() { c.observed(OpTable, start, err) }()
 	if c.denied != nil {
 		return Table{}, c.denied
 	}
@@ -376,8 +473,8 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 
 // decodeTable decodes a meta.k8s.io Table document — a LIST response body or a
 // watch event's object — into kube.Table. This is the single Table decode
-// seam: list metadata is captured here (resourceVersion for watch resumption,
-// D19; remainingItemCount for the sidebar counts).
+// seam: list metadata is captured here (resourceVersion for watch resumption;
+// remainingItemCount for the sidebar counts).
 func decodeTable(rt *ResourceType, body []byte) (Table, error) {
 	var raw struct {
 		Metadata          metav1.ListMeta                `json:"metadata"`
@@ -442,8 +539,15 @@ func tableResponseError(statusCode int, status string, body []byte) error {
 // (rv = the captured list Table.ResourceVersion). The returned stream yields
 // decoded events through Next. No client-go informer machinery: the Live list
 // screen consumes 1-row Table events, so raw REST against the Table endpoint
-// suffices (D19).
-func (c *Client) WatchTable(ctx context.Context, rt *ResourceType, opts WatchOptions) (*TableWatch, error) {
+// suffices.
+func (c *Client) WatchTable(ctx context.Context, rt *ResourceType, opts WatchOptions) (watch *TableWatch, err error) {
+	// WatchTable is long-lived: only the SETUP (opening the stream) is observed,
+	// never the watch's lifetime. Observing the held-open stream would poison the
+	// duration histogram exactly like the excluded SSE routes, so the deferred
+	// observe records the time to OPEN the watch (or the setup error) and returns
+	// before any frame is read.
+	start := time.Now()
+	defer func() { c.observed(OpWatch, start, err) }()
 	if c.denied != nil {
 		return nil, c.denied
 	}
@@ -493,7 +597,7 @@ func (c *Client) WatchTable(ctx context.Context, rt *ResourceType, opts WatchOpt
 
 // TableWatch is one open Table-format watch stream. Next decodes events until
 // the stream ends; the ending error is typed so the consumer's lifecycle
-// (D19) can branch without string matching:
+// can branch without string matching:
 //
 //   - io.EOF — the upstream closed the stream cleanly (re-watch from the last
 //     seen resourceVersion);
@@ -559,7 +663,9 @@ func (w *TableWatch) Close() error {
 	return err
 }
 
-func (c *Client) Logs(ctx context.Context, opts LogOptions) (string, error) {
+func (c *Client) Logs(ctx context.Context, opts LogOptions) (logs string, err error) {
+	start := time.Now()
+	defer func() { c.observed(OpLogs, start, err) }()
 	if c.denied != nil {
 		return "", c.denied
 	}
@@ -683,7 +789,7 @@ func IsAPIStatusError(err error) bool {
 
 // IsServerError reports whether err is an apiserver Status with a 5xx code --
 // the apiserver was reached but failed to serve the request. The web layer
-// folds this into the unreachable whole-list/detail state (D16: the card shows
+// folds this into the unreachable whole-list/detail state (the card shows
 // the REAL Status message verbatim); 4xx Statuses (bad selectors, conflicts)
 // keep their existing handling.
 func IsServerError(err error) bool {
@@ -692,4 +798,112 @@ func IsServerError(err error) bool {
 		return false
 	}
 	return status.Status().Code >= 500
+}
+
+// FailureKind is the single classification of an upstream failure. It is a
+// string so it can double as a metrics label later. The same upstream failure
+// classifies to the same kind everywhere, so every presentation path (HTTP
+// status, list/detail state, search chip) reads from one source of truth.
+type FailureKind string
+
+const (
+	// FailureForbidden is an apiserver 403 (RBAC denies the verb on the
+	// resource) -- the credentials are valid but not allowed.
+	FailureForbidden FailureKind = "forbidden"
+	// FailureUnauthorized is an apiserver 401 (the credentials are missing,
+	// expired, or rejected). It is kept distinct from forbidden even though the
+	// IsForbidden helper folds the two together for callers that want the merge.
+	FailureUnauthorized FailureKind = "unauthorized"
+	// FailureNotFound is an apiserver 404 (the resource type or object does not
+	// exist).
+	FailureNotFound FailureKind = "not_found"
+	// FailureTimeout is a deadline/timeout: a context deadline or a net.Error
+	// that reports Timeout(). The request did not complete in time.
+	FailureTimeout FailureKind = "timeout"
+	// FailureUnreachable is a transport-level failure that never reached the
+	// apiserver: a refused connection or an unroutable/unresolved host.
+	FailureUnreachable FailureKind = "unreachable"
+	// FailureUpstream5xx is an apiserver Status with a 5xx code: the apiserver
+	// was reached but failed to serve the request.
+	FailureUpstream5xx FailureKind = "upstream_5xx"
+	// FailureInternal is the total-taxonomy fallback: any other apiserver Status
+	// (400, 409, 429, 410, ...), a cancelled context (the client went away), and
+	// any unrecognized error all fold here.
+	FailureInternal FailureKind = "internal"
+)
+
+// ClassifyError maps any upstream failure to exactly one FailureKind. The
+// taxonomy is total: every error resolves to a kind, and unrecognized errors
+// fold to FailureInternal. Classification is by typed checks through
+// errors.Is/errors.As (wrapped chains classify correctly) and syscall-level
+// transport detection -- never by matching the error string.
+//
+// Order matters: typed apiserver Statuses are checked before transport
+// heuristics so a structured 5xx is not mistaken for a generic failure, and the
+// timeout check precedes the refused/no-route check so a dial timeout reads as a
+// timeout rather than an unreachable host.
+func ClassifyError(err error) FailureKind {
+	if err == nil {
+		return FailureInternal
+	}
+
+	// Typed apiserver Status responses (the request reached the apiserver).
+	var status kerrors.APIStatus
+	if errors.As(err, &status) {
+		switch code := status.Status().Code; {
+		case code == http.StatusForbidden:
+			return FailureForbidden
+		case code == http.StatusUnauthorized:
+			return FailureUnauthorized
+		case code == http.StatusNotFound:
+			return FailureNotFound
+		case code >= 500:
+			return FailureUpstream5xx
+		default:
+			// Any other apiserver status (400, 409, 410, 429, ...) folds to
+			// internal -- the taxonomy carries no dedicated kind for them.
+			return FailureInternal
+		}
+	}
+
+	// The resource-type-not-found sentinel from FindResource is not an apiserver
+	// Status, so it would otherwise fall through to internal -- but it is a
+	// not-found (IsNotFound treats it so). The precise sentinel check restores the
+	// pre-refactor not-found routing without folding in kerrors 404 (already
+	// handled by the APIStatus block above).
+	if errors.Is(err, ErrResourceTypeNotFound) {
+		return FailureNotFound
+	}
+
+	// A context deadline is a timeout; a context cancellation means the client
+	// went away and carries no special kind.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return FailureTimeout
+	}
+	if errors.Is(err, context.Canceled) {
+		return FailureInternal
+	}
+
+	// A net.Error that reports a timeout (e.g. an i/o or dial timeout) is a
+	// timeout before it is anything else.
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return FailureTimeout
+	}
+
+	// Syscall-level transport failures: a refused connection or an
+	// unroutable/unreachable host never reached the apiserver.
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.ENETUNREACH) {
+		return FailureUnreachable
+	}
+
+	// An unresolved host (DNS) is also a transport-level unreachable failure.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return FailureUnreachable
+	}
+
+	return FailureInternal
 }

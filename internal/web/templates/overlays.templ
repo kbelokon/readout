@@ -7,11 +7,11 @@ package templates
 // mount once per page in layout.templ; the context menu + bulk bar mount next to
 // (never inside) the #resource-list-content swap target in resource_list.templ on
 // single-type pages. They are not part of the resource_table.templ decomposition.
-// The render output stays byte-identical to the markup these replaced -- the SPEC
-// §9 visual grid + the behavior-fact net are the arbiters, so element/attribute
+// The render output stays byte-identical to the markup these replaced -- the
+// visual grid + the behavior-fact net are the arbiters, so element/attribute
 // order and inter-node whitespace are load-bearing and must not be "tidied" here.
 
-// toastHostC is the toast host (D24 / SPEC §8.8): layout chrome OUTSIDE every
+// toastHostC is the toast host: layout chrome OUTSIDE every
 // swap target (#resource-list-content morphs never touch it, so an active toast
 // survives refresh ticks; a boosted body swap replaces it, correctly -- a
 // navigation is a screen change). readout.js appends one .ro-toast per message,
@@ -20,7 +20,7 @@ templ toastHostC() {
 	<div id="ro-toasts" class="ro-toasts" role="status" aria-live="polite"></div>
 }
 
-// kbdOverlayC is the "?" keyboard-map overlay (Unit 18 / D10): GLOBAL chrome
+// kbdOverlayC is the "?" keyboard-map overlay: GLOBAL chrome
 // (it rides every page next to the palette -- the j/k/⏎ gestures themselves
 // stay single-type-page behaviors, but the map is discoverable everywhere).
 // Markup mirrors the prototype card (Readout v2.html #kbdOverlay): Navigate /
@@ -55,16 +55,16 @@ templ kbdOverlayC() {
 	</div>
 }
 
-// rowCtxMenuC is the right-click row context menu (Unit 16 / D10): ONE fixed,
+// rowCtxMenuC is the right-click row context menu: ONE fixed,
 // viewport-clamped popover, mounted by resource_list.templ NEXT TO (never
 // inside) the #resource-list-content swap target on single-type pages only --
-// the D1 boundary; only those rows carry the data-key identity + per-row href
+// the single-type/multi-type surface boundary; only those rows carry the data-key identity + per-row href
 // data attributes the menu binds. readout.js owns open/close (`is-open` +
 // aria-hidden), positioning, and writes each item's data-href from the
 // right-clicked row at open time; an item with no target for the row hides
 // (View logs is pods-only). Items are BUTTONS navigated via location.assign
 // (the palette pattern): htmx captures a boosted anchor's href at PROCESS
-// time, so runtime-bound anchor hrefs would go stale. Item order is the D10
+// time, so runtime-bound anchor hrefs would go stale. Item order is a fixed
 // contract: Open ⏎ · Copy name · View YAML · View logs · ── · Download YAML.
 templ rowCtxMenuC() {
 	<div class="ro-ctxmenu" id="ro-ctxmenu" role="menu" aria-label="Row actions" aria-hidden="true">
@@ -77,7 +77,7 @@ templ rowCtxMenuC() {
 	</div>
 }
 
-// BulkBar is the bulk bar's server-resolved download wiring (Unit 17 / D11).
+// BulkBar is the bulk bar's server-resolved download wiring.
 // DownloadHref is the CLEAN bulk GET base (`<canonical list path>?download=yaml`,
 // no filter/sort params) readout.js appends `&names=` to; empty means the bulk
 // download is unavailable (multi-cluster scope) and the button renders disabled
@@ -90,15 +90,15 @@ type BulkBar struct {
 	AllNamespaces bool
 }
 
-// bulkBarC is the bottom-center bulk-selection pill (Unit 16 / SPEC §6.4),
+// bulkBarC is the bottom-center bulk-selection pill,
 // mounted by resource_list.templ OUTSIDE the #resource-list-content swap
 // target on single-type pages only, so selection chrome survives every morph
 // untouched (multi-type pages render no bar -- pinned by
 // TestListLoopSurfaceBoundary). Closed = faded out (prototype `is-open`
 // opacity/transform transition) AND `inert`, so the invisible controls can
 // never take focus or clicks; readout.js toggles both at >=1 selected and
-// keeps #ro-bulk-count at "N selected". The Download YAML button (Unit 17 /
-// D11) is live only when the bar carries data-bulk-href (single-cluster
+// keeps #ro-bulk-count at "N selected". The Download YAML button
+// is live only when the bar carries data-bulk-href (single-cluster
 // lists); readout.js additionally disables it above the 100-name cap (with
 // the refusal toast -- the server rejects >100 with 400 either way).
 templ bulkBarC(b BulkBar) {

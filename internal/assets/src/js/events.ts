@@ -1,17 +1,16 @@
-// events.ts -- the delegated-event dispatcher (Unit 9). ONE DOM listener per
+// events.ts -- the delegated-event dispatcher. ONE DOM listener per
 // event TYPE on `document`, fronting an ORDERED list of bindings. This is the
 // target architecture the strangler migrates the monolith's hand-rolled
 // `document.addEventListener` listeners into, one feature cluster at a time.
 //
-// THE DISPATCH CONTRACT (pinned by the adversarial review + the listener
-// inventory at docs/forge/frontend-refactor/raw/listener-inventory.md, whose
-// durable projection is tests/e2e/compound-gestures.spec.ts):
+// THE DISPATCH CONTRACT (pinned by the adversarial review + the original listener
+// inventory, whose durable projection is tests/e2e/compound-gestures.spec.ts):
 //
 //   1. NOT first-match-wins. EVERY binding whose `selector` matches the event
 //      fires, in REGISTRATION ORDER. This mirrors the monolith, where separate
 //      `document.addEventListener('click', ...)` listeners ALL see the same
 //      click (the browser dispatches to every listener on the node) -- e.g. the
-//      D8 cols toggle (C1) and the cols outside-click guard (C4) both run on one
+//      cols toggle (C1) and the cols outside-click guard (C4) both run on one
 //      click with no propagation stop between them.
 //
 //   2. The chain only halts on an EXPLICIT stop signal that MIRRORS an existing

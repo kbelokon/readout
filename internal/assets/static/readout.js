@@ -872,8 +872,8 @@ ${piece}`;
       }
     },
     // Auto-refresh interval option (navbar #refresh-dropdown): persist the chosen
-    // mode in the ro_prefs cookie (D9), re-arm the poll, and reflect it in the
-    // control. The Live option (Unit 27/D19) persists the literal 'Live' and rides
+    // mode in the ro_prefs cookie, re-arm the poll, and reflect it in the
+    // control. The Live option persists the literal 'Live' and rides
     // the same path: liveApply opens/tears down the stream, applyRefresh then arms
     // the poll chain per the EFFECTIVE seconds (0 while a stream is riding). A
     // disabled Live option (multi-type/multi-cluster page) never fires (the
@@ -1767,7 +1767,7 @@ ${piece}`;
     }
   }
   var filtersBindings = [
-    // Chips editor (D7): a chip's ✕ is a real link (no-JS fallback) whose href is
+    // Chips editor: a chip's ✕ is a real link (no-JS fallback) whose href is
     // the server-built removal URL; intercept it to ride the v2 partial loop
     // (morph + canonical push) instead of a full navigation.
     {
@@ -1826,7 +1826,7 @@ ${piece}`;
         }
       }
     },
-    // Chips editor (D7): every keystroke re-runs the live name match (model-
+    // Chips editor: every keystroke re-runs the live name match (model-
     // driven, NO request) and the autocomplete; a fresh draft clears any
     // unknown-field hint.
     {
@@ -2029,7 +2029,7 @@ ${piece}`;
     return mergeColParams(window.location.pathname, window.location.search, owned, fields);
   }
   var columnsBindings = [
-    // Column-visibility popover (D8): the ⊞ title-row button toggles the popover
+    // Column-visibility popover: the ⊞ title-row button toggles the popover
     // open/closed. Open state is derived from the DOM (a boosted body swap
     // renders it closed). NOT stop:true -- C4's own [data-ro-cols-toggle] guard
     // (the outside-click binding below) keeps the double-fire single, not a stop
@@ -2047,7 +2047,7 @@ ${piece}`;
     // A column checkbox row: flip the checkbox optimistically, then commit the
     // COMPLETE hidden set (as the user now sees it) to the ro_prefs cookie and
     // re-render through the container's own programmatic path -- cookie-state,
-    // not URL-state: RO-No-Push, zero history entries (D6/D9). The identity row
+    // not URL-state: RO-No-Push, zero history entries. The identity row
     // is a disabled <button>, so its clicks never fire.
     {
       event: "click",
@@ -2083,7 +2083,7 @@ ${piece}`;
         setColsPopOpen(false);
       }
     },
-    // form.ro-pop-form (the D8 popover's labelcols/selector form): intercept and
+    // form.ro-pop-form (the popover's labelcols/selector form): intercept and
     // MERGE into the live query, riding the v2 loop exactly like a chip commit
     // (issueFilterNavigation falls back to a plain navigation when the loop is
     // unavailable). The native submit would rebuild the query from the round-trip
@@ -2380,7 +2380,7 @@ ${piece}`;
     logsPinTailIfFollowing();
   }
   var logsBindings = [
-    // Logs Follow toggle (D25): the active accent "Following" sticks the stream
+    // Logs Follow toggle: the active accent "Following" sticks the stream
     // to its tail; clicking flips to the quiet "Follow" (and back). Re-activating
     // snaps the stream to the tail immediately. Pure class + label flips -- no
     // request, the read-only floor is untouched. Kept its monolith early-return
@@ -2403,7 +2403,7 @@ ${piece}`;
         return true;
       }
     },
-    // Logs display toggles (D25): CLIENT-SIDE only, no refetch. The timestamps
+    // Logs display toggles: CLIENT-SIDE only, no refetch. The timestamps
     // checkbox shows/hides the .log-ts spans via the stream's `hide-ts` class.
     // Both flips reflow the stream, so while Following is active the tail is
     // re-pinned afterwards. The monolith #logTs branch early-returned (stop:true).
@@ -2732,7 +2732,7 @@ ${piece}`;
         return true;
       }
     },
-    // Namespace switch (D9): picking a namespace in the topbar dropdown records it
+    // Namespace switch: picking a namespace in the topbar dropdown records it
     // as this cluster's last-used namespace in the ro_prefs cookie (server-read
     // only, for cluster-entry hrefs -- never a redirect). The click is
     // deliberately NOT prevented; the boosted navigation proceeds. The cookie
@@ -2816,7 +2816,7 @@ ${piece}`;
         return true;
       }
     },
-    // In-cell +N overflow (SPEC §4.9/§4.10): the `.ro-chip.more[data-ro-more]` button
+    // In-cell +N overflow (label/selector chips and data keys): the `.ro-chip.more[data-ro-more]` button
     // toggles `.expanded` on its OWN `.ro-chips` strip, revealing the `.xtra` chips
     // in place (the button face flips +N <-> "less" in CSS). Delegated so it
     // survives every morph; aria-expanded mirrors the state. A refresh morph
@@ -2837,7 +2837,7 @@ ${piece}`;
         return true;
       }
     },
-    // Long-annotation toggle (SPEC §7.15): a >120-char annotation renders as a
+    // Long-annotation toggle: a >120-char annotation renders as a
     // collapsed `key · size` button + a hidden scrollable <pre> payload. The
     // delegated click flips the [hidden] attribute on the sibling .anno-pre,
     // mirrors the state into aria-expanded, and rotates the chevron via the .open
@@ -3404,7 +3404,7 @@ ${piece}`;
         return true;
       }
     },
-    // The search page's "Refine · ⌘K" button (D12): open the palette PREFILLED
+    // The search page's "Refine · ⌘K" button: open the palette PREFILLED
     // with the query the page searched (server-baked data-query). (C1, returned.)
     {
       event: "click",
@@ -3751,7 +3751,7 @@ ${piece}`;
   function runInit() {
     [
       syncRefreshUI,
-      // Live stream reconciliation (Unit 27/D19), BEFORE applyRefresh so
+      // Live stream reconciliation, BEFORE applyRefresh so
       // the poll chain arms against fresh live state: a riding stream
       // disarms it (effective 0), a fallback sets the 5s cadence.
       liveApply,
@@ -3762,16 +3762,16 @@ ${piece}`;
       initLogsFollow,
       syncThemeTogglePostTarget,
       setupStickyNamespace,
-      // Chips-editor row model (D7/D20): captured from the full server-rendered
+      // Chips-editor row model: captured from the full server-rendered
       // document. ORDER CONTRACT: this step must stay BEFORE the windowing
-      // init (Unit 24) that prunes rows from the DOM -- at this point
+      // init that prunes rows from the DOM -- at this point
       // the DOM still IS the complete dataset.
       captureRowModelFromDocument,
-      // Virtualization engagement (Unit 24/D20): windows the >threshold
+      // Virtualization engagement: windows the >threshold
       // table the server marked `.ro-windowed`. AFTER the model capture,
       // per the order contract above.
       virtualizeInit,
-      // Columns-popover open flag (D8): re-derived from the fresh DOM so a
+      // Columns-popover open flag: re-derived from the fresh DOM so a
       // boosted body swap (rendered closed) never leaves a stale-open flag.
       syncColsPopState,
       // Row state is keyed by OBJECT identity; the store clears when an

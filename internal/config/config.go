@@ -67,14 +67,14 @@ type ClusterConnection struct {
 // ClusterImpersonation is the per-cluster static service identity (act-as). It
 // maps onto api.AuthInfo.Impersonate / ImpersonateGroups / ImpersonateUID. It is
 // mutually exclusive with per-request passthrough: when passthrough fires, the
-// kube layer clears it so the request evaluates as the viewer (D4).
+// kube layer clears it so the request evaluates as the viewer.
 type ClusterImpersonation struct {
 	User   string
 	Groups []string
 	UID    string
 }
 
-// ArgoCDSource configures the Argo CD cluster-Secret discovery source (D6): the
+// ArgoCDSource configures the Argo CD cluster-Secret discovery source: the
 // kube loader lists Secrets labelled argocd.argoproj.io/secret-type=cluster in a
 // host cluster and parses each into a connection. HostCluster names a configured
 // cluster (in Clusters) to run the list against, or "" to use the in-cluster
@@ -177,7 +177,7 @@ type fileCluster struct {
 
 // fileClusterConn is one statically-configured cluster connection on the on-disk
 // schema, using kubeconfig field names/semantics. It is a list element so a
-// duplicate name is an explicit, detectable startup error (D8c) rather than a
+// duplicate name is an explicit, detectable startup error rather than a
 // silent last-write-wins. The *Data fields are []byte: sigs.k8s.io/yaml routes
 // YAML through JSON, so a YAML string decodes as base64 -- matching kubeconfig's
 // certificate-authority-data / client-certificate-data / client-key-data.
@@ -204,7 +204,7 @@ type fileClusterImpersonate struct {
 	UID    string   `json:"uid"`
 }
 
-// fileArgoCD is the on-disk Argo CD cluster-Secret discovery block (D6). It is a
+// fileArgoCD is the on-disk Argo CD cluster-Secret discovery block. It is a
 // pointer in fileConfig so the source is opt-in: absent -> no Secret listing
 // happens; present (even empty) -> the loader lists Argo cluster Secrets, by
 // default against the in-cluster SA in namespace "argocd".
@@ -462,7 +462,7 @@ func mapOrEmpty(m map[string]string) map[string]string {
 	return m
 }
 
-// v2DefaultHiddenColumns ships the D8 per-kind noise-off defaults: these
+// v2DefaultHiddenColumns ships the per-kind noise-off defaults: these
 // columns render HIDDEN unless something more specific speaks -- a config
 // file entry for the kind (overlayMap: file wins per key, an explicit empty
 // value re-shows everything), a user column preference in the ro_prefs cookie,
@@ -490,8 +490,8 @@ func overlayMap(defaults, file map[string]string) map[string]string {
 
 // resolveClusterConnections folds the on-disk cluster list into the runtime
 // []ClusterConnection. A cluster with an empty name is an error (it cannot be
-// addressed), and a byte-identical duplicate name is a startup error (D8c,
-// config-parse half) -- replacing the old map's silent last-write-wins. The
+// addressed), and a byte-identical duplicate name is a startup error
+// (config-parse half) -- replacing the old map's silent last-write-wins. The
 // post-SanitizeClusterName collision case is caught later in the kube loader.
 func resolveClusterConnections(clusters []fileClusterConn) ([]ClusterConnection, error) {
 	if len(clusters) == 0 {
@@ -532,7 +532,7 @@ func resolveClusterConnections(clusters []fileClusterConn) ([]ClusterConnection,
 }
 
 // resolveArgoCD folds the on-disk Argo CD discovery block into the runtime
-// pointer (D6). Absent in the file -> nil (the source is off). Present ->
+// pointer. Absent in the file -> nil (the source is off). Present ->
 // non-nil with Namespace defaulted to "argocd" when the operator left it empty,
 // matching Argo's default install namespace.
 func resolveArgoCD(src *fileArgoCD) *ArgoCDSource {

@@ -56,7 +56,7 @@
         opacity: 1;
     }
 
-    /* (Unit 16) the pre-redesign `.ro-list-table td.ro-cell-url` + the
+    /* the pre-redesign `.ro-list-table td.ro-cell-url` + the
        `.ro-list-table td.ro-cell-name a.ro-ext-link` link-out rules were removed:
        the redesign Clusters table is `.ro-table.ro-select-table` (under `.ro-rd`),
        styled by the canonical `.ro-rd .ro-cell-url` + `.ro-rd .ro-ext-link` rules
@@ -76,17 +76,17 @@
         margin-right: 0.375rem;
     }
 
-    /* (Unit 16) the pre-redesign `.tabs.ro-rt-tabs li ...` rules were removed:
+    /* the pre-redesign `.tabs.ro-rt-tabs li ...` rules were removed:
        resource_types now emits `<div class="ro-tabs ro-rt-tabs">` with bare `<a>`
        anchors (no `.tabs`, no `<li>`), styled by the redesign `.ro-rd .ro-tabs`
        chrome; the `.ro-rt-tabs` marker is KEEP-AS-IS but its old `.tabs`/`<li>`
        rules matched nothing. */
 
     /* Resource-type row cells: the API GROUP + VERSION read as quiet mono
-       metadata; scope renders as a quiet bordered caption badge (D3 colour law:
-       status dots and green are for health only -- a categorical value like
+       metadata; scope renders as a quiet bordered caption badge (status dots
+       and green are for health only -- a categorical value like
        scope gets the `.scope-badge` pattern, with the cluster variant earning
-       an amber-mixed border per the v2 prototype). */
+       an amber-mixed border). */
     .ro-rt-group,
     .ro-rt-version {
         font-family: var(--font-mono);
@@ -101,8 +101,8 @@
        resource's Kind. The CRD check uses a built-in group ALLOWLIST, NOT a
        "contains a slash" test -- so apps/v1, batch/v1 and the
        *.k8s.io groups are NOT badged, while cert-manager.io / argoproj.io /
-       monitoring.coreos.com ARE. Info tint per the v2 prototype (D3 colour law:
-       green is reserved; the CRD marker is categorical). */
+       monitoring.coreos.com ARE. Info tint, not green (green is reserved for
+       health/action; the CRD marker is categorical). */
     .ro-crd-badge {
         flex: 0 0 auto;
         font-family: var(--font-mono);
@@ -156,7 +156,7 @@
        block background INSIDE the card so the code sits flush on the card surface
        (no box-in-box), draw a faint hairline-separated gutter, and let long lines
        wrap so a 400+ line / CRD object never blows out the card width. */
-    /* Single contract (Unit 17): the former `.ro-rd .ro-yaml-card/.ro-card-head/
+    /* Single contract: the former `.ro-rd .ro-yaml-card/.ro-card-head/
        .ro-copy-btn` overrides (detail.css) are folded into these `.ro-yaml-card`-
        scoped rules -- the cards are only emitted inside a `.ro-rd` content root
        (resource_view), so the de-scoped rules paint the same pixels the scoped
@@ -168,7 +168,8 @@
         border-radius: var(--radius);
         overflow: hidden;
     }
-    /* The card margin must OUT-SPECIFY the `div.section { margin: 0 0 1rem 0 }`
+    /* The card margin must out-weigh on selector specificity the
+       `div.section { margin: 0 0 1rem 0 }`
        base rule (0,1,1): the card is `div.section.collapsible.ro-yaml-card`, so a
        bare `.ro-yaml-card` (0,1,0) would lose and the inter-card gap would jump
        from 12px to 16px. `div.section.ro-yaml-card` (0,2,1) wins (this is what the
@@ -211,7 +212,7 @@
     /* Per-section copy button: a quiet token chip (muted icon + mono "copy"
        label) that warms on hover -- saturation stays reserved for status. The
        label is swapped to "copied" in JS (textContent), not via CSS content. */
-    /* Single contract (Unit 17): the `.ro-rd .ro-copy-btn` override is folded in
+    /* Single contract: the `.ro-rd .ro-copy-btn` override is folded in
        here (the copy button is only emitted inside `.ro-rd`). Note the HOVER stays
        transparent (it changes only color + border-color) while FOCUS keeps the
        surface-2 wash -- the two states differ on purpose. */
@@ -304,7 +305,7 @@
        but a contentless caret keeps the rendered line text clean too). It points
        down when expanded, right when folded (matches the section-card caret).
 
-       v2 (D26): the caret is a quiet hover affordance -- invisible (opacity 0,
+       the caret is a quiet hover affordance -- invisible (opacity 0,
        its inline space still reserved so the YAML text never shifts) until the
        pointer is over its line, the button has keyboard focus, or the block is
        folded; revealed with the shared opacity transition, like the prototype's

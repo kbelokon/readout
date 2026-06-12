@@ -22,8 +22,7 @@
 
     :root {
         /* geometry + density -- SHARED by both themes. Values byte-exact from
-           the v2 handoff (docs/design_handoff_readout_v2/styles/tokens.css, the
-           token source of truth): cell-px 14px, radius 7px (sm 5px / pill 5px),
+           the v2 token source of truth: cell-px 14px, radius 7px (sm 5px / pill 5px),
            topbar 52px, sidebar 224px. v2 default density is COZY (row-py 11px);
            the [data-density="compact"] override below returns ultra-dense. */
         --row-py: 11px;
@@ -158,8 +157,7 @@
     /* Cookieless users on a dark OS get the dark palette; an explicit light
        choice still wins (same rule the app already uses for age/log/Pygments).
        This block MUST stay value-identical to [data-theme="dark"] above -- a
-       stale mirror silently hands system-dark users old values (the Unit 2
-       acceptance script checks the mirror). */
+       stale mirror silently hands system-dark users old values. */
     @media (prefers-color-scheme: dark) {
         :root:not([data-theme="light"]) {
             --bg: #0b0d11; --surface: #0f1217; --surface-2: #161a21; --surface-3: #1e232c;
@@ -183,7 +181,7 @@
     }
 
     /* density -- CSS-only attribute override (v2 default is cozy 11px). NO UI
-       control ships for it (D2): flipping it means setting data-density on
+       control ships for it: flipping it means setting data-density on
        <html> by hand. */
     [data-density="compact"] { --row-py: 7px; }
 
@@ -225,7 +223,7 @@
     .has-text-info    { color: var(--st-info); }
     .has-text-grey    { color: var(--text-faint); }
 
-    /* (Unit 16) the old `.ro-status-dot` (pre-redesign list status dot) rule was
+    /* the old `.ro-status-dot` (pre-redesign list status dot) rule was
        removed -- it is emitted by no template / generated Go / readout.js; the
        redesign status dot is `.ro-dot.<ok|warn|err|info|mute>` (defined in
        @layer app). */
@@ -233,7 +231,7 @@
     /* Per-row left status stripe: a thin inset bar down the row's leading
        edge in the matching status colour. Painted as an inset box-shadow on the
        row's first cell so it does not consume layout width or move any column.
-       SPEC §3: the producer (kube.RowStatusClass) emits row-status-* for err
+       the status system: the producer (kube.RowStatusClass) emits row-status-* for err
        and warn rows ONLY -- ok/mute rows carry no class and no stripe -- so
        only these two rules exist. */
     tr.row-status-warn > td:first-child { box-shadow: inset 0.1875rem 0 0 0 var(--st-warn); }

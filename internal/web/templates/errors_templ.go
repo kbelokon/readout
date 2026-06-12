@@ -11,14 +11,14 @@ import templruntime "github.com/a-h/templ/runtime"
 // errors.templ is the error + STATE surface. It holds (1) the full-page error
 // body (the simple `.ro-error-card` from the error() handler) and (2) the
 // redesign list/detail STATE partials aligned with the prototype VIEW.states
-// markup (D16): the big state card `.ro-empty-lg` with one plain-language
+// markup: the big state card `.ro-empty-lg` with one plain-language
 // headline + `<p>` line and the VERBATIM apiserver/transport string in the mono
-// `.errdetail` block (SPEC §1.5 -- never a cute paraphrase), the empty-FILTERED
+// `.errdetail` block (the verbatim string -- never a cute paraphrase), the empty-FILTERED
 // card with its inline `.ro-empty-chips`, the plainly-empty card with the broad
 // next action, and the hidden `.ro-banner.warn` the client-side stale path
 // reveals on an auto-refresh error. Each net-new state class resolves against
 // the redesign CSS via the `.ro-rd` content ancestor the list/detail content
-// already carries (D13).
+// already carries.
 
 // ErrorBody renders the full-page error content: the HTTP status text heading
 // and the verbatim error message.
@@ -515,7 +515,7 @@ func clearAction(clearHref string) templ.Component {
 // sentence "No <Kind> found in namespace “<ns>”" (the fact-pinned
 // `.ro-empty-title` + `.ro-empty-hint`) plus, when offered, the broad next
 // action ("Show <plural> across all namespaces" -- namespaced kinds only; a
-// cluster-scoped list never gets the link, SPEC §5/§9). The sentence stays one
+// cluster-scoped list never gets the link). The sentence stays one
 // @templ.Raw piece (see emptyTitle) so its clauses are never dropped.
 func emptyPlain(d ListData, table TableData) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -598,11 +598,11 @@ func emptyPlain(d ListData, table TableData) templ.Component {
 	})
 }
 
-// staleBanner is the hidden `.ro-banner.warn` the client-side stale path (D11/
-// D16) reveals on an auto-refresh error. It is rendered HIDDEN on first paint;
+// staleBanner is the hidden `.ro-banner.warn` the client-side stale path
+// reveals on an auto-refresh error. It is rendered HIDDEN on first paint;
 // on a refresh `htmx:responseError`/`htmx:sendError` readout.js removes the
 // `hidden` attribute and dims #resource-list-content (it never blanks the rows
-// -- HTMX keeps them on error). Copy per D16: "Auto-refresh failed — showing
+// -- HTMX keeps them on error). Copy: "Auto-refresh failed — showing
 // the last good data" / "Retrying in Ns" / Retry now. The countdown span
 // (data-stale-countdown) carries readout.js's live backoff countdown ("Ns",
 // repainted every second); the "…" placeholder shows only while no retry is

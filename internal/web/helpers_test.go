@@ -47,7 +47,7 @@ func TestFormattingHelpers(t *testing.T) {
 
 func TestTableCellFormattingHelpers(t *testing.T) {
 	table := kube.Table{Resource: kube.ResourceType{Plural: "pods"}, Columns: []kube.Column{{Name: "Name"}, {Name: "Status"}, {Name: "CPU Usage"}, {Name: "Memory Usage"}}}
-	// Completed encodes mute under SPEC §3 (was the retired info tone).
+	// Completed encodes mute under the status-tone table (was the retired info tone).
 	if cellClass(&table, 1, "Running") != "has-text-success" || cellClass(&table, 1, "Completed") != "has-text-grey" || cellClass(&table, 1, "ImagePullBackOff") != "has-text-danger" || cellClass(&table, 1, "Pending") != "has-text-warning" {
 		t.Fatalf("cellClass mismatch")
 	}
@@ -79,17 +79,18 @@ func TestTableCellFormattingHelpers(t *testing.T) {
 }
 
 // TestStatusToneSpecTableCrossPackage is the cross-package delegation proof for
-// the single-owner law (D4): for EVERY SPEC §3 row, the tone the web layer
+// the single-owner law (one status-tone function owns every value->tone
+// mapping): for EVERY status-table row, the tone the web layer
 // decodes out of kube.CellClass equals kube.StatusTone's verdict -- across the
 // formerly hand-switched plurals, kinds that never had a switch (jobs), an
 // unknown plural, and the events Type column. kube.CellClass and the tone table
-// cannot disagree on a SPEC word without failing here. Each row also pins the
-// pulse rule (law §1.3): ONLY the transient set animates -- Init:1/2 is
+// cannot disagree on a status word without failing here. Each row also pins the
+// pulse rule (ONLY the transient set animates): Init:1/2 is
 // warn+pulse, Init:CrashLoopBackOff is err and (like every err) NEVER pulses.
 //
 // The rows mirror specStatusToneRows in internal/kube/table_test.go row for
 // row (that table is unexported test code, so it cannot be shared across
-// packages); when a SPEC §3 word is added there it MUST be added here too --
+// packages); when a status word is added there it MUST be added here too --
 // the count guard below trips when the sets drift in size.
 func TestStatusToneSpecTableCrossPackage(t *testing.T) {
 	rows := []struct {
@@ -130,7 +131,7 @@ func TestStatusToneSpecTableCrossPackage(t *testing.T) {
 		{"Init:Error", "err", false},
 		{"Init:ImagePullBackOff", "err", false},
 		{"Init:CreateContainerConfigError", "err", false},
-		// err -- D4 amendment 2026-06-10 (user-approved SPEC §3 extension):
+		// err -- the user-approved status-table err-set extension (2026-06-10):
 		// terminal pod failure words v1 rendered red
 		{"ErrImagePull", "err", false},
 		{"CreateContainerConfigError", "err", false},
@@ -161,7 +162,7 @@ func TestStatusToneSpecTableCrossPackage(t *testing.T) {
 			t.Fatalf("transientStatus(%q) = %t, want %t", c.value, got, c.pulse)
 		}
 		if c.tone == "err" && transientStatus(c.value) {
-			t.Fatalf("err state %q must never pulse (law §1.3)", c.value)
+			t.Fatalf("err state %q must never pulse (only in-flight states animate)", c.value)
 		}
 	}
 }

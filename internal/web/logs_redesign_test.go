@@ -15,7 +15,7 @@ import (
 // logs_redesign_test.go pins the redesign container-logs page through the REAL
 // render pipeline (the Logs templ + the package-web logPreHTML log-block builder
 // + the live handler). Each fact is an independent statement about how the logs
-// view maps onto the redesign vocabulary: the .ro-rd content marker (D13), the
+// view maps onto the redesign vocabulary: the .ro-rd content marker, the
 // detail title + .ro-tabs chrome shared with resource_view (so detail and logs
 // stay consistent), the .ro-logs-form tail/filter/Refresh form, the .ro-logtabs
 // per-container pills (active = green pill), the .ro-logpre block whose lines are
@@ -40,7 +40,7 @@ func renderLogs(t *testing.T, d *templates.LogsData) *goquery.Document {
 }
 
 // TestLogsRedesignChrome pins the logs spine: the outermost content element
-// carries .ro-rd (D13), the title is the .ro-detail-title row (H1 name + kind
+// carries .ro-rd, the title is the .ro-detail-title row (H1 name + kind
 // badge) and the tabs are the SAME .ro-tabs set as resource_view
 // (Default/YAML/Events/Logs) with Logs the .is-active tab and the sibling tabs
 // linking back to the detail GETs -- so the detail and logs screens read
@@ -60,7 +60,7 @@ func TestLogsRedesignChrome(t *testing.T) {
 	})
 
 	if doc.Find(".ro-rd").Length() == 0 {
-		t.Fatalf("logs view missing the .ro-rd content marker (D13)")
+		t.Fatalf("logs view missing the .ro-rd content marker")
 	}
 	if doc.Find(".ro-rd .ro-detail-title").Length() == 0 {
 		t.Fatalf(".ro-detail-title is not under the .ro-rd marker")
@@ -283,8 +283,8 @@ func TestLogsRedesignDisabledNotice(t *testing.T) {
 	}
 }
 
-// TestLogsRedesignDisplayControls pins the D25 deltas through the Logs templ:
-// the pn-head/pn-tail title split (the same Unit 13 helper the detail title
+// TestLogsRedesignDisplayControls pins the logs-alignment deltas through the Logs templ:
+// the pn-head/pn-tail title split (the same name helper the detail title
 // uses), the Download-logs title action (a plain GET anchor that opts out of
 // hx-boost -- boost would swap the attachment bytes into <body>), and the
 // client-side display controls in the logs form: the checked timestamps
@@ -307,7 +307,7 @@ func TestLogsRedesignDisplayControls(t *testing.T) {
 		LogPre:            `<pre class="ro-logpre">` + "\n</pre>",
 	})
 
-	// Title split: bright workload head + muted hash tail (Unit 13 parity).
+	// Title split: bright workload head + muted hash tail (parity with the detail title).
 	if got := normSpace(doc.Find("h1.ro-title .pn-head").Text()); got != "redis-master" {
 		t.Fatalf("logs .pn-head = %q, want redis-master", got)
 	}
@@ -374,7 +374,7 @@ func TestLogsRedesignDisplayControls(t *testing.T) {
 	}
 }
 
-// TestLogsDownloadRoute pins the Download-logs GET end to end (D25): with
+// TestLogsDownloadRoute pins the Download-logs GET end to end: with
 // container logs enabled, ?download=txt serves the assembled stream as a
 // text/plain attachment named after the request path -- one `pod container
 // text` line per entry, honoring the filter param exactly like the on-screen

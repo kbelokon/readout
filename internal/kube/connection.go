@@ -8,7 +8,7 @@ import (
 
 // Source identifies where a cluster connection was discovered. It rides the
 // Connection (and the runtime Cluster) so the loader can prune/reload per origin
-// (D3) and so a cluster's provenance is visible without re-deriving it from the
+// and so a cluster's provenance is visible without re-deriving it from the
 // config shape.
 type Source int
 

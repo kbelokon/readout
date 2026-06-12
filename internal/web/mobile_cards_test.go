@@ -10,7 +10,7 @@ import (
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
-// mobile_cards_test.go pins Unit 15: below 760px the resource table is shown as a
+// mobile_cards_test.go pins the mobile cards layer: below 760px the resource table is shown as a
 // `.ro-cardlist` of `.ro-pcard` (base.css's media query hides
 // `.ro-table-wrap.has-cards` and shows `.ro-cardlist`), and the topbar carries a
 // `.menu-toggle` hamburger that reveals the sidebar. The responsive switch + the
@@ -100,8 +100,8 @@ func TestMobileCardsPreserveTransientPulse(t *testing.T) {
 	if got := normSpace(creatingCard.Find(".pc-name").Text()); got != "web-creating-7c9f7cd495-6fff6" {
 		t.Fatalf("card name = %q, want the full split name", got)
 	}
-	// The age meta carries the v2 age-bucket class (Unit 23: the card cell speaks
-	// the SAME §4.3 age vocabulary the table does). 3s old at the fixed clock ->
+	// The age meta carries the v2 age-bucket class (the card cell speaks
+	// the SAME duration-age bucket vocabulary the table does). 3s old at the fixed clock ->
 	// .age-fresh, computed from the object's creationTimestamp by the pipeline.
 	if got := normSpace(creatingCard.Find(`.pc-meta .m:has(.k:contains("age")) .age-fresh`).Text()); got != "3s" {
 		t.Fatalf("creating card age meta = %q, want 3s inside .age-fresh", got)
@@ -255,7 +255,7 @@ func TestMobileCardsThroughEngineMirrorTableCells(t *testing.T) {
 
 	// The Labels chips cell rides into the card meta as the SAME neutral chip the
 	// table strip renders: a `.ro-chip` with the ck/cs/cv ink-weight split and NO
-	// tint modifier class (D3: labels are identification, not status -- the v1
+	// tint modifier class (under the colour law labels are identification, not status -- the v1
 	// `.app` green tint must never resurface in the card projection).
 	chip := card.Find(`.pc-meta .m:has(.k:contains("labels")) .ro-chips .ro-chip`)
 	if chip.Length() != 1 {
@@ -270,7 +270,7 @@ func TestMobileCardsThroughEngineMirrorTableCells(t *testing.T) {
 }
 
 // TestMobileCardsEventsMessageKeepsMsgTreatment pins the card projection of the
-// events Message cell (SPEC §4.16): below 760px the card meta value must carry
+// events Message cell (the wrapping events-message recipe): below 760px the card meta value must carry
 // the SAME `.ro-event-msg` treatment marker the table's td does (muted ink +
 // wrapping live in CSS keyed on that class; the td-scoped rule cannot reach a
 // card <span>, so a card-scope rule keys on the same class). Without the
@@ -310,7 +310,7 @@ func htmlOf(t *testing.T, sel *goquery.Selection) string {
 	return h
 }
 
-// TestMobileMenuToggleExistsWhereverSidebarDoes pins the hamburger contract (D11):
+// TestMobileMenuToggleExistsWhereverSidebarDoes pins the hamburger contract:
 // the topbar carries a `.menu-toggle` <button> on every page that renders a sidebar
 // (so the delegated readout.js click can reveal it), and OMITS it on the Clusters
 // entry page, which has no sidebar. Being a <button>, the app-layer

@@ -1,9 +1,13 @@
 package web
 
 import (
+	"context"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,14 +20,21 @@ type clusterFakeOptions struct {
 	// delay is slept before every discovery/list/table response, used to force
 	// out-of-order completion across clusters (a slow cluster finishes last).
 	delay time.Duration
+	// listDelay is slept before the pods/deployments LIST/table responses only
+	// (NOT discovery), modeling a cluster whose connection is alive -- discovery
+	// answers -- but whose list endpoint hangs. This is the shape the fan-out
+	// time budget cuts: the list request rides http.NewRequestWithContext, so a
+	// budget-expired ctx aborts it (discovery uses the REST client's own
+	// timeout, not the per-call ctx, so it is bounded separately).
+	listDelay time.Duration
 	// failList makes the pods table/list endpoints return 500 so the cluster is
 	// a partial failure (its FindResource succeeds, its Table fails) -- the
 	// other clusters must still render and the partial notice must appear.
 	failList bool
 	// searchFixtures swaps the pods table for the search-shaped fixture
 	// (api-backend / metrics-api / redis-master names) and adds a deployments
-	// route (api-gateway), so the grouped-search tests can assert the D12 mark
-	// highlight + the multi-kind totals. Off by default: existing tests keep the
+	// route (api-gateway), so the grouped-search tests can assert the search
+	// `<mark>` highlight + the multi-kind totals. Off by default: existing tests keep the
 	// nginx/my-app rows and no deployments route.
 	searchFixtures bool
 }
@@ -63,7 +74,23 @@ func newClusterFakeAPI(t *testing.T, opts clusterFakeOptions) *httptest.Server {
 	if opts.searchFixtures {
 		podsFixture = "data/search_pods_table.json"
 	}
-	podsHandler := delay(func(w http.ResponseWriter, r *http.Request) {
+	listDelay := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if opts.listDelay > 0 {
+				// Sleep, but wake on client cancellation so the budget-cut request
+				// frees the handler immediately (a raw time.Sleep would keep the
+				// goroutine -- and t.Cleanup's server Close -- blocked the full
+				// stall after the client already gave up).
+				select {
+				case <-time.After(opts.listDelay):
+				case <-r.Context().Done():
+					return
+				}
+			}
+			h(w, r)
+		}
+	}
+	podsHandler := delay(listDelay(func(w http.ResponseWriter, r *http.Request) {
 		if opts.failList {
 			http.Error(w, "boom: pods backend unavailable", http.StatusInternalServerError)
 			return
@@ -74,18 +101,18 @@ func newClusterFakeAPI(t *testing.T, opts clusterFakeOptions) *httptest.Server {
 			return
 		}
 		_, _ = w.Write(readFixture(t, "data/pods_with_node_list.json"))
-	})
+	}))
 	mux.HandleFunc("/api/v1/namespaces/default/pods", podsHandler)
 	mux.HandleFunc("/api/v1/pods", podsHandler)
 	if opts.searchFixtures {
-		deploymentsHandler := delay(func(w http.ResponseWriter, _ *http.Request) {
+		deploymentsHandler := delay(listDelay(func(w http.ResponseWriter, _ *http.Request) {
 			if opts.failList {
 				http.Error(w, "boom: deployments backend unavailable", http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(readFixture(t, "data/search_deployments_table.json"))
-		})
+		}))
 		mux.HandleFunc("/apis/apps/v1/namespaces/default/deployments", deploymentsHandler)
 		mux.HandleFunc("/apis/apps/v1/deployments", deploymentsHandler)
 	}
@@ -123,7 +150,7 @@ func clusterConnections(m map[string]string) []config.ClusterConnection {
 // hrefs is the merged row order.
 func clusterCellOrder(body string) []string {
 	// Scope to the .ro-table Cluster column (td.cell-clu): the engine now ALSO emits
-	// the mobile `.ro-cardlist` projection of the same rows (Unit 15), which carries
+	// the mobile `.ro-cardlist` projection of the same rows (the mobile cards layer), which carries
 	// its own `cluster` meta link, so a raw href scan would double-count. Parsing the
 	// table's cluster cells pins the merge order on the table body alone.
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
@@ -283,12 +310,12 @@ func TestMultiClusterSearchFanInIsDeterministicAndPartialSafe(t *testing.T) {
 	}
 }
 
-// TestSearchGroupedByClusterMarksAndTotals pins the D12 grouped search render
+// TestSearchGroupedByClusterMarksAndTotals pins the grouped search render
 // over the proven fan-out: a two-cluster search (the alphabetically-first
 // cluster is the SLOWEST, finishing last) renders one `.search-group` per
 // cluster in fixed cluster-name order across repeated runs, each group header
 // carrying the ok dot + mono cluster name + count chip; the matched query
-// fragment is wrapped in a server-side `<mark>` inside the Unit 10
+// fragment is wrapped in a server-side `<mark>` inside the cell-cookbook
 // pn-head/pn-tail name split; and the totals strip counts
 // objects/clusters/kinds with the searched-clusters timing meta.
 func TestSearchGroupedByClusterMarksAndTotals(t *testing.T) {
@@ -377,7 +404,7 @@ func TestSearchGroupedByClusterMarksAndTotals(t *testing.T) {
 	}
 }
 
-// TestSearchGroupedPartialFailureKeepsFailedChip pins the D12 partial-failure
+// TestSearchGroupedPartialFailureKeepsFailedChip pins the grouped-search partial-failure
 // composition: a failed cluster renders its `.ro-scope-chip.err` (+ inline
 // read-only retry GET) ALONGSIDE the healthy cluster's `.search-group`, and the
 // failed cluster never grows a group.
@@ -420,6 +447,199 @@ func TestSearchGroupedPartialFailureKeepsFailedChip(t *testing.T) {
 	// The partial banner renders too.
 	if doc.Find(".ro-banner.warn").Length() == 0 {
 		t.Fatalf("partial-failure banner missing")
+	}
+}
+
+// TestListFanoutBudgetCutsHungCluster proves the list total fan-out budget cuts
+// a dead/hung cluster: one cluster stalls far beyond an injected ~100ms budget,
+// yet the page renders 200 with the healthy rows + the partial-failure banner,
+// and the request returns in well under the stall time (the budget fired, the
+// hung cluster did not hold the page until its own response).
+func TestListFanoutBudgetCutsHungCluster(t *testing.T) {
+	good := newClusterFakeAPI(t, clusterFakeOptions{})
+	// hung answers discovery but stalls its LIST 5s -- ~50x the budget; the
+	// list request rides ctx, so the budget must cut it.
+	hung := newClusterFakeAPI(t, clusterFakeOptions{listDelay: 5 * time.Second})
+	app := newMultiClusterServer(t, map[string]string{"good": good.URL, "zhung": hung.URL})
+	app.listBudget = 100 * time.Millisecond
+
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/_all/namespaces/default/pods", nil))
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (budget expiry must NOT 500) body=%s", rec.Code, rec.Body.String())
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("request took %v, want well under the 5s stall (budget did not cut the hung cluster)", elapsed)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/clusters/good/namespaces/default/pods/nginx"`) {
+		t.Fatalf("healthy cluster rows did not render under the budget: %s", body)
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if doc.Find(".ro-banner.warn:not(.ro-stale-banner)").Length() == 0 {
+		t.Fatalf("partial-failure banner missing after budget cut: %s", body)
+	}
+}
+
+// TestListFanoutBudgetAllHangNeverPanics pins the worst case: the concurrency
+// limit is SMALLER than the cluster count and EVERY cluster stalls past the
+// budget, so the in-flight clusters trip the deadline AND the still-queued
+// clusters start with an already-expired ctx and fail immediately. Every
+// cluster lands in the error lane, the page still renders 200 with the
+// all-failed banner -- never a bare 500 from budget expiry alone.
+func TestListFanoutBudgetAllHangNeverPanics(t *testing.T) {
+	clusters := map[string]string{}
+	for _, name := range []string{"c1", "c2", "c3", "c4"} {
+		hung := newClusterFakeAPI(t, clusterFakeOptions{listDelay: 5 * time.Second})
+		clusters[name] = hung.URL
+	}
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                 8080,
+		Clusters:             clusterConnections(clusters),
+		DefaultTheme:         "dark",
+		SearchMaxConcurrency: 2, // limit < len(clusters): some clusters queue behind an expired budget
+	})
+	app.listBudget = 100 * time.Millisecond
+
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/_all/namespaces/default/pods", nil))
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (all-fail under budget must NOT 500) body=%s", rec.Code, rec.Body.String())
+	}
+	if elapsed >= 3*time.Second {
+		t.Fatalf("request took %v, want well under the 5s stall (budget did not cut the hung clusters)", elapsed)
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	banner := doc.Find(".ro-banner.warn:not(.ro-stale-banner)")
+	if banner.Length() == 0 {
+		t.Fatalf("all-failed banner missing: %s", rec.Body.String())
+	}
+	if got := normSpace(banner.Find(".bn-title").Text()); got != "Partial results: 4 failed" {
+		t.Fatalf("banner title = %q, want 'Partial results: 4 failed'", got)
+	}
+}
+
+// TestSearchFanoutBudgetCutsHungCluster is the search analog of the list budget
+// cut: a hung cluster stalls past an injected short budget, the search still
+// renders 200 with the hung cluster's `.err` scope chip and in well under the
+// stall time.
+func TestSearchFanoutBudgetCutsHungCluster(t *testing.T) {
+	good := newClusterFakeAPI(t, clusterFakeOptions{searchFixtures: true})
+	hung := newClusterFakeAPI(t, clusterFakeOptions{searchFixtures: true, listDelay: 5 * time.Second})
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                       8080,
+		Clusters:                   []config.ClusterConnection{{Name: "good", Server: good.URL}, {Name: "zhung", Server: hung.URL}},
+		DefaultTheme:               "dark",
+		SearchMaxConcurrency:       100,
+		SearchDefaultResourceTypes: []string{"pods"},
+	})
+	app.searchBudget = 100 * time.Millisecond
+
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/search?q=api&cluster=_all&namespace=default&type=pods", nil))
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (budget expiry must NOT fail the search) body=%s", rec.Code, rec.Body.String())
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("search took %v, want well under the 5s stall (budget did not cut the hung cluster)", elapsed)
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse search body: %v", err)
+	}
+	if doc.Find(".ro-scope .ro-scope-chip.err").Length() == 0 {
+		t.Fatalf("hung cluster `.err` scope chip missing after budget cut: %s", rec.Body.String())
+	}
+	// The positive half: cutting the hung cluster must NOT discard the healthy
+	// cluster's results -- the good cluster's search group still renders.
+	groups := doc.Find(".search-group")
+	if groups.Length() != 1 {
+		t.Fatalf(".search-group count = %d, want 1 (the good cluster's results survive the cut): %s", groups.Length(), rec.Body.String())
+	}
+	if got := normSpace(groups.Find(".search-cluster .mono").Text()); got != "good" {
+		t.Fatalf("surviving group header = %q, want good", got)
+	}
+}
+
+// TestFanoutSlotsPreservesOrder runs fanoutSlots with a randomized per-item
+// completion order (each item sleeps a random spell) and asserts result[i] is
+// always fn(items[i]) -- input order, never completion order.
+func TestFanoutSlotsPreservesOrder(t *testing.T) {
+	const n = 50
+	items := make([]int, n)
+	// Pre-compute per-item sleep spells sequentially so the goroutines share no
+	// mutable rng (math/rand.Rand is not concurrency-safe); the sleep still
+	// randomizes completion order so a slot mix-up would surface.
+	sleeps := make([]time.Duration, n)
+	rng := rand.New(rand.NewSource(1))
+	for i := range items {
+		items[i] = i * 7 // a value distinct from the index, so a slot mix-up shows
+		sleeps[i] = time.Duration(rng.Intn(3)) * time.Millisecond
+	}
+	got := fanoutSlots(context.Background(), items, 8, func(_ context.Context, v int) int {
+		time.Sleep(sleeps[v/7])
+		return v * 2
+	})
+	if len(got) != n {
+		t.Fatalf("len(got) = %d, want %d", len(got), n)
+	}
+	for i := range items {
+		if want := items[i] * 2; got[i] != want {
+			t.Fatalf("got[%d] = %d, want %d (slot order not input-aligned)", i, got[i], want)
+		}
+	}
+}
+
+// TestFanoutSlotsZeroItems pins the empty input: an empty slice returns an empty
+// result slice and starts no goroutines (fn must never run).
+func TestFanoutSlotsZeroItems(t *testing.T) {
+	var calls atomic.Int64
+	got := fanoutSlots(context.Background(), []int{}, 4, func(_ context.Context, v int) int {
+		calls.Add(1)
+		return v
+	})
+	if len(got) != 0 {
+		t.Fatalf("len(got) = %d, want 0", len(got))
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("fn ran %d times on zero items, want 0", calls.Load())
+	}
+}
+
+// TestFanoutSlotsLimitGreaterThanItems proves limit >= len(items) does not
+// deadlock and still runs every item exactly once.
+func TestFanoutSlotsLimitGreaterThanItems(t *testing.T) {
+	items := []int{1, 2, 3}
+	var mu sync.Mutex
+	seen := map[int]int{}
+	got := fanoutSlots(context.Background(), items, 100, func(_ context.Context, v int) int {
+		mu.Lock()
+		seen[v]++
+		mu.Unlock()
+		return v
+	})
+	if len(got) != len(items) {
+		t.Fatalf("len(got) = %d, want %d", len(got), len(items))
+	}
+	for _, v := range items {
+		if seen[v] != 1 {
+			t.Fatalf("item %d ran %d times, want exactly 1", v, seen[v])
+		}
 	}
 }
 

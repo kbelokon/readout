@@ -39,7 +39,7 @@ type LayoutData struct {
 	Navbar  Navbar
 	Sidebar Sidebar
 
-	// PaletteJSON is the ⌘K palette feed (D10) as a JSON string, emitted into the
+	// PaletteJSON is the ⌘K palette feed as a JSON string, emitted into the
 	// #ro-palette-data hidden <div> (NOT a <script> -- htmx allowScriptTags:false
 	// strips every <script> from swapped content, which would empty the palette
 	// after an hx-boost nav). templ HTML-escapes it into the div text; the palette
@@ -69,14 +69,14 @@ type Navbar struct {
 	ThemeExplicit bool
 
 	// RefreshMode is the persisted auto-refresh mode from the ro_prefs cookie
-	// (D9): "" / "Off" / seconds-as-string / "Live" (Unit 27). The topbar
+	// from the cookie: "" / "Off" / seconds-as-string / "Live". The topbar
 	// renders the refresh label + the active interval option from it so the
 	// persisted choice paints at SSR (readout.js re-derives the same state from
 	// the same cookie, so the init sync is a no-op rather than a flash).
 	RefreshMode string
 
 	// LiveDisabled renders the dropdown's Live option disabled with an
-	// explanatory title (Unit 27/D19 scope cut): true on multi-type and
+	// explanatory title: true on multi-type and
 	// multi-cluster LIST pages, where the `_stream` endpoint answers 404.
 	// readout.js consults the rendered option (server truth) before opening a
 	// stream, so the gate has exactly one owner.
@@ -99,12 +99,12 @@ type NavItem struct {
 	Text   string
 	Active bool
 
-	// Icon is the pre-rendered sidebar entry glyph from the Unit-1 resolver
+	// Icon is the pre-rendered sidebar entry glyph from the kind-icon resolver
 	// (icons.KindIcon / icons.PluralMonogram), emitted raw. Empty for nav items
 	// that carry no icon slot (namespaces, Meta links).
 	Icon string
 
-	// Count/HasCount carry the per-kind object count (D13): the trailing mono
+	// Count/HasCount carry the per-kind object count: the trailing mono
 	// `.menu-count` span. HasCount distinguishes a real "0" (rendered) from an
 	// absent count (failed fetch / multi-cluster scope / non-kind entry).
 	Count    string
@@ -325,17 +325,17 @@ func layoutHead(d LayoutData) templ.Component {
 	})
 }
 
-// layoutBody renders the redesign chrome (D13): the sticky blurred topbar as a
+// layoutBody renders the redesign chrome: the sticky blurred topbar as a
 // <header class="ro-topbar"> (NOT a <nav>, so the header.ro-topbar CSS applies),
 // then the .ro-shell grid wrapping the sticky .ro-sidebar + the .ro-main content
 // region. The Clusters entry page (no cluster scope) omits the sidebar +
-// namespace context (D11): the sidebar renders only when Sidebar.ShowMenu and the
+// namespace context: the sidebar renders only when Sidebar.ShowMenu and the
 // .ctx-dd only when Navbar.ShowContext, so the .ro-shell collapses to just main.
-// The #ro-palette-data JSON blob (D10) and the palette overlay (Unit 4) ride on
+// The #ro-palette-data JSON blob and the palette overlay ride on
 // every page. Do NOT add the `ro-rd` content marker here -- content templates add
-// it when THEY migrate (D13).
+// it when THEY migrate.
 //
-// #ro-toasts is the toast host (D24 / SPEC §8.8): layout chrome OUTSIDE every
+// #ro-toasts is the toast host: layout chrome OUTSIDE every
 // swap target (#resource-list-content morphs never touch it, so an active
 // toast survives refresh ticks; a boosted body swap replaces it, correctly --
 // a navigation is a screen change). readout.js appends one .ro-toast per

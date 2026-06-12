@@ -62,8 +62,8 @@ func TestToolsFormUniqueIDs(t *testing.T) {
 
 func TestListToolsRoundTripApiVersion(t *testing.T) {
 	app := newTestServer(t)
-	// Single-type pages re-home the labelcols/selector inputs into the D8
-	// columns popover (form.ro-pop-form); the hidden-input param round-trip is
+	// Single-type pages re-home the labelcols/selector inputs into the
+	// column-visibility popover (form.ro-pop-form); the hidden-input param round-trip is
 	// the contract under test and must survive the move.
 	p := get(t, app, "/clusters/test/namespaces/default/pods?apiVersion=v1&api_version=v1&limit=2&label-columns=app&hide-columns=Age", http.StatusOK)
 	form := p.doc.Find("form.ro-pop-form")
@@ -238,8 +238,8 @@ func podsCellView(t *testing.T, columns []string, cells []any, colIdx int) cellV
 	return app.buildCellView(req, table, row, colIdx, cells[colIdx], "default", cellString(row, 0))
 }
 
-// TestGenericCellTruncationFollowsIdentifierRule pins Principles §3 ("identifiers
-// are sacred — never truncate them"): in a generic list, secondary free-text
+// TestGenericCellTruncationFollowsIdentifierRule pins the rule that identifiers
+// are sacred — never truncate them: in a generic list, secondary free-text
 // columns (selectors, node selectors, images, labels, messages) truncate with a
 // `title=` tooltip, while identifiers (IPs, container names) and numeric counts
 // stay FULL — the table wrapper scrolls horizontally under the pinned name column
@@ -444,7 +444,7 @@ func TestPodsListTransientStatusPulsesThroughRender(t *testing.T) {
 	// Whole-table sanity: exactly the two transient pods pulse (creating +
 	// terminating), so a broadened-pulse regression that animated steady states
 	// would also trip here. Scoped to the .ro-table: the engine now ALSO emits the
-	// mobile `.ro-cardlist` projection of the same rows (Unit 15), whose status
+	// mobile `.ro-cardlist` projection of the same rows (the mobile cards layer), whose status
 	// pills pulse identically -- TestMobileCards pins that the card pulse matches.
 	if got := p.doc.Find("table.ro-table .ro-dot.pulse").Length(); got != 2 {
 		t.Fatalf("transient pulse dots in table = %d, want 2 (creating + terminating)", got)
@@ -662,7 +662,7 @@ func TestAllClusterPartialFailureBanner(t *testing.T) {
 	p.wantHas(`table.ro-table td.cell-name a[href="/clusters/good/namespaces/default/pods/nginx"]`)
 
 	// The redesign partial-failure banner. Scoped to exclude the hidden
-	// client-side stale banner (also a `.ro-banner.warn`, Unit 14) so this pins
+	// client-side stale banner (also a `.ro-banner.warn`) so this pins
 	// the partial-failure banner specifically.
 	banner := p.doc.Find(".ro-banner.warn:not(.ro-stale-banner)")
 	if banner.Length() == 0 {
@@ -676,10 +676,10 @@ func TestAllClusterPartialFailureBanner(t *testing.T) {
 	}
 }
 
-// TestListSingleClusterNeverShowsPartialFailure pins the D11 invariant boundary:
+// TestListSingleClusterNeverShowsPartialFailure pins the invariant boundary:
 // a SINGLE-cluster list (even on a healthy fixture) NEVER renders the all-cluster
 // partial-failure banner. "Some clusters failed" is an all-cluster story only.
-// The hidden client-side stale banner (Unit 14) is a `.ro-banner.warn` too, so
+// The hidden client-side stale banner is a `.ro-banner.warn` too, so
 // the partial-failure absence is asserted via the partial-only marker
 // (.ro-partial-note) and a visible (non-stale) warn banner.
 func TestListSingleClusterNeverShowsPartialFailure(t *testing.T) {
@@ -690,10 +690,10 @@ func TestListSingleClusterNeverShowsPartialFailure(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// V2 interaction loop (D6) + the D1 surface boundary.
+// V2 table-interaction loop + the single-type-page surface boundary.
 // ---------------------------------------------------------------------------
 
-// TestRowKeyAndDomID pins the row-identity encoding (D6): the key collapses
+// TestRowKeyAndDomID pins the row-identity encoding (the table loop keys rows by identity): the key collapses
 // empty segments, and the derived DOM id stays unique and safe inside the
 // quoted attribute selector idiomorph matches ids with ([id="…"]) -- '%', '"',
 // '\', and whitespace are percent-escaped (escaping '%' itself keeps distinct
@@ -722,7 +722,7 @@ func TestRowKeyAndDomID(t *testing.T) {
 	}
 }
 
-// TestListLoopSurfaceBoundary pins the D1 boundary: a multi-TYPE page
+// TestListLoopSurfaceBoundary pins the single-type-page boundary: a multi-TYPE page
 // (plural=CSV) keeps the v1 contract untouched -- the baked-partial-URL
 // container re-fetched on ro:refresh, plain boosted sort links (no hx-get),
 // identity-less rows, no bulk-bar mount -- while the single-type page (pinned
@@ -748,7 +748,7 @@ func TestListLoopSurfaceBoundary(t *testing.T) {
 
 // TestListPartialFragmentCarriesCanonicalHrefs proves the `_table` fragment
 // resolves its request-derived hrefs against the CANONICAL list URL, never the
-// partial's own path (D6 state coherence). Before the buildListView
+// partial's own path (the table loop's state coherence). Before the buildListView
 // canonicalization, a fragment delivered by a refresh tick baked
 // `…/_table?sort=…` into its sort hrefs, so the next header click navigated to
 // the bare fragment.
@@ -769,11 +769,11 @@ func TestListPartialFragmentCarriesCanonicalHrefs(t *testing.T) {
 	p.wantAttr(`tr[data-key="test/default/nginx"]`, "id", "row-test/default/nginx")
 }
 
-// TestListPartialPushURLContract pins the D6 history-push matrix on the
+// TestListPartialPushURLContract pins the table-loop history-push matrix on the
 // `_table` handler: ONLY a user-initiated htmx request gets HX-Push-Url, and
 // the pushed URL is the CANONICAL list path + the live query -- never the
 // partial URL. Ticks/programmatic re-fetches (RO-No-Push), preload warm-ups
-// (HX-Preloaded), non-htmx requests, and multi-type pages (D1) get no push:
+// (HX-Preloaded), non-htmx requests, and multi-type pages get no push:
 // htmx pushes one history entry per header occurrence with no same-URL dedupe,
 // so any of those pushing would spray junk history entries.
 func TestListPartialPushURLContract(t *testing.T) {
@@ -819,7 +819,7 @@ func TestListPartialPushURLContract(t *testing.T) {
 		t.Fatalf("non-htmx push = %q, want none", got)
 	}
 
-	// Multi-type partials sit outside the loop (D1): no push even for an htmx
+	// Multi-type partials sit outside the loop (single-type pages only): no push even for an htmx
 	// request.
 	rec = tableGET("/clusters/test/namespaces/default/pods,services/_table", map[string]string{"HX-Request": "true"})
 	if got := rec.Header().Get("HX-Push-Url"); got != "" {
@@ -827,7 +827,7 @@ func TestListPartialPushURLContract(t *testing.T) {
 	}
 }
 
-// TestListLoopReadoutJSContract pins the readout.js half of the D6 loop the
+// TestListLoopReadoutJSContract pins the readout.js half of the table-interaction loop the
 // same way the stale-path test does (no headless JS runner in this suite; the
 // e2e suite exercises the runtime behavior): the CSP-safe ro-morph extension
 // delivering the morph config as a JS object, the location-derived tick URL,

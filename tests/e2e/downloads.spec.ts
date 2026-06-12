@@ -2,18 +2,18 @@ import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { controlURL } from './playwright.config';
 
-// Download surface (Unit 17): downloads must be REAL downloads.
+// Download surface: downloads must be REAL downloads.
 //
 //   - hx-boost regression (verified live before the fix): the body-level
 //     boost captured a download anchor's click and swapped the raw attachment
 //     bytes into <body> instead of downloading. The TSV list anchor and the
 //     detail YAML anchor now carry hx-boost="false"; clicking them fires a
 //     real `download` event and the page stays intact.
-//   - Bulk Download YAML (D11): one multi-document `---`-separated file via
+//   - Bulk Download YAML: one multi-document `---`-separated file via
 //     location.assign on a Content-Disposition URL -- the page never
 //     navigates, so the selection SURVIVES (a download is not a screen
-//     change, SPEC §6.4).
-//   - The selection cap (D11 + D24): above 100 selected the button disables
+//     change).
+//   - The selection cap: above 100 selected the button disables
 //     and ONE toast announces the refusal (the only sanctioned download
 //     toast; there is deliberately NO "ready" toast). Dropping back under
 //     the cap re-enables.
@@ -38,7 +38,7 @@ async function selectRow(page: Page, key: string): Promise<void> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the download buttons ride the table chrome (below 760px the card layer replaces it, D22)'
+    'the download buttons ride the table chrome (below 760px the card layer replaces it)'
   );
   await control('/__control/reset');
 });
@@ -93,7 +93,7 @@ test('bulk Download YAML serves one ---separated multi-doc file; selection survi
 
   // location.assign on a Content-Disposition URL downloads WITHOUT leaving
   // the page: the selection (explicit intent) survives, and no toast appears
-  // -- a plain GET has no detached "ready" moment (D24).
+  // -- a plain GET has no detached "ready" moment.
   expect(page.url()).toContain(PODS);
   await expect(page.locator('#ro-bulk-count')).toHaveText('2 selected');
   await expect(page.locator('tr.is-selected')).toHaveCount(2);

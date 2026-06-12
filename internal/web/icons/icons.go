@@ -41,10 +41,10 @@ func SVG(name string) string {
 	case "x", "times":
 		return `<svg xmlns="http://www.w3.org/2000/svg" class="lucide-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`
 	case "file":
-		// Context-menu "View YAML" glyph (Unit 16): Lucide file.
+		// Context-menu "View YAML" glyph: Lucide file.
 		return `<svg xmlns="http://www.w3.org/2000/svg" class="lucide-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>`
 	case "terminal":
-		// Context-menu "View logs" glyph (Unit 16): Lucide square-terminal --
+		// Context-menu "View logs" glyph: Lucide square-terminal --
 		// the boxed prompt the v2 prototype draws for its terminal icon.
 		return `<svg xmlns="http://www.w3.org/2000/svg" class="lucide-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2"/></svg>`
 

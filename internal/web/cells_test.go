@@ -11,14 +11,14 @@ import (
 	"github.com/kbelokon/readout/internal/kube"
 )
 
-// cells_test.go pins the SPEC §4 cell-type cookbook (Unit 10): the corner-case
+// cells_test.go pins the cell-type cookbook: the corner-case
 // cell constructors (pending/ports/hosts/tls/lastrun/keys/count/evobj/evage/
 // msg), the name middle-truncation + restarts thousands-separator wiring in
 // buildCellView, and the label/data-chip in-cell overflow machinery
 // (.xtra/.expanded + the +N button). Fixtures mirror the design handoff's
-// corner-case dataset (docs/design_handoff_readout_v2/js/data-extra.js) so the
+// corner-case dataset so the
 // designed-for inputs are the tested inputs. Every expectation is an
-// INDEPENDENT fact from SPEC §4 (thresholds: head>42 -> 26…12, evobj 34 ->
+// INDEPENDENT cell-cookbook fact (thresholds: head>42 -> 26…12, evobj 34 ->
 // 20…8, 2 ports / 1 host / 3 keys / 2 chips before overflow, count ≥20 amber,
 // capacity >55/>80, replica cap 12, age fractions of a 24h window), never an
 // echo of the emitted markup.
@@ -55,7 +55,7 @@ func firstRowTD(t *testing.T, doc *goquery.Document, idx int) *goquery.Selection
 	return tds.Eq(idx)
 }
 
-// TestNameCellMiddleTruncation pins SPEC §4.2 on the REAL pods cell assembly:
+// TestNameCellMiddleTruncation pins the name-cell middle-truncation recipe on the REAL pods cell assembly:
 // a head longer than 42 chars displays as first-26 + "…" + last-12 with the
 // FULL name in Title; the hash tail is NEVER truncated; a 42-char head stays
 // whole. The 64+-char cron pod name is the data-extra.js corner-case row.
@@ -106,7 +106,7 @@ func TestNameCellMiddleTruncation(t *testing.T) {
 // the REAL pipeline (buildListView -> bridge -> templ) and asserts the DOM:
 // the sticky name cell renders the truncated head in .pn-head, the INTACT
 // hash tail in .pn-tail, and carries the full name in the link's title= -- the
-// SPEC §4.2 escape hatch. A short name keeps the v1 markup (no title).
+// name-cell tooltip escape hatch. A short name keeps the v1 markup (no title).
 func TestNameCellTruncationThroughRender(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	const cronPod = "cron-data-warehouse-hourly-rollup-partition-compactor-29678881-x7k2v"
@@ -149,10 +149,10 @@ func TestNameCellTruncationThroughRender(t *testing.T) {
 	}
 }
 
-// TestRestartsCellThousandsSeparator pins SPEC §4.5 on the real pods cell
+// TestRestartsCellThousandsSeparator pins the restarts-cell recipe on the real pods cell
 // assembly: the webhook-dispatcher corner case (1047 restarts, data-extra.js)
 // renders "1,047" with the faint "(4m ago)" suffix and the amber tone; zero
-// stays "0"/faint. Unit 6's filter engine strips the comma when parsing, so
+// stays "0"/faint. The filter engine strips the comma when parsing, so
 // the display format is filter-compatible by design.
 func TestRestartsCellThousandsSeparator(t *testing.T) {
 	cols := []string{"Name", "Ready", "Status", "Restarts", "Age"}
@@ -171,9 +171,9 @@ func TestRestartsCellThousandsSeparator(t *testing.T) {
 	}
 }
 
-// TestPendingCellStates pins SPEC §4.12 through the constructor + the real
+// TestPendingCellStates pins the pending-cell recipe through the constructor + the real
 // render: an empty address -> the faint <none>; the literal <pending> -> an
-// amber PULSING dot + the word "pending" (an in-flight state, law §1.3); a
+// amber PULSING dot + the word "pending" (an in-flight state animates); a
 // real address -> plain text with no dot.
 func TestPendingCellStates(t *testing.T) {
 	if cv := pendingCellView("<pending>"); cv.Value != "pending" || cv.Tone != "warn" || !cv.Pulse {
@@ -204,7 +204,7 @@ func TestPendingCellStates(t *testing.T) {
 	}
 }
 
-// TestPortsCellOverflow pins SPEC §4.11: the first 2 ports show, the rest
+// TestPortsCellOverflow pins the ports-cell overflow recipe: the first 2 ports show, the rest
 // collapse into a faint +N, and the FULL list rides in the tooltip (both on
 // the cell and the +N). The 5-port observability-metrics service is the
 // data-extra.js corner case. No ports -> the muted "—".
@@ -240,7 +240,7 @@ func TestPortsCellOverflow(t *testing.T) {
 	}
 }
 
-// TestHostsCellOverflow pins SPEC §4.11 for ingress hosts: ONE host shows +
+// TestHostsCellOverflow pins the hosts-cell overflow recipe for ingress hosts: ONE host shows +
 // "+N hosts" faint, full list in the +N tooltip. The 4-host slr-www ingress is
 // the data-extra.js corner case.
 func TestHostsCellOverflow(t *testing.T) {
@@ -263,7 +263,7 @@ func TestHostsCellOverflow(t *testing.T) {
 	}
 }
 
-// TestTLSCellEarnedGreen pins SPEC §4.13 / the D3 colour law: the green lock +
+// TestTLSCellEarnedGreen pins the tls-cell recipe under the colour law: the green lock +
 // "tls" renders ONLY when TLS is terminated (live protection -- an earned
 // green); otherwise the muted "—" with no lock and no green anywhere in the
 // cell.
@@ -288,7 +288,7 @@ func TestTLSCellEarnedGreen(t *testing.T) {
 	}
 }
 
-// TestLastRunCellBuckets pins SPEC §4.14: the value (already a kubectl
+// TestLastRunCellBuckets pins the last-run-cell recipe: the value (already a kubectl
 // compressed duration) is bucket-coloured on the 24h window and suffixed
 // " ago"; a cronjob that never ran reads the faint <never>. Fixtures are the
 // data-extra.js cronjob lastRun values.
@@ -323,7 +323,7 @@ func TestLastRunCellBuckets(t *testing.T) {
 	}
 }
 
-// TestKeysCellChipsAndSecretSafety pins SPEC §4.10: data keys render as
+// TestKeysCellChipsAndSecretSafety pins the keys-cell recipe: data keys render as
 // `name · size` chips (name firm .cv, size faint .ck), 3 show and the rest
 // hide behind the `+N keys` in-cell expand (the same .xtra machinery as label
 // chips); empty data reads the muted "—". Secret VALUES are STRUCTURALLY
@@ -378,7 +378,7 @@ func TestKeysCellChipsAndSecretSafety(t *testing.T) {
 	}
 }
 
-// TestCountCellFormat pins SPEC §4.15: events counts render ×N with a
+// TestCountCellFormat pins the count-cell recipe: events counts render ×N with a
 // thousands separator; ≥20 reads chronic (the amber restarts ink), 0/1 fades,
 // in-between stays plain. The 141-count BackOff event is the data-extra.js
 // corner case.
@@ -410,9 +410,9 @@ func TestCountCellFormat(t *testing.T) {
 	}
 }
 
-// TestEvObjCellTruncation pins the SPEC §4 evobj recipe: a kind icon + the
+// TestEvObjCellTruncation pins the evobj cell recipe: a kind icon + the
 // faint "Kind/" prefix + the object name middle-truncated at 34 chars to
-// 20…8 -- with the full name in the tooltip (SPEC §4.2 beats the prototype
+// 20…8 -- with the full name in the tooltip (the name-cell tooltip rule beats the prototype
 // DOM, which dropped it). Short names stay whole.
 func TestEvObjCellTruncation(t *testing.T) {
 	short := evObjCellView("Pod", "ugc-backend-8b9fc9d44-nxxz9")
@@ -445,7 +445,7 @@ func TestEvObjCellTruncation(t *testing.T) {
 	}
 }
 
-// TestEvAgeCellLayers pins the SPEC §4 evage recipe: the LEADING age token is
+// TestEvAgeCellLayers pins the evage cell recipe: the LEADING age token is
 // bucket-coloured; the "(first … ago)" remainder renders as the faint 11px
 // second layer. Fixtures mirror the data-extra.js event ages.
 func TestEvAgeCellLayers(t *testing.T) {
@@ -470,7 +470,7 @@ func TestEvAgeCellLayers(t *testing.T) {
 	}
 }
 
-// TestMsgCellWrapsAndEscapes pins SPEC §4.16: the events message is the ONLY
+// TestMsgCellWrapsAndEscapes pins the events-message cell recipe: the events message is the ONLY
 // wrapping cell (td.ro-event-msg; the 520px clamp + white-space:normal live in
 // CSS keyed on that class), and -- the templ auto-escaping law -- runtime
 // message text can never inject markup.
@@ -497,7 +497,7 @@ func TestMsgCellWrapsAndEscapes(t *testing.T) {
 	}
 }
 
-// TestChipsCellOverflowInTable pins SPEC §4.9 through the REAL namespaces
+// TestChipsCellOverflowInTable pins the chips-cell overflow recipe through the REAL namespaces
 // pipeline (decorateNamespaceColumns -> buildListView -> templ): a 5-label row
 // renders 2 visible chips, 3 extras carrying the hidden .xtra class, and the
 // +N button (a real keyboard-reachable <button> with data-ro-more for the
@@ -585,7 +585,7 @@ func TestChipsCellOverflowInTable(t *testing.T) {
 	}
 }
 
-// TestCapacityBucketCellBoundaries pins the SPEC §4.6 capacity thresholds at
+// TestCapacityBucketCellBoundaries pins the capacity-bucket cell thresholds at
 // the exact boundary values the unit names: 54 -> lo, 56 -> mid, 81 -> hi
 // (>55 mid, >80 hi -- 55 and 80 stay in the lower bucket).
 func TestCapacityBucketCellBoundaries(t *testing.T) {
@@ -602,7 +602,7 @@ func TestCapacityBucketCellBoundaries(t *testing.T) {
 	}
 }
 
-// TestReplicaTrackCellCap pins the SPEC §4.7 segment ceiling: a deployment
+// TestReplicaTrackCellCap pins the replica-track cell segment ceiling: a deployment
 // with MORE desired replicas than the 12-segment cap renders exactly 12
 // segments while the honest ratio text keeps the real numbers.
 func TestReplicaTrackCellCap(t *testing.T) {
@@ -626,7 +626,7 @@ func TestReplicaTrackCellCap(t *testing.T) {
 	}
 }
 
-// TestDurationAgeCellBuckets pins the SPEC §4.3 age buckets as fractions of a
+// TestDurationAgeCellBuckets pins the duration-age cell buckets as fractions of a
 // 24h window over the duration-STRING parser (units s m h d w y): <10% fresh,
 // <35% recent, <65% day, <100% week, ≥1d old -- bracketing every boundary on
 // both sides, plus the compound multi-unit tokens the corner-case dataset

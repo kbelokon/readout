@@ -89,7 +89,7 @@ test('rankPaletteEntries drops non-matches and orders best-first', () => {
     assert.deepEqual(out, ['system-pods', 'kube-system', 'misty-sales']);
 });
 
-// --- recents dedupe (D21) ---------------------------------------------------
+// --- recents dedupe ---------------------------------------------------------
 
 test('paletteRecentTarget keys on href, falling back to action', () => {
     assert.equal(paletteRecentTarget({ label: 'x', href: '/a' }), 'href:/a');

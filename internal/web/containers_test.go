@@ -11,8 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// containers_test.go pins the Unit-13 pod-detail surface (D14 / SPEC §7.15 /
-// SPEC §6.6): the containers table (status.containerStatuses /
+// containers_test.go pins the pod-detail containers surface: the containers
+// table (status.containerStatuses /
 // status.initContainerStatuses joined with spec.containers + the PodMetrics
 // containers[] join), the ≤120/>120 annotation chip/block split, and the
 // detail-title head/hash split. Everything renders through the REAL pipeline
@@ -97,7 +97,7 @@ func renderContainersDetail(t *testing.T, usage map[string]kube.ContainerUsage) 
 	return renderDetailView(t, v)
 }
 
-// TestContainersSectionJoinOrder pins the D14 join + order law: the fixture
+// TestContainersSectionJoinOrder pins the containers join + order law: the fixture
 // pod (1 init + 2 regular) renders exactly 3 rows, init container FIRST with
 // the mute `init` badge, then the regular containers in spec order; each row
 // joins its status entry (state word, ready grammar, restarts) with its spec
@@ -183,7 +183,7 @@ func TestContainerRestartAgoSuffix(t *testing.T) {
 	}
 }
 
-// TestContainerMetricsJoin pins the D14 metrics rule on BOTH branches: with a
+// TestContainerMetricsJoin pins the containers metrics rule on BOTH branches: with a
 // live PodMetrics containers[] join the CPU/Memory cells show real per-
 // container values; without it they show the faint "—" — never zeros invented
 // for a dead join.
@@ -223,10 +223,11 @@ func TestContainerMetricsJoin(t *testing.T) {
 	}
 }
 
-// TestContainerStateToneByReason pins the D4 law on container state cells: the
+// TestContainerStateToneByReason pins the status-tone law on container state cells: the
 // waiting/terminated REASON is the state word, toned by kube.StatusTone (the
 // single value->tone owner) — CrashLoopBackOff err (never pulsing), the
-// in-flight ContainerCreating warn WITH the transient pulse (law §1.3).
+// in-flight ContainerCreating warn WITH the transient pulse (only transient
+// states pulse).
 func TestContainerStateToneByReason(t *testing.T) {
 	rt := kube.ResourceType{APIVersion: "v1", Version: "v1", Plural: "pods", Kind: "Pod", Namespaced: true}
 	obj := kube.NewObject(&rt, &unstructured.Unstructured{Object: map[string]any{
@@ -264,7 +265,7 @@ func TestContainerStateToneByReason(t *testing.T) {
 		t.Fatalf("waiting-reason state = %q, want CrashLoopBackOff toned err", got)
 	}
 	if boom.Find(".ro-dot.err.pulse").Length() != 0 {
-		t.Fatalf("CrashLoopBackOff must NOT pulse (errors never animate, law §1.3)")
+		t.Fatalf("CrashLoopBackOff must NOT pulse (errors never animate)")
 	}
 	if got := normSpace(boom.Find("span.ready.partial").Text()); got != "not ready" {
 		t.Fatalf("crashing container ready cell = %q, want not ready/partial", got)
@@ -306,7 +307,7 @@ func TestContainersLiveMetricsThroughHandler(t *testing.T) {
 	if got := normSpace(row.Find("td").Eq(6).Text()); got != "128Mi" {
 		t.Fatalf("handler-rendered Memory = %q, want 128Mi (live PodMetrics)", got)
 	}
-	// SPEC §7.15 section order through the handler: labels -> annotations ->
+	// Pod-detail section order through the handler: labels -> annotations ->
 	// containers (the owner line, absent on this fixture, sits between
 	// annotations and containers in the template), then the YAML cards with
 	// the Spec card open and the Status card collapsed by default.
@@ -318,15 +319,15 @@ func TestContainersLiveMetricsThroughHandler(t *testing.T) {
 		t.Fatalf("the containers section must precede the Spec YAML card")
 	}
 	if p.doc.Find(`.ro-yaml-card[data-name="status"].is-collapsed`).Length() != 1 {
-		t.Fatalf("the Status YAML card must start is-collapsed (SPEC §7.15)")
+		t.Fatalf("the Status YAML card must start is-collapsed")
 	}
 	if p.doc.Find(`.ro-yaml-card[data-name="spec"].is-collapsed`).Length() != 0 {
 		t.Fatalf("the Spec YAML card must start OPEN")
 	}
 }
 
-// TestAnnotationLongCollapsedToggle pins the >120-char annotation form (SPEC
-// §7.15): a 2 KiB last-applied-configuration value renders NOT as a chip but
+// TestAnnotationLongCollapsedToggle pins the >120-char annotation form in the
+// pod-detail surface: a 2 KiB last-applied-configuration value renders NOT as a chip but
 // as a collapsed `key · size` toggle (byte size on the face, aria-expanded
 // false) plus a [hidden] scrollable <pre> carrying the FULL value — the value
 // is reachable only after the readout.js toggle reveals the pre.
@@ -411,8 +412,8 @@ func TestAnnotationChipBlockBoundary(t *testing.T) {
 	}
 }
 
-// TestDetailTitleHeadTailSplit pins the SPEC §6.6 title law through the D14
-// name helper: a pod's H1 splits into the bright .pn-head workload prefix and
+// TestDetailTitleHeadTailSplit pins the detail-title head/hash-tail law through
+// the shared name helper: a pod's H1 splits into the bright .pn-head workload prefix and
 // the faint .pn-tail hash tail, glued (head+tail reconstructs the exact name);
 // a kind without a hash grammar (Deployment) renders an un-split head.
 func TestDetailTitleHeadTailSplit(t *testing.T) {
@@ -442,7 +443,7 @@ func TestDetailTitleHeadTailSplit(t *testing.T) {
 	}
 }
 
-// TestDetailTitleTruncatesLongHead pins SPEC §4.2 in the title: a head longer
+// TestDetailTitleTruncatesLongHead pins the name middle-truncation rule in the title: a head longer
 // than 42 chars middle-truncates to 26…12 (the hash tail stays INTACT) and
 // the H1 carries the FULL name in its title= tooltip.
 func TestDetailTitleTruncatesLongHead(t *testing.T) {

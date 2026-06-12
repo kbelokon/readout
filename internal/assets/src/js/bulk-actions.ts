@@ -1,4 +1,4 @@
-// bulk-actions.ts -- the bottom-center bulk bar actions (Unit 10, migrated from
+// bulk-actions.ts -- the bottom-center bulk bar actions, migrated from
 // legacy.js): Copy names, Download YAML, Clear. The bar's PAINT (is-open / "N
 // selected" / the download cap) lives in row-selection.ts (updateBulkBar); this
 // file owns the three action handlers + their dispatcher click bindings, which
@@ -18,7 +18,7 @@ import { BULK_NAMES_MAX, clearRowState, roCopyText } from './row-selection.js';
 // PINNED: including rows the live free-text filter is hiding and rows a
 // server-side filter dropped from the DOM (selection is explicit user intent;
 // the store, not the DOM, is the source). Feedback is the inline "Copied" flip
-// on the button itself -- deliberately NO toast (D10).
+// on the button itself -- deliberately NO toast.
 let bulkCopyResetTimer = 0;
 function bulkCopyNames(button: HTMLElement): void {
     const entries = roRowState().selectedEntries();
@@ -39,7 +39,7 @@ function bulkCopyNames(button: HTMLElement): void {
     });
 }
 
-// bulkDownloadYAML navigates to the bulk GET (D11): the CLEAN server-baked base
+// bulkDownloadYAML navigates to the bulk GET: the CLEAN server-baked base
 // href (data-bulk-href, no filter/sort params -- the server looks names up in
 // the UNFILTERED table, so selected-but-filtered rows are included) plus the
 // comma-joined selected names. Grammar follows the list scope: bare object names

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// The SPEC §7.15 long-annotation toggle on the pod detail page: a >120-char
+// The long-annotation toggle on the pod detail page: a >120-char
 // annotation value renders as a collapsed `key · size` button (`[data-ro-annolong]`)
 // with a hidden scrollable <pre class="anno-pre"> payload. The toggle is
 // all-new delegated JS (readout.js flips the [hidden] attribute + mirrors

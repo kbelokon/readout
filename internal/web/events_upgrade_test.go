@@ -10,7 +10,8 @@ import (
 	"github.com/kbelokon/readout/internal/kube"
 )
 
-// events_upgrade_test.go pins Unit 12 (D5 remaining kinds + D15): the dual-API
+// events_upgrade_test.go pins the events upgrade (rich schemas for the
+// remaining kinds + the events decode): the dual-API
 // event decode with the PINNED precedence (count = series.count → count →
 // deprecatedCount; first-seen = firstTimestamp → deprecatedFirstTimestamp →
 // eventTime; last-seen = series.lastObservedTime → lastTimestamp →
@@ -19,7 +20,7 @@ import (
 // cronjob/job/persistentvolume schema surfaces (Suspend status mapping,
 // lastrun <never>, verbatim BackoffLimitExceeded, uuid PV names never
 // split/truncated). Fixture values mirror the design handoff's corner-case
-// dataset (docs/design_handoff_readout_v2/js/data-extra.js); both event API
+// dataset; both event API
 // shapes and both sides of the 60s two-layer threshold are pinned because the
 // decode precedence and threshold were review-flagged ambiguities.
 
@@ -28,7 +29,7 @@ import (
 // reads 3m/41h from here, the series row 24s/4m, the burst row 45s.
 var eventsClock = time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 
-// TestEventDecodePrecedence pins the D15 decode across the THREE wire
+// TestEventDecodePrecedence pins the events decode across the THREE wire
 // spellings one struct must absorb: core/v1 (count/firstTimestamp/
 // lastTimestamp/involvedObject/message/source.component), events.k8s.io/v1
 // (deprecated*/regarding/note/reportingController), and the series aggregate
@@ -110,7 +111,7 @@ func TestEventDecodePrecedence(t *testing.T) {
 	}
 }
 
-// TestEventTwoLayerAgeThreshold pins the D15 second-layer gate: it renders
+// TestEventTwoLayerAgeThreshold pins the two-layer-age second-layer gate: it renders
 // when count > 1 AND last − first > 60s — both sides of the threshold and the
 // count gate are independent facts.
 func TestEventTwoLayerAgeThreshold(t *testing.T) {
@@ -293,7 +294,7 @@ func TestEventListThroughHandler(t *testing.T) {
 	}
 }
 
-// TestEventDetailTabInheritsCells pins D15 on the detail Events tab: the same
+// TestEventDetailTabInheritsCells pins the events decode on the detail Events tab: the same
 // ×N + two-layer-age cells the list renders, driven through buildEventViews +
 // the ResourceView templ over crafted dual-shape events.
 func TestEventDetailTabInheritsCells(t *testing.T) {
@@ -352,10 +353,10 @@ func TestEventDetailTabInheritsCells(t *testing.T) {
 	}
 }
 
-// TestCronJobCells pins the SPEC §7.11 cronjob cell mapping through the real
+// TestCronJobCells pins the cronjob cell mapping through the real
 // buildCellView: the printer's Suspend boolean maps false→Active (ok dot,
-// live health) / true→Suspended (mute, SPEC §3) with no pulse and the
-// kube.Table cell untouched; Last Schedule is the §4.14 lastrun cell
+// live health) / true→Suspended (mute per the status-tone table) with no pulse and the
+// kube.Table cell untouched; Last Schedule is the lastrun cell
 // (duration + " ago" + age bucket; the printer's literal <none> → the faint
 // <never>); the Schedule column stays the verbatim plain cell.
 func TestCronJobCells(t *testing.T) {
@@ -383,7 +384,7 @@ func TestCronJobCells(t *testing.T) {
 	if cv.Kind != cellStatus || cv.Value != "Active" || cv.Tone != "ok" || cv.Pulse {
 		t.Fatalf("unsuspended cell = %#v, want the steady ok Active status", cv)
 	}
-	// Suspend true → Suspended, mute (SPEC §3), never a pulse.
+	// Suspend true → Suspended, mute (per the status-tone table), never a pulse.
 	cv = schemaCellView(t, table, suspended, 2)
 	if cv.Kind != cellStatus || cv.Value != "Suspended" || cv.Tone != "mute" || cv.Pulse {
 		t.Fatalf("suspended cell = %#v, want the steady mute Suspended status", cv)
@@ -522,7 +523,7 @@ func TestJobColumnsDecoration(t *testing.T) {
 
 // TestJobListThroughHandler drives the fakeapi jobs fixture through the real
 // handler: the failed job renders its FULL verbatim status name
-// (BackoffLimitExceeded — SPEC §7.11) with the err dot and the err row
+// (BackoffLimitExceeded) with the err dot and the err row
 // stripe; completions ride the ready grammar (1/1 full green, 8/10 partial
 // amber).
 func TestJobListThroughHandler(t *testing.T) {
@@ -557,7 +558,7 @@ func TestJobListThroughHandler(t *testing.T) {
 // TestPersistentVolumeListThroughHandler drives the fakeapi PV fixture
 // through the real handler (a CLUSTER-scoped list): the uuid-shaped names
 // render whole — never split into a hash tail, never middle-truncated (no
-// tooltip needed) — and the phase words carry their SPEC §3 tones: Bound ok,
+// tooltip needed) — and the phase words carry their status-tone-table tones: Bound ok,
 // Released warn (+ warn stripe), Failed err (+ err stripe).
 func TestPersistentVolumeListThroughHandler(t *testing.T) {
 	app := newServer(t, baseConfig(t), eventsClock)

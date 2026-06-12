@@ -1,10 +1,10 @@
-// palette.ts -- the ⌘K jump-to command palette v2 DOM + dispatch (Unit 10).
+// palette.ts -- the ⌘K jump-to command palette v2 DOM + dispatch.
 // Migrated from the monolith (legacy.js) verbatim in behavior; the PURE ranking
 // + group order lives in palette-rank.ts (node-tested), this file owns the DOM:
 // reading the server feed, building rows, the active-row model, recents
 // persistence, open/close + focus restore, and the dispatcher bindings.
 //
-// Architecture (D10/D21/D12, SPEC §6.3 + §8.7): a keyboard launcher that JUMPS
+// Architecture: a keyboard launcher that JUMPS
 // to navigation targets. The feed-built groups come from the server JSON blob
 // in #ro-palette-data (re-read on EVERY open so an hx-boost swap is picked up);
 // the "On this page" group is harvested from the rendered list table. Selecting
@@ -13,7 +13,7 @@
 // textContent; the ONLY innerHTML is the server-escaped kind icon markup ->
 // CSP-clean.
 //
-// DISPATCH (the Unit 10 ordered-binding migration): the palette's click/input/
+// DISPATCH (the ordered-binding migration): the palette's click/input/
 // keydown branches were the FIRST branches of the monolith's big click + input
 // listeners and the head of its palette keydown listener, so they register
 // FIRST here (ahead of the row-gesture + still-resident filter listeners). The
@@ -106,7 +106,7 @@ function paletteHrefSafe(href: unknown): string {
     return trimmed;
 }
 
-// --- Palette Recents (D21 / SPEC §8.7 + §8.4): the last 5 CHOSEN entries, in
+// --- Palette Recents: the last 5 CHOSEN entries, in
 // localStorage 'ro-pref-recents', deduped by destination, newest first. Shown
 // as the FIRST group on an EMPTY query only. Reads are guarded end to end: a
 // missing/corrupt/unavailable store yields no Recents (never a throw), and the
@@ -243,7 +243,7 @@ function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLEleme
     return row;
 }
 
-// buildEverywhereRow is the D12 pinned-first search row, present ONLY while a
+// buildEverywhereRow is the pinned-first search row, present ONLY while a
 // query exists: `Search all clusters for "q"` -> a plain GET /search?q=. The
 // leading glyph is a CLONE of the palette's own server-rendered search icon.
 function buildEverywhereRow(query: string): HTMLElement {
@@ -458,7 +458,7 @@ function movePaletteActive(delta: number): void {
 
 // Act on a chosen row: run its named client action and/or navigate to its
 // server-built href, then close. EVERY choice is first recorded into Recents
-// (D21) -- click and ⏎ both land here.
+// -- click and ⏎ both land here.
 function choosePaletteRow(rowEl: HTMLElement | null): void {
     if (!rowEl) {
         return;
@@ -573,7 +573,7 @@ export const paletteBindings: Binding[] = [
             return true;
         },
     },
-    // The search page's "Refine · ⌘K" button (D12): open the palette PREFILLED
+    // The search page's "Refine · ⌘K" button: open the palette PREFILLED
     // with the query the page searched (server-baked data-query). (C1, returned.)
     {
         event: 'click',

@@ -21,7 +21,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// Shared TLS test harness (D9). These helpers are reused by the multi-source
+// Shared TLS test harness. These helpers are reused by the multi-source
 // loader, viewer-identity, and auth-method tests. They upgrade the fake
 // apiserver from the plain-HTTP newFakeAPIServer to real TLS so a genuine
 // handshake + first discovery request runs end to end.

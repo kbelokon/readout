@@ -14,7 +14,7 @@ import templruntime "github.com/a-h/templ/runtime"
 // (pcardCell, mirroring tableCell's branches without the <td> wrapper). It rides
 // the SAME row data the table body does; base.css shows it below 760px.
 
-// cardList renders the MOBILE projection of the SAME table rows (D11/D13): a
+// cardList renders the MOBILE projection of the SAME table rows: a
 // `.ro-cardlist` of `.ro-pcard`, one card per `table.Rows` entry, carrying the
 // IDENTICAL row data the `.ro-table` above does. base.css's @media (max-width:
 // 760px) hides `.ro-table-wrap.has-cards` and shows `.ro-cardlist`, so below

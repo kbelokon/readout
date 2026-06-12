@@ -10,7 +10,7 @@
     .ro-rd .ro-logs-form input:focus { border-color: var(--accent); }
     .ro-rd .ro-logs-form .tail { width: 74px; }
     .ro-rd .ro-logs-form .flt { width: 200px; }
-    /* The client-side display toggles (D25): checkbox labels read as one unit,
+    /* The client-side logs display toggles: checkbox labels read as one unit,
        the spacer pushes the Follow button to the row's far end (prototype). The
        generic `.ro-logs-form input` text-input sizing above out-specifies the
        bare `.ro-check` rules, so the checkbox geometry + checked accent are
@@ -46,10 +46,10 @@
         font-family: var(--font-mono); font-size: 12px; line-height: 1.7; padding: 12px 0;
         overflow: auto; max-height: calc(100vh - 280px); }
     .ro-rd .ro-logpre .log-line { display: block; white-space: pre; padding: 0 16px; }
-    /* wrap toggle (D25): long lines soft-wrap instead of scrolling sideways. */
+    /* wrap toggle: long lines soft-wrap instead of scrolling sideways. */
     .ro-rd .ro-logpre.wrap .log-line { white-space: pre-wrap; word-break: break-word; }
     .ro-rd .ro-logpre .log-line:hover { background: var(--row-hover); }
-    /* timestamps toggle (D25): hide the .log-ts spans client-side -- the spans
+    /* timestamps toggle: hide the .log-ts spans client-side -- the spans
        stay in the DOM, no refetch. */
     .ro-rd .ro-logpre.hide-ts .log-ts { display: none; }
     .log-src { color: var(--text-faint); }

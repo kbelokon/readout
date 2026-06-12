@@ -18,7 +18,7 @@
        never the list page's plain "Pods" title. */
     /* Kind badge: a small uppercase mono pill in the accent-weak wash (matches the
        sidebar active tint), sitting just after the mono resource name. Single
-       contract (Unit 17): the former `.ro-rd .ro-kind-badge` override and the bare
+       contract: the former `.ro-rd .ro-kind-badge` override and the bare
        twin are merged here -- `.ro-kind-badge` is only ever emitted inside a
        `.ro-rd` content root (resource_view / logs), so the de-scoped rule paints
        the same pixels the scoped rule did. The dead `h1.title:has(.ro-kind-badge)`
@@ -40,12 +40,12 @@
         background: var(--accent-weak);
         color: var(--accent);
     }
-    /* the containers-table `init` badge is MUTE, not accent (D14): an init
+    /* the containers-table `init` badge is MUTE, not accent: an init
        container is a fact, not a call to action. */
     .ro-kind-badge.init { background: var(--st-mute-bg); color: var(--st-mute); }
 
     /* Labels / Annotations sections: a quiet uppercase mono caption (matching the
-       sidebar group labels) over a wrapped row of chips. Single contract (Unit 17):
+       sidebar group labels) over a wrapped row of chips. Single contract:
        the bare twin and the `.ro-rd`-scoped override are merged (the `.ro-section`
        / `.ro-section-label` markup is only emitted under `.ro-rd`). */
     .ro-section { margin: 0 0 22px; }
@@ -58,7 +58,7 @@
         color: var(--text-faint);
         margin: 0 0 9px;
     }
-    /* Chips. Single contract (Unit 17): the chip SKIN + `.ro-chips` layout are owned
+    /* Chips. Single contract: the chip SKIN + `.ro-chips` layout are owned
        by table.css; the dead `.ro-chip .tag` / `.tag.ro-chip` tag-based skin was
        removed (`.tag` is no longer emitted in any template). Only the chip box
        layout the skin rule does not restate (display / flex) stays here. */
@@ -66,10 +66,10 @@
         display: inline-flex;
         flex: 0 0 auto;
     }
-    /* (D3 colour law) the legacy `.ro-chip.ro-label-app` green accent rules were
+    /* the legacy `.ro-chip.ro-label-app` green accent rules were
        removed: labels are neutral, key/value differ by ink weight, never hue. */
 
-    /* Owner line: a quiet mono line. Single contract (Unit 17): the bare twin and
+    /* Owner line: a quiet mono line. Single contract: the bare twin and
        the `.ro-rd`-scoped override are merged -- `.ro-owner` is only emitted under
        `.ro-rd` (resource_view), so the de-scoped rule paints the same pixels. The
        prefix text reads in the body UI font; the links read on the neutral link
@@ -167,21 +167,21 @@
     }
 
     /* =====================================================================
-       Redesign chrome dissolved here from the former redesign.css module
-       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       Redesign chrome dissolved here from the former redesign.css module.
+       Rules are VERBATIM; redesign rules win over the
        bare twins above by specificity (.ro-rd-scoped / element-qualified),
        so concatenation order is not load-bearing for them.
        ===================================================================== */
     /* ================================================================ DETAIL VIEW (redesign)
        Colliding canonical names (ro-kind-badge, ro-section, ro-section-label, ro-kv*,
        ro-cond-pill, ro-owner, ro-yaml-card, ro-card-head, ro-copy-btn, ro-event-msg)
-       are scoped under the redesign CONTENT marker `.ro-rd` (D13): a migrated content
+       are scoped under the redesign CONTENT marker `.ro-rd`: a migrated content
        template adds `ro-rd` to its outermost content element, so the redesign look
        applies only to migrated screens while the live (unmarked) markup keeps its
        existing app rule. Non-colliding net-new names stay bare. */
     .ro-detail-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 2px 0 14px; }
     .ro-detail-title .ro-title { font-size: 23px; }
-    /* SPEC §6.6: the hash tail stays faint even in the title; the tail also
+    /* the hash tail stays faint even in the title; the tail also
        sheds the heading weight so the workload head leads (prototype). The
        colours ride the global .pn-head/.pn-tail rules. */
     .ro-detail-title .ro-title .pn-tail { font-weight: 500; }
@@ -225,7 +225,7 @@
     .ro-rd .ro-cond-pill .ro-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: none; }
 
     /* YAML cards: the card chrome (`.ro-yaml-card` / `.ro-card-head` / `.ro-copy-btn`)
-       is owned as a SINGLE contract by cards-yaml.css (Unit 17); only the YAML body
+       is owned as a SINGLE contract by cards-yaml.css; only the YAML body
        token rules stay here. */
 
     /* YAML / code block (redesign bare variant) */

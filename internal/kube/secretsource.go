@@ -14,7 +14,7 @@ import (
 
 // argoClusterSecretLabelSelector selects Argo CD cluster Secrets. Argo labels
 // every cluster Secret it manages with this, so a List scoped to it returns the
-// cluster set (and only it) in a host namespace (D6).
+// cluster set (and only it) in a host namespace.
 const argoClusterSecretLabelSelector = "argocd.argoproj.io/secret-type=cluster"
 
 // argoTLSClientConfig is the nested TLS block inside an Argo cluster Secret's
@@ -59,7 +59,7 @@ type argoAWSAuthConfig struct {
 
 // argoClusterConfig is the parsed form of an Argo cluster Secret's `config` JSON
 // blob: the credential + TLS material that does NOT fit the flat top-level
-// name/server. This is the nested shape D6 pins (NOT a flat {server,CA,creds}).
+// name/server. This is the nested shape Argo uses (NOT a flat {server,CA,creds}).
 type argoClusterConfig struct {
 	BearerToken        string                  `json:"bearerToken"`
 	TLSClientConfig    argoTLSClientConfig     `json:"tlsClientConfig"`
@@ -69,7 +69,7 @@ type argoClusterConfig struct {
 	Password           string                  `json:"password"`
 }
 
-// parseArgoClusterSecret is the source-agnostic Secret->connection core (D6),
+// parseArgoClusterSecret is the source-agnostic Secret->connection core,
 // specialised to the Argo CD cluster-Secret schema. Input is a Secret's Data map
 // (raw bytes -- the Secret API has already base64-decoded stringData into it), so
 // data["name"]/data["server"] are plain strings and data["config"] is a JSON
@@ -77,9 +77,9 @@ type argoClusterConfig struct {
 // base64-decodes the inner caData/certData/keyData, and maps everything onto the
 // canonical Connection triple (Cluster TLS + AuthInfo credentials), Source =
 // SourceSecret. No rest.Config field is set by hand: the produced Connection
-// defers entirely to clientcmd via RESTConfig (D1).
+// defers entirely to clientcmd via RESTConfig.
 //
-// Errors (skip-with-error fuel for the caller, D3): a missing/empty server, an
+// Errors (skip-with-error fuel for the caller): a missing/empty server, an
 // unparseable config blob, or undecodable base64 in the TLS material.
 func parseArgoClusterSecret(data map[string][]byte) (*Connection, error) {
 	name := string(data["name"])
@@ -104,9 +104,9 @@ func parseArgoClusterSecret(data map[string][]byte) (*Connection, error) {
 		return nil, fmt.Errorf("argo cluster secret %q: parse config: %w", name, err)
 	}
 	// awsAuthConfig is the legacy EKS IAM path; readout does not ship the aws
-	// binary (D1 boundary / Accepted Risk), so honoring it would mean building a
+	// binary (out of scope / Accepted Risk), so honoring it would mean building a
 	// credential-less connection that silently runs anonymous -- exactly the class
-	// D8 exists to kill. When awsAuthConfig is the only credential, skip-with-error.
+	// the credential guards exist to kill. When awsAuthConfig is the only credential, skip-with-error.
 	if conf.AWSAuthConfig != nil && conf.BearerToken == "" && conf.ExecProviderConfig == nil &&
 		conf.TLSClientConfig.CertData == "" {
 		return nil, fmt.Errorf("argo cluster secret %q: awsAuthConfig is not supported "+
@@ -197,10 +197,10 @@ func argoExecToClientcmd(e *argoExecProviderConfig) *clientcmdapi.ExecConfig {
 }
 
 // discoverArgoSecrets is the Argo CD consumer of the Secret->connection primitive
-// (D6). It lists cluster Secrets in `namespace` of the HOST cluster (the cluster
+// primitive. It lists cluster Secrets in `namespace` of the HOST cluster (the cluster
 // reachable through `client`) and turns each into a discoveredCluster.
 //
-// Error model (D3):
+// Error model:
 //   - A failed LIST -- the host is down or the host SA is RBAC-forbidden to read
 //     Secrets -- is a SOURCE-level failure: it returns (nil, error). The caller
 //     surfaces it, but it does not blank the other sources.
@@ -209,7 +209,7 @@ func argoExecToClientcmd(e *argoExecProviderConfig) *clientcmdapi.ExecConfig {
 //
 // `client` is a kubernetes.Interface parameter so tests inject a fake clientset
 // (the LIST + parse is what this exercises; the connection transport itself is
-// already proven by Unit 1's RESTConfig tests).
+// already proven by the RESTConfig tests).
 func discoverArgoSecrets(ctx context.Context, client kubernetes.Interface, namespace string) ([]discoveredCluster, error) {
 	list, err := client.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: argoClusterSecretLabelSelector,

@@ -1,4 +1,4 @@
-// readout.ts -- the bundle ENTRY POINT. legacy.js is gone (Unit 13): the
+// readout.ts -- the bundle ENTRY POINT. legacy.js is gone: the
 // monolith is fully dismantled into typed modules, and this file wires them in
 // the one order that matters. esbuild bundles from here into a single classic
 // IIFE and PRESERVES import order, so the sequence below IS the bundle's

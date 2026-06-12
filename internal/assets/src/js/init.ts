@@ -7,7 +7,7 @@
 // single auditable place -- exactly the role legacy.js played for them.
 //
 // What lives here and WHY it is orchestration, not a leaf:
-//   - the htmx:beforeRequest sort-write hook (D9): writes the sort pref ONLY for
+//   - the htmx:beforeRequest sort-write hook: writes the sort pref ONLY for
 //     a direct sort-header gesture, after every configRequest listener has run
 //     (so the RO-No-Push programmatic marker is final);
 //   - the htmx:afterSwap post-swap PIPELINE: a FIXED order of repairs across
@@ -58,7 +58,7 @@ import './skeleton.js';
 window.roToast = showToast;
 
 // ---------------------------------------------------------------------------
-// Sort-click pref write (D9): htmx:beforeRequest.
+// Sort-click pref write: htmx:beforeRequest.
 // ---------------------------------------------------------------------------
 // A USER-initiated sort rides the v2 loop as an hx-get issued by a sort-header
 // anchor (inside a <thead> th) targeting #resource-list-content -- the SAME path
@@ -68,7 +68,7 @@ window.roToast = showToast;
 // RO-No-Push -- treated as do-not-write), preload warm-ups carry HX-Preloaded,
 // filter-chip commits are sourced from the editor input -- none of them match a
 // thead ancestor. A URL that merely ARRIVES with ?sort= (deep link, history
-// restore) never passes here at all: only the direct interaction writes (D9).
+// restore) never passes here at all: only the direct interaction writes the pref.
 document.addEventListener('htmx:beforeRequest', (event) => {
     const detail = (event as CustomEvent).detail;
     const cfg = detail?.requestConfig;
@@ -123,19 +123,19 @@ document.addEventListener('htmx:afterSwap', (event) => {
         }
         // The columns popover re-rendered closed (server truth carries no
         // `.is-open`); re-open it when it was open before the swap so a column
-        // toggle / tick never snaps it shut mid-interaction (D8). colsPopOpen()
+        // toggle / tick never snaps it shut mid-interaction. colsPopOpen()
         // is the columns.ts module flag read (the seam is retired).
         if (colsPopOpen()) {
             setColsPopOpen(true);
         }
-        // Re-window (Unit 24/D20) -- EVERY swap source lands here: tick, sort/
+        // Re-window -- EVERY swap source lands here: tick, sort/
         // filter swap, retry, AND the Live push (htmx.swap dispatches this
         // same event with target=container + the roLivePush marker, so pushes
         // ride the identical post-swap pipeline). LAST among the repairs, so
         // the adoption render consumes the visibleKeys applyLiveNameFilter
         // just re-derived; it ends in its own reapplyRowState over the slice.
         virtualizeAfterSwap();
-        // Live (Unit 27/D19): a REQUEST swap of the container while a stream
+        // Live: a REQUEST swap of the container while a stream
         // rides is a param change (`f`/sort via URL, columns via cookie) --
         // tear the stream down and reopen it against the new query under a
         // fresh generation. Pushes themselves (roLivePush) never reopen.
@@ -146,8 +146,8 @@ document.addEventListener('htmx:afterSwap', (event) => {
 // ---------------------------------------------------------------------------
 // Selection lifecycle + Live wrong-page teardown: htmx:beforeSwap (body swap).
 // ---------------------------------------------------------------------------
-// An hx-boost navigation swaps the <body> -- THE "screen change" moment (SPEC
-// §6.4) where selection clears. Content morphs target #resource-list-content,
+// An hx-boost navigation swaps the <body> -- THE "screen change" moment
+// where selection clears. Content morphs target #resource-list-content,
 // never body, so sort/filter/refresh keep selection; full-page navigations reset
 // script state for free. The fresh body renders its own closed menu + empty bar.
 // clearListStale rides along for its clearInterval half: the stale-countdown 1s
@@ -199,7 +199,7 @@ document.addEventListener('htmx:historyRestore', () => {
 // re-run on swap and resize since the column width can change.
 function setupStickyNamespace(): void {
     document.querySelectorAll('.ro-table-wrap table.ro-table').forEach((table) => {
-        // :not(.ro-vspacer): on a windowed table (Unit 24) the first tbody row
+        // :not(.ro-vspacer): on a windowed table the first tbody row
         // is the top spacer -- measure a real row, or the _all view loses its
         // second sticky column exactly on the lists big enough to window.
         const firstCell = table.querySelector('tbody tr:not(.ro-vspacer) td:first-child');
@@ -230,7 +230,7 @@ function runInitStep(step: () => void): void {
 function runInit(): void {
     [
         syncRefreshUI,
-        // Live stream reconciliation (Unit 27/D19), BEFORE applyRefresh so
+        // Live stream reconciliation, BEFORE applyRefresh so
         // the poll chain arms against fresh live state: a riding stream
         // disarms it (effective 0), a fallback sets the 5s cadence.
         liveApply,
@@ -241,16 +241,16 @@ function runInit(): void {
         initLogsFollow,
         syncThemeTogglePostTarget,
         setupStickyNamespace,
-        // Chips-editor row model (D7/D20): captured from the full server-rendered
+        // Chips-editor row model: captured from the full server-rendered
         // document. ORDER CONTRACT: this step must stay BEFORE the windowing
-        // init (Unit 24) that prunes rows from the DOM -- at this point
+        // init that prunes rows from the DOM -- at this point
         // the DOM still IS the complete dataset.
         captureRowModelFromDocument,
-        // Virtualization engagement (Unit 24/D20): windows the >threshold
+        // Virtualization engagement: windows the >threshold
         // table the server marked `.ro-windowed`. AFTER the model capture,
         // per the order contract above.
         virtualizeInit,
-        // Columns-popover open flag (D8): re-derived from the fresh DOM so a
+        // Columns-popover open flag: re-derived from the fresh DOM so a
         // boosted body swap (rendered closed) never leaves a stale-open flag.
         syncColsPopState,
         // Row state is keyed by OBJECT identity; the store clears when an

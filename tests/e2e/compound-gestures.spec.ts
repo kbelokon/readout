@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Compound-gesture inter-listener contract (Unit 8), end to end:
+// Compound-gesture inter-listener contract, end to end:
 //
 // The legacy monolith (internal/assets/src/js/legacy.js) carries 5 delegated
 // `click` and 3 `keydown` listeners on `document`. Their mutual decoupling is
@@ -50,7 +50,7 @@ function selectedKeys(page: Page): Promise<string[]> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the row/keyboard/palette gesture surfaces are desktop-only (below 760px the card layer replaces the table, D22)'
+    'the row/keyboard/palette gesture surfaces are desktop-only (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
 });

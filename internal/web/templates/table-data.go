@@ -10,7 +10,7 @@ import "strings"
 // The engine renders the body of the `.../{plural}/_table` GET partial route AND
 // the inner content of the full list page's #resource-list-content container:
 // per-table title row (count chip + TSV / columns / search-this actions -- the
-// columns action is the D8 ⊞ popover on single-type pages, the v1 toggle-tools +
+// columns action is the ⊞ popover on single-type pages, the v1 toggle-tools +
 // tools form elsewhere) + phase strip + the redesign `.ro-table` (in
 // `.ro-table-wrap`), then the footer meta line and the all-cluster partial-failure
 // banner.
@@ -30,7 +30,7 @@ import "strings"
 // Trusted pre-rendered chrome (inline SVG icons, the sort-direction icon) rides
 // in as raw strings.
 //
-// The v2 interaction loop (D6, single-type pages only -- D1): sort headers with
+// The v2 interaction loop (single-type pages only): sort headers with
 // a non-empty PartialHref are hx-get requests against the `_table` partial,
 // morph-swapped into #resource-list-content (the handler pushes the CANONICAL
 // page URL via HX-Push-Url -- never the partial URL); rows with a non-empty Key
@@ -57,16 +57,16 @@ type ListData struct {
 	// a single-cluster list that wholly failed). Empty Kind ("") means no state.
 	State ListState
 
-	// Stale (client-side, D11): a hidden `.ro-banner.warn` readout.js reveals on
+	// Stale (client-side): a hidden `.ro-banner.warn` readout.js reveals on
 	// an auto-refresh error (it never blanks the rows). ShowStaleBanner emits the
 	// hidden hook; it lives on the FULL page only (the partial fragment is what
 	// gets dimmed, it does not re-emit the banner).
 	ShowStaleBanner bool
 
-	// FilterBar is the Filters v2 chips editor (D7): rendered in the tools row of
+	// FilterBar is the Filters v2 chips editor: rendered in the tools row of
 	// the FIRST (only) table on single-type pages, inside the morphed fragment so
 	// a chip-committing partial request re-renders the chips and a shareable URL
-	// lands with them visible. nil on multi-type pages (D1: `?f=` ignored there).
+	// lands with them visible. nil on multi-type pages (`?f=` ignored there).
 	FilterBar *FilterBarData
 }
 
@@ -92,7 +92,7 @@ type EditorChip struct {
 // ListState is the resolved whole-list failure state. Kind is "" (no state),
 // "forbidden", or "unreachable". Hint is the ONE plain-language line under the
 // headline; Detail carries the VERBATIM apiserver/transport string for the
-// mono `.errdetail` block (SPEC §1.5). Cluster names the failing cluster in
+// mono `.errdetail` block. Cluster names the failing cluster in
 // the unreachable headline ("Can’t reach <cluster>").
 type ListState struct {
 	Kind      string
@@ -120,13 +120,13 @@ type TableData struct {
 
 	Tools TableTools
 
-	// Cols is the ⊞ column-visibility popover (D8): non-nil on single-type
+	// Cols is the ⊞ column-visibility popover: non-nil on single-type
 	// pages, where it REPLACES the v1 toggle-tools button + tools form (the
 	// filter input's new home is the chips editor, labelcols + selector move
-	// into the popover). nil (multi-type pages, D1) keeps the v1 chrome.
+	// into the popover). nil (multi-type pages) keeps the v1 chrome.
 	Cols *ColsPopover
 
-	// HideCreated suppresses the synthetic Created header and cells (D8): the
+	// HideCreated suppresses the synthetic Created header and cells: the
 	// Created column is rendered by this template, not carried by the kube
 	// Table, so the hide set reaches it through this flag.
 	HideCreated bool
@@ -145,8 +145,8 @@ type TableData struct {
 	CreatedSorted bool // active sort is the synthetic Created column
 
 	// CreatedPartialHref is the Created header's `_table` partial sort URL: when
-	// non-empty (single-type pages, D6) the header becomes an hx-get morph swap
-	// of #resource-list-content; empty keeps the v1 boosted link (D1).
+	// non-empty (single-type pages) the header becomes an hx-get morph swap
+	// of #resource-list-content; empty keeps the v1 boosted link.
 	CreatedPartialHref string
 
 	Rows []TableRow
@@ -180,10 +180,10 @@ type PhaseChip struct {
 // TableColumn is one column header: its title/class + sort link + the
 // pre-rendered sort-direction icon (raw HTML, empty when not the sort column).
 // Sorted marks the active sort column (the redesign `th.sorted` highlight).
-// PartialHref, when non-empty (single-type pages, D6), turns the header link
+// PartialHref, when non-empty (single-type pages), turns the header link
 // into an hx-get of the `_table` partial morph-swapped into
 // #resource-list-content; SortHref stays the canonical page URL for
-// history/new-tab/no-JS. Empty PartialHref keeps the v1 boosted link (D1).
+// history/new-tab/no-JS. Empty PartialHref keeps the v1 boosted link.
 type TableColumn struct {
 	Description string
 	Class       string
@@ -201,7 +201,7 @@ type TableColumn struct {
 	Hint string
 }
 
-// ColsPopover is the ⊞ column-visibility popover (D8): the per-column
+// ColsPopover is the ⊞ column-visibility popover: the per-column
 // checkbox entries (the full universe -- hidden columns included, so they stay
 // re-offerable) plus the labelcols / selector inputs absorbed from the tools
 // form (Tools carries their values and the hidden param round-trip; its
@@ -241,7 +241,7 @@ type HiddenInput struct {
 }
 
 // TableRow is one body row: its status class, the optional Cluster/Namespace
-// cells, the per-column cells, and the Created cell. Key/DomID carry the D6
+// cells, the per-column cells, and the Created cell. Key/DomID carry the
 // row identity ("cluster/ns/name" + the id derived from it): when non-empty
 // (single-type pages) the <tr> emits data-key + id so idiomorph matches rows
 // by identity (never position) and client row state re-keys across morphs.
@@ -258,7 +258,7 @@ type TableRow struct {
 	Key          string
 	DomID        string
 
-	// Per-row gesture targets (Unit 16 / D10), set together with Key on
+	// Per-row gesture targets, set together with Key on
 	// single-type pages: the full untruncated object name plus the
 	// server-resolved open / ?view=yaml / /logs (pods-only) / ?download=yaml
 	// hrefs, emitted as data-name/data-href/data-yaml/data-logs/data-download
@@ -312,16 +312,16 @@ type TableCell struct {
 
 // KeyChip is one configmap/secret data chip (`name · size`): the key name and
 // its human byte size. No value field exists by construction -- secret VALUES
-// never enter the DOM (SPEC §4.10).
+// never enter the DOM.
 type KeyChip struct {
 	Name string
 	Size string
 }
 
 // RowChip is one namespace label chip: the label key and value, rendered as a
-// NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3 colour
+// NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (the colour
 // law: every label chip is neutral; the green `.app` accent is retired).
-// A non-empty Href (single-type pages, D7/SPEC §8.1) renders the chip as a
+// A non-empty Href (single-type pages) renders the chip as a
 // click-to-filter anchor: the same list with `label:key=value` appended to
 // `?f=`.
 type RowChip struct {
@@ -362,7 +362,7 @@ const (
 	CellReplicas
 	CellRollout
 	CellChips
-	// SPEC §4 cookbook corner-case kinds -- the order MUST mirror the
+	// cookbook corner-case kinds -- the order MUST mirror the
 	// package-web cellKind enum (the bridge casts between them).
 	CellPending
 	CellPorts
@@ -376,7 +376,7 @@ const (
 	CellMsg
 )
 
-// chipsCellMax / keysCellMax are the SPEC §4.9/§4.10 in-cell overflow
+// chipsCellMax / keysCellMax are the in-cell overflow
 // thresholds: 2 label/selector chips and 3 data-key chips shown before the
 // extras hide behind `.xtra` + the `+N` expand button.
 const (
@@ -384,14 +384,14 @@ const (
 	keysCellMax  = 3
 )
 
-// virtualizeThreshold is the D20 windowing boundary (~500 rows), owned HERE:
+// virtualizeThreshold is the windowing boundary (~500 rows), owned HERE:
 // readout.js engages its virtualizer off the `ro-windowed` wrap class this
-// template emits, so the threshold has exactly one owner. Above it (Unit 24):
+// template emits, so the threshold has exactly one owner. Above it:
 //   - the wrap swaps `has-cards` for `ro-windowed` and the mobile card
 //     projection is NOT emitted (600 hidden .ro-pcard subtrees must not ride
 //     every morph);
 //   - the events msg cell clamps to one line in CSS and carries the full text
-//     in its title (recorded SPEC deviation, the fixed-height law);
+//     in its title (a deliberate deviation, the fixed-height law);
 //   - in-cell chip/keys expansion is disabled: the +N renders as a static
 //     chip whose title carries the full list, and the `.xtra` overflow chips
 //     are not emitted at all.
@@ -403,7 +403,7 @@ const virtualizeThreshold = 500
 func tableWindowed(table *TableData) bool { return len(table.Rows) > virtualizeThreshold }
 
 // tableWrapClass picks the wrap modifier: the mobile-card projection marker
-// below the threshold, the D20 `ro-windowed` marker above it.
+// below the threshold, the `ro-windowed` marker above it.
 func tableWrapClass(windowed bool) string {
 	if windowed {
 		return "ro-table-wrap ro-windowed"
@@ -412,7 +412,7 @@ func tableWrapClass(windowed bool) string {
 }
 
 // chipsTitle / keysTitle render the FULL chip list for the windowed +N's
-// title (D20: expansion disabled while windowed; the title recovers the data).
+// title (expansion disabled while windowed; the title recovers the data).
 func chipsTitle(chips []RowChip) string {
 	parts := make([]string, len(chips))
 	for i, chip := range chips {

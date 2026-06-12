@@ -15,7 +15,7 @@ import (
 // TestBuildEventViewsNormalizesBothEventShapes proves the dual-shape events
 // decode: the core/v1 `events` endpoint dual-writes BOTH the old core/v1 Event
 // shape AND the newer events.k8s.io/v1 shape, and buildEventViews normalizes
-// the spelling differences with the PINNED D15 precedence:
+// the spelling differences with the PINNED last-seen precedence:
 //   - last-seen: series.lastObservedTime -> lastTimestamp ->
 //     deprecatedLastTimestamp -> eventTime, rendered as the compressed
 //     duration since (the full timestamp moves into the AgeTitle tooltip)
@@ -41,7 +41,7 @@ func TestBuildEventViewsNormalizesBothEventShapes(t *testing.T) {
 			"reportingController": "kubelet",
 		},
 		// Series shape: series.lastObservedTime OUTRANKS the also-present
-		// eventTime (D15 — the series aggregate is the freshest observation).
+		// eventTime (the series aggregate is the freshest observation).
 		{
 			"type": "Normal", "reason": "Pulled",
 			"note":      "from series",
@@ -67,7 +67,7 @@ func TestBuildEventViewsNormalizesBothEventShapes(t *testing.T) {
 
 	// Old-style row: the compressed duration since lastTimestamp (Mar 1 ->
 	// Jun 1 = 91d) with the full timestamp in the tooltip; a countless event
-	// occurred once -> the faint ×1 (D15 count default).
+	// occurred once -> the faint ×1 (the count defaults to 1 for a countless event).
 	if views[0].Age != "91d" || views[0].Message != "old-style assigned" || views[0].From != "default-scheduler" {
 		t.Fatalf("old-style event view = %#v", views[0])
 	}
@@ -91,7 +91,7 @@ func TestBuildEventViewsNormalizesBothEventShapes(t *testing.T) {
 		t.Fatalf("Normal event tone = %q, want mute (no kube class -> mute default)", views[0].Tone)
 	}
 	// Series row: series.lastObservedTime (Mar 3 -> 89d) beats the older
-	// eventTime (92d) — the head of the D15 last-seen precedence.
+	// eventTime (92d) — the head of the last-seen precedence chain.
 	if views[2].Age != "89d" || views[2].Message != "from series" {
 		t.Fatalf("series event view = %#v, want the series.lastObservedTime age", views[2])
 	}

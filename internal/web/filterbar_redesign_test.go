@@ -11,11 +11,11 @@ import (
 )
 
 // filterbar_redesign_test.go pins the SERVER half of the Filters v2 chips
-// editor (D7): the chips render server-side in the tools row (a shareable URL
+// editor: the chips render server-side in the tools row (a shareable URL
 // lands with its chips visible), each chip's ✕ removes exactly its own raw
 // `?f=` occurrence, the headers carry the data-hint filterable-field markers
 // the client autocomplete reads, the editor exists ONLY on single-type pages
-// (the D1 boundary -- multi-type pages ignore `?f=`), and a namespace row's
+// (multi-type pages ignore `?f=`), and a namespace row's
 // label chips become click-to-filter anchors appending `label:key=value`.
 
 // podsListView builds a single-type pods listView through the real
@@ -111,12 +111,12 @@ func TestFilterBarHintsAndPlaceholder(t *testing.T) {
 }
 
 // TestFilterBarSingleTypeOnly: a multi-type page (plural=all) renders NO chips
-// editor -- `?f=` is ignored there (D1), so no editor may suggest it works.
+// editor -- `?f=` is ignored on multi-type pages, so no editor may suggest it works.
 func TestFilterBarSingleTypeOnly(t *testing.T) {
 	v := podsListView(t, "/clusters/test/namespaces/default/all?f=status%3ARunning", "all")
 	doc := renderListView(t, v)
 	if doc.Find("#ro-filter-field").Length() != 0 {
-		t.Fatalf("multi-type page rendered the chips editor; the D1 boundary forbids it")
+		t.Fatalf("multi-type page rendered the chips editor; it is a single-type-page surface")
 	}
 	if doc.Find("input#ro-filter-input").Length() != 0 {
 		t.Fatalf("multi-type page rendered the editor input")

@@ -1,6 +1,6 @@
-// refresh.ts -- the auto-refresh tick chain (D18 / SPEC §8.3 + §6.1), migrated
+// refresh.ts -- the auto-refresh tick chain, migrated
 // from legacy.js. OFF by default; the user picks an interval (or Live) in the
-// navbar #refresh-dropdown and the choice persists in the ro_prefs cookie (D9).
+// navbar #refresh-dropdown and the choice persists in the ro_prefs cookie.
 // When an interval is set and a resource-list page is showing, the tick
 // re-fetches the `_table` fragment so it morphs in place.
 //
@@ -48,7 +48,7 @@ function getHtmx(): Htmx | undefined {
 }
 
 // THE pending tick timer -- a setTimeout CHAIN, not setInterval: the wait
-// before the next tick depends on the failure backoff stage (SPEC §8.3), so
+// before the next tick depends on the failure backoff stage, so
 // every tick / failure / recovery re-derives it.
 let refreshTimerId: number | null = null;
 // Epoch ms of the next armed tick (0 = none) -- the stale banner's live
@@ -113,7 +113,7 @@ function isUserListRequest(event: Event): boolean {
 
 // Mark every request the container itself issues (tick / retry / programmatic
 // re-fetch) as non-push: the `_table` handler omits HX-Push-Url for these, so
-// only genuine user gestures create history entries (D6).
+// only genuine user gestures create history entries.
 document.addEventListener('htmx:configRequest', (event) => {
     const elt = (event as CustomEvent).detail?.elt;
     if (elt && elt.id === 'resource-list-content') {
@@ -157,8 +157,8 @@ document.addEventListener('htmx:afterRequest', (event) => {
 
 // refreshMode returns the persisted auto-refresh mode ('Off', an interval in
 // seconds as a string, 'Live'; '' = no preference) from the ro_prefs cookie.
-// The legacy `roRefresh` localStorage key migrates here ONCE (D9 -- owned by
-// this unit): a read-once fallback consulted only while the cookie carries no
+// The legacy `roRefresh` localStorage key migrates here ONCE (the cookie is
+// canonical afterwards): a read-once fallback consulted only while the cookie carries no
 // refresh value, written through to the cookie immediately.
 export function refreshMode(): string {
     const stored = readPrefs().refresh;
@@ -186,8 +186,8 @@ export function refreshInterval(): number {
 }
 
 // listTableURL derives the `_table` partial URL from the LIVE document URL at
-// fire time (path + "/_table" + the current query) -- the D6 replacement for
-// the render-time-baked PartialURL contract.
+// fire time (path + "/_table" + the current query) -- the replacement for
+// the render-time-baked PartialURL contract, so a tick keeps the user's sort/filter.
 function listTableURL(): string {
     const u = new URL(window.location.href);
     return `${u.pathname.replace(/\/+$/, '')}/_table${u.search}`;
@@ -246,7 +246,7 @@ export function effectivePollSeconds(): number {
     return policyEffectivePollSeconds(refreshMode(), refreshInterval(), liveFallbackSeconds());
 }
 
-// refreshDelaySeconds is the wait until the NEXT tick: the §8.3 backoff over
+// refreshDelaySeconds is the wait until the NEXT tick: the backoff over
 // the effective cadence and the failure stage (live-policy.ts).
 function refreshDelaySeconds(): number {
     return policyRefreshDelaySeconds(effectivePollSeconds(), refreshFailureStage);
@@ -320,7 +320,7 @@ export function noteRefreshFailure(): void {
 
 // noteRefreshRecovery: the FIRST successful swap after >=1 failures resets the
 // backoff and announces it -- "refresh resumed" is the SECOND sanctioned toast
-// trigger (D24/SPEC §8.8). Plain successes (stage 0) stay silent.
+// trigger. Plain successes (stage 0) stay silent.
 export function noteRefreshRecovery(): void {
     if (refreshFailureStage === 0) {
         return;
@@ -381,8 +381,8 @@ export const refreshBindings: Binding[] = [
         },
     },
     // Auto-refresh interval option (navbar #refresh-dropdown): persist the chosen
-    // mode in the ro_prefs cookie (D9), re-arm the poll, and reflect it in the
-    // control. The Live option (Unit 27/D19) persists the literal 'Live' and rides
+    // mode in the ro_prefs cookie, re-arm the poll, and reflect it in the
+    // control. The Live option persists the literal 'Live' and rides
     // the same path: liveApply opens/tears down the stream, applyRefresh then arms
     // the poll chain per the EFFECTIVE seconds (0 while a stream is riding). A
     // disabled Live option (multi-type/multi-cluster page) never fires (the

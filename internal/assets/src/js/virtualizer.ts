@@ -1,5 +1,5 @@
-// virtualizer.ts -- client-side row windowing above ~500 rows (Unit 24 / D20,
-// migrated from legacy.js). Lists always render COMPLETE server-side (no
+// virtualizer.ts -- client-side row windowing above ~500 rows,
+// migrated from legacy.js. Lists always render COMPLETE server-side (no
 // pagination, ever). Above the threshold the server marks the table wrap
 // `.ro-windowed` (the threshold has ONE owner: resource_table.templ; this module
 // only follows the marker) and the virtualizer takes ownership of the tbody: it
@@ -159,7 +159,7 @@ function virtMeasureRowHeight(): number {
     return pitch > 0 ? pitch : 0;
 }
 
-// virtFallbackRowHeight is the D20 formula (--row-py×2 + line-height + the row
+// virtFallbackRowHeight is the fixed-row-height formula (--row-py×2 + line-height + the row
 // border) -- only a one-frame seed for the cold-adoption render before a real
 // measurement corrects it.
 function virtFallbackRowHeight(): number {
@@ -180,7 +180,7 @@ function virtFallbackRowHeight(): number {
 
 // virtApplyPins re-applies the stored engagement-time column widths (a morph
 // syncs the server's attribute-less <th>s over the pins on every tick). Returns
-// false when the column SET changed (the D8 popover re-rendered the table with
+// false when the column SET changed (the columns popover re-rendered the table with
 // different columns) -- the caller re-measures then.
 function virtApplyPins(): boolean {
     const ths = (virtState.table as HTMLTableElement).querySelectorAll('thead th');
@@ -207,7 +207,7 @@ function virtPinColumns(): void {
 
 // virtComputeVisible derives the renderable row list from the full set and the
 // live free-text match (roRowModel.visibleKeys; null = no filter). The MATCH
-// itself ran on the full row model -- never the DOM window (D7/D20).
+// itself ran on the full row model -- never the DOM window.
 function virtComputeVisible(): void {
     const keys = roRowModel().visibleKeys;
     virtState.visible = keys
@@ -383,7 +383,7 @@ export function virtualizeAfterSwap(): void {
     }
     // The morph synced the server's <th>s over the width pins and the
     // .ro-virtualized class -- re-apply the engagement-time widths (or re-measure
-    // when the column set itself changed, e.g. a D8 toggle).
+    // when the column set itself changed, e.g. a columns-popover toggle).
     if (!virtApplyPins()) {
         virtPinColumns();
     }
@@ -398,7 +398,7 @@ export function virtualizeAfterSwap(): void {
     virtFlashChangedCells(prior);
 }
 
-// virtFlashChangedCells keeps the §8.3 changed-cell flash honest while windowed:
+// virtFlashChangedCells keeps the changed-cell flash honest while windowed:
 // rows bypass idiomorph (its cell-flash callbacks never fire), so the rendered
 // window is diffed here against the prior row set by identity. Disabled under
 // prefers-reduced-motion exactly like the idiomorph hooks.

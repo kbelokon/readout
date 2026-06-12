@@ -9,8 +9,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
+	"github.com/kbelokon/readout/internal/hooks"
 	"github.com/kbelokon/readout/internal/kube"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -37,7 +40,7 @@ func TestNodeMetricsAndSecretCustomColumns(t *testing.T) {
 		t.Fatalf("nodes metrics status=%d body=%s", nodes.Code, nodes.Body.String())
 	}
 	// The fakeapi nodes Table carries the worker-1 row (it served a zero-row
-	// bogus fixture before the D8 column work), so the metrics join renders the
+	// bogus fixture before the column-visibility work), so the metrics join renders the
 	// usage columns OVER a populated table now.
 	for _, needle := range []string{"CPU Usage", "Memory Usage", "worker-1"} {
 		if !strings.Contains(nodes.Body.String(), needle) {
@@ -263,7 +266,7 @@ func TestErrorPageNoClusterRefetch(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx", nil))
-	// A 4xx-backed detail fetch stays on the BARE error page (the D16 state card
+	// A 4xx-backed detail fetch stays on the BARE error page (the designed state card
 	// captures forbidden/unreachable/5xx only; s.error maps this generic failure
 	// to its 500 page); the invariant under test: that error render must NOT
 	// refetch namespaces against the failed cluster.
@@ -295,7 +298,7 @@ func newErrorPageCountingFakeAPI(t *testing.T, namespaceLists *atomic.Int64) *ht
 	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
 	mux.HandleFunc("/version", fixture("discovery/version.json"))
 	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx", func(w http.ResponseWriter, _ *http.Request) {
-		// A 4xx (not 5xx): the D16 state card captures forbidden/unreachable/5xx,
+		// A 4xx (not 5xx): the designed state card captures forbidden/unreachable/5xx,
 		// so this failure falls through to the bare s.error page -- the surface
 		// whose no-refetch invariant this test pins.
 		http.Error(w, "pod request rejected", http.StatusBadRequest)
@@ -496,7 +499,11 @@ func TestSessionSecretWarning(t *testing.T) {
 		t.Helper()
 		var buf bytes.Buffer
 		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-		s := &Server{cfg: cfg}
+		authenticator, err := auth.New(&cfg, cfg.SessionSecret, time.Now, hooks.NewClient())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := &Server{cfg: cfg, auth: authenticator}
 		s.warnMissingSessionSecret()
 		return strings.Contains(buf.String(), "READOUT_SESSION_SECRET")
 	}

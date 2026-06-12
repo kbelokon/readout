@@ -1,5 +1,5 @@
-// keyboard.ts -- keyboard row navigation + the "?" keyboard-map overlay (Unit 10,
-// migrated from legacy.js / Unit 18 + D10/D23). j/k move a single keyboard row
+// keyboard.ts -- keyboard row navigation + the "?" keyboard-map overlay,
+// migrated from legacy.js. j/k move a single keyboard row
 // focus through the VISIBLE identity rows (kfocus, keyed by data-key through
 // window.roRowState so it survives every morph), ⏎ opens the focused row's
 // detail href, "?" toggles the keyboard-map card.
@@ -14,8 +14,8 @@
 // keys; here we return inert). These guards are transcribed LITERALLY; the
 // dispatch order vs the palette keydown is belt-and-suspenders.
 //
-// The Unit-24 virtualizer and the Unit-12 columns popover are now MODULES
-// (virtualizer.ts / columns.ts, Unit 12): the windowed j/k walk and the
+// The virtualizer and the columns popover are now MODULES
+// (virtualizer.ts / columns.ts): the windowed j/k walk and the
 // colsPopOpen guard import them DIRECTLY (the window.roClusterBridge seam this
 // file used is dismantled).
 
@@ -46,9 +46,9 @@ function keyboardTargetIsTextEntry(target: EventTarget | null): boolean {
 }
 
 // keyboardSurfaceBusy: an open palette / context menu / namespace dropdown /
-// columns popover owns the keys (SPEC §8.6: menus and overlays are modal to the
+// columns popover owns the keys (menus and overlays are modal to the
 // keyboard). The first three are read from the live DOM; the columns popover
-// (Unit 12, still in legacy.js) is read through the bridge.
+// is read through the bridge.
 function keyboardSurfaceBusy(): boolean {
     const palette = document.getElementById(PALETTE_ID);
     if (palette?.classList.contains('open')) {
@@ -76,8 +76,8 @@ function visibleKeyRows(): HTMLElement[] {
 
 // moveRowFocus steps the focus key by delta through the visible rows, clamping
 // at both ends. Returns true when a row took focus (the caller preventDefaults
-// only then). While the Unit-24 virtualizer is engaged the walker is fed from
-// the virtualizer's full visible list (via the bridge; D20).
+// only then). While the virtualizer is engaged the walker is fed from
+// the virtualizer's full visible list (via the bridge).
 function moveRowFocus(delta: number): boolean {
     if (virtualizerActive()) {
         return virtMoveFocus(delta);
@@ -103,7 +103,7 @@ function openFocusedRow(): boolean {
     }
     let row: HTMLElement | null = visibleKeyRows().find((tr) => tr.dataset.key === key) || null;
     if (!row && virtualizerActive()) {
-        // Windowed (Unit 24): the focused row may have scrolled out of the
+        // Windowed: the focused row may have scrolled out of the
         // rendered window -- it is still logically visible.
         const tr = virtRowByKey(key);
         if (tr && virtVisible().indexOf(tr) !== -1) {

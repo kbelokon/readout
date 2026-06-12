@@ -356,7 +356,7 @@
     }
 
     /* ===========================================================================
-       YAML recolor onto the redesign --tok-* palette (D7). chroma/Pygments stays
+       YAML recolor onto the redesign --tok-* palette. chroma/Pygments stays
        SERVER-SIDE; only the token COLOURS move here. The base Pygments blocks above
        (light default + the [data-theme=dark] + prefers-dark overrides) are kept; THIS
        block lands LAST in @layer theme and repoints just the classes that matter for

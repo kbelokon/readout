@@ -1,17 +1,18 @@
 import { test, expect } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// The designed states (SPEC §7.18 / D16) against the live binary:
+// The designed error/empty/stale states against the live binary:
 //
 //   - fail-lists?mode=403 renders the forbidden card with the VERBATIM
 //     apiserver Status message in the mono errdetail block (the verbatim-error
-//     law, SPEC §1.5) under one plain-language headline;
+//     law -- real apiserver string, never a paraphrase) under one
+//     plain-language headline;
 //   - fail-lists?mode=500 renders the unreachable card with the VERBATIM
 //     InternalError Status message;
 //   - a filter that hides every row renders the empty-FILTERED card with the
 //     active chips inline + Clear filters;
 //   - a cluster-scoped kind (nodes) shows no namespace breadcrumb segment and
-//     no "across all namespaces" link (SPEC §5/§9);
+//     no "across all namespaces" link;
 //   - an auto-refresh failure dims the last-good rows and reveals the warn
 //     banner ("Auto-refresh failed — showing the last good data" + Retry now)
 //     WITHOUT blanking the table (the data-never-disappears law).
@@ -98,7 +99,7 @@ test('empty-filtered shows the active chips inline plus Clear filters', async ({
 test('a cluster-scoped kind shows no namespace crumb and no all-namespaces link', async ({ page }) => {
   await page.goto('/clusters/e2e/nodes');
 
-  // Breadcrumb: exactly cluster + plural -- no namespace segment (SPEC §5/§9).
+  // Breadcrumb: exactly cluster + plural -- no namespace segment.
   const crumbs = page.locator('.ro-rd .ro-breadcrumb li');
   await expect(crumbs).toHaveText(['e2e', 'nodes']);
   // No "Show nodes across all namespaces" footer link.
@@ -206,7 +207,7 @@ test('a failed auto-refresh dims the last-good rows and reveals the stale banner
   await page.mouse.move(200, 400);
   await control('/__control/fail-lists?mode=500');
 
-  // The banner reveals with the D16 copy; the rows DIM but never disappear.
+  // The banner reveals with the stale-data copy; the rows DIM but never disappear.
   const banner = page.locator('.ro-stale-banner');
   await expect(banner).toBeVisible({ timeout: 15_000 });
   await expect(banner.locator('.bn-title')).toHaveText(

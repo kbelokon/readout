@@ -1,11 +1,11 @@
-// columns.ts -- the column-visibility popover (D8, client half), migrated from
+// columns.ts -- the column-visibility popover (client half), migrated from
 // legacy.js. The ⊞ title-row popover on single-type list pages. The popover
 // itself is SERVER-rendered inside the morphed fragment (one checkbox per column
 // of the full universe, hidden columns included; the identity row disabled; the
 // absorbed labelcols/selector form); this module owns only the open state, the
 // toggle gesture, the checkbox commit, and the popover form submit.
 //
-// A toggle is cookie-state, not URL-state (D9): it writes the COMPLETE hidden
+// A toggle is cookie-state, not URL-state: it writes the COMPLETE hidden
 // set through roPrefsSetHiddenColumns (an empty array is the explicit "hide
 // nothing" that suppresses the config default) and re-renders by riding the
 // container's own programmatic path (requestListRefresh -> source
@@ -24,7 +24,7 @@
 // FORMS preserved here: 'popFormMergedHref', 'form.ro-pop-form', and the wiring
 // 'issueFilterNavigation(popFormMergedHref(popForm))'.
 //
-// DISPATCH (the Unit 12 ordered-binding migration): the popover's click branches
+// DISPATCH (the ordered-binding migration): the popover's click branches
 // were branches of the monolith's big click listener (the [data-ro-cols-toggle]
 // toggle C1, the [data-ro-action="toggle-column"] commit) plus its own
 // outside-click listener (C4).
@@ -109,7 +109,7 @@ function commitColumnVisibility(pop: Element | null): void {
     requestListRefresh();
 }
 
-// popFormMergedHref builds the D8 popover form's submit URL by MERGING its
+// popFormMergedHref builds the popover form's submit URL by MERGING its
 // user-editable fields into the LIVE query instead of replacing it wholesale
 // (which is what a native GET submit does). Every location.search pair whose key
 // the form does not own survives BYTE-EXACT -- above all the `?f=` chips, whose
@@ -137,7 +137,7 @@ function popFormMergedHref(form: HTMLFormElement): string {
 
 // --- dispatcher bindings ----------------------------------------------------
 export const columnsBindings: Binding[] = [
-    // Column-visibility popover (D8): the ⊞ title-row button toggles the popover
+    // Column-visibility popover: the ⊞ title-row button toggles the popover
     // open/closed. Open state is derived from the DOM (a boosted body swap
     // renders it closed). NOT stop:true -- C4's own [data-ro-cols-toggle] guard
     // (the outside-click binding below) keeps the double-fire single, not a stop
@@ -155,7 +155,7 @@ export const columnsBindings: Binding[] = [
     // A column checkbox row: flip the checkbox optimistically, then commit the
     // COMPLETE hidden set (as the user now sees it) to the ro_prefs cookie and
     // re-render through the container's own programmatic path -- cookie-state,
-    // not URL-state: RO-No-Push, zero history entries (D6/D9). The identity row
+    // not URL-state: RO-No-Push, zero history entries. The identity row
     // is a disabled <button>, so its clicks never fire.
     {
         event: 'click',
@@ -191,7 +191,7 @@ export const columnsBindings: Binding[] = [
             setColsPopOpen(false);
         },
     },
-    // form.ro-pop-form (the D8 popover's labelcols/selector form): intercept and
+    // form.ro-pop-form (the popover's labelcols/selector form): intercept and
     // MERGE into the live query, riding the v2 loop exactly like a chip commit
     // (issueFilterNavigation falls back to a plain navigation when the loop is
     // unavailable). The native submit would rebuild the query from the round-trip

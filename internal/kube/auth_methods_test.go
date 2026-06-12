@@ -13,10 +13,11 @@ import (
 	"sync"
 	"testing"
 
+	"k8s.io/client-go/rest"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// Auth-method behavioral tests (D9, Unit 8). Each proves one TLS/auth method at
+// Auth-method behavioral tests. Each proves one TLS/auth method at
 // the cheapest layer that genuinely exercises it, built through the canonical
 // Connection model + RESTConfig (never hand-set rest.Config auth fields) over the
 // shared TLS harness in testhelpers_test.go. These ride the same single sink that
@@ -338,10 +339,10 @@ func TestExecPlugin(t *testing.T) {
 
 // TestImpersonation proves the impersonation header is EMITTED from a static
 // Impersonate identity on the connection (the Act-As header reaches the
-// apiserver), and lightly cross-checks the D4 clear: WithBearer("viewer") on the
+// apiserver), and lightly cross-checks the passthrough clear: WithBearer("viewer") on the
 // same client reaches the server as Bearer viewer with NO Impersonate-User. The
-// clear's deep proof lives in TestImpersonationClearedOnPassthrough (Unit 5,
-// same package); this is a light overlap, not a duplicate.
+// clear's deep proof lives in TestImpersonationClearedOnPassthrough (same
+// package); this is a light overlap, not a duplicate.
 func TestImpersonation(t *testing.T) {
 	srv, rec := newAuthCapturingTLSServer(t)
 	conn := &Connection{
@@ -377,7 +378,7 @@ func TestImpersonation(t *testing.T) {
 		}
 	})
 
-	t.Run("passthrough clears Act-As (D4 cross-check)", func(t *testing.T) {
+	t.Run("passthrough clears Act-As (impersonation cross-check)", func(t *testing.T) {
 		// A fresh server+recorder so the clear is observed on this request alone,
 		// not confused with the accumulated impersonating requests above. Build a
 		// fresh base client off its own connection (the one above has cached
@@ -415,6 +416,58 @@ func TestImpersonation(t *testing.T) {
 			t.Fatalf("Impersonate-User leaked through passthrough: %q -- viewer would get the impersonated RBAC", got)
 		}
 	})
+}
+
+// TestImpersonationAndStaticCredsClearedOnPassthrough pins the hardest clear
+// combination: a base config carrying BOTH a static impersonation identity AND
+// static credentials (basic auth + client cert) at the same time. After
+// WithBearer, the passthrough request must reach the apiserver as the viewer's
+// Bearer with NO Impersonate-User (Act-As) header -- proving the clear strips
+// every static identity, not just one in isolation. This complements the
+// single-source clears (basic-auth-only, cert-only, impersonate-only) by
+// exercising them together on one base config.
+func TestImpersonationAndStaticCredsClearedOnPassthrough(t *testing.T) {
+	srv, rec := newAuthCapturingTLSServer(t)
+	clientCert, clientKey := genClientCert(t)
+
+	base, err := NewClient(&rest.Config{
+		Host:            srv.URL,
+		TLSClientConfig: rest.TLSClientConfig{CAData: serverCAPEM(t, srv), CertData: clientCert, KeyData: clientKey},
+		Username:        "cluster-user",
+		Password:        "cluster-password",
+		Impersonate:     rest.ImpersonationConfig{UserName: "robot", Groups: []string{"admins"}},
+	}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	viewer, err := base.WithBearer("viewer-token")
+	if err != nil {
+		t.Fatalf("WithBearer with combined static creds + impersonation base: %v", err)
+	}
+
+	// The passthrough clone must carry none of the base static identities: basic
+	// auth, client cert, and impersonation are all cleared in favor of the viewer
+	// bearer alone.
+	if viewer.config.Username != "" || viewer.config.Password != "" {
+		t.Fatalf("passthrough kept basic auth username=%q password=%q", viewer.config.Username, viewer.config.Password)
+	}
+	if len(viewer.config.CertData) != 0 || len(viewer.config.KeyData) != 0 {
+		t.Fatalf("passthrough kept client cert certData=%d keyData=%d", len(viewer.config.CertData), len(viewer.config.KeyData))
+	}
+	if viewer.config.Impersonate.UserName != "" || len(viewer.config.Impersonate.Groups) != 0 {
+		t.Fatalf("passthrough kept impersonation %#v", viewer.config.Impersonate)
+	}
+
+	if _, _, err := viewer.ResourceTypes(context.Background()); err != nil {
+		t.Fatalf("discovery with passthrough bearer failed: %v", err)
+	}
+	if got := rec.Authorization(); got != "Bearer viewer-token" {
+		t.Fatalf("apiserver saw Authorization %q, want Bearer viewer-token", got)
+	}
+	if got := rec.ImpersonateUser(); got != "" {
+		t.Fatalf("Impersonate-User leaked through passthrough: %q -- viewer would get the impersonated RBAC", got)
+	}
 }
 
 // TestOIDC exercises the OIDC auth-provider CONSTRUCTION path per the plan: set

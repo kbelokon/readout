@@ -40,7 +40,7 @@ func hasLogTimestamp(line string) bool {
 }
 
 func (s *Server) resourceList(w http.ResponseWriter, r *http.Request) {
-	// Bulk YAML download (D11) branches BEFORE the table fan-out: its name
+	// Bulk YAML download branches BEFORE the table fan-out: its name
 	// bounds are validated first, so a rejected request (101+ names) never
 	// pays for a cluster round-trip.
 	if r.URL.Query().Get("download") == "yaml" {
@@ -79,7 +79,7 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view := s.buildListView(r, &ctx)
-	// AUTO-REFRESH stale invariant (D11): the full page renders a whole-list
+	// AUTO-REFRESH stale invariant: the full page renders a whole-list
 	// forbidden/unreachable state card (a first load has no rows to keep), but this
 	// `_table` partial is the ro:refresh target morphed in place. Returning a
 	// 200-with-state-card here would swap the last-good rows OUT for the card and
@@ -93,7 +93,7 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, view.State.SourceErr)
 		return
 	}
-	// Canonical-URL history push (D6): a USER-initiated sort/filter request gets
+	// Canonical-URL history push: a USER-initiated sort/filter request gets
 	// the CANONICAL list URL (path minus `/_table`, current query) pushed into
 	// history -- never the partial URL (hx-push-url="true" would push
 	// `…/_table?…`; a reload of that entry renders a bare fragment). The header
@@ -104,7 +104,7 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 	// on requests issued by #resource-list-content itself; column toggles and
 	// later programmatic surfaces ride the same header), preload warm-ups carry
 	// HX-Preloaded, non-htmx requests have no HX-Request, and the loop is
-	// single-type-only (D1) -- none of those push.
+	// single-type-only -- none of those push.
 	if isSingleListType(r.PathValue("plural")) &&
 		r.Header.Get("HX-Request") == "true" &&
 		r.Header.Get("RO-No-Push") == "" &&
@@ -148,7 +148,7 @@ func (s *Server) downloadTSV(w http.ResponseWriter, r *http.Request, table *kube
 	writer.Flush()
 }
 
-// bulkNamesMax is the double-sided bulk-download bound (D11): the client
+// bulkNamesMax is the double-sided bulk-download bound: the client
 // disables the bulk button above this many selected objects, and the server
 // rejects a larger `names` list with 400 -- so a hand-built GET URL stays
 // bounded exactly like a button-built one.
@@ -171,7 +171,7 @@ func parseBulkNames(query url.Values) []string {
 }
 
 // downloadBulkYAML serves the list-level `?download=yaml&names=…` bulk export
-// (D11): ONE multi-document YAML, `---`-separated, one document per requested
+// ONE multi-document YAML, `---`-separated, one document per requested
 // name in request order. It extends the existing list download surface -- the
 // objects come from the same Table fan-out the page render uses (full objects
 // ride the rows via includeObject=Object), so the config namespace allow/deny
@@ -220,7 +220,7 @@ func (s *Server) downloadBulkYAML(w http.ResponseWriter, r *http.Request) {
 	objects := map[string]map[string]any{}
 	for ti := range ctx.Tables {
 		for _, row := range ctx.Tables[ti].Rows {
-			// Secret VALUES are never serialized (D5). The single-object
+			// Secret VALUES are never serialized. The single-object
 			// download masks the fetched object before marshaling
 			// (buildDetailView -> maskSecret); this path serializes the
 			// table's row objects, so it applies the SAME treatment before
@@ -374,7 +374,7 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		return lines[i].Container < lines[j].Container
 	})
-	// Download-logs (D25): a plain GET over the SAME assembled view -- the
+	// Download-logs: a plain GET over the SAME assembled view -- the
 	// container/tail/filter params shape `lines` exactly like the on-screen
 	// stream. Branches before the page render; gated on showContainerLogs so a
 	// disabled deployment never serves log bytes through the download spelling.
@@ -407,8 +407,8 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 		FilterVal:         filterText,
 		ContainerVal:      selectedContainer,
 	}
-	// The logs H1 carries the same pn-head/pn-tail split as the detail title
-	// (Unit 13 flagged the plain-name gap here).
+	// The logs H1 carries the same pn-head/pn-tail split as the detail title,
+	// so a long pod name renders with the muted hash tail rather than plain.
 	data.NameHead, data.NameTail, data.NameTitle = detailNameParts(&object)
 	if s.cfg.ShowContainerLogs {
 		// The Download-logs title action mirrors the on-screen view: same
@@ -447,7 +447,7 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 
 // logPreHTML builds the trusted <pre class="ro-logpre"> block: a leading
 // newline, then one .log-line block span per entry. Each line follows the
-// redesign structure (D13 / mockup): the .log-src source pod, the colored
+// redesign structure: the .log-src source pod, the colored
 // .log-cN container name (palette index = podColor(container), the CRC32 mod-8
 // hash so every container keeps a stable identity colour), the .log-ts
 // timestamp split off the entry's first line, then the bare message. A
@@ -493,7 +493,7 @@ func splitLogTimestamp(text string) (ts, msg string) {
 }
 
 // downloadLogs serves the assembled log stream as a plain-text attachment
-// (D25: the Download-logs title action is a plain GET). One line per entry in
+// (the Download-logs title action is a plain GET). One line per entry in
 // display order -- source pod, container, then the raw entry text (timestamp
 // prefix + message, folded continuation lines kept inline) -- so the file
 // mirrors the on-screen stream without markup. The filename derives from the

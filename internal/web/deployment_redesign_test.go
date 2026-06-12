@@ -255,7 +255,7 @@ func assertRolloutRenders(t *testing.T, state, label string) {
 	}}}
 	doc := renderResourceTable(t, &d)
 	// Scope to the .ro-table: the engine now ALSO emits the mobile `.ro-cardlist`
-	// projection of the same row (Unit 15), so the Rollout column appears a second
+	// projection of the same row (the mobile cards layer), so the Rollout column appears a second
 	// time as a card meta row. This test pins the TABLE cell; the card projection
 	// is covered by TestMobileCards.
 	sel := doc.Find("table.ro-table .rollout." + state)
@@ -365,7 +365,7 @@ func TestDeploymentListThroughHandlerPreservesGenerics(t *testing.T) {
 
 	// A replica track renders for every row (one per deployment). Scoped to the
 	// .ro-table: the engine now ALSO emits the mobile `.ro-cardlist` projection of
-	// the same rows (Unit 15), so the replica track appears again per card; this
+	// the same rows (the mobile cards layer), so the replica track appears again per card; this
 	// asserts the table body, the card projection is covered by TestMobileCards.
 	if got := doc.Find("table.ro-table .rep .rep-track").Length(); got != 4 {
 		t.Fatalf("replica tracks = %d, want 4 (one per deployment row)", got)
@@ -393,7 +393,7 @@ func TestDeploymentListThroughHandlerPreservesGenerics(t *testing.T) {
 	// Whole-table tone counts: exactly one full + one partial + one zero (the paused
 	// 'held' row is also 2/2 -> full, so full is two). A regression that broadened a
 	// tone would trip these counts. Scoped to the .ro-table: the engine now ALSO
-	// emits the mobile `.ro-cardlist` projection of the same rows (Unit 15), which
+	// emits the mobile `.ro-cardlist` projection of the same rows (the mobile cards layer), which
 	// repeats each replica ratio as a card meta row; TestMobileCards pins it.
 	if got := doc.Find("table.ro-table .rep-num.full").Length(); got != 2 {
 		t.Fatalf(".rep-num.full count = %d, want 2 (web 2/2 + held 2/2)", got)
@@ -417,7 +417,7 @@ func TestDeploymentListThroughHandlerPreservesGenerics(t *testing.T) {
 		t.Fatalf("worker row should carry .rollout.prog (the rolling deployment)")
 	}
 	// Whole-table rollout counts, scoped to the .ro-table: the engine now ALSO emits
-	// the mobile `.ro-cardlist` projection of the same rows (Unit 15), which repeats
+	// the mobile `.ro-cardlist` projection of the same rows (the mobile cards layer), which repeats
 	// each rollout pill as a card meta row; TestMobileCards pins the projection.
 	if doc.Find("table.ro-table .rollout.done").Length() != 1 {
 		t.Fatalf(".rollout.done count = %d, want 1 (only web is complete)", doc.Find("table.ro-table .rollout.done").Length())

@@ -8,14 +8,14 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-// cluster.templ is the single-cluster-overview page body (D4/D11/D13). It has no
-// handoff mockup, so it is rebuilt by the BORROW RULE (D11): the Namespaces table
+// cluster.templ is the single-cluster-overview page body. It has no
+// designed mockup, so it is rebuilt by the BORROW RULE: the Namespaces table
 // borrows the clusters.templ `.ro-select-table` treatment (checkbox column +
 // `.cl-name` mono link + label chips), and the Cluster Resource Types table is a
 // plain `.ro-table` -- staying CONSISTENT with the migrated list/detail
 // vocabulary.
 //
-// The OUTERMOST content element carries the `ro-rd` content marker (D13): the
+// The OUTERMOST content element carries the `ro-rd` content marker: the
 // colliding redesign classes below -- .ro-breadcrumb, .ro-select-table,
 // .ro-chips, .ro-chip, .ro-section -- are scoped under .ro-rd in readout.css, so
 // they only resolve when this content root carries the marker. The KEEP-AS-IS
@@ -49,7 +49,7 @@ type NamespaceRow struct {
 }
 
 // LabelChip is a non-link label pill rendered as a NEUTRAL `.ro-chip` with the
-// `.ck`/`.cs`/`.cv` ink-weight split (D3 colour law: every label chip is
+// `.ck`/`.cs`/`.cv` ink-weight split (the colour law: every label chip is
 // neutral; the green app.kubernetes.io/* accent is retired).
 type LabelChip struct {
 	Key string

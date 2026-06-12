@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Response } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Virtualization (Unit 24 / D20 / SPEC §8.2) on the 600-row "big" fixtures —
+// Virtualization on the 600-row "big" fixtures —
 // ordinary fakeapi store state, no injection endpoint:
 //
 //   - above ~500 rows the client windows the tbody: the DOM holds far fewer
@@ -17,8 +17,8 @@ import { controlURL } from './playwright.config';
 //     rows, stable scroll — and adopted changes flash exactly like the
 //     idiomorph path (the review-proven pass-with-bug hole #1);
 //   - the 600-row EVENTS fixture renders one-line clamped messages (full text
-//     in the title — the D20 fixed-height law), while the below-threshold
-//     events list keeps the full SPEC wrap;
+//     in the title — the fixed-height-while-windowed law), while the
+//     below-threshold events list keeps the full message wrap;
 //   - free text matches a name currently OUTSIDE the rendered window (the
 //     matcher reads the full row model, never the DOM window — the
 //     review-proven pass-with-bug hole #2).
@@ -276,7 +276,7 @@ test.describe('windowing (desktop)', () => {
     await expect(podRow(page, 1).locator('td').nth(2)).toContainText('CrashLoopBackOff');
 
     // ... and a change adopted while its row IS rendered flashes the changed
-    // cell (the §8.3 net: windowed rows bypass idiomorph, the virtualizer
+    // cell (the net: windowed rows bypass idiomorph, the virtualizer
     // diffs them itself).
     await scriptEvents([
       {
@@ -299,8 +299,8 @@ test.describe('windowing (desktop)', () => {
     expect(await rows.count()).toBeLessThan(100);
     await expect(page.locator('.ro-foundline')).toContainText('Found 600 rows');
 
-    // One-line clamp with the FULL text recoverable in the title (D20: the
-    // recorded fixed-height deviation).
+    // One-line clamp with the FULL text recoverable in the title (the
+    // fixed-height-while-windowed rule).
     const msg = page.locator('td.ro-event-msg').first();
     await expect(msg).toHaveCSS('white-space', 'nowrap');
     const { title, text } = await msg.evaluate((td) => ({
@@ -320,7 +320,7 @@ test.describe('windowing (desktop)', () => {
     );
     expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(1);
 
-    // Below the threshold the full SPEC behavior is untouched: the default
+    // Below the threshold the full wrapping behavior is untouched: the default
     // namespace events wrap and carry no clamp title.
     await page.goto('/clusters/e2e/namespaces/default/events');
     const smallMsg = page.locator('td.ro-event-msg').first();
@@ -336,7 +336,7 @@ test.describe('windowing (desktop)', () => {
     // big-pod-0001 is Running. Both sit inside the initial window.
     await expect(podRow(page, 7)).toBeVisible();
 
-    // Law §1.3: a transient status (Pending) animates its dot -- the
+    // The pulse law: a transient status (Pending) animates its dot -- the
     // ro-dot-pulse keyframes resolve on the COMPUTED style, not a class proxy
     // (the refresh.spec.ts livedot pattern).
     await expect(podRow(page, 7).locator('.cell-status .ro-dot')).toHaveCSS(

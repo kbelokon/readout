@@ -39,9 +39,10 @@
         border: 1px solid var(--border);
     }
 
-    /* (D3 colour law) the dead `.ro-ktag` green kind-tag rule was removed: no
+    /* the dead `.ro-ktag` green kind-tag rule was removed: no
        template emits it any more (the kind-tile icon system replaced it), and
-       its green tint died with the retired --label-app-* tokens. */
+       its green tint died with the retired --label-app-* tokens (the colour law
+       reserves green for action/health/freshness/links, not categorical tags). */
 
     /* Each result: a main column (mono name link, meta, snippets). */
     .search-result {
@@ -160,7 +161,7 @@
         padding: 0.75rem 0.875rem;
         white-space: pre-wrap; word-break: break-word; overflow: hidden;
     }
-    /* (Unit 16) the dead per-severity log rules (`.log-ctr`, `.log-msg`,
+    /* the dead per-severity log rules (`.log-ctr`, `.log-msg`,
        `.log-msg.log-lvl-warn|err`) were removed: the redesign log stream renders
        bare messages (`.log-line > .log-src/.log-cN/.log-ts` + plain text), so none
        of those classes is emitted. The per-pod identity colour lives on `.log-cN`
@@ -311,8 +312,8 @@
     .htmx-request.htmx-indicator { opacity: 1; }
 
     /* =====================================================================
-       Redesign chrome dissolved here from the former redesign.css module
-       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       Redesign chrome dissolved here from the former redesign.css module.
+       Rules are VERBATIM; redesign rules win over the
        bare twins above by specificity (.ro-rd-scoped / element-qualified),
        so concatenation order is not load-bearing for them.
        ===================================================================== */
@@ -329,15 +330,14 @@
     td.cell-clu a:hover { color: var(--accent); }
     .res-kind { display: inline-flex; align-items: center; gap: 8px; }
 
-    /* Search v2 (D12, prototype VIEW.search + data.css SEARCH RESULTS):
-       restored resource-type checkboxes, per-cluster result groups, and the
-       match highlight. `.search-types`/`.search-group`/`.search-cluster` are
-       net-new (bare, like the other search classes); `mark` is an ELEMENT
+    /* Search v2 results: restored resource-type checkboxes, per-cluster result
+       groups, and the match highlight. `.search-types`/`.search-group`/`.search-cluster`
+       are net-new (bare, like the other search classes); `mark` is an ELEMENT
        selector so it is scoped under the `.ro-rd` content marker -- only the
        migrated search body emits it, and the browser's yellow default must not
        leak anywhere else. The group count chip reuses the title-row count-chip
-       recipe (the prototype emits `.ro-count` here but never styles it outside
-       the title row -- a prototype gap, resolved toward the chip the SPEC names). */
+       recipe (the count chip is styled only inside the title row -- this restates
+       it here so the per-cluster group header gets the same recipe). */
     .search-types { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin: 0 0 12px; }
     .search-types .search-type { display: inline-flex; align-items: center; gap: 6px;
         font-size: 12.5px; color: var(--text-muted); cursor: pointer; }

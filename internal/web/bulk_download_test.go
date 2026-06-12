@@ -1,6 +1,6 @@
 package web
 
-// Bulk YAML download (Unit 17 / D11): the list-level `?download=yaml&names=…`
+// Bulk YAML download: the list-level `?download=yaml&names=…`
 // GET returns ONE multi-document YAML (`---`-separated, one document per
 // requested name in request order), bounded on BOTH sides (the client
 // disables the button above 100 selected; the server rejects >100 names with
@@ -152,7 +152,7 @@ func TestBulkDownloadMissingNameComment(t *testing.T) {
 	}
 }
 
-// TestBulkDownloadMasksSecretValues pins the D5 law (secret VALUES are never
+// TestBulkDownloadMasksSecretValues pins the secret-masking law (secret VALUES are never
 // serialized) on the BULK path: the single-object download masks the fetched
 // object before marshaling (buildDetailView -> maskSecret), and the bulk
 // multi-document download serializes the table's row objects, so it must
@@ -303,7 +303,8 @@ func TestBulkBarHrefAndBoundsFlags(t *testing.T) {
 	all.wantAttr("#ro-bulkbar", "data-bulk-cluster", "test")
 
 	// Multi-cluster scope: no bulk href, Download disabled with the
-	// explanatory title (D11), Copy names untouched.
+	// explanatory title (bulk YAML download is only offered on single-cluster
+	// lists), Copy names untouched.
 	multi := get(t, app, "/clusters/_all/namespaces/default/pods", http.StatusOK)
 	multi.wantAbsent("#ro-bulkbar[data-bulk-href]")
 	multi.wantHas("#ro-bulk-download[disabled]")
@@ -326,7 +327,7 @@ func TestBulkDownloadSurfaceAnchorsOptOutOfBoost(t *testing.T) {
 	detail := get(t, app, "/clusters/test/namespaces/default/pods/nginx", http.StatusOK)
 	detail.wantAttr(`.ro-detail-actions a[title="Download resource object as YAML"]`, "hx-boost", "false")
 
-	// The Download-logs title action (D25, Unit 22) is the third
+	// The Download-logs title action is the third
 	// download-serving anchor; it renders only with container logs enabled.
 	logsCfg := baseConfig(t)
 	logsCfg.ShowContainerLogs = true

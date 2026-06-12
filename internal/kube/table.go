@@ -411,11 +411,11 @@ func rowStatus(table *Table, row Row) status {
 	return strongest
 }
 
-// RowStatusClass is the row stripe class. SPEC §3 stripes ONLY err and warn
-// rows (the 3px inset first-cell stripe); ok/info/neutral rows carry no class,
-// so a healthy row never earns a decorative stripe (colour law: green is for
-// action/live health, not row chrome). The SPEC's "warn excluding Completed"
-// clause is vacuous under StatusTone -- Completed is mute, so it never reaches
+// RowStatusClass is the row stripe class. Only err and warn rows get the 3px
+// inset first-cell stripe; ok/info/neutral rows carry no class, so a healthy
+// row never earns a decorative stripe (colour law: green is for action/live
+// health, not row chrome). The "warn excluding Completed" clause is vacuous
+// under StatusTone -- Completed is mute, so it never reaches
 // warn -- and is deliberately NOT special-cased here. The selected-row accent
 // stripe takes precedence in CSS.
 func RowStatusClass(table *Table, row Row) string {
@@ -611,7 +611,7 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// StatusTone is THE single status value->tone mapping (design SPEC §3). Every
+// StatusTone is THE single status value->tone mapping. Every
 // status WORD in the system resolves through this table -- list tables, the
 // detail header, palette statuses, the phase strip, and events -- so no two
 // surfaces can ever disagree about a word's tone:
@@ -625,8 +625,8 @@ func equalStrings(a, b []string) bool {
 //	      CreateContainerConfigError, InvalidImageName, OutOfcpu, Init:* whose
 //	      state carries Error/BackOff
 //
-// The last four extend SPEC §3 by user decision (2026-06-10): they are
-// terminal pod failure words v1 rendered red; the SPEC's mute fallback was a
+// The last four extend the base table by user decision (2026-06-10): they are
+// terminal pod failure words v1 rendered red; the plain mute fallback was a
 // signal regression on real clusters.
 //
 // Anything else falls back to mute: an unknown status is shown grey, never
@@ -675,11 +675,11 @@ func statusToneClass(tone string) string {
 }
 
 // CellClass resolves a cell's Bulma text class. Status WORDS -- any plural's
-// Status column plus the events Type column (Normal/Warning ARE SPEC §3
+// Status column plus the events Type column (Normal/Warning ARE status
 // vocabulary) -- delegate to StatusTone, the single value->tone table, so
 // CellClass cannot hold a second opinion about a status word. The remaining
 // branches are the non-status vocabularies kept on purpose: the events Reason
-// map (Reasons sit outside SPEC §3) and the numeric severity rules (pod
+// map (Reasons are not status words) and the numeric severity rules (pod
 // restarts, zero usage, zero available).
 func CellClass(plural, col string, cell any) string {
 	value := strings.TrimSpace(fmt.Sprint(cell))

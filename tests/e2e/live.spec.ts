@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Response } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Live mode (Unit 27 / D19), made deterministic by the fakeapi control
+// Live mode, made deterministic by the fakeapi control
 // surface (watch-script with delayMs, watch-401, the openWatches snapshot):
 //
 //   - enabling Live opens the `_stream` SSE fetch (a client-minted ?g=
@@ -109,7 +109,7 @@ async function setHidden(page: Page, hidden: boolean): Promise<void> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the Live chrome (refresh dropdown, chips editor, windowing) is a desktop surface (below 760px the card layer replaces the table, D22)'
+    'the Live chrome (refresh dropdown, chips editor, windowing) is a desktop surface (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
 });
@@ -158,7 +158,7 @@ test('Live opens the stream: livedot pulses, a status change lands as a push and
   await expect(nginx.locator('td:has(span.cell-status)')).toHaveClass(/ro-cell-changed/);
   await expect(nginx.locator('td.cell-name')).not.toHaveClass(/ro-cell-changed/);
 
-  // Persistence (D9): a reload renders Live at SSR from the ro_prefs cookie
+  // Persistence: a reload renders Live at SSR from the ro_prefs cookie
   // and the stream reopens by itself (a fresh page init is a fresh attempt).
   const reopened = page.waitForRequest((r) => isStreamRequest(r.url()), { timeout: 10_000 });
   await page.reload();
@@ -295,7 +295,7 @@ test('watch-401 terminal: banner appears, 5s polling resumes, tab-hide/show neve
   expect(streamRequests).toEqual([]);
 
   // Live stays the selected mode and the livedot keeps pulsing: the fallback
-  // is an ACTIVE polling mode (the Unit 21 rule).
+  // is an ACTIVE polling mode (the livedot pulses for any active refresh mode).
   await expect(page.locator('#refresh-label')).toHaveText('Live');
   await expect(page.locator('#refresh-dropdown .ro-livedot')).toHaveCSS(
     'animation-name',

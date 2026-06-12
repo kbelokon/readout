@@ -1,5 +1,5 @@
 // stale.ts -- stale data (auto-refresh failure) handling, migrated from
-// legacy.js. CLIENT-SIDE, never blanks the rows (D11). There is no server-side
+// legacy.js. CLIENT-SIDE, never blanks the rows (data never disappears). There is no server-side
 // last-good cache: "stale" is purely the AUTO-REFRESH failure case. When the
 // #resource-list-content morph-refresh request errors (htmx:responseError = a
 // non-2xx reply, htmx:sendError = a transport failure), htmx does NOT swap on

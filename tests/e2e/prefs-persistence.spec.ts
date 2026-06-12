@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Response } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// ro_prefs write surfaces (D9), end to end with the SERVER FILL as the oracle:
+// ro_prefs cookie write surfaces, end to end with the SERVER FILL as the oracle:
 // each spec performs the direct user interaction that writes the cookie, then
 // forces a fresh server render (a bare-URL goto / a reload / a different page)
 // and asserts the persisted state in the SSR markup -- the same renders
@@ -57,7 +57,7 @@ async function pickInterval(page: Page, secs: number): Promise<void> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the prefs write surfaces are desktop chrome (below 760px the card layer replaces the sortable table, D22)'
+    'the prefs write surfaces are desktop chrome (below 760px the card layer replaces the sortable table)'
   );
   await control('/__control/reset');
 });
@@ -114,7 +114,8 @@ test('a namespace switch persists: the clusters page entry link points into it',
   await item.click();
   await expect(page).toHaveURL(/\/namespaces\/kube-system\/pods$/);
 
-  // The consumer surface (href-only, D9): the cluster row's entry link on the
+  // The consumer surface (href-only): the namespace pref is read only when
+  // building cluster-entry hrefs, so the cluster row's entry link on the
   // clusters page now points into the persisted namespace's pods list.
   await page.goto('/clusters');
   await expect(page.locator('td.cl-name a', { hasText: 'e2e' })).toHaveAttribute(

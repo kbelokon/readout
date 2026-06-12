@@ -1,12 +1,12 @@
 package web
 
-// layout_shell_test.go pins the redesign page-shell chrome (Unit 3): the
+// layout_shell_test.go pins the redesign page-shell chrome: the
 // blurred sticky topbar emitted as <header class="ro-topbar">, the grouped
 // sticky sidebar (.ro-sidebar) whose entries carry a resolved kind icon and an
 // .is-active marker on the current path, the .ro-shell grid wrapper with
-// .ro-main, the clusters entry page that omits the sidebar + namespace context
-// (D11), and the server-emitted #ro-palette-data JSON blob (D10) that the ⌘K
-// palette (Unit 4) consumes. These facts certify what the layout emits today,
+// .ro-main, the clusters entry page that omits the sidebar + namespace context,
+// and the server-emitted #ro-palette-data JSON blob that the ⌘K
+// palette consumes. These facts certify what the layout emits today,
 // read off its own output via goquery; they stand alongside the chrome facts in
 // behavior_facts_test.go and survive attribute reordering.
 
@@ -22,9 +22,9 @@ import (
 )
 
 // TestShellTopbarChrome pins the redesign topbar: it is a <header class="ro-topbar">
-// (NOT a <nav>, per D13 chrome scoping), carries the brand mask + name, the
+// (NOT a <nav>, per the redesign chrome scoping), carries the brand mask + name, the
 // read-only ⌘K search box, the live-refresh control with its label, and the
-// server-POST theme toggle (hx-boost="false", D5) -- never a client-JS toggle.
+// server-POST theme toggle (hx-boost="false") -- never a client-JS toggle.
 func TestShellTopbarChrome(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Date(2024, 1, 3, 6, 0, 0, 0, time.UTC))
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
@@ -34,7 +34,7 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantHas("header.ro-topbar")
 	p.wantAbsent("nav.navbar")
 
-	// Brand chip + mask + name: the SPEC 2.5 .brand-chip wrapper carries the
+	// Brand chip + mask + name: the .brand-chip wrapper carries the
 	// dark chip behind the .brand-logo CSS mask (which inherits --brand).
 	p.wantHas("header.ro-topbar .brand-item .brand-chip .brand-logo")
 	p.wantText("header.ro-topbar .brand-name", "readout")
@@ -42,14 +42,14 @@ func TestShellTopbarChrome(t *testing.T) {
 	// The body opts into the fixed-topbar offset class for the redesign shell.
 	p.wantHas("body.has-ro-topbar")
 
-	// Read-only search box: clicking it opens ⌘K (Unit 4); it carries the ⌘K hint
+	// Read-only search box: clicking it opens the ⌘K palette; it carries the ⌘K hint
 	// and a data hook the palette JS keys off, and is NOT a submitting <form>.
 	p.wantHas("header.ro-topbar .ro-search input")
 	p.wantHas("header.ro-topbar .ro-search .kbd-hint .ro-kbd")
 	p.wantAttr("header.ro-topbar .ro-search", "data-ro-palette-open", "true")
 
-	// Refresh control: the five interval options (10 replaced 15 per D18/SPEC
-	// §8.3) plus the Live mode (Unit 27/D19), the #refresh-label, the
+	// Refresh control: the five interval options (10s replaced the old 15s)
+	// plus the Live mode, the #refresh-label, the
 	// #refresh-dropdown hook.
 	if got := p.attrs("#refresh-dropdown .refresh-option", "data-ro-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
 		t.Fatalf("refresh-option data-ro-interval set = %v, want [0 5 10 30 60 Live]", got)
@@ -59,12 +59,12 @@ func TestShellTopbarChrome(t *testing.T) {
 	// The livedot's live state has exactly ONE owner: `refresh-on` on
 	// #refresh-dropdown (SSR refreshDropdownClass + JS syncRefreshUI). The old
 	// static `refresh-live` class painted the dot brand-green even at Off -- a
-	// false live-health signal (colour law §1.1, the ctx-dot.none precedent) --
+	// false live-health signal (the colour law: green only for live signals; the ctx-dot.none precedent) --
 	// so it must never come back.
 	p.wantAbsent(".refresh-live")
 	p.wantHas("#refresh-label")
 
-	// Theme toggle stays a server POST /preferences that opts OUT of hx-boost (D5).
+	// Theme toggle stays a server POST /preferences that opts OUT of hx-boost.
 	p.wantAttr("#btn-theme-toggle", "data-theme-explicit", "false")
 	p.wantAttr(`header.ro-topbar form[action="/preferences"][method="post"]`, "hx-boost", "false")
 	p.wantHas("#btn-theme-toggle .theme-icon-dark")
@@ -74,8 +74,8 @@ func TestShellTopbarChrome(t *testing.T) {
 // TestNavbarNamespaceContext pins the namespace context dropdown (.ctx-dd): it
 // renders only with a cluster in scope, shows the current namespace, and keeps
 // the JS hooks (#namespace-dropdown / #namespace-searchbox / .namespace-item).
-// The pill dot is green only when a namespace is SET (SPEC §6.1 "green dot when
-// set" + law §1.1): the "None" state carries .ctx-dot.none, which the prototype
+// The pill dot is green only when a namespace is SET ("green dot when
+// set", and green is reserved for live health under the colour law): the "None" state carries .ctx-dot.none, which the prototype
 // greys (chrome.css:77).
 func TestNavbarNamespaceContext(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
@@ -103,7 +103,7 @@ func TestNavbarNamespaceContext(t *testing.T) {
 
 // TestSidebarGroupedIconsAndActive pins the redesign sidebar: it is an
 // <aside class="ro-sidebar"> wrapped in the .ro-shell grid, its grouped entries
-// each carry a resolved kind icon (the Unit 1 resolver), and the entry whose
+// each carry a resolved kind icon (the kind-icon resolver), and the entry whose
 // href equals the current path carries the .is-active marker.
 func TestSidebarGroupedIconsAndActive(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
@@ -118,7 +118,7 @@ func TestSidebarGroupedIconsAndActive(t *testing.T) {
 		t.Fatalf("sidebar menu-labels = %v", labels)
 	}
 
-	// Every sidebar entry carries an icon slot (the Unit 1 resolver emits either a
+	// Every sidebar entry carries an icon slot (the kind-icon resolver emits either a
 	// curated `.ico` glyph span or a `.kind-tile` monogram). Assert each <a> has at
 	// least one of those leading icon elements.
 	links := p.doc.Find(".ro-sidebar .menu-list a.menu-item")
@@ -148,7 +148,7 @@ func TestSidebarGroupedIconsAndActive(t *testing.T) {
 	}
 }
 
-// TestLayoutClustersPageOmitsSidebarAndContext pins D11: the Clusters entry page
+// TestLayoutClustersPageOmitsSidebarAndContext pins the entry-page rule: the Clusters entry page
 // renders the topbar chrome but NO sidebar and NO namespace context pill (it has
 // no cluster scope), so the .ro-shell/.ro-sidebar and the .ctx-dd are absent.
 func TestLayoutClustersPageOmitsSidebarAndContext(t *testing.T) {
@@ -165,7 +165,7 @@ func TestLayoutClustersPageOmitsSidebarAndContext(t *testing.T) {
 	p.wantAbsent(".ctx-dd")
 }
 
-// TestLayoutPaletteDataBlob pins the palette feed contract (D10): the layout
+// TestLayoutPaletteDataBlob pins the palette feed contract: the layout
 // emits the #ro-palette-data feed as a NON-<script> element. htmx runs with
 // allowScriptTags:false, which makes it strip EVERY <script> from swapped
 // content -- so a <script> feed disappears after the first hx-boost navigation
@@ -385,9 +385,9 @@ func TestPaletteFeedDetailTabActions(t *testing.T) {
 	check(base + "/logs")
 }
 
-// TestPaletteFeedServerSideTruncation pins the D5/D21 truncation seat: LONG
+// TestPaletteFeedServerSideTruncation pins the palette-label truncation seat: LONG
 // palette labels are middle-truncated SERVER-side, in the feed builder, via the
-// shared MiddleTruncate (SPEC §4.2: >42 runes -> first 26 + "…" + last 12),
+// shared MiddleTruncate (the name middle-truncation rule: >42 runes -> first 26 + "…" + last 12),
 // carried as the omitempty `display` field next to the untouched full `name`
 // (the JS renders display and keeps name in the row title). Short names emit
 // no display at all -- the wire stays byte-compatible for them.
@@ -400,7 +400,7 @@ func TestPaletteFeedServerSideTruncation(t *testing.T) {
 		t.Fatalf("fixture name %q should exceed the truncation budget", long)
 	}
 
-	// paletteDisplayName is the single truncation seat: long -> the §4.2 form,
+	// paletteDisplayName is the single truncation seat: long -> the head/hash-tail truncated form,
 	// short / exactly-at-budget -> "" (the omitempty field stays off the wire).
 	if got := paletteDisplayName(long); got != wantDisplay {
 		t.Fatalf("paletteDisplayName(long) = %q, want %q", got, wantDisplay)
@@ -442,9 +442,9 @@ func TestPaletteFeedServerSideTruncation(t *testing.T) {
 }
 
 // paletteFeedJSON mirrors the pinned palette-feed wire shape so the test parses
-// the emitted blob structurally (the camelCase keys are the public contract Unit
-// 4's JS reads). `display` is the Unit 19 extension: the server-truncated
-// label form, present only when the name overruns the SPEC §4.2 budget.
+// the emitted blob structurally (the camelCase keys are the public contract the
+// palette JS reads). `display` is the server-truncation extension: the server-truncated
+// label form, present only when the name overruns the middle-truncation budget.
 type paletteFeedJSON struct {
 	CurrentCluster   *string `json:"currentCluster"`
 	CurrentNamespace *string `json:"currentNamespace"`

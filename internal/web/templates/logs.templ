@@ -2,12 +2,12 @@ package templates
 
 // logs.templ is the resource-logs page body: the breadcrumb, the redesign detail
 // title (the pn-head/pn-tail split name + kind badge + the Download-logs title
-// action, D25) + the Default/YAML/Events/Logs tabs (Logs active -- the SAME
+// action) + the Default/YAML/Events/Logs tabs (Logs active -- the SAME
 // .ro-detail-title/.ro-kind-badge/.ro-tabs chrome and tab set as
 // resource_view.templ, so detail and logs stay visually consistent), and -- when
 // container logs are enabled -- the .ro-logs-form (tail/filter/Refresh plus the
 // CLIENT-SIDE timestamps/wrap toggles and the stateful Following⇄Follow button,
-// D25), the optional per-container .ro-logtabs (active = green pill), and the
+// the optional per-container .ro-logtabs (active = green pill), and the
 // .ro-logpre log block.
 //
 // The timestamps/wrap checkboxes and the Follow button are presentation-only:
@@ -16,9 +16,9 @@ package templates
 // never ride the Refresh GET. The Download-logs anchor is a plain GET
 // (?download=txt over the same container/tail/filter view) and opts out of
 // hx-boost: boost would swap the attachment bytes into <body> instead of
-// downloading (htmx 2.0.4, the Unit 17 lesson).
+// downloading (htmx 2.0.4, the download-anchor lesson).
 //
-// The outermost content element carries the `ro-rd` content marker (D13) so the
+// The outermost content element carries the `ro-rd` content marker so the
 // canonical class names below (.ro-detail-title, .ro-kind-badge, .ro-tabs,
 // .ro-logs-form, .ro-logpre, ...) resolve to the redesign CSS scoped under
 // .ro-rd. The page is READ-ONLY: Default / YAML / Events are sibling detail GETs,
@@ -31,7 +31,7 @@ package templates
 // as a trusted raw string in the handler and injected via templ.Raw -- templ
 // element trees would normalize the whitespace. The behavior-fact net pins the
 // active Logs tab, the ro-logs-form, the ro-logtabs active pill, the ro-logpre
-// block + a structured log line, the disabled-state notice, and (Unit 22) the
+// block + a structured log line, the disabled-state notice, and the
 // display controls + the Download-logs action (logs_redesign_test.go).
 
 // LogsData is the resolved resource-logs input.
@@ -39,7 +39,7 @@ type LogsData struct {
 	Breadcrumb DetailBreadcrumb
 
 	Name string
-	// NameHead/NameTail/NameTitle mirror the detail title split (Unit 13):
+	// NameHead/NameTail/NameTitle mirror the detail title split:
 	// the bright workload prefix, the muted hash tail, and the full-name
 	// tooltip when the head was middle-truncated.
 	NameHead    string
@@ -50,8 +50,8 @@ type LogsData struct {
 	YAMLHref    string
 	EventsHref  string
 
-	// DownloadHref/DownloadIcon render the Download-logs title action (D25,
-	// plain GET). Empty DownloadHref hides the action (logs disabled).
+	// DownloadHref/DownloadIcon render the Download-logs title action
+	// (plain GET). Empty DownloadHref hides the action (logs disabled).
 	DownloadHref string
 	DownloadIcon string
 	// FollowIcon is the rotate-cw glyph inside the Follow button.

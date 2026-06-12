@@ -92,13 +92,13 @@
     table td.num:not([align]) { text-align: right; }
 
     /* =====================================================================
-       Redesign chrome dissolved here from the former redesign.css module
-       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       Redesign chrome dissolved here from the former redesign.css module.
+       Rules are VERBATIM; redesign rules win over the
        bare twins above by specificity (.ro-rd-scoped / element-qualified),
        so concatenation order is not load-bearing for them.
        ===================================================================== */
     /* ===========================================================================
-       REDESIGN COMPONENT PORT (Unit 2, additive). The component classes below are
+       REDESIGN COMPONENT PORT (additive). The component classes below are
        lifted EXACT from the redesign source of truth -- design/assets/base.css plus
        the per-screen inline <style> blocks (Clusters / Search / Pods Mobile) that
        are NOT in base.css. They are NEW class names (e.g. bare `.ro-topbar`, not the
@@ -107,7 +107,7 @@
        same token layer just rethemed to the green/dark "Terminal" palette, so they
        follow light/dark for free. base.css's two `body.theme-light` rules (on the
        monogram tile) are mapped onto readout's data-theme mechanism (NOT a body
-       class) per D5.
+       class).
        =========================================================================== */
 
     .mono { font-family: var(--font-mono); }
@@ -135,7 +135,7 @@
         border-bottom: 1px solid var(--border);
     }
     header.ro-topbar .brand-item { display: flex; align-items: center; gap: 9px; padding-right: 4px; }
-    /* the mark sits on a small dark chip (SPEC 2.5: #0d1117, radius 7, the SAME
+    /* the mark sits on a small dark chip (#0d1117, radius 7, the SAME
        in BOTH themes) so the light-green brand stays readable on the light
        header too */
     header.ro-topbar .brand-chip {
@@ -175,8 +175,8 @@
     .ctx-dd:hover { border-color: var(--border-strong); }
     .ctx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand);
         box-shadow: 0 0 0 3px var(--accent-weak); }
-    /* No namespace set ("None"): the dot drops its green -- SPEC §6.1 "green
-       dot when set" + law §1.1 (prototype chrome.css:77). */
+    /* No namespace set ("None"): the dot drops its green -- the namespace dot is
+       green only when a namespace is set, and green is reserved for live signals. */
     .ctx-dot.none { background: var(--text-ghost); box-shadow: none; }
     .ctx-caret { color: var(--text-faint); display: inline-flex; }
 
@@ -211,11 +211,11 @@
        redesign bar reuses it -- no duplicate here to keep this additive.) */
     .ro-livedot { width: 6px; height: 6px; border-radius: 50%;
         background: var(--text-ghost); flex: none; }
-    /* SPEC §6.1 + colour law §1.1: the dot is GHOST-GREY by default and turns
-       brand + PULSES only while a refresh mode is active ("pulsing brand dot
-       when live" -- any non-Off interval today; Unit 27's Live joins through
+    /* the dot is GHOST-GREY by default and turns
+       brand + PULSES only while a refresh mode is active (the pulsing brand dot
+       signals live -- any non-Off interval today; Live joins through
        the same refresh-on hook). Green is a live-health signal, so Off keeps
-       the grey dot (prototype chrome.css:110-111; the ctx-dot.none precedent).
+       the grey dot (matching the no-namespace ctx-dot.none precedent).
        refresh-on is the ONE state owner: rendered at SSR (refreshDropdownClass)
        and toggled by syncRefreshUI on an interval pick. */
     #refresh-dropdown.refresh-on .ro-livedot { background: var(--brand); animation: ro-pulse 1.8s ease-out infinite; }
@@ -310,8 +310,8 @@
         color: var(--accent-text);
         font-weight: 600;
     }
-    /* a disabled option (Live on multi-type/multi-cluster pages, Unit 27/D19)
-       reads as unavailable: faded, no hover wash, the title explains why. */
+    /* a disabled option (Live on multi-type/multi-cluster pages, where Live is
+       unsupported) reads as unavailable: faded, no hover wash, the title explains why. */
     .refresh-option:disabled,
     .refresh-option:disabled:hover,
     .refresh-option:disabled:focus {
@@ -389,7 +389,7 @@
         content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px;
         width: 2.5px; border-radius: 2px; background: var(--accent);
     }
-    /* Per-kind object count (D13, SPEC §6.2): the trailing mono badge on a
+    /* Per-kind object count: the trailing mono badge on a
        sidebar entry. margin-left:auto pushes it to the row's right edge. */
     .ro-sidebar .menu-list a .menu-count {
         margin-left: auto; font-family: var(--font-mono);
@@ -400,7 +400,7 @@
     .ro-main { flex: 1; min-width: 0; padding: 22px 26px 80px; }
     .ro-main.wide { max-width: 100%; }
 
-    /* Breadcrumb -- SINGLE contract (Unit 17). Every breadcrumb is now
+    /* Breadcrumb -- SINGLE contract. Every breadcrumb is now
        `<nav class="ro-breadcrumb">` inside a `.ro-rd` content root (the redundant
        legacy `breadcrumb` class was dropped from the 4 list/detail templates, and
        the `nav.breadcrumb.ro-breadcrumb` rules in controls.css + the `.breadcrumb`
@@ -472,7 +472,7 @@
     .kind-emoji { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center;
         justify-content: center; font-size: 13px; line-height: 1; }
     /* base.css scoped the lighter tile to `body.theme-light`; mapped onto readout's
-       data-theme mechanism (NOT a body class) per D5 -- light default :root + explicit
+       data-theme mechanism (NOT a body class) -- light default :root + explicit
        [data-theme=light]; dark is the un-prefixed tile rule above + the prefers-dark
        :not([data-theme=light]) re-assertion below. */
     :root .kind-tile, [data-theme="light"] .kind-tile {

@@ -67,7 +67,7 @@ func splitObjectName(plural, name string) (head, tail string) {
 	return name, ""
 }
 
-// SPEC §4.2 middle-truncation thresholds. Table/palette/detail identifier
+// Middle-truncation thresholds. Table/palette/detail identifier
 // heads: >42 chars -> first 26 + "…" + last 12. Event object names: >34 ->
 // first 20 + "…" + last 8.
 const (
@@ -80,12 +80,12 @@ const (
 )
 
 // MiddleTruncate shortens an identifier that exceeds max runes to
-// `lead…trail` (SPEC §4.2): the prefix identifies the workload, the suffix
+// `lead…trail`: the prefix identifies the workload, the suffix
 // stays unique, and the full name must ride in a `title=` tooltip whenever
 // truncated reports true. It counts and slices in RUNE space so a multi-byte
 // name is never cut mid-rune. Exported because every identifier surface shares
 // it: the table name cells + event objects consume it now; the palette feed
-// (Unit 19) and the detail title (Unit 13) consume it from their own assembly.
+// and the detail title consume it from their own assembly.
 func MiddleTruncate(name string, max, lead, trail int) (display string, truncated bool) {
 	runes := []rune(name)
 	if len(runes) <= max || lead+trail >= len(runes) {
@@ -95,10 +95,10 @@ func MiddleTruncate(name string, max, lead, trail int) (display string, truncate
 }
 
 // groupThousands inserts comma thousands separators into a plain base-10 digit
-// string ("1047" -> "1,047"), the SPEC §4.5/§4.15 restart/event-count format.
+// string ("1047" -> "1,047"), the restart-count / event-count display format.
 // Anything that is not purely digits (an empty cell, an already-grouped value,
 // a decorated string) passes through unchanged, so the helper can never
-// corrupt a non-numeric cell. Unit 6's filter engine strips these commas when
+// corrupt a non-numeric cell. The filter engine strips these commas when
 // it parses leading numeric tokens, so the display stays filter-compatible.
 func groupThousands(value string) string {
 	if value == "" || len(value) <= 3 {
@@ -125,10 +125,11 @@ func groupThousands(value string) string {
 
 // statusTone decodes a kube.CellClass Bulma text class into the status-dot tone
 // vocabulary (ok/warn/err/info/mute). The value->tone DECISIONS live in exactly
-// one place -- kube.StatusTone, the SPEC §3 table, which CellClass delegates
-// every status word to -- so this is a pure decoding of that wire class, never a
-// second opinion about a word. "info" survives only for the events Reason map
-// (a kept vocabulary outside SPEC §3); an empty class (a non-status cell) yields
+// one place -- kube.StatusTone, the canonical status-word->tone table, which
+// CellClass delegates every status word to -- so this is a pure decoding of that
+// wire class, never a second opinion about a word. "info" survives only for the
+// events Reason map (a kept vocabulary outside the status table); an empty class
+// (a non-status cell) yields
 // "" so the generic fallback emits a dot with no tone colour.
 func statusTone(bulmaClass string) string {
 	switch bulmaClass {
@@ -150,7 +151,7 @@ func statusTone(bulmaClass string) string {
 // transientStatus reports whether a status value is an in-flight state that
 // should animate (the dot gets .pulse): ContainerCreating, Pending,
 // Terminating, PodInitializing, and Init:* progress without an error. Per the
-// design rulebook (law §1.3) ONLY this transient set pulses -- steady states
+// design rulebook ONLY this transient set pulses -- steady states
 // never animate, and errors NEVER pulse (the Init error/backoff states are
 // excluded here and tone err via kube.StatusTone).
 func transientStatus(value string) bool {
@@ -662,8 +663,8 @@ func namespaceEmptyText(namespace string, allNamespaces bool) string {
 
 // namespaceLabelChips builds the namespace label-chip view models from the row
 // object's metadata.labels (sorted by key for a stable order). Every chip is
-// NEUTRAL (D3 colour law: the green app.kubernetes.io/* accent is retired; the
-// key/value pair differs by ink weight in the renderer). A namespace with no
+// NEUTRAL (under the colour law the green app.kubernetes.io/* accent is retired;
+// the key/value pair differs by ink weight in the renderer). A namespace with no
 // labels yields nil, so the renderer shows the muted "—".
 func namespaceLabelChips(obj map[string]any) []chipView {
 	labels, _, _ := unstructured.NestedStringMap(obj, "metadata", "labels")
@@ -742,10 +743,10 @@ func formatTimestamp(value string) string {
 
 // durationToken matches one `<count><unit>` segment of a kubectl-style
 // compressed duration ("3h2m", "41d", "1y127d"). The unit vocabulary is the
-// SPEC §4.3 parser set: s m h d w y.
+// designed duration parser set: s m h d w y.
 var durationToken = regexp.MustCompile(`(\d+)([smhdwy])`)
 
-// durationUnitMinutes maps the SPEC §4.3 duration units onto minutes,
+// durationUnitMinutes maps the duration units onto minutes,
 // mirroring the design reference ageMinutes (render.js) byte-faithfully.
 var durationUnitMinutes = map[byte]float64{
 	's': 1.0 / 60,
@@ -772,7 +773,7 @@ func ageMinutes(value string) float64 {
 }
 
 // durationAgeClass buckets a kubectl-style duration STRING as a fraction of
-// the 24h window (SPEC §4.3, the same fractions s.ageClass applies to
+// the 24h window (the same fractions s.ageClass applies to
 // timestamps): <10% fresh, <35% recent, <65% day, <100% week, ≥1d old. The
 // duration flavour serves the cells whose source value is already a compressed
 // duration (cronjob Last Schedule, event ages) rather than an RFC3339
@@ -980,8 +981,8 @@ func downloadTSVHref(u *url.URL, plural string) string {
 	return clone.String()
 }
 
-// bulkDownloadHref builds the CLEAN bulk-download base for the current list
-// (D11): the canonical list path plus ONLY `download=yaml`. Unlike
+// bulkDownloadHref builds the CLEAN bulk-download base for the current list:
+// the canonical list path plus ONLY `download=yaml`. Unlike
 // downloadTSVHref it deliberately drops the carried query -- the selection
 // store may hold rows the active server-side filter hides, and the bulk
 // handler must find them in the unfiltered table.
@@ -1008,7 +1009,7 @@ func delQuery(u *url.URL, keys ...string) string {
 // queryEncodeKeepParens URL-encodes the query values but leaves parentheses
 // and commas literal, so selector links like `?selector=app(in)(a,b)` stay
 // readable in the address bar instead of showing %28/%29. The literal comma
-// is also LOAD-BEARING for Filters v2 (D7): an `?f=status:Running,Pending`
+// is also LOAD-BEARING for Filters v2: an `?f=status:Running,Pending`
 // chip's OR-comma is RAW on the wire, and every server-rebuilt href (sort
 // headers, metrics join, TSV download) round-trips the query through this
 // codec -- encoding the comma to %2C would silently collapse the OR into a

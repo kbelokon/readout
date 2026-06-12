@@ -61,7 +61,7 @@ export default defineConfig({
   retries: 0,
   reporter: [['list']],
   timeout: 30_000,
-  // Screenshot baselines for the SPEC §9 visual walk live next to the specs,
+  // Screenshot baselines for the visual-regression walk live next to the specs,
   // keyed by project (viewport) name.
   snapshotPathTemplate: '{testDir}/__screenshots__/{projectName}/{testFileName}/{arg}{ext}',
   use: {
@@ -80,13 +80,13 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
     // Mobile walk: below the 760px breakpoint, where the card layer plus
-    // hamburger replace the table chrome (SPEC deviation D22 keeps it).
+    // hamburger replace the table chrome (the mobile card layer is kept).
     {
       name: 'mobile',
       testIgnore: /visual\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, hasTouch: true },
     },
-    // Visual baselines (SPEC §9 / Unit 2): the screenshot walk, host-only,
+    // Visual baselines: the screenshot walk, host-only,
     // included only under RO_VISUAL=1. testMatch pins it to visual.spec.ts
     // alone, so it never runs the behavioural specs.
     ...(visualEnabled ? [visualProject] : []),

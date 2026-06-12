@@ -279,7 +279,7 @@ func TestStatusHelpers(t *testing.T) {
 	}
 }
 
-// specStatusToneRows is the SPEC §3 status table verbatim -- one case per row,
+// specStatusToneRows is the canonical status-word->tone table verbatim -- one case per row,
 // including the Init:* prefix family and the explicit mute fallback. It backs
 // both the direct StatusTone pin and the CellClass delegation proof, so the
 // vocabulary is written down exactly once in this package's tests.
@@ -316,9 +316,9 @@ var specStatusToneRows = []struct {
 	{"ImagePullBackOff", "err"},
 	{"Evicted", "err"},
 	{"BackoffLimitExceeded", "err"},
-	// err — D4 amendment 2026-06-10 (user-approved): terminal pod failure
-	// words v1 rendered red; SPEC §3 omitted them and the mute fallback was
-	// a signal regression on real clusters.
+	// err — single-owner table amendment 2026-06-10 (user-approved): terminal
+	// pod failure words v1 rendered red; the base table omitted them and the
+	// mute fallback was a signal regression on real clusters.
 	{"ErrImagePull", "err"},
 	{"CreateContainerConfigError", "err"},
 	{"InvalidImageName", "err"},
@@ -334,7 +334,7 @@ var specStatusToneRows = []struct {
 }
 
 // TestStatusToneSpecTable pins kube.StatusTone -- THE single value->tone
-// mapping (SPEC §3) -- row by row, including the Init:* error/backoff split and
+// mapping -- row by row, including the Init:* error/backoff split and
 // the mute fallback.
 func TestStatusToneSpecTable(t *testing.T) {
 	for _, c := range specStatusToneRows {
@@ -349,11 +349,11 @@ func TestStatusToneSpecTable(t *testing.T) {
 }
 
 // TestCellClassDelegatesStatusWordsToStatusTone is the delegation proof for the
-// single-owner law (D4): for EVERY SPEC §3 word, CellClass's class for a Status
+// single-owner law: for EVERY status word, CellClass's class for a Status
 // column is exactly the statusToneClass encoding of StatusTone -- across the
 // previously hand-switched plurals (pods/namespaces/nodes/pv/pvc), kinds that
 // never had a switch (jobs), an unknown plural, and the events Type column
-// (Normal/Warning are SPEC vocabulary too). A re-introduced per-plural status
+// (Normal/Warning are status vocabulary too). A re-introduced per-plural status
 // override in CellClass cannot pass this.
 func TestCellClassDelegatesStatusWordsToStatusTone(t *testing.T) {
 	plurals := []string{"pods", "namespaces", "nodes", "persistentvolumes", "persistentvolumeclaims", "jobs", "widgets"}
@@ -377,9 +377,9 @@ func TestCellClassDelegatesStatusWordsToStatusTone(t *testing.T) {
 	}
 }
 
-// TestRowStatusStripeOnlyErrAndWarn pins the SPEC §3 stripe rule: ONLY err and
+// TestRowStatusStripeOnlyErrAndWarn pins the stripe rule: ONLY err and
 // warn rows carry a row-status-* class. A Running (ok) row and a Completed
-// (mute -> neutral) row carry none -- the "warn excluding Completed" SPEC
+// (mute -> neutral) row carry none -- the "warn excluding Completed"
 // clause holds with no special case because Completed never tones warn. The
 // kept events Reason map still feeds the stripe (a danger Reason stripes err).
 func TestRowStatusStripeOnlyErrAndWarn(t *testing.T) {
@@ -436,7 +436,7 @@ func TestPhaseSummaryForPodsUsesStatusCellLabels(t *testing.T) {
 		class string
 	}{
 		{"Running", 2, "has-text-success"},
-		// Completed is mute under SPEC §3 (a finished pod is history, not info).
+		// Completed is mute (a finished pod is history, not info).
 		{"Completed", 1, "has-text-grey"},
 		{"ImagePullBackOff", 1, "has-text-danger"},
 	}
@@ -466,7 +466,7 @@ func TestRowStatusClassNames(t *testing.T) {
 		Resource: ResourceType{Plural: "pods", Kind: "Pod"},
 		Columns:  []Column{{Name: "Status"}},
 	}
-	// SPEC §3: ok rows carry NO stripe class (only err/warn stripe).
+	// ok rows carry NO stripe class (only err/warn stripe).
 	row := Row{Cells: []any{"Running"}}
 	if got := RowStatusClass(&table, row); got != "" {
 		t.Fatalf("class = %q, want none for an ok row", got)

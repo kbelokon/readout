@@ -15,10 +15,10 @@ PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.60.0-noble
 
 .DEFAULT_GOAL := ci
 
-.PHONY: ci tools generate templ-check lint test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-update assets assets-check
+.PHONY: ci tools generate templ-check lint comment-check test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-update assets assets-check
 
-## ci: the REQUIRED gates -- templ freshness, lint, race tests (matches .github/workflows/ci.yaml)
-ci: templ-check lint race
+## ci: the REQUIRED gates -- templ freshness, lint, comment hygiene, race tests (matches .github/workflows/ci.yaml)
+ci: templ-check lint comment-check race
 
 ## tools: install the pinned templ codegen binary (into $(go env GOBIN))
 tools:
@@ -36,6 +36,10 @@ templ-check: generate
 ## lint: golangci-lint (v2 config in .golangci.yml)
 lint:
 	golangci-lint run ./...
+
+## comment-check: fail on design-doc references in code comments (see scripts/check-comments.sh)
+comment-check:
+	bash scripts/check-comments.sh
 
 ## test: plain test suite
 test:

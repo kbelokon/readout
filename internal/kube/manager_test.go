@@ -115,7 +115,7 @@ func TestDiscoverStaticBuildsConnectionThroughClientcmd(t *testing.T) {
 	}
 }
 
-// TestStaticAuthThreadsBearerToken is the D8a regression guard: a static cluster
+// TestStaticAuthThreadsBearerToken is a regression guard: a static cluster
 // configured with a token must reach the apiserver as Bearer auth, NOT silently
 // anonymous (the old discoverStatic dropped it). Verified end-to-end against the
 // auth-capturing TLS server.
@@ -190,7 +190,7 @@ func TestStaticNonHTTPSWithAuthIsBroken(t *testing.T) {
 	}
 }
 
-// TestLoadMultiSourceCoexistAndPerContextError pins D3: static and kubeconfig
+// TestLoadMultiSourceCoexistAndPerContextError pins the per-source error model: static and kubeconfig
 // sources COEXIST (no longer mutually exclusive), and a malformed cluster is
 // skipped-with-error without failing its siblings.
 func TestLoadMultiSourceCoexistAndPerContextError(t *testing.T) {
@@ -223,7 +223,7 @@ func TestLoadMultiSourceCoexistAndPerContextError(t *testing.T) {
 	}
 }
 
-// TestDuplicateSanitizedCollision pins D8c (loader-half): two distinct configured
+// TestDuplicateSanitizedCollision pins the loader-half: two distinct configured
 // names that sanitize to the same key must not silently collapse -- the second is
 // surfaced as a collision error, the first stays loaded.
 func TestDuplicateSanitizedCollision(t *testing.T) {
@@ -274,7 +274,7 @@ func TestReloadMissingKubeconfigErrors(t *testing.T) {
 }
 
 // TestZeroContextKubeconfigStartsEmpty pins the first-run reachability
-// prerequisite (D16/D17): with NO configured source, no in-cluster
+// prerequisite: with NO configured source, no in-cluster
 // ServiceAccount, and a $KUBECONFIG that resolves to zero contexts, the manager
 // must come up with an EMPTY cluster set instead of failing NewManager -- a
 // fatal error here exits main before the listener binds, so the first-run

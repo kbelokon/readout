@@ -12,10 +12,10 @@ import (
 // into rest.Config.CAData verbatim and does NOT parse it at ClientConfig() time (the
 // x509 parse happens later in HTTPClientFor/TLSConfigFor), so the byte-copy proof
 // does not need a real certificate. The real handshake-against-an-extracted-CA proof
-// lives in the Unit 7 CA-trust test.
+// lives in the CA-trust handshake test.
 const fakeCAPEM = "-----BEGIN CERTIFICATE-----\nMIIB-fake-ca-data\n-----END CERTIFICATE-----\n"
 
-// TestRESTConfig proves the canonical claim of D1: a Connection built from the
+// TestRESTConfig proves the canonical claim: a Connection built from the
 // kubeconfig triple yields a rest.Config that carries every TLS/auth field, with
 // zero rest.Config fields set by hand -- clientcmd populates them. Each subtest
 // sets one family of fields on api.Cluster/api.AuthInfo and asserts they surface
@@ -125,10 +125,11 @@ func TestRESTConfig(t *testing.T) {
 	})
 
 	t.Run("exec credential plugin rides the model", func(t *testing.T) {
-		// The exec path is what Unit 8 exercises. clientcmd rejects an ExecConfig
-		// with an unset InteractiveMode (validation.go: "interactiveMode must be
-		// specified"), so a server-side exec connection MUST set Never -- pin that
-		// gate here so Unit 8 inherits a documented, working seam.
+		// The exec path is what the auth-method tests exercise. clientcmd rejects
+		// an ExecConfig with an unset InteractiveMode (validation.go:
+		// "interactiveMode must be specified"), so a server-side exec connection
+		// MUST set Never -- pin that gate here so those tests inherit a
+		// documented, working seam.
 		conn := &Connection{
 			Name:    "c",
 			Cluster: &clientcmdapi.Cluster{Server: host},
@@ -182,7 +183,7 @@ func TestRESTConfig(t *testing.T) {
 	})
 }
 
-// TestConnectionTokenFileRotation pins the D8b rotation-wiring contract. The
+// TestConnectionTokenFileRotation pins the token-file rotation-wiring contract. The
 // file-token path sets AuthInfo.TokenFile ONLY (Token empty). clientcmd then
 // reads the file into BearerToken AND keeps BearerTokenFile set
 // (client_config.go:277-287) -- BearerTokenFile staying set is what arms

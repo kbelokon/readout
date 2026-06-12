@@ -230,7 +230,7 @@ func TestKindIcon(t *testing.T) {
 
 // assertNoInjection fails if a runtime-derived raw markup fragment leaked an
 // unescaped tag opener that could break the surrounding document (the resolver
-// output is emitted raw AND embedded in Unit 3's palette JSON).
+// output is emitted raw AND embedded in the layout's palette JSON).
 func assertNoInjection(t *testing.T, label, markup string) {
 	t.Helper()
 	for _, bad := range []string{"<script", "</span><script", `onerror="alert`} {

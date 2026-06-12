@@ -1,4 +1,4 @@
-// collapse-hash.ts -- the PURE collapse-section URL-fragment codec (Unit 9).
+// collapse-hash.ts -- the PURE collapse-section URL-fragment codec.
 // Split out of misc-ui.ts so it has NO runtime imports: Node's native
 // type-stripping (`node --test`) resolves `.js` specifiers literally and cannot
 // follow a runtime `./x.js` import to its `.ts` source, so a node-tested module

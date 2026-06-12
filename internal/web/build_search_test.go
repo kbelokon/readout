@@ -5,7 +5,7 @@ import (
 	"unicode/utf8"
 )
 
-// TestMarkFirstMatchKeepsRuneBoundaries pins the D12 mark split against
+// TestMarkFirstMatchKeepsRuneBoundaries pins the search `<mark>` highlight split against
 // lowering that changes INDIVIDUAL rune widths while preserving the whole
 // string's byte length: Ⱥ (2 bytes) lowers to ⱥ (3 bytes) while
 // Å (ANGSTROM SIGN, 3 bytes) lowers to å (2 bytes), so a byte

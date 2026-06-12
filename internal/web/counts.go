@@ -1,6 +1,6 @@
 package web
 
-// counts.go implements the sidebar per-kind object counts (D13, SPEC §6.2):
+// counts.go implements the sidebar per-kind object counts:
 // one chunked list request per sidebar kind with `limit=1`, where
 //
 //	count = len(rows) + metadata.remainingItemCount
@@ -17,8 +17,8 @@ package web
 // short deadline so a slow or dead kind can never delay a page render beyond
 // countFetchTimeout, and render on full page loads only -- the `_table`
 // refresh partial never rebuilds the sidebar, so ticks never re-fetch
-// (recorded SPEC deviation D13: §6.2 says "live"; page-load + TTL is the
-// deliberate cost cut). A failed fetch renders NO count (and the failure is
+// (a deliberate cost cut: the design calls for live counts, but page-load +
+// TTL is the sanctioned trade-off). A failed fetch renders NO count (and the failure is
 // remembered for the same TTL so a broken kind is not re-probed on every page
 // load) -- EXCEPT when the failure is the caller's own cancellation (an
 // aborted page load), which says nothing about the kind and is never cached;
@@ -30,8 +30,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 
 	"github.com/kbelokon/readout/internal/kube"
 )
@@ -95,7 +93,7 @@ func (c *countCache) store(key countKey, entry countEntry) {
 	c.entries[key] = entry
 }
 
-// tableCount is the D13 count formula over a limit=1 Table chunk:
+// tableCount is the sidebar count formula over a limit=1 Table chunk:
 // len(rows) + metadata.remainingItemCount. It covers zero items (0 rows, no
 // remainder -> 0), an exact-one list (1 row, no remainder -> 1), the normal
 // paginating apiserver (1 row + remainingItemCount 106 -> 107), and a server
@@ -128,27 +126,26 @@ func (s *Server) attachSidebarCounts(ctx context.Context, client *kube.Client, c
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, countFetchTimeout)
 	defer cancel()
-	var g errgroup.Group
-	for i := range targets {
-		target := &targets[i]
+	// One shared 800ms deadline over an UNBOUNDED fan-out (limit = len(targets)),
+	// so a slow or dead kind can never delay the page beyond countFetchTimeout.
+	// Each closure mutates its own target in place and returns nothing; the
+	// returned slot array is ignored. Errors degrade to an absent count and are
+	// never raised -- a sibling count must still land. The fan-out is mechanism
+	// only; ALL cache laws (TTL, never-cache-Canceled) stay inside cachedCount.
+	_ = fanoutSlots(fetchCtx, targets, len(targets), func(ctx context.Context, target countTarget) struct{} {
 		// The metrics.k8s.io pseudo-types (PodMetrics/NodeMetrics) are join
 		// sources, not navigable kinds -- never count them (their plurals also
 		// collide with pods/nodes). Mirrors the palette-feed skip.
 		if target.resource.Group == "metrics.k8s.io" {
-			continue
+			return struct{}{}
 		}
-		g.Go(func() error {
-			count, ok := s.cachedCount(fetchCtx, client, cluster, target)
-			if ok {
-				target.item.Count = strconv.FormatInt(count, 10)
-				target.item.HasCount = true
-			}
-			// Errors degrade to an absent count; never fail the group (a g.Wait
-			// error would have no consumer, and sibling counts must still land).
-			return nil
-		})
-	}
-	_ = g.Wait()
+		count, ok := s.cachedCount(ctx, client, cluster, &target)
+		if ok {
+			target.item.Count = strconv.FormatInt(count, 10)
+			target.item.HasCount = true
+		}
+		return struct{}{}
+	})
 }
 
 // cachedCount returns the count for one target, consulting the TTL cache

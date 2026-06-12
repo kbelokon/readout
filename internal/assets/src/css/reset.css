@@ -131,7 +131,7 @@
     .input::placeholder { color: var(--text-faint); }
     .input:hover { border-color: var(--border-strong); }
     .input:focus { border-color: var(--accent); background: var(--surface); }
-    /* (Unit 17) the `.breadcrumb ul` / `.breadcrumb li` reset rules were removed:
+    /* the `.breadcrumb ul` / `.breadcrumb li` reset rules were removed:
        the `breadcrumb` legacy class is no longer emitted (single `.ro-breadcrumb`
        contract), and the ul/li flex layout is fully restated by the
        `.ro-rd .ro-breadcrumb ul` / `li` rules in shell.css. The inert current-crumb

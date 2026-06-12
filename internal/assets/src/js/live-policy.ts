@@ -1,4 +1,4 @@
-// live-policy.ts -- the PURE decision core of the Unit 11 refresh + Live
+// live-policy.ts -- the PURE decision core of the refresh + Live
 // cluster, lifted out of the DOM/protocol modules (refresh.ts, live.ts) so the
 // load-bearing protocol decisions are node-testable with no DOM, no fetch, no
 // htmx. The DOM modules read state from the page and the wire; THIS module is
@@ -8,17 +8,17 @@
 // contract this module carries ONLY erasable (type-only) imports -- it imports
 // nothing at runtime, so `node --test` strips its types and runs it directly.
 //
-// Three decisions live here, each pinned by the Unit 27 / D19 spec:
+// Three decisions live here, each pinned by the refresh + Live protocol:
 //   1. effectivePollSeconds -- the poll cadence the tick chain arms, folding the
 //      chosen interval together with Live's degraded-to-polling 5s fallback.
-//   2. refreshDelaySeconds -- the backoff wait until the NEXT tick (SPEC §8.3:
-//      1x -> 2x -> 4x of the cadence, capped 60s, reset on success).
+//   2. refreshDelaySeconds -- the backoff wait until the NEXT tick:
+//      1x -> 2x -> 4x of the cadence, capped 60s, reset on success.
 //   3. classifyStreamClose -- the close-reason TAXONOMY as a discriminated
 //      union: every way a stream connect/read can end maps to exactly one
 //      action (silent polling, banner polling, or a terminal close), so the
 //      transport core in live.ts is a thin switch over this verdict.
 //   4. shouldDiscardPush -- the morph-time generation/page/in-flight discard
-//      gate (D19): a frame is dropped whole, never deferred, when it is stale.
+//      gate: a Live frame is dropped whole, never deferred, when it is stale.
 
 // --- 1. effective poll cadence ----------------------------------------------
 
@@ -64,7 +64,7 @@ export function nextFailureStage(stage: number): number {
     return Math.min(stage + 1, 3);
 }
 
-// --- 3. stream-close taxonomy (D19) -----------------------------------------
+// --- 3. stream-close taxonomy ----------------------------------------------
 
 // A StreamCloseAction is the VERDICT classifyStreamClose returns -- the single
 // thing live.ts acts on when a connect or read ends. The discriminated union
@@ -99,7 +99,7 @@ export interface StreamCloseFacts {
 
 // classifyStreamClose maps one close fact to its action. Supersession trumps
 // everything (our own teardown surfaces as a connect/read error -- never act on
-// it). Then the D19 taxonomy: connect-time failures (the fetch reject, a
+// it). Then the close-reason taxonomy: connect-time failures (the fetch reject, a
 // non-200 status) degrade SILENTLY; mid/post-stream failures (a read drop, a
 // terminal frame, a terminal-less EOF) degrade WITH the banner. Only the
 // terminal frame is `terminal: true` -- the wire said so explicitly.
@@ -119,7 +119,7 @@ export function classifyStreamClose(facts: StreamCloseFacts): StreamCloseAction 
     }
 }
 
-// --- 4. morph-time push discard (D19) ---------------------------------------
+// --- 4. morph-time push discard ---------------------------------------------
 
 // A PushDiscardReason names WHY a pushed `_table` frame is dropped at morph
 // time, or 'none' when it should morph. Every reason but 'none' increments the

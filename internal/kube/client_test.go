@@ -277,7 +277,7 @@ func TestClientDiscoveryListGetAndBearerHelpers(t *testing.T) {
 	}
 }
 
-// TestWithBearerClearsImpersonation pins the D4 security property at the field
+// TestWithBearerClearsImpersonation pins the passthrough security property at the field
 // level: the per-request passthrough clone carries the viewer token, drops the
 // rotation file, and clears any static Impersonate so the request evaluates as
 // the viewer, not the static impersonation identity.
@@ -338,7 +338,7 @@ func TestImpersonationClearedOnPassthrough(t *testing.T) {
 	}
 }
 
-// TestIsAnonymous pins the base-anonymous predicate behind the D8d denial: a
+// TestIsAnonymous pins the base-anonymous predicate behind the passthrough denial: a
 // connection is anonymous iff it carries no authenticating credential.
 // Impersonation alone does not count (it needs a base credential to authenticate).
 func TestIsAnonymous(t *testing.T) {

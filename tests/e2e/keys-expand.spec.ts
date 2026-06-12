@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// The SPEC §4.9/§4.10 in-cell overflow toggle on a configmap data-keys cell
-// (Unit 11): the `+N keys` button is all-new delegated JS with no other
+// The in-cell chips/keys overflow toggle on a configmap data-keys cell:
+// the `+N keys` button is all-new delegated JS with no other
 // behavioral gate, so the click interaction is proven end to end here --
 // extra chips hidden at render, revealed in place by a click (button face
 // flips to "less"), hidden again by a second click. Driven against the
@@ -14,7 +14,7 @@ const CONFIGMAPS = '/clusters/e2e/namespaces/default/configmaps';
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the keys cell rides the table layer; below 760px the card layer replaces it (D22)'
+    'the keys cell rides the table layer; below 760px the card layer replaces it'
   );
   const res = await fetch(`${controlURL}/__control/reset`);
   if (!res.ok) {

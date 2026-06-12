@@ -24,7 +24,7 @@ type DetailData struct {
 
 	Name string
 	// NameHead/NameTail split the H1 into the bright workload prefix + the
-	// muted hash tail (SPEC §6.6: the hash tail stays faint even in the
+	// muted hash tail (the hash tail stays faint even in the
 	// title); NameTitle carries the FULL name in a title= tooltip when the
 	// head was middle-truncated. An empty NameHead (hand-built data) falls
 	// back to the plain Name.
@@ -49,7 +49,7 @@ type DetailData struct {
 
 	Labels      []DetailLabelChip
 	Annotations []AnnotationChip
-	// AnnotationsLong are the >120-char annotation values (SPEC §7.15): each
+	// AnnotationsLong are the >120-char annotation values: each
 	// renders below the chips as a collapsed `key · size` toggle + a hidden
 	// scrollable <pre> payload (readout.js owns the delegated toggle).
 	AnnotationsLong []AnnotationLong
@@ -57,7 +57,7 @@ type DetailData struct {
 
 	Owners []OwnerLink
 
-	// Containers is the pod containers table (D14), rendered between the
+	// Containers is the pod containers table, rendered between the
 	// owner line and the YAML cards. nil for non-pod kinds.
 	Containers *Containers
 
@@ -118,7 +118,7 @@ type DetailLink struct {
 // DetailLabelChip is one label pill on the detail page: an anchor to the
 // selector-filtered list (distinct from the cluster page's non-link LabelChip).
 // Every chip is a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight
-// split (D3 colour law: the green app.kubernetes.io/* accent is retired).
+// split (the colour law: the green app.kubernetes.io/* accent is retired).
 type DetailLabelChip struct {
 	Href string
 	Key  string
@@ -134,7 +134,7 @@ type AnnotationChip struct {
 	Full string
 }
 
-// AnnotationLong is one >120-char annotation (SPEC §7.15): a collapsed
+// AnnotationLong is one >120-char annotation: a collapsed
 // `key · size` toggle button whose payload (`Value`, the FULL annotation)
 // expands into a scrollable <pre>. ChevIcon is the pre-rendered chevron SVG.
 type AnnotationLong struct {
@@ -144,7 +144,7 @@ type AnnotationLong struct {
 	ChevIcon string
 }
 
-// Containers is the pod containers section (D14): Count/InitCount feed the
+// Containers is the pod containers section: Count/InitCount feed the
 // `Containers · N + M init` label; Rows arrive init-first, badged.
 type Containers struct {
 	Count     int
@@ -153,7 +153,7 @@ type Containers struct {
 }
 
 // ContainerRow is one container row (matches package-web containerRowView):
-// the state cell speaks the SPEC §3 tone vocabulary (kube.StatusTone via
+// the state cell speaks the tone vocabulary (kube.StatusTone via
 // StateTone + the transient StatePulse); empty Ready/Ports/CPU/Mem render the
 // faint "—"; Image is faint secondary text truncated with a title= tooltip.
 type ContainerRow struct {
@@ -224,7 +224,7 @@ type SecretData struct {
 
 // YAMLCard is one collapsible per-section YAML card. Content is the trusted
 // highlighted-YAML HTML for the section, injected raw. Collapsed starts the
-// card folded (SPEC §7.15: the Status card collapses by default) via the same
+// card folded (the Status card collapses by default) via the same
 // is-collapsed class the readout.js section-fold toggle drives.
 type YAMLCard struct {
 	Name      string
@@ -235,7 +235,7 @@ type YAMLCard struct {
 }
 
 // EventRow is one event row in the Events tab table, inheriting the
-// events-list cells (D15). Tone is the redesign status-dot/cell-status tone
+// events-list cells. Tone is the redesign status-dot/cell-status tone
 // for the Type cell (mute for Normal/unknown, warn for Warning), resolved in
 // build_resource.go from the events/Type cell class. Count/CountClass are the
 // ×N dedupe cell (≥20 amber, 1 faint); Age is the leading compressed-duration
@@ -299,7 +299,7 @@ type SubtableCell struct {
 }
 
 // ResourceView is the redesign object-detail page body. The outermost element
-// carries the `ro-rd` content marker (D13) so the canonical class names below
+// carries the `ro-rd` content marker so the canonical class names below
 // (.ro-detail-title, .ro-kind-badge, .ro-section, .ro-chip, .ro-yaml-card,
 // .ro-event-msg, ...) resolve to the redesign CSS scoped under .ro-rd. The page
 // is server-driven and READ-ONLY: Default / YAML / Events are separate GETs
@@ -401,11 +401,11 @@ templ detailBody(d DetailData) {
 	}
 }
 
-// containersSection is the pod containers table (D14): a labelled redesign
+// containersSection is the pod containers table: a labelled redesign
 // .ro-table between the owner line and the YAML cards. Init containers lead,
 // each badged with the mute `init` kind-badge; the State cell is the
-// .cell-status/.ro-dot pair toned by kube.StatusTone (D4) with the transient
-// pulse (law §1.3); Ready speaks the prototype's ready/not-ready grammar
+// .cell-status/.ro-dot pair toned by kube.StatusTone with the transient
+// pulse (only in-flight states animate); Ready speaks the prototype's ready/not-ready grammar
 // (init rows keep the faint "—"); Restarts reuses the list's
 // .restarts.zero|some + faint "(… ago)" suffix; CPU/Memory show real
 // PodMetrics values or the faint "—" (never zeros for a dead join); Image is
@@ -457,7 +457,7 @@ templ containersSection(c Containers) {
 }
 
 // eventsSection is the Events-tab view: a labelled section wrapping the toned
-// events table (redesign .ro-table), inheriting the events-list cells (D15).
+// events table (redesign .ro-table), inheriting the events-list cells.
 // The Type cell is a status-dot/cell-status pair toned mute (Normal) or warn
 // (Warning); Count is the ×N dedupe cell (≥20 amber, 1 faint); Age is the
 // two-layer compressed duration (bucket-coloured lead token + faint

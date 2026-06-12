@@ -1,4 +1,4 @@
-// filters.ts -- the v2 filter chips editor (D7, client half), migrated from
+// filters.ts -- the v2 filter chips editor (client half), migrated from
 // legacy.js: free-text live match, operator chips, autocomplete, ⌫ pop,
 // unknown-field hint. CSP-clean, GET-only.
 //
@@ -11,7 +11,7 @@
 // GETs the server answers with the canonical HX-Push-Url), and the schema/value
 // autocomplete.
 //
-// THE FULL ROW MODEL (D20): every matcher/frequency scan reads roRowModel, a
+// THE FULL ROW MODEL: every matcher/frequency scan reads roRowModel, a
 // capture of the COMPLETE server-rendered table -- taken from the incoming
 // server fragment in the ro-morph handleSwap (before the morph, before any
 // client windowing touches the DOM) and from the full document at init. The
@@ -27,7 +27,7 @@
 // the monolith's big click listener; the #ro-filter-input input branch; the
 // editor keydown protocol; the AC outside-click C5).
 //
-// DISPATCH (the Unit 12 ordered-binding migration): the editor keydown is the
+// DISPATCH (the ordered-binding migration): the editor keydown is the
 // focus-routed half of compound case 4 (listener-inventory K1 step 2): an Escape
 // with focus in #ro-filter-input reaches handleFilterInputKeydown here (a no-op
 // with the autocomplete closed), and the migrated palette-open keydown binding
@@ -116,7 +116,7 @@ export function captureRowModel(root: ParentNode): void {
 
 // captureRowModelFromDocument: the first paint is the full server-rendered list,
 // so the live DOM IS the complete model here. Must run before the windowing init
-// step (Unit 24) prunes rows -- and must NEVER re-capture once the virtualizer is
+// step (windowing) prunes rows -- and must NEVER re-capture once the virtualizer is
 // engaged: runInit re-runs on htmx:load, and by then the DOM is a window, not the
 // dataset. A runInit step (exported for legacy.js's runInit chain).
 export function captureRowModelFromDocument(): void {
@@ -126,7 +126,7 @@ export function captureRowModelFromDocument(): void {
     }
 }
 
-// ---- live free-text name match (NO request, D7) ----------------------------
+// ---- live free-text name match (NO request) --------------------------------
 const FILTER_HIDE_CLASS = 'ro-row-filtered';
 
 // applyLiveNameFilter narrows the rows to the names containing the draft text,
@@ -150,7 +150,7 @@ export function applyLiveNameFilter(): void {
             !!visible && !visible.has((tr as HTMLElement).dataset.key as string),
         );
     });
-    // Virtualization (Unit 24/D20): the class application above only reaches the
+    // Virtualization: the class application above only reaches the
     // rendered window -- re-window over the new visible set so a match currently
     // OUTSIDE the window becomes a rendered row.
     virtualizeOnFilterChange();
@@ -251,7 +251,7 @@ function hideFilterFieldHint(): void {
 }
 
 // ---- autocomplete -------------------------------------------------------------
-// Client-side only (D7): field names (with type hints) while the draft has no
+// Client-side only: field names (with type hints) while the draft has no
 // operator; after `field:` (the equality form, on a known real column) the top 8
 // distinct values by frequency from the FULL row model. The operator forms
 // (!= > <) autocomplete the field then leave the value free. Tab/⏎ accepts, esc
@@ -425,7 +425,7 @@ function handleFilterInputKeydown(event: KeyboardEvent): void {
 
 // --- dispatcher bindings ----------------------------------------------------
 export const filtersBindings: Binding[] = [
-    // Chips editor (D7): a chip's ✕ is a real link (no-JS fallback) whose href is
+    // Chips editor: a chip's ✕ is a real link (no-JS fallback) whose href is
     // the server-built removal URL; intercept it to ride the v2 partial loop
     // (morph + canonical push) instead of a full navigation.
     {
@@ -487,7 +487,7 @@ export const filtersBindings: Binding[] = [
             }
         },
     },
-    // Chips editor (D7): every keystroke re-runs the live name match (model-
+    // Chips editor: every keystroke re-runs the live name match (model-
     // driven, NO request) and the autocomplete; a fresh draft clears any
     // unknown-field hint.
     {

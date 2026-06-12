@@ -94,7 +94,7 @@
     /* Empty state (resource-list-content.html). Not an error -- a calm, expected
        state: the literal "No <Kind> ... found." title plus a quiet nudge. The cell
        spans the table; the inner block is centered with breathing room so an empty
-       table reads as intentional, not broken. (Unit 16: the dead
+       table reads as intentional, not broken. (The dead
        `.ro-list-table tr.ro-empty-row` hover/border rules were removed -- the
        redesign empty row rides in a `.ro-table`, and the `.ro-empty-lg` card owns
        the empty state.) */
@@ -157,7 +157,7 @@
        morph diffs in place); the class is added only off-reduced-motion (the JS
        hook is not registered under prefers-reduced-motion), and the animation is
        additionally disabled in the media block below as defence-in-depth.
-       (Unit 16: retargeted from the retired `.ro-list-table` to the redesign
+       (Retargeted from the retired `.ro-list-table` to the redesign
        `.ro-table` so the JS-driven flash actually lands on the live table cells --
        readout.js adds `.ro-cell-changed` to `.ro-table` `<td>`s on morph.) */
     .ro-table tbody td.ro-cell-changed {
@@ -185,22 +185,22 @@
     }
 
     /* ---------------------------------------------------------------------------
-       ⌘K jump-to palette -- RETIRED here (Unit 4).
+       ⌘K jump-to palette -- RETIRED here.
 
        The pre-redesign overlay (`.ro-palette` / `.ro-palette-panel` / `-head` /
        `-input` / `-list` / `-row` / `-tag` / `-label` / `-path` / `-empty` + the
        `ro-palette-in` keyframe) is gone. Its markup was deleted in
        components.templ and its bare `.ro-palette` selector collided with the
-       redesign inner panel (`.ro-rd .ro-palette`, defined further below). Unit 2
-       lifted the redesign palette under the `.ro-rd.ro-palette-backdrop` marker
-       and noted "Unit 4 retires it" -- this is that retirement. The redesign
+       redesign inner panel (`.ro-rd .ro-palette`, defined further below). The
+       redesign palette was lifted under the `.ro-rd.ro-palette-backdrop` marker
+       and the old overlay was retired here. The redesign
        palette + its reduced-motion guard live in the REDESIGN COMPONENT PORT
        block below (search the `⌘K PALETTE (redesign canonical .ro-pal-*)`
        banner). */
 
     /* =====================================================================
-       Redesign chrome dissolved here from the former redesign.css module
-       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       Redesign chrome dissolved here from the former redesign.css module.
+       Rules are VERBATIM; redesign rules win over the
        bare twins above by specificity (.ro-rd-scoped / element-qualified),
        so concatenation order is not load-bearing for them.
        ===================================================================== */
@@ -230,7 +230,7 @@
        The live Search markup still uses bare `<span class="ro-scope-chip">` (inside a
        `<div class="ro-scope">`) styled by the existing app rules, so the redesign
        scope + chip rules use the canonical names scoped under the redesign CONTENT
-       marker `.ro-rd` (D13) -- the migrated Search content carries `ro-rd`, so the
+       marker `.ro-rd` -- the migrated Search content carries `ro-rd`, so the
        redesign chip look applies only there while live Search keeps its app rule. */
     .ro-rd .ro-scope { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 16px; font-size: 12px; }
     .ro-rd .ro-scope .lbl { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
@@ -248,7 +248,7 @@
     .ro-rd .ro-scope-chip.err .retry { color: var(--st-err); text-decoration: underline; cursor: pointer; }
 
     /* ----------------------------------------------------------------------------
-       Filters v2 chips editor (D7) -- the tools-row filter field that hosts the
+       Filters v2 chips editor -- the tools-row filter field that hosts the
        server-rendered `?f=` chips + the free-text/autocomplete input. Ported from
        the prototype's chrome.css (.ro-tools-filter / .ro-scope-chip / .filter-hint)
        and scoped under the `.ro-rd` content marker so the Clusters page's simpler
@@ -294,7 +294,7 @@
     .ro-rd .ro-ac-item.active { background: var(--accent-weak); }
 
     /* ----------------------------------------------------------------------------
-       Column-visibility popover (D8) -- the ⊞ title-row action's dropdown:
+       Column-visibility popover -- the ⊞ title-row action's dropdown:
        one checkbox row per column (the identity row disabled) plus the
        labelcols / selector form absorbed from the v1 tools form. Ported from
        the prototype's chrome.css (.rel / .ro-pop / .pop-head / .col-toggle)
@@ -322,7 +322,7 @@
     .ro-rd .ro-pop-form .pop-head { padding-left: 5px; }
     .ro-rd .ro-pop-form .ro-tools-actions { margin-top: 6px; }
 
-    /* big empty / failure state (prototype VIEW.states markup, D16) */
+    /* big empty / failure state (the designed empty/error screens) */
     .ro-empty-lg { display: flex; flex-direction: column; align-items: center; justify-content: center;
         text-align: center; padding: 72px 24px; }
     .ro-empty-glyph { width: 52px; height: 52px; border-radius: 13px; display: flex; align-items: center;
@@ -335,8 +335,8 @@
     .ro-empty-lg h3 { font-size: 16px; font-weight: 600; margin: 0 0 6px; color: var(--text); }
     .ro-empty-lg p { font-size: 13px; color: var(--text-muted); margin: 0 0 4px; max-width: 460px; }
     .ro-empty-lg .hint { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
-    /* the VERBATIM apiserver/transport string (SPEC §1.5): mono, code surface,
-       breaks anywhere -- the real error is never clipped into a cute message */
+    /* the VERBATIM apiserver/transport string: mono, code surface,
+       breaks anywhere -- the real error is shown literally, never clipped into a cute message */
     .ro-empty-lg .errdetail { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted);
         background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
         padding: 8px 12px; margin-top: 10px; max-width: 560px; word-break: break-all; white-space: normal; }
@@ -352,12 +352,12 @@
     .ro-empty-inline { padding: 36px 20px; text-align: center; color: var(--text-faint);
         font-size: 13px; font-family: var(--font-ui); }
 
-    /* first-run (SPEC §7.2, D17): the instruction screen at zero configured
+    /* first-run: the instruction screen at zero configured
        clusters -- the command block reads as a terminal, so it left-aligns
        inside the centred card */
     .ro-firstrun .errdetail { text-align: left; }
 
-    /* Stale (client-side, D11). readout.js reveals the pre-rendered hidden
+    /* Stale (client-side). readout.js reveals the pre-rendered hidden
        `.ro-stale-banner` and adds `.ro-stale` to #resource-list-content on an
        auto-refresh error -- it never blanks the rows. `.ro-banner` sets
        display:flex, which overrides the UA [hidden]{display:none}, so the hidden
@@ -367,7 +367,7 @@
     .ro-banner.ro-stale-banner[hidden] { display: none; }
     #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
 
-    /* Loading skeleton (D16 / SPEC §7.19). Rows mirror the visible column
+    /* Loading skeleton. Rows mirror the visible column
        widths (inline width per .skel bar, baked server-side in
        #ro-skel-template) and fade toward the bottom (inline opacity).
        readout.js clones the rows into #resource-list-content ONLY when the

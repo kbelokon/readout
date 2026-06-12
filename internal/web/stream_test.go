@@ -1,6 +1,6 @@
 package web
 
-// stream_test.go pins the `_stream` SSE endpoint (D19, Unit 26) against
+// stream_test.go pins the `_stream` SSE endpoint (the Live refresh mode) against
 // scripted fakeapi fixtures: the handshake + framing (generation echo), the
 // coalescing pacing (floor, ceiling, churn degradation), render-time filter
 // transitions over the unfiltered snapshot, the complete lifecycle (410
@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/tests/unit/fakeapi"
 )
@@ -490,7 +491,7 @@ func TestStreamWatchlessKind204(t *testing.T) {
 	}
 }
 
-// TestStreamScope404 pins the D19 scope cut: multi-type plurals (all / CSV)
+// TestStreamScope404 pins the Live-mode scope cut: multi-type plurals (all / CSV)
 // and multi-cluster scope (_all / CSV) get 404 — Live is single-type,
 // single-cluster only.
 func TestStreamScope404(t *testing.T) {
@@ -739,7 +740,7 @@ func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
 
-	value, err := app.sessions.Seal(sessionCookieName, authSession{
+	value, err := app.auth.SealSession(&auth.Session{
 		AccessToken: "session-token",
 		Expires:     time.Now().Add(2 * time.Second).Unix(),
 	}, time.Hour)
@@ -750,7 +751,7 @@ func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: value})
 
 	s := openStreamRequest(t, req)
 	s.requireEvent(t, "ro-table", 5*time.Second)
@@ -879,7 +880,7 @@ func TestStreamExcludedFromDurationHistogram(t *testing.T) {
 	}
 }
 
-// TestStreamStatusWriterFlushUnwrap pins the D19 plumbing on statusWriter:
+// TestStreamStatusWriterFlushUnwrap pins the SSE-streaming plumbing on statusWriter:
 // Flush reaches the wrapped writer (the embedded field used to hide
 // http.Flusher, buffering SSE forever) and Unwrap exposes it for
 // http.ResponseController.

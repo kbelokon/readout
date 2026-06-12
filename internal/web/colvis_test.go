@@ -1,11 +1,11 @@
 package web
 
-// colvis_test.go pins the D8 column-visibility contract introduced with the ⊞
+// colvis_test.go pins the column-visibility contract introduced with the ⊞
 // popover:
 //
 //   - the hide spec is applied AFTER the label/synthetic/joined columns land,
 //     so SYNTHETIC columns (node Pods/Conditions, namespace Labels) hide too --
-//     including through the ro_prefs cookie (the Unit-8 caveat: removal used
+//     including through the ro_prefs cookie (the column-visibility caveat: removal used
 //     to run before the decorations, which made these unhideable);
 //   - the identity/name column is NEVER removed: ?hidecols=Name is ignored
 //     server-side, and `*` keeps the identity column standing;
@@ -44,7 +44,7 @@ func TestColvisSyntheticColumnsHide(t *testing.T) {
 	}
 }
 
-// TestColvisCookieHidesSyntheticColumns pins the same fact through the D9
+// TestColvisCookieHidesSyntheticColumns pins the same fact through the ro_prefs
 // cookie write surface the popover uses: a persisted hide list naming a
 // synthetic column render-hides it (the exact gap the pre-v2 removal order
 // left open).
@@ -64,7 +64,7 @@ func TestColvisCookieHidesSyntheticColumns(t *testing.T) {
 	}
 }
 
-// TestColvisIdentityColumnProtected pins the D8 identity rule: the name column
+// TestColvisIdentityColumnProtected pins the column-visibility identity rule: the name column
 // is not hideable -- a forced ?hidecols=Name is ignored server-side, and a
 // wildcard hide keeps the identity column (plus nothing else) standing.
 func TestColvisIdentityColumnProtected(t *testing.T) {
@@ -115,7 +115,7 @@ func TestColvisCreatedColumnHides(t *testing.T) {
 // TestColvisConfigDefaultRendersHiddenButOffered pins the config-default leg
 // the v2 shipped defaults ride: a DefaultHiddenColumns entry hides the column
 // at render while the popover keeps offering it (unchecked), and an explicit
-// empty cookie hide set resurfaces it (user override wins, D8).
+// empty cookie hide set resurfaces it (a user override wins over the default).
 func TestColvisConfigDefaultRendersHiddenButOffered(t *testing.T) {
 	cfg := baseConfig(t)
 	cfg.DefaultHiddenColumns = map[string]string{"nodes": "External-IP,Created"}
@@ -134,7 +134,7 @@ func TestColvisConfigDefaultRendersHiddenButOffered(t *testing.T) {
 	assertContainsAll(t, "explicit-empty headers", shown.texts("thead th"), "External-IP", "Created")
 }
 
-// TestColsPopoverSingleTypeGate pins the D1 boundary of the popover chrome:
+// TestColsPopoverSingleTypeGate pins the single-type-page boundary of the popover chrome:
 // single-type pages render the ⊞ popover (and no v1 tools form); multi-type
 // pages keep the v1 toggle-tools + tools form and get no popover.
 func TestColsPopoverSingleTypeGate(t *testing.T) {
@@ -185,8 +185,8 @@ func TestColsPopoverFilterRoundTrip(t *testing.T) {
 	p.wantHas(`form.tools-form input.ro-input[name="filter"][value="ngi"]`)
 }
 
-// TestColsPopoverSubmitMergeJSContract pins the readout.js half of the D8
-// popover submit (needle-style -- the e2e suite drives the runtime): the
+// TestColsPopoverSubmitMergeJSContract pins the readout.js half of the
+// column-visibility popover submit (needle-style -- the e2e suite drives the runtime): the
 // submit is intercepted and MERGED into the live query so active `?f=` chips
 // survive a labelcols/selector apply byte-exact.
 func TestColsPopoverSubmitMergeJSContract(t *testing.T) {

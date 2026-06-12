@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/kbelokon/readout/internal/assets"
+	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
+	"github.com/kbelokon/readout/internal/hooks"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/web/templates"
 )
@@ -26,6 +28,17 @@ import (
 // permitted.
 const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
 
+const (
+	// listFanoutBudget and searchFanoutBudget are the default TOTAL fan-out wall
+	// time for the multi-cluster list and search assemblies. The budget exists
+	// only to cut a dead or hung cluster, NOT to cap a fat-but-alive list, so it
+	// is generous: 30s also absorbs queue-wait under the concurrency limit
+	// (queued clusters spend the shared total budget while they wait for a
+	// worker slot).
+	listFanoutBudget   = 30 * time.Second
+	searchFanoutBudget = 30 * time.Second
+)
+
 type Server struct {
 	cfg                config.Config
 	manager            *kube.Manager
@@ -34,7 +47,8 @@ type Server struct {
 	assets             map[string]string
 	partials           map[string]string
 	metrics            *appMetrics
-	sessions           *sessionCodec
+	auth               *auth.Authenticator
+	hooks              *hooks.Client
 	passthroughClients *kube.PassthroughClientCache
 	// now is the clock for all render-path time (age coloring + the list/search
 	// "took X" footer). It defaults to time.Now in New; tests inject a fixed
@@ -42,12 +56,25 @@ type Server struct {
 	// (now == time.Now) every render is byte-identical to a direct time.Now call.
 	now func() time.Time
 
-	// counts is the sidebar per-kind count cache (D13): keyed by the exact list
+	// counts is the sidebar per-kind count cache: keyed by the exact list
 	// each sidebar entry points at, TTL-invalidated against the s.now clock.
 	// The zero value is ready; no constructor wiring needed.
 	counts countCache
 
-	// streamSlots caps concurrent Live streams (D19): every open `_stream`
+	// listBudget and searchBudget cap the TOTAL fan-out wall time for the
+	// multi-cluster list and search assemblies: the caller wraps the request
+	// ctx with this timeout before fanning out, so one dead or hung cluster can
+	// no longer hold a page until the client gives up. The budget only cuts
+	// dead/hung clusters -- it is wide enough to let a fat-but-alive list finish
+	// and to absorb queue-wait under the concurrency limit -- and a cluster that
+	// trips it lands in the existing per-cluster error lane (partial-failure
+	// banner), never a top-level failure. They default to listFanoutBudget /
+	// searchFanoutBudget in New; tests inject a short budget, the same pattern
+	// as the now clock field.
+	listBudget   time.Duration
+	searchBudget time.Duration
+
+	// streamSlots caps concurrent Live streams: every open `_stream`
 	// handler holds one slot for its whole lifetime; when the channel is full
 	// the next stream gets 429 BEFORE any SSE headers. The slot releases on
 	// every handler exit path (deferred at acquisition).
@@ -55,7 +82,7 @@ type Server struct {
 
 	// shutdownCh mirrors the New() context's Done channel: when the process
 	// is shutting down, open Live streams emit `event: ro-terminal` (reason
-	// "shutdown") and close instead of dying mid-frame (D19).
+	// "shutdown") and close instead of dying mid-frame.
 	shutdownCh <-chan struct{}
 }
 
@@ -78,7 +105,8 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if cfg.StaticAssetsPath != "" {
 		staticFS = os.DirFS(cfg.StaticAssetsPath)
 	}
-	sessions, err := newSessionCodec(cfg.SessionSecret)
+	hooksClient := hooks.NewClient()
+	authenticator, err := auth.New(cfg, cfg.SessionSecret, time.Now, hooksClient)
 	if err != nil {
 		return nil, err
 	}
@@ -90,31 +118,40 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		assets:             assetHashes(staticFS),
 		partials:           loadPartials(cfg.TemplatesPath),
 		metrics:            newAppMetrics(),
-		sessions:           sessions,
+		auth:               authenticator,
+		hooks:              hooksClient,
 		passthroughClients: kube.NewPassthroughClientCache(0, 0),
 		now:                time.Now,
+		listBudget:         listFanoutBudget,
+		searchBudget:       searchFanoutBudget,
 		streamSlots:        make(chan struct{}, streamCapMax),
 		shutdownCh:         ctx.Done(),
 	}
+	// Wire domain metrics: the kube Manager bakes the per-cluster request
+	// observer into each Client (cluster name closed over), and the shared hooks
+	// client records call duration. Both observer surfaces are Prometheus-free in
+	// their own packages — the closures here own the metric types.
+	manager.SetRequestObserverFactory(s.metrics.kubeObserverFactory())
+	hooksClient.SetObserver(s.metrics.hookObserver())
 	s.routes()
 	s.warnMissingSessionSecret()
 	return s, nil
 }
 
 // warnMissingSessionSecret warns at startup when the effective auth mode is
-// OIDC but no session secret is configured (READOUT_SESSION_SECRET empty, so
-// newSessionCodec generated an ephemeral per-process key). Without a stable
-// secret, sessions silently break across restarts and across replicas. Gated
-// on effectiveAuthMode (not raw cfg.AuthMode) so the implicit
+// OIDC but no session secret is configured (READOUT_SESSION_SECRET empty, so the
+// session codec falls back to an ephemeral per-process key). Without a stable
+// secret, sessions silently break across restarts and across replicas. Gated on
+// the effective auth mode (not raw cfg.AuthMode) so the implicit
 // AuthModeNone + OIDC-config path is also covered.
 func (s *Server) warnMissingSessionSecret() {
-	if s.effectiveAuthMode() == config.AuthModeOIDC && s.cfg.SessionSecret == "" {
+	if s.auth.EffectiveAuthMode() == config.AuthModeOIDC && s.cfg.SessionSecret == "" {
 		slog.Warn("OIDC auth has no session secret; sessions will not survive restarts or span replicas", "env", "READOUT_SESSION_SECRET")
 	}
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.readOnly(s.securityHeaders(s.observeMetrics(s.auth(s.mux))))
+	return s.readOnly(s.securityHeaders(s.observeMetrics(s.auth.Middleware(s.mux))))
 }
 
 func (s *Server) routes() {
@@ -128,9 +165,9 @@ func (s *Server) routes() {
 		// Override the catch-all route so the main app listener does not redirect /metrics.
 		s.mux.HandleFunc("GET /metrics", http.NotFound)
 	}
-	s.mux.HandleFunc("GET /oauth2/callback", s.oauth2Callback)
-	s.mux.HandleFunc("GET /oauth2/login", s.oauth2Login)
-	s.mux.HandleFunc("GET /oauth2/logout", s.oauth2Logout)
+	s.mux.HandleFunc("GET /oauth2/callback", s.auth.Callback)
+	s.mux.HandleFunc("GET /oauth2/login", s.auth.Login)
+	s.mux.HandleFunc("GET /oauth2/logout", s.auth.Logout)
 	s.mux.HandleFunc("GET /", s.index)
 	s.mux.HandleFunc("GET /preferences", s.preferences)
 	s.mux.HandleFunc("POST /preferences", s.savePreferences)
@@ -167,9 +204,9 @@ func (s *Server) kubeClient(r *http.Request, cluster *kube.Cluster) *kube.Client
 	if !s.cfg.ClusterAuthUseSessionToken {
 		return cluster.Client
 	}
-	token := s.requestBearer(r)
+	token := s.auth.RequestBearer(r)
 	if token == "" {
-		// No viewer token (D8d). Fall through to the base identity -- an in-cluster
+		// No viewer token. Fall through to the base identity -- an in-cluster
 		// SA, a token-file, or a static cluster with its own credential is a real
 		// identity, not silent anonymous. Deny ONLY when the base is itself
 		// anonymous: serving that as anonymous would be a silent downgrade.

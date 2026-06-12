@@ -1,9 +1,9 @@
 package web
 
-// handlers_stream.go is the server half of Live mode (D19): the read-only
+// handlers_stream.go is the server half of Live mode: the read-only
 // `GET …/{plural}/_stream` SSE endpoint. It keeps one UNFILTERED per-cluster
-// Table snapshot in memory, feeds it from a Table watch (Unit 25's
-// kube.WatchTable), and pushes re-renders of the SAME `_table` partial as
+// Table snapshot in memory, feeds it from a Table watch
+// (kube.WatchTable), and pushes re-renders of the SAME `_table` partial as
 // `event: ro-table` frames — `f`/`sort`/columns apply at render time, never
 // to the snapshot, so an object that starts (or stops) matching the active
 // filter appears (or disappears) on the next push.
@@ -36,7 +36,7 @@ import (
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
-// Stream tuning (D19). The values are pinned by design — they live as package
+// Stream tuning for Live mode. The values are pinned by design — they live as package
 // vars only so tests can compress time (the idle cap is explicitly
 // test-injectable per the design; the defaults are asserted by
 // TestStreamBackoffSchedule and never configurable at runtime).
@@ -179,7 +179,7 @@ func watchReader(ctx context.Context, w *kube.TableWatch, out chan<- watchResult
 	}
 }
 
-// resourceStream serves `GET …/{plural}/_stream` (D19). Order is load-
+// resourceStream serves `GET …/{plural}/_stream` for Live mode. Order is load-
 // bearing: the scope/namespace checks are free and run first; the cap slot is
 // acquired before any upstream work and before SSE headers (a cap-exceeded
 // stream 429s without ever connecting); discovery then classifies watch-less
@@ -190,7 +190,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 	clusterName := r.PathValue("cluster")
 	namespace := r.PathValue("namespace")
 	plural := r.PathValue("plural")
-	// D19 scope cut: Live covers single-type AND single-cluster lists only.
+	// Live scope cut: Live covers single-type AND single-cluster lists only.
 	// Multi-type pages (plural "all"/"_all"/CSV) and multi-cluster scope
 	// (cluster "_all"/CSV) get 404 — the dropdown renders the option disabled.
 	if !isSingleListType(plural) || clusterName == kube.AllClusters || strings.Contains(clusterName, ",") {
@@ -263,8 +263,8 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 // modes have no per-session expiry: the hard streamMaxLifetime cap applies,
 // terminal reason "idle".
 func (s *Server) streamLifetime(r *http.Request) (time.Duration, string) {
-	if s.effectiveAuthMode() == config.AuthModeOIDC {
-		if session, ok := s.authSession(r); ok {
+	if s.auth.EffectiveAuthMode() == config.AuthModeOIDC {
+		if session, ok := s.auth.Session(r); ok {
 			return time.Until(time.Unix(session.Expires, 0)), "auth"
 		}
 	}
@@ -309,20 +309,22 @@ type streamSession struct {
 	eventTimes []time.Time
 }
 
+// streamHandshakeStatus maps an initial-list failure to the plain HTTP status
+// the handshake fails with: a 403 for a forbidden/unauthorized denial, a 404 for
+// a missing resource, and a 502 for everything else (the cluster could not serve
+// the snapshot). It classifies once through the shared classifier and maps the
+// kind. The stream never half-connects, so this is the whole response.
+func streamHandshakeStatus(err error) int {
+	return failureHandshakeStatus(kube.ClassifyError(err))
+}
+
 // run fetches the initial snapshot, completes the SSE handshake with the
 // initial full push, and hands off to the event loop. A failure before the
 // handshake stays a plain HTTP status — the stream never half-connects.
 func (st *streamSession) run(ctx context.Context) {
 	table, err := st.list(ctx)
 	if err != nil {
-		status := http.StatusBadGateway
-		switch {
-		case kube.IsForbidden(err):
-			status = http.StatusForbidden
-		case kube.IsNotFound(err):
-			status = http.StatusNotFound
-		}
-		http.Error(st.w, "initial list failed", status)
+		http.Error(st.w, "initial list failed", streamHandshakeStatus(err))
 		return
 	}
 	st.snapshot = table
@@ -344,7 +346,7 @@ func (st *streamSession) run(ctx context.Context) {
 
 // list fetches the stream's pristine scope Table: namespace + label selector
 // apply (apiserver-level), readout-side filters and sort do NOT — the
-// snapshot stays unfiltered by contract (D19).
+// snapshot stays unfiltered by contract.
 func (st *streamSession) list(ctx context.Context) (kube.Table, error) {
 	return st.client.Table(ctx, &st.rt, kube.ListOptions{Namespace: st.listNS, LabelSelector: st.selector})
 }
@@ -601,11 +603,12 @@ func (st *streamSession) push(ctx context.Context) error {
 // terminal writes the named `ro-terminal` frame. Write errors are ignored —
 // the stream is closing either way.
 func (st *streamSession) terminal(reason string) {
+	st.srv.observeStreamTerminal(reason)
 	_ = st.writeEvent("ro-terminal", streamTerminalPayload{G: st.gen, Reason: reason})
 }
 
 // writeEvent writes one SSE frame and flushes it — per-message flush is part
-// of the D19 plumbing (statusWriter forwards Flush; the anti-buffering header
+// of the Live stream plumbing (statusWriter forwards Flush; the anti-buffering header
 // set at the handshake keeps proxies honest). Every frame is bounded by a
 // write deadline (via statusWriter's Unwrap → http.ResponseController): a
 // connected-but-not-reading peer otherwise blocks the write forever once TCP

@@ -109,7 +109,7 @@ func toNavItems(items []navItem) []templates.NavItem {
 	for i := range items {
 		it := &items[i]
 		// Count/HasCount ride along for the sidebar Meta entries (the Events
-		// meta carries a count, D13); namespace nav items never set them.
+		// meta carries a count); namespace nav items never set them.
 		out[i] = templates.NavItem{Href: it.Href, Text: it.Text, Active: it.Active, Count: it.Count, HasCount: it.HasCount}
 	}
 	return out
@@ -226,8 +226,8 @@ func toTableData(t *tableView) templates.TableData {
 		EmptyGlyph:         icon("inbox"),
 		ClearHref:          t.ClearHref,
 	}
-	// The ⊞ column-visibility popover (D8): single-type pages only (buildListView
-	// fills ColumnVis under the D1 gate). It absorbs the tools form's labelcols +
+	// The ⊞ column-visibility popover: single-type pages only (buildListView
+	// fills ColumnVis under the single-type gate). It absorbs the tools form's labelcols +
 	// selector inputs, so it reuses the resolved toolsView values + hidden-input
 	// round-trip; nil keeps the v1 toggle-tools chrome.
 	if len(t.ColumnVis) > 0 {
@@ -346,7 +346,7 @@ func toTableData(t *tableView) templates.TableData {
 			case cellRollout:
 				tc.RolloutIcon = icon(rolloutIconName(cell.RolloutState))
 			case cellTLS:
-				// The earned-green lock (SPEC §4.13), pre-rendered only for a
+				// The earned-green TLS lock, pre-rendered only for a
 				// terminated cell (the "—" fallback carries no icon).
 				if cell.Value != "" {
 					tc.CellIcon = icon("lock")
@@ -364,7 +364,7 @@ func toTableData(t *tableView) templates.TableData {
 	return td
 }
 
-// rowDomID derives the row's DOM id from its data-key (D6: idiomorph matches
+// rowDomID derives the row's DOM id from its data-key (idiomorph matches
 // rows by id, never position). The id must be safe inside the quoted attribute
 // selector idiomorph uses (`[id="…"]`) and as an HTML id, so '%', '"', '\',
 // whitespace, and control bytes are percent-escaped; everything else (incl.
@@ -715,7 +715,7 @@ func toSearchData(v *searchView) templates.SearchData {
 	return d
 }
 
-// searchTotals builds the totals strip (D12): the tally line counts what the
+// searchTotals builds the totals strip: the tally line counts what the
 // results ACTUALLY span -- "N objects · M clusters · K kinds" where M is the
 // clusters that contributed results (the group count) -- and the meta reports
 // what the search COVERED: "searched M clusters in T s" over every cluster in
@@ -766,11 +766,11 @@ func searchTypeLabel(allTypes bool, count int) string {
 	return fmt.Sprintf("%d resource types", count)
 }
 
-// searchBanner builds the multi-cluster partial-failure banner (D11), shown only
+// searchBanner builds the multi-cluster partial-failure banner, shown only
 // when at least one cluster failed to answer: the "Searched N of M clusters — K
 // didn't respond" title, a detail line naming the failed clusters + their
 // reason, and the read-only "Retry failed" GET href. The all-cluster LIST banner
-// (Unit 5) is a DIFFERENT screen; this is the search flavour.
+// is a DIFFERENT screen; this is the search flavour.
 func searchBanner(v *searchView) templates.SearchBanner {
 	failed := 0
 	var detail []string
