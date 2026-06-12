@@ -103,6 +103,17 @@ func parseArgoClusterSecret(data map[string][]byte) (*Connection, error) {
 	if err := json.Unmarshal(rawConfig, &conf); err != nil {
 		return nil, fmt.Errorf("argo cluster secret %q: parse config: %w", name, err)
 	}
+	// Reject a server URL that points at loopback/link-local/metadata. The Argo
+	// source is the real injection vector (a cluster actor can create these
+	// Secrets), so it gets this guard tightest: a bad server URL is a typed
+	// skip-with-error, surfaced as a broken cluster (Config nil) rather than a
+	// connection readout would dial at the cloud metadata endpoint.
+	if err := validateClusterServerURL(server); err != nil {
+		return nil, fmt.Errorf("argo cluster secret %q: %w", name, err)
+	}
+	// Insecure TLS is honored, not blocked (zero blocking gates): warn so a
+	// disabled TLS verification on this cluster is visible to the operator.
+	warnInsecureTLS(name, SourceSecret, conf.TLSClientConfig.Insecure)
 	// awsAuthConfig is the legacy EKS IAM path; readout does not ship the aws
 	// binary (out of scope / Accepted Risk), so honoring it would mean building a
 	// credential-less connection that silently runs anonymous -- exactly the class

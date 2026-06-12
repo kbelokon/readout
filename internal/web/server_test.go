@@ -12,12 +12,26 @@ import (
 	"testing"
 	"time"
 
+	"os"
+
 	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/tests/unit/fakeapi"
 	"k8s.io/client-go/rest"
 )
+
+// TestMain enables the loopback exception in kube's cluster-server-URL validator
+// for the whole web test binary: every web test runs its fake apiserver on a
+// 127.0.0.1 httptest port, and without this the loopback guard would mark those
+// test clusters broken. The loopback-reject policy itself is covered in
+// internal/kube; link-local/metadata stays rejected here too.
+func TestMain(m *testing.M) {
+	restore := kube.SetAllowLoopbackClusterURLForTest(true)
+	code := m.Run()
+	restore()
+	os.Exit(code)
+}
 
 func TestReadOnlyMiddlewareRejectsWritesEverywhere(t *testing.T) {
 	app := newTestServer(t)

@@ -284,6 +284,16 @@ func discoverStatic(cfg *appconfig.Config, gate credentialPluginGate) []discover
 			result = append(result, dc)
 			continue
 		}
+		// Reject a server URL pointing at loopback/link-local/metadata (resolve
+		// and check), so a static cluster cannot aim readout at the cloud metadata
+		// endpoint. Private/RFC1918 apiservers are allowed.
+		if err := validateClusterServerURL(cc.Server); err != nil {
+			dc.Err = err
+			result = append(result, dc)
+			continue
+		}
+		// Insecure TLS is honored, not blocked: warn so it is visible.
+		warnInsecureTLS(cc.Name, SourceStatic, cc.InsecureSkipTLSVerify)
 		restCfg, err := connectionFromClusterConfig(cc).RESTConfig()
 		if err != nil {
 			dc.Err = err
@@ -457,6 +467,15 @@ func discoverKubeconfig(cfg *appconfig.Config, gate credentialPluginGate) ([]dis
 			result = append(result, dc)
 			continue
 		}
+		// Reject a server URL pointing at loopback/link-local/metadata (resolve
+		// and check). The resolved Host is what client-go will dial.
+		if err := validateClusterServerURL(restCfg.Host); err != nil {
+			dc.Err = err
+			result = append(result, dc)
+			continue
+		}
+		// Insecure TLS is honored, not blocked: warn so it is visible.
+		warnInsecureTLS(name, SourceKubeconfig, restCfg.Insecure)
 		// Exec-plugin gate (kubeconfig is an operator-owned source): a denied plugin
 		// becomes a broken cluster, never a silently-stripped anonymous connection.
 		if err := gate.applyCredentialPluginPolicy(restCfg, name, SourceKubeconfig); err != nil {

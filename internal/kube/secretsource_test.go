@@ -27,6 +27,7 @@ import (
 // rather than aborting the whole reload. A non-existent host cluster forces the
 // source error deterministically (no in-cluster env dependency).
 func TestArgoSourceFailureNonFatalToOtherSources(t *testing.T) {
+	allowLoopbackClusterURLs(t)
 	good := newTLSFakeAPIServer(t)
 	cfg := &appconfig.Config{
 		Clusters: []appconfig.ClusterConnection{
@@ -115,6 +116,9 @@ func splitYAMLDocs(s string) []string {
 // Connection, and the produced rest.Config carries the decoded CA, the token, and
 // the client cert -- via the proven RESTConfig, with no hand-set fields.
 func TestArgoSecretParsesNestedConfig(t *testing.T) {
+	// Hermetic resolver: map the fixture host to a benign IP so the server-URL
+	// validator does not hit real DNS (and so the parse stays offline).
+	stubResolver(t, map[string][]string{"prod.example.com": {"10.0.0.1"}})
 	data := loadFixtureSecretData(t, 0) // the bearerToken + TLS prod cluster
 
 	conn, err := parseArgoClusterSecret(data)
@@ -187,6 +191,7 @@ func TestArgoSecretParsesNestedConfig(t *testing.T) {
 // AuthInfo.Exec with InteractiveMode forced to Never, so its RESTConfig() does not
 // fail clientcmd's exec validation.
 func TestArgoSecretParsesExecProviderVariant(t *testing.T) {
+	stubResolver(t, map[string][]string{"REDACTED.gr7.us-east-1.eks.amazonaws.com": {"10.0.0.2"}})
 	data := loadFixtureSecretData(t, 1) // the exec-plugin EKS cluster
 
 	conn, err := parseArgoClusterSecret(data)
@@ -243,6 +248,7 @@ func TestArgoSecretSourceForbiddenHostIsSourceError(t *testing.T) {
 // the bad one with Err set and Config nil -- so a single bad Secret never blanks
 // its siblings.
 func TestArgoSecretSourceMalformedSecretSkipped(t *testing.T) {
+	stubResolver(t, map[string][]string{"good.example.com": {"10.0.0.5"}})
 	good := argoClusterSecret("good", map[string]string{
 		"name":   "good-cluster",
 		"server": "https://good.example.com",
@@ -331,6 +337,10 @@ func argoClusterSecret(name string, stringData map[string]string) *corev1.Secret
 // untrusted-content identifier) is skip-with-error rather than an empty-keyed
 // cluster that collides with siblings.
 func TestArgoSecretRejectsUnsupportedAndEmptyName(t *testing.T) {
+	stubResolver(t, map[string][]string{
+		"eks.example":     {"10.0.0.6"},
+		"no-name.example": {"10.0.0.7"},
+	})
 	t.Run("awsAuthConfig sole credential is skip-with-error", func(t *testing.T) {
 		data := map[string][]byte{
 			"name":   []byte("eks-prod"),

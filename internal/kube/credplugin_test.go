@@ -188,6 +188,7 @@ func TestCredPluginOperatorAllowlistExtendsDefault(t *testing.T) {
 // aws) is DENIED under the default (Argo defaults DenyAll), surfaced as a broken
 // cluster with Config nil -- it is never built into a usable (anonymous) client.
 func TestArgoSecretExecDeniedNotDowngradedToAnonymous(t *testing.T) {
+	stubResolver(t, map[string][]string{"eks.example.com": {"10.0.0.3"}})
 	secret := argoClusterSecret("eks", map[string]string{
 		"name":   "eks-prod",
 		"server": "https://eks.example.com",
@@ -223,6 +224,7 @@ func TestArgoSecretExecDeniedNotDowngradedToAnonymous(t *testing.T) {
 // override (with aws) admits the same Argo exec Secret -- the source-aware DenyAll
 // default applies only when no override is set.
 func TestArgoSecretExecAllowedUnderGlobalAllowlist(t *testing.T) {
+	stubResolver(t, map[string][]string{"eks.example.com": {"10.0.0.3"}})
 	secret := argoClusterSecret("eks", map[string]string{
 		"name":   "eks-prod",
 		"server": "https://eks.example.com",
@@ -253,6 +255,7 @@ func TestArgoSecretExecAllowedUnderGlobalAllowlist(t *testing.T) {
 // through discoverStatic by asserting the allowed common-plugin path, while the
 // denied-path fail-closed contract is proven at the gate and Argo levels above.)
 func TestStaticExecGateThreaded(t *testing.T) {
+	stubResolver(t, map[string][]string{"one": {"10.0.0.4"}})
 	cfg := &appconfig.Config{
 		Clusters: []appconfig.ClusterConnection{{Name: "one", Server: "https://one"}},
 	}
