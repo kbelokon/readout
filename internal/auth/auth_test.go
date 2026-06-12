@@ -138,7 +138,12 @@ func TestHeaderGroupsReachHook(t *testing.T) {
 	if rec.Code != http.StatusNoContent || !nextCalled {
 		t.Fatalf("headers auth status=%d nextCalled=%t body=%s", rec.Code, nextCalled, rec.Body.String())
 	}
-	if payload.Token["access_token"] != "" || payload.Token["expiry"] == "" {
+	// Token minimization: with no includeTokens configured, the hook receives only
+	// token_type and expiry metadata -- never the access/refresh/id tokens.
+	if _, ok := payload.Token["access_token"]; ok {
+		t.Fatalf("access_token leaked to hook by default: %#v", payload.Token)
+	}
+	if payload.Token["expiry"] == "" {
 		t.Fatalf("headers hook token payload = %#v", payload.Token)
 	}
 	if payload.Session.User != "kirill" || payload.Session.Email != "kirill@example.test" || !reflect.DeepEqual(payload.Session.Groups, []string{"viewers", "ops", "debug"}) {
@@ -892,6 +897,9 @@ func TestAuthorizationHookAllowsDeniesAndUpdatesSession(t *testing.T) {
 	defer hook.Close()
 
 	a.cfg.AuthorizationHookURL = hook.URL
+	// Opt every token in so this case exercises the include-tokens lane: with
+	// access|id|refresh listed, all three reach the hook.
+	a.cfg.AuthorizationHookIncludeTokens = []string{"access", "id", "refresh"}
 	allowed, err = a.authorizationHook(context.Background(), token, &session)
 	if err != nil {
 		t.Fatal(err)
@@ -899,7 +907,7 @@ func TestAuthorizationHookAllowsDeniesAndUpdatesSession(t *testing.T) {
 	if allowed {
 		t.Fatal("hook should deny access")
 	}
-	if payload.Token["access_token"] != "hook-token" || payload.Token["id_token"] != "id.jwt" || payload.Session.User != "old-user" {
+	if payload.Token["access_token"] != "hook-token" || payload.Token["id_token"] != "id.jwt" || payload.Token["refresh_token"] != "refresh" || payload.Session.User != "old-user" {
 		t.Fatalf("unexpected hook payload: %#v", payload)
 	}
 	if session.User != "new-user" || session.Email != "new@example.test" || !reflect.DeepEqual(session.Groups, []string{"ops", "dev"}) {
@@ -951,6 +959,7 @@ func TestAuthorizationHookPayload(t *testing.T) {
 	}))
 	defer hook.Close()
 	a.cfg.AuthorizationHookURL = hook.URL
+	a.cfg.AuthorizationHookIncludeTokens = []string{"id"}
 	session = Session{User: "old"}
 	allowed, err = a.authorizationHook(context.Background(), token, &session)
 	if err != nil || !allowed || session.User != "new" || session.Email != "n@example" || len(session.Groups) != 1 {
@@ -965,6 +974,138 @@ func TestAuthorizationHookPayload(t *testing.T) {
 	allowed, err = a.authorizationHook(context.Background(), token, &Session{})
 	if err != nil || allowed {
 		t.Fatalf("deny hook allowed=%t err=%v", allowed, err)
+	}
+}
+
+// TestAuthorizationHookFailsClosed pins the fail-closed contract: a configured
+// hook that does NOT return an explicit {"allowed": true} denies. A missing
+// `allowed` field, an explicit false, an empty object, and a malformed JSON body
+// all deny -- only an explicit true admits. A bug or compromise in the hook can
+// no longer fail open.
+func TestAuthorizationHookFailsClosed(t *testing.T) {
+	token := &oauth2.Token{AccessToken: "tok", Expiry: time.Now().Add(time.Hour)}
+
+	cases := []struct {
+		name string
+		body string
+		// for malformed JSON the call errors out; otherwise it returns deny w/o err.
+		wantErr bool
+	}{
+		{name: "empty object", body: `{}`},
+		{name: "explicit false", body: `{"allowed":false}`},
+		{name: "missing allowed, other fields", body: `{"user":"x","groups":["ops"]}`},
+		{name: "null allowed", body: `{"allowed":null}`},
+		{name: "malformed json", body: `{not json`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer hook.Close()
+			a := newAuth(t, &config.Config{AuthorizationHookURL: hook.URL})
+			allowed, err := a.authorizationHook(context.Background(), token, &Session{})
+			if allowed {
+				t.Fatalf("%s: hook allowed access, must fail closed", tc.name)
+			}
+			if tc.wantErr && err == nil {
+				t.Fatalf("%s: expected an error", tc.name)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("%s: unexpected error %v", tc.name, err)
+			}
+		})
+	}
+
+	// The one admit lane: an explicit {"allowed": true} passes.
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"allowed":true}`))
+	}))
+	defer ok.Close()
+	a := newAuth(t, &config.Config{AuthorizationHookURL: ok.URL})
+	allowed, err := a.authorizationHook(context.Background(), token, &Session{})
+	if err != nil || !allowed {
+		t.Fatalf("explicit allow lane allowed=%t err=%v", allowed, err)
+	}
+}
+
+// TestAuthorizationHookOmitsTokensByDefault pins token minimization: with no
+// includeTokens configured, the hook receives token_type and expiry only -- never
+// access/refresh/id tokens -- and listed tokens (and only those) appear when the
+// operator opts in.
+func TestAuthorizationHookOmitsTokensByDefault(t *testing.T) {
+	token := (&oauth2.Token{
+		AccessToken:  "access-secret",
+		TokenType:    "Bearer",
+		RefreshToken: "refresh-secret",
+		Expiry:       time.Now().Add(time.Hour),
+	}).WithExtra(map[string]any{"id_token": "id-secret"})
+
+	var got map[string]any
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Token map[string]any `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		got = payload.Token
+		_, _ = w.Write([]byte(`{"allowed":true}`))
+	}))
+	defer hook.Close()
+
+	a := newAuth(t, &config.Config{AuthorizationHookURL: hook.URL})
+
+	// Default: no tokens.
+	if _, err := a.authorizationHook(context.Background(), token, &Session{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"access_token", "refresh_token", "id_token"} {
+		if _, ok := got[k]; ok {
+			t.Fatalf("%s leaked to hook by default: %#v", k, got)
+		}
+	}
+	if got["token_type"] != "Bearer" || got["expiry"] == "" {
+		t.Fatalf("default token metadata missing: %#v", got)
+	}
+
+	// Opt only access in: access_token present, refresh/id still absent.
+	a.cfg.AuthorizationHookIncludeTokens = []string{"access"}
+	if _, err := a.authorizationHook(context.Background(), token, &Session{}); err != nil {
+		t.Fatal(err)
+	}
+	if got["access_token"] != "access-secret" {
+		t.Fatalf("opted-in access_token missing: %#v", got)
+	}
+	if _, ok := got["refresh_token"]; ok {
+		t.Fatalf("refresh_token leaked when only access opted in: %#v", got)
+	}
+	if _, ok := got["id_token"]; ok {
+		t.Fatalf("id_token leaked when only access opted in: %#v", got)
+	}
+}
+
+// TestAuthorizationHookErrorSanitized pins that a hook 5xx body never reaches the
+// caller's error: the surfaced error carries the status but NOT the response body
+// (which on a compromised hook is attacker-chosen).
+func TestAuthorizationHookErrorSanitized(t *testing.T) {
+	const secretBody = "secret=super-sensitive-leak-marker"
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, secretBody, http.StatusInternalServerError)
+	}))
+	defer hook.Close()
+
+	a := newAuth(t, &config.Config{AuthorizationHookURL: hook.URL})
+	token := &oauth2.Token{AccessToken: "tok", Expiry: time.Now().Add(time.Hour)}
+	allowed, err := a.authorizationHook(context.Background(), token, &Session{})
+	if allowed {
+		t.Fatal("5xx hook must deny")
+	}
+	if err == nil {
+		t.Fatal("expected an error from a 5xx hook")
+	}
+	if strings.Contains(err.Error(), secretBody) {
+		t.Fatalf("hook response body leaked into error: %v", err)
 	}
 }
 

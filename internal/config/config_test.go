@@ -646,3 +646,78 @@ func TestAddress(t *testing.T) {
 		t.Fatalf("Address = %q", got)
 	}
 }
+
+// TestAuthorizationHookURLValidated pins the hook-URL load-time policy: https is
+// accepted, http only for a loopback dev target, and a non-loopback http URL, a
+// no-scheme value, or a link-local/metadata host is a config error. This policy
+// is intentionally stricter than the cluster-server validator (which allows
+// private IPs) and is enforced as a config-syntax error, not a startup gate.
+func TestAuthorizationHookURLValidated(t *testing.T) {
+	valid := []string{
+		"https://authz.example/hook",
+		"https://authz.example:8443/hook",
+		"http://localhost:9000/hook",
+		"http://127.0.0.1:9000/hook",
+		"http://[::1]:9000/hook",
+	}
+	for _, raw := range valid {
+		t.Run("valid "+raw, func(t *testing.T) {
+			cfg, err := Parse([]string{"--config", writeConfig(t, "hooks:\n  authorizationUrl: \""+raw+"\"\n")})
+			if err != nil {
+				t.Fatalf("hook URL %q should load: %v", raw, err)
+			}
+			if cfg.AuthorizationHookURL != raw {
+				t.Fatalf("hook URL = %q, want %q", cfg.AuthorizationHookURL, raw)
+			}
+		})
+	}
+
+	invalid := []string{
+		"http://authz.example/hook",      // non-loopback http
+		"https://169.254.169.254/latest", // cloud metadata host
+		"http://169.254.169.254/latest",  // cloud metadata over http
+		"ftp://authz.example/hook",       // wrong scheme
+		"authz.example/hook",             // no scheme/host
+	}
+	for _, raw := range invalid {
+		t.Run("invalid "+raw, func(t *testing.T) {
+			if _, err := Parse([]string{"--config", writeConfig(t, "hooks:\n  authorizationUrl: \""+raw+"\"\n")}); err == nil {
+				t.Fatalf("hook URL %q should be rejected", raw)
+			}
+		})
+	}
+}
+
+// TestAuthorizationHookIncludeTokens pins the includeTokens enum: valid token
+// names load through to the resolved Config, blanks are dropped, an unknown token
+// is a config error, and a typo of the key is rejected by strict parse.
+func TestAuthorizationHookIncludeTokens(t *testing.T) {
+	cfg, err := Parse([]string{"--config", writeConfig(t, "hooks:\n  authorizationUrl: https://a.example/h\n  authorizationIncludeTokens:\n    - access\n    - id\n")})
+	if err != nil {
+		t.Fatalf("valid includeTokens should load: %v", err)
+	}
+	if len(cfg.AuthorizationHookIncludeTokens) != 2 ||
+		cfg.AuthorizationHookIncludeTokens[0] != "access" ||
+		cfg.AuthorizationHookIncludeTokens[1] != "id" {
+		t.Fatalf("includeTokens = %#v", cfg.AuthorizationHookIncludeTokens)
+	}
+
+	// Default (omitted) is empty: no tokens are sent.
+	cfg, err = Parse([]string{"--config", writeConfig(t, "hooks:\n  authorizationUrl: https://a.example/h\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AuthorizationHookIncludeTokens) != 0 {
+		t.Fatalf("default includeTokens = %#v, want empty", cfg.AuthorizationHookIncludeTokens)
+	}
+
+	// An unknown token name is a config error.
+	if _, err := Parse([]string{"--config", writeConfig(t, "hooks:\n  authorizationIncludeTokens:\n    - bogus\n")}); err == nil {
+		t.Fatal("unknown token name should be rejected")
+	}
+
+	// A typo of the key is rejected by strict parse.
+	if _, err := Parse([]string{"--config", writeConfig(t, "hooks:\n  authorizationIncludeToken:\n    - access\n")}); err == nil {
+		t.Fatal("typo'd includeTokens key should be rejected by strict parse")
+	}
+}

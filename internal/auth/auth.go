@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -132,7 +133,11 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			session := a.trustedHeaderSession(r)
 			allowed, err := a.authorizationHook(r.Context(), &oauth2.Token{}, &session)
 			if err != nil {
-				http.Error(w, "authorization hook failed: "+err.Error(), http.StatusForbidden)
+				// The hook error can carry endpoint-internal (or attacker-chosen)
+				// detail; log it server-side and return a fixed generic message so
+				// nothing from the hook reaches the browser.
+				slog.Error("authorization hook failed", "path", r.URL.Path, "error", err)
+				http.Error(w, "authorization hook denied or failed", http.StatusForbidden)
 				return
 			}
 			if !allowed {
@@ -169,14 +174,26 @@ func (a *Authenticator) authorizationHook(ctx context.Context, token *oauth2.Tok
 	if err != nil {
 		return false, err
 	}
+	// Token minimization: by default the hook receives only the token_type and
+	// expiry metadata, never the bearer token set. The operator opts specific
+	// tokens in via hooks.authorizationIncludeTokens (access|id|refresh); only the
+	// listed tokens are added. A buggy or compromised hook thus cannot harvest the
+	// full OAuth token set.
 	tokenMap := map[string]any{
-		"access_token":  token.AccessToken,
-		"token_type":    token.TokenType,
-		"refresh_token": token.RefreshToken,
-		"expiry":        token.Expiry.Format(time.RFC3339),
+		"token_type": token.TokenType,
+		"expiry":     token.Expiry.Format(time.RFC3339),
 	}
-	if idToken, _ := token.Extra("id_token").(string); idToken != "" {
-		tokenMap["id_token"] = idToken
+	for _, want := range a.cfg.AuthorizationHookIncludeTokens {
+		switch want {
+		case "access":
+			tokenMap["access_token"] = token.AccessToken
+		case "refresh":
+			tokenMap["refresh_token"] = token.RefreshToken
+		case "id":
+			if idToken, _ := token.Extra("id_token").(string); idToken != "" {
+				tokenMap["id_token"] = idToken
+			}
+		}
 	}
 	result, err := a.hooks.Authorization(ctx, a.cfg.AuthorizationHookURL, hooks.AuthorizationRequest{
 		Token:   tokenMap,
@@ -194,10 +211,15 @@ func (a *Authenticator) authorizationHook(ctx context.Context, token *oauth2.Tok
 	if result.Groups != nil {
 		session.Groups = result.Groups
 	}
-	if result.Allowed != nil {
-		return *result.Allowed, nil
+	// Fail closed: a configured hook must return an explicit {"allowed": true} to
+	// admit. A missing `allowed` field (nil) -- a hook bug, a malformed response,
+	// or a compromised endpoint omitting the field -- denies. Only an explicit
+	// true allows; an explicit false denies. (The no-hook-configured case returned
+	// allow at the top of this function.)
+	if result.Allowed != nil && *result.Allowed {
+		return true, nil
 	}
-	return true, nil
+	return false, nil
 }
 
 func (a *Authenticator) trustedHeaderSession(r *http.Request) Session {
@@ -356,7 +378,8 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed, err := a.authorizationHook(r.Context(), token, &session)
 	if err != nil {
-		http.Error(w, "authorization hook failed: "+err.Error(), http.StatusForbidden)
+		slog.Error("authorization hook failed", "path", r.URL.Path, "error", err)
+		http.Error(w, "authorization hook denied or failed", http.StatusForbidden)
 		return
 	}
 	if !allowed {

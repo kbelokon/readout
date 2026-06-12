@@ -288,7 +288,16 @@ auth:
 
 # External JSON HTTP hooks (replace the upstream in-process coroutine hooks).
 hooks:
+  # The authorization hook is consulted on every gated request. It is fail-closed:
+  # a configured hook must return {"allowed": true} to admit; a missing/false
+  # `allowed`, a malformed response, or an error denies. The URL is validated at
+  # load: https only, http permitted only for a loopback dev target, and never a
+  # link-local/metadata host.
   authorizationUrl: ""
+  # By default the hook receives only identity claims (user, email, groups,
+  # issuer, subject) plus token_type/expiry metadata -- never the OAuth tokens.
+  # Opt specific tokens in here; allowed values: access, id, refresh.
+  authorizationIncludeTokens: []
   resourcePrerenderUrl: ""
 
 # Secrets come from the environment, never this file. Environment overrides the

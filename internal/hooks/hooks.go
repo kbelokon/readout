@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -168,7 +169,13 @@ func (c *Client) postJSON(ctx context.Context, endpoint string, payload any, out
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s: %s", resp.Status, string(data))
+		// The hook response body can carry endpoint-internal detail (and, on a
+		// compromised hook, attacker-chosen content) that must never reach the
+		// browser through a surfaced error. Log status+body server-side and return
+		// an error carrying only the status -- no body. Callers map this to a
+		// generic client message.
+		slog.Error("hook call failed", "endpoint", endpoint, "status", resp.Status, "body", string(data))
+		return fmt.Errorf("hook returned %s", resp.Status)
 	}
 	if len(data) == 0 || out == nil {
 		return nil

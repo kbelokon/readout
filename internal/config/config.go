@@ -144,7 +144,12 @@ type Config struct {
 	SessionSecretFile          string
 	PublicURL                  string
 	AuthorizationHookURL       string
-	ResourcePrerenderHookURL   string
+	// AuthorizationHookIncludeTokens lists which OAuth tokens (access|id|refresh)
+	// the authorization hook receives. It defaults to empty: by default the hook
+	// gets only identity claims, never the bearer token set, so a buggy or
+	// compromised hook cannot harvest tokens. Only the listed tokens are sent.
+	AuthorizationHookIncludeTokens []string
+	ResourcePrerenderHookURL       string
 }
 
 // fileLink is the on-disk form of Link for the YAML file. sigs.k8s.io/yaml
@@ -305,8 +310,12 @@ type fileConfig struct {
 	} `json:"auth"`
 
 	Hooks struct {
-		AuthorizationURL     string `json:"authorizationUrl"`
-		ResourcePrerenderURL string `json:"resourcePrerenderUrl"`
+		AuthorizationURL string `json:"authorizationUrl"`
+		// AuthorizationIncludeTokens opts the authorization hook into receiving
+		// specific OAuth tokens. It is a list drawn from access|id|refresh; an
+		// empty/omitted list (the default) sends identity claims only.
+		AuthorizationIncludeTokens []string `json:"authorizationIncludeTokens"`
+		ResourcePrerenderURL       string   `json:"resourcePrerenderUrl"`
 	} `json:"hooks"`
 }
 
@@ -365,50 +374,51 @@ func resolve(file *fileConfig) (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		Port:                       firstNonZero(file.Port, 8080),
-		MetricsPort:                file.MetricsPort,
-		ListenAddress:              strings.TrimSpace(file.ListenAddress),
-		KubeconfigPath:             file.KubeconfigPath,
-		KubeconfigContexts:         file.KubeconfigContexts,
-		ClusterAuthUseSessionToken: file.ClusterAuthUseSessionToken,
-		ShowContainerLogs:          file.ShowContainerLogs,
-		NoAccessLogs:               file.NoAccessLogs,
-		IncludeSecrets:             file.IncludeSecrets,
-		TemplatesPath:              file.TemplatesPath,
-		StaticAssetsPath:           file.StaticAssetsPath,
-		SearchDefaultResourceTypes: file.Search.DefaultResourceTypes,
-		SearchOfferedResourceTypes: file.Search.OfferedResourceTypes,
-		SearchMaxConcurrency:       100,
-		DefaultLabelColumns:        mapOrEmpty(file.LabelColumns),
-		DefaultHiddenColumns:       overlayMap(v2DefaultHiddenColumns, file.HiddenColumns),
-		DefaultCustomColumns:       mapOrEmpty(file.CustomColumns),
-		PreferredAPIVersions:       mapOrEmpty(file.PreferredAPIVersions),
-		DefaultTheme:               firstNonEmpty(file.DefaultTheme, "dark"),
-		ThemeOptions:               file.ThemeOptions,
-		Clusters:                   clusters,
-		ArgoCD:                     resolveArgoCD(file.ArgoCD),
-		ExternalClusters:           clusterMap(file.ExternalClusters),
-		ObjectLinks:                resolveLinks(file.ObjectLinks),
-		LabelLinks:                 resolveLinks(file.LabelLinks),
-		TimestampLinks:             resolveLinks(file.TimestampLinks),
-		ResourceIcons:              resolveResourceIcons(file.ResourceIcons),
-		Sidebar:                    resolveSidebar(file.Sidebar),
-		AuthMode:                   firstNonEmpty(file.Auth.Mode, AuthModeNone),
-		TrustedHeaderUser:          firstNonEmpty(file.Auth.TrustedHeaders.User, "X-Forwarded-User"),
-		TrustedHeaderEmail:         firstNonEmpty(file.Auth.TrustedHeaders.Email, "X-Forwarded-Email"),
-		TrustedHeaderGroups:        firstNonEmpty(file.Auth.TrustedHeaders.Groups, "X-Forwarded-Groups"),
-		OIDCIssuerURL:              file.Auth.OIDC.IssuerURL,
-		OIDCClientID:               file.Auth.OIDC.ClientID,
-		OAuth2ClientIDFile:         file.Auth.OIDC.ClientIDFile,
-		OAuth2ClientSecretFile:     file.Auth.OIDC.ClientSecretFile,
-		OIDCRedirectURL:            file.Auth.OIDC.RedirectURL,
-		OAuth2AuthorizeURL:         file.Auth.OIDC.AuthorizeURL,
-		OAuth2TokenURL:             file.Auth.OIDC.TokenURL,
-		OAuth2Scope:                file.Auth.OIDC.Scope,
-		SessionSecretFile:          file.SessionSecretFile,
-		PublicURL:                  file.PublicURL,
-		AuthorizationHookURL:       file.Hooks.AuthorizationURL,
-		ResourcePrerenderHookURL:   file.Hooks.ResourcePrerenderURL,
+		Port:                           firstNonZero(file.Port, 8080),
+		MetricsPort:                    file.MetricsPort,
+		ListenAddress:                  strings.TrimSpace(file.ListenAddress),
+		KubeconfigPath:                 file.KubeconfigPath,
+		KubeconfigContexts:             file.KubeconfigContexts,
+		ClusterAuthUseSessionToken:     file.ClusterAuthUseSessionToken,
+		ShowContainerLogs:              file.ShowContainerLogs,
+		NoAccessLogs:                   file.NoAccessLogs,
+		IncludeSecrets:                 file.IncludeSecrets,
+		TemplatesPath:                  file.TemplatesPath,
+		StaticAssetsPath:               file.StaticAssetsPath,
+		SearchDefaultResourceTypes:     file.Search.DefaultResourceTypes,
+		SearchOfferedResourceTypes:     file.Search.OfferedResourceTypes,
+		SearchMaxConcurrency:           100,
+		DefaultLabelColumns:            mapOrEmpty(file.LabelColumns),
+		DefaultHiddenColumns:           overlayMap(v2DefaultHiddenColumns, file.HiddenColumns),
+		DefaultCustomColumns:           mapOrEmpty(file.CustomColumns),
+		PreferredAPIVersions:           mapOrEmpty(file.PreferredAPIVersions),
+		DefaultTheme:                   firstNonEmpty(file.DefaultTheme, "dark"),
+		ThemeOptions:                   file.ThemeOptions,
+		Clusters:                       clusters,
+		ArgoCD:                         resolveArgoCD(file.ArgoCD),
+		ExternalClusters:               clusterMap(file.ExternalClusters),
+		ObjectLinks:                    resolveLinks(file.ObjectLinks),
+		LabelLinks:                     resolveLinks(file.LabelLinks),
+		TimestampLinks:                 resolveLinks(file.TimestampLinks),
+		ResourceIcons:                  resolveResourceIcons(file.ResourceIcons),
+		Sidebar:                        resolveSidebar(file.Sidebar),
+		AuthMode:                       firstNonEmpty(file.Auth.Mode, AuthModeNone),
+		TrustedHeaderUser:              firstNonEmpty(file.Auth.TrustedHeaders.User, "X-Forwarded-User"),
+		TrustedHeaderEmail:             firstNonEmpty(file.Auth.TrustedHeaders.Email, "X-Forwarded-Email"),
+		TrustedHeaderGroups:            firstNonEmpty(file.Auth.TrustedHeaders.Groups, "X-Forwarded-Groups"),
+		OIDCIssuerURL:                  file.Auth.OIDC.IssuerURL,
+		OIDCClientID:                   file.Auth.OIDC.ClientID,
+		OAuth2ClientIDFile:             file.Auth.OIDC.ClientIDFile,
+		OAuth2ClientSecretFile:         file.Auth.OIDC.ClientSecretFile,
+		OIDCRedirectURL:                file.Auth.OIDC.RedirectURL,
+		OAuth2AuthorizeURL:             file.Auth.OIDC.AuthorizeURL,
+		OAuth2TokenURL:                 file.Auth.OIDC.TokenURL,
+		OAuth2Scope:                    file.Auth.OIDC.Scope,
+		SessionSecretFile:              file.SessionSecretFile,
+		PublicURL:                      file.PublicURL,
+		AuthorizationHookURL:           file.Hooks.AuthorizationURL,
+		AuthorizationHookIncludeTokens: file.Hooks.AuthorizationIncludeTokens,
+		ResourcePrerenderHookURL:       file.Hooks.ResourcePrerenderURL,
 	}
 	if file.Search.MaxConcurrency != nil {
 		cfg.SearchMaxConcurrency = *file.Search.MaxConcurrency
@@ -434,6 +444,22 @@ func resolve(file *fileConfig) (Config, error) {
 	cfg.SessionSecret = firstNonEmpty(os.Getenv("READOUT_SESSION_SECRET"), cfg.SessionSecret)
 	cfg.AuthorizationHookURL = firstNonEmpty(os.Getenv("READOUT_AUTHORIZATION_HOOK_URL"), cfg.AuthorizationHookURL)
 	cfg.ResourcePrerenderHookURL = firstNonEmpty(os.Getenv("READOUT_RESOURCE_PRERENDER_HOOK_URL"), cfg.ResourcePrerenderHookURL)
+
+	// The authorization hook is an outbound call to an external endpoint, so its
+	// URL is validated as a config-syntax check (NOT a security startup gate): it
+	// must be https, or http only for a loopback dev target, and never point at a
+	// link-local/cloud-metadata host. This is a SEPARATE policy from the
+	// cluster-server URL validator -- a hook is external by design, a cluster
+	// server may legitimately be a private IP -- so the two are kept as distinct
+	// helpers and must not be merged.
+	if cfg.AuthorizationHookURL != "" {
+		if err := validateHookURL(cfg.AuthorizationHookURL); err != nil {
+			return Config{}, fmt.Errorf("hooks.authorizationUrl: %w", err)
+		}
+	}
+	if cfg.AuthorizationHookIncludeTokens, err = normalizeIncludeTokens(cfg.AuthorizationHookIncludeTokens); err != nil {
+		return Config{}, fmt.Errorf("hooks.authorizationIncludeTokens: %w", err)
+	}
 
 	if cfg.IncludeNamespaces, err = compilePatterns(file.IncludeNamespaces); err != nil {
 		return Config{}, fmt.Errorf("includeNamespaces: %w", err)
@@ -744,6 +770,80 @@ func normalizePublicURL(raw string) (string, error) {
 		return "", fmt.Errorf("publicUrl must be an origin (no path); readout serves on its own host, got %q", raw)
 	}
 	return u.Scheme + "://" + u.Host, nil
+}
+
+// validateHookURL checks an external hook URL at config load. It is intentionally
+// strict because the hook is an outbound call carrying identity (and optionally
+// tokens): the scheme must be https, with http permitted ONLY for a loopback dev
+// target, and the host must not be a link-local / cloud-metadata address
+// (169.254.0.0/16, fe80::/10) -- the classic SSRF-to-metadata target. This policy
+// is DELIBERATELY different from the cluster-server URL validator: a cluster API
+// server may legitimately sit on a private IP, so the two validators stay
+// separate and must not be merged.
+func validateHookURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("not a valid URL: %w", err)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("must include a host, got %q", raw)
+	}
+	host := u.Hostname()
+	switch u.Scheme {
+	case "https":
+		// always allowed
+	case "http":
+		if !isLoopbackURLHost(host) {
+			return fmt.Errorf("http hook URL is allowed only for a loopback dev target, got %q", raw)
+		}
+	default:
+		return fmt.Errorf("must be an https URL (http allowed only for loopback), got %q", raw)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("hook URL must not target a link-local/metadata host, got %q", raw)
+		}
+	}
+	return nil
+}
+
+// isLoopbackURLHost reports whether a URL host (no port) is a loopback target:
+// the literal name "localhost" or any loopback IP literal.
+func isLoopbackURLHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// includeTokenValues is the closed enum of tokens the authorization hook may opt
+// into receiving.
+var includeTokenValues = map[string]bool{
+	"access":  true,
+	"id":      true,
+	"refresh": true,
+}
+
+// normalizeIncludeTokens validates the hooks.authorizationIncludeTokens enum
+// list: each entry must be one of access|id|refresh (a bad value is a
+// config-syntax error). Blank entries are skipped; an empty/omitted list returns
+// nil so the auth layer sends identity claims only.
+func normalizeIncludeTokens(raw []string) ([]string, error) {
+	var result []string
+	for _, t := range raw {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if !includeTokenValues[t] {
+			return nil, fmt.Errorf("invalid token %q (allowed: access, id, refresh)", t)
+		}
+		result = append(result, t)
+	}
+	return result, nil
 }
 
 func readSecretFile(path string) (string, error) {

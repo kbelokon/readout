@@ -104,6 +104,27 @@ See [`readout.yaml`](readout.yaml) for the full annotated schema, including auth
 (`none` / `headers` / `oidc`), theming, external readout cross-links, and the
 external JSON HTTP hooks.
 
+### Authorization hook
+
+`hooks.authorizationUrl` points at an external JSON endpoint consulted on every
+gated request (and at OAuth callback). It is **fail-closed**: a configured hook
+must answer `{"allowed": true}` to admit the request. A missing or `false`
+`allowed` field, a malformed response, or any call error **denies** access — a
+buggy or compromised hook cannot fail open. The hook may also return `user`,
+`email`, and `groups` to refine the identity. Hook failures surface a generic
+message to the browser; the underlying status/body is logged server-side only.
+
+- **URL validation (at load).** The hook URL must be `https`. Plain `http` is
+  accepted **only** for a loopback dev target (`localhost`, `127.0.0.1`, `::1`),
+  and a link-local / cloud-metadata host (e.g. `169.254.169.254`) is rejected. A
+  bad URL is a config-parse error. (This is intentionally stricter than the
+  cluster `server:` URL, which may be a private IP.)
+- **Token minimization.** By default the hook receives only identity claims plus
+  `token_type`/`expiry` metadata — **never** the access, id, or refresh tokens.
+  Opt specific tokens in with `hooks.authorizationIncludeTokens`, a list drawn
+  from `access`, `id`, `refresh`. Only the listed tokens are sent; an unknown
+  value is a config error.
+
 ### Connecting to clusters
 
 A cluster connection is built from kubeconfig field semantics and handed to
