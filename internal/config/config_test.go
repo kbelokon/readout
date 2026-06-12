@@ -822,16 +822,25 @@ func TestLinkSchemeAllowed(t *testing.T) {
 	}
 }
 
-// TestStaticLinkBadSchemeRejected proves an operator-defined config link with a
-// javascript: scheme fails config load at startup.
-func TestStaticLinkBadSchemeRejected(t *testing.T) {
+// TestStaticLinkBadSchemeDropped proves an operator-defined config link with a
+// javascript: scheme is DROPPED at load (the app still starts -- no blocking
+// gate) so it never reaches a page, while valid links survive.
+func TestStaticLinkBadSchemeDropped(t *testing.T) {
 	bad := "clusters:\n  - name: one\n    server: https://one\nobjectLinks:\n  pods:\n    - href: \"javascript:alert(1)\"\n"
-	if _, err := Parse([]string{"--config", writeConfig(t, bad)}); err == nil {
-		t.Fatal("javascript: objectLink href should be rejected at startup")
+	cfg, err := Parse([]string{"--config", writeConfig(t, bad)})
+	if err != nil {
+		t.Fatalf("javascript: objectLink should be dropped, not fail startup: %v", err)
+	}
+	if len(cfg.ObjectLinks["pods"]) != 0 {
+		t.Fatalf("javascript: link should be dropped, got %v", cfg.ObjectLinks["pods"])
 	}
 
 	ok := "clusters:\n  - name: one\n    server: https://one\nobjectLinks:\n  pods:\n    - href: \"https://ok.example/{name}\"\nlabelLinks:\n  app:\n    - href: \"/filter/{value}\"\n"
-	if _, err := Parse([]string{"--config", writeConfig(t, ok)}); err != nil {
+	cfg, err = Parse([]string{"--config", writeConfig(t, ok)})
+	if err != nil {
 		t.Fatalf("valid link schemes should load: %v", err)
+	}
+	if len(cfg.ObjectLinks["pods"]) != 1 || len(cfg.LabelLinks["app"]) != 1 {
+		t.Fatalf("valid links should survive: %+v %+v", cfg.ObjectLinks, cfg.LabelLinks)
 	}
 }

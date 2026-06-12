@@ -494,21 +494,26 @@ func resolve(file *fileConfig) (Config, error) {
 	// server may legitimately be a private IP -- so the two are kept as distinct
 	// helpers and must not be merged.
 	// Static config-defined links render as <a href> in the browser, so an
-	// operator-supplied `javascript:`/`data:` scheme is rejected at startup
-	// rather than reaching a page. The scheme is fixed text -- the {cluster}/
-	// {name}/{timestamp} placeholders only ever sit in the path/host -- so this
-	// is decidable before substitution. (Hook-returned links arrive at runtime
-	// and are dropped+logged at render time, not here.)
-	for field, links := range map[string]map[string][]Link{
-		"objectLinks":    cfg.ObjectLinks,
-		"labelLinks":     cfg.LabelLinks,
-		"timestampLinks": cfg.TimestampLinks,
+	// operator-supplied `javascript:`/`data:` scheme must never reach a page. A
+	// disallowed-scheme link is DROPPED at load (the app still starts -- no
+	// blocking gate), symmetric with how hook-returned links are dropped at
+	// render time. Render-time templ.URL is the backstop. The scheme is fixed
+	// text -- the {cluster}/{name}/{timestamp} placeholders only ever sit in the
+	// path/host -- so this is decidable before substitution.
+	for _, links := range []map[string][]Link{
+		cfg.ObjectLinks, cfg.LabelLinks, cfg.TimestampLinks,
 	} {
 		for key, defs := range links {
+			kept := defs[:0]
 			for _, def := range defs {
-				if !LinkSchemeAllowed(def.Href) {
-					return Config{}, fmt.Errorf("%s[%q]: link href %q uses a disallowed scheme (only http/https/mailto/tel/ftp/ftps are permitted)", field, key, def.Href)
+				if LinkSchemeAllowed(def.Href) {
+					kept = append(kept, def)
 				}
+			}
+			if len(kept) == 0 {
+				delete(links, key)
+			} else {
+				links[key] = kept
 			}
 		}
 	}
