@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/yamlview"
 )
@@ -33,22 +34,12 @@ func (s *Server) highlightYAML(cluster, namespace string, object *kube.Object, a
 }
 
 // safeLinkScheme gates the hand-built timestamp <a href> in linkTimestampsHTML,
-// which bypasses templ's URL sanitizer. A schemeless or rooted reference
-// (no scheme before the first '/', e.g. "/path", "//host") carries no
-// executable scheme and is allowed; a scheme-prefixed href is permitted only
-// for http/https/mailto, so a config-defined `javascript:`/`data:` timestamp
-// link is rejected.
+// which bypasses templ's URL sanitizer. It delegates to the single config-layer
+// allowlist so config-load filtering and render-time gating agree on exactly one
+// rule: a schemeless/rooted reference is allowed; a scheme-prefixed href is
+// permitted only for the safe set, so a `javascript:`/`data:` link is rejected.
 func safeLinkScheme(href string) bool {
-	i := strings.IndexRune(href, ':')
-	if i < 0 || strings.ContainsRune(href[:i], '/') {
-		return true
-	}
-	switch strings.ToLower(href[:i]) {
-	case "http", "https", "mailto":
-		return true
-	default:
-		return false
-	}
+	return config.LinkSchemeAllowed(href)
 }
 
 // linkTimestampsHTML rewrites every ISO-8601 timestamp in a rendered YAML line

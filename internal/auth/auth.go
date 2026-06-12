@@ -354,12 +354,12 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	oauthConfig, verifier, err := a.oauth2Config(r.Context(), r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		authEdgeError(w, r, "oauth config build failed", err, http.StatusInternalServerError)
 		return
 	}
 	token, err := oauthConfig.Exchange(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
-		authEdgeError(w, r, "OAuth token exchange failed", err)
+		authEdgeError(w, r, "OAuth token exchange failed", err, http.StatusUnauthorized)
 		return
 	}
 	session := Session{
@@ -373,7 +373,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		if verifier != nil {
 			verified, err := verifier.Verify(r.Context(), idToken)
 			if err != nil {
-				authEdgeError(w, r, "OIDC ID token verification failed", err)
+				authEdgeError(w, r, "OIDC ID token verification failed", err, http.StatusUnauthorized)
 				return
 			}
 			var claims struct {
@@ -384,7 +384,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 				Groups            []string `json:"groups"`
 			}
 			if err := verified.Claims(&claims); err != nil {
-				authEdgeError(w, r, "OIDC claims parse failed", err)
+				authEdgeError(w, r, "OIDC claims parse failed", err, http.StatusUnauthorized)
 				return
 			}
 			session.User = first(claims.PreferredUsername, claims.Name, claims.Subject)
@@ -437,16 +437,22 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 // auth-edge counterpart to Server.error's 5xx sanitization; it does NOT apply
 // to the authorized-viewer cluster-error display, which stays verbatim by
 // design.
-func authEdgeError(w http.ResponseWriter, r *http.Request, stage string, err error) {
+// authEdgeError sanitizes an auth-flow failure shown to an unauthenticated
+// client: the full detail (which can carry the issuer URL, transport errors, or
+// token material) is logged server-side under a correlation id, and the client
+// gets only a generic message plus that id. status is the client-visible code --
+// 401 for an identity/verification failure, 500 for a server-side build/discovery
+// failure -- so the body is sanitized either way.
+func authEdgeError(w http.ResponseWriter, r *http.Request, stage string, err error, status int) {
 	id := correlationID()
-	slog.Error("auth callback failed", "stage", stage, "correlation_id", id, "path", r.URL.Path, "error", err)
-	http.Error(w, "Authentication failed (reference "+id+")", http.StatusUnauthorized)
+	slog.Error("auth flow failed", "stage", stage, "correlation_id", id, "path", r.URL.Path, "error", err)
+	http.Error(w, http.StatusText(status)+" (reference "+id+")", status)
 }
 
 func (a *Authenticator) startOAuth2(w http.ResponseWriter, r *http.Request, originalURL string) {
 	oauthConfig, _, err := a.oauth2Config(r.Context(), r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		authEdgeError(w, r, "oauth config build failed", err, http.StatusInternalServerError)
 		return
 	}
 	nonce, err := randomToken(32)
