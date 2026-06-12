@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -129,6 +130,7 @@ type Config struct {
 	TrustedHeaderUser          string
 	TrustedHeaderEmail         string
 	TrustedHeaderGroups        string
+	TrustedProxyCIDRs          []netip.Prefix
 	OIDCIssuerURL              string
 	OIDCClientID               string
 	OIDCClientSecret           string
@@ -285,9 +287,10 @@ type fileConfig struct {
 	Auth struct {
 		Mode           string `json:"mode"`
 		TrustedHeaders struct {
-			User   string `json:"user"`
-			Email  string `json:"email"`
-			Groups string `json:"groups"`
+			User              string   `json:"user"`
+			Email             string   `json:"email"`
+			Groups            string   `json:"groups"`
+			TrustedProxyCIDRs []string `json:"trustedProxyCidrs"`
 		} `json:"trustedHeaders"`
 		OIDC struct {
 			IssuerURL        string `json:"issuerUrl"`
@@ -409,6 +412,10 @@ func resolve(file *fileConfig) (Config, error) {
 	}
 	if file.Search.MaxConcurrency != nil {
 		cfg.SearchMaxConcurrency = *file.Search.MaxConcurrency
+	}
+
+	if cfg.TrustedProxyCIDRs, err = parseCIDRs(file.Auth.TrustedHeaders.TrustedProxyCIDRs); err != nil {
+		return Config{}, fmt.Errorf("auth.trustedHeaders.trustedProxyCidrs: %w", err)
 	}
 
 	// Safe loopback default: a no-auth binary with no explicit listenAddress
@@ -745,6 +752,27 @@ func readSecretFile(path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+// parseCIDRs turns the optional auth.trustedHeaders.trustedProxyCidrs strings
+// into netip.Prefix values. A blank entry is skipped; a malformed entry is a
+// config-syntax error (surfaced like a bad namespace regex), NOT a security
+// startup gate. An empty/omitted list returns nil -- the headers-mode caller
+// reads nil as "no proxy gate, trust headers + warn".
+func parseCIDRs(raw []string) ([]netip.Prefix, error) {
+	var result []netip.Prefix
+	for _, c := range raw {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(c)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", c, err)
+		}
+		result = append(result, prefix)
+	}
+	return result, nil
 }
 
 func compilePatterns(patterns []string) ([]*regexp.Regexp, error) {

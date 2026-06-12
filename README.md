@@ -88,6 +88,18 @@ fast at startup. The customization surface, all in the YAML:
   (`localhost` / `127.0.0.1` / `[::1]`), a DNS-rebinding guard that never blocks
   your own local access.
 
+- **headers auth** — `auth.mode: headers` trusts the identity headers
+  (`auth.trustedHeaders.user` / `email` / `groups`). By default any client that
+  can reach readout directly can set `X-Forwarded-User` and impersonate any
+  user, so headers mode logs a loud startup warning until you constrain it. Set
+  `auth.trustedHeaders.trustedProxyCidrs` to your stripping proxy's CIDR(s):
+  header identity is then honored only when the **TCP peer** (the real
+  connection address — never a forwarded header like `X-Forwarded-For`) falls
+  inside one of the CIDRs, and a peer outside the range (or one that does not
+  resolve to an IP) is rejected. Leaving it empty keeps the trust-all behavior
+  plus the warning; it is **never** a startup error. The groups header is
+  bounded (group count and total length) so an oversized header cannot fan out.
+
 See [`readout.yaml`](readout.yaml) for the full annotated schema, including auth
 (`none` / `headers` / `oidc`), theming, external readout cross-links, and the
 external JSON HTTP hooks.

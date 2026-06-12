@@ -253,12 +253,27 @@ sessionSecretFile: ""
 # OIDC requires a callback (redirect) URL: set either auth.oidc.redirectUrl
 # (or READOUT_OIDC_REDIRECT_URL) or the top-level publicUrl above. Setting OIDC
 # fields here while leaving mode at "none" is a startup error -- set mode: oidc.
+#
+# headers mode trusts the identity headers below. By default ANY client that can
+# reach readout directly can set X-Forwarded-User and impersonate any user, so
+# headers mode logs a loud startup warning until you constrain it. Set
+# trustedProxyCidrs to the CIDR(s) of your stripping reverse proxy: header
+# identity is then honored only when the TCP peer (the real connection address,
+# never a forwarded header) falls inside one of the CIDRs; a peer outside the
+# range -- or one that does not resolve to an IP -- is rejected. Leaving it
+# empty keeps the trust-all behavior plus the warning; it is never a startup
+# error (there are no blocking startup gates).
 auth:
   mode: none
   trustedHeaders:
     user: X-Forwarded-User
     email: X-Forwarded-Email
     groups: X-Forwarded-Groups
+    # Optional. Empty = trust headers from any peer (logs a warning). Set to the
+    # CIDR(s) of your reverse proxy to gate header identity on the TCP peer.
+    trustedProxyCidrs: []
+    #   - 10.0.0.0/8
+    #   - 2001:db8::/32
   oidc:
     issuerUrl: ""
     clientId: ""

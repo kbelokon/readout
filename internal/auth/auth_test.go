@@ -3,8 +3,10 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"reflect"
@@ -179,6 +181,148 @@ func TestHeaderModeNoHookPassthrough(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent || !nextCalled {
 		t.Fatalf("headers no-hook status=%d nextCalled=%t body=%s", rec.Code, nextCalled, rec.Body.String())
+	}
+}
+
+// TestHeaderModeTrustedProxyCIDR pins the peer-CIDR gate: with trustedProxyCidrs
+// set, a spoofed identity header from a peer OUTSIDE the CIDR is rejected
+// (403), while the same header from INSIDE the CIDR is served. The gate reads
+// r.RemoteAddr, never a forwarded header, so X-Forwarded-For cannot move the
+// peer into the trusted range.
+func TestHeaderModeTrustedProxyCIDR(t *testing.T) {
+	a := newAuth(t, &config.Config{
+		AuthMode:          config.AuthModeHeaders,
+		TrustedHeaderUser: "X-User",
+		TrustedProxyCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+	})
+	handler := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	// Outside the CIDR: spoofed header must NOT be honored.
+	outside := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	outside.RemoteAddr = "203.0.113.7:5555"
+	outside.Header.Set("X-User", "attacker")
+	// A spoofed X-Forwarded-For claiming an in-CIDR address must not help.
+	outside.Header.Set("X-Forwarded-For", "10.1.2.3")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, outside)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("outside-CIDR spoof status=%d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Inside the CIDR: header identity is honored.
+	inside := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	inside.RemoteAddr = "10.4.5.6:5555"
+	inside.Header.Set("X-User", "kirill")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, inside)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("inside-CIDR status=%d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHeaderModeTrustedProxyDeniesUnparseablePeer pins fail-closed behavior:
+// when a CIDR is configured but the peer address is empty or not an IP (unix
+// socket / garbage), the request is denied rather than trusted.
+func TestHeaderModeTrustedProxyDeniesUnparseablePeer(t *testing.T) {
+	a := newAuth(t, &config.Config{
+		AuthMode:          config.AuthModeHeaders,
+		TrustedHeaderUser: "X-User",
+		TrustedProxyCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+	})
+	handler := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, peer := range []string{"", "@", "/run/readout.sock", "not-an-ip"} {
+		req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+		req.RemoteAddr = peer
+		req.Header.Set("X-User", "kirill")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("unparseable peer %q status=%d, want 403 (fail closed)", peer, rec.Code)
+		}
+	}
+}
+
+// TestHeaderModeTrustedProxyIPv6 pins that an IPv6 peer inside an IPv6 CIDR is
+// honored (host:port parsing of the bracketed form, zone stripped).
+func TestHeaderModeTrustedProxyIPv6(t *testing.T) {
+	a := newAuth(t, &config.Config{
+		AuthMode:          config.AuthModeHeaders,
+		TrustedHeaderUser: "X-User",
+		TrustedProxyCIDRs: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
+	})
+	handler := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	in := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	in.RemoteAddr = "[2001:db8::1]:5555"
+	in.Header.Set("X-User", "kirill")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, in)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("in-CIDR IPv6 status=%d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+
+	out := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	out.RemoteAddr = "[2001:dead::1]:5555"
+	out.Header.Set("X-User", "attacker")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, out)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("out-of-CIDR IPv6 status=%d, want 403", rec.Code)
+	}
+}
+
+// TestHeaderModeNoCIDRTrustsHeaders pins the unset-CIDR behavior: with no
+// trustedProxyCidrs the peer is not checked at all and header identity is
+// trusted as before (the loud startup warning is emitted at server build, not
+// here).
+func TestHeaderModeNoCIDRTrustsHeaders(t *testing.T) {
+	a := newAuth(t, &config.Config{
+		AuthMode:          config.AuthModeHeaders,
+		TrustedHeaderUser: "X-User",
+	})
+	handler := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	req.RemoteAddr = "203.0.113.7:5555" // off-host peer, but no CIDR gate
+	req.Header.Set("X-User", "kirill")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("no-CIDR headers status=%d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSplitHeaderGroupsCapped pins the group-header bounds: an enormous header
+// is capped by count, and an oversized total length is truncated before the
+// split fans out.
+func TestSplitHeaderGroupsCapped(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < maxHeaderGroups+50; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "g%d", i)
+	}
+	groups := splitHeaderGroups(b.String())
+	if len(groups) > maxHeaderGroups {
+		t.Fatalf("group count = %d, want <= %d", len(groups), maxHeaderGroups)
+	}
+	if len(groups) != maxHeaderGroups {
+		t.Fatalf("group count = %d, want exactly the cap %d", len(groups), maxHeaderGroups)
+	}
+
+	// A single oversized value (no commas) is length-truncated, never returned
+	// whole, and never panics.
+	huge := strings.Repeat("a", maxHeaderGroupsLen*4)
+	got := splitHeaderGroups(huge)
+	if len(got) != 1 || len(got[0]) > maxHeaderGroupsLen {
+		t.Fatalf("oversized single group not truncated: count=%d len=%d", len(got), len(got[0]))
 	}
 }
 

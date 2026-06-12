@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -113,6 +114,17 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		case config.AuthModeHeaders:
+			// When trustedProxyCIDRs is configured, identity headers are only
+			// honored from a TCP peer inside one of the CIDRs. The check gates on
+			// r.RemoteAddr (the real peer) and NEVER on X-Forwarded-For or any
+			// other client-settable header -- the whole point is to not trust
+			// headers a direct client can forge. An unparseable/empty peer fails
+			// closed (deny) since a CIDR was explicitly set. When the list is
+			// empty, the gate is skipped and headers are trusted as before.
+			if len(a.cfg.TrustedProxyCIDRs) > 0 && !peerInCIDRs(r.RemoteAddr, a.cfg.TrustedProxyCIDRs) {
+				http.Error(w, "untrusted proxy", http.StatusForbidden)
+				return
+			}
 			if r.Header.Get(a.cfg.TrustedHeaderUser) == "" && r.Header.Get(a.cfg.TrustedHeaderEmail) == "" {
 				http.Error(w, "missing trusted identity header", http.StatusUnauthorized)
 				return
@@ -196,16 +208,67 @@ func (a *Authenticator) trustedHeaderSession(r *http.Request) Session {
 	}
 }
 
+// peerInCIDRs reports whether the TCP peer in remoteAddr (host:port form, as
+// set by net/http) is inside one of the trusted CIDRs. A remoteAddr that does
+// not parse to an IP -- empty, a unix socket path, or otherwise malformed --
+// returns false so the caller fails closed: when a CIDR is configured an
+// unidentifiable peer is never trusted.
+func peerInCIDRs(remoteAddr string, cidrs []netip.Prefix) bool {
+	addr, ok := peerAddr(remoteAddr)
+	if !ok {
+		return false
+	}
+	for _, prefix := range cidrs {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// peerAddr extracts the bare IP from a net/http RemoteAddr. It accepts the
+// usual host:port form and, defensively, a bare IP; an IPv6 peer's zone is
+// stripped so it compares cleanly against an unzoned CIDR. ok is false on any
+// value that does not yield an IP (empty, unix socket, garbage).
+func peerAddr(remoteAddr string) (netip.Addr, bool) {
+	if remoteAddr == "" {
+		return netip.Addr{}, false
+	}
+	if ap, err := netip.ParseAddrPort(remoteAddr); err == nil {
+		return ap.Addr().Unmap().WithZone(""), true
+	}
+	if addr, err := netip.ParseAddr(remoteAddr); err == nil {
+		return addr.Unmap().WithZone(""), true
+	}
+	return netip.Addr{}, false
+}
+
+const (
+	// maxHeaderGroups caps how many groups are read from the trusted groups
+	// header; entries past the cap are dropped. maxHeaderGroupsLen caps the
+	// total accepted header length so an enormous header cannot fan out into a
+	// huge slice before the count cap applies.
+	maxHeaderGroups    = 256
+	maxHeaderGroupsLen = 16 * 1024
+)
+
 func splitHeaderGroups(value string) []string {
 	if value == "" {
 		return nil
+	}
+	if len(value) > maxHeaderGroupsLen {
+		value = value[:maxHeaderGroupsLen]
 	}
 	parts := strings.Split(value, ",")
 	groups := make([]string, 0, len(parts))
 	for _, part := range parts {
 		group := strings.TrimSpace(part)
-		if group != "" {
-			groups = append(groups, group)
+		if group == "" {
+			continue
+		}
+		groups = append(groups, group)
+		if len(groups) >= maxHeaderGroups {
+			break
 		}
 	}
 	return groups

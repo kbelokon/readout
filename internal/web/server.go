@@ -136,7 +136,24 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	s.routes()
 	s.warnMissingSessionSecret()
 	s.warnUnauthenticatedExposure()
+	s.warnUntrustedHeaderProxy()
 	return s, nil
+}
+
+// warnUntrustedHeaderProxy warns at startup when headers auth mode is on but no
+// trustedProxyCidrs are set: with no peer CIDR gate, any client reaching the app
+// directly can set X-Forwarded-User and impersonate any user. It never fails --
+// the same loud-warn-no-gate posture as the other startup warnings. When a CIDR
+// list IS configured the header identity is gated on the TCP peer, so no warning.
+func (s *Server) warnUntrustedHeaderProxy() {
+	if s.cfg.AuthMode != config.AuthModeHeaders {
+		return
+	}
+	if len(s.cfg.TrustedProxyCIDRs) > 0 {
+		return
+	}
+	slog.Warn("headers auth has no trustedProxyCidrs; any client reaching the app directly can impersonate any user; put readout behind a stripping proxy and/or set auth.trustedHeaders.trustedProxyCidrs",
+		"authMode", s.cfg.AuthMode)
 }
 
 // warnMissingSessionSecret warns at startup when auth mode is OIDC but no

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,42 @@ func TestParseLoadsYAMLConfigEnvOverridesAndDefaults(t *testing.T) {
 	}
 	if cfg.ExternalClusters["prod"] != "https://readout.example" || !cfg.ShowContainerLogs || !cfg.IncludeSecrets {
 		t.Fatalf("external/boolean config not resolved: %#v", cfg)
+	}
+}
+
+// TestTrustedProxyCIDRsParse pins that auth.trustedHeaders.trustedProxyCidrs
+// resolves through the strict parser into []netip.Prefix, that a blank entry is
+// skipped, that an omitted list is nil (trust-headers + warn path), and that a
+// malformed CIDR is a config-syntax error (NOT a security startup gate).
+func TestTrustedProxyCIDRsParse(t *testing.T) {
+	path := writeConfig(t, "auth:\n  mode: headers\n  trustedHeaders:\n    trustedProxyCidrs:\n      - 10.0.0.0/8\n      - \"\"\n      - 2001:db8::/32\n")
+	cfg, err := Parse([]string{"--config", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("2001:db8::/32")}
+	if len(cfg.TrustedProxyCIDRs) != len(want) {
+		t.Fatalf("trustedProxyCidrs = %#v, want %#v", cfg.TrustedProxyCIDRs, want)
+	}
+	for i := range want {
+		if cfg.TrustedProxyCIDRs[i] != want[i] {
+			t.Fatalf("trustedProxyCidrs[%d] = %v, want %v", i, cfg.TrustedProxyCIDRs[i], want[i])
+		}
+	}
+
+	// Omitted list -> nil (no gate).
+	none, err := Parse([]string{"--config", writeConfig(t, "auth:\n  mode: headers\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.TrustedProxyCIDRs != nil {
+		t.Fatalf("omitted trustedProxyCidrs = %#v, want nil", none.TrustedProxyCIDRs)
+	}
+
+	// Malformed CIDR -> config error, surfaced like a bad regex.
+	_, err = Parse([]string{"--config", writeConfig(t, "auth:\n  mode: headers\n  trustedHeaders:\n    trustedProxyCidrs:\n      - not-a-cidr\n")})
+	if err == nil || !strings.Contains(err.Error(), "trustedProxyCidrs") {
+		t.Fatalf("malformed CIDR error = %v, want a trustedProxyCidrs config error", err)
 	}
 }
 
