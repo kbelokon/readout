@@ -30,6 +30,21 @@ about behavior lives in the YAML config:
 A documented, copy-pasteable example config lives at
 [`readout.yaml`](readout.yaml). Start from it.
 
+### Validating a config offline
+
+```sh
+readout config validate --config readout.yaml
+```
+
+`config validate` loads the config exactly as startup would — strict parsing,
+semantic checks, and the same secret/endpoint resolution — then exits `0` and
+prints `config OK`, or exits `1` with the identical error message startup would
+print. It performs no cluster or network calls. Because it is faithful to a real
+startup, the same `READOUT_*` environment variables in your shell affect the
+result (env values override the file), so validate in the environment the
+process will actually run in. A bare `readout config`, or an unknown
+sub-subcommand, prints usage and exits `2`.
+
 ## Configuration
 
 Everything that used to be a flag is a field in `readout.yaml`, parsed with
