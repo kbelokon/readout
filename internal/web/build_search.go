@@ -421,26 +421,15 @@ func findSearchResource(ctx context.Context, client *kube.Client, typ string) (k
 
 // searchScopeReason condenses a failed cluster's error records into the short
 // label shown on the `.ro-scope-chip.err` chip (the full per-error detail rides
-// in the `.ro-banner.warn` summary). It classifies the FIRST error: a deadline/
-// timeout reads as "timeout", a connection/no-route/refused error as
-// "unreachable", a 403 as "forbidden", else a generic "failed". The classifier is
-// substring-based over the error string (the apiserver/transport error text),
-// kept deliberately small.
+// in the `.ro-banner.warn` summary). It classifies the FIRST error through the
+// shared failure classifier and maps the kind to the chip reason: a deadline
+// reads as "timeout", a refused/unroutable host as "unreachable", a 403 as
+// "forbidden", and everything else as the generic "failed".
 func searchScopeReason(errs []searchErrorRecord) string {
 	if len(errs) == 0 {
 		return "failed"
 	}
-	msg := strings.ToLower(errs[0].err.Error())
-	switch {
-	case strings.Contains(msg, "deadline") || strings.Contains(msg, "timeout"):
-		return "timeout"
-	case strings.Contains(msg, "connection refused") || strings.Contains(msg, "no such host") || strings.Contains(msg, "no route"):
-		return "unreachable"
-	case strings.Contains(msg, "forbidden"):
-		return "forbidden"
-	default:
-		return "failed"
-	}
+	return failureChipReason(kube.ClassifyError(errs[0].err))
 }
 
 // clusterMatches reports whether a cluster's name or any label value contains

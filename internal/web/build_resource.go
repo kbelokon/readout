@@ -198,10 +198,8 @@ func detailNameParts(object *kube.Object) (head, tail, nameTitle string) {
 // from the request path (cluster/namespace/plural/name) so no fetched object is
 // needed -- the fetch is exactly what failed.
 func (s *Server) detailState(r *http.Request, cluster *kube.Cluster, plural, name, namespace, verb string, err error) *detailView {
-	forbidden := kube.IsForbidden(err)
-	apiStatus := kube.IsAPIStatusError(err)
-	unreachable := !forbidden && !kube.IsNotFound(err) && (!apiStatus || kube.IsServerError(err))
-	if !forbidden && !unreachable {
+	kind, ok := failureListState(kube.ClassifyError(err), err)
+	if !ok {
 		return nil
 	}
 	state := &detailStateView{
@@ -213,13 +211,13 @@ func (s *Server) detailState(r *http.Request, cluster *kube.Cluster, plural, nam
 		RetryHref: r.URL.String(),
 		BackHref:  "/clusters",
 	}
-	if forbidden {
+	if kind == stateForbidden {
 		state.Kind = stateForbidden
 		state.Hint = forbiddenStateHint
 		state.Detail = "403 Forbidden · " + err.Error()
 	} else {
 		state.Kind = stateUnreachable
-		state.Hint = unreachableStateHint(apiStatus)
+		state.Hint = unreachableStateHint(kube.IsAPIStatusError(err))
 		state.Detail = err.Error()
 	}
 	title := name + " (" + plural + ")"

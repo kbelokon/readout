@@ -1396,10 +1396,8 @@ func filterFieldHint(col *kube.Column) string {
 // same list URL (a read-only GET); Back to clusters is /clusters.
 func (s *Server) buildListState(r *http.Request, lc *listContext) *listStateView {
 	err := lc.Errors[0]
-	forbidden := kube.IsForbidden(err)
-	apiStatus := kube.IsAPIStatusError(err)
-	unreachable := !forbidden && !kube.IsNotFound(err) && (!apiStatus || kube.IsServerError(err))
-	if !forbidden && !unreachable {
+	kind, ok := failureListState(kube.ClassifyError(err), err)
+	if !ok {
 		return nil
 	}
 	state := &listStateView{
@@ -1411,13 +1409,13 @@ func (s *Server) buildListState(r *http.Request, lc *listContext) *listStateView
 		BackHref:  "/clusters",
 		SourceErr: err,
 	}
-	if forbidden {
+	if kind == stateForbidden {
 		state.Kind = stateForbidden
 		state.Hint = forbiddenStateHint
 		state.Detail = "403 Forbidden · " + err.Error()
 	} else {
 		state.Kind = stateUnreachable
-		state.Hint = unreachableStateHint(apiStatus)
+		state.Hint = unreachableStateHint(kube.IsAPIStatusError(err))
 		state.Detail = err.Error()
 	}
 	return state

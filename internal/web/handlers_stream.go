@@ -309,20 +309,22 @@ type streamSession struct {
 	eventTimes []time.Time
 }
 
+// streamHandshakeStatus maps an initial-list failure to the plain HTTP status
+// the handshake fails with: a 403 for a forbidden/unauthorized denial, a 404 for
+// a missing resource, and a 502 for everything else (the cluster could not serve
+// the snapshot). It classifies once through the shared classifier and maps the
+// kind. The stream never half-connects, so this is the whole response.
+func streamHandshakeStatus(err error) int {
+	return failureHandshakeStatus(kube.ClassifyError(err))
+}
+
 // run fetches the initial snapshot, completes the SSE handshake with the
 // initial full push, and hands off to the event loop. A failure before the
 // handshake stays a plain HTTP status — the stream never half-connects.
 func (st *streamSession) run(ctx context.Context) {
 	table, err := st.list(ctx)
 	if err != nil {
-		status := http.StatusBadGateway
-		switch {
-		case kube.IsForbidden(err):
-			status = http.StatusForbidden
-		case kube.IsNotFound(err):
-			status = http.StatusNotFound
-		}
-		http.Error(st.w, "initial list failed", status)
+		http.Error(st.w, "initial list failed", streamHandshakeStatus(err))
 		return
 	}
 	st.snapshot = table

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -692,4 +694,103 @@ func IsServerError(err error) bool {
 		return false
 	}
 	return status.Status().Code >= 500
+}
+
+// FailureKind is the single classification of an upstream failure. It is a
+// string so it can double as a metrics label later. The same upstream failure
+// classifies to the same kind everywhere, so every presentation path (HTTP
+// status, list/detail state, search chip) reads from one source of truth.
+type FailureKind string
+
+const (
+	// FailureForbidden is an apiserver 403 (RBAC denies the verb on the
+	// resource) -- the credentials are valid but not allowed.
+	FailureForbidden FailureKind = "forbidden"
+	// FailureUnauthorized is an apiserver 401 (the credentials are missing,
+	// expired, or rejected). It is kept distinct from forbidden even though the
+	// IsForbidden helper folds the two together for callers that want the merge.
+	FailureUnauthorized FailureKind = "unauthorized"
+	// FailureNotFound is an apiserver 404 (the resource type or object does not
+	// exist).
+	FailureNotFound FailureKind = "not_found"
+	// FailureTimeout is a deadline/timeout: a context deadline or a net.Error
+	// that reports Timeout(). The request did not complete in time.
+	FailureTimeout FailureKind = "timeout"
+	// FailureUnreachable is a transport-level failure that never reached the
+	// apiserver: a refused connection or an unroutable/unresolved host.
+	FailureUnreachable FailureKind = "unreachable"
+	// FailureUpstream5xx is an apiserver Status with a 5xx code: the apiserver
+	// was reached but failed to serve the request.
+	FailureUpstream5xx FailureKind = "upstream_5xx"
+	// FailureInternal is the total-taxonomy fallback: any other apiserver Status
+	// (400, 409, 429, 410, ...), a cancelled context (the client went away), and
+	// any unrecognized error all fold here.
+	FailureInternal FailureKind = "internal"
+)
+
+// ClassifyError maps any upstream failure to exactly one FailureKind. The
+// taxonomy is total: every error resolves to a kind, and unrecognized errors
+// fold to FailureInternal. Classification is by typed checks through
+// errors.Is/errors.As (wrapped chains classify correctly) and syscall-level
+// transport detection -- never by matching the error string.
+//
+// Order matters: typed apiserver Statuses are checked before transport
+// heuristics so a structured 5xx is not mistaken for a generic failure, and the
+// timeout check precedes the refused/no-route check so a dial timeout reads as a
+// timeout rather than an unreachable host.
+func ClassifyError(err error) FailureKind {
+	if err == nil {
+		return FailureInternal
+	}
+
+	// Typed apiserver Status responses (the request reached the apiserver).
+	var status kerrors.APIStatus
+	if errors.As(err, &status) {
+		switch code := status.Status().Code; {
+		case code == http.StatusForbidden:
+			return FailureForbidden
+		case code == http.StatusUnauthorized:
+			return FailureUnauthorized
+		case code == http.StatusNotFound:
+			return FailureNotFound
+		case code >= 500:
+			return FailureUpstream5xx
+		default:
+			// Any other apiserver status (400, 409, 410, 429, ...) folds to
+			// internal -- the taxonomy carries no dedicated kind for them.
+			return FailureInternal
+		}
+	}
+
+	// A context deadline is a timeout; a context cancellation means the client
+	// went away and carries no special kind.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return FailureTimeout
+	}
+	if errors.Is(err, context.Canceled) {
+		return FailureInternal
+	}
+
+	// A net.Error that reports a timeout (e.g. an i/o or dial timeout) is a
+	// timeout before it is anything else.
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return FailureTimeout
+	}
+
+	// Syscall-level transport failures: a refused connection or an
+	// unroutable/unreachable host never reached the apiserver.
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.ENETUNREACH) {
+		return FailureUnreachable
+	}
+
+	// An unresolved host (DNS) is also a transport-level unreachable failure.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return FailureUnreachable
+	}
+
+	return FailureInternal
 }
