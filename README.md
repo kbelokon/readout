@@ -104,6 +104,34 @@ See [`readout.yaml`](readout.yaml) for the full annotated schema, including auth
 (`none` / `headers` / `oidc`), theming, external readout cross-links, and the
 external JSON HTTP hooks.
 
+#### External auth proxy (headers mode)
+
+Headers mode **is** the external-OAuth deployment: you run an authenticating
+proxy (oauth2-proxy, an SSO gateway, an ingress auth filter) in front of readout,
+and the proxy asserts the viewer's identity in `X-Forwarded-User` / `-Email` /
+`-Groups`. Two requirements make that safe:
+
+- **The proxy MUST strip any incoming `X-Forwarded-User` / `-Email` / `-Groups`**
+  from the client request before setting its own. Otherwise a client can forge
+  identity headers that the proxy passes through untouched.
+- **Set `auth.trustedHeaders.trustedProxyCidrs` to the proxy's source range** so
+  readout honors identity headers only from the proxy's TCP peer. Pick the CIDR by
+  topology:
+  - **Sidecar in the same pod** (proxy and readout share the pod network):
+    loopback — `127.0.0.1/32` and `::1/128`.
+  - **Separate in-cluster proxy / ingress controller**: the proxy's pod CIDR (the
+    range its pods get from the cluster CNI).
+  - **External proxy** (off-cluster gateway): the proxy's egress source-IP range.
+
+The peer match is on the real TCP connection address, never a forwarded header,
+so an attacker cannot spoof it with `X-Forwarded-For`.
+
+Headers mode forwards no bearer token to the apiserver, so combining it with
+`clusterAuthUseSessionToken: true` (per-viewer passthrough) only works if the
+proxy **also** forwards a Kubernetes-usable bearer token for the viewer;
+otherwise strict passthrough denies every request (see
+[Viewer identity](#viewer-identity-token-passthrough)).
+
 ### Authorization hook
 
 `hooks.authorizationUrl` points at an external JSON endpoint consulted on every
@@ -183,11 +211,14 @@ without forking the image (an init-container + shared `emptyDir` on `PATH`, or a
 native image volume) is tracked as backlog **B-002**
 ([`docs/forge/backlog.md`](docs/forge/backlog.md)).
 
-Because an exec plugin runs a command in readout's pod, readout gates **which**
-command a connection may run, so a cluster actor who can inject an
-`execProviderConfig` (most plausibly through an Argo CD cluster Secret, which a
-cluster actor can create) cannot run an arbitrary binary. The gate applies to
-every connection source. When `kube.credentialPluginPolicy` is unset (the
+An exec credential plugin is an **RCE-equivalent trust boundary**: a kubeconfig
+or Argo cluster-Secret `exec` command runs an arbitrary binary inside readout's
+pod, with readout's filesystem, env, and service-account token in reach. Whoever
+controls a connection's `exec` block controls code execution in the pod.
+Because of that, readout gates **which** command a connection may run, so a
+cluster actor who can inject an `execProviderConfig` (most plausibly through an
+Argo CD cluster Secret, which a cluster actor can create) cannot run an arbitrary
+binary. The gate applies to every connection source. When `kube.credentialPluginPolicy` is unset (the
 default), the policy is **source-aware**:
 
 - operator-owned sources (`kubeconfig`, static `clusters:`) default to an
