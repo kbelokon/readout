@@ -1238,3 +1238,38 @@ func cookieNamed(t *testing.T, cookies []*http.Cookie, name string) *http.Cookie
 	t.Fatalf("cookie %s not found in %#v", name, cookies)
 	return nil
 }
+
+// TestLogoutRejectsCrossSite proves the GET-logout CSRF close-out: a request
+// with Sec-Fetch-Site: cross-site (a cross-site page force-logging-out the
+// victim) is rejected with 403 and clears no cookies, while same-origin and
+// `none` (user-typed/bookmark) requests, and a request with no Sec-Fetch-Site
+// at all (older browser, annoyance-grade gap), clear the session and redirect.
+func TestLogoutRejectsCrossSite(t *testing.T) {
+	a := newAuth(t, &config.Config{SessionSecret: "test-secret", AuthMode: config.AuthModeOIDC})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/oauth2/logout", nil)
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	a.Logout(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site logout status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("cross-site logout cleared cookies: %#v", rec.Result().Cookies())
+	}
+
+	for _, site := range []string{"same-origin", "same-site", "none", ""} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/oauth2/logout", nil)
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		a.Logout(rec, req)
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
+			t.Fatalf("Sec-Fetch-Site %q logout status=%d location=%q", site, rec.Code, rec.Header().Get("Location"))
+		}
+		if len(rec.Result().Cookies()) != 2 {
+			t.Fatalf("Sec-Fetch-Site %q logout did not clear both cookies: %#v", site, rec.Result().Cookies())
+		}
+	}
+}

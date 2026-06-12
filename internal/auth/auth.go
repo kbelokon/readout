@@ -306,8 +306,18 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 	a.startOAuth2(w, r, next)
 }
 
-// Logout clears the session and OAuth state cookies and redirects home.
+// Logout clears the session and OAuth state cookies and redirects home. It
+// stays a GET (there is no logout UI, and POST-logout would need a form plus a
+// read-only-middleware allowlist widening), so the CSRF vector — a cross-site
+// page that force-logs-out the victim — is closed here instead: a request whose
+// Sec-Fetch-Site is cross-site is rejected. Same-origin and `none`
+// (user-typed/bookmark) requests pass, and a browser that sends no
+// Sec-Fetch-Site at all is not blocked (annoyance-grade, accepted by design).
 func (a *Authenticator) Logout(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		http.Error(w, "cross-site logout rejected", http.StatusForbidden)
+		return
+	}
 	clearCookie(w, r, SessionCookieName, "/")
 	clearCookie(w, r, StateCookieName, CallbackPath)
 	http.Redirect(w, r, "/", http.StatusFound)
