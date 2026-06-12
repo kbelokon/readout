@@ -138,14 +138,13 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	return s, nil
 }
 
-// warnMissingSessionSecret warns at startup when the effective auth mode is
-// OIDC but no session secret is configured (READOUT_SESSION_SECRET empty, so the
-// session codec falls back to an ephemeral per-process key). Without a stable
-// secret, sessions silently break across restarts and across replicas. Gated on
-// the effective auth mode (not raw cfg.AuthMode) so the implicit
-// AuthModeNone + OIDC-config path is also covered.
+// warnMissingSessionSecret warns at startup when auth mode is OIDC but no
+// session secret is configured (READOUT_SESSION_SECRET empty and no
+// sessionSecretFile, so the session codec falls back to an ephemeral
+// per-process key). Without a stable secret, sessions silently break across
+// restarts and across replicas.
 func (s *Server) warnMissingSessionSecret() {
-	if s.auth.EffectiveAuthMode() == config.AuthModeOIDC && s.cfg.SessionSecret == "" {
+	if s.cfg.AuthMode == config.AuthModeOIDC && s.cfg.SessionSecret == "" {
 		slog.Warn("OIDC auth has no session secret; sessions will not survive restarts or span replicas", "env", "READOUT_SESSION_SECRET")
 	}
 }

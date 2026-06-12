@@ -128,6 +128,14 @@ and the environment **overrides** the file:
 | `READOUT_AUTHORIZATION_HOOK_URL`      | authorization hook URL           |
 | `READOUT_RESOURCE_PRERENDER_HOOK_URL` | resource-prerender hook URL      |
 
+The session secret can also be read from a mounted file via the top-level
+`sessionSecretFile:` config key (the env var wins when both are set). For OIDC,
+set the top-level `publicUrl:` (origin only, e.g. `https://readout.example`) to
+pin the externally-visible origin; readout then derives the OIDC callback as
+`publicUrl` + `/oauth2/callback`, so an explicit `auth.oidc.redirectUrl` is not
+required. Leaving `auth.mode` at `none` while OIDC fields are set is a startup
+error — set `auth.mode: oidc`. See [`readout.yaml`](readout.yaml) for both keys.
+
 ## Endpoints
 
 - read-only HTTP edge; the only state-changing route is the allowlisted

@@ -263,7 +263,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 // modes have no per-session expiry: the hard streamMaxLifetime cap applies,
 // terminal reason "idle".
 func (s *Server) streamLifetime(r *http.Request) (time.Duration, string) {
-	if s.auth.EffectiveAuthMode() == config.AuthModeOIDC {
+	if s.cfg.AuthMode == config.AuthModeOIDC {
 		if session, ok := s.auth.Session(r); ok {
 			return time.Until(time.Unix(session.Expires, 0)), "auth"
 		}

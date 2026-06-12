@@ -108,7 +108,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		switch a.EffectiveAuthMode() {
+		switch a.cfg.AuthMode {
 		case "", config.AuthModeNone:
 			next.ServeHTTP(w, r)
 			return
@@ -359,7 +359,14 @@ func (a *Authenticator) oauth2Config(ctx context.Context, r *http.Request) (*oau
 	if a.cfg.OIDCClientID == "" {
 		return nil, nil, errors.New("missing OIDC/OAuth2 client ID")
 	}
+	// Redirect-URL precedence: an explicit oidc.redirectUrl wins; otherwise a
+	// configured publicUrl (origin only) gives a stable callback that does not
+	// depend on per-request headers; otherwise fall back to reconstructing the
+	// external URL from the request (Host / X-Forwarded-*), a dev convenience.
 	redirectURL := a.cfg.OIDCRedirectURL
+	if redirectURL == "" && a.cfg.PublicURL != "" {
+		redirectURL = a.cfg.PublicURL + CallbackPath
+	}
 	if redirectURL == "" {
 		redirectURL = externalURL(r, CallbackPath)
 	}
@@ -445,19 +452,6 @@ func (a *Authenticator) RequestBearer(r *http.Request) string {
 		return session.AccessToken
 	}
 	return ""
-}
-
-// EffectiveAuthMode resolves the runtime auth mode: an explicit mode is honored,
-// but AuthModeNone with OAuth/OIDC endpoints configured implies OIDC.
-func (a *Authenticator) EffectiveAuthMode() string {
-	if a.cfg.AuthMode == config.AuthModeNone && a.oauthConfigured() {
-		return config.AuthModeOIDC
-	}
-	return a.cfg.AuthMode
-}
-
-func (a *Authenticator) oauthConfigured() bool {
-	return a.cfg.OIDCIssuerURL != "" || (a.cfg.OAuth2AuthorizeURL != "" && a.cfg.OAuth2TokenURL != "")
 }
 
 // IsPublicPath reports whether a path bypasses auth (health/metrics probes, the
