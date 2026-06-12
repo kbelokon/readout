@@ -1,7 +1,19 @@
 image:
   repository: ghcr.io/kbelokon/readout
-  tag: 0.7.0
+  # defaults to chart appVersion when empty
+  tag: ""
+  # when set, the digest wins and the tag is ignored
+  digest: ""
   pullPolicy: IfNotPresent
+
+# overrides for generated resource names
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
 
 replicaCount: 1
 

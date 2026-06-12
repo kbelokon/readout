@@ -1,14 +1,14 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "readout.name" . }}
+  name: {{ include "readout.fullname" . }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      application: {{ include "readout.name" . }}
+      {{- include "readout.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
@@ -16,12 +16,12 @@ spec:
       annotations:
         checksum/config: {{ toYaml .Values.config | sha256sum }}
     spec:
-      serviceAccountName: {{ include "readout.name" . }}
+      serviceAccountName: {{ include "readout.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: readout
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "readout.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --config
@@ -56,4 +56,4 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: {{ include "readout.name" . }}
+            name: {{ include "readout.fullname" . }}
