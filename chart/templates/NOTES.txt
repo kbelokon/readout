@@ -1,6 +1,8 @@
 {{- $fullName := include "readout.fullname" . -}}
 {{- $svcPort := .Values.service.port -}}
 {{- $mode := (.Values.config.auth).mode | default "none" -}}
+{{- $svcType := .Values.service.type | default "ClusterIP" -}}
+{{- $exposed := or .Values.ingress.enabled .Values.gateway.enabled (eq $svcType "LoadBalancer") (eq $svcType "NodePort") -}}
 readout {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
 
 ACCESS URL
@@ -52,6 +54,31 @@ AUTH POSTURE
   everyone out. Wire auth.sessionSecret.existingSecret (or env READOUT_SESSION_SECRET,
   or config.sessionSecretFile) to keep sessions across restarts.
   {{- end }}
+{{- end }}
+{{- if and (eq $mode "none") $exposed }}
+
+!! ===========================================================================
+!! WARNING: NO-AUTH INSTANCE IS EXPOSED ON THE NETWORK
+!! ===========================================================================
+!! config.auth.mode is "none" AND this release is reachable beyond the cluster:
+{{- if .Values.ingress.enabled }}
+!!   - ingress.enabled is true
+{{- end }}
+{{- if .Values.gateway.enabled }}
+!!   - gateway.enabled is true
+{{- end }}
+{{- if eq $svcType "LoadBalancer" }}
+!!   - service.type is LoadBalancer
+{{- end }}
+{{- if eq $svcType "NodePort" }}
+!!   - service.type is NodePort
+{{- end }}
+!!
+!! readout serves an UNAUTHENTICATED, cluster-wide read viewer. Anyone who can
+!! reach this address can browse your entire cluster. This install was NOT
+!! blocked, but you should not leave it this way: set config.auth.mode to oidc
+!! or headers (behind a trusted proxy) before trusting this exposure.
+!! ===========================================================================
 {{- end }}
 {{- if .Values.gateway.enabled }}
 

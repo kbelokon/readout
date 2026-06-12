@@ -36,19 +36,20 @@ rbac:
   # renders; binding it to your own roles is then your responsibility.
   create: true
   # preset selects the read scope:
-  #   wildcard   - get/list/watch on every apiGroup and resource, including any
-  #                CRD the cluster serves. This is what makes "discover anything"
-  #                work out of the box.
-  #   restricted - least privilege: grants follow .Values.config (the single
-  #                source of truth). secrets and pods/log are granted only when
-  #                config.includeSecrets / config.showContainerLogs ask for them.
-  #
-  # TRADE-OFF (wildcard): the wildcard preset grants API-level read on Secrets
-  # even when config.includeSecrets is false. The app's own gate still refuses
-  # to admit the Secret type in that case, but a compromise of the SA token
-  # exposes every Secret in the cluster through the apiserver directly. Choose
-  # restricted when that exposure is unacceptable.
-  preset: wildcard
+  #   restricted - DEFAULT, least privilege: grants follow .Values.config (the
+  #                single source of truth). secrets and pods/log are granted only
+  #                when config.includeSecrets / config.showContainerLogs ask for
+  #                them.
+  #   wildcard   - LOUD OPT-IN: get/list/watch on every apiGroup and resource,
+  #                including any CRD the cluster serves -- and including API-level
+  #                read on Secrets even when config.includeSecrets is false. This
+  #                makes "discover everything" work out of the box, at the cost of
+  #                handing the SA token apiserver-direct read on every Secret in
+  #                the cluster. The app's own gate still refuses to admit the
+  #                Secret type unless config.includeSecrets is set, but a
+  #                compromise of the SA token bypasses that gate. Choose wildcard
+  #                only when that exposure is acceptable.
+  preset: restricted
   # Extra rules appended to the ClusterRole under either preset. Use this to
   # widen read access (e.g. a resource the restricted preset omits, or an
   # argoCD host whose credentials live in a local Secret). values.schema.json
@@ -299,9 +300,6 @@ extraObjects: []
 # instead by the app's startup checks and `readout config validate`. The gates
 # exist to catch the obvious local-values mistakes, not to be authoritative.
 unsafe:
-  # Set true to allow exposing readout (ingress/gateway) while config.auth.mode
-  # is none. Without this, exposing a no-auth instance is a template error.
-  allowNoAuth: false
   # Set true to allow multi-replica OIDC without a stable session secret wired
   # through chart values. Without it (and with no session-secret wiring the
   # chart can see), that combination is a template error -- each replica would

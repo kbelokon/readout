@@ -13,14 +13,12 @@
 #   kubectl get ingress readout
 #   curl -I https://readout.example.com/
 #
-# AUTH TRADE-OFF: readout shows cluster contents to anyone who reaches it. This
-# example sets unsafe.allowNoAuth=true so it renders, but that publishes an
-# UNAUTHENTICATED cluster viewer. Put real auth here before exposing it: set
-# config.auth.mode to oidc (see oidc-existing-secret.yaml) or headers behind a
-# trusted proxy. allowNoAuth is honest noise, not a recommendation.
-unsafe:
-  allowNoAuth: true
-
+# AUTH TRADE-OFF: readout shows cluster contents to anyone who reaches it. With
+# config.auth.mode none (the default) this Ingress publishes an UNAUTHENTICATED
+# cluster viewer. The chart renders it anyway and prints a loud NOTES warning --
+# it never blocks the install. Put real auth here before trusting the exposure:
+# set config.auth.mode to oidc (see oidc-existing-secret.yaml) or headers behind
+# a trusted proxy.
 ingress:
   enabled: true
   className: nginx

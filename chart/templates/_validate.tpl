@@ -8,7 +8,6 @@ startup checks and `readout config validate`.
 */}}
 {{- define "readout.validate" -}}
 {{- include "readout.validate.sessionSecret" . -}}
-{{- include "readout.validate.noAuth" . -}}
 {{- include "readout.validate.selectorLabels" . -}}
 {{- include "readout.validate.pdb" . -}}
 {{- end -}}
@@ -75,20 +74,6 @@ operator acknowledges via unsafe.allowEphemeralSessionSecret.
   {{- end -}}
   {{- if and (not $wired) (not .Values.envFrom) -}}
     {{- fail "config.auth.mode=oidc with replicaCount>1 needs a stable session secret shared by every replica; without one each pod signs sessions with its own ephemeral key and OIDC login breaks under load balancing. Wire one through chart values: auth.sessionSecret.existingSecret (+key), or an env[] entry named READOUT_SESSION_SECRET, or config.sessionSecretFile, or supply it via envFrom. To run anyway with an ephemeral per-pod secret, set unsafe.allowEphemeralSessionSecret=true." -}}
-  {{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Gate (c): exposing readout (ingress or gateway) while auth.mode is none/unset
-puts an unauthenticated cluster viewer on the network. Fail unless the operator
-acknowledges via unsafe.allowNoAuth.
-*/}}
-{{- define "readout.validate.noAuth" -}}
-{{- if and (or .Values.ingress.enabled .Values.gateway.enabled) (not .Values.unsafe.allowNoAuth) -}}
-  {{- $mode := (.Values.config.auth).mode | default "none" -}}
-  {{- if eq $mode "none" -}}
-    {{- fail "exposing readout through ingress/gateway while config.auth.mode is none publishes an unauthenticated, cluster-wide read viewer; anyone who reaches the address can browse your cluster. Set config.auth.mode to a real mode (oidc/headers) before exposing it, or set unsafe.allowNoAuth=true to expose it without authentication on purpose." -}}
   {{- end -}}
 {{- end -}}
 {{- end -}}

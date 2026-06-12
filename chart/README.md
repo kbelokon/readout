@@ -61,7 +61,7 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | `commonLabels` | `{}` | Labels merged into every rendered resource (applied last, so they override standard chart labels of the same name). |
 | `commonAnnotations` | `{}` | Annotations merged into every rendered resource. Per-resource annotation blocks win on conflict; not part of the pod config checksum, so changing it does not roll pods. |
 | `serviceAccount` | `{create: true, name: "", annotations: {}}` | The ServiceAccount readout runs as. When `create` is false, set `name` to an existing account; binding it to roles is then your responsibility. |
-| `rbac` | `{create: true, preset: wildcard, extraRules: []}` | Cluster read access. See [RBAC presets](#rbac-presets) below. When `create` is false, no RBAC objects render. `extraRules` are appended verbatim (keep verbs within get/list/watch — schema-pinned). |
+| `rbac` | `{create: true, preset: restricted, extraRules: []}` | Cluster read access. Defaults to the least-privilege `restricted` preset. See [RBAC presets](#rbac-presets) below. When `create` is false, no RBAC objects render. `extraRules` are appended verbatim (keep verbs within get/list/watch — schema-pinned). |
 | `replicaCount` | `1` | Number of readout pod replicas. |
 | `service` | `{type: ClusterIP, port: 80, labels: {}, annotations: {}}` | The main Service. `labels`/`annotations` merge over the common sets. |
 | `metrics` | `{enabled: false, port: 9090, service: {...}, serviceMonitor: {...}}` | Separate metrics listener. When enabled, renders `config.metricsPort = metrics.port`, adds a `metrics` container port, a `<fullname>-metrics` Service, and an optional `serviceMonitor` (Prometheus Operator CRD). See the metrics guards below. |
@@ -87,7 +87,7 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | `extraContainers` | `[]` | Extra sidecar containers, rendered verbatim into the pod. |
 | `podDisruptionBudget` | `{enabled: false, minAvailable: "", maxUnavailable: ""}` | PodDisruptionBudget for readout pods. Set exactly one of `minAvailable`/`maxUnavailable` (Kubernetes rejects both). |
 | `extraObjects` | `[]` | Escape hatch for arbitrary Helm-owned objects (platform CRs, extra Secrets). Each entry is one YAML map; string values run through `tpl` with the chart root context. See [Exposure recipes](#exposure-recipes). |
-| `unsafe` | `{allowNoAuth: false, allowEphemeralSessionSecret: false}` | Acknowledgements that silence the chart's safety gates. See [Safety gates and the env boundary](#safety-gates-and-the-env-boundary). |
+| `unsafe` | `{allowEphemeralSessionSecret: false}` | Acknowledgement that silences the multi-replica OIDC session-secret gate. See [Safety gates and the env boundary](#safety-gates-and-the-env-boundary). |
 | `testFramework` | `{enabled: false, image: {repository: curlimages/curl, tag: "8.11.1"}}` | Opt-in `helm test` connectivity pod. When enabled, `helm test <release>` runs a curl pod against the Service's `/readyz`. |
 
 ## Exposure recipes
@@ -141,21 +141,22 @@ values run through `tpl`, so they can reference chart helpers like
 readout's access is read-only by construction: this chart never grants a mutating
 verb on any resource. Verbs are always `get`/`list`/`watch`.
 
-- **`wildcard`** (default) — `get`/`list`/`watch` on every apiGroup and resource,
-  including any CRD the cluster serves. This is what makes "discover anything"
-  work out of the box.
-- **`restricted`** — least privilege: grants are **derived from `config`** (the
-  single source of truth). Secrets read and `pods/log` read are granted only when
-  `config.includeSecrets` / `config.showContainerLogs` ask for them; the Argo CD
-  namespaced Role/RoleBinding renders only when `config.argoCD` reads cluster
-  Secrets from the in-cluster ServiceAccount.
+- **`restricted`** (default) — least privilege: grants are **derived from
+  `config`** (the single source of truth). Secrets read and `pods/log` read are
+  granted only when `config.includeSecrets` / `config.showContainerLogs` ask for
+  them; the Argo CD namespaced Role/RoleBinding renders only when `config.argoCD`
+  reads cluster Secrets from the in-cluster ServiceAccount.
+- **`wildcard`** (loud opt-in) — `get`/`list`/`watch` on every apiGroup and
+  resource, including any CRD the cluster serves **and including API-level read on
+  Secrets even when `config.includeSecrets` is false**. This makes "discover
+  everything" work out of the box, at the cost of handing the ServiceAccount token
+  apiserver-direct read on every Secret in the cluster.
 
-**Wildcard trade-off:** the wildcard preset grants API-level **read on Secrets**
-even when `config.includeSecrets` is false. readout's own app-level gate still
-refuses to admit the Secret type in that case, but a compromise of the
-ServiceAccount token exposes every Secret in the cluster through the apiserver
-directly. Choose `restricted` when that exposure is unacceptable. (Documented
-trade-off — not a bug.)
+**Wildcard trade-off:** readout's own app-level gate still refuses to admit the
+Secret type when `config.includeSecrets` is false, but a compromise of the
+ServiceAccount token bypasses that gate and exposes every Secret in the cluster
+through the apiserver directly. The default is `restricted`; select `wildcard`
+only when that exposure is acceptable. (Documented trade-off — not a bug.)
 
 Widen either preset with `rbac.extraRules`, appended verbatim. Keep verbs within
 `get`/`list`/`watch` — the schema pins this list to read-only verbs.
@@ -170,9 +171,11 @@ is the **app's own startup checks** and `readout config validate` (see
 
 The gates:
 
-- **No-auth exposure** — exposing through Ingress/Gateway while
-  `config.auth.mode` is `none` is a template error. Set a real `auth.mode`
-  (`oidc`/`headers`) or acknowledge with `unsafe.allowNoAuth: true`.
+- **No-auth exposure** — exposing readout while `config.auth.mode` is `none`
+  (through Ingress, Gateway, or a `LoadBalancer`/`NodePort` Service) is **never
+  render-blocked**: the chart installs and prints a loud NOTES warning instead.
+  An exposed no-auth instance publishes an unauthenticated, cluster-wide read
+  viewer; set a real `auth.mode` (`oidc`/`headers`) before trusting the exposure.
 - **Multi-replica OIDC session secret** — `config.auth.mode: oidc` with
   `replicaCount > 1` and no chart-visible session secret is a template error
   (each replica would sign with its own ephemeral key and break OIDC login
@@ -248,7 +251,7 @@ Seven runnable values files in [`examples/`](examples):
 
 | File | What it deploys |
 | --- | --- |
-| [`minimal.yaml`](examples/minimal.yaml) | Smallest honest install: single ClusterIP pod, wildcard preset, auth none, no exposure (reach via port-forward). |
+| [`minimal.yaml`](examples/minimal.yaml) | Smallest honest install: single ClusterIP pod, restricted preset (default), auth none, no exposure (reach via port-forward). |
 | [`ingress-nginx.yaml`](examples/ingress-nginx.yaml) | readout behind a `networking.k8s.io/v1` Ingress on the nginx class. |
 | [`gateway-api.yaml`](examples/gateway-api.yaml) | readout exposed by attaching an HTTPRoute to an existing Gateway API Gateway. |
 | [`oidc-existing-secret.yaml`](examples/oidc-existing-secret.yaml) | OIDC login behind an Ingress, with session and client Secrets wired from pre-created Secrets. The recommended exposed setup. |

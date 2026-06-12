@@ -529,9 +529,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "allowNoAuth": {
-          "type": "boolean"
-        },
         "allowEphemeralSessionSecret": {
           "type": "boolean"
         }

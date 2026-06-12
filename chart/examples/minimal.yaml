@@ -1,10 +1,12 @@
 # minimal.yaml -- smallest honest install of readout.
 #
-# Deploys: a single ClusterIP-only readout pod with the wildcard read preset,
-# auth mode none, and no external exposure. Reach it with port-forward.
+# Deploys: a single ClusterIP-only readout pod with the restricted read preset
+# (the default), auth mode none, and no external exposure. Reach it with
+# port-forward.
 #
 # Cluster prerequisites: none. The chart creates the ServiceAccount and the
-# cluster-wide read RBAC; no Secrets are consumed by this example.
+# least-privilege read RBAC derived from config; no Secrets are consumed by this
+# example.
 #
 # After install:
 #   kubectl get pods -l app.kubernetes.io/name=readout

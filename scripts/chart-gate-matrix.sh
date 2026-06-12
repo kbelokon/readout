@@ -39,13 +39,13 @@ expect_pass "oidc multi-replica with session secret" \
   --set replicaCount=3 --set config.auth.mode=oidc \
   --set auth.sessionSecret.existingSecret=s
 
-# Gate: exposing a no-auth instance (ingress) is rejected by default...
-expect_fail "ingress exposure while auth.mode=none" \
+# No-auth exposure is NEVER render-blocked: exposing a no-auth instance through
+# ingress renders successfully (the operator is warned via NOTES, not stopped).
+expect_pass "ingress exposure while auth.mode=none renders (warns, never blocks)" \
   --set ingress.enabled=true --set 'ingress.hosts[0].host=r.example.com'
-# ...and unlocked only with the explicit unsafe acknowledgement.
-expect_pass "ingress exposure with unsafe.allowNoAuth" \
-  --set ingress.enabled=true --set 'ingress.hosts[0].host=r.example.com' \
-  --set unsafe.allowNoAuth=true
+# A no-auth LoadBalancer Service is likewise rendered, not blocked.
+expect_pass "LoadBalancer exposure while auth.mode=none renders (warns, never blocks)" \
+  --set service.type=LoadBalancer
 
 # Schema: a non-integer replicaCount is a type error.
 expect_fail "schema rejects non-integer replicaCount" \
@@ -73,7 +73,7 @@ expect_fail "gate rejects name-only READOUT_SESSION_SECRET env entry" \
 # Schema conditional (if/then) branches -- the constructs most likely to
 # diverge between the helm 3 and helm 4 schema engines, so probe them on both.
 expect_fail "schema rejects ingress.enabled with zero hosts" \
-  --set ingress.enabled=true --set unsafe.allowNoAuth=true
+  --set ingress.enabled=true
 expect_fail "schema rejects existingSecret with empty key" \
   --set auth.oidc.existingSecret=s --set auth.oidc.clientIdKey=""
 
