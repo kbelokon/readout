@@ -48,13 +48,13 @@ func newAppMetrics() *appMetrics {
 	up.Set(1)
 	kubeRequests := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "readout_kube_requests_total",
-		Help: "Total kube API requests, by cluster, operation and result.",
-	}, []string{"cluster", "operation", "result"})
+		Help: "Total kube API requests, by target cluster, operation and result.",
+	}, []string{"target_cluster", "operation", "result"})
 	kubeDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "readout_kube_request_duration_seconds",
-		Help:    "Kube API request latency in seconds, by cluster and operation.",
+		Help:    "Kube API request latency in seconds, by target cluster and operation.",
 		Buckets: prometheus.DefBuckets,
-	}, []string{"cluster", "operation"})
+	}, []string{"target_cluster", "operation"})
 	streamTerminal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "readout_stream_terminal_total",
 		Help: "Total Live stream terminations, by reason.",

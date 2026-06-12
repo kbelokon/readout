@@ -75,9 +75,9 @@ func TestDomainMetricsScrape(t *testing.T) {
 
 	wantSeries := []string{
 		// kube requests: a list against the configured cluster with an ok result.
-		`readout_kube_requests_total{cluster="test",operation="list",result="ok"}`,
+		`readout_kube_requests_total{operation="list",result="ok",target_cluster="test"}`,
 		// kube duration histogram for the same cluster/operation.
-		`readout_kube_request_duration_seconds_count{cluster="test",operation="list"}`,
+		`readout_kube_request_duration_seconds_count{operation="list",target_cluster="test"}`,
 		// stream terminal counter for the idle reason.
 		`readout_stream_terminal_total{reason="idle"}`,
 		// hook duration histogram for the authorization hook, ok result.
@@ -171,7 +171,7 @@ func TestDomainMetricsScrapeErrorLabels(t *testing.T) {
 
 	wantSeries := []string{
 		// kube list against the configured cluster, classified as a 5xx upstream.
-		`readout_kube_requests_total{cluster="test",operation="list",result="upstream_5xx"}`,
+		`readout_kube_requests_total{operation="list",result="upstream_5xx",target_cluster="test"}`,
 		// prerender hook duration histogram with the error result.
 		`readout_hook_duration_seconds_count{hook="prerender",result="error"}`,
 	}
