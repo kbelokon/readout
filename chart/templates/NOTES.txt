@@ -80,6 +80,20 @@ AUTH POSTURE
 !! or headers (behind a trusted proxy) before trusting this exposure.
 !! ===========================================================================
 {{- end }}
+{{- if and (.Values.networkPolicy).enabled (not (.Values.networkPolicy.egress).to) }}
+
+!! ===========================================================================
+!! WARNING: NETWORKPOLICY ENABLED WITH NO EGRESS DESTINATIONS
+!! ===========================================================================
+!! networkPolicy.enabled is true but networkPolicy.egress.to is empty, so on an
+!! enforcing CNI readout's pods can reach ONLY DNS -- NOT the Kubernetes
+!! apiserver (or your OIDC issuer / hooks). readout CANNOT FUNCTION without
+!! apiserver egress: every cluster view will fail. Populate networkPolicy.egress.to
+!! with the apiserver endpoint (and OIDC/hook hosts); see the values.yaml comment
+!! for the ipBlock recipe. This was NOT blocked, but the instance is broken until
+!! you do.
+!! ===========================================================================
+{{- end }}
 {{- if .Values.gateway.enabled }}
 
 GATEWAY (HTTPRoute) ATTACHMENT
