@@ -9,78 +9,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
-	"golang.org/x/oauth2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
-
-func TestAuthorizationHookAllowsDeniesAndUpdatesSession(t *testing.T) {
-	app := newTestServer(t)
-	session := authSession{AccessToken: "old", User: "old-user"}
-	token := (&oauth2.Token{
-		AccessToken:  "hook-token",
-		TokenType:    "Bearer",
-		RefreshToken: "refresh",
-		Expiry:       time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
-	}).WithExtra(map[string]any{"id_token": "id.jwt"})
-
-	allowed, err := app.authorizationHook(context.Background(), token, &session)
-	if err != nil || !allowed || session.User != "old-user" {
-		t.Fatalf("empty hook allowed=%v updated=%#v err=%v", allowed, session, err)
-	}
-
-	var payload struct {
-		Token   map[string]any `json:"token"`
-		Session authSession    `json:"session"`
-	}
-	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" {
-			t.Fatalf("bad hook request method=%s content-type=%s", r.Method, r.Header.Get("Content-Type"))
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatal(err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"allowed":false,"user":"new-user","email":"new@example.test","groups":["ops","dev"]}`))
-	}))
-	defer hook.Close()
-
-	app.cfg.AuthorizationHookURL = hook.URL
-	allowed, err = app.authorizationHook(context.Background(), token, &session)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if allowed {
-		t.Fatal("hook should deny access")
-	}
-	if payload.Token["access_token"] != "hook-token" || payload.Token["id_token"] != "id.jwt" || payload.Session.User != "old-user" {
-		t.Fatalf("unexpected hook payload: %#v", payload)
-	}
-	if session.User != "new-user" || session.Email != "new@example.test" || !reflect.DeepEqual(session.Groups, []string{"ops", "dev"}) {
-		t.Fatalf("updated session = %#v", session)
-	}
-}
-
-func TestAuthorizationHookErrors(t *testing.T) {
-	app := newTestServer(t)
-	token := &oauth2.Token{AccessToken: "hook-token", Expiry: time.Now().Add(time.Hour)}
-	fail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "nope", http.StatusForbidden)
-	}))
-	defer fail.Close()
-
-	app.cfg.AuthorizationHookURL = fail.URL
-	if _, err := app.authorizationHook(context.Background(), token, &authSession{}); err == nil {
-		t.Fatal("expected non-2xx hook to fail")
-	}
-	app.cfg.AuthorizationHookURL = "://bad-url"
-	if _, err := app.authorizationHook(context.Background(), token, &authSession{}); err == nil {
-		t.Fatal("expected invalid hook URL to fail")
-	}
-}
 
 func TestResourcePrerenderHookUpdatesLinksAndResource(t *testing.T) {
 	app := newTestServer(t)

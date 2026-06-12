@@ -1,4 +1,4 @@
-package web
+package auth
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -18,13 +19,25 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const (
-	sessionCookieName = "READOUT"
-	stateCookieName   = "READOUT_STATE"
-	oauthCallbackPath = "/oauth2/callback"
-)
+// SessionCookieName is the name of the sealed session cookie. It is also the
+// AES-GCM associated data the session codec binds the envelope to, so a cookie
+// resealed under a different name fails to open.
+const SessionCookieName = "READOUT"
 
-type authSession struct {
+// StateCookieName is the name of the sealed OAuth state cookie (nonce +
+// original URL), scoped to the callback path. Like the session cookie, the name
+// doubles as the codec's associated data.
+const StateCookieName = "READOUT_STATE"
+
+// CallbackPath is the OAuth2 redirect/callback route. It is also a public path
+// (auth bypasses it) so the unauthenticated callback can complete the handshake.
+const CallbackPath = "/oauth2/callback"
+
+// Session is the decoded sealed session: the OAuth tokens plus the
+// user/email/groups identity. The JSON tags define the on-the-wire envelope
+// payload, so they must stay stable for sealed cookies to survive across
+// restarts and process versions.
+type Session struct {
 	AccessToken  string   `json:"access_token"`
 	TokenType    string   `json:"token_type,omitempty"`
 	RefreshToken string   `json:"refresh_token,omitempty"`
@@ -40,23 +53,72 @@ type oauthState struct {
 	OriginalURL string `json:"original_url"`
 }
 
-func (s *Server) auth(next http.Handler) http.Handler {
+// Authenticator owns the security-sensitive surface: auth-mode dispatch, the
+// OIDC/OAuth2 flows, the sealed-session codec, the OIDC provider cache, and the
+// bearer-source policy. Web wires its handlers and middleware; it never reaches
+// into these internals directly.
+type Authenticator struct {
+	cfg      config.Config
+	sessions *sessionCodec
+	hooks    *hooks.Client
+	// now is the clock for session expiry comparisons. It defaults to time.Now
+	// in New; tests inject a fixed instant.
+	now func() time.Time
+
+	// oidcMu guards the OIDC discovery cache below. oidcProvider is built once
+	// per process from the configured issuer (go-oidc fetches the discovery
+	// document and the remote key set) and reused for every login and callback.
+	// Discovery is comparatively expensive and the issuer's metadata is stable,
+	// so caching it avoids a network round trip on each OAuth handshake. A failed
+	// construction is never cached: a transient issuer outage must not poison the
+	// process, so the next request retries discovery from scratch.
+	oidcMu       sync.Mutex
+	oidcProvider *oidc.Provider
+}
+
+// New builds an Authenticator from the resolved config, the session secret
+// (READOUT_SESSION_SECRET), an injectable clock, and the shared hooks client. A
+// nil clock falls back to time.Now. The config is copied into the Authenticator
+// so it owns an independent snapshot. The secret is hashed into the session
+// codec's AES key; an empty secret yields an ephemeral per-process key (sessions
+// will not survive restarts).
+func New(cfg *config.Config, secret string, now func() time.Time, hooksClient *hooks.Client) (*Authenticator, error) {
+	codec, err := newSessionCodec(secret)
+	if err != nil {
+		return nil, err
+	}
+	if now == nil {
+		now = time.Now
+	}
+	return &Authenticator{
+		cfg:      *cfg,
+		sessions: codec,
+		hooks:    hooksClient,
+		now:      now,
+	}, nil
+}
+
+// Middleware gates every non-public request by the effective auth mode: none
+// passes through, headers requires a trusted identity header (and runs the
+// authorization hook), and OIDC requires a valid session or starts the OAuth2
+// handshake.
+func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.isPublicPath(r.URL.Path) {
+		if a.IsPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		switch s.effectiveAuthMode() {
+		switch a.EffectiveAuthMode() {
 		case "", config.AuthModeNone:
 			next.ServeHTTP(w, r)
 			return
 		case config.AuthModeHeaders:
-			if r.Header.Get(s.cfg.TrustedHeaderUser) == "" && r.Header.Get(s.cfg.TrustedHeaderEmail) == "" {
+			if r.Header.Get(a.cfg.TrustedHeaderUser) == "" && r.Header.Get(a.cfg.TrustedHeaderEmail) == "" {
 				http.Error(w, "missing trusted identity header", http.StatusUnauthorized)
 				return
 			}
-			session := s.trustedHeaderSession(r)
-			allowed, err := s.authorizationHook(r.Context(), &oauth2.Token{}, &session)
+			session := a.trustedHeaderSession(r)
+			allowed, err := a.authorizationHook(r.Context(), &oauth2.Token{}, &session)
 			if err != nil {
 				http.Error(w, "authorization hook failed: "+err.Error(), http.StatusForbidden)
 				return
@@ -68,11 +130,11 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		case config.AuthModeOIDC:
-			if _, ok := s.authSession(r); ok {
+			if _, ok := a.Session(r); ok {
 				next.ServeHTTP(w, r)
 				return
 			}
-			s.startOAuth2(w, r, r.URL.RequestURI())
+			a.startOAuth2(w, r, r.URL.RequestURI())
 			return
 		default:
 			http.Error(w, "invalid auth mode", http.StatusInternalServerError)
@@ -87,8 +149,8 @@ func (s *Server) auth(next http.Handler) http.Handler {
 // the updated session after the call. Returns whether access is allowed. The
 // hook IO lives in internal/hooks; this adapter maps the session to the hook's
 // request DTO and applies the value result back onto the session struct.
-func (s *Server) authorizationHook(ctx context.Context, token *oauth2.Token, session *authSession) (bool, error) {
-	if s.cfg.AuthorizationHookURL == "" {
+func (a *Authenticator) authorizationHook(ctx context.Context, token *oauth2.Token, session *Session) (bool, error) {
+	if a.cfg.AuthorizationHookURL == "" {
 		return true, nil
 	}
 	sessionJSON, err := json.Marshal(*session)
@@ -104,7 +166,7 @@ func (s *Server) authorizationHook(ctx context.Context, token *oauth2.Token, ses
 	if idToken, _ := token.Extra("id_token").(string); idToken != "" {
 		tokenMap["id_token"] = idToken
 	}
-	result, err := s.hooks.Authorization(ctx, s.cfg.AuthorizationHookURL, hooks.AuthorizationRequest{
+	result, err := a.hooks.Authorization(ctx, a.cfg.AuthorizationHookURL, hooks.AuthorizationRequest{
 		Token:   tokenMap,
 		Session: sessionJSON,
 	})
@@ -126,11 +188,11 @@ func (s *Server) authorizationHook(ctx context.Context, token *oauth2.Token, ses
 	return true, nil
 }
 
-func (s *Server) trustedHeaderSession(r *http.Request) authSession {
-	return authSession{
-		User:   r.Header.Get(s.cfg.TrustedHeaderUser),
-		Email:  r.Header.Get(s.cfg.TrustedHeaderEmail),
-		Groups: splitHeaderGroups(r.Header.Get(s.cfg.TrustedHeaderGroups)),
+func (a *Authenticator) trustedHeaderSession(r *http.Request) Session {
+	return Session{
+		User:   r.Header.Get(a.cfg.TrustedHeaderUser),
+		Email:  r.Header.Get(a.cfg.TrustedHeaderEmail),
+		Groups: splitHeaderGroups(r.Header.Get(a.cfg.TrustedHeaderGroups)),
 	}
 }
 
@@ -149,32 +211,38 @@ func splitHeaderGroups(value string) []string {
 	return groups
 }
 
-func (s *Server) oauth2Login(w http.ResponseWriter, r *http.Request) {
+// Login starts the OAuth2 handshake for an explicit /oauth2/login hit, honoring
+// a local-only `next` redirect target.
+func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 	next := r.URL.Query().Get("next")
 	if !isLocalRedirect(next) {
 		next = "/"
 	}
-	s.startOAuth2(w, r, next)
+	a.startOAuth2(w, r, next)
 }
 
-func (s *Server) oauth2Logout(w http.ResponseWriter, r *http.Request) {
-	clearCookie(w, r, sessionCookieName, "/")
-	clearCookie(w, r, stateCookieName, oauthCallbackPath)
+// Logout clears the session and OAuth state cookies and redirects home.
+func (a *Authenticator) Logout(w http.ResponseWriter, r *http.Request) {
+	clearCookie(w, r, SessionCookieName, "/")
+	clearCookie(w, r, StateCookieName, CallbackPath)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-func (s *Server) oauth2Callback(w http.ResponseWriter, r *http.Request) {
-	stateCookie, err := r.Cookie(stateCookieName)
+// Callback completes the OAuth2/OIDC handshake: it validates the sealed state
+// cookie and nonce, exchanges the code, verifies the ID token when OIDC, runs
+// the authorization hook, and seals the resulting session cookie.
+func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
+	stateCookie, err := r.Cookie(StateCookieName)
 	if err != nil {
 		http.Error(w, "missing OAuth state cookie", http.StatusBadRequest)
 		return
 	}
 	var state oauthState
-	if err := s.sessions.Open(stateCookieName, stateCookie.Value, &state); err != nil {
+	if err := a.sessions.Open(StateCookieName, stateCookie.Value, &state); err != nil {
 		http.Error(w, "invalid OAuth state", http.StatusBadRequest)
 		return
 	}
-	clearCookie(w, r, stateCookieName, oauthCallbackPath)
+	clearCookie(w, r, StateCookieName, CallbackPath)
 	if state.Nonce == "" || state.Nonce != r.URL.Query().Get("state") {
 		http.Error(w, "OAuth state mismatch", http.StatusBadRequest)
 		return
@@ -183,7 +251,7 @@ func (s *Server) oauth2Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OAuth error: "+msg, http.StatusUnauthorized)
 		return
 	}
-	oauthConfig, verifier, err := s.oauth2Config(r.Context(), r)
+	oauthConfig, verifier, err := a.oauth2Config(r.Context(), r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -193,7 +261,7 @@ func (s *Server) oauth2Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OAuth token exchange failed: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
-	session := authSession{
+	session := Session{
 		AccessToken:  token.AccessToken,
 		TokenType:    token.TokenType,
 		RefreshToken: token.RefreshToken,
@@ -223,7 +291,7 @@ func (s *Server) oauth2Callback(w http.ResponseWriter, r *http.Request) {
 			session.Groups = claims.Groups
 		}
 	}
-	allowed, err := s.authorizationHook(r.Context(), token, &session)
+	allowed, err := a.authorizationHook(r.Context(), token, &session)
 	if err != nil {
 		http.Error(w, "authorization hook failed: "+err.Error(), http.StatusForbidden)
 		return
@@ -237,13 +305,13 @@ func (s *Server) oauth2Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OAuth token already expired", http.StatusUnauthorized)
 		return
 	}
-	value, err := s.sessions.Seal(sessionCookieName, session, ttl)
+	value, err := a.sessions.Seal(SessionCookieName, session, ttl)
 	if err != nil {
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     SessionCookieName,
 		Value:    value,
 		Path:     "/",
 		MaxAge:   int(ttl.Seconds()),
@@ -258,8 +326,8 @@ func (s *Server) oauth2Callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
-func (s *Server) startOAuth2(w http.ResponseWriter, r *http.Request, originalURL string) {
-	oauthConfig, _, err := s.oauth2Config(r.Context(), r)
+func (a *Authenticator) startOAuth2(w http.ResponseWriter, r *http.Request, originalURL string) {
+	oauthConfig, _, err := a.oauth2Config(r.Context(), r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -270,15 +338,15 @@ func (s *Server) startOAuth2(w http.ResponseWriter, r *http.Request, originalURL
 		return
 	}
 	state := oauthState{Nonce: nonce, OriginalURL: originalURL}
-	cookieValue, err := s.sessions.Seal(stateCookieName, state, 10*time.Minute)
+	cookieValue, err := a.sessions.Seal(StateCookieName, state, 10*time.Minute)
 	if err != nil {
 		http.Error(w, "failed to create OAuth state", http.StatusInternalServerError)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     stateCookieName,
+		Name:     StateCookieName,
 		Value:    cookieValue,
-		Path:     oauthCallbackPath,
+		Path:     CallbackPath,
 		MaxAge:   int((10 * time.Minute).Seconds()),
 		HttpOnly: true,
 		Secure:   secureCookie(r),
@@ -287,20 +355,20 @@ func (s *Server) startOAuth2(w http.ResponseWriter, r *http.Request, originalURL
 	http.Redirect(w, r, oauthConfig.AuthCodeURL(nonce), http.StatusFound)
 }
 
-func (s *Server) oauth2Config(ctx context.Context, r *http.Request) (*oauth2.Config, *oidc.IDTokenVerifier, error) {
-	if s.cfg.OIDCClientID == "" {
+func (a *Authenticator) oauth2Config(ctx context.Context, r *http.Request) (*oauth2.Config, *oidc.IDTokenVerifier, error) {
+	if a.cfg.OIDCClientID == "" {
 		return nil, nil, errors.New("missing OIDC/OAuth2 client ID")
 	}
-	redirectURL := s.cfg.OIDCRedirectURL
+	redirectURL := a.cfg.OIDCRedirectURL
 	if redirectURL == "" {
-		redirectURL = externalURL(r, oauthCallbackPath)
+		redirectURL = externalURL(r, CallbackPath)
 	}
-	scopes := strings.Fields(s.cfg.OAuth2Scope)
+	scopes := strings.Fields(a.cfg.OAuth2Scope)
 	var endpoint oauth2.Endpoint
 	var verifier *oidc.IDTokenVerifier
 	switch {
-	case s.cfg.OIDCIssuerURL != "":
-		provider, err := s.oidcDiscover()
+	case a.cfg.OIDCIssuerURL != "":
+		provider, err := a.oidcDiscover()
 		if err != nil {
 			return nil, nil, fmt.Errorf("OIDC discovery failed: %w", err)
 		}
@@ -308,18 +376,18 @@ func (s *Server) oauth2Config(ctx context.Context, r *http.Request) (*oauth2.Con
 		if len(scopes) == 0 {
 			scopes = []string{oidc.ScopeOpenID, "email", "profile"}
 		}
-		verifier = provider.Verifier(&oidc.Config{ClientID: s.cfg.OIDCClientID})
-	case s.cfg.OAuth2AuthorizeURL != "" && s.cfg.OAuth2TokenURL != "":
+		verifier = provider.Verifier(&oidc.Config{ClientID: a.cfg.OIDCClientID})
+	case a.cfg.OAuth2AuthorizeURL != "" && a.cfg.OAuth2TokenURL != "":
 		endpoint = oauth2.Endpoint{
-			AuthURL:  s.cfg.OAuth2AuthorizeURL,
-			TokenURL: s.cfg.OAuth2TokenURL,
+			AuthURL:  a.cfg.OAuth2AuthorizeURL,
+			TokenURL: a.cfg.OAuth2TokenURL,
 		}
 	default:
 		return nil, nil, errors.New("missing OIDC issuer URL or generic OAuth2 authorize/token URLs")
 	}
 	return &oauth2.Config{
-		ClientID:     s.cfg.OIDCClientID,
-		ClientSecret: s.cfg.OIDCClientSecret,
+		ClientID:     a.cfg.OIDCClientID,
+		ClientSecret: a.cfg.OIDCClientSecret,
 		Endpoint:     endpoint,
 		RedirectURL:  redirectURL,
 		Scopes:       scopes,
@@ -334,66 +402,82 @@ func (s *Server) oauth2Config(ctx context.Context, r *http.Request) (*oauth2.Con
 // verification for unrelated requests. A failed construction is not stored, so
 // the next caller retries discovery rather than inheriting a poisoned cache from
 // a transient issuer outage.
-func (s *Server) oidcDiscover() (*oidc.Provider, error) {
-	s.oidcMu.Lock()
-	defer s.oidcMu.Unlock()
-	if s.oidcProvider != nil {
-		return s.oidcProvider, nil
+func (a *Authenticator) oidcDiscover() (*oidc.Provider, error) {
+	a.oidcMu.Lock()
+	defer a.oidcMu.Unlock()
+	if a.oidcProvider != nil {
+		return a.oidcProvider, nil
 	}
-	provider, err := oidc.NewProvider(context.Background(), s.cfg.OIDCIssuerURL)
+	provider, err := oidc.NewProvider(context.Background(), a.cfg.OIDCIssuerURL)
 	if err != nil {
 		return nil, err
 	}
-	s.oidcProvider = provider
+	a.oidcProvider = provider
 	return provider, nil
 }
 
-func (s *Server) authSession(r *http.Request) (authSession, bool) {
-	cookie, err := r.Cookie(sessionCookieName)
+// Session opens the sealed session cookie and returns it when present, decodable,
+// non-empty (has an access token), and unexpired by its own Expires field.
+func (a *Authenticator) Session(r *http.Request) (Session, bool) {
+	cookie, err := r.Cookie(SessionCookieName)
 	if err != nil {
-		return authSession{}, false
+		return Session{}, false
 	}
-	var session authSession
-	if err := s.sessions.Open(sessionCookieName, cookie.Value, &session); err != nil {
-		return authSession{}, false
+	var session Session
+	if err := a.sessions.Open(SessionCookieName, cookie.Value, &session); err != nil {
+		return Session{}, false
 	}
-	if session.AccessToken == "" || session.Expires <= time.Now().Unix() {
-		return authSession{}, false
+	if session.AccessToken == "" || session.Expires <= a.now().Unix() {
+		return Session{}, false
 	}
 	return session, true
 }
 
-func (s *Server) requestBearer(r *http.Request) string {
+// RequestBearer resolves the viewer's bearer token: the Authorization header
+// wins, otherwise the access token from a valid sealed session, otherwise empty
+// (anonymous). The legacy access_token cookie is deliberately not a source.
+func (a *Authenticator) RequestBearer(r *http.Request) string {
 	authz := r.Header.Get("Authorization")
 	if strings.HasPrefix(authz, "Bearer ") {
 		return strings.TrimPrefix(authz, "Bearer ")
 	}
-	if session, ok := s.authSession(r); ok {
+	if session, ok := a.Session(r); ok {
 		return session.AccessToken
 	}
 	return ""
 }
 
-func (s *Server) effectiveAuthMode() string {
-	if s.cfg.AuthMode == config.AuthModeNone && s.oauthConfigured() {
+// EffectiveAuthMode resolves the runtime auth mode: an explicit mode is honored,
+// but AuthModeNone with OAuth/OIDC endpoints configured implies OIDC.
+func (a *Authenticator) EffectiveAuthMode() string {
+	if a.cfg.AuthMode == config.AuthModeNone && a.oauthConfigured() {
 		return config.AuthModeOIDC
 	}
-	return s.cfg.AuthMode
+	return a.cfg.AuthMode
 }
 
-func (s *Server) oauthConfigured() bool {
-	return s.cfg.OIDCIssuerURL != "" || (s.cfg.OAuth2AuthorizeURL != "" && s.cfg.OAuth2TokenURL != "")
+func (a *Authenticator) oauthConfigured() bool {
+	return a.cfg.OIDCIssuerURL != "" || (a.cfg.OAuth2AuthorizeURL != "" && a.cfg.OAuth2TokenURL != "")
 }
 
-func (s *Server) isPublicPath(path string) bool {
+// IsPublicPath reports whether a path bypasses auth (health/metrics probes, the
+// OAuth routes, and static assets).
+func (a *Authenticator) IsPublicPath(path string) bool {
 	return path == "/health" ||
 		path == "/healthz" ||
 		path == "/readyz" ||
 		path == "/metrics" ||
-		path == oauthCallbackPath ||
+		path == CallbackPath ||
 		path == "/oauth2/login" ||
 		path == "/oauth2/logout" ||
 		strings.HasPrefix(path, "/assets/")
+}
+
+// SealSession seals a session into a cookie value bound to the session cookie
+// name, for callers that mint a session outside the callback flow. The session
+// is taken by pointer (it is a heavy value).
+func (a *Authenticator) SealSession(session *Session, ttl time.Duration) (string, error) {
+	return a.sessions.Seal(SessionCookieName, session, ttl)
 }
 
 func oauthExpiry(token *oauth2.Token) time.Time {
@@ -447,4 +531,23 @@ func randomToken(n int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+// isLocalRedirect reports whether target is a safe same-origin redirect: a
+// rooted path that is not protocol-relative or backslash-smuggled to an external
+// host.
+func isLocalRedirect(target string) bool {
+	return strings.HasPrefix(target, "/") &&
+		!strings.HasPrefix(target, "//") &&
+		!strings.HasPrefix(target, `/\`)
+}
+
+// first returns the first non-empty value, or "" when all are empty.
+func first(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

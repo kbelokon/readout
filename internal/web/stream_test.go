@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/tests/unit/fakeapi"
 )
@@ -739,7 +740,7 @@ func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
 
-	value, err := app.sessions.Seal(sessionCookieName, authSession{
+	value, err := app.auth.SealSession(&auth.Session{
 		AccessToken: "session-token",
 		Expires:     time.Now().Add(2 * time.Second).Unix(),
 	}, time.Hour)
@@ -750,7 +751,7 @@ func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: value})
 
 	s := openStreamRequest(t, req)
 	s.requireEvent(t, "ro-table", 5*time.Second)

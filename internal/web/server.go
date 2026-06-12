@@ -10,11 +10,10 @@ import (
 	"net/http"
 	"os"
 	"sort"
-	"sync"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/kbelokon/readout/internal/assets"
+	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/hooks"
 	"github.com/kbelokon/readout/internal/kube"
@@ -48,7 +47,7 @@ type Server struct {
 	assets             map[string]string
 	partials           map[string]string
 	metrics            *appMetrics
-	sessions           *sessionCodec
+	auth               *auth.Authenticator
 	hooks              *hooks.Client
 	passthroughClients *kube.PassthroughClientCache
 	// now is the clock for all render-path time (age coloring + the list/search
@@ -85,16 +84,6 @@ type Server struct {
 	// is shutting down, open Live streams emit `event: ro-terminal` (reason
 	// "shutdown") and close instead of dying mid-frame.
 	shutdownCh <-chan struct{}
-
-	// oidcMu guards the OIDC discovery cache below. oidcProvider is built once
-	// per process from the configured issuer (go-oidc fetches the discovery
-	// document and the remote key set) and reused for every login and callback.
-	// Discovery is comparatively expensive and the issuer's metadata is stable,
-	// so caching it avoids a network round trip on each OAuth handshake. A failed
-	// construction is never cached: a transient issuer outage must not poison the
-	// process, so the next request retries discovery from scratch.
-	oidcMu       sync.Mutex
-	oidcProvider *oidc.Provider
 }
 
 var withBearerClient = func(client *kube.Client, token string) (*kube.Client, error) {
@@ -116,7 +105,8 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if cfg.StaticAssetsPath != "" {
 		staticFS = os.DirFS(cfg.StaticAssetsPath)
 	}
-	sessions, err := newSessionCodec(cfg.SessionSecret)
+	hooksClient := hooks.NewClient()
+	authenticator, err := auth.New(cfg, cfg.SessionSecret, time.Now, hooksClient)
 	if err != nil {
 		return nil, err
 	}
@@ -128,8 +118,8 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		assets:             assetHashes(staticFS),
 		partials:           loadPartials(cfg.TemplatesPath),
 		metrics:            newAppMetrics(),
-		sessions:           sessions,
-		hooks:              hooks.NewClient(),
+		auth:               authenticator,
+		hooks:              hooksClient,
 		passthroughClients: kube.NewPassthroughClientCache(0, 0),
 		now:                time.Now,
 		listBudget:         listFanoutBudget,
@@ -143,19 +133,19 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 }
 
 // warnMissingSessionSecret warns at startup when the effective auth mode is
-// OIDC but no session secret is configured (READOUT_SESSION_SECRET empty, so
-// newSessionCodec generated an ephemeral per-process key). Without a stable
-// secret, sessions silently break across restarts and across replicas. Gated
-// on effectiveAuthMode (not raw cfg.AuthMode) so the implicit
+// OIDC but no session secret is configured (READOUT_SESSION_SECRET empty, so the
+// session codec falls back to an ephemeral per-process key). Without a stable
+// secret, sessions silently break across restarts and across replicas. Gated on
+// the effective auth mode (not raw cfg.AuthMode) so the implicit
 // AuthModeNone + OIDC-config path is also covered.
 func (s *Server) warnMissingSessionSecret() {
-	if s.effectiveAuthMode() == config.AuthModeOIDC && s.cfg.SessionSecret == "" {
+	if s.auth.EffectiveAuthMode() == config.AuthModeOIDC && s.cfg.SessionSecret == "" {
 		slog.Warn("OIDC auth has no session secret; sessions will not survive restarts or span replicas", "env", "READOUT_SESSION_SECRET")
 	}
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.readOnly(s.securityHeaders(s.observeMetrics(s.auth(s.mux))))
+	return s.readOnly(s.securityHeaders(s.observeMetrics(s.auth.Middleware(s.mux))))
 }
 
 func (s *Server) routes() {
@@ -169,9 +159,9 @@ func (s *Server) routes() {
 		// Override the catch-all route so the main app listener does not redirect /metrics.
 		s.mux.HandleFunc("GET /metrics", http.NotFound)
 	}
-	s.mux.HandleFunc("GET /oauth2/callback", s.oauth2Callback)
-	s.mux.HandleFunc("GET /oauth2/login", s.oauth2Login)
-	s.mux.HandleFunc("GET /oauth2/logout", s.oauth2Logout)
+	s.mux.HandleFunc("GET /oauth2/callback", s.auth.Callback)
+	s.mux.HandleFunc("GET /oauth2/login", s.auth.Login)
+	s.mux.HandleFunc("GET /oauth2/logout", s.auth.Logout)
 	s.mux.HandleFunc("GET /", s.index)
 	s.mux.HandleFunc("GET /preferences", s.preferences)
 	s.mux.HandleFunc("POST /preferences", s.savePreferences)
@@ -208,7 +198,7 @@ func (s *Server) kubeClient(r *http.Request, cluster *kube.Cluster) *kube.Client
 	if !s.cfg.ClusterAuthUseSessionToken {
 		return cluster.Client
 	}
-	token := s.requestBearer(r)
+	token := s.auth.RequestBearer(r)
 	if token == "" {
 		// No viewer token. Fall through to the base identity -- an in-cluster
 		// SA, a token-file, or a static cluster with its own credential is a real

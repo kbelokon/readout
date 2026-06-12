@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/tests/unit/fakeapi"
@@ -121,7 +122,7 @@ func TestMetricsEndpointCountsRoutedRequests(t *testing.T) {
 
 func TestMetricsSeparatePort(t *testing.T) {
 	mainPort := newTestServer(t)
-	if !mainPort.isPublicPath("/metrics") {
+	if !mainPort.auth.IsPublicPath("/metrics") {
 		t.Fatal("metrics should be public on the main mux when metricsPort is unset")
 	}
 	rec := httptest.NewRecorder()
@@ -136,7 +137,7 @@ func TestMetricsSeparatePort(t *testing.T) {
 		Clusters:     []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
 		DefaultTheme: "dark",
 	})
-	if !separate.isPublicPath("/metrics") {
+	if !separate.auth.IsPublicPath("/metrics") {
 		t.Fatal("metrics must bypass auth so the main mux can return the disabled 404 when metricsPort is set")
 	}
 	rec = httptest.NewRecorder()
@@ -259,7 +260,7 @@ func TestGenericOAuth2FlowCreatesEncryptedSession(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	state := cookieNamed(t, rec.Result().Cookies(), stateCookieName)
+	state := cookieNamed(t, rec.Result().Cookies(), auth.StateCookieName)
 	location := rec.Header().Get("Location")
 	if !strings.Contains(location, "https://auth.example/authorize") || !strings.Contains(location, "client_id=client-id") {
 		t.Fatalf("unexpected authorize redirect: %s", location)
@@ -272,7 +273,7 @@ func TestGenericOAuth2FlowCreatesEncryptedSession(t *testing.T) {
 	if cbRec.Code != http.StatusFound {
 		t.Fatalf("callback status = %d body=%s", cbRec.Code, cbRec.Body.String())
 	}
-	session := cookieNamed(t, cbRec.Result().Cookies(), sessionCookieName)
+	session := cookieNamed(t, cbRec.Result().Cookies(), auth.SessionCookieName)
 	if session.Value == "" || strings.Contains(session.Value, "session-token") {
 		t.Fatalf("session cookie is empty or not encrypted: %q", session.Value)
 	}
@@ -367,12 +368,12 @@ func TestClusterAuthUsesEncryptedSessionToken(t *testing.T) {
 	var lastAuth authRecorder
 	fake := newRecordingServerFakeAPI(t, &lastAuth)
 	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark", ClusterAuthUseSessionToken: true, SessionSecret: "test-secret"})
-	value, err := app.sessions.Seal(sessionCookieName, authSession{AccessToken: "forwarded-token", Expires: time.Now().Add(time.Hour).Unix()}, time.Hour)
+	value, err := app.auth.SealSession(&auth.Session{AccessToken: "forwarded-token", Expires: time.Now().Add(time.Hour).Unix()}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: value})
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

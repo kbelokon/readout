@@ -9,8 +9,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
+	"github.com/kbelokon/readout/internal/hooks"
 	"github.com/kbelokon/readout/internal/kube"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -496,7 +499,11 @@ func TestSessionSecretWarning(t *testing.T) {
 		t.Helper()
 		var buf bytes.Buffer
 		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-		s := &Server{cfg: cfg}
+		authenticator, err := auth.New(&cfg, cfg.SessionSecret, time.Now, hooks.NewClient())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := &Server{cfg: cfg, auth: authenticator}
 		s.warnMissingSessionSecret()
 		return strings.Contains(buf.String(), "READOUT_SESSION_SECRET")
 	}
