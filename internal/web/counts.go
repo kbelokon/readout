@@ -1,6 +1,6 @@
 package web
 
-// counts.go implements the sidebar per-kind object counts (D13, SPEC §6.2):
+// counts.go implements the sidebar per-kind object counts:
 // one chunked list request per sidebar kind with `limit=1`, where
 //
 //	count = len(rows) + metadata.remainingItemCount
@@ -17,8 +17,8 @@ package web
 // short deadline so a slow or dead kind can never delay a page render beyond
 // countFetchTimeout, and render on full page loads only -- the `_table`
 // refresh partial never rebuilds the sidebar, so ticks never re-fetch
-// (recorded SPEC deviation D13: §6.2 says "live"; page-load + TTL is the
-// deliberate cost cut). A failed fetch renders NO count (and the failure is
+// (a deliberate cost cut: the design calls for live counts, but page-load +
+// TTL is the sanctioned trade-off). A failed fetch renders NO count (and the failure is
 // remembered for the same TTL so a broken kind is not re-probed on every page
 // load) -- EXCEPT when the failure is the caller's own cancellation (an
 // aborted page load), which says nothing about the kind and is never cached;
@@ -95,7 +95,7 @@ func (c *countCache) store(key countKey, entry countEntry) {
 	c.entries[key] = entry
 }
 
-// tableCount is the D13 count formula over a limit=1 Table chunk:
+// tableCount is the sidebar count formula over a limit=1 Table chunk:
 // len(rows) + metadata.remainingItemCount. It covers zero items (0 rows, no
 // remainder -> 0), an exact-one list (1 row, no remainder -> 1), the normal
 // paginating apiserver (1 row + remainingItemCount 106 -> 107), and a server

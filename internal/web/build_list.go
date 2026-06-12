@@ -37,7 +37,7 @@ type listContext struct {
 	Duration        time.Duration
 	Clients         requestKubeClients
 
-	// ColVis maps each table's plural to its column-visibility universe (D8):
+	// ColVis maps each table's plural to its column-visibility universe:
 	// every column of the fully-decorated table plus the synthetic Created, with
 	// hidden/identity flags -- captured at the removal point in applyTableOptions
 	// (the removed columns are gone from Tables, so the popover needs this to
@@ -165,7 +165,7 @@ func (s *Server) clusterTables(r *http.Request, client *kube.Client, cluster *ku
 }
 
 // streamListContext wraps ONE cluster's pristine snapshot table into the same
-// listContext shape the `_table` partial renders from (D19): cluster tags,
+// listContext shape the `_table` partial renders from: cluster tags,
 // then the full applyTableOptions pass — decorations, hidecols, the legacy
 // filter params AND the `?f=` chips, sort — exactly like clusterTables, so
 // the pushed fragment is byte-shaped like a `_table` response and morphs
@@ -234,13 +234,13 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 
 // applyTableOptionsWithUsage is applyTableOptions with an optional pre-fetched
 // metrics overlay: a non-nil metricsUsage feeds the ?join=metrics columns
-// instead of a live metrics fetch. The Live stream (D19) renders pushes at up
+// instead of a live metrics fetch. The Live stream renders pushes at up
 // to ~3/s and refreshes usage on its own 30s sub-poll, so its renders must
 // never re-list the metrics API; everything else passes nil and keeps the
 // per-request fetch.
 func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, metricsUsage map[string][2]float64) []columnVis {
 	q := r.URL.Query()
-	// D9 cookie fill: the ro_prefs colvis/sort prefs stand in for ABSENT URL
+	// Cookie fill: the ro_prefs colvis/sort prefs stand in for ABSENT URL
 	// params (URL always wins; single-type pages only; render-only -- r.URL is
 	// never mutated, so rebuilt hrefs and HX-Push-Url keep URL truth).
 	fill := prefsListFill(r)
@@ -248,7 +248,7 @@ func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client
 	if hide == "" {
 		if fill.HasHide {
 			// An explicit cookie hide set -- possibly EMPTY ("show everything"),
-			// which must suppress the config default (user override wins, D8).
+			// which must suppress the config default (user override wins).
 			hide = fill.Hide
 		} else {
 			hide = s.cfg.DefaultHiddenColumns[table.Resource.Plural]
@@ -285,18 +285,18 @@ func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client
 	}
 	if table.Resource.Plural == "ingresses" {
 		// Ingresses get a synthetic TLS column derived from each row's spec.tls
-		// (the server-side Table has no TLS column, SPEC §7.10).
+		// (the server-side Table has no TLS column).
 		decorateIngressColumns(table)
 	}
 	if table.Resource.Plural == "jobs" {
-		// Jobs get the verbatim-status guarantee (SPEC §7.11): a printer without
+		// Jobs get the verbatim-status guarantee: a printer without
 		// the Status column gains one derived from status.conditions, and a bare
 		// "Failed" refines to the condition's verbatim reason
 		// (BackoffLimitExceeded).
 		decorateJobColumns(table)
 	}
 	if table.Resource.Plural == "events" {
-		// Events get the ×N dedupe column (D15): the count decodes from each
+		// Events get the ×N dedupe column: the count decodes from each
 		// row's object across BOTH event API shapes and lands before Message so
 		// the wrapping msg column stays last. CronJobs and PersistentVolumes need
 		// no table-level decoration — their printer columns already carry the v2
@@ -315,7 +315,7 @@ func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client
 	if custom != "" {
 		s.joinCustomColumns(r.Context(), client, table, namespace, allNamespaces, custom, q)
 	}
-	// Column visibility (D8): applied AFTER the label / synthetic / joined
+	// Column visibility: applied AFTER the label / synthetic / joined
 	// columns land, so the hide spec can remove synthetic columns too (until v2
 	// it ran before the decorations, which made node Pods/Conditions, the
 	// deployment Rollout, the namespace Labels, and the joined usage columns
@@ -327,8 +327,8 @@ func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client
 	vis := applyHiddenColumns(table, hide)
 	kube.FilterRowsByNamespace(table, s.cfg.IncludeNamespaces, s.cfg.ExcludeNamespaces)
 	kube.FilterTable(table, q.Get("filter"), false)
-	// Filters v2 (D7): the repeatable `?f=` chips, single-type pages only (the
-	// D1 boundary -- the same gate the interaction loop uses). A multi-type
+	// Filters v2: the repeatable `?f=` chips, single-type pages only (the
+	// single-type boundary -- the same gate the interaction loop uses). A multi-type
 	// page that receives `f` anyway IGNORES it: never a 500, never a
 	// surprise-empty table the client UI cannot explain. Chips run on the full
 	// dataset BEFORE sort/limit, after the joins/decorations (so the joined
@@ -371,7 +371,7 @@ func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client
 	return vis
 }
 
-// columnVis is one column-visibility entry (D8): a column of the FULLY
+// columnVis is one column-visibility entry: a column of the FULLY
 // decorated table (label columns, synthetic node/deployment/namespace columns,
 // joined usage columns, the template-synthetic Created) plus whether the
 // current render hides it and whether it is the protected identity column.
@@ -388,7 +388,7 @@ type columnVis struct {
 // columns. The identity column -- the "Name" column, or the first column for a
 // kind whose Table has none (the same nameColumn rule the row keys and the
 // sticky column use) -- is NEVER removed, `*` included: a forced
-// ?hidecols=Name is ignored server-side (D8). The synthetic Created column is
+// ?hidecols=Name is ignored server-side. The synthetic Created column is
 // template-rendered, not a kube column, so it joins the universe here and
 // hides via the render flag rather than kube.RemoveColumns.
 func applyHiddenColumns(table *kube.Table, spec string) []columnVis {
@@ -454,7 +454,7 @@ func mergeColumnVis(left, right []columnVis) []columnVis {
 // kube.MetricsUsage (the typed quantity seam). nil when discovery or the
 // metrics LIST fails — applyMetricsUsage then writes the zero placeholders,
 // so a failed fetch never leaves ragged rows. Split from the column apply
-// so the Live stream (D19) can refresh usage on its own 30s sub-poll instead
+// so the Live stream can refresh usage on its own 30s sub-poll instead
 // of re-fetching per push.
 func (s *Server) fetchMetricsUsage(ctx context.Context, client *kube.Client, namespaced bool, namespace string, allNamespaces bool, labelSelector string) map[string][2]float64 {
 	metricsKind := "NodeMetrics"
@@ -567,7 +567,7 @@ func decorateNamespaceColumns(table *kube.Table) {
 	}
 }
 
-// decorateServiceColumns guarantees the v2 services schema surface (SPEC §7.8):
+// decorateServiceColumns guarantees the v2 services schema surface:
 // the External-IP and Selector columns are appended -- read from each row's
 // spec/status with the SAME value encoding the upstream printer uses
 // (`<none>`/`<pending>`/ExternalName target; sorted comma-joined `k=v`) -- when
@@ -600,7 +600,7 @@ func decorateServiceColumns(table *kube.Table) {
 // cell with the plain DISPLAY value ("tls" when spec.tls terminates at least
 // one host, "—" otherwise) so sort, TSV, filter, and the generic fallback see
 // a sensible value; the rich tlsCellView renderer re-reads the row object for
-// the earned-green lock (SPEC §4.13). The cell is appended for EVERY row in
+// the earned-green lock. The cell is appended for EVERY row in
 // lockstep with the column, so the table never goes ragged. A TLS column the
 // server-side Table already provided (it does not today) is never duplicated.
 func decorateIngressColumns(table *kube.Table) {
@@ -638,7 +638,7 @@ func insertTableColumn(table *kube.Table, idx int, name string, cell func(obj ma
 	}
 }
 
-// decorateJobColumns guarantees the jobs verbatim-status surface (SPEC §7.11).
+// decorateJobColumns guarantees the jobs verbatim-status surface.
 // A printer WITHOUT the Status column (pre-1.30 apiservers) gains a synthetic
 // one right after the identity column, derived from status.conditions
 // (jobStatusText). A printer WITH it keeps its cell as the truth — except a
@@ -713,7 +713,7 @@ func jobFailedReason(obj map[string]any) string {
 	return ""
 }
 
-// decorateEventColumns appends the events ×N dedupe column (D15): the count
+// decorateEventColumns appends the events ×N dedupe column: the count
 // decodes from each row's object with the pinned dual-API precedence
 // (series.count → count → deprecatedCount, defaulting to 1) and the cell
 // carries the plain int64 so sort, TSV, and filter see the numeric truth; the
@@ -734,7 +734,7 @@ func decorateEventColumns(table *kube.Table) {
 }
 
 // decorateConfigMapColumns curates the configmaps Data column for the keys
-// cell (SPEC §4.10). NO synthetic column is needed -- the server's integer
+// cell. NO synthetic column is needed -- the server's integer
 // key-count cell stays in place as the sort/TSV/filter truth and the
 // `name · size` chips re-read the row object at cell-build time
 // (configMapKeyChips) -- but the count cell makes GuessColumnClasses
@@ -833,7 +833,7 @@ func selectorChips(obj map[string]any) []chipView {
 }
 
 // ingressTLSTerminated reports whether an Ingress terminates TLS: spec.tls
-// lists at least one entry (SPEC §7.10 "ingress TLS from spec.tls").
+// lists at least one entry (ingress TLS comes from spec.tls).
 func ingressTLSTerminated(obj map[string]any) bool {
 	tls, _, _ := unstructured.NestedSlice(obj, "spec", "tls")
 	return len(tls) > 0
@@ -866,7 +866,7 @@ func commaListValues(value string) []string {
 // configMapKeyChips builds the configmap Data key chips from the row object:
 // `data` key names sized by their value's byte length, `binaryData` key names
 // sized by the DECODED byte length (the wire form is base64). Only key names
-// and sizes leave this function (SPEC §4.10).
+// and sizes leave this function.
 func configMapKeyChips(obj map[string]any) []keyChipView {
 	data, _, _ := unstructured.NestedStringMap(obj, "data")
 	binary, _, _ := unstructured.NestedStringMap(obj, "binaryData")
@@ -1087,7 +1087,7 @@ func evalJSONPath(jp *jsonpath.JSONPath, obj any) string {
 // listView, resolving every request-derived href and flag here so render never
 // touches *http.Request.
 func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
-	// Canonicalize the request URL FIRST (D6 state coherence): this builder
+	// Canonicalize the request URL FIRST (for state coherence): this builder
 	// serves BOTH the full page and the `_table` partial, and every href it
 	// resolves (sort headers, metrics join, label-selector links, filter chips,
 	// retry) must point at the canonical LIST PAGE -- never at the partial.
@@ -1101,7 +1101,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	q := r.URL.Query()
 	sortValue := q.Get("sort")
 	joinValue := q.Get("join")
-	// D9 cookie fill: with no ?sort= in the URL the persisted sort drives the
+	// Cookie fill: with no ?sort= in the URL the persisted sort drives the
 	// render (applyTableOptions sorted the rows with the same fill), so the
 	// th.sorted highlight, the sort icons, and the asc/desc header toggle must
 	// see the EFFECTIVE sort. The fill never touches r.URL: header hrefs SET
@@ -1113,7 +1113,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 		sortValue = prefsListFill(r).Sort
 	}
 
-	// The D1 surface boundary: the v2 interaction loop (partial sort headers,
+	// The single-type surface boundary: the v2 interaction loop (partial sort headers,
 	// row identity, location-derived ticks) applies to single-resource-type
 	// pages only. partialSortURL is the `_table` base the header hx-get links
 	// sort against; nil disables the whole loop for multi-type pages.
@@ -1139,7 +1139,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	if lc.Namespace != "" && lc.Plural != "namespaces" && !lc.IsAllNamespaces {
 		v.AllNamespacesHref = fmt.Sprintf("/clusters/%s/namespaces/_all/%s?%s", url.PathEscape(lc.Cluster), url.PathEscape(lc.Plural), r.URL.RawQuery)
 	}
-	// Bulk download surface (D11 / Unit 17): single-type AND single-cluster
+	// Bulk download surface: single-type AND single-cluster
 	// lists get the clean `?download=yaml` base href baked onto the bulk bar;
 	// multi-cluster scope leaves it empty, which renders the Download button
 	// disabled with the explanatory title (the names grammar carries no
@@ -1147,7 +1147,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	if single && !lc.IsAllClusters && lc.ClusterCount == 1 {
 		v.BulkDownloadHref = bulkDownloadHref(r.URL)
 	}
-	// The client-side stale path (D11) needs its markup hooks in the first server
+	// The client-side stale path needs its markup hooks in the first server
 	// response: a hidden `.ro-banner.warn` readout.js reveals on an auto-refresh
 	// error, dimming the rows in #resource-list-content (the morph target) instead
 	// of blanking them. The server never decides "stale" -- there is no last-good
@@ -1163,7 +1163,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	if len(filterChips) > 0 {
 		clearHref = delQuery(r.URL, "filter", "selector", "labelcols", "label-columns", "f")
 	}
-	// The chips editor (D7): single-type pages only, mirroring the `?f=` gate in
+	// The chips editor: single-type pages only, mirroring the `?f=` gate in
 	// applyTableOptions. The chips ride the morphed fragment, so a shareable URL
 	// lands with its chips visible and a chip-committing partial re-renders them.
 	if single {
@@ -1183,9 +1183,9 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 		if (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") && joinValue == "" {
 			tv.ShowMetricsHref = addQuery(r.URL, "join", "metrics")
 		}
-		// Column visibility (D8): the synthetic Created column hides through a
+		// Column visibility: the synthetic Created column hides through a
 		// render flag (it is not a kube column), and the popover universe rides
-		// only on single-type pages -- the same D1 gate the loop, the chips
+		// only on single-type pages -- the same single-type gate the loop, the chips
 		// editor, and the cookie fill share. A hand-built listContext without
 		// ColVis (tests) keeps Created shown.
 		if vis, ok := lc.ColVis[table.Resource.Plural]; ok {
@@ -1226,7 +1226,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 			ns := nestedString(row.Object, "metadata", "namespace")
 			name := cellString(row, nameColumn(table))
 			rv := rowView{
-				// The row stripe (SPEC §3: err/warn rows only) derives from the same
+				// The row stripe (err/warn rows only) derives from the same
 				// kube.StatusTone table the status dot uses, via RowStatusClass.
 				StatusClass:  kube.RowStatusClass(table, row),
 				Cluster:      row.Cluster,
@@ -1236,7 +1236,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 			}
 			if single {
 				rv.Key = rowKey(row.Cluster, ns, name)
-				// Per-row gesture targets (Unit 16 / D10): server-resolved hrefs
+				// Per-row gesture targets: server-resolved hrefs
 				// the context menu + bulk actions read off the <tr>. OpenHref
 				// mirrors the name-cell link exactly (buildCellView's cellName
 				// branch is the twin), including the namespaces drill-down to
@@ -1281,7 +1281,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 		}
 		v.Tables = append(v.Tables, tv)
 	}
-	// Whole-list failure state (D11): a SINGLE-cluster list that produced no
+	// Whole-list failure state: a SINGLE-cluster list that produced no
 	// tables at all but did collect a FORBIDDEN or UNREACHABLE error renders that
 	// state in place of the table -- and its per-cluster error is NOT surfaced as
 	// the all-cluster partial-failure banner (the invariant: a single-cluster list
@@ -1300,7 +1300,7 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 }
 
 // isSingleListType reports whether the {plural} path segment names exactly ONE
-// resource type -- the D1 surface boundary for the v2 interaction loop (D6).
+// resource type -- the single-type surface boundary for the v2 interaction loop.
 // Multi-type pages ("all", the "_all" union, and CSV lists) keep the v1
 // behavior: boosted sort links, no row identity, the baked partial URL.
 func isSingleListType(plural string) bool {
@@ -1308,7 +1308,7 @@ func isSingleListType(plural string) bool {
 }
 
 // rowKey is the stable row object identity "cluster/ns/name" with empty
-// segments collapsed (a cluster-scoped object yields "cluster/name") -- the D6
+// segments collapsed (a cluster-scoped object yields "cluster/name") -- the
 // data-key contract that morphs, selection, and j/k focus key on.
 func rowKey(cluster, namespace, name string) string {
 	parts := make([]string, 0, 3)
@@ -1336,7 +1336,7 @@ func buildFilterChips(r *http.Request) []filterChipView {
 	if labelCols := first(q.Get("labelcols"), q.Get("label-columns")); labelCols != "" {
 		chips = append(chips, filterChipView{Label: "labels: " + labelCols, RemoveHref: delQuery(r.URL, "labelcols", "label-columns")})
 	}
-	// Filters v2 chips (D7): one removable chip per `?f=` param, single-type
+	// Filters v2 chips: one removable chip per `?f=` param, single-type
 	// pages only (the same gate applyTableOptions filters under -- a multi-type
 	// page ignores `f`, so its emptiness must never be blamed on it). The ✕
 	// removes exactly that raw occurrence so sibling chips keep their raw
@@ -1391,7 +1391,7 @@ func filterFieldHint(col *kube.Column) string {
 // forbidden state (an apiserver 403 naming the verb/resource/namespace) or the
 // unreachable state (a transport/dial failure that never reached the apiserver,
 // OR an apiserver 5xx Status -- both shown with the REAL error string in the
-// mono errdetail block, never a cute message, SPEC §1.5/D16). It returns nil
+// mono errdetail block, never a cute message). It returns nil
 // for any other failure (a missing resource type, a 4xx Status such as a bad
 // selector), so those keep the existing partial-error banner. The retry is the
 // same list URL (a read-only GET); Back to clusters is /clusters.
@@ -1425,7 +1425,7 @@ func (s *Server) buildListState(r *http.Request, lc *listContext) *listStateView
 }
 
 // forbiddenStateHint is the one plain-language line of the forbidden state
-// (prototype VIEW.states copy, D16); the verbatim 403 Status rides below it in
+// (the designed states copy); the verbatim 403 Status rides below it in
 // the mono errdetail block.
 const forbiddenStateHint = "Your credentials can browse this cluster, but RBAC denies this view."
 
@@ -1433,7 +1433,7 @@ const forbiddenStateHint = "Your credentials can browse this cluster, but RBAC d
 // The prototype copy ("the request never made it") is literal for a transport
 // failure; an apiserver 5xx DID reach the apiserver, so it gets a truthful
 // variant -- the verbatim Status message below carries the real detail either
-// way (SPEC §1.5).
+// way (the verbatim-error law).
 func unreachableStateHint(apiAnswered bool) string {
 	if apiAnswered {
 		return "The apiserver answered with an error."
@@ -1464,7 +1464,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 	case colName == "Name":
 		cv.Kind = cellName
 		cv.NameHead, cv.NameTail = splitObjectName(table.Resource.Plural, value)
-		// SPEC §4.2 middle truncation: a head longer than 42 chars displays as
+		// Middle truncation: a head longer than 42 chars displays as
 		// `first26…last12` with the FULL name in the tooltip. The hash tail is
 		// never touched, so a cron pod's job/pod suffix stays unique on screen.
 		if display, truncated := MiddleTruncate(cv.NameHead, nameHeadMax, nameHeadLead, nameHeadTrail); truncated {
@@ -1523,7 +1523,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		// "Labels" column (which carries a Label tag) on the generic path instead.
 		cv.Kind = cellChips
 		cv.Chips = namespaceLabelChips(row.Object)
-		// Label-chip click-to-filter (D7 / SPEC §8.1): on a single-type page each
+		// Label-chip click-to-filter: on a single-type page each
 		// chip links to THIS list with the `label:key=value` chip appended to its
 		// `?f=` set (the same gate the filter engine applies under -- a multi-type
 		// page ignores `f`, so its chips stay inert spans).
@@ -1534,43 +1534,43 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		}
 	case (table.Resource.Plural == "services" && colName == "External-IP") ||
 		(table.Resource.Plural == "ingresses" && colName == "Address"):
-		// SPEC §4.12 pending cell: the printer's `<none>` (or an empty address) is
+		// Pending cell: the printer's `<none>` (or an empty address) is
 		// the faint none; the literal `<pending>` of an unprovisioned LB/ingress is
 		// the amber pulsing in-flight state; an ExternalName target / provisioned
 		// address renders verbatim.
 		cv = pendingCellView(value)
 	case table.Resource.Plural == "services" && colName == "Port(s)":
-		// SPEC §4.11 ports cell over the printer's comma-joined list: first 2 +
+		// Ports cell over the printer's comma-joined list: first 2 +
 		// faint "+N", the full list in the tooltip; portless (`<none>`) -> "—".
 		cv = portsCellView(commaListValues(value))
 	case table.Resource.Plural == "ingresses" && colName == "Hosts":
-		// SPEC §4.11 hosts cell: the first host + faint "+N hosts" with the full
+		// Hosts cell: the first host + faint "+N hosts" with the full
 		// newline-joined list in the tooltip.
 		cv = hostsCellView(commaListValues(value))
 	case table.Resource.Plural == "services" && colName == "Selector" && table.Columns[i].Label == "":
 		// The services Selector column renders neutral chips read from
-		// spec.selector (SPEC §7.8). Deliberately NO click-to-filter href (see
+		// spec.selector. Deliberately NO click-to-filter href (see
 		// selectorChips); the Label=="" guard keeps a user-added labelcols
 		// "Selector" column on the label path.
 		cv.Kind = cellChips
 		cv.Chips = selectorChips(row.Object)
 	case table.Resource.Plural == "ingresses" && colName == "TLS":
 		// The synthetic TLS column (added by decorateIngressColumns) renders the
-		// earned-green lock only when spec.tls terminates (SPEC §4.13), else "—".
+		// earned-green lock only when spec.tls terminates, else "—".
 		cv = tlsCellView(ingressTLSTerminated(row.Object))
 	case table.Resource.Plural == "configmaps" && colName == "Data":
 		// The configmap Data column renders `name · size` key chips decoded from
-		// the row object's data/binaryData (SPEC §4.10); the server's count cell
+		// the row object's data/binaryData; the server's count cell
 		// stays in the kube.Table for sort/TSV/filter.
 		cv = keysCellView(configMapKeyChips(row.Object))
 	case table.Resource.Plural == "secrets" && colName == "Data":
 		// The secret Data column renders key chips with DECODED byte sizes; the
-		// VALUE bytes never reach the view model (SPEC §4.10, secretKeyChips).
+		// VALUE bytes never reach the view model (secretKeyChips).
 		cv = keysCellView(secretKeyChips(row.Object))
 	case table.Resource.Plural == "cronjobs" && colName == "Suspend":
 		// The cronjob Suspend cell renders the prototype's status vocabulary:
 		// the printer's boolean maps false→Active (ok, live health) /
-		// true→Suspended (mute, SPEC §3) with the tone owned by kube.StatusTone
+		// true→Suspended (mute) with the tone owned by kube.StatusTone
 		// via CellClass — display-only; the kube.Table cell keeps the printer
 		// boolean for sort/TSV/filter. Neither word is transient, so no pulse.
 		label := "Active"
@@ -1581,7 +1581,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cv.Value = label
 		cv.Tone = statusTone(kube.CellClass(table.Resource.Plural, "Status", label))
 	case table.Resource.Plural == "cronjobs" && colName == "Last Schedule":
-		// SPEC §4.14 lastrun cell: the printer's compressed duration gains the
+		// Lastrun cell: the printer's compressed duration gains the
 		// age-bucket colour + " ago"; a cronjob that never ran prints the
 		// literal <none> on the wire — that IS the empty case → faint <never>.
 		if value == "<none>" {
@@ -1589,19 +1589,19 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		}
 		cv = lastRunCellView(value)
 	case table.Resource.Plural == "jobs" && colName == "Completions" && strings.Contains(value, "/"):
-		// SPEC §4.4: completions share the ready-ratio grammar (full green when
+		// Completions share the ready-ratio grammar (full green when
 		// n==m, partial amber, zero faint).
 		cv.Kind = cellReady
 		cv.Ratio = readyRatioClass(value)
 	case table.Resource.Plural == "events" && colName == "Type":
-		// The events Type cell is a status cell whose vocabulary IS SPEC §3
+		// The events Type cell is a status cell whose vocabulary IS the status table
 		// (Normal→mute, Warning→warn — never an invented stronger severity);
 		// CellClass("events","Type",…) delegates to kube.StatusTone. Neither
 		// word is transient, so no pulse.
 		cv.Kind = cellStatus
 		cv.Tone = statusTone(cls)
 	case table.Resource.Plural == "events" && colName == "Object":
-		// SPEC §4 evobj: kind icon + faint "Kind/" + the 20…8 middle-truncated
+		// Events Object cell: kind icon + faint "Kind/" + the 20…8 middle-truncated
 		// name, decoded from involvedObject (core/v1) or regarding
 		// (events.k8s.io/v1). An undecodable ref keeps the printer's plain
 		// "kind/name" cell.
@@ -1611,7 +1611,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 			cv.Kind = cellPlain
 		}
 	case table.Resource.Plural == "events" && colName == "Count":
-		// SPEC §4.15 ×N cell over the D15 dual-API count decode (≥20 amber, 1
+		// The ×N cell over the dual-API count decode (≥20 amber, 1
 		// faint). Re-decoded from the row object so a server-provided Count
 		// column shows the same pinned-precedence truth as the decorated one.
 		n := 1
@@ -1620,7 +1620,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		}
 		cv = countCellView(n)
 	case table.Resource.Plural == "events" && colName == "Last Seen":
-		// SPEC §4 evage: the two-layer age built from the D15 timestamp decode
+		// Events Age cell: the two-layer age built from the timestamp decode
 		// (last-seen lead token bucket-coloured; "(first <dur> ago)" faint when
 		// count > 1 and the spread exceeds 60s). When no timestamp decodes the
 		// printer's own Last Seen duration stays as the single layer.
@@ -1632,7 +1632,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		}
 		cv = evAgeCellView(text)
 	case table.Resource.Plural == "events" && colName == "Message":
-		// SPEC §4.16 msg: THE only wrapping column in the system (the 520px
+		// Message cell: THE only wrapping column in the system (the 520px
 		// clamp lives in CSS on td.ro-event-msg).
 		cv = msgCellView(value)
 	case colName == "CPU Usage":
@@ -1643,7 +1643,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cv.Value = memoryMiBFormat(cell)
 	case colName == "Status":
 		cv.Kind = cellStatus
-		// cls is kube.CellClass's encoding of kube.StatusTone (SPEC §3, the single
+		// cls is kube.CellClass's encoding of kube.StatusTone (the single
 		// value->tone owner), so the dot tone always exists (fallback mute).
 		cv.Tone = statusTone(cls)
 		// Pulse the transient set for ANY kind's status cell (law §1.3) -- the set
@@ -1657,7 +1657,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cv.Kind = cellRestarts
 		cv.Value, cv.Ago = splitRestarts(value)
 		cv.Tone = restartsTone(cv.Value)
-		// SPEC §4.5: the restart count gets a thousands separator (1047 ->
+		// The restart count gets a thousands separator (1047 ->
 		// 1,047). Applied after the tone (which keys on the raw "0") and safe
 		// for any non-numeric cell (groupThousands passes those through).
 		cv.Value = groupThousands(cv.Value)
@@ -1678,15 +1678,15 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 }
 
 // ---------------------------------------------------------------------------
-// SPEC §4 cookbook cell constructors (Unit 10). Each builds the resolved
+// Cell-cookbook cell constructors. Each builds the resolved
 // cellView for one corner-case cell type over plain data; the kind-specific
 // schema decorators that read row objects and CALL these land with the
-// services/ingress/configmap/secret/cronjob/job columns (Unit 11) and the
-// events columns (Unit 12). Display-only: the kube.Table cell keeps its raw
+// services/ingress/configmap/secret/cronjob/job columns and the
+// events columns. Display-only: the kube.Table cell keeps its raw
 // value for sort/filter/TSV.
 // ---------------------------------------------------------------------------
 
-// portsCellMax / hostsCellMax / keysCellMax / chipsCellMax are the SPEC §4
+// portsCellMax / hostsCellMax / keysCellMax / chipsCellMax are the
 // in-cell overflow thresholds: 2 ports, 1 host, 3 data keys, 2 label/selector
 // chips shown before the faint +N (ports/hosts) or the +N expand button
 // (keys/chips).
@@ -1697,10 +1697,10 @@ const (
 	chipsCellMax = 2
 )
 
-// pendingCellView resolves a service External-IP / ingress Address cell (SPEC
-// §4.12): empty -- including the printer's literal `<none>`, which IS the
+// pendingCellView resolves a service External-IP / ingress Address cell:
+// empty -- including the printer's literal `<none>`, which IS the
 // empty case on the wire -- -> the faint `<none>`, the literal `<pending>` ->
-// an amber PULSING dot + the word "pending" (an in-flight state, law §1.3),
+// an amber PULSING dot + the word "pending" (an in-flight state, the motion law),
 // anything else -> the plain address.
 func pendingCellView(value string) cellView {
 	cv := cellView{Kind: cellPending, Value: value}
@@ -1715,7 +1715,7 @@ func pendingCellView(value string) cellView {
 	return cv
 }
 
-// portsCellView resolves a service Ports cell (SPEC §4.11): the first 2 ports
+// portsCellView resolves a service Ports cell: the first 2 ports
 // joined ", ", a faint "+N" for the rest, and the FULL comma-joined list in the
 // tooltip. No ports -> the muted "—" (empty Value).
 func portsCellView(ports []string) cellView {
@@ -1733,7 +1733,7 @@ func portsCellView(ports []string) cellView {
 	return cv
 }
 
-// hostsCellView resolves an ingress Hosts cell (SPEC §4.11): the first host +
+// hostsCellView resolves an ingress Hosts cell: the first host +
 // a faint "+N hosts", with the full newline-joined list in the tooltip. No
 // hosts -> the muted "—" (empty Value).
 func hostsCellView(hosts []string) cellView {
@@ -1749,8 +1749,8 @@ func hostsCellView(hosts []string) cellView {
 	return cv
 }
 
-// tlsCellView resolves an ingress TLS cell (SPEC §4.13): the green lock +
-// "tls" ONLY when TLS is terminated (an EARNED green: live protection, D3),
+// tlsCellView resolves an ingress TLS cell: the green lock +
+// "tls" ONLY when TLS is terminated (an EARNED green under the colour law: live protection),
 // else the muted "—".
 func tlsCellView(terminated bool) cellView {
 	cv := cellView{Kind: cellTLS}
@@ -1761,7 +1761,7 @@ func tlsCellView(terminated bool) cellView {
 	return cv
 }
 
-// lastRunCellView resolves a cronjob Last Schedule cell (SPEC §4.14): the
+// lastRunCellView resolves a cronjob Last Schedule cell: the
 // age-bucket colour (the value is already a kubectl compressed duration) +
 // a " ago" suffix; a cronjob that never ran -> the faint `<never>` (empty
 // Value).
@@ -1775,7 +1775,7 @@ func lastRunCellView(value string) cellView {
 	return cv
 }
 
-// keysCellView resolves a configmap/secret Data cell (SPEC §4.10): one
+// keysCellView resolves a configmap/secret Data cell: one
 // `name · size` chip per key, the first keysCellMax shown, the rest behind the
 // `+N keys` in-cell expand. The keyChipView carries ONLY the key name + byte
 // size -- secret values are structurally absent from the view model. Empty
@@ -1784,7 +1784,7 @@ func keysCellView(keys []keyChipView) cellView {
 	return cellView{Kind: cellKeys, Keys: keys}
 }
 
-// countCellView resolves an events Count cell (SPEC §4.15): `×N` with a
+// countCellView resolves an events Count cell: `×N` with a
 // thousands separator; ≥20 reads chronic (the amber .restarts.some ink), a
 // 0/1 count fades. The class strings are final span classes lifted from the
 // reference countCell.
@@ -1801,10 +1801,10 @@ func countCellView(n int) cellView {
 	return cv
 }
 
-// evObjCellView resolves an events Object cell (SPEC §4 evobj): the kind icon
+// evObjCellView resolves an events Object cell: the kind icon
 // (pre-rendered in the bridge) + the faint "Kind/" prefix + the 20…8
 // middle-truncated object name, full name in the tooltip when truncated
-// (SPEC §4.2 -- the truncation rule beats the reference DOM, which dropped the
+// (the truncation rule beats the reference DOM, which dropped the
 // tooltip).
 func evObjCellView(kind, name string) cellView {
 	cv := cellView{Kind: cellEvObj, Value: name, EvKind: kind, EvName: name}
@@ -1815,7 +1815,7 @@ func evObjCellView(kind, name string) cellView {
 	return cv
 }
 
-// evAgeCellView resolves an events Age cell (SPEC §4 evage): the leading age
+// evAgeCellView resolves an events Age cell: the leading age
 // token carries the age-bucket colour; any remainder ("(first 41h ago)")
 // renders as the faint 11px second layer.
 func evAgeCellView(value string) cellView {
@@ -1829,7 +1829,7 @@ func evAgeCellView(value string) cellView {
 	return cv
 }
 
-// msgCellView resolves an events Message cell (SPEC §4.16): the ONLY wrapping
+// msgCellView resolves an events Message cell: the ONLY wrapping
 // column in the system (td.ro-event-msg, max-width 520px in CSS). The value is
 // plain text; templ escapes it at render.
 func msgCellView(value string) cellView {

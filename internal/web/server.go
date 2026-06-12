@@ -42,12 +42,12 @@ type Server struct {
 	// (now == time.Now) every render is byte-identical to a direct time.Now call.
 	now func() time.Time
 
-	// counts is the sidebar per-kind count cache (D13): keyed by the exact list
+	// counts is the sidebar per-kind count cache: keyed by the exact list
 	// each sidebar entry points at, TTL-invalidated against the s.now clock.
 	// The zero value is ready; no constructor wiring needed.
 	counts countCache
 
-	// streamSlots caps concurrent Live streams (D19): every open `_stream`
+	// streamSlots caps concurrent Live streams: every open `_stream`
 	// handler holds one slot for its whole lifetime; when the channel is full
 	// the next stream gets 429 BEFORE any SSE headers. The slot releases on
 	// every handler exit path (deferred at acquisition).
@@ -55,7 +55,7 @@ type Server struct {
 
 	// shutdownCh mirrors the New() context's Done channel: when the process
 	// is shutting down, open Live streams emit `event: ro-terminal` (reason
-	// "shutdown") and close instead of dying mid-frame (D19).
+	// "shutdown") and close instead of dying mid-frame.
 	shutdownCh <-chan struct{}
 }
 
@@ -169,7 +169,7 @@ func (s *Server) kubeClient(r *http.Request, cluster *kube.Cluster) *kube.Client
 	}
 	token := s.requestBearer(r)
 	if token == "" {
-		// No viewer token (D8d). Fall through to the base identity -- an in-cluster
+		// No viewer token. Fall through to the base identity -- an in-cluster
 		// SA, a token-file, or a static cluster with its own credential is a real
 		// identity, not silent anonymous. Deny ONLY when the base is itself
 		// anonymous: serving that as anonymous would be a silent downgrade.

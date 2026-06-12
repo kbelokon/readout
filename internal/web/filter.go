@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// filter.go is the server half of Filters v2 (design D7): parsing the
+// filter.go is the server half of Filters v2: parsing the
 // repeatable `?f=` query params into chips and matching table rows against
 // them. The chip grammar is pinned:
 //
@@ -481,7 +481,7 @@ func parseCellAgeToken(text string) (float64, bool) {
 // parseAgeToken parses a kubectl-age token into seconds. apimachinery's
 // HumanDuration emits one- AND two-unit tokens (59s, 5m33s, 3h, 2d3h, 1y127d),
 // so the parser accepts any run of number+unit groups and sums them. Units
-// are the SPEC's s/m/h/d/w/y set, lowercase only -- case-sensitivity keeps
+// are the s/m/h/d/w/y duration set, lowercase only -- case-sensitivity keeps
 // quantity suffixes like "100Mi" from half-parsing as durations. A bare
 // number has no unit and fails, so `restarts>0` stays a numeric compare.
 func parseAgeToken(s string) (float64, bool) {
@@ -531,7 +531,7 @@ func parseAgeToken(s string) (float64, bool) {
 // a label value arrives as %2C -- a literal comma inside one alternative, never
 // an OR split -- and the append is raw string concatenation, so every sibling
 // param (other raw `?f=` chips included) keeps its exact wire encoding. Used by
-// the label-chip click-to-filter hrefs (SPEC §8.1).
+// the label-chip click-to-filter hrefs.
 func addFilterChipHref(u *url.URL, chip string) string {
 	clone := *u
 	pair := "f=" + url.QueryEscape(chip)

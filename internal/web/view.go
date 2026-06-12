@@ -31,8 +31,8 @@ type listView struct {
 	Errors          []error
 	Tables          []tableView
 
-	// SingleType marks a single-resource-type list page -- the D1 surface
-	// boundary for the v2 interaction loop (D6). Only single-type pages get the
+	// SingleType marks a single-resource-type list page -- the surface
+	// boundary for the v2 interaction loop. Only single-type pages get the
 	// partial sort headers, row identity keys, the location-derived refresh tick,
 	// and the bulk-bar mount; multi-type pages (plural=all / CSV / _all) keep the
 	// v1 behavior (boosted sort links + the render-time-baked partial URL).
@@ -44,10 +44,10 @@ type listView struct {
 	AllNamespacesHref string
 
 	// BulkDownloadHref is the CLEAN bulk-download base for the bulk bar's
-	// Download YAML button (D11): the canonical list path + `?download=yaml`,
+	// Download YAML button: the canonical list path + `?download=yaml`,
 	// to which readout.js appends `&names=`. Deliberately WITHOUT the current
 	// filter/sort params -- selection may include rows a server-side filter
-	// dropped (Unit 16 pinned: selection is explicit intent), so the bulk
+	// dropped (selection is explicit intent), so the bulk
 	// fetch must look names up in the UNFILTERED table. Set only on
 	// single-type, single-cluster lists; empty disables the button
 	// (multi-cluster scope renders it disabled with an explanatory title).
@@ -55,13 +55,13 @@ type listView struct {
 
 	// State is the resolved whole-list failure state for a SINGLE-cluster list
 	// that produced no tables at all (forbidden / unreachable). nil for the happy
-	// path, for an all-cluster list (which uses the partial-failure banner, D11),
-	// and for a single-cluster list that still produced at least one table (D11:
+	// path, for an all-cluster list (which uses the partial-failure banner),
+	// and for a single-cluster list that still produced at least one table (
 	// a single-cluster list never reports some-clusters-failed; a partial
 	// multi-type list keeps its tables and the per-type errors are dropped here).
 	State *listStateView
 
-	// StaleBanner feeds the CLIENT-SIDE stale path (D11): a hidden
+	// StaleBanner feeds the CLIENT-SIDE stale path: a hidden
 	// `.ro-banner.warn` that readout.js reveals (and dims #resource-list-content,
 	// the id the JS owns) when an auto-refresh request errors. Pre-rendered so the
 	// markup hooks exist in the first server response; the server never decides
@@ -69,10 +69,10 @@ type listView struct {
 	// error that keeps the existing rows.
 	StaleBanner bool
 
-	// FilterBar is the Filters v2 chips editor (D7): the active `?f=` chips
+	// FilterBar is the Filters v2 chips editor: the active `?f=` chips
 	// rendered server-side in the tools row (a shareable URL lands with its
 	// chips visible) plus the free-text/autocomplete input readout.js drives.
-	// nil on multi-type pages (the D1 boundary -- `?f=` is ignored there, so no
+	// nil on multi-type pages (the single-type boundary -- `?f=` is ignored there, so no
 	// editor may suggest it works).
 	FilterBar *filterBarView
 }
@@ -106,7 +106,7 @@ type listStateView struct {
 	Verb      string // "list" (the read-only verb that was denied/attempted)
 	Resource  string // the resource plural the request targeted
 	Namespace string // the namespace scope ("" / "_all" rendered as a clause)
-	Hint      string // the ONE plain-language line under the headline (D16)
+	Hint      string // the ONE plain-language line under the headline
 	Detail    string // the verbatim apiserver/transport string for the mono errdetail block
 	RetryHref string // a read-only GET back to this same list URL
 	BackHref  string // "/clusters"
@@ -143,19 +143,19 @@ type tableView struct {
 	CreatedIcon string
 
 	// CreatedPartialHref is the synthetic Created header's `_table` partial sort
-	// URL (the hx-get target of the v2 loop, D6). Empty on multi-type pages
-	// (D1), where the Created header stays a plain boosted link.
+	// URL (the hx-get target of the v2 loop). Empty on multi-type pages,
+	// where the Created header stays a plain boosted link.
 	CreatedPartialHref string
 
-	// HideCreated suppresses the synthetic Created header/cells (D8): the
+	// HideCreated suppresses the synthetic Created header/cells: the
 	// Created column is template-rendered, not a kube column, so the hide set
 	// reaches it through this flag rather than kube.RemoveColumns. The zero
 	// value keeps Created shown.
 	HideCreated bool
 
-	// ColumnVis is the column-visibility popover universe (D8): every column of
+	// ColumnVis is the column-visibility popover universe: every column of
 	// the fully-decorated table + the synthetic Created, with hidden/identity
-	// flags. Non-nil only on single-type pages (the D1 gate); nil keeps the v1
+	// flags. Non-nil only on single-type pages (the single-type gate); nil keeps the v1
 	// toggle-tools form chrome.
 	ColumnVis []columnVis
 
@@ -181,7 +181,7 @@ type emptyActionView struct {
 }
 
 // filterChipView is one removable active-filter chip, shared by the
-// empty-filtered state and the chips editor (D7): Label is the human chip text,
+// empty-filtered state and the chips editor: Label is the human chip text,
 // RemoveHref drops just that one filter (a read-only GET) so the ✕ removes it.
 // Field/Op/Value carry the editor's display split (`.ck` key, accent operator,
 // `.v` value) for a well-formed `?f=` chip; they stay empty for the legacy
@@ -197,8 +197,8 @@ type filterChipView struct {
 
 // columnView precomputes a column header's sort link and indicator. SortHref is
 // the CANONICAL page URL (history/new-tab/no-JS); PartialHref is the same sort
-// against the `_table` partial route -- the header's hx-get in the v2 loop (D6).
-// PartialHref is empty on multi-type pages (D1 boundary: v1 boosted links).
+// against the `_table` partial route -- the header's hx-get in the v2 loop.
+// PartialHref is empty on multi-type pages (the single-type boundary: v1 boosted links).
 type columnView struct {
 	SortHref    string
 	SortIcon    string
@@ -241,14 +241,14 @@ type rowView struct {
 	CreatedText  string
 
 	// Key is the row's stable object identity "cluster/ns/name" (empty segments
-	// collapsed) -- the D6 row-identity contract. The renderer emits it as
+	// collapsed) -- the row-identity contract. The renderer emits it as
 	// data-key plus an id derived from it, so idiomorph matches rows by identity
 	// (never position) and client row state (selection, j/k focus) re-keys onto
-	// the same object across morphs. Empty on multi-type pages (D1), where rows
+	// the same object across morphs. Empty on multi-type pages, where rows
 	// stay identity-less v1 markup.
 	Key string
 
-	// Per-row gesture targets (Unit 16 / D10), emitted as <tr> data attributes
+	// Per-row gesture targets, emitted as <tr> data attributes
 	// on single-type pages only (set together with Key; all empty on multi-type
 	// pages). The context menu binds them at open time and the bulk actions read
 	// Name/DownloadHref off the selection store:
@@ -286,7 +286,7 @@ type cellView struct {
 	Pulse bool
 	// NameHead/NameTail split an identifier into a bright workload prefix + a
 	// muted hash suffix for the sticky name cell. NameHead+NameTail == Value,
-	// EXCEPT when the head exceeds the SPEC §4.2 threshold (42 chars): the head
+	// EXCEPT when the head exceeds the middle-truncation threshold (42 chars): the head
 	// is then middle-truncated for display (26…12) and Title carries the FULL
 	// name. The tail/hash is NEVER truncated.
 	NameHead string
@@ -334,7 +334,7 @@ type cellView struct {
 	// entry (sorted), each carrying its key/value pair. Empty means a namespace
 	// with no labels, rendered as a muted "—". In tables the renderer shows the
 	// first chipsCellMax chips; the rest carry `.xtra` (hidden) behind the `+N`
-	// in-cell expand button (SPEC §4.9).
+	// in-cell expand button.
 	Chips []chipView
 
 	// More is the faint overflow suffix on a ports/hosts cell ("+N" / "+N
@@ -342,14 +342,14 @@ type cellView struct {
 	More string
 	// Keys are the configmap/secret data chips for cellKeys (`name · size`).
 	// Secret VALUES never reach this view model -- a key chip carries ONLY the
-	// key name and its byte size (SPEC §4.10). Past keysCellMax the renderer
+	// key name and its byte size. Past keysCellMax the renderer
 	// hides chips behind the `+N keys` in-cell expand, same `.xtra` machinery
 	// as the label chips.
 	Keys []keyChipView
 	// EvKind/EvName are the events Object cell split for cellEvObj: EvKind
 	// renders faint with a trailing slash next to its kind icon; EvName is the
 	// 20…8 middle-truncated object name (Title carries the full name when
-	// truncated, SPEC §4.2).
+	// truncated).
 	EvKind string
 	EvName string
 	// EvAgeRest is the faint second layer of an events Age cell for cellEvAge
@@ -360,16 +360,16 @@ type cellView struct {
 
 // keyChipView is one configmap/secret data chip for cellKeys: the key name and
 // its HUMAN byte size ("4.2 KiB"). By construction no value field exists --
-// secret values must never be serialized into a view model (SPEC §4.10).
+// secret values must never be serialized into a view model.
 type keyChipView struct {
 	Name string
 	Size string
 }
 
 // chipView is one namespace label chip: the label key and value, rendered as a
-// NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (D3 colour law:
-// every label chip is neutral; the green `.app` accent is retired). Href, when
-// non-empty (single-type pages, D7/SPEC §8.1), is the click-to-filter target:
+// NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv` ink-weight split (under the
+// colour law every label chip is neutral; the green `.app` accent is retired). Href, when
+// non-empty (single-type pages), is the click-to-filter target:
 // the SAME list URL with the `label:key=value` chip appended to `?f=`.
 type chipView struct {
 	Key  string
@@ -411,9 +411,9 @@ const (
 	cellReplicas
 	cellRollout
 	cellChips
-	// The SPEC §4 cookbook corner-case kinds (Unit 10). The kind-specific
+	// The cell-cookbook corner-case kinds. The kind-specific
 	// schema decorators that EMIT most of them land with the services/ingress/
-	// configmap/secret/cronjob/job (Unit 11) and events (Unit 12) columns; the
+	// configmap/secret/cronjob/job and events columns; the
 	// constructors live in build_list.go and the renderers in
 	// resource_table.templ.
 	cellPending // empty -> faint <none>; literal <pending> -> amber pulsing dot + word
@@ -439,9 +439,9 @@ type detailView struct {
 	Title     string
 
 	// NameHead/NameTail split the detail H1 into the bright workload prefix +
-	// the muted hash tail (SPEC §6.6: the hash tail stays faint even in the
+	// the muted hash tail (the hash tail stays faint even in the
 	// title), via the same splitObjectName/MiddleTruncate pair the table name
-	// cells use (D14). NameTitle carries the FULL name for the title= tooltip
+	// cells use. NameTitle carries the FULL name for the title= tooltip
 	// when the head was middle-truncated; "" otherwise.
 	NameHead  string
 	NameTail  string
@@ -476,13 +476,13 @@ type detailView struct {
 
 	Labels      []labelChipView
 	Annotations []annotationChipView
-	// AnnotationsLong are the >120-char annotation values (SPEC §7.15 /
-	// D14): each renders as a collapsed `key · size` toggle whose payload
+	// AnnotationsLong are the >120-char annotation values: each renders as a
+	// collapsed `key · size` toggle whose payload
 	// expands into a scrollable <pre>, never as a chip.
 	AnnotationsLong []annotationLongView
 	Node            *nodeSummaryView // non-nil only for Kind == Node
 
-	// Containers is the pod containers table (D14): init containers first
+	// Containers is the pod containers table: init containers first
 	// (badged), then regular, each joining status/spec/metrics. nil for
 	// non-pod kinds and for a pod whose spec decodes no containers.
 	Containers *containersSectionView
@@ -509,14 +509,14 @@ type detailStateView struct {
 	Resource  string
 	Name      string
 	Namespace string
-	Hint      string // the ONE plain-language line under the headline (D16)
+	Hint      string // the ONE plain-language line under the headline
 	Detail    string // the verbatim apiserver/transport string (mono errdetail)
 	RetryHref string
 	BackHref  string
 }
 
 // labelChipView is one resolved label chip: the selector href and the
-// key/value. Every label chip is a NEUTRAL `.ro-chip` (D3 colour law -- the
+// key/value. Every label chip is a NEUTRAL `.ro-chip` (under the colour law the
 // green app.kubernetes.io/* accent is retired; key/value differ by ink weight).
 type labelChipView struct {
 	Href string
@@ -534,7 +534,7 @@ type annotationChipView struct {
 	Full string
 }
 
-// annotationLongView is one >120-char annotation (SPEC §7.15): the key, the
+// annotationLongView is one >120-char annotation: the key, the
 // humanBytes payload size shown on the collapsed toggle, and the full value
 // rendered (escaped) inside the hidden scrollable <pre>.
 type annotationLongView struct {
@@ -543,7 +543,7 @@ type annotationLongView struct {
 	Value string
 }
 
-// containersSectionView is the pod containers table (D14): Count/InitCount
+// containersSectionView is the pod containers table: Count/InitCount
 // drive the `Containers · N + M init` section label; Rows are ordered init
 // containers first (badged), then regular, both in spec declaration order.
 type containersSectionView struct {
@@ -556,7 +556,7 @@ type containersSectionView struct {
 // the status.containerStatuses / status.initContainerStatuses entry joined by
 // name; Ports/Image come from the spec.containers entry; CPU/Mem come from the
 // PodMetrics containers[] join when live ("" renders the faint "—"). The
-// StateTone is kube.StatusTone(State) (D4 — the single value->tone owner, the
+// StateTone is kube.StatusTone(State), the single value->tone owner, the
 // waiting/terminated reason IS the state word); StatePulse marks the transient
 // set (law §1.3).
 type containerRowView struct {
@@ -613,7 +613,7 @@ type secretDataView struct {
 
 // yamlCardView is one resolved per-section YAML card. Content is the trusted
 // highlighted-YAML HTML produced by the YAML highlighter (injected raw).
-// Collapsed marks a card that starts folded (SPEC §7.15: the Status card is
+// Collapsed marks a card that starts folded (the Status card is
 // collapsed by default) — the same is-collapsed class the readout.js section
 // fold toggles.
 type yamlCardView struct {
@@ -660,7 +660,7 @@ type subtableCell struct {
 // eventView is one rendered event row (already flattened from the raw object).
 // Tone is the redesign status tone for the Type cell (mute for Normal/unknown,
 // warn for Warning), mapped from the events/Type cell class via statusTone.
-// Count/CountClass are the ×N dedupe cell (D15: ≥20 amber "restarts some", 1
+// Count/CountClass are the ×N dedupe cell (≥20 amber "restarts some", 1
 // faint); Age is the leading compressed-duration token with AgeClass its
 // .age-* bucket, AgeRest the faint "(first 41h ago)" second layer (empty for
 // a single occurrence or a ≤60s spread), and AgeTitle the full last-seen
@@ -707,8 +707,8 @@ type searchView struct {
 	IsAllClusters   bool
 	IsAllNamespaces bool
 
-	// OfferedTypes are the resource-type checkboxes (restored in the body per
-	// D12), sorted by plural; Checked marks the types in the current ?type=
+	// OfferedTypes are the resource-type checkboxes (restored in the body for
+	// the grouped search), sorted by plural; Checked marks the types in the current ?type=
 	// selection, so the GET form round-trips the type scope without hidden
 	// inputs.
 	OfferedTypes      []searchTypeOption
@@ -723,7 +723,7 @@ type searchView struct {
 	Results  []searchResult
 	Duration time.Duration
 
-	// Groups partitions Results per cluster in fixed cluster-name order (D12):
+	// Groups partitions Results per cluster in fixed cluster-name order:
 	// one group per cluster that contributed at least one result, rows keeping
 	// the sortResults total order. A cluster that answered with zero hits (or
 	// failed) grows no group -- its presence is the scope chip's job.
@@ -749,7 +749,7 @@ type searchTypeOption struct {
 }
 
 // searchScopeCluster is one per-cluster scope chip in the redesign search
-// `.ro-scope` strip (D11): the cluster Name, whether it Failed to answer (any
+// `.ro-scope` strip: the cluster Name, whether it Failed to answer (any
 // per-cluster error record), the number of result cards it contributed
 // (ResultCount, shown on an `.ok` chip), the short failure Reason (shown on an
 // `.err` chip), and the read-only RetryHref that re-runs the SAME search scoped
@@ -763,11 +763,11 @@ type searchScopeCluster struct {
 	RetryHref   string
 }
 
-// searchGroup is one cluster's block in the grouped results render (D12): the
+// searchGroup is one cluster's block in the grouped results render: the
 // header (ok dot + mono cluster name + count chip) plus that cluster's result
 // rows. Failed carries the cluster's scope-chip status so the header dot can
 // tell partial health truthfully (a cluster can answer SOME types and fail
-// others) -- colour law D3: the dot is live health, not decoration.
+// others) -- under the colour law the dot is live health, not decoration.
 type searchGroup struct {
 	Cluster string
 	Failed  bool
@@ -780,13 +780,13 @@ type searchGroup struct {
 // the Kind cell; Created feeds the Age cell's bucket class. Labels feeds the
 // sort score (searchScore ranks on Title + Labels).
 //
-// The name cell reuses the Unit 10 treatment server-side: NamePre/NameMark/
+// The name cell reuses the cookbook name treatment server-side: NamePre/NameMark/
 // NamePost are the display HEAD (splitObjectName + MiddleTruncate) split around
 // the first case-insensitive query-word match (NameMark "" = no mark), NameTail
 // is the muted hash tail (never marked), and NameTitle carries the full name
 // tooltip when the head middle-truncated. Pre+Mark+Post always reassemble the
 // display head, so the templ can emit each segment as an auto-escaped text node
-// around a literal <mark> -- no templ.Raw over user-derived text (D12).
+// around a literal <mark> -- no templ.Raw over user-derived text.
 type searchResult struct {
 	Title     string
 	Kind      string

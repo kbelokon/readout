@@ -110,7 +110,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, requestKubeClient
 				searchable[sc.plural] = sc.kind
 			}
 		}
-		// Per-cluster scope-chip status (D11): the chip is `.err` when the cluster
+		// Per-cluster scope-chip status: the chip is `.err` when the cluster
 		// produced any error record (it failed to fully answer) and `.ok`
 		// otherwise; the result count rides on the `.ok` chip. The RetryHref re-runs
 		// the SAME search scoped to just this cluster -- a read-only GET, never a
@@ -179,7 +179,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, requestKubeClient
 }
 
 // groupSearchResults partitions the (already sortResults-ordered) results into
-// per-cluster groups (D12). Group order follows the ScopeClusters slice -- the
+// per-cluster groups. Group order follows the ScopeClusters slice -- the
 // name-sorted cluster order the fan-out merged by -- so the grouped render is
 // deterministic regardless of completion order; rows keep their total order
 // within each group. A cluster with no results grows no group (the scope chip
@@ -231,9 +231,9 @@ func distinctKindCount(results []searchResult) int {
 	return len(kinds)
 }
 
-// searchResultName resolves a result row's name treatment: the Unit 10
-// head/tail split + SPEC §4.2 middle truncation the table name cells apply,
-// then the D12 mark split of the DISPLAY head around the first matching query
+// searchResultName resolves a result row's name treatment: the same
+// head/tail split + middle truncation the table name cells apply,
+// then the search mark split of the DISPLAY head around the first matching query
 // word. The hash tail is never marked (prototype VIEW.search mark()); a match
 // living in the tail or in a truncated-away middle simply renders unmarked.
 // NameTitle is the full name, set only when the head truncated.
@@ -248,7 +248,7 @@ func searchResultName(plural, name, filterQuery string) (pre, mark, post, tail, 
 }
 
 // markFirstMatch splits display into pre/mark/post around the first
-// case-insensitive occurrence of the first matching query word, for the D12
+// case-insensitive occurrence of the first matching query word, for the search
 // <mark> wrap. Matching is PLAIN strings.Index over lowered strings -- never a
 // regex -- so names and queries carrying regex-special characters ('.', '+',
 // '(' ...) match literally. A byte offset from the lowered scan is applied to

@@ -22,10 +22,10 @@ import (
 // here so the templ components render plain data. The hrefs/classes/escaping are
 // pinned by the behavior-fact net.
 
-// labelChips builds the redesign non-link label pills (D11/D13) shared by the
+// labelChips builds the redesign non-link label pills shared by the
 // clusters-entry rows, the cluster-overview meta line, and the namespace rows.
 // Each pill renders as a NEUTRAL `.ro-chip` with the `.ck`/`.cs`/`.cv`
-// ink-weight split (D3 colour law: the green app.kubernetes.io/* accent is
+// ink-weight split (under the colour law the green app.kubernetes.io/* accent is
 // retired), matching the migrated list/detail `.ro-chip` vocabulary scoped
 // under the page's .ro-rd marker.
 func labelChips(labels map[string]string) []templates.LabelChip {
@@ -50,7 +50,7 @@ func sortedKeys(m map[string]string) []string {
 // round-trip values, the filtered in-cluster rows, and the external-cluster
 // rows. The filter matches the prior handler (case-insensitive over
 // name+url+labels). Each row's entry link consumes the persisted
-// namespace-per-cluster pref via clusterEntryHref (D9 -- the clusters page is a
+// namespace-per-cluster pref via clusterEntryHref (the clusters page is a
 // cluster-ENTRY surface; link construction only, never a redirect).
 func (s *Server) buildClustersData(r *http.Request, selector, filter string) templates.ClustersData {
 	clusters := s.manager.Clusters()
@@ -59,7 +59,7 @@ func (s *Server) buildClustersData(r *http.Request, selector, filter string) tem
 		Count:         len(clusters) + len(s.cfg.ExternalClusters),
 		SelectorValue: selector,
 		FilterValue:   filter,
-		// First-run (SPEC §7.2 / D17): ZERO clusters configured anywhere -- no
+		// First-run state: ZERO clusters configured anywhere -- no
 		// loaded clusters, no broken ones (a configured-but-broken cluster is a
 		// different failure, not "nothing configured"), and no external links.
 		// The filter/selector never affect this: Count is computed pre-filter.

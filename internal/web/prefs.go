@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// prefs.go is the server READ side of the `ro_prefs` preference cookie (D9):
+// prefs.go is the server READ side of the `ro_prefs` preference cookie:
 // one compact cookie carrying column visibility per plural, sort per plural,
 // the auto-refresh mode, and a last-used namespace per cluster. The cookie is
 // WRITTEN exclusively by readout.js (document.cookie on direct user
@@ -26,8 +26,8 @@ import (
 // padding) behind a `v1.` version tag. Anything that does not decode is
 // treated as no preferences at all: a corrupt cookie must never 500 a page.
 //
-// SPEC §8.4's "last cluster" is deliberately NOT in this schema -- a recorded
-// SPEC deviation (D9): no consumer exists for it, and a write-only field
+// A "last cluster" preference is deliberately NOT in this schema -- a sanctioned
+// deviation from the design: no consumer exists for it, and a write-only field
 // invites invented redirect semantics. The theme keeps its own `theme` cookie
 // (handlers_prefs.go) untouched.
 const (
@@ -49,7 +49,7 @@ type prefs struct {
 	// the least recently used kind.
 	Kinds []kindPrefs `json:"kinds,omitempty"`
 	// Refresh is the auto-refresh mode as a STRING: "Off", an interval in
-	// seconds ("5"/"10"/"30"/"60"...), or the future "Live" (Unit 27). Stored
+	// seconds ("5"/"10"/"30"/"60"...), or the "Live" SSE refresh option. Stored
 	// stringly so Live needs no schema change. "" means no preference.
 	Refresh string `json:"refresh,omitempty"`
 	// Namespaces maps cluster name -> last-used namespace ("_all" is a valid
@@ -67,7 +67,7 @@ type kindPrefs struct {
 	// Hide is the hidden-column-name list. A POINTER so "no column preference"
 	// (nil -> the config DefaultHiddenColumns default applies) is distinct from
 	// an explicit "hide nothing" ([] -> the user toggled everything visible,
-	// which must SUPPRESS the config default -- user override wins, D8). A
+	// which must SUPPRESS the config default -- user override wins). A
 	// plain slice could not round-trip that difference through omitempty.
 	Hide *[]string `json:"hide,omitempty"`
 }
@@ -154,13 +154,13 @@ func (p *prefs) kind(plural string) *kindPrefs {
 
 // isHistoryRestoreRequest reports whether this request is htmx re-fetching a
 // page for a history (back/forward) restore after a cache miss. Those renders
-// must be URL-explicit for URL-REPRESENTABLE state (D9): the back button is
+// must be URL-explicit for URL-REPRESENTABLE state: the back button is
 // not defeated by a freshly written sort pref.
 func isHistoryRestoreRequest(r *http.Request) bool {
 	return r.Header.Get("HX-History-Restore-Request") == "true"
 }
 
-// prefsFill is the resolved D9 cookie fill for one list request: the values
+// prefsFill is the resolved cookie fill for one list request: the values
 // that stand in for ABSENT ?sort= / ?hidecols= URL params at SSR time. URL
 // params always win; the fill is RENDER-ONLY state -- it never materializes
 // into r.URL, so every rebuilt href (sort headers, metrics join, TSV) and the
@@ -173,7 +173,7 @@ type prefsFill struct {
 	// kube.RemoveColumns spec format; k8s printer-column names never contain
 	// commas). HasHide distinguishes "no column preference" from an explicit
 	// empty hide set: the latter must SUPPRESS the DefaultHiddenColumns config
-	// default (user override wins, D8). Column visibility has NO URL form, so
+	// default (user override wins). Column visibility has NO URL form, so
 	// it stays filled even on a history restore -- stripping it would make a
 	// back-render differ from a hard reload of the same URL.
 	Hide    string
@@ -181,7 +181,7 @@ type prefsFill struct {
 }
 
 // prefsListFill resolves the cookie fill for a list request. Single-type pages
-// only (the D1 surface boundary, the same gate the interaction loop and `?f=`
+// only (the single-type surface boundary, the same gate the interaction loop and `?f=`
 // use): the write surfaces only exist there, and a page-wide sort fill on a
 // multi-type page could not be reflected per-table.
 func prefsListFill(r *http.Request) prefsFill {
@@ -205,7 +205,7 @@ func prefsListFill(r *http.Request) prefsFill {
 	return fill
 }
 
-// clusterEntryHref is THE namespace-per-cluster consumer (D9, pinned): a
+// clusterEntryHref is THE namespace-per-cluster consumer of the prefs cookie: a
 // cluster-entry link (the clusters page's rows, the palette's topbar cluster
 // nav) points into the persisted namespace's pods list when one is recorded
 // ("_all" included), else at the cluster overview. Pure link construction --

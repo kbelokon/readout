@@ -19,7 +19,7 @@ func defaultSidebarGroups() []config.SidebarGroup {
 	return []config.SidebarGroup{
 		{Label: "Cluster Resources", Resources: []string{"namespaces", "nodes", "persistentvolumes"}},
 		{Label: "Controllers", Resources: []string{"deployments", "cronjobs", "jobs", "daemonsets", "statefulsets"}},
-		// Secrets close the §6.2 Pod Management group (D13). With the secret
+		// Secrets close the Pod Management sidebar group. With the secret
 		// barrier down (IncludeSecrets=false, the default) discovery filters the
 		// Secret type out, sidebarResourceLink fails to resolve it, and the entry
 		// simply does not render -- so the curated entry only appears when the
@@ -74,14 +74,14 @@ type navbarView struct {
 	ToggleNextURL string
 	ThemeExplicit bool
 
-	// RefreshMode is the persisted auto-refresh mode from the ro_prefs cookie
-	// (D9): "" (no preference) / "Off" / an interval in seconds as a string /
-	// "Live" (Unit 27). The topbar renders the refresh label + active option
+	// RefreshMode is the persisted auto-refresh mode from the ro_prefs cookie:
+	// "" (no preference) / "Off" / an interval in seconds as a string /
+	// "Live" (the SSE refresh option). The topbar renders the refresh label + active option
 	// from it at SSR so the persisted choice paints without the JS sync flash;
 	// readout.js re-derives the same state from the same cookie on init.
 	RefreshMode string
 
-	// LiveDisabled disables the dropdown's Live option (Unit 27/D19 scope
+	// LiveDisabled disables the dropdown's Live option (the Live scope
 	// cut): set on multi-type and multi-cluster LIST pages, the scope the
 	// `_stream` endpoint 404s. Mirrors resourceStream's gate exactly
 	// (isSingleListType + the all/CSV cluster check) so the rendered option is
@@ -129,25 +129,25 @@ type navItem struct {
 	// count is namespace- or cluster-scoped).
 	Resource kube.ResourceType
 
-	// Count/HasCount carry the per-kind object count (D13): the mono
+	// Count/HasCount carry the per-kind object count: the mono
 	// `.menu-count` value. HasCount distinguishes a real "0" (rendered) from a
 	// failed or never-attempted fetch (no count shown).
 	Count    string
 	HasCount bool
 
-	// Icon is the pre-rendered per-entry glyph from the Unit-1 resolver
+	// Icon is the pre-rendered per-entry glyph from the kind-icon resolver
 	// (icons.KindIcon when HasKind, else icons.PluralMonogram), resolved in the
 	// handler seam so the templ sidebar and the palette feed share one markup
 	// string and the renderer stays request-free. Empty for non-resource items.
 	Icon template.HTML
 }
 
-// paletteFeedView is the resolved data the ⌘K palette consumes (D10): the
+// paletteFeedView is the resolved data the ⌘K palette consumes: the
 // current scope plus the cluster / namespace / kind / action lists, all drawn
 // from the SAME server context the layout already built (the cluster registry,
 // the navbar namespace links, the sidebar resource types) -- no new discovery or
 // API call. It is serialized verbatim into the #ro-palette-data JSON blob by the
-// templ shell; Unit 4's JS reads it. The JSON tags ARE the pinned wire contract.
+// templ shell; the palette JS reads it. The JSON tags ARE the pinned wire contract.
 type paletteFeedView struct {
 	CurrentCluster   *string             `json:"currentCluster"`
 	CurrentNamespace *string             `json:"currentNamespace"`
@@ -158,8 +158,8 @@ type paletteFeedView struct {
 }
 
 // paletteLinkFeed is a {name, href} jump target (a cluster or a namespace).
-// Display carries the SPEC §4.2 middle-truncated form when -- and only when --
-// the name overruns the 42-rune identifier budget (D5/D21: truncation is
+// Display carries the middle-truncated form when -- and only when --
+// the name overruns the 42-rune identifier budget (truncation is
 // SERVER-side, in this feed builder, via the shared MiddleTruncate); the JS
 // renders Display and keeps the full Name in the row title.
 type paletteLinkFeed struct {
@@ -170,7 +170,7 @@ type paletteLinkFeed struct {
 
 // paletteKindFeed is a resource-type jump target: the kind label + plural +
 // API group + the namespaced/cluster scope + the list href + the pre-rendered
-// (HTML-escaped via JSON encoding) icon markup from the Unit-1 resolver.
+// (HTML-escaped via JSON encoding) icon markup from the kind-icon resolver.
 // Display is the truncated label form, exactly as on paletteLinkFeed.
 type paletteKindFeed struct {
 	Kind       string `json:"kind"`
@@ -183,7 +183,7 @@ type paletteKindFeed struct {
 }
 
 // paletteActionFeed is a labelled action: an href (navigate) or a named client
-// action the palette JS interprets (Unit 4). Both keys are emitted so the JS can
+// action the palette JS interprets. Both keys are emitted so the JS can
 // branch; only one is populated per entry.
 type paletteActionFeed struct {
 	Label  string `json:"label"`
@@ -230,12 +230,12 @@ func (s *Server) buildLayoutViewScopedWithClients(r *http.Request, title, cluste
 	}
 }
 
-// buildPaletteFeed assembles the ⌘K palette data (D10): the cluster registry,
+// buildPaletteFeed assembles the ⌘K palette data: the cluster registry,
 // the navbar namespace links, EVERY discovered resource type (built-ins + CRDs,
 // from the cached discovery the sidebar already warmed), and the sidebar meta
 // actions. When no cluster is in scope the cluster list still populates (the
 // registry is request-independent) while namespaces/kinds are empty, so the
-// palette opens everywhere. The icon markup is the Unit-1 resolver's
+// palette opens everywhere. The icon markup is the kind-icon resolver's
 // already-escaped string carried verbatim.
 func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, clients requestKubeClients, navbar *navbarView, sidebar *sidebarView) paletteFeedView {
 	feed := paletteFeedView{
@@ -256,7 +256,7 @@ func (s *Server) buildPaletteFeed(r *http.Request, cluster, namespace string, cl
 	if s.manager != nil {
 		// The palette cluster list is the topbar's cluster nav, i.e. a
 		// cluster-ENTRY surface: each link consumes the persisted
-		// namespace-per-cluster pref via clusterEntryHref (D9 -- link
+		// namespace-per-cluster pref via clusterEntryHref (link
 		// construction only, never a redirect).
 		nsPrefs := prefsFromRequest(r).Namespaces
 		for _, c := range s.manager.Clusters() {
@@ -397,8 +397,8 @@ func (s *Server) paletteKindEntry(cluster, namespace string, rt *kube.ResourceTy
 	}
 }
 
-// paletteDisplayName applies the D5/D21 server-side truncation to a palette
-// label: the SPEC §4.2 identifier budget (>42 runes -> first 26 + "…" + last
+// paletteDisplayName applies the server-side identifier truncation to a palette
+// label: the identifier budget (>42 runes -> first 26 + "…" + last
 // 12) through the shared MiddleTruncate. Returns "" when the name fits -- the
 // omitempty Display field then stays off the wire and the palette JS renders
 // the full Name itself.
@@ -443,8 +443,8 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 	return v
 }
 
-// liveOptionDisabled decides the topbar Live option's disabled state (Unit
-// 27/D19): true exactly on LIST pages outside the `_stream` scope cut --
+// liveOptionDisabled decides the topbar Live option's disabled state:
+// true exactly on LIST pages outside the `_stream` scope cut --
 // multi-type plurals ("all"/"_all"/CSV) or multi-cluster scope ("_all"/CSV
 // cluster). Detail pages ({name} bound) and non-resource pages keep the
 // option enabled; it is inert there, like the interval options (no
@@ -519,7 +519,7 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, cl
 		v.Meta = append(v.Meta, navItem{Text: "Resource Types", Href: href, Active: r.URL.Path == href})
 	}
 
-	// Per-kind counts (D13): collected AFTER the view is fully assembled so the
+	// Per-kind counts: collected AFTER the view is fully assembled so the
 	// target pointers into v.Groups/v.Meta stay valid, fetched concurrently
 	// under one short deadline. With no concrete client (multi-cluster `_all`,
 	// unknown cluster, no manager) no targets resolve and the sidebar renders

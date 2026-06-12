@@ -49,8 +49,8 @@ func (s *Server) observeMetrics(next http.Handler) http.Handler {
 		} else if method, path, ok := strings.Cut(route, " "); ok && method == r.Method {
 			route = path
 		}
-		// The `_stream` SSE routes are excluded from the duration histogram
-		// (D19): a stream's lifetime is minutes of intentional held-open
+		// The `_stream` SSE routes are excluded from the duration histogram:
+		// a stream's lifetime is minutes of intentional held-open
 		// connection, not request latency — one 30-minute stream would
 		// permanently distort every latency quantile. Streams stay counted in
 		// the request totals below.
@@ -85,7 +85,7 @@ func (w *statusWriter) WriteHeader(status int) {
 // Flush forwards to the wrapped writer's http.Flusher. The embedded
 // ResponseWriter field hides the interface (a struct-embedded interface only
 // re-exposes its OWN methods), which would buffer SSE pushes indefinitely —
-// the `_stream` endpoint flushes per message through this (D19).
+// the `_stream` endpoint flushes per message through this.
 func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()

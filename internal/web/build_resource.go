@@ -149,9 +149,9 @@ func (s *Server) buildDetailView(w http.ResponseWriter, r *http.Request, client 
 }
 
 // detailNameParts resolves the detail H1's head/tail split: the same
-// splitObjectName + SPEC §4.2 MiddleTruncate pair the table name cells apply
-// (D14), so a pod/replicaset hash tail renders faint even in the title (SPEC
-// §6.6) and an over-42-char head middle-truncates with the FULL name riding
+// splitObjectName + MiddleTruncate pair the table name cells apply,
+// so a pod/replicaset hash tail renders faint even in the title
+// and an over-42-char head middle-truncates with the FULL name riding
 // in the title= tooltip (nameTitle non-empty only then).
 func detailNameParts(object *kube.Object) (head, tail, nameTitle string) {
 	head, tail = splitObjectName(object.Resource.Plural, object.Name())
@@ -165,7 +165,7 @@ func detailNameParts(object *kube.Object) (head, tail, nameTitle string) {
 // detailState classifies a detail-page fetch failure into the forbidden state
 // (a 403 naming the verb/resource/namespace) or the unreachable state (a
 // transport/dial failure or an apiserver 5xx Status, shown with the REAL error
-// string in the mono errdetail block, D16), returning a state-only detailView
+// string in the mono errdetail block), returning a state-only detailView
 // the handler renders at 200. It returns nil for any other failure (a NotFound
 // object -> a real 404, a 4xx Status, the policy 403), so the caller falls
 // through to s.error and the existing status-code page. The breadcrumb is built
@@ -216,7 +216,7 @@ func buildLabelChips(cluster, namespace string, object *kube.Object) []labelChip
 	out := make([]labelChipView, 0, len(keys))
 	for _, key := range keys {
 		val := labels[key]
-		// Label-chip click-to-filter (D7 / SPEC §8.1): the chip navigates to this
+		// Label-chip click-to-filter: the chip navigates to this
 		// KIND's list in the same cluster/namespace with the `label:key=value`
 		// chip applied (`?f=`), riding the same grammar the list filter engine
 		// parses. The chip text is QueryEscape'd whole, so '/', '=' and any comma
@@ -238,7 +238,7 @@ func buildLabelChips(cluster, namespace string, object *kube.Object) []labelChip
 	return out
 }
 
-// annotationLongThreshold is the SPEC §7.15 chip/block split: an annotation
+// annotationLongThreshold is the annotation chip/block split: an annotation
 // value over this many bytes (last-applied-configuration and friends) is no
 // chip — it renders as a collapsed `key · size` toggle expanding to a
 // scrollable <pre>. At or under it, the value stays a chip (40-char display
@@ -246,7 +246,7 @@ func buildLabelChips(cluster, namespace string, object *kube.Object) []labelChip
 const annotationLongThreshold = 120
 
 // buildAnnotationChips resolves the annotations (sorted keys) into the two
-// SPEC §7.15 forms. Chips (≤120 chars): Val is the value truncated to 40 for
+// chip/block forms. Chips (≤120 chars): Val is the value truncated to 40 for
 // the clipped chip body; Full is the complete "key: value" string for the
 // title= tooltip. Long values (>120 chars): the key + humanBytes size for the
 // collapsed toggle, plus the full value for the expandable <pre> — a long
@@ -286,7 +286,7 @@ func buildAnnotationChips(object *kube.Object) ([]annotationChipView, []annotati
 // per-container usage map. Availability detection mirrors fetchMetricsUsage: a
 // cluster without metrics-server fails FindResourceByKind (discovery, cached
 // 60s) and a too-young pod fails the Get — both yield nil, which renders every
-// CPU/Memory cell as the faint "—" (D14: real values only when the metrics
+// CPU/Memory cell as the faint "—" (real values only when the metrics
 // join is live; never zeros invented for a dead join).
 func (s *Server) podContainerMetrics(r *http.Request, client *kube.Client, namespace, name string) map[string]kube.ContainerUsage {
 	rt, err := client.FindResourceByKind(r.Context(), "metrics.k8s.io/v1beta1", "PodMetrics", true)
@@ -300,9 +300,9 @@ func (s *Server) podContainerMetrics(r *http.Request, client *kube.Client, names
 	return kube.PodContainerUsage(obj.Object)
 }
 
-// buildContainersView resolves the pod containers table (D14). Pod is a fixed
+// buildContainersView resolves the pod containers table. Pod is a fixed
 // kind, so the object is decoded once into a corev1.Pod. Rows are driven by
-// the SPEC declaration order — spec.initContainers first (each badged `init`),
+// the pod's declaration order — spec.initContainers first (each badged `init`),
 // then spec.containers — so every declared container appears even before the
 // kubelet posts a status; each row joins its status.initContainerStatuses /
 // status.containerStatuses entry by container name (state, ready, restarts +
@@ -336,10 +336,10 @@ func (s *Server) buildContainersView(object *kube.Object, usage map[string]kube.
 }
 
 // containerRow resolves one container row from the spec entry + its joined
-// status and metrics. The state cell speaks the SPEC §3 status vocabulary:
-// the word is Running / the terminated reason / the waiting reason (D14 —
+// status and metrics. The state cell speaks the canonical status vocabulary:
+// the word is Running / the terminated reason / the waiting reason (
 // CrashLoopBackOff, ImagePullBackOff, Completed, ... ARE the state), toned by
-// kube.StatusTone (D4) and pulsing only for the transient set (law §1.3). An
+// kube.StatusTone and pulsing only for the transient set (the motion law). An
 // absent status renders the faint "—" state and an untoned 0-restart cell —
 // the row never invents runtime facts the kubelet has not posted.
 func containerRow(spec *corev1.Container, statuses map[string]*corev1.ContainerStatus, usage map[string]kube.ContainerUsage, init bool, now time.Time) containerRowView {
@@ -381,7 +381,7 @@ func containerRow(spec *corev1.Container, statuses map[string]*corev1.ContainerS
 	return row
 }
 
-// containerStateWord derives the SPEC §3 state word from a container status:
+// containerStateWord derives the status-vocabulary state word from a container status:
 // Running, the terminated reason (Completed, Error, OOMKilled, ...), or the
 // waiting reason (CrashLoopBackOff, ContainerCreating, ...) — the same words
 // the pod list's Status column speaks, so kube.StatusTone owns their tones. A
@@ -533,7 +533,7 @@ func buildSecretDataView(object *kube.Object) *secretDataView {
 // buildYAMLCards resolves the per-section YAML cards: sorted top-level keys
 // (excluding metadata/apiVersion/kind and the Secret data key), the capitalized
 // title, and the highlighted-YAML content. The status card starts Collapsed
-// (SPEC §7.15: Spec open, Status collapsed by default — status is the
+// (Spec open, Status collapsed by default — status is the
 // machine-noise section on every kind); the readout.js fold toggle reopens it.
 func (s *Server) buildYAMLCards(cluster, namespace string, object *kube.Object) []yamlCardView {
 	keys := make([]string, 0, len(object.Raw))
@@ -561,7 +561,7 @@ func (s *Server) buildYAMLCards(cluster, namespace string, object *kube.Object) 
 // endpoint dual-writes BOTH the old core/v1 Event shape and the newer
 // events.k8s.io/v1 shape into the same list (and an events.k8s.io list spells
 // the legacy fields `deprecated*`), so this one struct carries every spelling
-// and the accessors below normalize between them with the PINNED D15
+// and the accessors below normalize between them with the PINNED
 // precedence. Decoded once via FromUnstructured at the decodeEventItem seam
 // (a fixed, known kind) — the detail events tab (buildEventViews) and the
 // events list cells (buildCellView) share it.
@@ -612,7 +612,7 @@ func decodeEventItem(raw map[string]any) (*eventItem, bool) {
 	return &event, true
 }
 
-// eventCount is the D15-pinned count precedence: series.count → count →
+// eventCount is the pinned count precedence: series.count → count →
 // deprecatedCount. An event that decodes no explicit count occurred once
 // (the ×1 faint cell), never zero.
 func (e *eventItem) eventCount() int64 {
@@ -624,13 +624,13 @@ func (e *eventItem) eventCount() int64 {
 	return 1
 }
 
-// firstSeen is the D15-pinned first-seen precedence: firstTimestamp →
+// firstSeen is the pinned first-seen precedence: firstTimestamp →
 // deprecatedFirstTimestamp → eventTime.
 func (e *eventItem) firstSeen() string {
 	return first(e.FirstTimestamp, e.DeprecatedFirstTimestamp, e.EventTime)
 }
 
-// lastSeen is the D15-pinned last-seen precedence: series.lastObservedTime →
+// lastSeen is the pinned last-seen precedence: series.lastObservedTime →
 // lastTimestamp → deprecatedLastTimestamp → eventTime.
 func (e *eventItem) lastSeen() string {
 	return first(e.Series.LastObservedTime, e.LastTimestamp, e.DeprecatedLastTimestamp, e.EventTime)
@@ -664,7 +664,7 @@ func parseEventTime(value string) (time.Time, bool) {
 	return t, err == nil
 }
 
-// eventAgeText builds the two-layer event age (D15): the compressed kubectl
+// eventAgeText builds the two-layer event age: the compressed kubectl
 // duration since last-seen, plus the `(first <dur> ago)` second layer when
 // count > 1 AND last − first > 60s (the pinned threshold — a tight burst
 // stays single-layer because both layers would read the same). No last-seen
@@ -684,7 +684,7 @@ func eventAgeText(e *eventItem, now time.Time) string {
 }
 
 // buildEventViews flattens raw event objects into render-ready event rows for
-// the detail Events tab, which inherits the events-list cells (D15): the Type
+// the detail Events tab, which inherits the events-list cells: the Type
 // cell tone is the redesign status tone mapped from kube.CellClass("events",
 // "Type", <value>) via statusTone, then defaulted to "mute" for a Normal event
 // (which carries no kube class) so the redesign dot still reads grey; the
