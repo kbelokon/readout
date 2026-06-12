@@ -21,6 +21,56 @@ service:
   type: ClusterIP
   port: 80
 
+# Expose readout through a Kubernetes Ingress (networking.k8s.io/v1). The
+# backend always targets this chart's Service on service.port above.
+ingress:
+  enabled: false
+  # IngressClass to use. Leave empty to let the cluster pick its default class.
+  className: ""
+  annotations: {}
+  # At least one host is required when enabled. A host entry with no `paths`
+  # gets a single default path "/" with pathType Prefix.
+  hosts: []
+    # - host: readout.example.com
+    #   paths:
+    #     - path: /
+    #       pathType: Prefix
+  # Passed through verbatim into spec.tls.
+  tls: []
+    # - hosts:
+    #     - readout.example.com
+    #   secretName: readout-tls
+
+# Expose readout through Gateway API by attaching an HTTPRoute to an existing
+# Gateway. This chart never creates a Gateway or GatewayClass -- those are
+# platform infrastructure. backendRefs always target this chart's Service on
+# service.port above.
+gateway:
+  enabled: false
+  # HTTPRoute API version. Override to gateway.networking.k8s.io/v1beta1 on
+  # clusters pinned to the older API.
+  apiVersion: gateway.networking.k8s.io/v1
+  # Required when enabled: the Gateway(s) this route attaches to. An HTTPRoute
+  # with no parentRefs is invalid, so the template fails fast when this is empty.
+  parentRefs: []
+    # - name: public-gateway
+    #   namespace: gateway-system
+    #   sectionName: https
+  # Optional. Omit to attach to all of the parent Gateway's listener hostnames.
+  hostnames: []
+    # - readout.example.com
+  annotations: {}
+  # Optional. Write rules only to add matches or filters. When empty, a single
+  # catch-all rule routes everything to this chart's Service.
+  rules: []
+    # - matches:
+    #     - path:
+    #         type: PathPrefix
+    #         value: /
+    #   backendRefs:
+    #     - name: readout
+    #       port: 80
+
 # readout configuration. This whole block is serialized verbatim into a
 # ConfigMap as readout.yaml and mounted at /etc/readout/readout.yaml; the
 # container runs with --config /etc/readout/readout.yaml. The schema matches
