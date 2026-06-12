@@ -1,8 +1,8 @@
 import { test, expect, type Page, type Response } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Keyboard navigation + the "?" overlay + the SPEC §8.6 accessibility floor
-// (Unit 18 / D10 / D23), end to end:
+// Keyboard navigation + the "?" overlay + the accessibility floor
+// (j/k focus, aria-activedescendant, aria-sort, focus trap), end to end:
 //
 //   - j/k move the row focus through the visible identity rows (kfocus class),
 //     keyed by data-key through window.roRowState -- NOT by position -- and the
@@ -13,7 +13,7 @@ import { controlURL } from './playwright.config';
 //     the keyboard (the chips editor's ⏎-commits-a-chip protocol above all,
 //     and the ⌘K palette);
 //   - focus survives a refresh-tick morph (the identity proof, like the
-//     Unit 16 selection one);
+//     row-selection one);
 //   - "?" toggles the keyboard-map overlay; esc/backdrop close it and restore
 //     the prior focus; keys are trapped while it is open;
 //   - the sorted header exposes aria-sort with the real direction.
@@ -95,7 +95,7 @@ async function pickInterval(page: Page, secs: number): Promise<void> {
 const focusedRow = '#resource-list-content tr.kfocus';
 
 // expectFocus asserts the SINGLE focused row is `key` and that the table wrap
-// announces exactly that row via aria-activedescendant (SPEC §8.6).
+// announces exactly that row via aria-activedescendant.
 async function expectFocus(page: Page, key: string): Promise<void> {
   await expect(page.locator(focusedRow)).toHaveCount(1);
   await expect(page.locator(`tr[data-key="${key}"]`)).toHaveClass(/kfocus/);
@@ -242,7 +242,7 @@ test('deleting the focused row clears aria-activedescendant and kfocus; j clamps
 
   // Delete the focused row out from under its key: the next tick's morph
   // drops the row, and the row-state re-apply must CLEAR the wrap's
-  // aria-activedescendant (SPEC §8.6: never announce a row that left the
+  // aria-activedescendant (never announce a row that left the
   // document) with zero kfocus rows -- the clear branch of the focus mirror.
   await pickInterval(page, 5);
   await scriptEvents([

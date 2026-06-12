@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Compound-gesture inter-listener contract (Unit 8), end to end:
+// Compound-gesture inter-listener contract, end to end:
 //
 // The legacy monolith (internal/assets/src/js/legacy.js) carries 5 delegated
 // `click` and 3 `keydown` listeners on `document`. Their mutual decoupling is

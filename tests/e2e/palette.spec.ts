@@ -1,10 +1,10 @@
 import { test, expect, type Page } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// ⌘K palette v2 (Unit 19 / D21 + D12, SPEC §6.3 + §8.7), end to end:
+// ⌘K palette v2, end to end:
 //
 //   - while TYPING the Everywhere row (`Search all clusters for "q"`) is
-//     pinned first and ⏎ lands on /search?q=… (D12 routing);
+//     pinned first and ⏎ lands on /search?q=… (the all-clusters search route);
 //   - group order with a query: Everywhere -> On this page -> Resource types
 //     -> Namespaces -> Clusters -> Actions; empty query: Recents first, then
 //     the standard groups minus Everywhere;
@@ -19,7 +19,8 @@ import { controlURL } from './playwright.config';
 //     (Default view / YAML / Events), the Logs jump, and Toggle theme -- the
 //     review-flagged silent-regression path this spec pins;
 //   - resource-type rows carry the kind icon, the API-group meta, and the
-//     quiet namespaced/cluster scope badge (Unit 3 vocabulary, D3).
+//     quiet namespaced/cluster scope badge (the neutral bordered scope-badge
+//     vocabulary, never a green dot or green text).
 //
 // Driven against the fakeapi harness, same as keyboard.spec.ts.
 
@@ -78,7 +79,7 @@ test('typing pins Everywhere first and ⏎ lands on /search?q=…', async ({ pag
   expect(groups[0].labels).toEqual(['Search all clusters for “dply”']);
   await expect(page.locator(activeLabel)).toHaveText('Search all clusters for “dply”');
 
-  // ⏎ on the fresh query routes to the all-clusters search (D12).
+  // ⏎ on the fresh query routes to the all-clusters search.
   await page.keyboard.press('Enter');
   await page.waitForURL(/\/search\?q=dply$/);
   await expect(page.locator('.search-big input[name="q"]')).toHaveValue('dply');
@@ -90,8 +91,9 @@ test('group order: Everywhere -> On this page -> Resource types (typing); standa
   await page.goto(PODS);
   await openPalette(page);
 
-  // Empty query, fresh profile: no Recents yet, the standard groups in SPEC
-  // §6.3 order, Everywhere absent.
+  // Empty query, fresh profile: no Recents yet, the standard groups in the
+  // canonical order (On this page -> Resource types -> Namespaces -> Clusters
+  // -> Actions), Everywhere absent.
   let groups = await paletteGroups(page);
   expect(groups.map((g) => g.title)).toEqual([
     'On this page',
@@ -291,7 +293,7 @@ test('resource-type rows carry the kind icon, API-group meta, and the quiet scop
   await openPalette(page);
 
   // A namespaced CRD: Certificates shows its API group and the "namespaced"
-  // badge (the Unit 3 scope-badge wording, not the old NS abbreviation).
+  // badge (the full scope-badge wording, not the old NS abbreviation).
   await page.locator('#ro-palette-input').fill('certificates');
   const certRow = page
     .locator('#ro-palette-list .ro-pal-item')

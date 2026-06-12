@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Response } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Auto-refresh v2 (D18 / SPEC §8.3 + §6.1), made deterministic by the fakeapi
+// Auto-refresh v2, made deterministic by the fakeapi
 // control surface:
 //
 //   - a failed tick keeps the last-good rows (dimmed), reveals the warn
@@ -10,16 +10,16 @@ import { controlURL } from './playwright.config';
 //     interval: the second failure visibly doubles the wait;
 //   - Retry now fires immediately -- it never waits out the backoff;
 //   - the first success after failures clears the banner + dim and fires the
-//     second sanctioned toast, "Refresh resumed" (D24);
+//     second sanctioned toast, "Refresh resumed";
 //   - a scripted LIST mutation flashes the changed cell on the next tick: the
-//     POLLING-wave flash net, so severing Live (Unit 27) can never sever the
+//     polling-mode flash net, so severing Live mode can never sever the
 //     only flash coverage;
 //   - the interval choice persists via the ro_prefs cookie (asserted on the
-//     NEW 10s option that replaced 15s, D18);
+//     NEW 10s option that replaced the old 15s default);
 //   - the topbar livedot pulses while any non-Off interval is active and is
-//     static GHOST-GREY at Off (SPEC §6.1 "pulsing brand dot when live" +
-//     colour law §1.1: brand-green is a live-health signal, so a dot that
-//     stays green at Off is a false signal — prototype chrome.css:110-111).
+//     static GHOST-GREY at Off (the brand dot pulses only when live; and per
+//     the colour law brand-green is a live-health signal, so a dot that
+//     stays green at Off would be a false signal).
 
 const PODS = '/clusters/e2e/namespaces/default/pods';
 const PODS_LIST_PATH = '/api/v1/namespaces/default/pods';
@@ -139,7 +139,7 @@ test('failure backs off with a live countdown, Retry now is immediate, recovery 
   await retried;
 
   // Recovery: banner clears, dim lifts, rows intact -- and the SECOND
-  // sanctioned toast announces it (D24: recovery-only, never per-tick).
+  // sanctioned toast announces it (recovery-only, never per-tick).
   await expect(banner).toBeHidden();
   await expect(page.locator('#resource-list-content')).not.toHaveClass(/ro-stale/);
   await expect(rowNames(page)).toHaveText(['nginx', 'my-app']);
@@ -152,7 +152,8 @@ test('a scripted status change flashes the changed cell on the next polling tick
   await page.goto(PODS);
   await expect(rowNames(page)).toHaveText(['nginx', 'my-app']);
 
-  // Mutate the fixture's LIST state per the Unit 1 contract: nginx's READY/
+  // Mutate the fixture's LIST state per the fakeapi contract (control-applied
+  // changes alter subsequent LIST responses): nginx's READY/
   // STATUS/RESTARTS cells change; NAME and AGE stay byte-identical.
   await scriptEvents([
     {
@@ -183,8 +184,8 @@ test('the interval choice (the new 10s option) survives reload via the prefs coo
   page,
 }) => {
   await page.goto(PODS);
-  // D18: 10s replaced 15s -- the dropdown offers exactly Off/5/10/30/60, plus
-  // the Live stream mode (Unit 27/D19).
+  // 10s replaced the old 15s -- the dropdown offers exactly Off/5/10/30/60, plus
+  // the Live stream mode.
   await expect(page.locator('.refresh-menu .refresh-option')).toHaveText([
     'Off',
     'Every 5s',

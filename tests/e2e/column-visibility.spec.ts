@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Response } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Column-visibility popover (D8), end to end against the fakeapi harness:
+// Column-visibility popover, end to end against the fakeapi harness:
 //
 //   - the shipped v2 default-hidden set applies: the nodes page hides
 //     External-IP (and friends) on a plain load;
@@ -15,8 +15,8 @@ import { controlURL } from './playwright.config';
 //   - the title row keeps the TSV download + search-this-type buttons, and the
 //     absorbed label-selector / labels-as-columns inputs are reachable inside
 //     the popover;
-//   - a pasted ?sort= deep link never writes the ro_prefs cookie (the D9
-//     write-on-direct-interaction-only rule, cookie-unchanged assertion).
+//   - a pasted ?sort= deep link never writes the ro_prefs cookie (only direct
+//     user interactions write the cookie, cookie-unchanged assertion).
 //
 // Fixture state is reset per spec; Playwright gives each test a fresh browser
 // context, so cookie state never bleeds between tests.

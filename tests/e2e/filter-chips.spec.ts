@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Response } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Filters v2 chips editor (D7), end to end against the fakeapi harness:
+// Filters v2 chips editor, end to end against the fakeapi harness:
 //
 //   - free text live-matches the NAME column entirely client-side: rows narrow
 //     with NO network request (request-count assertion) until an operator chip
@@ -200,7 +200,7 @@ test('a second chip ANDs with the first; ⌫ pops only the last chip', async ({ 
   await commitDraft(page);
   await expect(visibleNames(page)).toHaveText(['nginx', 'my-app', 'restarted']);
 
-  // The second chip AND-combines (SPEC §8.1 / §9): only the row matching BOTH
+  // The second chip AND-combines: only the row matching BOTH
   // survives, and the canonical URL carries both repeatable f= params.
   await filterInput(page).click();
   await filterInput(page).pressSequentially('restarts>0');

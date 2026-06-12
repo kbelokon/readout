@@ -4,14 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// First-run (SPEC §7.2 / D17) against the REAL binary: readout launched with a
-// KUBECONFIG that resolves to ZERO contexts must SURVIVE startup (the D16/D17
+// First-run screen against the REAL binary: readout launched with a
+// KUBECONFIG that resolves to ZERO contexts must SURVIVE startup (the
 // reachability prerequisite -- it used to exit before binding the listener)
 // and render the instruction screen: the literal headline, the command block
 // with the binary's REAL config surface (KUBECONFIG + --config; the
 // prototype's nonexistent --kubeconfig flag must not ship), Setup docs, and a
 // Re-check that is a plain read-only GET reload. There is NO login UI
-// anywhere (D17).
+// anywhere.
 //
 // The shared Playwright webServer harness boots readout against a populated
 // fakeapi kubeconfig, so this spec spawns its OWN readout process on a
@@ -110,7 +110,7 @@ test('zero-context kubeconfig boots into the first-run screen, not an exit', asy
   await expect(card.locator('h3')).toHaveText('No clusters configured');
   expect(new URL(page.url()).pathname).toBe('/clusters');
 
-  // No login UI anywhere (D17): no token input, no SSO card.
+  // No login UI anywhere: no token input, no SSO card.
   await expect(page.locator('input[type="password"]')).toHaveCount(0);
   await expect(page.locator('.login-card')).toHaveCount(0);
 });

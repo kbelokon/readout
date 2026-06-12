@@ -1,8 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// SPEC §9 visual walk: pixel baselines over the deterministic fakeapi harness,
-// the pixel insurance that licenses every later refactor (Unit 2). Any
+// The visual-regression walk: pixel baselines over the deterministic fakeapi
+// harness, the pixel insurance that licenses every later refactor. Any
 // unintended visual drift fails this run.
 //
 // CONTRACT — these baselines are the DEVELOPER MACHINE's own Chromium render,
@@ -43,7 +43,7 @@ const CLUSTERS = '/clusters';
 // results instead of a populated group.
 const SEARCH = '/search?cluster=e2e&q=nginx&type=pods';
 
-// The three SPEC §8.5 viewport bands. 900px sits in the 760–1100px icon-rail
+// The three responsive viewport bands. 900px sits in the 760–1100px icon-rail
 // band (invisible to both the 1440px desktop frame and the 390px mobile
 // frame), so the rail chrome only ever shows here.
 const VIEWPORTS = {
@@ -254,7 +254,7 @@ for (const theme of THEMES) {
 }
 
 // ---------------------------------------------------------------------------
-// Mobile band — the card layer (D22) replaces the table below 760px.
+// Mobile band — the card layer replaces the table below 760px.
 // Token: mobile-cards. Both themes.
 // ---------------------------------------------------------------------------
 

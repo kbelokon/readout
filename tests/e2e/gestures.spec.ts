@@ -1,14 +1,14 @@
 import { test, expect, type Page, type Response } from '@playwright/test';
 import { controlURL } from './playwright.config';
 
-// Row gestures (Unit 16 / D10) on single-type pages, end to end:
+// Row gestures on single-type pages, end to end:
 //
-//   - the three gestures stay DISTINCT (SPEC §5): name-click opens (the
+//   - the three gestures stay DISTINCT: name-click opens (the
 //     anchor), row-click toggles selection, right-click opens the context
 //     menu bound to that row's server-resolved data attributes;
 //   - menu composition is per-kind: pods get 5 actions (View logs included),
 //     every other kind 4;
-//   - the bulk bar (SPEC §6.4) appears at >=1 selected with "N selected",
+//   - the bulk bar appears at >=1 selected with "N selected",
 //     Copy names joins the FULL names with newlines (inline "Copied", no
 //     toast), ✕ clears;
 //   - THE identity proof: selection is keyed by data-key, not row position --
@@ -130,7 +130,7 @@ test('right-click on a pod row opens the 5-action menu bound to that row; esc cl
   await row.click({ button: 'right' });
   await expect(menu).toHaveClass(/is-open/);
 
-  // Pods compose all five actions -- View logs included -- in the D10 order,
+  // Pods compose all five actions -- View logs included -- in the context-menu order,
   // each bound to THIS row's server-resolved target.
   await expect(page.locator(menuItems)).toHaveCount(5);
   await expect(page.locator(menuItems)).toHaveText([
@@ -162,7 +162,7 @@ test('right-click on a pod row opens the 5-action menu bound to that row; esc cl
 test('name click opens the detail page (the open gesture, not the toggle)', async ({ page }) => {
   await page.goto(PODS);
 
-  // The OPEN gesture (SPEC §5): the sticky name cell's anchor lands on the
+  // The OPEN gesture: the sticky name cell's anchor lands on the
   // object detail. (Its distinctness from the row-click TOGGLE is carried by
   // the selection tests: their row clicks hit a plain td and select without
   // navigating; this one navigates.)
@@ -298,7 +298,7 @@ test('an hx-boost navigation to another kind clears the selection', async ({ pag
   await selectRow(page, 'e2e/default/my-app');
   await expect(page.locator('#ro-bulk-count')).toHaveText('2 selected');
 
-  // Boosted sidebar navigation to Services = the screen change (SPEC §6.4).
+  // Boosted sidebar navigation to Services = the screen change that clears selection.
   await page.locator('.ro-sidebar a', { hasText: 'Services' }).click();
   await page.waitForURL(`**${SERVICES}`);
   await expect(page.locator('#ro-bulkbar')).not.toHaveClass(/is-open/);
