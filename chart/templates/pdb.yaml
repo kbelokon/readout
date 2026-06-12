@@ -11,11 +11,16 @@ metadata:
     {{- . | nindent 4 }}
   {{- end }}
 spec:
-  {{- with .Values.podDisruptionBudget.minAvailable }}
-  minAvailable: {{ . }}
+  {{- /* Emit each field whenever it is set, including the valid value 0 --
+     a plain `with` would treat 0 as empty and silently drop an explicit
+     budget like maxUnavailable: 0 (block all voluntary evictions). */}}
+  {{- $min := .Values.podDisruptionBudget.minAvailable }}
+  {{- if not (or (kindIs "invalid" $min) (eq (toString $min) "")) }}
+  minAvailable: {{ $min }}
   {{- end }}
-  {{- with .Values.podDisruptionBudget.maxUnavailable }}
-  maxUnavailable: {{ . }}
+  {{- $max := .Values.podDisruptionBudget.maxUnavailable }}
+  {{- if not (or (kindIs "invalid" $max) (eq (toString $max) "")) }}
+  maxUnavailable: {{ $max }}
   {{- end }}
   selector:
     matchLabels:

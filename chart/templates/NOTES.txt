@@ -39,6 +39,12 @@ AUTH POSTURE
   sources carries READOUT_SESSION_SECRET, shared by every replica -- otherwise
   each pod signs sessions with its own key and OIDC login breaks under load
   balancing.
+    {{- else }}
+  !! WARNING: auth.mode is "oidc" with replicaCount {{ .Values.replicaCount }}
+  !! and NO session secret from any source. Each replica signs sessions with
+  !! its own ephemeral key, so OIDC login WILL break under load balancing.
+  !! Wire auth.sessionSecret.existingSecret (or env READOUT_SESSION_SECRET,
+  !! or config.sessionSecretFile) before relying on this install.
     {{- end }}
   {{- else }}
   auth.mode is "oidc" on a single replica with no chart-visible session secret.

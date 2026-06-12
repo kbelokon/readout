@@ -10,7 +10,7 @@
 #   - no Secrets are consumed by this example
 #
 # After install:
-#   kubectl get servicemonitor readout
+#   kubectl get servicemonitor readout-metrics
 #   kubectl get svc readout-metrics
 #   # confirm the target shows up in Prometheus -> Status -> Targets
 #

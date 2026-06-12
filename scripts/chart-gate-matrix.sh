@@ -57,4 +57,11 @@ expect_fail "schema rejects mutating extraRules verb" \
   --set 'rbac.extraRules[0].resources[0]=y' \
   --set 'rbac.extraRules[0].verbs[0]=create'
 
+# Schema conditional (if/then) branches -- the constructs most likely to
+# diverge between the helm 3 and helm 4 schema engines, so probe them on both.
+expect_fail "schema rejects ingress.enabled with zero hosts" \
+  --set ingress.enabled=true --set unsafe.allowNoAuth=true
+expect_fail "schema rejects existingSecret with empty key" \
+  --set auth.oidc.existingSecret=s --set auth.oidc.clientIdKey=""
+
 exit "$fail"
