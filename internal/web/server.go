@@ -135,6 +135,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	hooksClient.SetObserver(s.metrics.hookObserver())
 	s.routes()
 	s.warnMissingSessionSecret()
+	s.warnUnauthenticatedExposure()
 	return s, nil
 }
 
@@ -149,8 +150,34 @@ func (s *Server) warnMissingSessionSecret() {
 	}
 }
 
+// warnUnauthenticatedExposure warns at startup when auth is disabled. It never
+// fails: a no-auth binary is allowed to run, but the operator is told loudly
+// what is exposed and on which clusters. The two flavours are (a) the safe
+// default -- bound to loopback, only this host reaches it -- and (b) a network
+// bind, where unauthenticated cluster data is served on a reachable address.
+// Both list the loaded cluster/context names and the auth mode so the operator
+// sees the blast radius. This mirrors warnMissingSessionSecret: a loud slog.Warn
+// on the same startup path, no startup gate.
+func (s *Server) warnUnauthenticatedExposure() {
+	if s.cfg.AuthMode != config.AuthModeNone {
+		return
+	}
+	contexts := make([]string, 0)
+	for _, c := range s.manager.Clusters() {
+		contexts = append(contexts, c.Name)
+	}
+	addr := config.Address(s.cfg.ListenAddress, s.cfg.Port)
+	if config.IsLoopbackHost(s.cfg.ListenAddress) {
+		slog.Warn("auth is disabled (auth.mode=none); serving on loopback only",
+			"authMode", s.cfg.AuthMode, "addr", addr, "clusters", contexts)
+		return
+	}
+	slog.Warn("serving unauthenticated cluster data on "+addr,
+		"authMode", s.cfg.AuthMode, "addr", addr, "clusters", contexts)
+}
+
 func (s *Server) Handler() http.Handler {
-	return s.readOnly(s.securityHeaders(s.observeMetrics(s.auth.Middleware(s.mux))))
+	return s.hostAllowlist(s.readOnly(s.securityHeaders(s.observeMetrics(s.auth.Middleware(s.mux)))))
 }
 
 func (s *Server) routes() {

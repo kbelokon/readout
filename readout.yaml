@@ -15,6 +15,17 @@
 # TCP port to listen on. The --port flag overrides this.
 port: 8080
 
+# Bind host for BOTH the app and metrics listeners (the port stays per-listener).
+# Leave empty to bind all interfaces (":port"). SAFE DEFAULT: when this is empty
+# AND auth.mode is "none", readout binds loopback (127.0.0.1) instead, so a
+# no-auth instance does not serve unauthenticated cluster data on every
+# interface. An explicit value always wins -- set it (e.g. "0.0.0.0") to bind a
+# network address; under no-auth that logs a loud startup warning but never
+# refuses to start. When bound to loopback under no-auth, request Host headers
+# must be a loopback name (localhost / 127.0.0.1 / [::1]) -- a DNS-rebinding
+# guard that never blocks your own local access.
+listenAddress: ""
+
 # Optional separate Prometheus metrics listener. When 0, /metrics is served on
 # the main port as a public endpoint. When non-zero, /metrics is served only on
 # this port and is disabled on the main app listener.

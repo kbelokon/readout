@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -90,9 +91,10 @@ type ArgoCDSource struct {
 // rest of the service consumes directly (s.cfg.X); the YAML file is parsed into
 // the unexported fileConfig and folded into this shape by resolve().
 type Config struct {
-	Port        int
-	MetricsPort int
-	ShowVersion bool
+	Port          int
+	MetricsPort   int
+	ListenAddress string
+	ShowVersion   bool
 
 	IncludeNamespaces []*regexp.Regexp
 	ExcludeNamespaces []*regexp.Regexp
@@ -221,6 +223,14 @@ type fileArgoCD struct {
 type fileConfig struct {
 	Port        int `json:"port"`
 	MetricsPort int `json:"metricsPort"`
+
+	// ListenAddress pins the bind host for BOTH the app and metrics listeners
+	// (the port stays per-listener). An explicit value always wins. When it is
+	// empty AND auth.mode is "none", resolve() defaults the bind to the loopback
+	// host 127.0.0.1 so a default no-auth binary does not expose unauthenticated
+	// cluster data on every interface; under any other auth mode an empty value
+	// keeps the historical all-interfaces bind.
+	ListenAddress string `json:"listenAddress"`
 
 	// PublicURL pins the externally-visible origin readout is reached at
 	// (scheme + host, no path). When set it is the base for the OIDC redirect URL
@@ -354,6 +364,7 @@ func resolve(file *fileConfig) (Config, error) {
 	cfg := Config{
 		Port:                       firstNonZero(file.Port, 8080),
 		MetricsPort:                file.MetricsPort,
+		ListenAddress:              strings.TrimSpace(file.ListenAddress),
 		KubeconfigPath:             file.KubeconfigPath,
 		KubeconfigContexts:         file.KubeconfigContexts,
 		ClusterAuthUseSessionToken: file.ClusterAuthUseSessionToken,
@@ -398,6 +409,14 @@ func resolve(file *fileConfig) (Config, error) {
 	}
 	if file.Search.MaxConcurrency != nil {
 		cfg.SearchMaxConcurrency = *file.Search.MaxConcurrency
+	}
+
+	// Safe loopback default: a no-auth binary with no explicit listenAddress
+	// binds loopback so unauthenticated cluster data is not served on every
+	// interface. An explicit listenAddress always wins; any other auth mode
+	// keeps the historical all-interfaces bind (empty host -> ":port").
+	if cfg.ListenAddress == "" && cfg.AuthMode == AuthModeNone {
+		cfg.ListenAddress = loopbackHost
 	}
 
 	// READOUT_* env overrides the file for secrets and OIDC endpoint config.
@@ -464,8 +483,58 @@ func resolve(file *fileConfig) (Config, error) {
 	return cfg, nil
 }
 
-func Address(port int) string {
-	return ":" + strconv.Itoa(port)
+// loopbackHost is the bind host used as the safe default under auth.mode=none
+// with no explicit listenAddress.
+const loopbackHost = "127.0.0.1"
+
+// Address builds a listen address from a bind host and a port. An empty host
+// yields the historical ":port" (all interfaces); a non-empty host pins the
+// bind, e.g. Address("127.0.0.1", 8080) -> "127.0.0.1:8080". The host threads
+// through BOTH the app and metrics listeners so they bind the same interface.
+func Address(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// loopbackHosts is the Host-header allowlist enforced ONLY when the resolved
+// bind is loopback under auth.mode=none: it rejects a forged-Host DNS-rebinding
+// request while always admitting the operator's own loopback access.
+var loopbackHosts = map[string]bool{
+	"localhost": true,
+	"127.0.0.1": true,
+	"::1":       true,
+}
+
+// IsLoopbackHost reports whether a bind host is a loopback address. The empty
+// host (all interfaces) is NOT loopback.
+func IsLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return host == "localhost"
+}
+
+// EnforceLoopbackHostAllowlist reports whether request Host headers must be
+// checked against the loopback allowlist: true only when the resolved bind is
+// loopback AND auth is disabled. A non-loopback bind accepts any Host (the
+// operator reaches readout by its real name); any auth mode other than none
+// already gates access, so no Host check is layered on.
+func (c *Config) EnforceLoopbackHostAllowlist() bool {
+	return c.AuthMode == AuthModeNone && IsLoopbackHost(c.ListenAddress)
+}
+
+// AllowedHost reports whether a request Host (with any :port stripped) is in
+// the loopback allowlist. It is consulted only when EnforceLoopbackHostAllowlist
+// is true.
+func AllowedHost(hostHeader string) bool {
+	host := hostHeader
+	if h, _, err := net.SplitHostPort(hostHeader); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	return loopbackHosts[strings.ToLower(host)]
 }
 
 func firstNonEmpty(values ...string) string {

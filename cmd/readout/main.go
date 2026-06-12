@@ -135,9 +135,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		slog.Error("failed to initialize app", "version", version.Version, "error", err)
 		return 1
 	}
-	addr := config.Address(cfg.Port)
+	addr := config.Address(cfg.ListenAddress, cfg.Port)
 	if cfg.MetricsPort != 0 {
-		metricsAddr := config.Address(cfg.MetricsPort)
+		metricsAddr := config.Address(cfg.ListenAddress, cfg.MetricsPort)
 		metricsSrv := newHTTPServer(metricsAddr, app.MetricsHandler())
 		go func() {
 			slog.Info("readout metrics started", "version", version.Version, "addr", metricsAddr)

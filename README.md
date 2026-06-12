@@ -77,6 +77,16 @@ fast at startup. The customization surface, all in the YAML:
 - **namespaces** — `includeNamespaces` / `excludeNamespaces` RE2 regular
   expressions (exclude wins; empty include means all; cluster-scoped objects are
   never namespace-excluded).
+- **listenAddress** — bind host for **both** the app and metrics listeners (the
+  port stays per-listener). Empty binds all interfaces (`:port`). **Safe
+  default:** when `listenAddress` is empty **and** `auth.mode` is `none`, readout
+  binds loopback (`127.0.0.1`) so a no-auth instance is not reachable off-host;
+  an explicit value always wins. Binding a network address under `auth.mode:
+  none` logs a loud startup warning (the loaded clusters and auth mode are named)
+  but **never** refuses to start — there are no blocking startup gates. While
+  bound to loopback under no-auth, request `Host` headers must be a loopback name
+  (`localhost` / `127.0.0.1` / `[::1]`), a DNS-rebinding guard that never blocks
+  your own local access.
 
 See [`readout.yaml`](readout.yaml) for the full annotated schema, including auth
 (`none` / `headers` / `oidc`), theming, external readout cross-links, and the

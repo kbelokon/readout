@@ -605,7 +605,7 @@ func TestRemovedClusterKeysRejected(t *testing.T) {
 }
 
 func TestAddress(t *testing.T) {
-	if got := Address(9090); got != ":9090" {
+	if got := Address("", 9090); got != ":9090" {
 		t.Fatalf("Address = %q", got)
 	}
 }

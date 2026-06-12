@@ -69,8 +69,8 @@ func TestRunServerInitAndListenErrors(t *testing.T) {
 		}
 	}
 	listenAndServe = func(srv *http.Server) error {
-		if srv.Addr != ":9091" {
-			t.Fatalf("addr = %q, want :9091", srv.Addr)
+		if srv.Addr != "127.0.0.1:9091" {
+			t.Fatalf("addr = %q, want 127.0.0.1:9091", srv.Addr)
 		}
 		if srv.Handler == nil {
 			t.Fatal("handler is nil")
@@ -108,7 +108,7 @@ func TestRunServerInitAndListenErrors(t *testing.T) {
 			t.Fatalf("timed out waiting for main and metrics servers, saw %v", seen)
 		}
 	}
-	for _, addr := range []string{":9091", ":9092"} {
+	for _, addr := range []string{"127.0.0.1:9091", "127.0.0.1:9092"} {
 		srv := seen[addr]
 		if srv == nil {
 			t.Fatalf("server %s was not started; saw %v", addr, seen)
@@ -119,7 +119,7 @@ func TestRunServerInitAndListenErrors(t *testing.T) {
 		assertTimeouts(t, srv)
 	}
 	rec := httptest.NewRecorder()
-	seen[":9092"].Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	seen["127.0.0.1:9092"].Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "# HELP readout_up") {
 		t.Fatalf("metrics server handler status=%d body=%s", rec.Code, rec.Body.String())
 	}
