@@ -4,6 +4,38 @@ description: Strictly read-only Kubernetes web viewer in Go
 type: application
 version: 0.7.0
 appVersion: 0.7.0
+kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
   - https://github.com/kbelokon/readout
+icon: https://raw.githubusercontent.com/kbelokon/readout/main/brand/readout-icon.png
+keywords:
+  - kubernetes
+  - read-only
+  - viewer
+  - dashboard
+  - rbac
+  - oidc
+maintainers:
+  - name: Kirill Belokon
+    email: kb@kbelokon.com
+    url: https://github.com/kbelokon
+annotations:
+  artifacthub.io/license: GPL-3.0-only
+  artifacthub.io/links: |
+    - name: source
+      url: https://github.com/kbelokon/readout
+    - name: chart
+      url: https://github.com/kbelokon/readout/tree/main/chart
+  artifacthub.io/images: |
+    - name: readout
+      image: ghcr.io/kbelokon/readout:0.7.0
+  artifacthub.io/changes: |
+    - kind: changed
+      description: "Resource identity moved to app.kubernetes.io/name+instance with release-scoped names; upgrade from <=0.6 requires helm uninstall && helm install (stateless, no data loss)"
+    - kind: added
+      description: "Full chart surface: RBAC presets (wildcard/restricted), Ingress and Gateway API exposure, metrics listener with optional ServiceMonitor, typed secret wiring, PodDisruptionBudget, and an extraObjects escape hatch"
+    - kind: added
+      description: "Cross-field safety gates for no-auth exposure, multi-replica OIDC session secrets, and metrics port conflicts, each with an unsafe.* override"
+    - kind: added
+      description: "Hand-written README, AGENTS.md deployment guidance, and seven runnable example values files"
