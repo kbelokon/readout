@@ -9,13 +9,12 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// These tests pin the maintainer's primary deployment pattern -- a multi-context
-// kubeconfig rendered into a Secret and mounted, with readout pointed at it via
-// kubeconfigPath -- against the security changes that landed earlier: strict
-// passthrough (Unit 6) and the source-aware exec credential-plugin gate (Unit 4).
-// They run under DEFAULT policy (no overrides): the kubeconfig source defaults to
-// the cloud-plugin Allowlist, so a static-token file loads every context and an
-// allowlisted exec context keeps its ExecProvider.
+// These tests pin a multi-context kubeconfig rendered into a Secret and mounted,
+// with readout pointed at it via kubeconfigPath, against the security defaults:
+// strict session-token passthrough and the source-aware exec credential-plugin
+// gate. They run under DEFAULT policy (no overrides): the kubeconfig source
+// defaults to the cloud-plugin allowlist, so a static-token file loads every
+// context and an allowlisted exec context keeps its ExecProvider.
 
 // writeExecKubeconfig writes a kubeconfig with one static-token context plus one
 // context whose user authenticates via an exec credential plugin running
