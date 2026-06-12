@@ -320,7 +320,12 @@ templ ResourceView(d DetailData) {
 			// attachment body into <body> instead of downloading (htmx 2.0.4).
 			</h1> <span class="ro-kind-badge">{ d.Kind }</span><div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } hx-boost="false" title="Download resource object as YAML" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
 				for _, link := range d.Links {
-					<a href={ templ.SafeURL(link.Href) } class="ro-iconbtn" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
+					// Config/hook-influenced href: templ.URL sanitizes any scheme
+					// outside http/https/mailto/tel/ftp/ftps to about:invalid, so an
+					// operator-defined or hook-returned `javascript:`/`data:` link
+					// cannot execute. The trusted handler-built hrefs above (download,
+					// logs, chips, owners, namespace, table) stay templ.SafeURL.
+					<a href={ templ.URL(link.Href) } class="ro-iconbtn" title={ link.Title }><span class="icon">@templ.Raw(link.Icon)</span></a>
 				}</div><span class="ro-detail-meta">{ "created " + d.CreatedMeta + ", version " + d.Version }</span></div>
 			<div class="ro-tabs">@tabLink(d.DefaultTabActive, "?", "Default")@tabLink(d.YAMLTabActive, "?view=yaml", "YAML")@tabLink(d.EventsTabActive, "?view=events", "Events")
 				if d.LogsHref != "" {

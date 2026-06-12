@@ -32,6 +32,25 @@ func (s *Server) highlightYAML(cluster, namespace string, object *kube.Object, a
 	})
 }
 
+// safeLinkScheme gates the hand-built timestamp <a href> in linkTimestampsHTML,
+// which bypasses templ's URL sanitizer. A schemeless or rooted reference
+// (no scheme before the first '/', e.g. "/path", "//host") carries no
+// executable scheme and is allowed; a scheme-prefixed href is permitted only
+// for http/https/mailto, so a config-defined `javascript:`/`data:` timestamp
+// link is rejected.
+func safeLinkScheme(href string) bool {
+	i := strings.IndexRune(href, ':')
+	if i < 0 || strings.ContainsRune(href[:i], '/') {
+		return true
+	}
+	switch strings.ToLower(href[:i]) {
+	case "http", "https", "mailto":
+		return true
+	default:
+		return false
+	}
+}
+
 // linkTimestampsHTML rewrites every ISO-8601 timestamp in a rendered YAML line
 // into an <a> link to the configured time-based view for the object's resource
 // endpoint. With no configured TimestampLinks it returns the line unchanged.
@@ -47,6 +66,13 @@ func (s *Server) linkTimestampsHTML(cluster, namespace string, object *kube.Obje
 	return iso8601Timestamp.ReplaceAllStringFunc(out, func(timestamp string) string {
 		repl := strings.NewReplacer("{cluster}", cluster, "{namespace}", namespace, "{name}", object.Name(), "{timestamp}", timestamp)
 		href := repl.Replace(link.Href)
+		// This <a> is built by hand and bypasses templ's URL sanitizer, so the
+		// scheme is validated here: a config-defined `javascript:`/`data:` href
+		// (or one assembled from the substituted timestamp) must not become an
+		// executable link. On rejection the timestamp is left as plain text.
+		if !safeLinkScheme(href) {
+			return timestamp
+		}
 		title := repl.Replace(first(link.Title, timestamp))
 		return `<a href="` + html.EscapeString(href) + `" title="` + html.EscapeString(title) + `">` + timestamp + `</a>`
 	})

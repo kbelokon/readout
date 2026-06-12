@@ -493,6 +493,26 @@ func resolve(file *fileConfig) (Config, error) {
 	// cluster-server URL validator -- a hook is external by design, a cluster
 	// server may legitimately be a private IP -- so the two are kept as distinct
 	// helpers and must not be merged.
+	// Static config-defined links render as <a href> in the browser, so an
+	// operator-supplied `javascript:`/`data:` scheme is rejected at startup
+	// rather than reaching a page. The scheme is fixed text -- the {cluster}/
+	// {name}/{timestamp} placeholders only ever sit in the path/host -- so this
+	// is decidable before substitution. (Hook-returned links arrive at runtime
+	// and are dropped+logged at render time, not here.)
+	for field, links := range map[string]map[string][]Link{
+		"objectLinks":    cfg.ObjectLinks,
+		"labelLinks":     cfg.LabelLinks,
+		"timestampLinks": cfg.TimestampLinks,
+	} {
+		for key, defs := range links {
+			for _, def := range defs {
+				if !LinkSchemeAllowed(def.Href) {
+					return Config{}, fmt.Errorf("%s[%q]: link href %q uses a disallowed scheme (only http/https/mailto/tel/ftp/ftps are permitted)", field, key, def.Href)
+				}
+			}
+		}
+	}
+
 	if cfg.AuthorizationHookURL != "" {
 		if err := validateHookURL(cfg.AuthorizationHookURL); err != nil {
 			return Config{}, fmt.Errorf("hooks.authorizationUrl: %w", err)
@@ -747,6 +767,28 @@ func clusterMap(clusters []fileCluster) map[string]string {
 		result[c.Name] = c.URL
 	}
 	return result
+}
+
+// LinkSchemeAllowed reports whether href is safe to render as an <a href>.
+// It mirrors the github.com/a-h/templ URL() sanitizer's allowlist (the
+// http/https/mailto/tel/ftp/ftps schemes) so config-static and hook-returned
+// links are judged by the same rule the template applies, and a schemeless or
+// rooted reference (no scheme before the first '/', e.g. "/path", "//host",
+// "foo/bar") is allowed -- those carry no executable scheme. A bare
+// "javascript:" / "data:" / "vbscript:" style href is rejected.
+func LinkSchemeAllowed(href string) bool {
+	i := strings.IndexRune(href, ':')
+	if i < 0 || strings.ContainsRune(href[:i], '/') {
+		// No scheme, or the colon sits after a path separator (e.g. "/a:b"):
+		// not a scheme-prefixed URL, so there is nothing executable to gate.
+		return true
+	}
+	switch strings.ToLower(href[:i]) {
+	case "http", "https", "mailto", "tel", "ftp", "ftps":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveLinks(links map[string][]fileLink) map[string][]Link {

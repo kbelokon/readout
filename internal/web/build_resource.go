@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -37,8 +38,18 @@ func (s *Server) resourcePrerenderHook(ctx context.Context, cluster, namespace, 
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(result.Links) > 0 {
-		links = append(links, result.Links...)
+	// Hook-returned links are attacker-influenceable runtime data: drop and log
+	// any with a disallowed scheme (e.g. javascript:/data:) before they reach
+	// the link list. The template additionally sanitizes config/hook hrefs via
+	// templ.URL, but dropping here keeps an unrenderable link out entirely and
+	// surfaces the bad hook response in the logs.
+	for _, link := range result.Links {
+		if !config.LinkSchemeAllowed(link.Href) {
+			slog.Warn("dropping prerender-hook link with disallowed scheme",
+				"cluster", cluster, "namespace", namespace, "plural", plural, "href", link.Href)
+			continue
+		}
+		links = append(links, link)
 	}
 	return links, result.Resource, nil
 }

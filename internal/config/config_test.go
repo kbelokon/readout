@@ -786,3 +786,52 @@ func TestAuthorizationHookIncludeTokens(t *testing.T) {
 		t.Fatal("typo'd includeTokens key should be rejected by strict parse")
 	}
 }
+
+// TestLinkSchemeAllowed pins the shared scheme allowlist: http/https/mailto/
+// tel/ftp/ftps and any schemeless/rooted reference pass; an executable scheme
+// (javascript/data/vbscript) is rejected.
+func TestLinkSchemeAllowed(t *testing.T) {
+	allowed := []string{
+		"https://ok.example/path",
+		"http://ok.example",
+		"mailto:ops@example.com",
+		"tel:+15550100",
+		"ftp://files.example",
+		"ftps://files.example",
+		"/clusters/x/pods",
+		"//host.example",
+		"/\\evil",
+		"relative/path",
+		"/a:b", // the colon sits after a '/', so it is not a scheme prefix
+	}
+	for _, href := range allowed {
+		if !LinkSchemeAllowed(href) {
+			t.Errorf("LinkSchemeAllowed(%q) = false, want true", href)
+		}
+	}
+	rejected := []string{
+		"javascript:alert(1)",
+		"JavaScript:alert(1)",
+		"data:text/html,<script>",
+		"vbscript:msgbox",
+	}
+	for _, href := range rejected {
+		if LinkSchemeAllowed(href) {
+			t.Errorf("LinkSchemeAllowed(%q) = true, want false", href)
+		}
+	}
+}
+
+// TestStaticLinkBadSchemeRejected proves an operator-defined config link with a
+// javascript: scheme fails config load at startup.
+func TestStaticLinkBadSchemeRejected(t *testing.T) {
+	bad := "clusters:\n  - name: one\n    server: https://one\nobjectLinks:\n  pods:\n    - href: \"javascript:alert(1)\"\n"
+	if _, err := Parse([]string{"--config", writeConfig(t, bad)}); err == nil {
+		t.Fatal("javascript: objectLink href should be rejected at startup")
+	}
+
+	ok := "clusters:\n  - name: one\n    server: https://one\nobjectLinks:\n  pods:\n    - href: \"https://ok.example/{name}\"\nlabelLinks:\n  app:\n    - href: \"/filter/{value}\"\n"
+	if _, err := Parse([]string{"--config", writeConfig(t, ok)}); err != nil {
+		t.Fatalf("valid link schemes should load: %v", err)
+	}
+}
