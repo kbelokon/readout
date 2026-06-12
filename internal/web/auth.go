@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/kbelokon/readout/internal/config"
+	"github.com/kbelokon/readout/internal/hooks"
 	"golang.org/x/oauth2"
 )
 
@@ -77,6 +79,51 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			return
 		}
 	})
+}
+
+// authorizationHook consults the configured JSON authorization hook, updating
+// session in place with any user/email/groups the hook returns. session is
+// taken by pointer (it is a heavy value) and mutated directly; the caller reads
+// the updated session after the call. Returns whether access is allowed. The
+// hook IO lives in internal/hooks; this adapter maps the session to the hook's
+// request DTO and applies the value result back onto the session struct.
+func (s *Server) authorizationHook(ctx context.Context, token *oauth2.Token, session *authSession) (bool, error) {
+	if s.cfg.AuthorizationHookURL == "" {
+		return true, nil
+	}
+	sessionJSON, err := json.Marshal(*session)
+	if err != nil {
+		return false, err
+	}
+	tokenMap := map[string]any{
+		"access_token":  token.AccessToken,
+		"token_type":    token.TokenType,
+		"refresh_token": token.RefreshToken,
+		"expiry":        token.Expiry.Format(time.RFC3339),
+	}
+	if idToken, _ := token.Extra("id_token").(string); idToken != "" {
+		tokenMap["id_token"] = idToken
+	}
+	result, err := s.hooks.Authorization(ctx, s.cfg.AuthorizationHookURL, hooks.AuthorizationRequest{
+		Token:   tokenMap,
+		Session: sessionJSON,
+	})
+	if err != nil {
+		return false, err
+	}
+	if result.User != "" {
+		session.User = result.User
+	}
+	if result.Email != "" {
+		session.Email = result.Email
+	}
+	if result.Groups != nil {
+		session.Groups = result.Groups
+	}
+	if result.Allowed != nil {
+		return *result.Allowed, nil
+	}
+	return true, nil
 }
 
 func (s *Server) trustedHeaderSession(r *http.Request) authSession {

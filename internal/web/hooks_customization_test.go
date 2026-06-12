@@ -126,32 +126,6 @@ func TestResourcePrerenderHookUpdatesLinksAndResource(t *testing.T) {
 	}
 }
 
-func TestPostJSONErrorBranches(t *testing.T) {
-	if err := postJSON(context.Background(), "://bad-url", map[string]string{"x": "y"}, nil); err == nil {
-		t.Fatal("expected bad URL to fail")
-	}
-	if err := postJSON(context.Background(), "http://example.invalid", func() {}, nil); err == nil {
-		t.Fatal("expected marshal error to fail")
-	}
-
-	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer empty.Close()
-	if err := postJSON(context.Background(), empty.URL, map[string]string{"x": "y"}, nil); err != nil {
-		t.Fatalf("empty response should succeed: %v", err)
-	}
-
-	invalidJSON := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{`))
-	}))
-	defer invalidJSON.Close()
-	var out map[string]any
-	if err := postJSON(context.Background(), invalidJSON.URL, map[string]string{"x": "y"}, &out); err == nil {
-		t.Fatal("expected invalid JSON response to fail")
-	}
-}
-
 func TestLoadPartialsFallbackAndPrecedence(t *testing.T) {
 	if got := loadPartials(""); len(got) != 0 {
 		t.Fatalf("empty root partials = %#v", got)

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,12 +11,37 @@ import (
 	"time"
 
 	"github.com/kbelokon/readout/internal/config"
+	"github.com/kbelokon/readout/internal/hooks"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/yamlview"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/duration"
 )
+
+// resourcePrerenderHook consults the configured JSON resource-prerender hook,
+// returning the (possibly extended) link list and an optional replacement
+// resource. The hook IO lives in internal/hooks; this adapter maps the inputs
+// to the hook's request DTO and folds the result back into the link list.
+func (s *Server) resourcePrerenderHook(ctx context.Context, cluster, namespace, plural string, object *kube.Object, links []config.Link) ([]config.Link, map[string]any, error) {
+	if s.cfg.ResourcePrerenderHookURL == "" {
+		return links, nil, nil
+	}
+	result, err := s.hooks.Prerender(ctx, s.cfg.ResourcePrerenderHookURL, &hooks.PrerenderRequest{
+		Cluster:   cluster,
+		Namespace: namespace,
+		Plural:    plural,
+		Resource:  object.Raw,
+		Links:     links,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(result.Links) > 0 {
+		links = append(links, result.Links...)
+	}
+	return links, result.Resource, nil
+}
 
 // build_resource.go is the data-assembly layer for the resource-view (object
 // detail) page and the related-pods/events sub-data it fetches. It turns the

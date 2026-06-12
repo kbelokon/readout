@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kbelokon/readout/internal/config"
+	"github.com/kbelokon/readout/internal/hooks"
 	"github.com/kbelokon/readout/internal/kube"
 	"golang.org/x/oauth2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -21,7 +22,7 @@ func newBareServer(t *testing.T, cfg *config.Config) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Server{cfg: *cfg, sessions: codec}
+	return &Server{cfg: *cfg, sessions: codec, hooks: hooks.NewClient()}
 }
 
 func TestAuthModesHeadersOIDCAndBearerSources(t *testing.T) {
@@ -241,20 +242,6 @@ func TestAuthorizationAndPrerenderHooks(t *testing.T) {
 	allowed, err = s.authorizationHook(context.Background(), token, &authSession{})
 	if err != nil || allowed {
 		t.Fatalf("deny hook allowed=%t err=%v", allowed, err)
-	}
-
-	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "nope", http.StatusTeapot)
-	}))
-	defer bad.Close()
-	if err := postJSON(context.Background(), bad.URL, map[string]string{"x": "y"}, nil); err == nil || !strings.Contains(err.Error(), "418") {
-		t.Fatalf("postJSON status err = %v", err)
-	}
-	if err := postJSON(context.Background(), "://bad-url", map[string]string{"x": "y"}, nil); err == nil {
-		t.Fatal("bad URL unexpectedly succeeded")
-	}
-	if err := postJSON(context.Background(), hook.URL, func() {}, nil); err == nil {
-		t.Fatal("unmarshalable payload unexpectedly posted")
 	}
 
 	obj := kube.NewObject(&kube.ResourceType{APIVersion: "v1", Version: "v1", Plural: "pods", Kind: "Pod", Namespaced: true}, &unstructured.Unstructured{Object: map[string]any{

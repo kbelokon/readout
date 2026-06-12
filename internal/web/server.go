@@ -16,6 +16,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/kbelokon/readout/internal/assets"
 	"github.com/kbelokon/readout/internal/config"
+	"github.com/kbelokon/readout/internal/hooks"
 	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/web/templates"
 )
@@ -37,6 +38,7 @@ type Server struct {
 	partials           map[string]string
 	metrics            *appMetrics
 	sessions           *sessionCodec
+	hooks              *hooks.Client
 	passthroughClients *kube.PassthroughClientCache
 	// now is the clock for all render-path time (age coloring + the list/search
 	// "took X" footer). It defaults to time.Now in New; tests inject a fixed
@@ -103,6 +105,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		partials:           loadPartials(cfg.TemplatesPath),
 		metrics:            newAppMetrics(),
 		sessions:           sessions,
+		hooks:              hooks.NewClient(),
 		passthroughClients: kube.NewPassthroughClientCache(0, 0),
 		now:                time.Now,
 		streamSlots:        make(chan struct{}, streamCapMax),
