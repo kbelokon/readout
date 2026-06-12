@@ -86,10 +86,12 @@ func TestAuthModesHeadersOIDCAndBearerSources(t *testing.T) {
 	if got := s.requestBearer(req); got != "direct-token" {
 		t.Fatalf("direct bearer = %q", got)
 	}
+	// The legacy access_token cookie is no longer a bearer source: a request
+	// carrying only this cookie resolves to no bearer (anonymous).
 	req = httptest.NewRequest(http.MethodGet, "/clusters", nil)
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: "cookie-token"})
-	if got := s.requestBearer(req); got != "cookie-token" {
-		t.Fatalf("access_token cookie bearer = %q", got)
+	if got := s.requestBearer(req); got != "" {
+		t.Fatalf("legacy access_token cookie should not be a bearer source, got %q", got)
 	}
 }
 

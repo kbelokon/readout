@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/kbelokon/readout/internal/assets"
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
@@ -57,6 +59,16 @@ type Server struct {
 	// is shutting down, open Live streams emit `event: ro-terminal` (reason
 	// "shutdown") and close instead of dying mid-frame.
 	shutdownCh <-chan struct{}
+
+	// oidcMu guards the OIDC discovery cache below. oidcProvider is built once
+	// per process from the configured issuer (go-oidc fetches the discovery
+	// document and the remote key set) and reused for every login and callback.
+	// Discovery is comparatively expensive and the issuer's metadata is stable,
+	// so caching it avoids a network round trip on each OAuth handshake. A failed
+	// construction is never cached: a transient issuer outage must not poison the
+	// process, so the next request retries discovery from scratch.
+	oidcMu       sync.Mutex
+	oidcProvider *oidc.Provider
 }
 
 var withBearerClient = func(client *kube.Client, token string) (*kube.Client, error) {

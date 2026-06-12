@@ -253,7 +253,7 @@ func (s *Server) oauth2Config(ctx context.Context, r *http.Request) (*oauth2.Con
 	var verifier *oidc.IDTokenVerifier
 	switch {
 	case s.cfg.OIDCIssuerURL != "":
-		provider, err := oidc.NewProvider(ctx, s.cfg.OIDCIssuerURL)
+		provider, err := s.oidcDiscover()
 		if err != nil {
 			return nil, nil, fmt.Errorf("OIDC discovery failed: %w", err)
 		}
@@ -279,6 +279,28 @@ func (s *Server) oauth2Config(ctx context.Context, r *http.Request) (*oauth2.Con
 	}, verifier, nil
 }
 
+// oidcDiscover returns the process-wide cached OIDC provider, building it on
+// first use and on every prior failure. Construction is pinned to
+// context.Background() on purpose: go-oidc binds the remote key-set fetcher used
+// by every later token verification to the context passed here, so a request
+// context (which can be canceled when the client disconnects) would later break
+// verification for unrelated requests. A failed construction is not stored, so
+// the next caller retries discovery rather than inheriting a poisoned cache from
+// a transient issuer outage.
+func (s *Server) oidcDiscover() (*oidc.Provider, error) {
+	s.oidcMu.Lock()
+	defer s.oidcMu.Unlock()
+	if s.oidcProvider != nil {
+		return s.oidcProvider, nil
+	}
+	provider, err := oidc.NewProvider(context.Background(), s.cfg.OIDCIssuerURL)
+	if err != nil {
+		return nil, err
+	}
+	s.oidcProvider = provider
+	return provider, nil
+}
+
 func (s *Server) authSession(r *http.Request) (authSession, bool) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
@@ -301,9 +323,6 @@ func (s *Server) requestBearer(r *http.Request) string {
 	}
 	if session, ok := s.authSession(r); ok {
 		return session.AccessToken
-	}
-	if cookie, err := r.Cookie("access_token"); err == nil {
-		return cookie.Value
 	}
 	return ""
 }

@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -262,10 +264,13 @@ func TestSessionCodecAndBearerSources(t *testing.T) {
 		t.Fatalf("header bearer = %q", got)
 	}
 
+	// The legacy access_token cookie is no longer a bearer source: only the
+	// Authorization header and the sealed session cookie are honored. A request
+	// carrying only this cookie must resolve to no bearer (anonymous).
 	cookieReq := httptest.NewRequest(http.MethodGet, "/clusters", nil)
 	cookieReq.AddCookie(&http.Cookie{Name: "access_token", Value: "cookie-token"})
-	if got := app.requestBearer(cookieReq); got != "cookie-token" {
-		t.Fatalf("cookie bearer = %q", got)
+	if got := app.requestBearer(cookieReq); got != "" {
+		t.Fatalf("legacy access_token cookie should not be a bearer source, got %q", got)
 	}
 
 	sessionValue, err := app.sessions.Seal(sessionCookieName, authSession{AccessToken: "session-token", Expires: time.Now().Add(time.Hour).Unix()}, time.Hour)
@@ -460,5 +465,119 @@ func TestOAuth2ConfigErrors(t *testing.T) {
 	app.startOAuth2(rec, httptest.NewRequest(http.MethodGet, "/clusters", nil), "/clusters")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("startOAuth2 error status = %d", rec.Code)
+	}
+}
+
+// fakeIssuer is a minimal OIDC discovery endpoint that counts how many times the
+// discovery document is fetched. When fail is set it returns 500 instead, to
+// simulate a transient issuer outage.
+type fakeIssuer struct {
+	server    *httptest.Server
+	discovery int32
+	fail      atomic.Bool
+}
+
+func newFakeIssuer(t *testing.T) *fakeIssuer {
+	t.Helper()
+	fi := &fakeIssuer{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&fi.discovery, 1)
+		if fi.fail.Load() {
+			http.Error(w, "issuer down", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 fi.server.URL,
+			"authorization_endpoint": fi.server.URL + "/authorize",
+			"token_endpoint":         fi.server.URL + "/token",
+			"jwks_uri":               fi.server.URL + "/keys",
+		})
+	})
+	fi.server = httptest.NewServer(mux)
+	t.Cleanup(fi.server.Close)
+	return fi
+}
+
+func (fi *fakeIssuer) hits() int32 {
+	return atomic.LoadInt32(&fi.discovery)
+}
+
+func newIssuerServer(t *testing.T, fi *fakeIssuer) *Server {
+	return newTestServerWithConfig(t, &config.Config{
+		Port:          8080,
+		Clusters:      []config.ClusterConnection{{Name: "test", Server: newServerFakeAPI(t).URL}},
+		DefaultTheme:  "dark",
+		OIDCClientID:  "client-id",
+		OIDCIssuerURL: fi.server.URL,
+		SessionSecret: "test-secret",
+	})
+}
+
+func TestOIDCProviderCached(t *testing.T) {
+	fi := newFakeIssuer(t)
+	app := newIssuerServer(t, fi)
+
+	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	for i := 0; i < 3; i++ {
+		if _, _, err := app.oauth2Config(context.Background(), req); err != nil {
+			t.Fatalf("oauth2Config call %d: %v", i, err)
+		}
+	}
+	if got := fi.hits(); got != 1 {
+		t.Fatalf("discovery hits across 3 calls = %d, want 1", got)
+	}
+
+	// A failed first discovery must NOT be cached: the next call after the issuer
+	// recovers has to succeed and cache from then on.
+	failing := newFakeIssuer(t)
+	failing.fail.Store(true)
+	app2 := newIssuerServer(t, failing)
+	if _, _, err := app2.oauth2Config(context.Background(), req); err == nil {
+		t.Fatal("expected discovery failure while issuer is down")
+	}
+	if got := failing.hits(); got != 1 {
+		t.Fatalf("failed discovery hits = %d, want 1", got)
+	}
+	failing.fail.Store(false)
+	for i := 0; i < 2; i++ {
+		if _, _, err := app2.oauth2Config(context.Background(), req); err != nil {
+			t.Fatalf("oauth2Config after recovery call %d: %v", i, err)
+		}
+	}
+	// 1 failed hit + 1 successful (cached thereafter) = 2 total.
+	if got := failing.hits(); got != 2 {
+		t.Fatalf("discovery hits after recovery = %d, want 2", got)
+	}
+}
+
+func TestOIDCProviderCachedConcurrent(t *testing.T) {
+	fi := newFakeIssuer(t)
+	app := newIssuerServer(t, fi)
+
+	const callers = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	start := make(chan struct{})
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+			if _, _, err := app.oauth2Config(context.Background(), req); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent oauth2Config: %v", err)
+	}
+	if got := fi.hits(); got != 1 {
+		t.Fatalf("discovery hits across %d concurrent callers = %d, want 1", callers, got)
 	}
 }
