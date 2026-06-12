@@ -217,7 +217,13 @@ and the environment **overrides** the file:
 | `READOUT_RESOURCE_PRERENDER_HOOK_URL` | resource-prerender hook URL      |
 
 The session secret can also be read from a mounted file via the top-level
-`sessionSecretFile:` config key (the env var wins when both are set). For OIDC,
+`sessionSecretFile:` config key (the env var wins when both are set). For OIDC
+the sealed cookie **is** the session (there is no server-side store), so a short
+or absent secret is forgeable: readout logs a loud startup warning when the OIDC
+session secret is missing or decodes to fewer than 32 bytes (it accepts
+base64/hex or a raw string). This is a minimum-length signal, not an entropy
+check, and it never blocks startup — generate a strong secret with
+`openssl rand -base64 32`. For OIDC,
 set the top-level `publicUrl:` (origin only, e.g. `https://readout.example`) to
 pin the externally-visible origin; readout then derives the OIDC callback as
 `publicUrl` + `/oauth2/callback`, so an explicit `auth.oidc.redirectUrl` is not

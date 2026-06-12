@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -157,14 +159,56 @@ func (s *Server) warnUntrustedHeaderProxy() {
 		"authMode", s.cfg.AuthMode)
 }
 
-// warnMissingSessionSecret warns at startup when auth mode is OIDC but no
-// session secret is configured (READOUT_SESSION_SECRET empty and no
-// sessionSecretFile, so the session codec falls back to an ephemeral
-// per-process key). Without a stable secret, sessions silently break across
-// restarts and across replicas.
+// minSessionSecretBytes is the minimum decoded length we want behind an OIDC
+// sealed-cookie session. The cookie IS the session (no server-side store), so a
+// short/guessable secret is forgeable. This is a minimum-LENGTH signal only, not
+// an entropy check: 32 zero bytes passes this gate but is still a bad secret.
+const minSessionSecretBytes = 32
+
+// decodedSecretLen reports the byte length a session secret resolves to. It
+// tries base64 (std then raw, padded and unpadded) and then hex; if the string
+// is neither, it falls back to the raw UTF-8 byte length. This mirrors how the
+// secret is consumed: any non-empty string is accepted and hashed, so an
+// operator may paste an encoded key or a raw passphrase, and either form should
+// be measured for the minimum-length warning.
+func decodedSecretLen(secret string) int {
+	if secret == "" {
+		return 0
+	}
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	} {
+		if b, err := enc.DecodeString(secret); err == nil {
+			return len(b)
+		}
+	}
+	if b, err := hex.DecodeString(secret); err == nil {
+		return len(b)
+	}
+	return len(secret)
+}
+
+// warnMissingSessionSecret warns at startup when auth mode is OIDC and the
+// session secret is absent OR shorter than minSessionSecretBytes once decoded.
+// The OIDC sealed cookie IS the session (no server-side store), so an absent
+// secret falls back to an ephemeral per-process key (sessions break across
+// restarts and replicas) and a short secret is brute-forceable/forgeable. It
+// never fails -- the same loud-warn-no-gate posture as the other startup
+// warnings; the app always starts.
 func (s *Server) warnMissingSessionSecret() {
-	if s.cfg.AuthMode == config.AuthModeOIDC && s.cfg.SessionSecret == "" {
-		slog.Warn("OIDC auth has no session secret; sessions will not survive restarts or span replicas", "env", "READOUT_SESSION_SECRET")
+	if s.cfg.AuthMode != config.AuthModeOIDC {
+		return
+	}
+	if s.cfg.SessionSecret == "" {
+		slog.Warn("OIDC auth has no session secret; sessions will not survive restarts or span replicas; generate one with `openssl rand -base64 32`", "env", "READOUT_SESSION_SECRET")
+		return
+	}
+	if n := decodedSecretLen(s.cfg.SessionSecret); n < minSessionSecretBytes {
+		slog.Warn("OIDC session secret is short; the sealed-cookie session is brute-forceable; use at least 32 bytes, e.g. `openssl rand -base64 32`",
+			"env", "READOUT_SESSION_SECRET", "decodedBytes", n, "minBytes", minSessionSecretBytes)
 	}
 }
 

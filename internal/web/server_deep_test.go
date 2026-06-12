@@ -487,10 +487,11 @@ func TestNamespaceAllowedStatusErrorAndErrorPage(t *testing.T) {
 }
 
 // TestSessionSecretWarning pins the startup warning: when auth mode is OIDC and
-// READOUT_SESSION_SECRET (cfg.SessionSecret) is empty, warnMissingSessionSecret
-// emits a slog WARN. It covers explicit OIDC and the no-warn modes; a none-mode
-// config carrying OIDC fields never reaches this warning (it is rejected at
-// config load now that implicit promotion is gone), so here it does NOT warn.
+// READOUT_SESSION_SECRET (cfg.SessionSecret) is empty OR decodes to fewer than 32
+// bytes, warnMissingSessionSecret emits a slog WARN. It covers explicit OIDC and
+// the no-warn modes; a none-mode config carrying OIDC fields never reaches this
+// warning (it is rejected at config load now that implicit promotion is gone), so
+// here it does NOT warn. The app still starts in every case (warn-only).
 // Not parallel: it mutates the process-global default logger.
 func TestSessionSecretWarning(t *testing.T) {
 	prev := slog.Default()
@@ -525,9 +526,21 @@ func TestSessionSecretWarning(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "explicit OIDC with secret does not warn",
-			cfg:  config.Config{AuthMode: config.AuthModeOIDC, OIDCIssuerURL: "https://issuer.example", SessionSecret: "stable"},
+			name: "explicit OIDC with valid 32-byte base64 secret does not warn",
+			// `openssl rand -base64 32` shape: 44 base64 chars decoding to 32 bytes.
+			cfg:  config.Config{AuthMode: config.AuthModeOIDC, OIDCIssuerURL: "https://issuer.example", SessionSecret: "c2/JFTJsq+1q9p5q5RZ1Wq3W4r5t6y7u8i9o0p1a2s4="},
 			want: false,
+		},
+		{
+			name: "explicit OIDC with short raw secret warns",
+			cfg:  config.Config{AuthMode: config.AuthModeOIDC, OIDCIssuerURL: "https://issuer.example", SessionSecret: "password"},
+			want: true,
+		},
+		{
+			name: "explicit OIDC with short base64 secret warns",
+			// "c2hvcnQ=" decodes to "short" (5 bytes) < 32.
+			cfg:  config.Config{AuthMode: config.AuthModeOIDC, OIDCIssuerURL: "https://issuer.example", SessionSecret: "c2hvcnQ="},
+			want: true,
 		},
 		{
 			name: "none without OIDC config does not warn",
@@ -544,6 +557,39 @@ func TestSessionSecretWarning(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := warned(t, tc.cfg); got != tc.want {
 				t.Fatalf("warned=%v want=%v for cfg=%#v", got, tc.want, tc.cfg)
+			}
+		})
+	}
+}
+
+// TestDecodedSecretLen pins the decode ladder behind the short-secret warning:
+// base64 (std/raw, padded/unpadded) is tried first, then hex, and a string that
+// is neither falls back to its raw UTF-8 byte length. Note the ladder is
+// base64-FIRST by design, so many plain ASCII strings (e.g. "password") happen
+// to be valid base64 and are measured as their decoded length, not their char
+// count. This is a length measurement only -- it makes no entropy claim. What
+// matters for the warning is that short secrets land well under 32 bytes either
+// way; the raw fallback covers strings outside both alphabets.
+func TestDecodedSecretLen(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		secret string
+		want   int
+	}{
+		{name: "empty", secret: "", want: 0},
+		// Contains '-' and '!' -> not valid base64/hex -> raw byte length.
+		{name: "raw passphrase with non-alphabet chars", secret: "hunter2-pw!", want: 11},
+		{name: "base64 std 32 bytes", secret: "c2/JFTJsq+1q9p5q5RZ1Wq3W4r5t6y7u8i9o0p1a2s4=", want: 32},
+		{name: "base64 short", secret: "c2hvcnQ=", want: 5}, // "short"
+		// "password" is valid base64 and decodes to 6 bytes (<32, still warns).
+		{name: "ascii that is valid base64", secret: "password", want: 6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := decodedSecretLen(tc.secret); got != tc.want {
+				t.Fatalf("decodedSecretLen(%q)=%d want %d", tc.secret, got, tc.want)
 			}
 		})
 	}
