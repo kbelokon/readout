@@ -36,6 +36,40 @@ service:
   labels: {}
   annotations: {}
 
+# Metrics listener. When enabled, the chart renders config.metricsPort =
+# metrics.port, which makes the app start a SEPARATE metrics listener and move
+# /metrics off the main port. It also adds a dedicated container port and a
+# `<fullname>-metrics` Service, plus an optional ServiceMonitor.
+# READOUT_* env does not override metricsPort, so this rendered file value is
+# the single source of truth for the metrics port.
+metrics:
+  enabled: false
+  # Container/listener port the app binds metrics on. Rendered into the app
+  # config as metricsPort. Setting config.metricsPort directly to a DIFFERENT
+  # value (or while metrics is disabled) is a template error.
+  port: 9090
+  # The metrics Service. targetPort always tracks the `metrics` container port.
+  service:
+    port: 9090
+    # Extra labels/annotations for the metrics Service only (merged over
+    # commonLabels / commonAnnotations).
+    annotations: {}
+    labels: {}
+  # ServiceMonitor (monitoring.coreos.com/v1) for Prometheus Operator. Off by
+  # default: it requires the third-party CRD. The ServiceMonitor selects the
+  # metrics Service by the stable app.kubernetes.io/name + /instance labels plus
+  # any metrics.service.labels, and scrapes the named `metrics` endpoint port --
+  # so labels added under metrics.service.labels also become selector keys.
+  serviceMonitor:
+    enabled: false
+    # Extra labels on the ServiceMonitor object itself (e.g. a `release` label
+    # so a Prometheus Operator instance picks it up).
+    labels: {}
+    # Scrape interval and timeout. Empty string omits the field, letting the
+    # operator/Prometheus default apply.
+    interval: 30s
+    scrapeTimeout: ""
+
 # Expose readout through a Kubernetes Ingress (networking.k8s.io/v1). The
 # backend always targets this chart's Service on service.port above.
 ingress:

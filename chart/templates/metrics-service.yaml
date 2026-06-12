@@ -1,0 +1,23 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "readout.fullname" . }}-metrics
+  labels:
+    {{- include "readout.labels" . | nindent 4 }}
+    {{- with .Values.metrics.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- $ann := include "readout.annotations" (dict "context" . "local" .Values.metrics.service.annotations) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    {{- include "readout.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.service.port }}
+      targetPort: metrics
+{{- end }}

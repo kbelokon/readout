@@ -22,7 +22,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/config: {{ toYaml .Values.config | sha256sum }}
+        checksum/config: {{ include "readout.config" . | sha256sum }}
         {{- $podAnn := include "readout.annotations" (dict "context" . "local" .Values.podAnnotations) }}
         {{- with $podAnn }}
         {{- . | nindent 8 }}
@@ -56,6 +56,10 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.config.port | default 8080 }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz

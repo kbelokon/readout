@@ -62,6 +62,27 @@ set. Returns an empty string when nothing is set.
 {{- end -}}
 {{- end -}}
 
+{{/*
+Effective app config as YAML. metrics.enabled renders config.metricsPort from
+metrics.port; a hand-set config.metricsPort must agree (equal value) or the
+chart fails, and setting it while metrics is disabled fails too. This is the
+single render path -- the ConfigMap serializes this and the Deployment hashes
+it for checksum/config, so changing metrics.port rolls pods.
+*/}}
+{{- define "readout.config" -}}
+{{- $cfg := deepCopy .Values.config -}}
+{{- $given := .Values.config.metricsPort | default 0 -}}
+{{- if .Values.metrics.enabled -}}
+  {{- if and (ne (int $given) 0) (ne (int $given) (int .Values.metrics.port)) -}}
+    {{- fail (printf "config.metricsPort (%v) conflicts with metrics.port (%v): unset config.metricsPort or make them equal" $given .Values.metrics.port) -}}
+  {{- end -}}
+  {{- $_ := set $cfg "metricsPort" .Values.metrics.port -}}
+{{- else if ne (int $given) 0 -}}
+  {{- fail (printf "config.metricsPort (%v) is set but metrics.enabled is false: the app would move /metrics off the main port with no metrics Service. Set metrics.enabled=true (and metrics.port) instead" $given) -}}
+{{- end -}}
+{{- toYaml $cfg -}}
+{{- end -}}
+
 {{/* ServiceAccount name: fullname when created, else the provided name or "default". */}}
 {{- define "readout.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}

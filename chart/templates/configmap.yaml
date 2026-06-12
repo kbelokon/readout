@@ -11,4 +11,4 @@ metadata:
   {{- end }}
 data:
   readout.yaml: |
-    {{- toYaml .Values.config | nindent 4 }}
+    {{- include "readout.config" . | nindent 4 }}
