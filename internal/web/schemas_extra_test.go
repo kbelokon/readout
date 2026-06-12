@@ -189,7 +189,7 @@ func TestServiceCells(t *testing.T) {
 // TestServiceCellsPendingAndExternalNameRender drives the LB/ExternalName
 // corner rows through the FULL pipeline (decorate -> buildListView -> templ)
 // and asserts the DOM: the <pending> LB renders the amber PULSING dot + the
-// word "pending" (law §1.3: an in-flight state), the ExternalName target
+// word "pending" (an in-flight state animates), the ExternalName target
 // renders verbatim in the External-IP column, and a portless service shows
 // the muted "—".
 func TestServiceCellsPendingAndExternalNameRender(t *testing.T) {

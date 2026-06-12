@@ -246,7 +246,7 @@ export function effectivePollSeconds(): number {
     return policyEffectivePollSeconds(refreshMode(), refreshInterval(), liveFallbackSeconds());
 }
 
-// refreshDelaySeconds is the wait until the NEXT tick: the §8.3 backoff over
+// refreshDelaySeconds is the wait until the NEXT tick: the backoff over
 // the effective cadence and the failure stage (live-policy.ts).
 function refreshDelaySeconds(): number {
     return policyRefreshDelaySeconds(effectivePollSeconds(), refreshFailureStage);

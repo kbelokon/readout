@@ -276,7 +276,7 @@ test.describe('windowing (desktop)', () => {
     await expect(podRow(page, 1).locator('td').nth(2)).toContainText('CrashLoopBackOff');
 
     // ... and a change adopted while its row IS rendered flashes the changed
-    // cell (the §8.3 net: windowed rows bypass idiomorph, the virtualizer
+    // cell (the net: windowed rows bypass idiomorph, the virtualizer
     // diffs them itself).
     await scriptEvents([
       {
@@ -336,7 +336,7 @@ test.describe('windowing (desktop)', () => {
     // big-pod-0001 is Running. Both sit inside the initial window.
     await expect(podRow(page, 7)).toBeVisible();
 
-    // Law §1.3: a transient status (Pending) animates its dot -- the
+    // The pulse law: a transient status (Pending) animates its dot -- the
     // ro-dot-pulse keyframes resolve on the COMPUTED style, not a class proxy
     // (the refresh.spec.ts livedot pattern).
     await expect(podRow(page, 7).locator('.cell-status .ro-dot')).toHaveCSS(

@@ -173,7 +173,7 @@ func TestRestartsCellThousandsSeparator(t *testing.T) {
 
 // TestPendingCellStates pins the pending-cell recipe through the constructor + the real
 // render: an empty address -> the faint <none>; the literal <pending> -> an
-// amber PULSING dot + the word "pending" (an in-flight state, law §1.3); a
+// amber PULSING dot + the word "pending" (an in-flight state animates); a
 // real address -> plain text with no dot.
 func TestPendingCellStates(t *testing.T) {
 	if cv := pendingCellView("<pending>"); cv.Value != "pending" || cv.Tone != "warn" || !cv.Pulse {

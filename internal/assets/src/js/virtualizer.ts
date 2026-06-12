@@ -398,7 +398,7 @@ export function virtualizeAfterSwap(): void {
     virtFlashChangedCells(prior);
 }
 
-// virtFlashChangedCells keeps the §8.3 changed-cell flash honest while windowed:
+// virtFlashChangedCells keeps the changed-cell flash honest while windowed:
 // rows bypass idiomorph (its cell-flash callbacks never fire), so the rendered
 // window is diffed here against the prior row set by identity. Disabled under
 // prefers-reduced-motion exactly like the idiomorph hooks.

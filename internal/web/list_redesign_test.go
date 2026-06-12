@@ -238,8 +238,8 @@ func podsCellView(t *testing.T, columns []string, cells []any, colIdx int) cellV
 	return app.buildCellView(req, table, row, colIdx, cells[colIdx], "default", cellString(row, 0))
 }
 
-// TestGenericCellTruncationFollowsIdentifierRule pins Principles §3 ("identifiers
-// are sacred — never truncate them"): in a generic list, secondary free-text
+// TestGenericCellTruncationFollowsIdentifierRule pins the rule that identifiers
+// are sacred — never truncate them: in a generic list, secondary free-text
 // columns (selectors, node selectors, images, labels, messages) truncate with a
 // `title=` tooltip, while identifiers (IPs, container names) and numeric counts
 // stay FULL — the table wrapper scrolls horizontally under the pinned name column

@@ -151,7 +151,7 @@ func statusTone(bulmaClass string) string {
 // transientStatus reports whether a status value is an in-flight state that
 // should animate (the dot gets .pulse): ContainerCreating, Pending,
 // Terminating, PodInitializing, and Init:* progress without an error. Per the
-// design rulebook (law §1.3) ONLY this transient set pulses -- steady states
+// design rulebook ONLY this transient set pulses -- steady states
 // never animate, and errors NEVER pulse (the Init error/backoff states are
 // excluded here and tone err via kube.StatusTone).
 func transientStatus(value string) bool {

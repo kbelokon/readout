@@ -59,7 +59,7 @@ func TestShellTopbarChrome(t *testing.T) {
 	// The livedot's live state has exactly ONE owner: `refresh-on` on
 	// #refresh-dropdown (SSR refreshDropdownClass + JS syncRefreshUI). The old
 	// static `refresh-live` class painted the dot brand-green even at Off -- a
-	// false live-health signal (colour law §1.1, the ctx-dot.none precedent) --
+	// false live-health signal (the colour law: green only for live signals; the ctx-dot.none precedent) --
 	// so it must never come back.
 	p.wantAbsent(".refresh-live")
 	p.wantHas("#refresh-label")
@@ -400,7 +400,7 @@ func TestPaletteFeedServerSideTruncation(t *testing.T) {
 		t.Fatalf("fixture name %q should exceed the truncation budget", long)
 	}
 
-	// paletteDisplayName is the single truncation seat: long -> the §4.2 form,
+	// paletteDisplayName is the single truncation seat: long -> the head/hash-tail truncated form,
 	// short / exactly-at-budget -> "" (the omitempty field stays off the wire).
 	if got := paletteDisplayName(long); got != wantDisplay {
 		t.Fatalf("paletteDisplayName(long) = %q, want %q", got, wantDisplay)

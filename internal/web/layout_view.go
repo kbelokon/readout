@@ -530,7 +530,7 @@ func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, cl
 
 // sidebarCountTargets collects the sidebar entries that receive a count: every
 // group entry with a resolved resource type, plus the namespace-scope Events
-// meta entry (the §6.2 prototype shows a count on Events but not on Resource
+// meta entry (the prototype shows a count on Events but not on Resource
 // Types, which is not a kind). Namespaced kinds count within the in-scope
 // namespace; cluster-scoped kinds count cluster-wide.
 func (s *Server) sidebarCountTargets(r *http.Request, client *kube.Client, namespace string, v *sidebarView) []countTarget {

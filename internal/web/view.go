@@ -98,7 +98,7 @@ const (
 // listStateView is the resolved whole-list failure state shown in place of the
 // tables when a single-cluster list wholly failed. Forbidden names the
 // verb/resource/namespace + 403; unreachable shows the REAL transport error
-// string (never a cute message, Principles §11) + a read-only retry GET + a
+// string (never a cute message) + a read-only retry GET + a
 // "Back to clusters" escape.
 type listStateView struct {
 	Kind      listStateKind
@@ -558,7 +558,7 @@ type containersSectionView struct {
 // PodMetrics containers[] join when live ("" renders the faint "—"). The
 // StateTone is kube.StatusTone(State), the single value->tone owner, the
 // waiting/terminated reason IS the state word); StatePulse marks the transient
-// set (law §1.3).
+// set (only in-flight states animate).
 type containerRowView struct {
 	Name string
 	Init bool

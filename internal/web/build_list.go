@@ -1646,7 +1646,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		// cls is kube.CellClass's encoding of kube.StatusTone (the single
 		// value->tone owner), so the dot tone always exists (fallback mute).
 		cv.Tone = statusTone(cls)
-		// Pulse the transient set for ANY kind's status cell (law §1.3) -- the set
+		// Pulse the transient set for ANY kind's status cell (only in-flight states animate) -- the set
 		// itself gates (steady and err states never pulse), so a Terminating
 		// namespace pulses exactly like a Terminating pod.
 		cv.Pulse = transientStatus(value)
@@ -1838,8 +1838,7 @@ func msgCellView(value string) cellView {
 
 // secondaryTextColumns are the recognized k8s Table columns whose value is long
 // free-text rather than an identifier -- they truncate with a `title=` tooltip
-// (Principles §3: "secondary free-text — truncate WITH a tooltip", e.g. images,
-// labels, selectors, node selectors, messages). The design keeps an ALLOW-LIST
+// (e.g. images, labels, selectors, node selectors, messages). The design keeps an ALLOW-LIST
 // here, not the inverse, because identifiers are sacred: an unlisted column stays
 // FULL and the table wrapper scrolls horizontally under the pinned name column
 // (the design's escape valve), which is always safe -- whereas truncating by

@@ -88,7 +88,7 @@
     /* Bottom-center bulk-selection pill -- lifted from the v2 prototype
        data.css (.ro-bulkbar). Closed = faded out via the is-open transition
        (the markup also goes `inert`, so the invisible controls drop out of
-       focus order and the a11y tree); the count is the accent voice (§6.4). */
+       focus order and the a11y tree); the count is the accent voice. */
     .ro-bulkbar { position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 8px);
         z-index: 80; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 16px;
         background: var(--surface); border: 1px solid var(--border-strong); border-radius: 11px;

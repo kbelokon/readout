@@ -405,7 +405,7 @@ templ detailBody(d DetailData) {
 // .ro-table between the owner line and the YAML cards. Init containers lead,
 // each badged with the mute `init` kind-badge; the State cell is the
 // .cell-status/.ro-dot pair toned by kube.StatusTone with the transient
-// pulse (law §1.3); Ready speaks the prototype's ready/not-ready grammar
+// pulse (only in-flight states animate); Ready speaks the prototype's ready/not-ready grammar
 // (init rows keep the faint "—"); Restarts reuses the list's
 // .restarts.zero|some + faint "(… ago)" suffix; CPU/Memory show real
 // PodMetrics values or the faint "—" (never zeros for a dead join); Image is

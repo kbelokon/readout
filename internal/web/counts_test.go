@@ -259,7 +259,7 @@ func TestSidebarCountsSlowFetchDoesNotStallRender(t *testing.T) {
 	p.wantAbsent(".ro-sidebar .menu-count")
 }
 
-// TestSidebarSecretsJoinPodManagement pins the §6.2 composition delta: with
+// TestSidebarSecretsJoinPodManagement pins the sidebar composition delta: with
 // IncludeSecrets the Secrets entry renders INSIDE Pod Management (after
 // ConfigMaps, matching the prototype order), the label set stays exactly the
 // three groups + ONE Meta (the hardcoded Meta section is not duplicated), and

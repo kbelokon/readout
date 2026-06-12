@@ -243,7 +243,7 @@ test('the livedot pulses brand while an interval is active and is static ghost a
   expect(ghost).not.toBe(brand); // the colour assertions below must be able to tell them apart
 
   // Off (the default): a static GHOST dot -- no pulse AND no brand green
-  // (colour law §1.1: green means live health; a green dot at Off is a false
+  // (the colour law: green means live health; a green dot at Off is a false
   // signal -- the prototype defaults the dot to --text-ghost, chrome.css:110).
   await expect(dot).toHaveCSS('animation-name', 'none');
   await expect(dot).toHaveCSS('background-color', ghost);
