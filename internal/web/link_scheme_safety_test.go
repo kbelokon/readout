@@ -13,11 +13,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// link_scheme_safety_test.go pins Unit 10's link-scheme hardening: the
-// config/hook-influenced detail link renders through templ.URL (so a
-// javascript:/data: scheme collapses to about:invalid), the hand-built YAML
-// timestamp <a href> is scheme-validated, and hook-returned links with a
-// disallowed scheme are dropped.
+// These tests pin the link-scheme hardening: the config/hook-influenced detail
+// link renders through templ.URL (so a javascript:/data: scheme collapses to
+// about:invalid), the hand-built YAML timestamp <a href> is scheme-validated,
+// and hook-returned links with a disallowed scheme are dropped.
 
 // renderDetailLinkHref renders ResourceView with a single config/hook detail
 // link carrying href and returns the rendered HTML.

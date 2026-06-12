@@ -323,11 +323,11 @@ func TestServerErrorCorrelationID(t *testing.T) {
 	}
 }
 
-// TestAuthorizedViewerClusterErrorStaysVerbatim is the regression guard for the
-// deliberate v2 verbatim-error law: the auth-edge sanitization (Unit 14) must
-// NOT bleed into the AUTHORIZED-viewer cluster-error display. A real cluster API
-// host and the verbatim transport string still ride the mono errdetail block on
-// both list (buildListState) and detail (detailState) failure paths.
+// TestAuthorizedViewerClusterErrorStaysVerbatim guards the deliberate split: the
+// auth-edge error sanitization must NOT bleed into the authorized-viewer
+// cluster-error display. An authorized viewer is shown the real cluster API host
+// and the verbatim transport string in the mono errdetail block on both list
+// (buildListState) and detail (detailState) failure paths.
 func TestAuthorizedViewerClusterErrorStaysVerbatim(t *testing.T) {
 	const apiHost = "https://kube-apiserver.internal.example:6443"
 	raw := fmt.Errorf("Get %q/api/v1/namespaces/default/pods: dial tcp 10.0.0.1:6443: connect: connection refused", apiHost)
