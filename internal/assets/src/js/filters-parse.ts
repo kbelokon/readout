@@ -1,5 +1,5 @@
 // filters-parse.ts -- the PURE expression parsing + suggestion matching of the
-// v2 filter chips editor (D7), extracted from legacy.js so the operator split,
+// v2 filter chips editor, extracted from legacy.js so the operator split,
 // the field-name normalization, the autocomplete ranking, and the value-
 // frequency scan are node-tested in isolation. No DOM: every function takes a
 // plain string or a plain row-model object, so a regression in the grammar (the
@@ -217,7 +217,7 @@ export function liveNameMatchKeys(rows: ModelRow[], draft: string): Set<string> 
 }
 
 // mergeColParams MERGES a popover form's owned fields into the live query
-// instead of replacing it wholesale (the D8 labelcols/selector apply). Every
+// instead of replacing it wholesale (the column-popover labelcols/selector apply). Every
 // existing query pair whose key the form does NOT own survives BYTE-EXACT --
 // above all the `?f=` chips, whose raw OR-commas are wire-significant (filter.go
 // splits alternatives on raw commas BEFORE percent-decoding, so a re-encoded

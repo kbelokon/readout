@@ -1,4 +1,4 @@
-// skeleton.ts -- the loading skeleton (D16 / SPEC §7.19), migrated from
+// skeleton.ts -- the loading skeleton, migrated from
 // legacy.js. Shown ONLY into an EMPTY swap target. Every full page is
 // server-rendered with rows already in place, and the morph refresh keeps the
 // last-good rows, so the only valid skeleton moment is a partial request

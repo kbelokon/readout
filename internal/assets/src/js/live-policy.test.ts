@@ -1,5 +1,5 @@
 // live-policy.test.ts -- node:test for the PURE refresh + Live decision core
-// (live-policy.ts). The cadence math, the §8.3 backoff, the D19 stream-close
+// (live-policy.ts). The cadence math, the failure backoff, the Live stream-close
 // taxonomy, and the morph-time discard gate are the load-bearing protocol
 // decisions the e2e suite (live.spec.ts, refresh.spec.ts) exercises through the
 // DOM; pinning every branch here (no DOM, no fetch) catches a regression at the
@@ -42,7 +42,7 @@ test('Live degraded to polling uses the 5s fallback cadence', () => {
     assert.equal(effectivePollSeconds('Live', 0, 5), 5);
 });
 
-// --- refreshDelaySeconds (SPEC §8.3 backoff) --------------------------------
+// --- refreshDelaySeconds (failure backoff) ----------------------------------
 
 test('a non-positive cadence arms no timer', () => {
     assert.equal(refreshDelaySeconds(0, 0), 0);
@@ -75,7 +75,7 @@ test('nextFailureStage escalates 0->1->2->3 and clamps at 3', () => {
     assert.equal(nextFailureStage(3), 3); // terminal stage stays
 });
 
-// --- classifyStreamClose (D19 taxonomy, discriminated union) ----------------
+// --- classifyStreamClose (close-reason taxonomy, discriminated union) -------
 
 function close(cause: StreamCloseFacts['cause'], superseded = false): StreamCloseFacts {
     return { superseded, cause };
@@ -144,7 +144,7 @@ test('the close verdict is always a fallback or an ignore (the union is total)',
     }
 });
 
-// --- shouldDiscardPush (D19 morph-time gate) --------------------------------
+// --- shouldDiscardPush (morph-time gate) ------------------------------------
 
 function push(over: Partial<PushDiscardFacts> = {}): PushDiscardFacts {
     return {

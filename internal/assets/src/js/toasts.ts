@@ -1,5 +1,5 @@
-// toasts.ts -- transient toast notifications (Unit 9 leaf migration; D24 /
-// SPEC §8.8): bottom-right, 3.5s, mono caption voice. A toast exists ONLY for
+// toasts.ts -- transient toast notifications (leaf migration):
+// bottom-right, 3.5s, mono caption voice. A toast exists ONLY for
 // an async result detached from its trigger -- exactly two sanctioned triggers:
 // the bulk download refused over the selection cap and "refresh resumed" after
 // a failed-then-recovered auto-refresh (the polling layer calls window.roToast).

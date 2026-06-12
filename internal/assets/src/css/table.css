@@ -10,7 +10,7 @@
        as the per-row stripes) + a label + a mono count; the right side is the
        visible-row total. The dot rule itself lives in @layer theme (shared with the
        Status cell); this rule only owns the band's layout and the mono numerals. */
-    /* Single contract (Unit 17): the former `.ro-rd .ro-phase-strip/-tally/-chip/
+    /* Single contract: the former `.ro-rd .ro-phase-strip/-tally/-chip/
        -count` overrides are folded into these bare rules -- the phase strip is only
        emitted inside a `.ro-rd` content root (resource_table / search), so the
        de-scoped rules paint the same pixels the scoped overrides did. Properties the
@@ -72,7 +72,7 @@
        group/version/scope cells + the CRD badge. App wins by layer order.
        --------------------------------------------------------------------------- */
 
-    /* (Unit 17) the dead `h1.title .ro-count` rule was removed: every `.ro-count`
+    /* the dead `h1.title .ro-count` rule was removed: every `.ro-count`
        in markup is a SIBLING of the title (`.ro-title-row > h1 + .ro-count` on
        Clusters / Resource Types / list tables, `.search-cluster > .ro-count` on
        search), never a DESCENDANT of an `h1.title`, so the descendant rule matched
@@ -80,8 +80,8 @@
        (shell.css) and `.search-cluster .ro-count` (search.css). */
 
     /* =====================================================================
-       Redesign chrome dissolved here from the former redesign.css module
-       (Unit 16 phase 2). Rules are VERBATIM; redesign rules win over the
+       Redesign chrome dissolved here from the former redesign.css module.
+       Rules are VERBATIM; redesign rules win over the
        bare twins above by specificity (.ro-rd-scoped / element-qualified),
        so concatenation order is not load-bearing for them.
        ===================================================================== */
@@ -114,7 +114,7 @@
     .ro-table tbody tr { transition: background .08s ease; }
     .ro-table tbody tr:hover { background: var(--row-hover); }
     .ro-table tbody tr.is-selected { background: var(--row-sel); }
-    /* j/k keyboard row focus (Unit 18 / D10) -- prototype data.css order:
+    /* j/k keyboard row focus -- declaration order matters:
        kfocus is declared AFTER is-selected so a focused+selected row reads as
        the focused one (hover tint + the accent bar on the sticky cell). */
     .ro-table tbody tr.kfocus { background: var(--row-hover); }
@@ -170,7 +170,7 @@
     td.cell-node a { color: var(--text-muted); }
     td.cell-node a:hover { color: var(--accent); }
     .ro-table td.faint { color: var(--text-faint); }
-    /* (Unit 16) `.faint` utility for the empty-placeholder em-dash. Migrated
+    /* `.faint` utility for the empty-placeholder em-dash. Migrated
        content emits a bare `<span class="faint">—</span>` for empty node
        roles/conditions + namespace label chips + the Search "no namespace" cell;
        only `.ro-table td.faint` existed, so a bare span read at full text colour.
@@ -229,12 +229,12 @@
     .ro-foundline { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
 
     /* chips (labels) -- redesign, canonical names under the .ro-rd content
-       marker. NEUTRAL by design (D3 colour law: green is earned -- action /
+       marker. NEUTRAL by design (green is earned -- action /
        live health / freshness / link -- and labels are data): the key (.ck)
        reads faint, the ghost separator (.cs) fainter, the value (.cv) firm at
        weight 550 -- ink weight differentiates, never hue. The legacy green
        `.app` chip accent is retired; no chip rule may tint by label key. */
-    /* Single contract (Unit 17): the chip skin is de-scoped from `.ro-rd` to bare
+    /* Single contract: the chip skin is de-scoped from `.ro-rd` to bare
        here -- `.ro-chip`/`.ro-chips` are only emitted inside a `.ro-rd` content root
        (cluster / clusters / resource_table / resource_view), so the de-scoped rules
        paint the same pixels. The chip LAYOUT props the skin does not restate
@@ -253,13 +253,13 @@
     .ro-chip .cs { color: var(--text-ghost); }
     .ro-chip .cv { color: var(--chip-val); font-weight: 550; }
     /* a LINK chip (detail-page selector filter) earns the green hover -- a
-       navigable identifier is one of the four sanctioned greens (D3: link). */
+       navigable identifier is one of the four sanctioned greens (links). */
     a.ro-chip:hover { border-color: var(--border-strong); }
     a.ro-chip:hover .cv { color: var(--accent-text); }
     .ro-chip.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
     .ro-chip.anno { max-width: 320px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 
-    /* long annotations (SPEC §7.15): a >120-char value renders as a collapsed
+    /* long annotations: a >120-char value renders as a collapsed
        `key · size` toggle chip; the payload expands into a scrollable <pre>
        capped at 300px (the only place a long annotation value renders whole).
        readout.js flips [hidden] on the .anno-pre + .open on the toggle. */
@@ -281,12 +281,12 @@
     .ro-table-wrap .ro-chips { max-width: 34rem; }
     .ro-table-wrap .ro-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 
-    /* in-cell +N overflow (SPEC §4.9 label/selector chips, §4.10 data keys):
+    /* in-cell +N overflow (label/selector chips, data keys):
        chips past the threshold carry `.xtra` and stay hidden until the strip
        gains `.expanded` (toggled by the delegated readout.js click on the
        `.ro-chip.more[data-more]` button -- no inline handlers under the CSP).
        The button face swaps `+N` <-> "less" purely in CSS via .more-n/.more-less.
-       UNIT-24 HOOK: `.expanded` is set ONLY by the user toggle, so a parent
+       VIRTUALIZATION HOOK: `.expanded` is set ONLY by the user toggle, so a parent
        scope can disable in-cell expansion under virtualization by hiding the
        button (e.g. `.ro-rd .ro-windowed .ro-chip.more { display: none; }`) --
        no JS change needed. */
@@ -298,17 +298,17 @@
     .ro-chips.expanded .more-n { display: none; }
     .ro-chips.expanded .more-less { display: inline; }
 
-    /* ------------------------------------------------ VIRTUALIZATION (Unit 24 / D20)
+    /* ------------------------------------------------ VIRTUALIZATION
        Above ~500 rows the server marks the wrap `.ro-windowed` (it replaces
        `has-cards`; resource_table.templ owns the threshold) and readout.js
        windows the tbody: only the viewport's rows render, framed by two
        `.ro-vspacer` rows whose heights stand in for the off-window rows.
 
-       The fixed-height row law (recorded SPEC deviation): while windowed the
+       The fixed-height row law (a deliberate constraint while windowed): the
        events msg clamps to ONE line (full text in its title) and chip strips
        never wrap -- variable-height rows would break the spacer offset math
        exactly where virtualization first engages. Below the threshold the
-       full SPEC behavior (msg wrap + in-cell expand) is untouched. */
+       full wrap + in-cell expand behavior is untouched. */
 
     /* spacer rows: pure height carriers -- no padding/border (their height is
        set exactly by JS), no hover tint, and ABOVE ALL no sticky/background
@@ -339,7 +339,7 @@
     .ro-rd .ro-chip.more.more-static:hover { color: var(--text-faint); border-color: var(--border); }
 
     /* events Age second layer ("(first 41h ago)"): faint 11px next to the
-       bucket-coloured leading token (SPEC §4 evage). */
+       bucket-coloured leading age token. */
     .ro-rd .evage-rest { font-size: 11px; }
 
 
@@ -370,7 +370,7 @@
     .ro-pcard .pc-meta .ro-event-msg { white-space: normal; min-width: 0; color: var(--text-muted); }
 
 
-    /* ================================================================ LIST-SPECIFIC CELLS (redesign) */
+    /* ================================================================ LIST-ONLY CELLS (redesign) */
     /* roles (nodes) -- redesign, canonical name under the .ro-rd content marker */
     .ro-rd .ro-role-chip { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
         background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted); }

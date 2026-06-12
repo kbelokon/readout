@@ -31,7 +31,7 @@
     a { color: var(--id-color); text-decoration: none; }
 
     /* DATA -> mono. Code/pre/highlight (YAML + resource blocks), kind/label tags,
-       and table cells (identifiers + numerics + ages). (Unit 17: the breadcrumb
+       and table cells (identifiers + numerics + ages). (The breadcrumb
        mono now rides the single `.ro-rd .ro-breadcrumb` contract in shell.css; the
        `nav.breadcrumb` legacy hook was removed here with the legacy rules below.) */
     code,
@@ -42,7 +42,7 @@
     table.table th,
     table.table td { font-family: var(--font-mono); }
 
-    /* (Unit 17) the legacy `nav.breadcrumb.ro-breadcrumb` rules were removed: the
+    /* the legacy `nav.breadcrumb.ro-breadcrumb` rules were removed: the
        breadcrumb is now a SINGLE `.ro-rd .ro-breadcrumb` contract (shell.css) that
        carries the exact values these rules were painting. */
 

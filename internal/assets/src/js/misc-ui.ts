@@ -1,4 +1,4 @@
-// misc-ui.ts -- the remaining leaf UI features (Unit 9 migration): per-section
+// misc-ui.ts -- the remaining leaf UI features (migrated from legacy.js): per-section
 // YAML copy, section collapse + its on-load hash restore, the mobile sidebar
 // hamburger, and the namespace dropdown (toggle / select / search-filter /
 // enter-select). Each is LEAF per the listener inventory -- no inter-listener
@@ -132,7 +132,7 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // Namespace switch (D9): picking a namespace in the topbar dropdown records it
+    // Namespace switch: picking a namespace in the topbar dropdown records it
     // as this cluster's last-used namespace in the ro_prefs cookie (server-read
     // only, for cluster-entry hrefs -- never a redirect). The click is
     // deliberately NOT prevented; the boosted navigation proceeds. The cookie
@@ -216,7 +216,7 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // In-cell +N overflow (SPEC §4.9/§4.10): the `.ro-chip.more[data-ro-more]` button
+    // In-cell +N overflow (label/selector chips and data keys): the `.ro-chip.more[data-ro-more]` button
     // toggles `.expanded` on its OWN `.ro-chips` strip, revealing the `.xtra` chips
     // in place (the button face flips +N <-> "less" in CSS). Delegated so it
     // survives every morph; aria-expanded mirrors the state. A refresh morph
@@ -237,7 +237,7 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // Long-annotation toggle (SPEC §7.15): a >120-char annotation renders as a
+    // Long-annotation toggle: a >120-char annotation renders as a
     // collapsed `key · size` button + a hidden scrollable <pre> payload. The
     // delegated click flips the [hidden] attribute on the sibling .anno-pre,
     // mirrors the state into aria-expanded, and rotates the chevron via the .open

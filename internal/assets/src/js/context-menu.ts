@@ -1,4 +1,4 @@
-// context-menu.ts -- the row right-click context menu (Unit 10, migrated from
+// context-menu.ts -- the row right-click context menu, migrated from
 // legacy.js). ONE server-rendered popover (#ro-ctxmenu); opening binds the
 // right-clicked row's server-resolved targets onto the items' data-href and
 // stashes the row name for Copy. Position is fixed + viewport-clamped.

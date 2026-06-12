@@ -1,5 +1,5 @@
-// row-selection.ts -- identity-keyed row state (D6) + the row-click selection
-// gesture (Unit 10, migrated from legacy.js). Single-type list rows carry
+// row-selection.ts -- identity-keyed row state + the row-click selection
+// gesture, migrated from legacy.js. Single-type list rows carry
 // data-key="cluster/ns/name" (and an id derived from it, which idiomorph uses to
 // match rows by OBJECT identity, never by position). Row-level client state
 // lives here, keyed by that identity:
@@ -36,7 +36,7 @@ export function reapplyRowState(): void {
             focusedRow = row;
         }
     });
-    // a11y (D23/SPEC §8.6): the table wrap mirrors the focused row's id as
+    // a11y: the table wrap mirrors the focused row's id as
     // aria-activedescendant. Synced HERE -- the single place row state lands in
     // the DOM -- so it survives every morph exactly like kfocus, and clears when
     // the focused row left the fragment.
@@ -233,7 +233,7 @@ export const rowSelectionBindings: Binding[] = [
         selector: '#resource-list-content tr[data-key]',
         handler: (event, matched) => {
             // Interactive descendants keep their own gesture (the NAME anchor
-            // opens, label chips filter, +N overflow expands; SPEC §5).
+            // opens, label chips filter, +N overflow expands).
             const target = event.target as Element | null;
             if (target?.closest('a, button, input, select, textarea, label')) {
                 return;

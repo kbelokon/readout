@@ -1,4 +1,4 @@
-// logs.ts -- the logs page leaf features (Unit 9 migration; D25 / SPEC §8.8):
+// logs.ts -- the logs page leaf features (migrated from legacy.js):
 // the Follow pin toggle, the timestamps/wrap display toggles, and the init pin.
 //
 // The .ro-logpre stream is its own scroll container (max-height + overflow in
@@ -45,7 +45,7 @@ export function initLogsFollow(): void {
 // --- dispatcher bindings ---------------------------------------------------
 
 export const logsBindings: Binding[] = [
-    // Logs Follow toggle (D25): the active accent "Following" sticks the stream
+    // Logs Follow toggle: the active accent "Following" sticks the stream
     // to its tail; clicking flips to the quiet "Follow" (and back). Re-activating
     // snaps the stream to the tail immediately. Pure class + label flips -- no
     // request, the read-only floor is untouched. Kept its monolith early-return
@@ -68,7 +68,7 @@ export const logsBindings: Binding[] = [
             return true;
         },
     },
-    // Logs display toggles (D25): CLIENT-SIDE only, no refetch. The timestamps
+    // Logs display toggles: CLIENT-SIDE only, no refetch. The timestamps
     // checkbox shows/hides the .log-ts spans via the stream's `hide-ts` class.
     // Both flips reflow the stream, so while Following is active the tail is
     // re-pinned afterwards. The monolith #logTs branch early-returned (stop:true).

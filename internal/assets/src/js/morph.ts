@@ -98,7 +98,7 @@ if (
 }
 
 // ---------------------------------------------------------------------------
-// ro-morph: the CSP-safe idiomorph swap of the v2 list loop (D6).
+// ro-morph: the CSP-safe idiomorph swap of the v2 list loop.
 // ---------------------------------------------------------------------------
 // The vendored idiomorph extension parses any non-trivial hx-swap config
 // ("morph:{…}") through Function() -- dynamic code evaluation that the strict
@@ -123,15 +123,15 @@ if (typeof htmx !== 'undefined' && typeof Idiomorph !== 'undefined') {
             if (swapStyle !== 'morph') {
                 return false; // not ours -> htmx falls through to its native swaps
             }
-            // Filters v2 (D7/D20): capture the FULL row model from the incoming
+            // Filters v2: capture the FULL row model from the incoming
             // SERVER fragment before the morph. The server always renders the
             // complete list (no pagination), so the fragment is the full dataset
-            // even when a client-side windowing layer (Unit 24) keeps only a
+            // even when a client-side windowing layer keeps only a
             // window of rows in the live DOM -- the free-text matcher and the
             // value-frequency autocomplete must never read the windowed DOM.
             if (target && target.id === 'resource-list-content') {
                 captureRowModel(fragment);
-                // Virtualization (Unit 24/D20), AFTER the model capture: a
+                // Virtualization, AFTER the model capture: a
                 // >threshold fragment's rows are detached for adoption so
                 // they never ride the morph (height-preserving spacers stand
                 // in); virtualizeAfterSwap re-windows once the morph lands.

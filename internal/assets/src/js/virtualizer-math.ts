@@ -1,11 +1,11 @@
 // virtualizer-math.ts -- the PURE windowing arithmetic of the >~500-row list
-// virtualizer (Unit 24 / D20), extracted from legacy.js so the offset/height/
+// virtualizer, extracted from legacy.js so the offset/height/
 // visible-range/spacer math is node-tested instead of trusted "by eye". No DOM,
 // no globals: every input is a plain number, every output a plain object, so
 // node:test can pin the window boundaries the e2e windowing spec only exercises
 // through 600 rendered rows.
 //
-// The fixed-row-height contract (D20: every windowed row has the SAME measured
+// The fixed-row-height contract (every windowed row has the SAME measured
 // pitch, guaranteed by the windowed clamp CSS + the server-side expansion
 // flattening) is what makes this arithmetic exact -- the offset from the tbody's
 // viewport-relative top to any row index is `index * rowH`, with no per-row

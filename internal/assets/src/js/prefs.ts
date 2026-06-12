@@ -1,4 +1,4 @@
-// prefs.ts -- the `ro_prefs` preference cookie codec (D9), THE pref write path
+// prefs.ts -- the `ro_prefs` preference cookie codec, THE pref write path
 // (the server only reads). Extracted from legacy.js as the first typed module.
 //
 // One compact cookie persists column visibility per plural, sort per plural,
@@ -47,7 +47,7 @@ export const PREFS_COOKIE_MAX_AGE = 31536000; // one year, in seconds
 
 // REFRESH_KEY is the LEGACY v1 localStorage home of the interval choice. It is
 // no longer written; refreshMode() reads it ONCE as a migration fallback into
-// the ro_prefs cookie (D9).
+// the ro_prefs cookie.
 export const REFRESH_KEY = 'roRefresh';
 
 // b64urlEncodeUTF8 / b64urlDecodeUTF8: base64url (URL-safe alphabet, no
@@ -168,7 +168,7 @@ export function encodePrefsValue(prefs: Prefs): string {
     }
     let value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
     while (value.length > PREFS_MAX_ENCODED && out.kinds && out.kinds.length > 0) {
-        out.kinds = out.kinds.slice(0, -1); // D9 eviction: drop the tail kind
+        out.kinds = out.kinds.slice(0, -1); // tail eviction: drop the least-recently-used kind
         if (out.kinds.length === 0) {
             delete out.kinds;
         }
@@ -236,7 +236,7 @@ export function roPrefsSetSort(plural: string, sort: string): void {
     writePrefs(prefs);
 }
 
-// roPrefsSetHiddenColumns is the COLUMN-VISIBILITY write surface: the D8
+// roPrefsSetHiddenColumns is the COLUMN-VISIBILITY write surface: the
 // columns popover commits through it (commitColumnVisibility). names is the
 // COMPLETE hidden-column list for the plural as the user sees it -- an EMPTY
 // array is an explicit "hide nothing" that the server distinguishes from "no
@@ -248,7 +248,7 @@ export function roPrefsSetHiddenColumns(plural: string, names: string[]): void {
 }
 
 // roPrefsSetRefresh persists the auto-refresh mode ('Off', seconds-as-string,
-// future 'Live') -- the interval picker writes through it; Unit 27's Live mode
+// future 'Live') -- the interval picker writes through it; Live mode
 // will too.
 export function roPrefsSetRefresh(mode: string): void {
     const prefs = readPrefs();

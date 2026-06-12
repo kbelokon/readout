@@ -1,4 +1,4 @@
-// live.ts -- Live mode (Unit 27 / D19, client half), migrated from legacy.js.
+// live.ts -- Live mode (client half), migrated from legacy.js.
 // 'Live' is the 6th refresh-dropdown mode: instead of polling, the client opens
 // the read-only `GET …/{plural}/_stream` SSE endpoint and morphs every pushed
 // `_table` fragment through the SAME ro-morph pipeline the polling ticks ride
@@ -89,7 +89,7 @@ export function liveFallbackSeconds(): number {
 
 // liveSupported: can THIS page stream? The v2 single-type container must be
 // present (data-live-url="location") and the server-rendered Live option must
-// not be disabled (the D19 scope cut). Server truth drives the client.
+// not be disabled (Live is unsupported on multi-type/multi-cluster pages). Server truth drives the client.
 function liveSupported(): boolean {
     const content = document.getElementById('resource-list-content') as HTMLElement | null;
     if (content?.dataset.liveUrl !== 'location') {
@@ -275,7 +275,7 @@ function liveHandleFrame(name: string, text: string, ctrl: AbortController): boo
     }
     pruneSettledListRequests(userListRequestsInFlight);
     pruneSettledListRequests(containerListRequestsInFlight);
-    // The morph-time discard gate (D19), as the ordered taxonomy of
+    // The morph-time discard gate, as the ordered taxonomy of
     // live-policy.ts (node-tested): stale generation -> wrong page -> a _table
     // request in flight. The WRONG-PAGE fact is computed here with its literal
     // form, `liveStreamBase() !== liveState.streamPath`: it is the independent
@@ -368,7 +368,7 @@ export function liveApply(force?: boolean): void {
     liveOpen(base);
 }
 
-// Visibility close/reopen (D19): hiding the tab closes a riding stream;
+// Visibility close/reopen: hiding the tab closes a riding stream;
 // returning reopens ONLY after such a hidden-close. A terminal/429/204 fallback
 // and user-selected polling never reopen here.
 document.addEventListener('visibilitychange', () => {

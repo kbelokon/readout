@@ -42,7 +42,7 @@ export type { ACItem, ModelField, ModelRow };
 // entry fields the row builder + the Go feed builder agree on.
 
 // paletteLinkFeed: a {name, href} jump target (a cluster or a namespace).
-// Display carries the SPEC §4.2 middle-truncated form only when the name
+// Display carries the middle-truncated form only when the name
 // overruns the 42-rune budget (server-side truncation, omitempty).
 export interface PaletteLinkFeed {
     name: string;
@@ -84,7 +84,7 @@ export interface PaletteFeedWire {
 }
 
 // ---------------------------------------------------------------------------
-// ro_prefs cookie payload (D9) -- internal/web/prefs.go (prefs / kindPrefs).
+// ro_prefs cookie payload -- internal/web/prefs.go (prefs / kindPrefs).
 // ---------------------------------------------------------------------------
 // The cookie is JS-written, server-read (the codec lives in prefs.ts, pinned
 // from both sides by the golden fixtures prefs.test.ts shares with the Go
@@ -113,7 +113,7 @@ export interface PrefsWire {
 }
 
 // ---------------------------------------------------------------------------
-// Live SSE frames (D19) -- internal/web/handlers_stream.go
+// Live SSE frames -- internal/web/handlers_stream.go
 // (streamTablePayload / streamTerminalPayload).
 // ---------------------------------------------------------------------------
 // The `GET …/{plural}/_stream` endpoint pushes `event: ro-table` and
@@ -138,7 +138,7 @@ export interface StreamTerminalPayloadWire {
 }
 
 // ---------------------------------------------------------------------------
-// Row model (D7/D20) + filter autocomplete -- CLIENT-side, see filters-parse.ts.
+// Row model + filter autocomplete -- CLIENT-side, see filters-parse.ts.
 // ---------------------------------------------------------------------------
 // The row model is captured from the FULL server fragment (never the windowed
 // DOM) in filters.ts; rows are identified by their `data-key` (the same identity

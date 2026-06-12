@@ -1,13 +1,13 @@
 // bindings.ts -- THE single ordered registration list for the delegated-event
 // dispatcher (events.ts). This is the one auditable place the registration
-// ORDER lives, per the Unit 9 dispatch contract: read this file top-to-bottom
+// ORDER lives, per the dispatch contract: read this file top-to-bottom
 // to know exactly which migrated binding sees an event first.
 //
 // The list is registered FIRST (at the very top of legacy.js's body, before the
 // monolith attaches its own remaining document listeners), so every migrated
 // leaf binding here runs ahead of the not-yet-migrated monolith listeners. That
 // is safe today because every entry is a LEAF feature with no inter-listener
-// dependency (per docs/forge/frontend-refactor/raw/listener-inventory.md); the
+// dependency (per the original listener inventory); the
 // risky clusters (palette / rows / columns) still live in legacy.js and join
 // this list in later units in the order the inventory pins.
 //
@@ -35,9 +35,9 @@ import { foldBindings } from './yaml-folds.js';
 // change listener; toasts is a pure function), so they do not appear in this
 // list -- they are wired through the runInit step / direct calls in legacy.js.
 //
-// REGISTRATION ORDER (read top-to-bottom). The Unit-10 cluster reproduces the
-// monolith's inter-listener decoupling (docs/forge/frontend-refactor/raw/
-// listener-inventory.md, durable projection tests/e2e/compound-gestures.spec.ts):
+// REGISTRATION ORDER (read top-to-bottom). The row/palette/columns cluster
+// reproduces the monolith's inter-listener decoupling (the original listener
+// inventory, with a durable projection in tests/e2e/compound-gestures.spec.ts):
 //
 //   - context-menu FIRST: its UNCONDITIONAL dismiss (C2 step 2) runs before any
 //     stop:true leaf below, so clicking ANYWHERE (incl. a stop:true namespace

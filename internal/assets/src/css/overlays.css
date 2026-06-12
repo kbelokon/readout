@@ -5,11 +5,11 @@
     /* ================================================================ ⌘K PALETTE (redesign canonical .ro-pal-*)
        The redesign palette is an OVERLAY appended to <body>, OUTSIDE the `.ro-rd`
        content subtree -- so its container rules cannot be gated by an ancestor marker.
-       Instead the redesign palette ROOT (the backdrop) carries `ro-rd` itself (Unit 4
-       adds it): the canonical `.ro-palette-backdrop` / `.ro-palette` container names
+       Instead the redesign palette ROOT (the backdrop) carries `ro-rd` itself:
+       the canonical `.ro-palette-backdrop` / `.ro-palette` container names
        are gated by `.ro-rd` ON / UNDER that root, which differentiates the redesign
        palette from the OLD `.ro-palette` / `.ro-palette-panel` / `-row` overlay (left
-       untouched here; Unit 4 retires it). The inner `.ro-pal-*` vocabulary is net-new
+       untouched here; the rebuilt palette retires it). The inner `.ro-pal-*` vocabulary is net-new
        (no old conflict) and stays bare below. */
     .ro-rd.ro-palette-backdrop { position: fixed; inset: 0; z-index: 200; background: var(--overlay-bg);
         backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center;
@@ -38,12 +38,12 @@
         text-overflow: ellipsis; white-space: nowrap; }
     .ro-pal-item .pal-label .pal-ctx { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; margin-left: 8px; }
     .ro-pal-item .pal-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
-    /* compact namespaced/cluster scope badge on resource-type rows -- the Unit 3
-       `.scope-badge` vocabulary (D3 colour law: a categorical scope stays a
+    /* compact namespaced/cluster scope badge on resource-type rows -- the
+       `.scope-badge` vocabulary (the colour law keeps a categorical scope as a
        quiet neutral badge; only the cluster variant earns the amber-mixed
        border, matching resource_types.templ). The prototype's info-tinted `ns`
-       variant is deliberately NOT carried -- D3 takes precedence over the demo
-       CSS. */
+       variant is deliberately NOT carried -- the neutral-categorical colour law
+       takes precedence over the demo CSS. */
     .ro-pal-item .pal-scope { font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em;
         padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-faint);
         white-space: nowrap; }
@@ -65,7 +65,7 @@
     .ro-pal-foot .spacer { flex: 1; }
 
 
-    /* ================================================================ CONTEXT MENU + BULK BAR (Unit 16 / D10) */
+    /* ================================================================ CONTEXT MENU + BULK BAR */
     /* Right-click row context menu -- lifted from the v2 prototype chrome.css
        (.ro-ctxmenu), net-new class (no v1 collision, no .ro-rd marker needed).
        Fixed and viewport-clamped by readout.js; `is-open` reveals. Items are
@@ -101,7 +101,7 @@
     .ro-bulkbar .bulk-x:hover { background: var(--surface-2); color: var(--text); }
 
 
-    /* Toasts (D24 / SPEC §8.8): bottom-right, 3.5s, mono caption voice. Only
+    /* Toasts: bottom-right, 3.5s, mono caption voice. Only
        async results detached from their trigger toast (bulk download refused
        over the cap, refresh resumed); inline feedback (copy -> "Copied")
        never does. The #ro-toasts host is layout chrome outside the swap
@@ -120,7 +120,7 @@
     @keyframes ro-toast-in { from { opacity: 0; transform: translateY(6px); } }
 
 
-    /* ================================================================ "?" KEYBOARD OVERLAY (Unit 18 / D10) */
+    /* ================================================================ "?" KEYBOARD OVERLAY */
     /* The keyboard-map card -- lifted verbatim from the v2 prototype data.css
        (.kbd-overlay block). Global layout chrome (kbdOverlayC) revealed via
        `open` on the backdrop; readout.js owns toggle/esc/backdrop-close and
@@ -151,7 +151,7 @@
     .menu-toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px;
         height: 32px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); }
 
-    /* icon rail (Unit 23 / SPEC §8.5 / D22): between the mobile card layer
+    /* icon rail: between the mobile card layer
        (≤760px) and the full sidebar (>1100px) the sidebar collapses to an
        icon-only rail. The `.ro-rail` modifier rides on the aside markup at every
        width (the `.has-cards` pattern); THIS media query decides when it bites:
@@ -182,7 +182,7 @@
 
     /* responsive switch (from base.css @media max-width:760px) -- drives the mobile
        card layout the Pods Mobile artboard shows. Below 760px the sidebar is hidden
-       and the `.menu-toggle` hamburger (Unit 15, topbar) reveals it: the delegated
+       and the `.menu-toggle` hamburger (in the topbar) reveals it: the delegated
        readout.js click handler toggles `.is-active` on `.ro-sidebar`, and the
        `.is-active` rule below floats it as a fixed overlay panel under the sticky
        topbar (so it does not shove the card list). The inline ⌘K search box is

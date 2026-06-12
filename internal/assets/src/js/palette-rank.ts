@@ -1,4 +1,4 @@
-// palette-rank.ts -- the PURE ⌘K palette ranking + grouping (Unit 10). Split
+// palette-rank.ts -- the PURE ⌘K palette ranking + grouping. Split
 // out of palette.ts so it has NO runtime imports: Node's native type-stripping
 // (`node --test`) resolves `.js` specifiers literally and cannot follow a
 // runtime `./x.js` import to its `.ts` source, so a node-tested module must
@@ -6,13 +6,13 @@
 // palette.ts (which DOES carry runtime imports for its DOM + bindings) re-uses
 // every export here.
 //
-// This module owns the SPEC §8.7 / §6.3 + D21/D12 decisions that are pure data
+// This module owns the palette matching + ordering decisions that are pure data
 // transforms -- the fuzzy SUBSEQUENCE ranker, per-group ranking, the recents
 // write-side dedupe/cap, and the GROUP ORDER (Everywhere/Recents first, then On
 // this page, then the feed groups). The DOM rendering (row elements, the active
 // model, open/close) stays in palette.ts; this file decides ONLY shape + order.
 
-// roFuzzyScore is THE palette matcher (SPEC §8.7 / D21): a case-insensitive
+// roFuzzyScore is THE palette matcher: a case-insensitive
 // SUBSEQUENCE match -- replacing the old substring test -- scored so a prefix
 // match always ranks above a word-start match, which always ranks above a
 // scattered one. Returns -1 when query is not a subsequence of text, else a
@@ -88,7 +88,7 @@ export function rankPaletteEntries<T>(
     return scored.map((it) => it.entry);
 }
 
-// --- recents write-side codec (D21) ----------------------------------------
+// --- recents write-side codec ----------------------------------------------
 
 // A persisted recent: a label plus a navigation target (a SAFE href and/or a
 // named client action). The store is the last PALETTE_RECENTS_MAX chosen
@@ -120,7 +120,7 @@ export function dedupeRecents(
     return kept.slice(0, max);
 }
 
-// --- group order (SPEC §6.3 + D21/D12) --------------------------------------
+// --- group order ------------------------------------------------------------
 
 // A ranked, ordered palette group descriptor: the display title, the feed key
 // (drives the row builder in palette.ts), and the entries in render order. The
@@ -131,8 +131,8 @@ export interface PaletteGroup<E = unknown> {
     entries: E[];
 }
 
-// The render order + display titles of the FEED-built groups (the SPEC §6.3
-// order AFTER the synthesized Everywhere/Recents slot and the page-objects
+// The render order + display titles of the FEED-built groups (the canonical
+// group order AFTER the synthesized Everywhere/Recents slot and the page-objects
 // group). Empty groups are skipped by buildPaletteGroups.
 export const FEED_GROUPS: { title: string; key: string }[] = [
     { title: 'Resource types', key: 'kinds' },
@@ -165,8 +165,8 @@ export interface PageObject {
 }
 
 // buildPaletteGroups produces the ORDERED, ranked group list the palette
-// renders -- the single owner of group order (SPEC §6.3 + D21/D12):
-//   - while TYPING (q non-empty): Everywhere (pinned first, D12) -> On this page
+// renders -- the single owner of group order:
+//   - while TYPING (q non-empty): Everywhere (pinned first) -> On this page
 //     -> Resource types -> Namespaces -> Clusters -> Actions;
 //   - on an EMPTY query: the persisted Recents lead (Everywhere absent), then On
 //     this page -> the feed groups.
@@ -197,7 +197,7 @@ export function buildPaletteGroups(
         groups.push({ title: 'On this page', key: 'objects', entries: objects });
     }
 
-    // The feed groups in SPEC §6.3 order; each ranked, empty ones skipped.
+    // The feed groups in canonical order; each ranked, empty ones skipped.
     FEED_GROUPS.forEach((group) => {
         const list = (feed[group.key as keyof PaletteFeed] || []) as Record<string, unknown>[];
         const ranked = rankPaletteEntries(list, q, (entry) => feedEntryLabel(entry, group.key));

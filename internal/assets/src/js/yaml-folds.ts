@@ -1,5 +1,5 @@
 // yaml-folds.ts -- nested-YAML-block folding + YAML line-anchor highlight
-// (Unit 9 leaf migration). CSP-clean, no build, graceful.
+// (leaf migration from legacy.js). CSP-clean, no build, graceful.
 //
 // Over the EXISTING Pygments `linenos="table"` output (a `table.highlighttable`
 // whose `td.code > pre` holds one `<span id="yaml-...-line-N">` per source line),

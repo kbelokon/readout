@@ -4,7 +4,7 @@
  * pre-declaration sets layer precedence, and the @import list below sets the
  * rule order WITHIN each layer (Lightning CSS concatenates each imported
  * `@layer app {...}` / `@layer theme {...}` block in import order). The former
- * redesign.css port module has been DISSOLVED (Unit 16): its chrome zones moved
+ * redesign.css port module has been DISSOLVED: its chrome zones moved
  * into the thematic modules they belong to (top bar / layout / icons / dots ->
  * shell; table / virtualization / list cells -> table; detail -> detail; logs ->
  * logs; states -> states; overlays + the reduced-motion guard -> overlays). The

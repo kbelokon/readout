@@ -1,4 +1,4 @@
-// theme.ts -- the navbar theme-toggle POST target (Unit 9 leaf migration).
+// theme.ts -- the navbar theme-toggle POST target (leaf migration from legacy.js).
 //
 // The navbar theme toggle POSTs /preferences with a hidden `theme` value that
 // must flip the EFFECTIVE palette. With an explicit choice (a theme cookie or
