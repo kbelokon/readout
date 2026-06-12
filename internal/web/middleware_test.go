@@ -145,3 +145,61 @@ func TestSameOriginNoSignalAllowed(t *testing.T) {
 		t.Fatalf("no-signal POST: status = %d, want 200", rec.Code)
 	}
 }
+
+// TestSecurityHeadersUnconditional proves the defense-in-depth headers the CSP
+// does not cover are set on every response: Referrer-Policy, Permissions-Policy,
+// Cross-Origin-Opener-Policy, and the unchanged CSP + X-Content-Type-Options.
+func TestSecurityHeadersUnconditional(t *testing.T) {
+	s := &Server{cfg: config.Config{}}
+	h := s.securityHeaders(okNext())
+
+	req := httptest.NewRequest(http.MethodGet, "http://readout.example/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	want := map[string]string{
+		"Referrer-Policy":            "no-referrer",
+		"Permissions-Policy":         "camera=(), microphone=(), geolocation=()",
+		"Cross-Origin-Opener-Policy": "same-origin",
+		"X-Content-Type-Options":     "nosniff",
+		"Content-Security-Policy":    csp,
+	}
+	for header, value := range want {
+		if got := rec.Header().Get(header); got != value {
+			t.Errorf("%s = %q, want %q", header, got, value)
+		}
+	}
+}
+
+// TestSecurityHeadersHSTSGatedOnHTTPSPublicURL proves HSTS is emitted only when
+// the resolved public URL is https. The gate is the public URL scheme, not the
+// request scheme: a TLS-terminating proxy can hand the app a plain-http request
+// while the public origin is https.
+func TestSecurityHeadersHSTSGatedOnHTTPSPublicURL(t *testing.T) {
+	const wantHSTS = "max-age=31536000; includeSubDomains"
+	tests := []struct {
+		name      string
+		publicURL string
+		want      string // "" means HSTS absent
+	}{
+		{name: "https public url", publicURL: "https://readout.example", want: wantHSTS},
+		{name: "http public url", publicURL: "http://readout.example", want: ""},
+		{name: "unset public url", publicURL: "", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{cfg: config.Config{PublicURL: tc.publicURL}}
+			h := s.securityHeaders(okNext())
+
+			// Plain-http request on purpose: a TLS-terminating proxy makes the
+			// request look http even when the public origin is https.
+			req := httptest.NewRequest(http.MethodGet, "http://internal.svc/", nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if got := rec.Header().Get("Strict-Transport-Security"); got != tc.want {
+				t.Errorf("Strict-Transport-Security = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

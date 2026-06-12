@@ -106,10 +106,40 @@ func originHostMatches(rawURL, requestHost, publicURL string) bool {
 	return false
 }
 
+// hstsValue is the Strict-Transport-Security policy emitted only on https
+// deployments: one year, including subdomains.
+const hstsValue = "max-age=31536000; includeSubDomains"
+
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	// Resolve the HSTS gate once when the middleware is built, not per-request:
+	// HSTS is emitted only when the configured public URL is https. The gate is
+	// the public URL scheme, NOT the request scheme -- a TLS-terminating proxy
+	// can hand the app a plain-http request while the public origin is https, so
+	// keying on the request scheme would suppress HSTS on a TLS deployment.
+	hsts := publicURLIsHTTPS(s.cfg.PublicURL)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", csp)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		if hsts {
+			w.Header().Set("Strict-Transport-Security", hstsValue)
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// publicURLIsHTTPS reports whether the configured public URL resolves to an
+// https origin. An empty or unparseable value is not https (no HSTS), so a plain
+// http or unset deployment never gets the HSTS header.
+func publicURLIsHTTPS(publicURL string) bool {
+	if publicURL == "" {
+		return false
+	}
+	u, err := url.Parse(publicURL)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "https"
 }
