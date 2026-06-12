@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"sort"
@@ -8,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/kbelokon/readout/internal/kube"
-	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,7 +19,7 @@ import (
 // component consumes -- the offered resource-type checkbox set, the per-(type,
 // cluster) search results, the per-cluster scope chips (each carrying its own
 // failure status/reason/retry href), and the result count. The per-cluster search
-// fans out concurrently (errgroup + SearchMaxConcurrency); the slots are merged in
+// fans out concurrently (fanoutSlots + SearchMaxConcurrency); the slots are merged in
 // fixed cluster order so output is deterministic regardless of completion order.
 
 // searchDefaultResourceTypes are the resource types searched when the request
@@ -84,23 +84,25 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, requestKubeClient
 	// Fan the per-cluster search out concurrently, bounded by
 	// SearchMaxConcurrency. Each cluster searches all requested types into its
 	// own ordered slot; expected per-(cluster,type) failures are RESULT RECORDS
-	// (searchErrorRecord), never errgroup errors -- a failing cluster still renders
-	// partial results. After Wait the slots are merged in fixed cluster order
-	// (clusters is name-sorted by manager.Select) regardless of completion order
-	// so Results, the per-cluster ScopeClusters status, and the searchable
+	// (searchErrorRecord), never task errors -- a failing cluster still renders
+	// partial results. After the fan-out the slots are merged in fixed cluster
+	// order (clusters is name-sorted by manager.Select) regardless of completion
+	// order so Results, the per-cluster ScopeClusters status, and the searchable
 	// first-wins set are all deterministic; the final sortResults gives Results
 	// total order.
-	slots := make([]clusterSearchResult, len(clusters))
-	g, _ := errgroup.WithContext(r.Context())
-	g.SetLimit(s.searchConcurrency())
-	for i, cluster := range clusters {
-		i, cluster := i, cluster
-		g.Go(func() error {
-			slots[i] = s.clusterSearch(r, clients[cluster.Name], cluster, types, namespaces, selector, filterQuery, isAllNamespaces)
-			return nil
-		})
-	}
-	_ = g.Wait()
+	//
+	// The total fan-out time budget wraps the request ctx HERE, in the caller,
+	// so the helper stays mechanism-only: a dead or hung cluster trips the
+	// deadline, its per-(cluster,type) fetch returns a deadline error that lands
+	// in the slot's error record (the same partial-failure path a 500 takes),
+	// and a still-queued cluster starts with an already-expired ctx and fails
+	// the same way -- every cluster gets a slot and a scope chip, the page
+	// renders.
+	fanoutCtx, cancel := context.WithTimeout(r.Context(), s.searchBudget)
+	defer cancel()
+	slots := fanoutSlots(fanoutCtx, clusters, s.searchConcurrency(), func(ctx context.Context, cluster *kube.Cluster) clusterSearchResult {
+		return s.clusterSearch(ctx, clients[cluster.Name], cluster, types, namespaces, selector, filterQuery, isAllNamespaces)
+	})
 
 	var failedClusters []string
 	for i, slot := range slots {
@@ -163,7 +165,7 @@ func (s *Server) buildSearchView(r *http.Request) (searchView, requestKubeClient
 			continue
 		}
 		for _, cluster := range clusters {
-			if rt, _, err := findSearchResource(r, clients[cluster.Name], typ); err == nil {
+			if rt, _, err := findSearchResource(r.Context(), clients[cluster.Name], typ); err == nil {
 				searchable[rt.Plural] = rt.Kind
 				break
 			}
@@ -318,11 +320,11 @@ type searchErrorRecord struct {
 // namespace filter + text filter -> result cards. Per-type failures are
 // collected as error records, not raised, so the per-cluster work can run as a
 // single fan-out task.
-func (s *Server) clusterSearch(r *http.Request, client *kube.Client, cluster *kube.Cluster, types []string, namespaces []string, selector, filterQuery string, isAllNamespaces bool) clusterSearchResult {
+func (s *Server) clusterSearch(ctx context.Context, client *kube.Client, cluster *kube.Cluster, types []string, namespaces []string, selector, filterQuery string, isAllNamespaces bool) clusterSearchResult {
 	var out clusterSearchResult
 	seen := map[string]bool{}
 	for _, typ := range types {
-		rt, namespaced, err := findSearchResource(r, client, typ)
+		rt, namespaced, err := findSearchResource(ctx, client, typ)
 		if err != nil {
 			out.errs = append(out.errs, searchErrorRecord{cluster: cluster.Name, resourceType: typ, err: err})
 			continue
@@ -341,7 +343,7 @@ func (s *Server) clusterSearch(r *http.Request, client *kube.Client, cluster *ku
 			listNamespaces = namespaces
 		}
 		for _, listNS := range listNamespaces {
-			table, err := client.Table(r.Context(), &rt, kube.ListOptions{Namespace: listNS, LabelSelector: selector})
+			table, err := client.Table(ctx, &rt, kube.ListOptions{Namespace: listNS, LabelSelector: selector})
 			if err != nil {
 				out.errs = append(out.errs, searchErrorRecord{cluster: cluster.Name, resourceType: typ, err: err})
 				continue
@@ -405,12 +407,12 @@ func searchScopeValues(raw []string) []string {
 // findSearchResource resolves a plural to a ResourceType, trying namespaced
 // first then cluster-scoped. The bool reports whether the resolved type is
 // namespaced.
-func findSearchResource(r *http.Request, client *kube.Client, typ string) (kube.ResourceType, bool, error) {
-	rt, err := client.FindResource(r.Context(), typ, true, "")
+func findSearchResource(ctx context.Context, client *kube.Client, typ string) (kube.ResourceType, bool, error) {
+	rt, err := client.FindResource(ctx, typ, true, "")
 	if err == nil {
 		return rt, true, nil
 	}
-	rt, err = client.FindResource(r.Context(), typ, false, "")
+	rt, err = client.FindResource(ctx, typ, false, "")
 	if err != nil {
 		return kube.ResourceType{}, false, err
 	}

@@ -29,6 +29,17 @@ import (
 // permitted.
 const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
 
+const (
+	// listFanoutBudget and searchFanoutBudget are the default TOTAL fan-out wall
+	// time for the multi-cluster list and search assemblies. The budget exists
+	// only to cut a dead or hung cluster, NOT to cap a fat-but-alive list, so it
+	// is generous: 30s also absorbs queue-wait under the concurrency limit
+	// (queued clusters spend the shared total budget while they wait for a
+	// worker slot).
+	listFanoutBudget   = 30 * time.Second
+	searchFanoutBudget = 30 * time.Second
+)
+
 type Server struct {
 	cfg                config.Config
 	manager            *kube.Manager
@@ -50,6 +61,19 @@ type Server struct {
 	// each sidebar entry points at, TTL-invalidated against the s.now clock.
 	// The zero value is ready; no constructor wiring needed.
 	counts countCache
+
+	// listBudget and searchBudget cap the TOTAL fan-out wall time for the
+	// multi-cluster list and search assemblies: the caller wraps the request
+	// ctx with this timeout before fanning out, so one dead or hung cluster can
+	// no longer hold a page until the client gives up. The budget only cuts
+	// dead/hung clusters -- it is wide enough to let a fat-but-alive list finish
+	// and to absorb queue-wait under the concurrency limit -- and a cluster that
+	// trips it lands in the existing per-cluster error lane (partial-failure
+	// banner), never a top-level failure. They default to listFanoutBudget /
+	// searchFanoutBudget in New; tests inject a short budget, the same pattern
+	// as the now clock field.
+	listBudget   time.Duration
+	searchBudget time.Duration
 
 	// streamSlots caps concurrent Live streams: every open `_stream`
 	// handler holds one slot for its whole lifetime; when the channel is full
@@ -108,6 +132,8 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		hooks:              hooks.NewClient(),
 		passthroughClients: kube.NewPassthroughClientCache(0, 0),
 		now:                time.Now,
+		listBudget:         listFanoutBudget,
+		searchBudget:       searchFanoutBudget,
 		streamSlots:        make(chan struct{}, streamCapMax),
 		shutdownCh:         ctx.Done(),
 	}

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/kbelokon/readout/internal/kube"
-	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/util/jsonpath"
 )
@@ -73,23 +72,26 @@ func (s *Server) listContext(r *http.Request) (listContext, error) {
 	// Fan the per-cluster table assembly out concurrently, bounded by
 	// SearchMaxConcurrency. Each cluster builds its own ordered tables + error
 	// records into a per-cluster slot; expected per-(cluster,type) failures are
-	// RESULT RECORDS (collected into the slot's errs), never errgroup errors --
+	// RESULT RECORDS (collected into the slot's errs), never task errors --
 	// a failing cluster must still render partial results with the partial
-	// notice. Results are merged AFTER Wait in fixed cluster order (clusters is
-	// name-sorted by manager.Select) regardless of completion order, replaying
-	// the exact sequential first-seen MergeTables so the card/row order is
-	// deterministic and byte-identical to the former sequential build.
-	slots := make([]clusterTableResult, len(clusters))
-	g, _ := errgroup.WithContext(r.Context())
-	g.SetLimit(s.searchConcurrency())
-	for i, cluster := range clusters {
-		i, cluster := i, cluster
-		g.Go(func() error {
-			slots[i] = s.clusterTables(r, clients[cluster.Name], cluster, resourceTypes, namespace, isAllNamespaces)
-			return nil
-		})
-	}
-	_ = g.Wait()
+	// notice. Results are merged AFTER the fan-out in fixed cluster order
+	// (clusters is name-sorted by manager.Select) regardless of completion
+	// order, replaying the exact sequential first-seen MergeTables so the
+	// card/row order is deterministic and byte-identical to the former
+	// sequential build.
+	//
+	// The total fan-out time budget wraps the request ctx HERE, in the caller,
+	// so the helper stays mechanism-only: a dead or hung cluster trips the
+	// deadline and its per-(cluster,type) fetch returns a deadline error that
+	// lands in the slot's error lane (the same partial-failure path a 500
+	// takes), so it can never hold the page until the client gives up. A
+	// still-queued cluster starts with an already-expired ctx and fails
+	// immediately the same way -- every cluster gets a slot, the page renders.
+	fanoutCtx, cancel := context.WithTimeout(r.Context(), s.listBudget)
+	defer cancel()
+	slots := fanoutSlots(fanoutCtx, clusters, s.searchConcurrency(), func(ctx context.Context, cluster *kube.Cluster) clusterTableResult {
+		return s.clusterTables(ctx, r, clients[cluster.Name], cluster, resourceTypes, namespace, isAllNamespaces)
+	})
 
 	var tables []kube.Table
 	var errs []error
@@ -127,7 +129,7 @@ type clusterTableResult struct {
 // clusterTables builds one cluster's ordered tables for the requested resource
 // types (with per-type FindResource/Table failures collected as error records,
 // not raised) so the per-cluster work can run as a single fan-out task.
-func (s *Server) clusterTables(r *http.Request, client *kube.Client, cluster *kube.Cluster, resourceTypes []string, namespace string, isAllNamespaces bool) clusterTableResult {
+func (s *Server) clusterTables(ctx context.Context, r *http.Request, client *kube.Client, cluster *kube.Cluster, resourceTypes []string, namespace string, isAllNamespaces bool) clusterTableResult {
 	var tables []kube.Table
 	var errs []error
 	colVis := map[string][]columnVis{}
@@ -136,7 +138,7 @@ func (s *Server) clusterTables(r *http.Request, client *kube.Client, cluster *ku
 		if typ == "" {
 			continue
 		}
-		rt, err := client.FindResource(r.Context(), typ, namespace != "", apiVersionParam(r))
+		rt, err := client.FindResource(ctx, typ, namespace != "", apiVersionParam(r))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s/%s: %w", cluster.Name, typ, err))
 			continue
@@ -145,7 +147,7 @@ func (s *Server) clusterTables(r *http.Request, client *kube.Client, cluster *ku
 		if isAllNamespaces {
 			listNS = ""
 		}
-		table, err := client.Table(r.Context(), &rt, kube.ListOptions{
+		table, err := client.Table(ctx, &rt, kube.ListOptions{
 			Namespace:     listNS,
 			LabelSelector: r.URL.Query().Get("selector"),
 		})
@@ -198,22 +200,19 @@ func (s *Server) streamListContext(r *http.Request, client *kube.Client, cluster
 // discovery fans out concurrently; the result is a set then sort.Strings, so it
 // is order-independent and deterministic regardless of completion order.
 func (s *Server) unionNamespacedResourceTypes(r *http.Request, clusters []*kube.Cluster, clients requestKubeClients) []string {
-	perCluster := make([][]string, len(clusters))
-	g, _ := errgroup.WithContext(r.Context())
-	g.SetLimit(s.searchConcurrency())
-	for i, cluster := range clusters {
-		i, cluster := i, cluster
-		g.Go(func() error {
-			types, _ := clients[cluster.Name].NamespacedResourceTypes(r.Context())
-			plurals := make([]string, 0, len(types))
-			for ti := range types {
-				plurals = append(plurals, types[ti].Plural)
-			}
-			perCluster[i] = plurals
-			return nil
-		})
-	}
-	_ = g.Wait()
+	// Pure fan-out mechanics over the same bounded worker pool the list/search
+	// assemblies use: per-cluster discovery is independent, per-cluster errors
+	// are already ignored (a cluster that fails discovery contributes no
+	// plurals), and the result is a set then sort -- so no time budget and no
+	// slot ordering matter here. The request ctx is used as-is.
+	perCluster := fanoutSlots(r.Context(), clusters, s.searchConcurrency(), func(ctx context.Context, cluster *kube.Cluster) []string {
+		types, _ := clients[cluster.Name].NamespacedResourceTypes(ctx)
+		plurals := make([]string, 0, len(types))
+		for ti := range types {
+			plurals = append(plurals, types[ti].Plural)
+		}
+		return plurals
+	})
 	set := map[string]bool{}
 	for _, plurals := range perCluster {
 		for _, plural := range plurals {

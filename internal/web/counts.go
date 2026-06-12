@@ -31,8 +31,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/kbelokon/readout/internal/kube"
 )
 
@@ -128,27 +126,26 @@ func (s *Server) attachSidebarCounts(ctx context.Context, client *kube.Client, c
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, countFetchTimeout)
 	defer cancel()
-	var g errgroup.Group
-	for i := range targets {
-		target := &targets[i]
+	// One shared 800ms deadline over an UNBOUNDED fan-out (limit = len(targets)),
+	// so a slow or dead kind can never delay the page beyond countFetchTimeout.
+	// Each closure mutates its own target in place and returns nothing; the
+	// returned slot array is ignored. Errors degrade to an absent count and are
+	// never raised -- a sibling count must still land. The fan-out is mechanism
+	// only; ALL cache laws (TTL, never-cache-Canceled) stay inside cachedCount.
+	_ = fanoutSlots(fetchCtx, targets, len(targets), func(ctx context.Context, target countTarget) struct{} {
 		// The metrics.k8s.io pseudo-types (PodMetrics/NodeMetrics) are join
 		// sources, not navigable kinds -- never count them (their plurals also
 		// collide with pods/nodes). Mirrors the palette-feed skip.
 		if target.resource.Group == "metrics.k8s.io" {
-			continue
+			return struct{}{}
 		}
-		g.Go(func() error {
-			count, ok := s.cachedCount(fetchCtx, client, cluster, target)
-			if ok {
-				target.item.Count = strconv.FormatInt(count, 10)
-				target.item.HasCount = true
-			}
-			// Errors degrade to an absent count; never fail the group (a g.Wait
-			// error would have no consumer, and sibling counts must still land).
-			return nil
-		})
-	}
-	_ = g.Wait()
+		count, ok := s.cachedCount(ctx, client, cluster, &target)
+		if ok {
+			target.item.Count = strconv.FormatInt(count, 10)
+			target.item.HasCount = true
+		}
+		return struct{}{}
+	})
 }
 
 // cachedCount returns the count for one target, consulting the TTL cache
