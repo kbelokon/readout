@@ -192,12 +192,16 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 	var out []discoveredCluster
 	explicit := false
 
+	// One exec-plugin gate, resolved once and threaded to every build site so the
+	// three connection sources (static, kubeconfig, Argo) share one policy.
+	gate := resolveCredentialPluginGate(cfg.CredentialPluginPolicy, cfg.CredentialPluginAllowlist)
+
 	if len(cfg.Clusters) > 0 {
-		out = append(out, discoverStatic(cfg)...)
+		out = append(out, discoverStatic(cfg, gate)...)
 		explicit = true
 	}
 	if cfg.KubeconfigPath != "" {
-		kc, err := discoverKubeconfig(cfg)
+		kc, err := discoverKubeconfig(cfg, gate)
 		if err != nil {
 			return nil, err
 		}
@@ -214,7 +218,7 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 	// in-cluster/kubeconfig fallback below does not also fire when ArgoCD is the
 	// only configured source.
 	if cfg.ArgoCD != nil {
-		argo, err := discoverArgoCD(ctx, cfg)
+		argo, err := discoverArgoCD(ctx, cfg, gate)
 		if err != nil {
 			out = append(out, discoveredCluster{Name: "argocd", Source: SourceSecret, Err: err})
 		} else {
@@ -245,7 +249,7 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 	if !errors.Is(inErr, rest.ErrNotInCluster) {
 		out = append(out, discoveredCluster{Name: "local", Source: SourceInCluster, Err: inErr})
 	}
-	kc, err := discoverKubeconfig(cfg)
+	kc, err := discoverKubeconfig(cfg, gate)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +265,7 @@ func discoverAll(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluste
 	return out, nil
 }
 
-func discoverStatic(cfg *appconfig.Config) []discoveredCluster {
+func discoverStatic(cfg *appconfig.Config, gate credentialPluginGate) []discoveredCluster {
 	var result []discoveredCluster
 	for i := range cfg.Clusters {
 		cc := &cfg.Clusters[i]
@@ -286,6 +290,13 @@ func discoverStatic(cfg *appconfig.Config) []discoveredCluster {
 			result = append(result, dc)
 			continue
 		}
+		// Exec-plugin gate (static is an operator-owned source): a denied plugin
+		// becomes a broken cluster, never a silently-stripped anonymous connection.
+		if err := gate.applyCredentialPluginPolicy(restCfg, cc.Name, SourceStatic); err != nil {
+			dc.Err = err
+			result = append(result, dc)
+			continue
+		}
 		dc.Config = restCfg
 		result = append(result, dc)
 	}
@@ -299,7 +310,7 @@ func discoverStatic(cfg *appconfig.Config) []discoveredCluster {
 // client cannot be built) returns an error here -- the source is surfaced as
 // failed but does not blank the other sources. Once the host client exists, the
 // live LIST and per-Secret parse errors are handled inside discoverArgoSecrets.
-func discoverArgoCD(ctx context.Context, cfg *appconfig.Config) ([]discoveredCluster, error) {
+func discoverArgoCD(ctx context.Context, cfg *appconfig.Config, gate credentialPluginGate) ([]discoveredCluster, error) {
 	hostCfg, err := argoHostRESTConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -308,7 +319,7 @@ func discoverArgoCD(ctx context.Context, cfg *appconfig.Config) ([]discoveredClu
 	if err != nil {
 		return nil, fmt.Errorf("argo host client: %w", err)
 	}
-	return discoverArgoSecrets(ctx, client, cfg.ArgoCD.Namespace)
+	return discoverArgoSecrets(ctx, client, cfg.ArgoCD.Namespace, gate)
 }
 
 // argoHostRESTConfig resolves the rest.Config of the cluster the Argo Secrets are
@@ -415,7 +426,7 @@ func isZeroAuthInfo(a *clientcmdapi.AuthInfo) bool {
 // discoverKubeconfig loads kubeconfig contexts as connections. The whole-file
 // load failing is a source-level error (returned); a single context that fails
 // to resolve is surfaced as a typed per-context error and skipped.
-func discoverKubeconfig(cfg *appconfig.Config) ([]discoveredCluster, error) {
+func discoverKubeconfig(cfg *appconfig.Config, gate credentialPluginGate) ([]discoveredCluster, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if cfg.KubeconfigPath != "" {
 		loadingRules.ExplicitPath = cfg.KubeconfigPath
@@ -442,6 +453,13 @@ func discoverKubeconfig(cfg *appconfig.Config) ([]discoveredCluster, error) {
 		clientCfg := clientcmd.NewNonInteractiveClientConfig(*raw, name, &clientcmd.ConfigOverrides{CurrentContext: name}, loadingRules)
 		restCfg, err := clientCfg.ClientConfig()
 		if err != nil {
+			dc.Err = err
+			result = append(result, dc)
+			continue
+		}
+		// Exec-plugin gate (kubeconfig is an operator-owned source): a denied plugin
+		// becomes a broken cluster, never a silently-stripped anonymous connection.
+		if err := gate.applyCredentialPluginPolicy(restCfg, name, SourceKubeconfig); err != nil {
 			dc.Err = err
 			result = append(result, dc)
 			continue

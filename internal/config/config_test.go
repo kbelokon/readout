@@ -606,6 +606,71 @@ clusters:
 	}
 }
 
+// TestKubeCredentialPluginPolicyParses pins the new kube: block through the full
+// strict-parse chain: the policy string and the additive allowlist resolve onto
+// the runtime Config.
+func TestKubeCredentialPluginPolicyParses(t *testing.T) {
+	const content = `
+kube:
+  credentialPluginPolicy: Allowlist
+  credentialPluginAllowlist:
+    - my-auth-plugin
+    - /usr/local/bin/aws
+`
+	cfg, err := Parse([]string{"--config", writeConfig(t, content)})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.CredentialPluginPolicy != CredentialPluginPolicyAllowlist {
+		t.Fatalf("CredentialPluginPolicy = %q, want Allowlist", cfg.CredentialPluginPolicy)
+	}
+	if len(cfg.CredentialPluginAllowlist) != 2 ||
+		cfg.CredentialPluginAllowlist[0] != "my-auth-plugin" ||
+		cfg.CredentialPluginAllowlist[1] != "/usr/local/bin/aws" {
+		t.Fatalf("CredentialPluginAllowlist = %#v", cfg.CredentialPluginAllowlist)
+	}
+}
+
+// TestKubeCredentialPluginPolicyDefaultsEmpty pins that an absent kube: block
+// leaves the policy unset (source-aware default) -- it is never auto-promoted.
+func TestKubeCredentialPluginPolicyDefaultsEmpty(t *testing.T) {
+	cfg, err := Parse([]string{"--config", writeConfig(t, "port: 8080\n")})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.CredentialPluginPolicy != "" {
+		t.Fatalf("absent kube block must leave policy empty, got %q", cfg.CredentialPluginPolicy)
+	}
+}
+
+// TestKubeCredentialPluginPolicyInvalidRejected pins that a misspelled policy is a
+// config-syntax error at parse (like auth.mode), not a silently-ignored value.
+func TestKubeCredentialPluginPolicyInvalidRejected(t *testing.T) {
+	const content = `
+kube:
+  credentialPluginPolicy: PermitEverything
+`
+	_, err := Parse([]string{"--config", writeConfig(t, content)})
+	if err == nil {
+		t.Fatal("invalid credentialPluginPolicy should be rejected")
+	}
+	if !strings.Contains(err.Error(), "credentialPluginPolicy") {
+		t.Fatalf("error should name the key: %v", err)
+	}
+}
+
+// TestKubeUnknownKeyRejected pins strict parse rejects an unknown key inside the
+// kube: block, matching the UnmarshalStrict contract for the new field group.
+func TestKubeUnknownKeyRejected(t *testing.T) {
+	const content = `
+kube:
+  bogusKey: true
+`
+	if _, err := Parse([]string{"--config", writeConfig(t, content)}); err == nil {
+		t.Fatal("unknown key under kube: should be rejected by strict parse")
+	}
+}
+
 // TestClusterDuplicateNameRejected pins the config-parse half: two byte-identical
 // cluster names are a startup error naming the cluster, not silent last-write-wins.
 func TestClusterDuplicateNameRejected(t *testing.T) {

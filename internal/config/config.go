@@ -21,6 +21,15 @@ const (
 	AuthModeOIDC    = "oidc"
 )
 
+// Exec credential-plugin policy values for kube.credentialPluginPolicy. An empty
+// value (the default) means the source-aware default applies; a set value
+// overrides it uniformly across every connection source.
+const (
+	CredentialPluginPolicyDenyAll   = "DenyAll"
+	CredentialPluginPolicyAllowlist = "Allowlist"
+	CredentialPluginPolicyAllowAll  = "AllowAll"
+)
+
 type Link struct {
 	Href  string
 	Icon  string
@@ -105,6 +114,19 @@ type Config struct {
 	KubeconfigContexts         []string
 	ClusterAuthUseSessionToken bool
 	ArgoCD                     *ArgoCDSource
+	// CredentialPluginPolicy is the global exec-credential-plugin gate override.
+	// "" (the default) means SOURCE-AWARE: operator-owned sources (kubeconfig,
+	// static) default to an allowlist; the discovered Argo-Secret source defaults
+	// to DenyAll because a cluster actor can create those Secrets. A set value
+	// (DenyAll|Allowlist|AllowAll) applies uniformly to every source. Validated in
+	// resolve(); the kube loader interprets it.
+	CredentialPluginPolicy string
+	// CredentialPluginAllowlist extends (operator-additive) the exec-plugin
+	// allowlist used under the Allowlist policy. Entries are matched by command
+	// basename, or by exact full path when the entry contains a "/". The
+	// source-aware default pre-seeds the common cloud plugins; these are added on
+	// top.
+	CredentialPluginAllowlist  []string
 	ShowContainerLogs          bool
 	NoAccessLogs               bool
 	IncludeSecrets             bool
@@ -225,6 +247,18 @@ type fileArgoCD struct {
 	Namespace   string `json:"namespace"`
 }
 
+// fileKube is the on-disk `kube:` block: cluster-connection security policy that
+// is not per-cluster. credentialPluginPolicy is the global exec-plugin gate
+// override (DenyAll|Allowlist|AllowAll); empty means the source-aware default
+// (kubeconfig/static allowlist the common cloud plugins, the discovered
+// Argo-Secret source denies all exec). credentialPluginAllowlist extends the
+// Allowlist set with operator-named commands (basename, or exact path when the
+// entry contains a "/").
+type fileKube struct {
+	CredentialPluginPolicy    string   `json:"credentialPluginPolicy"`
+	CredentialPluginAllowlist []string `json:"credentialPluginAllowlist"`
+}
+
 // fileConfig is the on-disk readout.yaml schema. It is a clean nested shape
 // (lists/maps of structs). resolve() folds it into the runtime Config.
 type fileConfig struct {
@@ -256,6 +290,11 @@ type fileConfig struct {
 	KubeconfigContexts         []string          `json:"kubeconfigContexts"`
 	ClusterAuthUseSessionToken bool              `json:"clusterAuthUseSessionToken"`
 	ArgoCD                     *fileArgoCD       `json:"argoCD"`
+
+	// Kube holds cluster-connection security policy that is not per-cluster. It is
+	// a nested `kube:` block (distinct from the top-level clusters/kubeconfig
+	// fields) so the exec-credential-plugin gate reads as one coherent policy unit.
+	Kube fileKube `json:"kube"`
 
 	ShowContainerLogs bool   `json:"showContainerLogs"`
 	NoAccessLogs      bool   `json:"noAccessLogs"`
@@ -396,6 +435,8 @@ func resolve(file *fileConfig) (Config, error) {
 		ThemeOptions:                   file.ThemeOptions,
 		Clusters:                       clusters,
 		ArgoCD:                         resolveArgoCD(file.ArgoCD),
+		CredentialPluginPolicy:         strings.TrimSpace(file.Kube.CredentialPluginPolicy),
+		CredentialPluginAllowlist:      file.Kube.CredentialPluginAllowlist,
 		ExternalClusters:               clusterMap(file.ExternalClusters),
 		ObjectLinks:                    resolveLinks(file.ObjectLinks),
 		LabelLinks:                     resolveLinks(file.LabelLinks),
@@ -494,6 +535,15 @@ func resolve(file *fileConfig) (Config, error) {
 
 	if cfg.AuthMode != AuthModeNone && cfg.AuthMode != AuthModeHeaders && cfg.AuthMode != AuthModeOIDC {
 		return Config{}, fmt.Errorf("invalid auth mode %q", cfg.AuthMode)
+	}
+	// An unknown credentialPluginPolicy is a config typo, not a runtime gate: an
+	// empty value (source-aware default) is valid; any other value must be one of
+	// the three known modes. This rejects the misspelled key at parse, exactly like
+	// the auth-mode check above -- it never blocks app START on a well-formed value.
+	switch cfg.CredentialPluginPolicy {
+	case "", CredentialPluginPolicyDenyAll, CredentialPluginPolicyAllowlist, CredentialPluginPolicyAllowAll:
+	default:
+		return Config{}, fmt.Errorf("invalid kube.credentialPluginPolicy %q (want DenyAll, Allowlist, or AllowAll)", cfg.CredentialPluginPolicy)
 	}
 	// OIDC is never auto-enabled from endpoint config: a config that carries OIDC
 	// settings but leaves auth.mode at "none" is a misconfiguration, not a silent

@@ -171,6 +171,27 @@ without forking the image (an init-container + shared `emptyDir` on `PATH`, or a
 native image volume) is tracked as backlog **B-002**
 ([`docs/forge/backlog.md`](docs/forge/backlog.md)).
 
+Because an exec plugin runs a command in readout's pod, readout gates **which**
+command a connection may run, so a cluster actor who can inject an
+`execProviderConfig` (most plausibly through an Argo CD cluster Secret, which a
+cluster actor can create) cannot run an arbitrary binary. The gate applies to
+every connection source. When `kube.credentialPluginPolicy` is unset (the
+default), the policy is **source-aware**:
+
+- operator-owned sources (`kubeconfig`, static `clusters:`) default to an
+  allowlist pre-seeded with the common cloud plugins — `aws`,
+  `aws-iam-authenticator`, `gke-gcloud-auth-plugin`, `kubelogin`,
+  `kubectl-oidc_login` — so EKS/GKE-exec kubeconfig installs keep working;
+- the discovered **Argo cluster-Secret** source defaults to `DenyAll`, because a
+  cluster actor can create those Secrets.
+
+A denied plugin is **rejected** — the connection becomes a broken cluster — never
+silently stripped to an anonymous connection. Override uniformly across all
+sources by setting `kube.credentialPluginPolicy` to `DenyAll`, `Allowlist`, or
+`AllowAll`; extend the allowlist with `kube.credentialPluginAllowlist` (an entry
+is matched by command basename, or by exact full path when it contains a `/`).
+See [`readout.yaml`](readout.yaml) for the block.
+
 ### Secrets (environment only)
 
 Secrets are never written to the config file — they come from the environment,

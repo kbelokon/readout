@@ -225,7 +225,7 @@ func TestArgoSecretSourceForbiddenHostIsSourceError(t *testing.T) {
 				schema.GroupResource{Group: "", Resource: "secrets"}, "", nil)
 		})
 
-	got, err := discoverArgoSecrets(context.Background(), client, "argocd")
+	got, err := discoverArgoSecrets(context.Background(), client, "argocd", credentialPluginGate{})
 	if err == nil {
 		t.Fatalf("forbidden host list must be a source-level error, got results %#v", got)
 	}
@@ -257,7 +257,7 @@ func TestArgoSecretSourceMalformedSecretSkipped(t *testing.T) {
 
 	client := fake.NewClientset(good, bad)
 
-	got, err := discoverArgoSecrets(context.Background(), client, "argocd")
+	got, err := discoverArgoSecrets(context.Background(), client, "argocd", credentialPluginGate{})
 	if err != nil {
 		t.Fatalf("a malformed sibling must not be a source error: %v", err)
 	}

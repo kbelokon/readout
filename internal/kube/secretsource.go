@@ -210,7 +210,7 @@ func argoExecToClientcmd(e *argoExecProviderConfig) *clientcmdapi.ExecConfig {
 // `client` is a kubernetes.Interface parameter so tests inject a fake clientset
 // (the LIST + parse is what this exercises; the connection transport itself is
 // already proven by the RESTConfig tests).
-func discoverArgoSecrets(ctx context.Context, client kubernetes.Interface, namespace string) ([]discoveredCluster, error) {
+func discoverArgoSecrets(ctx context.Context, client kubernetes.Interface, namespace string, gate credentialPluginGate) ([]discoveredCluster, error) {
 	list, err := client.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: argoClusterSecretLabelSelector,
 	})
@@ -236,6 +236,18 @@ func discoverArgoSecrets(ctx context.Context, client kubernetes.Interface, names
 				Name:   secret.Name,
 				Source: SourceSecret,
 				Err:    &ContextLoadError{Name: secret.Name, Source: SourceSecret, Err: rerr},
+			})
+			continue
+		}
+		// Exec-plugin gate. The Argo-Secret source is the real injection vector (a
+		// cluster actor can create these Secrets), so under the default it denies
+		// every exec plugin: a denied Secret becomes a broken cluster, never a
+		// silently-stripped anonymous connection.
+		if gerr := gate.applyCredentialPluginPolicy(restCfg, conn.Name, SourceSecret); gerr != nil {
+			result = append(result, discoveredCluster{
+				Name:   secret.Name,
+				Source: SourceSecret,
+				Err:    &ContextLoadError{Name: secret.Name, Source: SourceSecret, Err: gerr},
 			})
 			continue
 		}

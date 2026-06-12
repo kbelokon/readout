@@ -106,7 +106,7 @@ func TestConnectionFromClusterConfigMapsEveryField(t *testing.T) {
 // configured server as Host.
 func TestDiscoverStaticBuildsConnectionThroughClientcmd(t *testing.T) {
 	cfg := &appconfig.Config{Clusters: []appconfig.ClusterConnection{{Name: "one", Server: "https://one"}}}
-	got := discoverStatic(cfg)
+	got := discoverStatic(cfg, credentialPluginGate{})
 	if len(got) != 1 || got[0].Err != nil || got[0].Name != "one" || got[0].Config.Host != "https://one" {
 		t.Fatalf("discoverStatic = %#v", got)
 	}
@@ -257,7 +257,7 @@ func TestDuplicateSanitizedCollision(t *testing.T) {
 func TestDiscoverKubeconfigLoadsSelectedContext(t *testing.T) {
 	kubeconfigPath := writeKubeconfig(t, map[string]string{"ctx-a": "https://a", "ctx-b": "https://b"})
 	cfg := &appconfig.Config{KubeconfigPath: kubeconfigPath, KubeconfigContexts: []string{"ctx-b"}}
-	discovered, err := discoverKubeconfig(cfg)
+	discovered, err := discoverKubeconfig(cfg, credentialPluginGate{})
 	if err != nil {
 		t.Fatal(err)
 	}

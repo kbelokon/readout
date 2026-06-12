@@ -122,6 +122,34 @@ clusterAuthUseSessionToken: false
 #   hostCluster: ""
 #   namespace: argocd
 
+# Exec credential-plugin policy. A kubeconfig/Argo Secret/static cluster can name
+# an `exec` credential plugin (the EKS/GKE auth path); readout gates which command
+# it will run so a cluster actor who can inject an execProviderConfig (e.g. via an
+# Argo cluster Secret) cannot run an arbitrary binary in the readout pod.
+#
+# When credentialPluginPolicy is UNSET (the default), the policy is SOURCE-AWARE:
+#   - operator-owned sources (kubeconfig, static clusters) default to an allowlist
+#     pre-seeded with the common cloud plugins (aws, aws-iam-authenticator,
+#     gke-gcloud-auth-plugin, kubelogin, kubectl-oidc_login), so EKS/GKE-exec
+#     kubeconfig installs keep working;
+#   - the discovered Argo cluster-Secret source defaults to DenyAll, because a
+#     cluster actor can create those Secrets -- that is the real injection vector.
+# A denied plugin is REJECTED (the connection becomes a broken cluster), never
+# silently stripped to an anonymous connection.
+#
+# Set credentialPluginPolicy to override uniformly across ALL sources:
+#   DenyAll    reject every exec plugin (breaks EKS/GKE-exec installs)
+#   Allowlist  permit only commands on credentialPluginAllowlist
+#   AllowAll   permit any exec command (the pre-gate behavior)
+# credentialPluginAllowlist extends the Allowlist set (on top of the seeded cloud
+# plugins under the source-aware default). An entry is matched by command basename,
+# or -- when it contains a "/" -- by exact full path.
+# kube:
+#   credentialPluginPolicy: ""          # "" | DenyAll | Allowlist | AllowAll
+#   credentialPluginAllowlist:
+#     - my-auth-plugin                  # bare basename match
+#     - /usr/local/bin/aws              # exact full-path match
+
 # Behavior toggles.
 showContainerLogs: false   # enable the container-logs tab
 noAccessLogs: false        # silence per-request access logging
