@@ -1,15 +1,18 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1106,6 +1109,74 @@ func TestAuthorizationHookErrorSanitized(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secretBody) {
 		t.Fatalf("hook response body leaked into error: %v", err)
+	}
+}
+
+// TestOAuthCallbackTokenExchangeErrorSanitized proves the auth-edge sanitization
+// law for the UNauthenticated login flow: when the token exchange fails, the
+// recon-useful detail (here a marker the token endpoint embeds in its error body,
+// standing in for issuer/transport/token-exchange strings) must NOT reach the
+// browser. The client sees only a generic message plus a short correlation ID,
+// and the raw detail appears ONLY in the server-side slog line keyed by that same
+// ID. Not parallel: it swaps the process-global default logger.
+func TestOAuthCallbackTokenExchangeErrorSanitized(t *testing.T) {
+	const reconMarker = "issuer-internal-host.svc.cluster.local-LEAK-MARKER"
+
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// A non-2xx token response makes oauth2.Exchange fail with an error that
+		// carries the response body; the body stands in for recon-useful detail.
+		http.Error(w, reconMarker, http.StatusInternalServerError)
+	}))
+	defer tokenServer.Close()
+
+	a := newAuth(t, &config.Config{
+		OIDCClientID:       "client-id",
+		OIDCClientSecret:   "client-secret",
+		OAuth2AuthorizeURL: "https://auth.example.test/authorize",
+		OAuth2TokenURL:     tokenServer.URL,
+		OIDCRedirectURL:    "http://example.test/oauth2/callback",
+		SessionSecret:      "test-secret",
+	})
+	value, err := a.sessions.Seal(StateCookieName, oauthState{Nonce: "good", OriginalURL: "/clusters"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth2/callback?state=good&code=ok", nil)
+	req.AddCookie(&http.Cookie{Name: StateCookieName, Value: value})
+	rec := httptest.NewRecorder()
+	a.Callback(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, reconMarker) {
+		t.Fatalf("recon detail leaked to client body: %q", body)
+	}
+	if strings.Contains(body, "token exchange") {
+		t.Fatalf("stage detail leaked to client body: %q", body)
+	}
+
+	// The client body must carry a short correlation ID...
+	idRE := regexp.MustCompile(`reference ([0-9a-f]{8,12})`)
+	m := idRE.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no correlation id in client body: %q", body)
+	}
+	clientID := m[1]
+
+	// ...and the raw detail must appear ONLY in the server log, under that same ID.
+	logged := logBuf.String()
+	if !strings.Contains(logged, reconMarker) {
+		t.Fatalf("raw detail missing from server log: %q", logged)
+	}
+	if !strings.Contains(logged, clientID) {
+		t.Fatalf("server log not keyed by the client correlation id %q: %q", clientID, logged)
 	}
 }
 

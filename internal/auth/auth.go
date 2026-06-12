@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -353,7 +354,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := oauthConfig.Exchange(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "OAuth token exchange failed: "+err.Error(), http.StatusUnauthorized)
+		authEdgeError(w, r, "OAuth token exchange failed", err)
 		return
 	}
 	session := Session{
@@ -367,7 +368,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		if verifier != nil {
 			verified, err := verifier.Verify(r.Context(), idToken)
 			if err != nil {
-				http.Error(w, "OIDC ID token verification failed: "+err.Error(), http.StatusUnauthorized)
+				authEdgeError(w, r, "OIDC ID token verification failed", err)
 				return
 			}
 			var claims struct {
@@ -378,7 +379,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 				Groups            []string `json:"groups"`
 			}
 			if err := verified.Claims(&claims); err != nil {
-				http.Error(w, "OIDC claims parse failed: "+err.Error(), http.StatusUnauthorized)
+				authEdgeError(w, r, "OIDC claims parse failed", err)
 				return
 			}
 			session.User = first(claims.PreferredUsername, claims.Name, claims.Subject)
@@ -420,6 +421,21 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		target = "/"
 	}
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// authEdgeError sanitizes an OAuth/OIDC handshake failure for the
+// UNauthenticated user at the login edge. The raw detail (issuer/transport/
+// token-exchange/verification strings) is recon-useful and must not reach the
+// browser, so it is logged server-side under a short correlation ID and the
+// client sees only a generic message plus that ID — enough for the user to
+// quote it to an operator who then greps the matching log line. This is the
+// auth-edge counterpart to Server.error's 5xx sanitization; it does NOT apply
+// to the authorized-viewer cluster-error display, which stays verbatim by
+// design.
+func authEdgeError(w http.ResponseWriter, r *http.Request, stage string, err error) {
+	id := correlationID()
+	slog.Error("auth callback failed", "stage", stage, "correlation_id", id, "path", r.URL.Path, "error", err)
+	http.Error(w, "Authentication failed (reference "+id+")", http.StatusUnauthorized)
 }
 
 func (a *Authenticator) startOAuth2(w http.ResponseWriter, r *http.Request, originalURL string) {
@@ -630,6 +646,22 @@ func randomToken(n int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+// correlationID returns a short random hex token used to tie a sanitized
+// client-facing auth-edge error to the full detail logged server-side. It is
+// not a secret and not security-sensitive: it only has to be unique enough for
+// an operator to grep the matching log line. crypto/rand is used so two
+// concurrent failures do not collide; on the (vanishingly rare) read error it
+// degrades to a fixed marker rather than failing the request — the request was
+// already failing, and a missing-id log line is still better than leaking the
+// raw detail to the client.
+func correlationID() string {
+	var data [6]byte
+	if _, err := io.ReadFull(rand.Reader, data[:]); err != nil {
+		return "00000000"
+	}
+	return hex.EncodeToString(data[:])
 }
 
 // isLocalRedirect reports whether target is a safe same-origin redirect: a

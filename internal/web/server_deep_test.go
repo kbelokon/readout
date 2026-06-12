@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -276,6 +277,84 @@ func TestErrorPageNoClusterRefetch(t *testing.T) {
 	}
 	if got := namespaceLists.Load(); got != 0 {
 		t.Fatalf("error render issued %d namespace LIST calls against the failed cluster, want 0", got)
+	}
+}
+
+// TestServerErrorCorrelationID proves the 5xx-sanitization correlation seam:
+// s.error hides the raw 5xx detail from the page (Unit established law) and now
+// ties the hidden detail to a short correlation ID — the same ID rides the
+// client message AND the server-side slog line, so an operator can grep the raw
+// error from a user-quoted reference without the page ever carrying it.
+// Not parallel: it swaps the process-global default logger.
+func TestServerErrorCorrelationID(t *testing.T) {
+	const reconMarker = "apiserver-internal-host.svc.cluster.local-LEAK-MARKER"
+
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	app := newTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/pods", nil)
+	app.error(rec, req, statusError{status: http.StatusInternalServerError, message: reconMarker})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, reconMarker) {
+		t.Fatalf("raw 5xx detail leaked to client body: %q", body)
+	}
+
+	idRE := regexp.MustCompile(`reference ([0-9a-f]{8,12})`)
+	m := idRE.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no correlation id in 5xx client body: %q", body)
+	}
+	clientID := m[1]
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, reconMarker) {
+		t.Fatalf("raw 5xx detail missing from server log: %q", logged)
+	}
+	if !strings.Contains(logged, clientID) {
+		t.Fatalf("server log not keyed by client correlation id %q: %q", clientID, logged)
+	}
+}
+
+// TestAuthorizedViewerClusterErrorStaysVerbatim is the regression guard for the
+// deliberate v2 verbatim-error law: the auth-edge sanitization (Unit 14) must
+// NOT bleed into the AUTHORIZED-viewer cluster-error display. A real cluster API
+// host and the verbatim transport string still ride the mono errdetail block on
+// both list (buildListState) and detail (detailState) failure paths.
+func TestAuthorizedViewerClusterErrorStaysVerbatim(t *testing.T) {
+	const apiHost = "https://kube-apiserver.internal.example:6443"
+	raw := fmt.Errorf("Get %q/api/v1/namespaces/default/pods: dial tcp 10.0.0.1:6443: connect: connection refused", apiHost)
+
+	req := httptest.NewRequest(http.MethodGet, "/clusters/c/namespaces/default/pods", nil)
+	lc := &listContext{Cluster: "c", Namespace: "default", Plural: "pods", Errors: []error{raw}}
+	listState := (&Server{}).buildListState(req, lc)
+	if listState == nil {
+		t.Fatal("buildListState returned nil for an unreachable cluster error")
+	}
+	if !strings.Contains(listState.Detail, apiHost) {
+		t.Fatalf("authorized-viewer LIST detail redacted the cluster API host: %q", listState.Detail)
+	}
+	if !strings.Contains(listState.Detail, "connection refused") {
+		t.Fatalf("authorized-viewer LIST detail redacted the verbatim error: %q", listState.Detail)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/clusters/c/namespaces/default/pods/x", nil)
+	dv := (&Server{}).detailState(detailReq, &kube.Cluster{Name: "c"}, "pods", "x", "default", "get", raw)
+	if dv == nil || dv.State == nil {
+		t.Fatal("detailState returned no state for an unreachable cluster error")
+	}
+	if !strings.Contains(dv.State.Detail, apiHost) {
+		t.Fatalf("authorized-viewer DETAIL redacted the cluster API host: %q", dv.State.Detail)
+	}
+	if !strings.Contains(dv.State.Detail, "connection refused") {
+		t.Fatalf("authorized-viewer DETAIL redacted the verbatim error: %q", dv.State.Detail)
 	}
 }
 

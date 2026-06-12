@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -466,10 +467,29 @@ func (s *Server) error(w http.ResponseWriter, r *http.Request, err error) {
 	// hit it).
 	message := err.Error()
 	if status >= 500 {
-		slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "status", status, "error", err)
-		message = "Internal server error — see server logs"
+		// Tie the hidden detail to a short correlation ID: the server logs the raw
+		// error under the ID and the client sees only the ID, so an operator can
+		// grep the matching log line from a user-quoted reference without the page
+		// ever carrying cluster-internal names/hosts.
+		id := correlationID()
+		slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "status", status, "correlation_id", id, "error", err)
+		message = "Internal server error (reference " + id + ") — see server logs"
 	}
 	s.pageComponentWithScope(w, r, statusText, "", "", templates.ErrorBody(statusText, message))
+}
+
+// correlationID returns a short random hex token tying a sanitized client-facing
+// 5xx page to the full error logged server-side. It is not a secret: it only has
+// to be unique enough for an operator to grep the matching log line. On the
+// vanishingly rare crypto/rand read error it degrades to a fixed marker rather
+// than failing — the request was already failing and a missing-id line beats
+// leaking the raw detail to the client.
+func correlationID() string {
+	var data [6]byte
+	if _, err := io.ReadFull(rand.Reader, data[:]); err != nil {
+		return "00000000"
+	}
+	return hex.EncodeToString(data[:])
 }
 
 type statusError struct {
