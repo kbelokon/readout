@@ -82,6 +82,10 @@ func runConfigValidate(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if fs.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "unexpected argument %q\n\n%s", fs.Arg(0), configUsage)
+		return 2
+	}
 
 	// Reconstruct the bootstrap arg shape config.Parse expects so the identical
 	// loader (strict parse, env overlay, file-field precedence, semantic checks)

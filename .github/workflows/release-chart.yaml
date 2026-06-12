@@ -10,7 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@v4
+        with:
+          # Package with the same helm major the CI chart job validates against
+          # (users run helm 3), so packaging behavior cannot drift independently.
+          version: v3.21.0
       - name: Registry login
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin

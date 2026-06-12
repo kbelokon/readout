@@ -49,11 +49,11 @@ rbac:
   # exposes every Secret in the cluster through the apiserver directly. Choose
   # restricted when that exposure is unacceptable.
   preset: wildcard
-  # Extra rules appended verbatim to the ClusterRole under either preset. Use
-  # this to widen read access (e.g. a resource the restricted preset omits, or
-  # an argoCD host whose credentials live in a local Secret). Keep verbs within
-  # get/list/watch -- the chart does not police this list, but granting other
-  # verbs defeats the read-only contract.
+  # Extra rules appended to the ClusterRole under either preset. Use this to
+  # widen read access (e.g. a resource the restricted preset omits, or an
+  # argoCD host whose credentials live in a local Secret). values.schema.json
+  # rejects any verb outside get/list/watch (the read-only contract); rules
+  # that pass the schema are appended verbatim.
   extraRules: []
   #  - apiGroups: ["example.com"]
   #    resources: ["widgets"]
@@ -155,8 +155,10 @@ gateway:
 
 # readout configuration. This whole block is serialized verbatim into a
 # ConfigMap as readout.yaml and mounted at /etc/readout/readout.yaml; the
-# container runs with --config /etc/readout/readout.yaml. The schema matches
-# readout.yaml. Secrets are NOT placed here -- they come from READOUT_* env
+# container runs with --config /etc/readout/readout.yaml. Helm only checks
+# that this block is an object -- key/value validation happens at app startup
+# (strict parse, unknown keys rejected) and via `readout config validate`.
+# Secrets are NOT placed here -- they come from READOUT_* env
 # (see env / envFrom below), which override the file at startup.
 config:
   port: 8080
@@ -212,9 +214,11 @@ auth:
 # READOUT_* secret environment. `env` adds literal name/value pairs;
 # `envFrom` references existing Secrets/ConfigMaps (e.g. a Secret holding
 # READOUT_SESSION_SECRET / READOUT_OIDC_CLIENT_SECRET). Secrets never go in the
-# ConfigMap above. The typed `auth` entries above are rendered FIRST, then these
-# `env` entries; because Kubernetes lets the last entry with a given name win, an
-# `env` entry here overrides a typed entry of the same name.
+# ConfigMap above. Precedence: the typed `auth` entries above are rendered
+# FIRST, then these `env` entries; because Kubernetes lets the last entry with
+# a given name win, an `env` entry here overrides a typed entry of the same
+# name. Explicit entries (typed or `env`) always beat `envFrom` -- Kubernetes
+# resolves envFrom first and explicit env vars shadow it.
 env: []
 #  - name: READOUT_SESSION_SECRET
 #    valueFrom:

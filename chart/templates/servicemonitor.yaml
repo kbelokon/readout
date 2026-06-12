@@ -5,7 +5,7 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "readout.fullname" . }}-metrics
+  name: {{ include "readout.fullname.suffixed" (dict "context" . "suffix" "metrics") }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
     {{- with .Values.metrics.serviceMonitor.labels }}

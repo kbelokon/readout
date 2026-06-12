@@ -21,6 +21,17 @@ else we prefix it with the release name. Truncated to 63 chars for DNS names.
 {{- end -}}
 {{- end -}}
 
+{{/*
+Fullname with a suffix appended, keeping the WHOLE name within the 63-char
+DNS-label limit. A plain `fullname-suffix` concatenation can reach 71 chars
+for a long release name, which renders fine and is rejected only by the
+cluster API. Call with (dict "context" . "suffix" "metrics").
+*/}}
+{{- define "readout.fullname.suffixed" -}}
+{{- $max := int (sub 62 (len .suffix)) -}}
+{{- printf "%s-%s" (include "readout.fullname" .context | trunc $max | trimSuffix "-") .suffix -}}
+{{- end -}}
+
 {{/* Chart label value: name-version with non-DNS chars normalized. */}}
 {{- define "readout.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}

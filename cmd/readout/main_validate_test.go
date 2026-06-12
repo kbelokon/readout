@@ -77,12 +77,14 @@ func TestRunConfigValidateMissingFile(t *testing.T) {
 	}
 }
 
-// TestRunConfigUsage pins the usage exit code (2) for a bare `config` and for an
-// unknown sub-subcommand, both writing usage to stderr and nothing to stdout.
+// TestRunConfigUsage pins the usage exit code (2) for a bare `config`, an
+// unknown sub-subcommand, and stray positional arguments after `validate` --
+// all writing usage to stderr and nothing to stdout.
 func TestRunConfigUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{"config"},
 		{"config", "bogus"},
+		{"config", "validate", "stray"},
 	} {
 		var stdout, stderr bytes.Buffer
 		code := run(args, &stdout, &stderr)

@@ -85,7 +85,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "readout.fullname" . }}-argocd
+  name: {{ include "readout.fullname.suffixed" (dict "context" . "suffix" "argocd") }}
   namespace: {{ $argoNs }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
@@ -102,7 +102,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "readout.fullname" . }}-argocd
+  name: {{ include "readout.fullname.suffixed" (dict "context" . "suffix" "argocd") }}
   namespace: {{ $argoNs }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
@@ -114,7 +114,7 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "readout.fullname" . }}-argocd
+  name: {{ include "readout.fullname.suffixed" (dict "context" . "suffix" "argocd") }}
 subjects:
   - kind: ServiceAccount
     name: {{ include "readout.serviceAccountName" . }}
