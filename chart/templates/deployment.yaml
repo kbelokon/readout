@@ -30,6 +30,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "readout.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}

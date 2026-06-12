@@ -230,7 +230,80 @@ envFrom: []
 #  - secretRef:
 #      name: readout
 
-resources: {}
+# Container resource requests and limits. These are REAL defaults, not an empty
+# placeholder: an unbounded readout container is a DoS surface. Concrete trigger
+# -- a single crafted/expensive list-and-render request (e.g. a namespace with
+# thousands of objects, or a client looping such requests) drives CPU and heap
+# until the kubelet OOM-kills the pod or it starves its node neighbours. The
+# limit caps that blast radius; the request lets the scheduler reserve room so a
+# noisy neighbour cannot starve readout instead. Tune for your cluster size;
+# raise the memory limit before the request if you list very large namespaces.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Set on the pod spec, not left implicit. readout REACHES the apiserver with this
+# SA token (that is the whole point of the Live/in-cluster mode and the RBAC this
+# chart grants), so the token MUST be mounted -- this is a deliberate `true`, not
+# Kubernetes' silent default. Set false only if you run readout in a mode that
+# never talks to the apiserver; then drop rbac.create too.
+automountServiceAccountToken: true
+
+# Opt-in NetworkPolicy (networking.k8s.io/v1) bounding readout's ingress and
+# egress. OFF by default. CAVEAT: a NetworkPolicy is enforced ONLY by a CNI that
+# implements it (Calico, Cilium, Antrea, etc.). On a cluster whose CNI ignores
+# NetworkPolicy (e.g. plain flannel) this object renders and applies cleanly but
+# enforces NOTHING -- it is not a security control there. Verify your CNI before
+# relying on it.
+networkPolicy:
+  enabled: false
+  # Ingress to readout's pods. With enabled:true and no allowed sources below the
+  # policy is default-deny ingress (nothing may reach readout) -- uncomment and
+  # scope the sources your traffic actually comes from. Each entry is a verbatim
+  # NetworkPolicyPeer (podSelector/namespaceSelector/ipBlock).
+  ingress:
+    # The app/main port (config.port). When metrics.enabled, the metrics port is
+    # allowed from the same sources too.
+    from: []
+      # Ingress controller / reverse-proxy / auth proxy that fronts readout:
+      # - namespaceSelector:
+      #     matchLabels:
+      #       kubernetes.io/metadata.name: ingress-nginx
+      # Prometheus scraping the metrics port:
+      # - namespaceSelector:
+      #     matchLabels:
+      #       kubernetes.io/metadata.name: monitoring
+  # Egress from readout's pods. DNS (UDP/TCP 53) is always allowed when egress is
+  # rendered -- readout must resolve the apiserver and the OIDC issuer. Add the
+  # destinations readout reaches: the Kubernetes apiserver, your OIDC issuer, and
+  # any Argo host. Each entry is a verbatim NetworkPolicyEgressRule.
+  egress:
+    # Allow DNS resolution (kube-dns / CoreDNS). Set false only if you pin every
+    # egress destination by ipBlock and need no name resolution.
+    dns: true
+    # Verbatim egress rules. Leave empty and readout can reach ONLY DNS -- which
+    # breaks apiserver/OIDC access -- so scope these to your endpoints.
+    to: []
+      # Kubernetes apiserver (cluster-dependent; commonly the kubernetes.default
+      # ClusterIP/443 or the control-plane node IPs). Example ipBlock:
+      # - to:
+      #     - ipBlock:
+      #         cidr: 10.0.0.1/32
+      #   ports:
+      #     - protocol: TCP
+      #       port: 443
+      # OIDC issuer + Argo hosts reached over the internet (scope tighter if you
+      # can pin their egress CIDRs):
+      # - to:
+      #     - ipBlock:
+      #         cidr: 0.0.0.0/0
+      #   ports:
+      #     - protocol: TCP
+      #       port: 443
 
 podSecurityContext:
   runAsNonRoot: true

@@ -71,7 +71,9 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | `auth` | `{sessionSecret: {existingSecret: "", key: session-secret}, oidc: {existingSecret: "", clientIdKey: client-id, clientSecretKey: client-secret}}` | Typed secret wiring. Point at Secrets you already created; the chart renders matching `READOUT_*` env via `secretKeyRef`. Empty `existingSecret` disables a wiring. See [Secret wiring](#secret-wiring). |
 | `env` | `[]` | Literal extra `READOUT_*` env entries. Rendered after the typed `auth` entries, so an `env` entry of the same name wins. |
 | `envFrom` | `[]` | `envFrom` references to existing Secrets/ConfigMaps (e.g. a Secret holding `READOUT_SESSION_SECRET`). Opaque to the chart's gates. |
-| `resources` | `{}` | Container resource requests/limits. |
+| `resources` | `{requests: {cpu: 50m, memory: 128Mi}, limits: {cpu: 500m, memory: 512Mi}}` | Container resource requests/limits. Real defaults, not empty: an unbounded container is a DoS surface — one expensive list-and-render request (e.g. a namespace with thousands of objects, or a client looping such requests) drives CPU/heap until OOM. The limit caps the blast radius; the request reserves scheduler room. Tune for your cluster. |
+| `automountServiceAccountToken` | `true` | Explicit (not Kubernetes' silent default): readout reaches the apiserver with the SA token in Live/in-cluster mode, so it must be mounted. Set false only in a mode that never talks to the apiserver (then drop `rbac.create` too). |
+| `networkPolicy` | `{enabled: false, ingress: {from: []}, egress: {dns: true, to: []}}` | Opt-in `networking.k8s.io/v1` NetworkPolicy bounding readout's ingress/egress. Off by default. See [NetworkPolicy](#networkpolicy) — **enforced only by a CNI that implements NetworkPolicy.** |
 | `podSecurityContext` | `{runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}` | Pod-level security context. |
 | `securityContext` | `{allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}` | Container-level security context. |
 | `podAnnotations` | `{}` | Annotations added to the pod template only. |
@@ -222,6 +224,57 @@ reference). Full recipe in
 
 readout serves on its own host (a subdomain or a root domain); subpath
 deployment is unsupported and `publicUrl` is validated as origin-only.
+
+## NetworkPolicy
+
+`networkPolicy.enabled: true` renders an opt-in `networking.k8s.io/v1`
+NetworkPolicy that bounds readout's blast radius: a default-deny baseline plus
+only the ingress/egress you explicitly allow.
+
+> **CNI caveat.** A NetworkPolicy is enforced **only** by a CNI that implements
+> it (Calico, Cilium, Antrea, …). On a cluster whose CNI ignores NetworkPolicy
+> (e.g. plain flannel) this object applies cleanly but enforces **nothing** — it
+> is not a security control there. Verify your CNI before relying on it.
+
+- **Ingress** — `networkPolicy.ingress.from` is a list of verbatim
+  `NetworkPolicyPeer`s allowed to reach readout's app port (`config.port`) and,
+  when `metrics.enabled`, the metrics port. **Left empty, ingress is
+  default-deny** — nothing reaches readout. Scope it to your ingress controller /
+  reverse proxy / auth proxy, and Prometheus if it scrapes metrics.
+- **Egress** — `networkPolicy.egress.dns` (default `true`) allows DNS on UDP/TCP
+  53 so readout can resolve the apiserver and OIDC issuer.
+  `networkPolicy.egress.to` is a list of verbatim `NetworkPolicyEgressRule`s for
+  the destinations readout reaches: the **Kubernetes apiserver**, your **OIDC
+  issuer**, and any **Argo host**. Left empty, readout can reach only DNS — which
+  breaks apiserver/OIDC access — so scope these to your endpoints.
+
+```yaml
+networkPolicy:
+  enabled: true
+  ingress:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-nginx
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+  egress:
+    dns: true
+    to:
+      - to:
+          - ipBlock:
+              cidr: 10.0.0.1/32   # apiserver
+        ports:
+          - protocol: TCP
+            port: 443
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0     # OIDC issuer / Argo (pin tighter if you can)
+        ports:
+          - protocol: TCP
+            port: 443
+```
 
 ## Validating before install
 

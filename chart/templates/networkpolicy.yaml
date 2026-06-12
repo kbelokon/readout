@@ -1,0 +1,48 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "readout.fullname" . }}
+  labels:
+    {{- include "readout.labels" . | nindent 4 }}
+  {{- $ann := include "readout.annotations" (dict "context" .) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  # Selects this chart's readout pods. An empty ingress/egress rule list under a
+  # declared policyType is default-deny for that direction.
+  podSelector:
+    matchLabels:
+      {{- include "readout.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- with $np.ingress.from }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.config.port | default 8080 }}
+        {{- if $.Values.metrics.enabled }}
+        - protocol: TCP
+          port: {{ $.Values.metrics.port }}
+        {{- end }}
+    {{- end }}
+  egress:
+    {{- if $np.egress.dns }}
+    # DNS resolution (kube-dns / CoreDNS): readout must resolve the apiserver and
+    # the OIDC issuer before it can reach them.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    {{- with $np.egress.to }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
