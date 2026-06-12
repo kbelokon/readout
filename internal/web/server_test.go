@@ -7,12 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"os"
 
 	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
