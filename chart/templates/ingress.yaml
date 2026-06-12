@@ -7,9 +7,10 @@ metadata:
   name: {{ $fullName }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- $ann := include "readout.annotations" (dict "context" . "local" .Values.ingress.annotations) }}
+  {{- with $ann }}
   annotations:
-    {{- toYaml . | nindent 4 }}
+    {{- . | nindent 4 }}
   {{- end }}
 spec:
   {{- if .Values.ingress.className }}

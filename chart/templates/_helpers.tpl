@@ -32,7 +32,8 @@ app.kubernetes.io/name: {{ include "readout.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
-{{/* Common labels applied to every resource. */}}
+{{/* Common labels applied to every resource. commonLabels are user-supplied
+and merged last so they can override the standard label set. */}}
 {{- define "readout.labels" -}}
 helm.sh/chart: {{ include "readout.chart" . }}
 {{ include "readout.selectorLabels" . }}
@@ -40,6 +41,25 @@ helm.sh/chart: {{ include "readout.chart" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- with .Values.commonLabels }}
+{{ toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Common annotations applied to every resource. Emits only the merged key/value
+lines (no annotations: header) so call sites can guard an empty result and keep
+the default render free of stray annotation blocks. Call as:
+  {{- $ann := include "readout.annotations" (dict "context" . "local" .Values.x.annotations) }}
+where "local" is an optional per-resource annotation map merged over the common
+set. Returns an empty string when nothing is set.
+*/}}
+{{- define "readout.annotations" -}}
+{{- $context := .context -}}
+{{- $merged := merge (deepCopy (default (dict) .local)) (default (dict) $context.Values.commonAnnotations) -}}
+{{- if $merged -}}
+{{- toYaml $merged -}}
+{{- end -}}
 {{- end -}}
 
 {{/* ServiceAccount name: fullname when created, else the provided name or "default". */}}

@@ -10,9 +10,10 @@ metadata:
   name: {{ $fullName }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
-  {{- with .Values.gateway.annotations }}
+  {{- $ann := include "readout.annotations" (dict "context" . "local" .Values.gateway.annotations) }}
+  {{- with $ann }}
   annotations:
-    {{- toYaml . | nindent 4 }}
+    {{- . | nindent 4 }}
   {{- end }}
 spec:
   parentRefs:

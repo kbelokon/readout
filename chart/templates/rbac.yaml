@@ -4,6 +4,11 @@ metadata:
   name: {{ include "readout.fullname" . }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
+  {{- $ann := include "readout.annotations" (dict "context" .) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
 rules:
   - apiGroups: [""]
     resources: ["configmaps", "endpoints", "events", "limitranges", "namespaces", "nodes", "persistentvolumeclaims", "persistentvolumes", "pods", "pods/log", "replicationcontrollers", "resourcequotas", "services"]
@@ -18,6 +23,11 @@ metadata:
   name: {{ include "readout.fullname" . }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
+  {{- $ann := include "readout.annotations" (dict "context" .) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

@@ -4,6 +4,14 @@ metadata:
   name: {{ include "readout.fullname" . }}
   labels:
     {{- include "readout.labels" . | nindent 4 }}
+    {{- with .Values.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- $ann := include "readout.annotations" (dict "context" . "local" .Values.service.annotations) }}
+  {{- with $ann }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
   selector:

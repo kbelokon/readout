@@ -10,6 +10,17 @@ image:
 nameOverride: ""
 fullnameOverride: ""
 
+# Labels merged into the metadata.labels of every resource this chart renders.
+# Applied last, so a key here overrides the standard chart label of the same name.
+commonLabels: {}
+
+# Annotations merged into the metadata.annotations of every resource this chart
+# renders. Per-resource annotation blocks (serviceAccount.annotations,
+# ingress.annotations, gateway.annotations, service.annotations, podAnnotations)
+# take precedence on key conflicts. Note: common metadata is intentionally NOT
+# part of the pod config checksum, so changing it does not roll pods.
+commonAnnotations: {}
+
 serviceAccount:
   create: true
   name: ""
@@ -20,6 +31,10 @@ replicaCount: 1
 service:
   type: ClusterIP
   port: 80
+  # Extra labels/annotations for the Service only (merged over commonLabels /
+  # commonAnnotations). Use annotations for cloud load-balancer controls etc.
+  labels: {}
+  annotations: {}
 
 # Expose readout through a Kubernetes Ingress (networking.k8s.io/v1). The
 # backend always targets this chart's Service on service.port above.
@@ -120,3 +135,53 @@ securityContext:
   capabilities:
     drop:
       - ALL
+
+# Annotations/labels added to the pod template only (in addition to the chart's
+# standard pod labels and commonLabels/commonAnnotations).
+podAnnotations: {}
+podLabels: {}
+
+# Standard scheduling and placement pass-throughs. All rendered verbatim only
+# when set, so the default render carries none of them.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+# Extra volumes and volume mounts for the readout container. extraVolumeMounts
+# are appended to the readout container; extraVolumes to the pod.
+extraVolumes: []
+# - name: cache
+#   emptyDir: {}
+extraVolumeMounts: []
+# - name: cache
+#   mountPath: /var/cache/readout
+
+# Extra init containers and sidecar containers, rendered verbatim into the pod.
+initContainers: []
+extraContainers: []
+
+# PodDisruptionBudget for the readout pods. minAvailable and maxUnavailable are
+# mutually exclusive -- set exactly one; Kubernetes rejects a PDB with both. The
+# selector always targets this chart's pods.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: ""
+  maxUnavailable: ""
+
+# Escape hatch for arbitrary Helm-owned objects this chart does not model
+# (platform CRs, extra Secrets, etc.). Each list entry is one YAML map for a
+# single object -- multi-document strings are not supported. Entries are emitted
+# verbatim (no chart labels or annotations are injected, so immutable fields are
+# never mutated), but string values are run through tpl with the chart root
+# context, so they may embed expressions such as {{ .Release.Name }} or
+# {{ include "readout.fullname" $ }}. These objects share the release lifecycle
+# and are deleted when the release is uninstalled.
+extraObjects: []
+# - apiVersion: v1
+#   kind: Secret
+#   metadata:
+#     name: '{{ include "readout.fullname" $ }}-extra'
+#   stringData:
+#     key: value
