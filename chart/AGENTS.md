@@ -5,7 +5,7 @@ is a strictly read-only Kubernetes web viewer. It serves on its own host
 (subdomain or root domain) — no subpath. Follow this flow top to bottom; each
 step is concrete commands, not theory.
 
-Chart source (OCI): `oci://ghcr.io/kbelokon/charts/readout` (version `0.7.0`).
+Chart source (OCI): `oci://ghcr.io/kbelokon/charts/readout` (version `0.8.0`).
 
 ## 1. Detect cluster routing options
 
@@ -75,7 +75,7 @@ Chart values (renders manifests, runs the safety gates):
 
 ```sh
 helm template readout oci://ghcr.io/kbelokon/charts/readout \
-  --version 0.7.0 -f values.yaml
+  --version 0.8.0 -f values.yaml
 ```
 
 Raw app config (faithful to startup):
@@ -94,9 +94,9 @@ Dry-run first, then apply:
 
 ```sh
 helm upgrade --install readout oci://ghcr.io/kbelokon/charts/readout \
-  --version 0.7.0 -f values.yaml --dry-run
+  --version 0.8.0 -f values.yaml --dry-run
 helm upgrade --install readout oci://ghcr.io/kbelokon/charts/readout \
-  --version 0.7.0 -f values.yaml
+  --version 0.8.0 -f values.yaml
 ```
 
 **Upgrading a user from chart ≤ 0.6:** identity (selectors/names) changed, so
@@ -104,7 +104,7 @@ helm upgrade --install readout oci://ghcr.io/kbelokon/charts/readout \
 
 ```sh
 helm uninstall readout
-helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.7.0 -f values.yaml
+helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.8.0 -f values.yaml
 ```
 
 ## 6. Verify

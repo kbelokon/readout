@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.7.0
-appVersion: 0.7.0
+version: 0.8.0
+appVersion: 0.8.0
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,7 +29,7 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.7.0
+      image: ghcr.io/kbelokon/readout:0.8.0
   artifacthub.io/changes: |
     - kind: changed
       description: "Resource identity moved to app.kubernetes.io/name+instance with release-scoped names; upgrade from <=0.6 requires helm uninstall && helm install (stateless, no data loss)"
