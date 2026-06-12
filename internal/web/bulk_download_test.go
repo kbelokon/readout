@@ -67,7 +67,7 @@ func TestBulkDownloadThreeDocsWithKinds(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "text/vnd.yaml; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", got)
 	}
-	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="test_default_configmaps_bulk.yaml"` {
+	if got := rec.Header().Get("Content-Disposition"); got != "attachment; filename=test_default_configmaps_bulk.yaml" {
 		t.Fatalf("Content-Disposition = %q", got)
 	}
 
@@ -99,7 +99,7 @@ func TestBulkDownloadAllNamespacesGrammar(t *testing.T) {
 		"/clusters/test/namespaces/_all/pods?download=yaml&names=default/nginx,default/my-app",
 		http.StatusOK)
 
-	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="test__all_pods_bulk.yaml"` {
+	if got := rec.Header().Get("Content-Disposition"); got != "attachment; filename=test__all_pods_bulk.yaml" {
 		t.Fatalf("Content-Disposition = %q", got)
 	}
 	docs := splitYAMLDocs(rec.Body.String())

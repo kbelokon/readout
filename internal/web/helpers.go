@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"html"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -1054,6 +1055,58 @@ func cellDisplayString(cell any) string {
 		return ""
 	}
 	return fmt.Sprint(cell)
+}
+
+// safeSpreadsheetCell defuses CSV/TSV formula injection: a cell whose first
+// character is one a spreadsheet treats as the start of a formula (=, +, -, @)
+// or a control character (tab, CR, LF) that some importers strip before
+// evaluating the rest, gets a leading apostrophe so the spreadsheet renders it
+// as literal text instead of executing it. An empty cell passes through
+// unchanged. csv.Writer still handles quoting of embedded tabs/quotes/newlines;
+// this only neutralizes the LEADING formula trigger.
+func safeSpreadsheetCell(value string) string {
+	if value == "" {
+		return value
+	}
+	switch value[0] {
+	case '=', '+', '-', '@', '\t', '\r', '\n':
+		return "'" + value
+	}
+	return value
+}
+
+// safeAttachmentFilename builds a conservative Content-Disposition attachment
+// filename token: it strips path separators and control characters (anything
+// below U+0020, which would let a CR/LF split the header) so the result is a
+// single safe line. A value that collapses to empty falls back to "download".
+// mime.FormatMediaType handles the quoting/encoding of the returned value.
+func safeAttachmentFilename(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r < 0x20, r == 0x7f:
+			// drop control characters (incl. CR/LF/tab)
+		case r == '/', r == '\\':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "download"
+	}
+	return out
+}
+
+// attachmentDisposition builds an RFC 6266 `attachment` Content-Disposition
+// header value via mime.FormatMediaType, so the filename is quoted/encoded
+// correctly (including unicode) rather than hand-concatenated. The filename is
+// run through safeAttachmentFilename first.
+func attachmentDisposition(filename string) string {
+	return mime.FormatMediaType("attachment", map[string]string{
+		"filename": safeAttachmentFilename(filename),
+	})
 }
 
 func resourceHref(cluster string, rt *kube.ResourceType, namespace, name string) string {

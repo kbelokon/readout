@@ -398,7 +398,7 @@ func TestLogsDownloadRoute(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", got)
 	}
-	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="clusters_test_namespaces_default_pods_nginx_logs.txt"` {
+	if got := rec.Header().Get("Content-Disposition"); got != "attachment; filename=clusters_test_namespaces_default_pods_nginx_logs.txt" {
 		t.Fatalf("Content-Disposition = %q", got)
 	}
 	// One `pod container text` line per entry, raw timestamp text kept.

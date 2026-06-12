@@ -136,7 +136,7 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 func (s *Server) downloadTSV(w http.ResponseWriter, r *http.Request, table *kube.Table) {
 	filename := strings.Trim(strings.ReplaceAll(r.URL.Path, "/", "_"), "_")
 	w.Header().Set("Content-Type", "text/tab-separated-values; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`.tsv"`)
+	w.Header().Set("Content-Disposition", attachmentDisposition(filename+".tsv"))
 	writer := csv.NewWriter(w)
 	writer.Comma = '\t'
 	var cols []string
@@ -159,7 +159,7 @@ func (s *Server) downloadTSV(w http.ResponseWriter, r *http.Request, table *kube
 			rec = append(rec, nestedString(row.Object, "metadata", "namespace"))
 		}
 		for _, cell := range row.Cells {
-			rec = append(rec, cellDisplayString(cell))
+			rec = append(rec, safeSpreadsheetCell(cellDisplayString(cell)))
 		}
 		_ = writer.Write(rec)
 	}
@@ -279,7 +279,7 @@ func (s *Server) downloadBulkYAML(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "text/vnd.yaml; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.Join(filename, "_")+`_bulk.yaml"`)
+	w.Header().Set("Content-Disposition", attachmentDisposition(strings.Join(filename, "_")+"_bulk.yaml"))
 	_, _ = io.WriteString(w, b.String())
 }
 
@@ -515,7 +515,7 @@ func splitLogTimestamp(text string) (ts, msg string) {
 func (s *Server) downloadLogs(w http.ResponseWriter, r *http.Request, lines []logLine) {
 	filename := strings.Trim(strings.ReplaceAll(r.URL.Path, "/", "_"), "_")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`.txt"`)
+	w.Header().Set("Content-Disposition", attachmentDisposition(filename+".txt"))
 	for _, l := range lines {
 		_, _ = fmt.Fprintf(w, "%s %s %s\n", l.Pod, l.Container, l.Text)
 	}
@@ -524,7 +524,7 @@ func (s *Server) downloadLogs(w http.ResponseWriter, r *http.Request, lines []lo
 func (s *Server) downloadYAML(w http.ResponseWriter, r *http.Request, obj map[string]any) {
 	filename := strings.Trim(strings.ReplaceAll(r.URL.Path, "/", "_"), "_")
 	w.Header().Set("Content-Type", "text/vnd.yaml; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`.yaml"`)
+	w.Header().Set("Content-Disposition", attachmentDisposition(filename+".yaml"))
 	data, _ := yamlview.Marshal(obj)
 	_, _ = w.Write(data)
 }
