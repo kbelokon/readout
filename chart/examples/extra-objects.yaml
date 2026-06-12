@@ -1,0 +1,37 @@
+# extra-objects.yaml -- ship a platform CR the chart does not model, through the
+# extraObjects escape hatch.
+#
+# Deploys: readout plus a Traefik IngressRoute (traefik.io/v1alpha1) routing
+# Host(`readout.example.com`) to this chart's Service. The IngressRoute is
+# emitted verbatim, but its string values run through tpl, so it can reference
+# chart helpers like {{ include "readout.fullname" $ }} and the service port.
+#
+# Cluster prerequisites:
+#   - Traefik installed as the ingress controller (provides the IngressRoute CRD)
+#   - DNS for readout.example.com pointed at Traefik
+#   - no Secrets are consumed by this example
+#
+# After install:
+#   kubectl get ingressroute readout
+#   curl -I http://readout.example.com/
+#
+# AUTH TRADE-OFF: this routes external traffic to readout, which shows cluster
+# contents to anyone who reaches it. The chart's no-auth gate does NOT fire here
+# because it only inspects ingress.enabled / gateway.enabled, and exposure via an
+# extraObjects CR is invisible to it -- so no unsafe acknowledgement is required
+# to render. That does not make it safe: put real auth in front (set
+# config.auth.mode to oidc, see oidc-existing-secret.yaml) before exposing it.
+extraObjects:
+  - apiVersion: traefik.io/v1alpha1
+    kind: IngressRoute
+    metadata:
+      name: '{{ include "readout.fullname" $ }}'
+    spec:
+      entryPoints:
+        - web
+      routes:
+        - match: Host(`readout.example.com`)
+          kind: Rule
+          services:
+            - name: '{{ include "readout.fullname" $ }}'
+              port: '{{ $.Values.service.port }}'

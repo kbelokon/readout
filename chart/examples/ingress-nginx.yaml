@@ -1,0 +1,35 @@
+# ingress-nginx.yaml -- expose readout through an ingress-nginx Ingress.
+#
+# Deploys: readout behind a networking.k8s.io/v1 Ingress on the nginx class.
+#
+# Cluster prerequisites:
+#   - an ingress-nginx controller serving the "nginx" IngressClass
+#   - DNS for readout.example.com pointed at the controller's load balancer
+#   - (optional) a TLS Secret if you terminate TLS here -- see ingress.tls below;
+#     create it yourself, the chart never creates Secrets:
+#       kubectl create secret tls readout-tls --cert=tls.crt --key=tls.key
+#
+# After install:
+#   kubectl get ingress readout
+#   curl -I https://readout.example.com/
+#
+# AUTH TRADE-OFF: readout shows cluster contents to anyone who reaches it. This
+# example sets unsafe.allowNoAuth=true so it renders, but that publishes an
+# UNAUTHENTICATED cluster viewer. Put real auth here before exposing it: set
+# config.auth.mode to oidc (see oidc-existing-secret.yaml) or headers behind a
+# trusted proxy. allowNoAuth is honest noise, not a recommendation.
+unsafe:
+  allowNoAuth: true
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: readout.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # tls:
+  #   - hosts:
+  #       - readout.example.com
+  #     secretName: readout-tls

@@ -1,0 +1,65 @@
+{{- $fullName := include "readout.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+{{- $mode := (.Values.config.auth).mode | default "none" -}}
+readout {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+ACCESS URL
+{{- if and .Values.ingress.enabled .Values.ingress.hosts (gt (len .Values.ingress.hosts) 0) }}
+  Reach readout at: http(s)://{{ (index .Values.ingress.hosts 0).host }}/
+{{- else if and .Values.gateway.enabled .Values.gateway.hostnames (gt (len .Values.gateway.hostnames) 0) }}
+  Reach readout at: http(s)://{{ index .Values.gateway.hostnames 0 }}/
+{{- else }}
+  No external host is configured. Reach readout with a port-forward:
+    kubectl port-forward svc/{{ $fullName }} 8080:{{ $svcPort }}
+  then open http://localhost:8080
+{{- end }}
+
+AUTH POSTURE
+{{- if eq $mode "none" }}
+  !! WARNING: auth.mode is "none". readout serves an UNAUTHENTICATED, cluster-wide
+  !! read viewer -- anyone who reaches it can browse your cluster. Do not expose
+  !! this instance to a network you do not fully trust. Set config.auth.mode to
+  !! oidc or headers before exposing it.
+{{- else if eq $mode "headers" }}
+  auth.mode is "headers": readout TRUSTS reverse-proxy identity headers
+  (X-Forwarded-User/Email/Groups). This is only safe behind a proxy that STRIPS
+  any client-supplied identity headers and re-sets them itself. Without such a
+  proxy in front, any client can impersonate any user.
+{{- else if eq $mode "oidc" }}
+  {{- $wired := false -}}
+  {{- if .Values.auth.sessionSecret.existingSecret }}{{- $wired = true -}}{{- end -}}
+  {{- if .Values.config.sessionSecretFile }}{{- $wired = true -}}{{- end -}}
+  {{- range .Values.env }}{{- if eq .name "READOUT_SESSION_SECRET" }}{{- $wired = true -}}{{- end -}}{{- end -}}
+  {{- if $wired }}
+  auth.mode is "oidc" with a chart-visible session secret. Good.
+  {{- else if gt (int .Values.replicaCount) 1 }}
+    {{- if .Values.envFrom }}
+  auth.mode is "oidc" with replicaCount {{ .Values.replicaCount }} and no
+  chart-visible session secret. You supplied envFrom: make sure one of those
+  sources carries READOUT_SESSION_SECRET, shared by every replica -- otherwise
+  each pod signs sessions with its own key and OIDC login breaks under load
+  balancing.
+    {{- end }}
+  {{- else }}
+  auth.mode is "oidc" on a single replica with no chart-visible session secret.
+  Sessions are signed with an ephemeral per-pod key, so every restart logs
+  everyone out. Wire auth.sessionSecret.existingSecret (or env READOUT_SESSION_SECRET,
+  or config.sessionSecretFile) to keep sessions across restarts.
+  {{- end }}
+{{- end }}
+{{- if .Values.gateway.enabled }}
+
+GATEWAY (HTTPRoute) ATTACHMENT
+  An HTTPRoute named "{{ $fullName }}" was created. If traffic does not reach
+  readout, check that it was Accepted by its parent Gateway:
+    kubectl describe httproute {{ $fullName }}
+  The CLUSTER Gateway's spec.listeners[].allowedRoutes must admit routes from
+  this namespace ("{{ .Release.Namespace }}"); a route in a disallowed namespace
+  is silently not attached.
+{{- end }}
+{{- if (.Values.testFramework).enabled }}
+
+VERIFY
+  Run the bundled connectivity test:
+    helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+{{- end }}

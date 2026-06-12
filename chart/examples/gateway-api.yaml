@@ -1,0 +1,34 @@
+# gateway-api.yaml -- expose readout by attaching an HTTPRoute to an existing
+# Gateway API Gateway.
+#
+# Deploys: readout plus a gateway.networking.k8s.io/v1 HTTPRoute. The chart never
+# creates the Gateway or GatewayClass -- those are platform infrastructure.
+#
+# Cluster prerequisites:
+#   - a Gateway API implementation with CRDs installed
+#   - an existing Gateway named "public" in namespace "infra" (REPLACE ME below)
+#     whose allowedRoutes admit this release's namespace
+#   - DNS for readout.example.com pointed at that Gateway's address
+#
+# After install:
+#   kubectl describe httproute readout
+#   # check the route's status shows it Accepted by the parent Gateway
+#
+# AUTH TRADE-OFF: readout shows cluster contents to anyone who reaches it. This
+# example sets unsafe.allowNoAuth=true so it renders, but that publishes an
+# UNAUTHENTICATED cluster viewer. Put real auth here before exposing it: set
+# config.auth.mode to oidc (see oidc-existing-secret.yaml) or headers behind a
+# trusted proxy. allowNoAuth is honest noise, not a recommendation.
+unsafe:
+  allowNoAuth: true
+
+gateway:
+  enabled: true
+  # REPLACE ME: point parentRefs at your real Gateway. "public" in namespace
+  # "infra" is a placeholder; an HTTPRoute with no valid parent attaches to
+  # nothing.
+  parentRefs:
+    - name: public
+      namespace: infra
+  hostnames:
+    - readout.example.com
