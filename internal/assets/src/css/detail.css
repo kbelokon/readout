@@ -152,7 +152,7 @@
     }
     .ro-input::placeholder { color: var(--text-faint); }
     .ro-input:hover { border-color: var(--border-strong); }
-    .ro-input:focus { border-color: var(--accent); background: var(--surface); }
+    .ro-input:focus { border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 3px var(--accent-weak); }
     .ro-tools-actions {
         display: flex;
         justify-content: flex-end;
