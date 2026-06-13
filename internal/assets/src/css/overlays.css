@@ -120,6 +120,21 @@
     @keyframes ro-toast-in { from { opacity: 0; transform: translateY(6px); } }
 
 
+    /* ================================================================ THIN SCROLLBARS (P9)
+       The inner scroll containers (log stream, namespace menu, palette list,
+       annotation <pre>, the table wrap, YAML blocks, sidebar) showed full-width UA
+       scrollbars that read as chrome, not content. Thin + token-coloured. */
+    .ro-table-wrap,
+    .ro-logpre,
+    .ctx-menu,
+    .ro-pal-list,
+    .anno-pre,
+    .ro-yaml,
+    .ro-sidebar {
+        scrollbar-width: thin;
+        scrollbar-color: var(--border-strong) transparent;
+    }
+
     /* ================================================================ "?" KEYBOARD OVERLAY */
     /* The keyboard-map card -- lifted verbatim from the v2 prototype data.css
        (.kbd-overlay block). Global layout chrome (kbdOverlayC) revealed via
