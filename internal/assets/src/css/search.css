@@ -123,7 +123,10 @@
        `#yaml-<line>` <span> when a .linenos anchor is clicked or the URL hash
        names a line, instead of setting el.style.background -- so the colour
        stays in CSS (tidier; the class swap is also unambiguous under a CSP). */
-    pre > span.yaml-line-highlight { background: hsl(48, 100%, 67%); }
+    pre > span.yaml-line-highlight {
+        background: var(--accent-weak);
+        box-shadow: inset 2.5px 0 0 var(--accent);
+    }
 
     /* Logs filter form inputs (resource-logs.html). De-inlined from the former
        inline width + vertical-align attributes so a strict style-src 'self'
