@@ -95,7 +95,7 @@
         box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none;
         transition: opacity var(--dur), transform var(--dur); }
     .ro-bulkbar.is-open { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
-    .ro-bulkbar .bulk-count { font-size: 12px; font-weight: 550; color: var(--accent-text); padding-right: 6px; }
+    .ro-bulkbar .bulk-count { font-size: 12px; font-weight: 550; color: var(--accent-text); padding-right: 6px; white-space: nowrap; }
     .ro-bulkbar .bulk-x { display: inline-flex; align-items: center; justify-content: center;
         width: 26px; height: 26px; border: 0; background: none; border-radius: 6px; color: var(--text-faint); }
     .ro-bulkbar .bulk-x:hover { background: var(--surface-2); color: var(--text); }
