@@ -73,6 +73,14 @@ func TestShellTopbarChrome(t *testing.T) {
 	// M1: the read-only search box placeholder uses a single U+2026 ellipsis
 	// glyph, not two ASCII dots (exact-match -- the old ".." form fails this).
 	p.wantAttr("header.ro-topbar .ro-search input", "placeholder", "Search Kubernetes objects…")
+
+	// P10: a touch-reachable mobile-search trigger rides as the first child of
+	// .tb-group, reusing the existing data-ro-palette-open delegated click hook
+	// (no new JS) to open the ⌘K palette on small screens where the inline
+	// .ro-search box is hidden.
+	p.wantHas(".tb-group .tb-btn.ro-search-mobile")
+	p.wantAttr(".tb-group .tb-btn.ro-search-mobile", "data-ro-palette-open", "true")
+	p.wantAttr(".tb-group .tb-btn.ro-search-mobile", "aria-label", "Search Kubernetes objects")
 }
 
 // TestNavbarNamespaceContext pins the namespace context dropdown (.ctx-dd): it
