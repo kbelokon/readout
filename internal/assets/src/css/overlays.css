@@ -129,7 +129,7 @@
     .kbd-overlay { position: fixed; inset: 0; z-index: 210; background: var(--overlay-bg);
         backdrop-filter: blur(2px); display: none; place-items: center; }
     .kbd-overlay.open { display: grid; }
-    .kbd-card { width: 480px; background: var(--surface); border: 1px solid var(--border-strong);
+    .kbd-card { width: min(480px, 92vw); background: var(--surface); border: 1px solid var(--border-strong);
         border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); padding: 22px 24px 14px; }
     .kbd-card h3 { font-size: 15px; font-weight: 650; margin: 0 0 14px; }
     .kbd-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px; }
