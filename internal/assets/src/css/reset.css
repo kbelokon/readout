@@ -5,7 +5,8 @@
 @layer app {
     html {
         box-sizing: border-box;
-        overflow: scroll;
+        overflow-x: auto;
+        overflow-y: scroll;
         line-height: 1.5;
         -webkit-text-size-adjust: 100%;
     }
