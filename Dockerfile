@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 # distroless static-debian12, tag :nonroot (informational, for Dependabot). The
 # digest is authoritative. USER nonroot is set explicitly below regardless.
-FROM gcr.io/distroless/static-debian12@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
+FROM gcr.io/distroless/static-debian12@sha256:9c346e4be81b5ca7ff31a0d89eaeade58b0f95cfd3baed1f36083ddb47ca3160
 COPY --from=build /out/readout /readout
 USER nonroot:nonroot
 EXPOSE 8080

@@ -49,6 +49,7 @@
     .ro-select:focus {
         border-color: var(--accent);
         background-color: var(--surface);
+        box-shadow: 0 0 0 3px var(--accent-weak);
     }
     .ro-select:disabled {
         background-color: var(--surface-2);

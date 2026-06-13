@@ -5,7 +5,8 @@
 @layer app {
     html {
         box-sizing: border-box;
-        overflow: scroll;
+        overflow-x: auto;
+        overflow-y: scroll;
         line-height: 1.5;
         -webkit-text-size-adjust: 100%;
     }
@@ -164,5 +165,10 @@
         outline-offset: 2px;
         border-radius: var(--radius-sm);
     }
+    /* The a11y baseline above squares the focus ring (radius-sm) on every focused
+       control; let the ring follow the control's own shape for the round chip ✕
+       (50%) and the 6px-square bulk ✕ instead of boxing them. */
+    .chip-x:focus-visible { border-radius: 50%; }
+    .bulk-x:focus-visible { border-radius: 6px; }
 
 }
