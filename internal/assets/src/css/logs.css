@@ -7,7 +7,7 @@
         font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
     .ro-rd .ro-logs-form input { height: 32px; background: var(--surface); border: 1px solid var(--border);
         border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 0 10px; }
-    .ro-rd .ro-logs-form input:focus { border-color: var(--accent); }
+    .ro-rd .ro-logs-form input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
     .ro-rd .ro-logs-form .tail { width: 74px; }
     .ro-rd .ro-logs-form .flt { width: 200px; }
     /* The client-side logs display toggles: checkbox labels read as one unit,

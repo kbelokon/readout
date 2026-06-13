@@ -192,7 +192,7 @@
         font-family: var(--font-ui); font-size: 13px;
     }
     .ro-search input::placeholder { color: var(--text-faint); }
-    .ro-search input:focus { border-color: var(--accent); background: var(--surface-2); }
+    .ro-search input:focus { border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 3px var(--accent-weak); }
     .ro-search .s-ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
         color: var(--text-faint); display: inline-flex; pointer-events: none; }
     .ro-search .kbd-hint { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
@@ -335,7 +335,7 @@
         font-size: 12px;
     }
     #namespace-searchbox::placeholder { color: var(--text-faint); }
-    #namespace-searchbox:focus { border-color: var(--accent); background: var(--surface); }
+    #namespace-searchbox:focus { border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 3px var(--accent-weak); }
 
     /* icons (lucide-ish via stroke) */
     .ico svg { width: 15px; height: 15px; display: block; stroke: currentColor;
