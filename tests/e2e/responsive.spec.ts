@@ -119,6 +119,33 @@ test('mobile cards speak the v2 cell vocabulary at 700px', async ({ page }) => {
   await expect(nginxCard.locator('.pc-meta .m .k', { hasText: 'ready' })).toBeVisible();
 });
 
+test('the mobile search icon reaches the palette at ≤760px; the desktop chip is the inverse', async ({
+  page,
+}) => {
+  // The topbar's read-only ⌘K chip is a desktop-only affordance; below the
+  // 760px flip it collapses and a compact icon button takes its place. The
+  // icon must still reach the same command palette via the delegated
+  // data-ro-palette-open hook -- otherwise mobile users lose search entirely.
+  await page.goto(PODS);
+  const chip = page.locator('header.ro-topbar .ro-search');
+  const mobileBtn = page.locator('header.ro-topbar .tb-btn.ro-search-mobile');
+
+  // --- ≤760px: the desktop chip hides, the icon button takes over and OPENS
+  // the palette on click. ---
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(chip).toBeHidden();
+  await expect(mobileBtn).toBeVisible();
+  await mobileBtn.click();
+  await expect(page.locator('#ro-palette')).toHaveClass(/open/);
+
+  // --- ≥761px: the inverse -- the chip is the visible affordance and the
+  // mobile icon button is gone. ---
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(chip).toBeVisible();
+  await expect(mobileBtn).toBeHidden();
+});
+
 test('a long sidebar kind name squeezes with an ellipsis instead of pushing the count out', async ({
   page,
 }) => {

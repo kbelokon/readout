@@ -30,6 +30,7 @@
         --radius: 7px;
         --radius-sm: 5px;
         --pill-radius: 5px;
+        --radius-lg: 13px;   /* v3 P2: shared pop-tier radius (palette / kbd-card / bulkbar / search-big / empty-glyph) */
         --topbar-h: 52px;
         --sidebar-w: 224px;
 
@@ -73,6 +74,10 @@
         --accent-text: #0c8f6e;       /* accent used as TEXT (readout-specific token) */
         --id-color: #14181d;          /* identifiers + name links */
         --link: #146a52;
+
+        /* v3 P1 native-control theming + P3 legible text-selection tint */
+        color-scheme: light;
+        --selection: color-mix(in oklab, var(--accent) 22%, transparent);
 
         /* label chips -- NEUTRAL (v2 colour law: green = action / live health /
            freshness / active nav, nothing else; key and value differ by ink
@@ -134,6 +139,10 @@
         --id-color: #d2d8df;          /* identifiers / row name links -- off-white */
         --link: #7fe9cd;
 
+        /* v3 P1 + P3 (dark) */
+        color-scheme: dark;
+        --selection: color-mix(in oklab, var(--accent) 30%, transparent);
+
         --chip-bg: #161a21;
         --chip-border: #232a34;
         --chip-key: #828d9c;
@@ -166,6 +175,7 @@
             --text: #dbe1e8; --text-muted: #98a1ae; --text-faint: #5d6675; --text-ghost: #3e4654;
             --border: #1d222b; --border-soft: #161b22; --border-strong: #2c333f;
             --accent: #56E0BC; --accent-on: #04140f; --accent-weak: rgba(86,224,188,.12); --accent-text: #56E0BC; --id-color: #d2d8df; --link: #7fe9cd;
+            color-scheme: dark; --selection: color-mix(in oklab, var(--accent) 30%, transparent);
             --chip-bg: #161a21; --chip-border: #232a34; --chip-key: #828d9c; --chip-val: #c2cad4;
             --st-ok: #3ddc97; --st-ok-bg: rgba(61,220,151,.13);
             --st-warn: #ffb454; --st-warn-bg: rgba(255,180,84,.13);

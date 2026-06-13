@@ -16,7 +16,7 @@
         padding-top: 12vh; opacity: 0; pointer-events: none; transition: opacity .12s; }
     .ro-rd.ro-palette-backdrop.open { opacity: 1; pointer-events: auto; }
     .ro-rd .ro-palette { width: min(640px, 92vw); max-height: 64vh; display: flex; flex-direction: column;
-        background: var(--surface); border: 1px solid var(--border-strong); border-radius: 13px;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
         box-shadow: var(--shadow-pop); overflow: hidden; transform: translateY(-6px); transition: transform .12s; }
     .ro-rd.ro-palette-backdrop.open .ro-palette { transform: translateY(0); }
     .ro-pal-search { display: flex; align-items: center; gap: 11px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
@@ -91,11 +91,11 @@
        focus order and the a11y tree); the count is the accent voice. */
     .ro-bulkbar { position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 8px);
         z-index: 80; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 16px;
-        background: var(--surface); border: 1px solid var(--border-strong); border-radius: 11px;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
         box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none;
         transition: opacity var(--dur), transform var(--dur); }
     .ro-bulkbar.is-open { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
-    .ro-bulkbar .bulk-count { font-size: 12px; font-weight: 550; color: var(--accent-text); padding-right: 6px; }
+    .ro-bulkbar .bulk-count { font-size: 12px; font-weight: 550; color: var(--accent-text); padding-right: 6px; white-space: nowrap; }
     .ro-bulkbar .bulk-x { display: inline-flex; align-items: center; justify-content: center;
         width: 26px; height: 26px; border: 0; background: none; border-radius: 6px; color: var(--text-faint); }
     .ro-bulkbar .bulk-x:hover { background: var(--surface-2); color: var(--text); }
@@ -120,6 +120,22 @@
     @keyframes ro-toast-in { from { opacity: 0; transform: translateY(6px); } }
 
 
+    /* ================================================================ THIN SCROLLBARS (P9)
+       The inner scroll containers (log stream, namespace menu, palette list,
+       annotation <pre>, the table wrap, YAML blocks, sidebar) showed full-width UA
+       scrollbars that read as chrome, not content. Thin + token-coloured. */
+    .ro-table-wrap,
+    .ro-logpre,
+    .ctx-menu,
+    .ro-pal-list,
+    .anno-pre,
+    .ro-yaml,
+    .ro-sidebar,
+    .ro-filter-ac {
+        scrollbar-width: thin;
+        scrollbar-color: var(--border-strong) transparent;
+    }
+
     /* ================================================================ "?" KEYBOARD OVERLAY */
     /* The keyboard-map card -- lifted verbatim from the v2 prototype data.css
        (.kbd-overlay block). Global layout chrome (kbdOverlayC) revealed via
@@ -127,10 +143,10 @@
        the focus trap (the card is the dialog's only focus stop). z-index 210
        keeps it above the palette (200-tier) like the prototype. */
     .kbd-overlay { position: fixed; inset: 0; z-index: 210; background: var(--overlay-bg);
-        backdrop-filter: blur(2px); display: none; place-items: center; }
+        backdrop-filter: blur(3px); display: none; place-items: center; }
     .kbd-overlay.open { display: grid; }
-    .kbd-card { width: 480px; background: var(--surface); border: 1px solid var(--border-strong);
-        border-radius: 13px; box-shadow: var(--shadow-pop); padding: 22px 24px 14px; }
+    .kbd-card { width: min(480px, 92vw); background: var(--surface); border: 1px solid var(--border-strong);
+        border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); padding: 22px 24px 14px; }
     .kbd-card h3 { font-size: 15px; font-weight: 650; margin: 0 0 14px; }
     .kbd-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px; }
     .kbd-grp { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
@@ -216,6 +232,14 @@
     .menu-toggle { display: none; }
     @media (max-width: 760px) { .menu-toggle { display: inline-flex; } }
 
+    /* The touch-search topbar button is mobile-only chrome: hidden at desktop
+       width where the ⌘K search chip is present, revealed below 760px so search
+       stays reachable on touch where the keyboard shortcut does not exist. Base
+       hide MUST precede the media reveal (equal specificity -> later source order
+       wins), mirroring .menu-toggle above. */
+    .tb-btn.ro-search-mobile { display: none; }
+    @media (max-width: 760px) { .tb-btn.ro-search-mobile { display: inline-flex; } }
+
     /* Respect prefers-reduced-motion for the ported pulse / skeleton / morph
        animations (D-reduced-motion). The static look is kept; only the looping /
        sweeping / pulsing motion is dropped. */
@@ -231,4 +255,5 @@
         .ro-toast { animation: none; transition: none; }
         .skel { animation: none; }
         .ro-fold-toggle { transition: none; }
+}
 }
