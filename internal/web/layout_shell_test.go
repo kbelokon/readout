@@ -69,6 +69,10 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantAttr(`header.ro-topbar form[action="/preferences"][method="post"]`, "hx-boost", "false")
 	p.wantHas("#btn-theme-toggle .theme-icon-dark")
 	p.wantHas("#btn-theme-toggle .theme-icon-light")
+
+	// M1: the read-only search box placeholder uses a single U+2026 ellipsis
+	// glyph, not two ASCII dots (exact-match -- the old ".." form fails this).
+	p.wantAttr("header.ro-topbar .ro-search input", "placeholder", "Search Kubernetes objects…")
 }
 
 // TestNavbarNamespaceContext pins the namespace context dropdown (.ctx-dd): it
