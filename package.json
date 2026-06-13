@@ -13,7 +13,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.0",
-    "@typescript/native-preview": "7.0.0-dev.20260611.2",
+    "@typescript/native-preview": "7.0.0-dev.20260613.1",
     "esbuild": "0.28.1",
     "lightningcss": "1.32.0",
     "typescript": "6.0.3"
