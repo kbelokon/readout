@@ -127,7 +127,7 @@
        the focus trap (the card is the dialog's only focus stop). z-index 210
        keeps it above the palette (200-tier) like the prototype. */
     .kbd-overlay { position: fixed; inset: 0; z-index: 210; background: var(--overlay-bg);
-        backdrop-filter: blur(2px); display: none; place-items: center; }
+        backdrop-filter: blur(3px); display: none; place-items: center; }
     .kbd-overlay.open { display: grid; }
     .kbd-card { width: min(480px, 92vw); background: var(--surface); border: 1px solid var(--border-strong);
         border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); padding: 22px 24px 14px; }
