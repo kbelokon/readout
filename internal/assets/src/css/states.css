@@ -325,7 +325,7 @@
     /* big empty / failure state (the designed empty/error screens) */
     .ro-empty-lg { display: flex; flex-direction: column; align-items: center; justify-content: center;
         text-align: center; padding: 72px 24px; }
-    .ro-empty-glyph { width: 52px; height: 52px; border-radius: 13px; display: flex; align-items: center;
+    .ro-empty-glyph { width: 52px; height: 52px; border-radius: var(--radius-lg); display: flex; align-items: center;
         justify-content: center; background: var(--surface-2); border: 1px solid var(--border); margin-bottom: 18px; }
     .ro-empty-glyph .ico svg { width: 24px; height: 24px; color: var(--text-faint); }
     .ro-empty-glyph.err { background: var(--st-err-bg); border-color: transparent; }

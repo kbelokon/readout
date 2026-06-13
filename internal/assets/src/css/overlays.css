@@ -16,7 +16,7 @@
         padding-top: 12vh; opacity: 0; pointer-events: none; transition: opacity .12s; }
     .ro-rd.ro-palette-backdrop.open { opacity: 1; pointer-events: auto; }
     .ro-rd .ro-palette { width: min(640px, 92vw); max-height: 64vh; display: flex; flex-direction: column;
-        background: var(--surface); border: 1px solid var(--border-strong); border-radius: 13px;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
         box-shadow: var(--shadow-pop); overflow: hidden; transform: translateY(-6px); transition: transform .12s; }
     .ro-rd.ro-palette-backdrop.open .ro-palette { transform: translateY(0); }
     .ro-pal-search { display: flex; align-items: center; gap: 11px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
@@ -91,7 +91,7 @@
        focus order and the a11y tree); the count is the accent voice. */
     .ro-bulkbar { position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 8px);
         z-index: 80; display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 16px;
-        background: var(--surface); border: 1px solid var(--border-strong); border-radius: 11px;
+        background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
         box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none;
         transition: opacity var(--dur), transform var(--dur); }
     .ro-bulkbar.is-open { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
@@ -130,7 +130,7 @@
         backdrop-filter: blur(2px); display: none; place-items: center; }
     .kbd-overlay.open { display: grid; }
     .kbd-card { width: 480px; background: var(--surface); border: 1px solid var(--border-strong);
-        border-radius: 13px; box-shadow: var(--shadow-pop); padding: 22px 24px 14px; }
+        border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); padding: 22px 24px 14px; }
     .kbd-card h3 { font-size: 15px; font-weight: 650; margin: 0 0 14px; }
     .kbd-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px; }
     .kbd-grp { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
