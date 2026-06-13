@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.9.0
-appVersion: 0.9.0
+version: 0.10.0
+appVersion: 0.10.0
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,15 +29,13 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.9.0
+      image: ghcr.io/kbelokon/readout:0.10.0
   artifacthub.io/changes: |
-    - kind: security
-      description: "Security audit closure: source-aware exec credential-plugin allowlist, fail-closed authorization hook with token minimization, cluster server-URL SSRF validation (link-local/metadata rejected), same-origin CSRF guard, security headers (Referrer-Policy/Permissions-Policy/COOP/gated HSTS), host allowlist, and bounded API reads"
-    - kind: changed
-      description: "RBAC preset defaults to restricted (read-only on a curated resource set); wildcard is now an explicit opt-in"
-    - kind: changed
-      description: "No blocking gates: no-auth network exposure and multi-replica OIDC without a shared session secret install and warn loudly in NOTES instead of failing; the unsafe.* override values are removed and the chart never refuses to render over a posture"
-    - kind: changed
-      description: "Header-auth identity is honored only when the TCP peer falls inside auth.trustedHeaders.trustedProxyCidrs; insecureSkipTLSVerify now logs a per-cluster startup warning"
     - kind: added
-      description: "Opt-in NetworkPolicy, default resource requests/limits, a multi-cluster kubeconfig example, SHA-pinned CI actions, and digest-pinned base/test images"
+      description: "Touch-reachable search: a topbar search button below 760px opens the command palette where the keyboard shortcut is unavailable"
+    - kind: fixed
+      description: "Native controls follow the active theme (color-scheme): scrollbars and select popups render dark in the dark theme; text selection is now legibly tinted; the forced horizontal scrollbar on classic-scrollbar platforms is gone"
+    - kind: fixed
+      description: "YAML line-anchor highlight uses the accent treatment instead of a hardcoded yellow that broke on the dark theme"
+    - kind: changed
+      description: "UI polish: one focus-ring dialect across filter and select inputs, a shared pop-tier corner radius, thin themed scrollbars on inner scrollers, and buttons that no longer wrap"
