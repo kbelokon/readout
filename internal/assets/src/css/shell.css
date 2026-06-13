@@ -111,7 +111,7 @@
        =========================================================================== */
 
     .mono { font-family: var(--font-mono); }
-    ::selection { background: var(--accent-weak); color: var(--text); }
+    ::selection { background: var(--selection); color: var(--text); }
 
     /* focus ring -- green, the redesign's signature (bare-element variant) */
     .ro-focus-ring:focus-visible {
