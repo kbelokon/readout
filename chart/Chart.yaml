@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.10.0
-appVersion: 0.10.0
+version: 0.10.1
+appVersion: 0.10.1
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,13 +29,9 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.10.0
+      image: ghcr.io/kbelokon/readout:0.10.1
   artifacthub.io/changes: |
-    - kind: added
-      description: "Touch-reachable search: a topbar search button below 760px opens the command palette where the keyboard shortcut is unavailable"
-    - kind: fixed
-      description: "Native controls follow the active theme (color-scheme): scrollbars and select popups render dark in the dark theme; text selection is now legibly tinted; the forced horizontal scrollbar on classic-scrollbar platforms is gone"
-    - kind: fixed
-      description: "YAML line-anchor highlight uses the accent treatment instead of a hardcoded yellow that broke on the dark theme"
+    - kind: security
+      description: "Bump esbuild to 0.28.1, clearing the GHSA-gv7w-rqvm-qjhr high-severity advisory that npm audit flagged on 0.28.0 (a dev-only build tool; the runtime image is unaffected)"
     - kind: changed
-      description: "UI polish: one focus-ring dialect across filter and select inputs, a shared pop-tier corner radius, thin themed scrollbars on inner scrollers, and buttons that no longer wrap"
+      description: "Routine dependency maintenance: k8s.io API client libraries to 0.36.2, golang.org/x/sync to 0.21.0, @biomejs/biome to 2.5.0, the TypeScript native-preview toolchain, the distroless base image digest, and the setup-node / setup-helm / upload-artifact CI actions"
