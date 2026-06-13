@@ -217,7 +217,6 @@
         .topnav,
         .refresh-label { display: none; }
         .ro-search { display: none; }
-        .tb-btn.ro-search-mobile { display: inline-flex; }
         .ro-title { font-size: 21px; }
         .ro-mobile-hide { display: none !important; }
         .ro-table-wrap.has-cards { display: none; }
@@ -234,10 +233,12 @@
     @media (max-width: 760px) { .menu-toggle { display: inline-flex; } }
 
     /* The touch-search topbar button is mobile-only chrome: hidden at desktop
-       width where the ⌘K search chip is present, revealed below 760px (the
-       reveal lives in the max-width:760px block above) so search stays reachable
-       on touch where the keyboard shortcut does not exist. */
+       width where the ⌘K search chip is present, revealed below 760px so search
+       stays reachable on touch where the keyboard shortcut does not exist. Base
+       hide MUST precede the media reveal (equal specificity -> later source order
+       wins), mirroring .menu-toggle above. */
     .tb-btn.ro-search-mobile { display: none; }
+    @media (max-width: 760px) { .tb-btn.ro-search-mobile { display: inline-flex; } }
 
     /* Respect prefers-reduced-motion for the ported pulse / skeleton / morph
        animations (D-reduced-motion). The static look is kept; only the looping /
