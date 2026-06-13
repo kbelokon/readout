@@ -130,7 +130,8 @@
     .ro-pal-list,
     .anno-pre,
     .ro-yaml,
-    .ro-sidebar {
+    .ro-sidebar,
+    .ro-filter-ac {
         scrollbar-width: thin;
         scrollbar-color: var(--border-strong) transparent;
     }
