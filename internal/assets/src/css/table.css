@@ -409,7 +409,7 @@
     .tools-row .ro-tools-filter .ico { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-faint); }
     .tools-row input { width: 100%; height: 36px; padding: 0 12px 0 34px; background: var(--surface);
         border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; }
-    .tools-row input:focus { border-color: var(--accent); }
+    .tools-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
     .cl-name a { font-family: var(--font-mono); color: var(--id-color); font-weight: 500; }
     .cl-name a:hover { color: var(--accent); }
 

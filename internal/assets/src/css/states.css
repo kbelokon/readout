@@ -8,64 +8,9 @@
        auto-refresh changed-cell flash. Tokens only; no inline style, no overrides.
        --------------------------------------------------------------------------- */
 
-    /* Full-page error (error.html). A calm centered column: a big status code in
-       the error hue, a short title, the REAL apiserver message verbatim in a mono
-       code block (the most useful thing for a read-only RBAC tool -- never hidden),
-       a plain-language hint, then Back (quiet) + Retry (accent) actions. */
-    .ro-error {
-        max-width: 42rem;
-        margin: 3.5rem auto 0;
-        text-align: center;
-    }
-    .ro-error-code {
-        font-family: var(--font-mono);
-        font-size: 4rem;
-        font-weight: 700;
-        line-height: 1;
-        letter-spacing: -0.03em;
-        color: var(--st-err);
-    }
-    .ro-error-title {
-        font-size: 1.25rem;
-        font-weight: 600;
-        color: var(--text);
-        margin: 0.5rem 0 1.25rem;
-    }
-    .ro-error-message {
-        text-align: left;
-        background: var(--code-bg);
-        border: 1px solid var(--border);
-        border-left: 0.1875rem solid var(--st-err);
-        border-radius: var(--radius);
-        padding: 0.75rem 0.875rem;
-        margin-bottom: 1rem;
-        overflow-x: auto;
-    }
-    .ro-error-message code {
-        font-family: var(--font-mono);
-        font-size: 0.8125rem;
-        color: var(--text);
-        background: transparent;
-        white-space: pre-wrap;
-        word-break: break-word;
-    }
-    .ro-error-hint {
-        color: var(--text-muted);
-        font-size: 0.875rem;
-        margin-bottom: 1.5rem;
-    }
-    .ro-error-hint code {
-        font-family: var(--font-mono);
-        background: var(--surface-2);
-        color: var(--text);
-        border-radius: var(--radius-sm);
-        padding: 0 0.25rem;
-    }
-    .ro-error-actions {
-        display: flex;
-        gap: 0.625rem;
-        justify-content: center;
-    }
+    /* Full-page error card (error.html). A calm centered card: the REAL apiserver
+       message verbatim in mono body text (the most useful thing for a read-only
+       RBAC tool -- never hidden), inside a bordered surface with an error-hue rail. */
     .ro-error-card {
         max-width: 42rem;
         margin: 3.5rem auto 0;
@@ -325,7 +270,7 @@
     /* big empty / failure state (the designed empty/error screens) */
     .ro-empty-lg { display: flex; flex-direction: column; align-items: center; justify-content: center;
         text-align: center; padding: 72px 24px; }
-    .ro-empty-glyph { width: 52px; height: 52px; border-radius: 13px; display: flex; align-items: center;
+    .ro-empty-glyph { width: 52px; height: 52px; border-radius: var(--radius-lg); display: flex; align-items: center;
         justify-content: center; background: var(--surface-2); border: 1px solid var(--border); margin-bottom: 18px; }
     .ro-empty-glyph .ico svg { width: 24px; height: 24px; color: var(--text-faint); }
     .ro-empty-glyph.err { background: var(--st-err-bg); border-color: transparent; }
