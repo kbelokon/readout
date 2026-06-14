@@ -17,8 +17,14 @@ coverage.*
 /kind
 /kubectl
 
+#bmad
+.agents/
+_bmad/
+_bmad-output/
+.claude/
+
 # Never publish: forge notes and parity artifacts
-docs/
+docs/forge
 test-artifacts/
 
 # Root asset-build toolchain (esbuild / Lightning CSS / biome / tsgo). The Go
