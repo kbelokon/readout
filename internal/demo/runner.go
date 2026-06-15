@@ -26,15 +26,12 @@ import (
 // scenario's cluster name.
 var demoClusterLabels = map[string]map[string]string{
 	"prod": {
-		"environment":               "production",
-		"region":                    "us-east-1",
-		"provider":                  "aws",
-		"app.kubernetes.io/part-of": "acme-shop",
+		"environment": "production",
+		"region":      "us-east-1",
 	},
 	"staging": {
 		"environment": "staging",
 		"region":      "us-west-2",
-		"provider":    "aws",
 	},
 }
 
