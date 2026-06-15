@@ -104,6 +104,8 @@ var builtinKinds = map[string]gvrInfo{
 	"batch/v1/CronJob": {apiPrefix: "/apis", group: "batch", version: "v1", resource: "cronjobs", singular: "cronjob", kind: "CronJob", listKind: "CronJobList", namespaced: true},
 
 	"networking.k8s.io/v1/Ingress": {apiPrefix: "/apis", group: "networking.k8s.io", version: "v1", resource: "ingresses", singular: "ingress", kind: "Ingress", listKind: "IngressList", namespaced: true},
+
+	"autoscaling/v2/HorizontalPodAutoscaler": {apiPrefix: "/apis", group: "autoscaling", version: "v2", resource: "horizontalpodautoscalers", singular: "horizontalpodautoscaler", kind: "HorizontalPodAutoscaler", listKind: "HorizontalPodAutoscalerList", namespaced: true},
 }
 
 // kindRegistry returns the builtin kinds plus one entry per registered CRD, so
