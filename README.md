@@ -55,7 +55,7 @@ readout is a single binary driven by one YAML config. Run it against a config fi
 readout --config readout.yaml
 ```
 
-That is the whole command line. readout has exactly four flags — everything else about behaviour lives in the YAML config:
+That is the whole command line. readout has five flags — everything else about behaviour lives in the YAML config:
 
 | Flag        | Purpose                                              |
 | ----------- | ---------------------------------------------------- |
@@ -63,6 +63,7 @@ That is the whole command line. readout has exactly four flags — everything el
 | `--port`    | TCP listen port (overrides `port:` in the config)    |
 | `--debug`   | verbose logging                                      |
 | `--version` | print the version and exit                           |
+| `--demo`    | serve two built-in fake clusters, no config needed (see [Live demo](#live-demo)) |
 
 A documented, copy-pasteable example config lives at [`readout.yaml`](readout.yaml) — start from it.
 
@@ -80,6 +81,33 @@ helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.10.1
 ```
 
 See [`chart/README.md`](chart/README.md) for values, RBAC presets, ingress/Gateway options, and upgrade notes.
+
+### Live demo
+
+```sh
+readout --demo --port 8099
+```
+
+`--demo` starts two fake clusters (`prod` + `staging`) inside the one process —
+no kubeconfig, no real cluster, no config file. They are seeded with a rich,
+referentially-consistent fake environment that exercises every part of the UI
+(curated cells, CRD icon families, pod/node metrics, detail pages, multi-cluster
+overview and search, bulk export), and a gentle background loop keeps Live
+moving. The test-only `/__control/` surface is never registered in this mode. It
+is the same binary you deploy — handy for a quick look without wiring up a
+cluster, and it is what powers the public demo.
+
+**Deploying it publicly.** The demo serves only fabricated, read-only data, so
+it runs open (`auth.mode: none`). To make it reachable off-host, set an explicit
+non-loopback `listenAddress` (or front it with a reverse proxy) — for example
+`listenAddress: ":8099"` to bind all interfaces. Because the bind is not
+loopback, the anti-DNS-rebinding `Host` allowlist does not apply; that is
+acceptable here precisely because every object is fake and the binary is
+read-only by construction (no write verb reaches any backend). Do **not** point a
+public, no-auth bind at a real cluster — that posture is for the demo only.
+
+The landing screenshots under [`docs/screenshots/`](docs/screenshots) are
+captured from this demo (regenerate with `RO_SHOTS=1 make e2e`).
 
 ### Validating a config offline
 
