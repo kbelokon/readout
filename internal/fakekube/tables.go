@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // tableColumn is one Table columnDefinition: the displayed name plus the wire
@@ -336,14 +337,81 @@ func buildTableDoc(b *listBucket) map[string]any {
 
 func cellName(obj map[string]any) any { return nestedString(obj, "metadata", "name") }
 
-// cellAge renders the printer's compressed-duration Age. The full timestamp
-// rides the object (metadata.creationTimestamp), which readout's age cell
-// re-reads, so a stable token here is enough for the generic/sort path.
+// cellAgeReference is the fixed "now" the derived Age cell measures
+// creationTimestamp against, so a generated Age is deterministic (no wall clock)
+// and stable across runs/snapshots. It matches the demo scenario's reference
+// instant; the base test cluster never reaches this derivation (its rows carry
+// EXPLICIT age cells via withCells), so the constant does not skew base ages.
+var cellAgeReference = mustTime("2026-06-15T12:00:00Z")
+
+// mustTime parses an RFC3339 literal, panicking on a malformed constant (a code
+// bug caught by the first test run).
+func mustTime(rfc3339 string) time.Time {
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		panic("fakeapi tables: bad reference timestamp " + rfc3339 + ": " + err.Error())
+	}
+	return t
+}
+
+// cellAge renders the printer's compressed-duration Age from the object's
+// creationTimestamp measured against the fixed cellAgeReference instant — the
+// kube printer's HumanDuration shape (years/days/hours/minutes/seconds, the two
+// most-significant units). The full timestamp also rides the object, which
+// readout's rich age cell re-reads; this value backs the generic/sort/TSV path
+// and the demo's visible Age column. An absent or unparseable timestamp renders
+// "<unknown>".
 func cellAge(obj map[string]any) any {
-	if nestedString(obj, "metadata", "creationTimestamp") == "" {
+	created := nestedString(obj, "metadata", "creationTimestamp")
+	if created == "" {
 		return "<unknown>"
 	}
-	return "10m"
+	t, err := time.Parse(time.RFC3339, created)
+	if err != nil {
+		return "<unknown>"
+	}
+	return humanAge(cellAgeReference.Sub(t))
+}
+
+// humanAge renders a duration as the kube printer's compressed Age token (e.g.
+// "12d", "3h", "45m", "5s", "1y127d"), showing the two most-significant nonzero
+// units the way kubectl's HumanDuration does. A non-positive duration renders
+// "0s".
+func humanAge(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	seconds := int64(d.Seconds())
+	const (
+		minute = 60
+		hour   = 60 * minute
+		day    = 24 * hour
+		year   = 365 * day
+	)
+	switch {
+	case seconds < minute:
+		return fmt.Sprintf("%ds", seconds)
+	case seconds < hour:
+		return fmt.Sprintf("%dm", seconds/minute)
+	case seconds < day:
+		h := seconds / hour
+		m := (seconds % hour) / minute
+		if h < 8 && m > 0 {
+			return fmt.Sprintf("%dh%dm", h, m)
+		}
+		return fmt.Sprintf("%dh", h)
+	case seconds < year:
+		dys := seconds / day
+		h := (seconds % day) / hour
+		if dys < 8 && h > 0 {
+			return fmt.Sprintf("%dd%dh", dys, h)
+		}
+		return fmt.Sprintf("%dd", dys)
+	default:
+		yrs := seconds / year
+		dys := (seconds % year) / day
+		return fmt.Sprintf("%dy%dd", yrs, dys)
+	}
 }
 
 // nestedString reads a dotted-path string from a decoded JSON map, "" when

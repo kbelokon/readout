@@ -68,6 +68,17 @@ type Cluster struct {
 	// ReplicaSet / CSINode, whose LIST routes 404 because nothing is seeded). A
 	// CRD already advertises its own kind, so these are for BUILT-IN groups only.
 	DiscoveryResources []DiscoveryResource
+
+	// FillEmptyLists, when true, registers a zero-row list route (List + Table
+	// forms) for EVERY namespace in the cluster crossed with every NAMESPACED
+	// kind this cluster advertises in discovery, skipping pairs that already
+	// carry objects. This mirrors a real apiserver, which answers an empty 200
+	// list for any served kind in any namespace rather than a 404. The demo opts
+	// in so the sidebar's per-namespace kind links never 404 on a kind that
+	// namespace happens to hold none of. The base test cluster leaves it off:
+	// its tests deliberately assert that a kind with no objects in a namespace
+	// 404s (selective-404).
+	FillEmptyLists bool
 }
 
 // DiscoveryResource advertises one built-in kind in discovery without a seeded

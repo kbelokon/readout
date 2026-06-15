@@ -407,6 +407,69 @@ func (st *store) listStateFor(path string) *listState {
 	return st.lists[path]
 }
 
+// TableRow returns a DEEP COPY of the seeded Table row (its cells + full object)
+// for the named object on a collection route, so a caller can mutate the copy
+// and post it back as a non-destructive MODIFIED event without aliasing store
+// state. ok is false when the path has no Table form or the row is absent. The
+// breathing driver uses this to capture a target pod's full row once and pulse a
+// faithful, container-preserving update rather than a minimal stub.
+func (s *Server) TableRow(listPath, name, namespace string) (cells []any, object map[string]any, ok bool) {
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	ls := s.store.lists[listPath]
+	if ls == nil || ls.table == nil {
+		return nil, nil, false
+	}
+	rows, _ := ls.table["rows"].([]any)
+	for _, r := range rows {
+		row, isMap := r.(map[string]any)
+		if !isMap {
+			continue
+		}
+		obj, _ := row["object"].(map[string]any)
+		if !objectMatches(obj, name, namespace) {
+			continue
+		}
+		rowCells, _ := row["cells"].([]any)
+		return deepCopyAnySlice(rowCells), deepCopyAnyMap(obj), true
+	}
+	return nil, nil, false
+}
+
+// deepCopyAnyMap deep-copies a decoded-JSON map via a JSON round-trip, so the
+// copy aliases no store state. Returns nil on a marshal failure (store maps are
+// JSON-derived, so a round-trip failure is unreachable in practice).
+func deepCopyAnyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// deepCopyAnySlice deep-copies a decoded-JSON slice via a JSON round-trip.
+func deepCopyAnySlice(s []any) []any {
+	if s == nil {
+		return nil
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		return nil
+	}
+	var out []any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
 // seedStore builds the in-memory state served by a default New() (no Seed). It
 // runs the SAME typed pipeline Seed(Cluster) uses — validateCluster +
 // buildStore — over baseTestCluster() (basedata.go), the typed object graph that

@@ -45,6 +45,13 @@ func created(minsAgo int) metav1.Time {
 	return metav1.NewTime(refTime.Add(-time.Duration(minsAgo) * time.Minute))
 }
 
+// createdAgo renders an RFC3339 timestamp the given duration before refTime, for
+// the string-typed namespace creationTimestamp (Namespace.Created). Deterministic
+// off the same fixed reference instant the object ages hang off.
+func createdAgo(d time.Duration) string {
+	return refTime.Add(-d).UTC().Format(time.RFC3339)
+}
+
 // ---- workloads ------------------------------------------------------------
 
 // deployment builds a Deployment with a matching selector label and a

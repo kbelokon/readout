@@ -18,6 +18,8 @@ package demo
 // the package's coverage test.
 
 import (
+	"time"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -64,6 +66,7 @@ func prodCluster() fakekube.Cluster {
 		NodeMetrics:    nodeMetrics,
 		ClusterObjects: prodClusterObjects(),
 		CRDs:           platformCRDs(),
+		FillEmptyLists: true, // a served kind answers an empty 200 in any namespace, never a 404
 		Namespaces: []fakekube.Namespace{
 			shopNamespace(),
 			paymentsNamespace(),
@@ -96,15 +99,15 @@ func shopNamespace() fakekube.Namespace {
 
 	pods := objs(
 		podFrom("web-7c9-aaa", "shop", &podOpts{
-			app: "web", node: "worker-1", ownerRS: "web-7c9",
+			app: "web", node: "worker-1", ownerRS: "web-7c9", createdMins: 180, // 3h
 			statuses: []corev1.ContainerStatus{readyContainer("web")},
 		}),
 		podFrom("web-7c9-bbb", "shop", &podOpts{
-			app: "web", node: "worker-1", ownerRS: "web-7c9",
+			app: "web", node: "worker-1", ownerRS: "web-7c9", createdMins: 45, // 45m
 			statuses: []corev1.ContainerStatus{readyContainer("web")},
 		}),
 		podFrom("web-7c9-ccc", "shop", &podOpts{
-			app: "web", node: "worker-2", ownerRS: "web-7c9",
+			app: "web", node: "worker-2", ownerRS: "web-7c9", createdMins: 17 * 60, // 17h
 			statuses: []corev1.ContainerStatus{readyContainer("web")},
 		}),
 	)
@@ -118,6 +121,7 @@ func shopNamespace() fakekube.Namespace {
 
 	return fakekube.Namespace{
 		Name:    "shop",
+		Created: createdAgo(38 * 24 * time.Hour), // ~5w
 		Labels:  map[string]string{"app.kubernetes.io/name": "shop", "team": "storefront"},
 		Objects: all,
 		PodMetrics: []fakekube.PodMetric{
@@ -137,11 +141,11 @@ func paymentsNamespace() fakekube.Namespace {
 	rs := replicaSet("checkout-5d", "checkout", 3, "checkout")
 
 	crashing := podFrom("checkout-5d-crash", "payments", &podOpts{
-		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
+		app: "checkout", node: "worker-1", ownerRS: "checkout-5d", createdMins: 8 * 60, // 8h
 		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "CrashLoopBackOff", 14)},
 	}) // rising restarts
 	pending := podFrom("checkout-5d-pend", "payments", &podOpts{
-		app: "checkout", phase: corev1.PodPending,
+		app: "checkout", phase: corev1.PodPending, createdMins: 12, // 12m
 		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ContainerCreating", 0)},
 	})
 	imgpull := podFrom("checkout-5d-img", "payments", &podOpts{
@@ -200,6 +204,7 @@ func paymentsNamespace() fakekube.Namespace {
 
 	return fakekube.Namespace{
 		Name:    "payments",
+		Created: createdAgo(24 * 24 * time.Hour), // ~3w
 		Labels:  map[string]string{"app.kubernetes.io/name": "payments", "team": "money"},
 		Objects: all,
 		PodMetrics: []fakekube.PodMetric{
@@ -219,7 +224,8 @@ func dataNamespace() fakekube.Namespace {
 	// Two pods owned by the StatefulSet (related-pods sub-table), one mounting
 	// the PVC; multi-container so the per-container metrics section renders.
 	pg0 := podFrom("postgres-0", "data", &podOpts{
-		app: "postgres", node: "worker-1", claimName: "pgdata-postgres-0",
+		app: "postgres", node: "worker-1", claimName: "pgdata-postgres-0", createdMins: 9 * 24 * 60, // 9d
+
 		containers: []corev1.Container{
 			{Name: "postgres", Image: "ghcr.io/cloudnative-pg/postgresql:16"},
 			{Name: "metrics", Image: "prometheuscommunity/postgres-exporter:v0.15"},
@@ -228,7 +234,8 @@ func dataNamespace() fakekube.Namespace {
 	})
 	pg0.OwnerReferences = ownerStatefulSet("postgres")
 	pg1 := podFrom("postgres-1", "data", &podOpts{
-		app: "postgres", node: "worker-2",
+		app: "postgres", node: "worker-2", createdMins: 9 * 24 * 60, // 9d
+
 		containers: []corev1.Container{
 			{Name: "postgres", Image: "ghcr.io/cloudnative-pg/postgresql:16"},
 			{Name: "metrics", Image: "prometheuscommunity/postgres-exporter:v0.15"},
@@ -246,6 +253,7 @@ func dataNamespace() fakekube.Namespace {
 
 	return fakekube.Namespace{
 		Name:    "data",
+		Created: createdAgo(52 * 24 * time.Hour), // ~7w
 		Labels:  map[string]string{"app.kubernetes.io/name": "data", "team": "platform"},
 		Objects: all,
 		PodMetrics: []fakekube.PodMetric{
@@ -288,6 +296,7 @@ func platformNamespace() fakekube.Namespace {
 	)
 	return fakekube.Namespace{
 		Name:    "platform",
+		Created: createdAgo(11 * 24 * time.Hour), // ~11d
 		Labels:  map[string]string{"app.kubernetes.io/name": "platform", "team": "platform"},
 		Objects: all,
 	}
@@ -345,6 +354,7 @@ func batchNamespace() fakekube.Namespace {
 
 	return fakekube.Namespace{
 		Name:    "batch",
+		Created: createdAgo(6 * 24 * time.Hour), // ~6d
 		Labels:  map[string]string{"app.kubernetes.io/name": "batch", "team": "data"},
 		Objects: all,
 	}
@@ -399,6 +409,7 @@ func kubeSystemNamespace() fakekube.Namespace {
 
 	return fakekube.Namespace{
 		Name:    "kube-system",
+		Created: createdAgo(417 * 24 * time.Hour), // oldest: cluster bootstrap, >1y
 		Labels:  map[string]string{"kubernetes.io/metadata.name": "kube-system"},
 		Objects: all,
 	}
@@ -410,8 +421,9 @@ func kubeSystemNamespace() fakekube.Namespace {
 // path).
 func emptyNamespace() fakekube.Namespace {
 	return fakekube.Namespace{
-		Name:   "empty",
-		Labels: map[string]string{"app.kubernetes.io/name": "empty"},
+		Name:    "empty",
+		Created: createdAgo(3 * 24 * time.Hour), // newer: a few days
+		Labels:  map[string]string{"app.kubernetes.io/name": "empty"},
 	}
 }
 
@@ -424,6 +436,7 @@ func bigNamespace() fakekube.Namespace {
 	}
 	return fakekube.Namespace{
 		Name:    "big",
+		Created: createdAgo(90 * 24 * time.Hour), // ~3mo
 		Labels:  map[string]string{"app.kubernetes.io/name": "big"},
 		Objects: items,
 	}
@@ -439,11 +452,11 @@ func stagingCluster() fakekube.Cluster {
 	rs := replicaSet("web-aa1", "web", 2, "web")
 	pods := objs(
 		podFrom("web-aa1-x", "apps", &podOpts{
-			app: "web", node: "staging-1", ownerRS: "web-aa1",
+			app: "web", node: "staging-1", ownerRS: "web-aa1", createdMins: 5 * 60, // 5h
 			statuses: []corev1.ContainerStatus{readyContainer("web")},
 		}),
 		podFrom("web-aa1-y", "apps", &podOpts{
-			app: "web", node: "staging-1", ownerRS: "web-aa1",
+			app: "web", node: "staging-1", ownerRS: "web-aa1", createdMins: 5*60 + 12, // 5h12m
 			statuses: []corev1.ContainerStatus{readyContainer("web")},
 		}),
 	)
@@ -452,14 +465,16 @@ func stagingCluster() fakekube.Cluster {
 	all = append(all, pods...)
 
 	return fakekube.Cluster{
-		Name:        "staging",
-		Nodes:       nodes,
-		NodeMetrics: []fakekube.NodeMetric{{Name: "staging-1", CPU: "900m", Memory: "4Gi"}},
+		Name:           "staging",
+		Nodes:          nodes,
+		FillEmptyLists: true, // a served kind answers an empty 200 in any namespace, never a 404
+		NodeMetrics:    []fakekube.NodeMetric{{Name: "staging-1", CPU: "900m", Memory: "4Gi"}},
 		CRDs: []fakekube.CRD{
 			{Group: "cert-manager.io", Version: "v1", Kind: "Certificate", Plural: "certificates", Namespaced: true},
 		},
 		Namespaces: []fakekube.Namespace{{
 			Name:    "apps",
+			Created: createdAgo(17 * 24 * time.Hour), // ~17d
 			Labels:  map[string]string{"app.kubernetes.io/name": "apps", "env": "staging"},
 			Objects: append(all, customResource("cert-manager.io/v1", "Certificate", "web-tls", "apps")),
 			PodMetrics: []fakekube.PodMetric{

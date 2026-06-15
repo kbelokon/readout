@@ -500,6 +500,15 @@ func buildStore(c *Cluster, reg map[string]gvrInfo) (*store, error) {
 		return nil, err
 	}
 
+	// When FillEmptyLists is set, register an empty list route for every
+	// namespace crossed with every NAMESPACED kind the cluster advertises in
+	// discovery, skipping pairs that already carry a route. This makes a served
+	// kind answer an empty 200 in any namespace (a real apiserver's behavior)
+	// rather than a 404 for the namespaces that hold none of it.
+	if c.FillEmptyLists {
+		fillEmptyLists(c, objs, listBuckets, bucketFor)
+	}
+
 	// Drop any standalone all-namespaces union that a "default" alias supersedes
 	// (a kind seen first in a non-default namespace, then in "default"): the
 	// shared default-backed alias is authoritative.
@@ -572,6 +581,60 @@ func (b *listBucket) appendItem(wire map[string]any, cells []any, tableOnly, lis
 	b.cells = append(b.cells, cells)
 	b.tableOnly = append(b.tableOnly, tableOnly)
 	b.listOnly = append(b.listOnly, listOnly)
+}
+
+// advertisedInfos returns the gvrInfo for every kind this cluster ADVERTISES in
+// discovery: every kind that has a seeded object, the two metrics resources, the
+// discovery-only resources, and the registered CRDs. buildDiscovery derives its
+// documents from exactly this set, so a route built from it agrees with the
+// sidebar entries discovery produces. Deduped by groupVersion + resource.
+func advertisedInfos(c *Cluster, objs []seededObject) []gvrInfo {
+	var out []gvrInfo
+	seen := map[string]bool{}
+	add := func(info gvrInfo) {
+		key := info.groupVersion() + "/" + info.resource
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, info)
+	}
+	for i := range objs {
+		add(objs[i].info)
+	}
+	add(gvrInfo{apiPrefix: "/apis", group: "metrics.k8s.io", version: "v1beta1", resource: "pods", kind: "PodMetrics", listKind: "PodMetricsList", namespaced: true})
+	add(gvrInfo{apiPrefix: "/apis", group: "metrics.k8s.io", version: "v1beta1", resource: "nodes", kind: "NodeMetrics", listKind: "NodeMetricsList", namespaced: false})
+	for _, dr := range c.DiscoveryResources {
+		apiPrefix := "/apis"
+		if dr.Group == "" {
+			apiPrefix = "/api"
+		}
+		add(gvrInfo{apiPrefix: apiPrefix, group: dr.Group, version: dr.Version, resource: dr.Plural, singular: dr.Singular, kind: dr.Kind, listKind: dr.Kind + "List", namespaced: dr.Namespaced})
+	}
+	for _, crd := range c.CRDs {
+		add(gvrInfo{apiPrefix: "/apis", group: crd.Group, version: crd.Version, resource: crd.Plural, singular: strings.ToLower(crd.Kind), kind: crd.Kind, listKind: crd.Kind + "List", namespaced: crd.Namespaced})
+	}
+	return out
+}
+
+// fillEmptyLists registers a zero-row List/Table route for every namespace in
+// the cluster crossed with every NAMESPACED kind the cluster advertises in
+// discovery (advertisedInfos), skipping pairs that already hold a route. The
+// per-namespace empty bucket renders a 0-row list; the all-namespaces route per
+// kind already aggregates the real items, so it is left untouched.
+func fillEmptyLists(c *Cluster, objs []seededObject, buckets map[string]*listBucket, bucketFor func(string, gvrInfo) *listBucket) {
+	infos := advertisedInfos(c, objs)
+	for _, info := range infos {
+		if !info.namespaced {
+			continue
+		}
+		for i := range c.Namespaces {
+			path := info.listPath(c.Namespaces[i].Name)
+			if _, exists := buckets[path]; !exists {
+				bucketFor(path, info) // registers an empty bucket -> zero-row route
+			}
+		}
+	}
 }
 
 // registerEmptyLists creates a zero-row List/Table route for every (namespace,
@@ -695,63 +758,17 @@ func buildMetrics(c *Cluster, st *store) error {
 // group present. A CR object whose group-version is not registered fails the
 // integrity validator before this runs, so every served kind has discovery.
 func buildDiscovery(c *Cluster, objs []seededObject, st *store) error {
-	// Collect the gvrInfo for every kind that appears, deduped by groupVersion
-	// + resource. The metrics group is always present (pods + nodes metrics).
+	// Group the gvrInfo for every advertised kind by its api-prefix/group/
+	// version. advertisedInfos is the single source of truth for the advertised
+	// kind set (seeded-object kinds + metrics + discovery-only resources + CRDs),
+	// shared with fillEmptyLists so the sidebar entries discovery produces and
+	// the routes the fill registers agree. The Namespace kind is always served
+	// (synthetic objects), so it is already covered by the object infos.
 	type gvKey struct{ apiPrefix, group, version string }
 	groups := map[gvKey][]gvrInfo{}
-	seen := map[string]bool{}
-	addInfo := func(info gvrInfo) {
-		dedupe := info.groupVersion() + "/" + info.resource
-		if seen[dedupe] {
-			return
-		}
-		seen[dedupe] = true
+	for _, info := range advertisedInfos(c, objs) {
 		k := gvKey{info.apiPrefix, info.group, info.version}
 		groups[k] = append(groups[k], info)
-	}
-	for i := range objs {
-		addInfo(objs[i].info)
-	}
-	// Namespace kind is always served (synthetic objects) — collectObjects adds
-	// it, so it is already covered. Metrics resources:
-	addInfo(gvrInfo{apiPrefix: "/apis", group: "metrics.k8s.io", version: "v1beta1", resource: "pods", singular: "", kind: "PodMetrics", listKind: "PodMetricsList", namespaced: true})
-	addInfo(gvrInfo{apiPrefix: "/apis", group: "metrics.k8s.io", version: "v1beta1", resource: "nodes", singular: "", kind: "NodeMetrics", listKind: "NodeMetricsList", namespaced: false})
-
-	// Discovery-only resources: advertised kinds with no seeded objects/routes
-	// (Deployment / ReplicaSet / CSINode), so the resource-types matrix shows
-	// them and their LIST routes 404 like an apiserver with zero such objects.
-	for _, dr := range c.DiscoveryResources {
-		apiPrefix := "/apis"
-		if dr.Group == "" {
-			apiPrefix = "/api"
-		}
-		addInfo(gvrInfo{
-			apiPrefix:  apiPrefix,
-			group:      dr.Group,
-			version:    dr.Version,
-			resource:   dr.Plural,
-			singular:   dr.Singular,
-			kind:       dr.Kind,
-			listKind:   dr.Kind + "List",
-			namespaced: dr.Namespaced,
-		})
-	}
-
-	// Registered CRDs are advertised in discovery even with no objects seeded
-	// (a real cluster lists a CRD's resource the moment the CRD is installed):
-	// the resource-types matrix shows the kind with its CRD badge, the palette
-	// offers a jump-to, and the LIST route 404s until an object exists.
-	for _, crd := range c.CRDs {
-		addInfo(gvrInfo{
-			apiPrefix:  "/apis",
-			group:      crd.Group,
-			version:    crd.Version,
-			resource:   crd.Plural,
-			singular:   strings.ToLower(crd.Kind),
-			kind:       crd.Kind,
-			listKind:   crd.Kind + "List",
-			namespaced: crd.Namespaced,
-		})
 	}
 
 	// /api (core APIVersions) + /api/v1 (core resource list).

@@ -34,6 +34,7 @@ const POD_INIT = '/clusters/prod/namespaces/kube-system/pods/installer-progress'
 const SECRET = '/clusters/prod/namespaces/kube-system/secrets/registry-creds'; // multi-key secret
 const NODE = '/clusters/prod/nodes/worker-2'; // NotReady + MemoryPressure conditions
 const ANNO_OBJECT = '/clusters/prod/namespaces/shop/deployments/web'; // >120-char annotation
+const POD_BREATHING = '/clusters/prod/namespaces/shop/pods/web-7c9-aaa'; // the breathing loop's pulse target
 
 // The repo's screenshot home — the README references docs/screenshots/*.png. The
 // spec runs from tests/e2e, so the repo root is two levels up.
@@ -119,6 +120,29 @@ test.describe('demo render smoke', () => {
       ready: async (p) => expect(p.locator('.ro-topbar')).toBeVisible(),
     },
     {
+      name: 'empty-OF-KIND namespace list (pods in a CRD-only namespace)',
+      // platform holds only custom resources, no pods. A real apiserver answers
+      // an empty 200 for any served kind in any namespace, so this list must
+      // render the empty-state card, NOT the "Can't reach" error card. This is
+      // the regression guard for the per-namespace empty-list fill (a served kind
+      // a namespace happens to hold none of used to 404 here).
+      path: '/clusters/prod/namespaces/platform/pods',
+      ready: async (p) => {
+        await expect(p.locator('.ro-empty-lg')).toBeVisible();
+        await expect(p.locator('.ro-error-card')).toHaveCount(0);
+        await expect(p.locator('main')).not.toContainText('Can’t reach');
+      },
+    },
+    {
+      name: 'empty-OF-KIND big namespace list (pods in a configmaps-only namespace)',
+      // big holds only configmaps. Same empty-200 guarantee for its pods list.
+      path: '/clusters/prod/namespaces/big/pods',
+      ready: async (p) => {
+        await expect(p.locator('.ro-empty-lg')).toBeVisible();
+        await expect(p.locator('.ro-error-card')).toHaveCount(0);
+      },
+    },
+    {
       name: 'big namespace configmaps (virtualized)',
       path: '/clusters/prod/namespaces/big/configmaps',
       ready: async (p) => expect(p.locator('.ro-table-wrap.ro-windowed')).toBeVisible(),
@@ -161,6 +185,20 @@ test.describe('demo detail descent', () => {
     await expect(initPods).toBeVisible();
     await expect(initPods.locator('.ro-section-label')).toContainText('init');
     await expect(initPods.locator('.ro-kind-badge.init').first()).toBeVisible();
+  });
+
+  test('breathing target pod detail: containers section stays populated', async ({ page }) => {
+    // web-7c9-aaa is the pod the breathing loop pulses. The pulse must be
+    // non-destructive: it preserves the pod's full object, so the detail page
+    // keeps its containers section and a real created timestamp. (A pulse that
+    // replaced the pod with a metadata stub blanked both.) The demo here runs
+    // with breathing FROZEN, so this is the seeded baseline the live pulse must
+    // never degrade below.
+    await page.goto(POD_BREATHING);
+    await expect(page.locator('.ro-containers')).toBeVisible();
+    await expect(page.locator('.ro-containers table.ro-table tbody tr').first()).toBeVisible();
+    // A real created timestamp rides the detail (not blank/unknown).
+    await expect(page.locator('main')).not.toContainText('<unknown>');
   });
 
   test('secret detail: key chips render, values masked', async ({ page }) => {
