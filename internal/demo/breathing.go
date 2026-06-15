@@ -24,6 +24,7 @@ package demo
 
 import (
 	"encoding/json"
+	"net/http"
 	"strconv"
 	"sync"
 	"time"
@@ -57,44 +58,75 @@ type breathTarget struct {
 	baseObject map[string]any
 }
 
-// breathTargetsFor maps each demo cluster's running engine to the healthy pod
-// the breathing loop pulses. The names mirror scenario.go's healthy serving
-// stories: prod's shop `web` deployment and staging's apps `web` deployment.
-// A cluster whose name is not mapped simply does not breathe (the loop skips
-// it) rather than fabricating an object.
+// breathTargetsFor pairs each demo cluster's engine with a healthy pod to pulse,
+// DISCOVERED at startup from the cluster's busy frontend namespace rather than
+// hardcoded — so the target survives scenario changes (a renamed pod no longer
+// silently stops the breath). A cluster with no healthy pod there simply does
+// not breathe rather than fabricating an object.
 func breathTargetsFor(servers []*fakekube.Server, names []string) []breathTarget {
-	type spec struct {
-		namespace string
-		name      string
-		app       string
-	}
-	byCluster := map[string]spec{
-		"prod":    {namespace: "shop", name: "web-7c9-aaa", app: "web"},
-		"staging": {namespace: "apps", name: "web-aa1-x", app: "web"},
+	nsByCluster := map[string]string{
+		"prod":    "storefront",
+		"staging": "storefront",
 	}
 	var targets []breathTarget
 	for i, srv := range servers {
 		if i >= len(names) {
 			break
 		}
-		s, ok := byCluster[names[i]]
+		ns, ok := nsByCluster[names[i]]
 		if !ok {
 			continue
 		}
-		listPath := "/api/v1/namespaces/" + s.namespace + "/pods"
-		// Capture the pod's full seeded row once so the pulse can preserve it.
-		cells, object, _ := srv.TableRow(listPath, s.name, s.namespace)
+		listPath := "/api/v1/namespaces/" + ns + "/pods"
+		name, cells, object := firstRunningPod(srv, listPath)
+		if name == "" {
+			continue
+		}
 		targets = append(targets, breathTarget{
 			server:     srv,
 			listPath:   listPath,
-			name:       s.name,
-			namespace:  s.namespace,
-			app:        s.app,
+			name:       name,
+			namespace:  ns,
+			app:        "storefront-web",
 			baseCells:  cells,
 			baseObject: object,
 		})
 	}
 	return targets
+}
+
+// firstRunningPod queries the engine's pods Table for the namespace and returns
+// the first Running pod's name plus its full row (cells + object), so the
+// breathing target is taken from the live scenario, not a hardcoded name.
+func firstRunningPod(srv *fakekube.Server, listPath string) (string, []any, map[string]any) {
+	req, err := http.NewRequest(http.MethodGet, srv.URL+listPath, nil)
+	if err != nil {
+		return "", nil, nil
+	}
+	req.Header.Set("Accept", "application/json;as=Table;g=meta.k8s.io;v=v1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", nil, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var doc struct {
+		Rows []struct {
+			Cells  []any          `json:"cells"`
+			Object map[string]any `json:"object"`
+		} `json:"rows"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&doc) != nil {
+		return "", nil, nil
+	}
+	for _, r := range doc.Rows {
+		if len(r.Cells) >= 3 {
+			if status, _ := r.Cells[2].(string); status == "Running" {
+				name, _ := r.Cells[0].(string)
+				return name, r.Cells, r.Object
+			}
+		}
+	}
+	return "", nil, nil
 }
 
 // BreathingDriver loops over a set of engines emitting one gentle MODIFIED pulse

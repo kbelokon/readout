@@ -1,21 +1,19 @@
 package demo
 
-// scenario.go is the curated demo object graph: two
-// in-process fake clusters, `prod` and `staging`, whose namespaces are
-// STORIES, not a flat one-of-each dump. `prod` carries the rich healthy +
-// failing narratives that light up every render path; `staging` carries a
-// smaller, healthier variant so the cross-cluster overview / search / `_all`
-// views differ meaningfully.
+// scenario.go is the curated demo object graph: two in-process fake clusters,
+// `prod` and `staging`, modelled on a believable commerce platform (Acme Shop)
+// rather than a coverage checklist. Namespaces map to how a real team organises
+// a cluster — product services (storefront, checkout, payments, search,
+// databases) and the platform/operator namespaces (argocd, monitoring,
+// cert-manager, flux-system, ingress-nginx, kube-system, …). Each carries a
+// coherent, healthy-looking workload, with a single believable incident (a bad
+// checkout deploy) so a visitor instantly sees the product spot a real problem.
 //
-// Referential integrity is law (fakekube/integrity.go runs inside Seed): every
-// Service selector, ownerRef, Ingress backend, PVC/PV binding, Pod→Node
-// assignment, Event involvedObject, and metric key in here resolves, or Seed
-// errors. The builders (builders.go) take the linking keys explicitly so a
-// story never invents a dangling reference.
-//
-// DemoScenario() is the single entry point a later wiring unit consumes; the
-// per-cluster builders (prodCluster / stagingCluster) are exported-for-test via
-// the package's coverage test.
+// Referential integrity is law (the validator runs inside Seed): every Service
+// selector, ownerRef, Ingress backend, PVC/PV binding, Pod→Node assignment,
+// Event involvedObject, and metric key resolves, or Seed errors. The builders
+// (builders.go) take the linking keys explicitly so a story never invents a
+// dangling reference.
 
 import (
 	"time"
@@ -27,460 +25,584 @@ import (
 	fakekube "github.com/kbelokon/readout/internal/fakekube"
 )
 
-// longAnnotation is the >120-char annotation value the detail page must collapse
-// (the annotations-chip render path). Kept here so the coverage test can assert
-// its length and its presence in the scenario.
-const longAnnotation = "This deployment is managed by the platform team via GitOps; changes must go through the infra repo pull-request flow and are reconciled by Flux every five minutes — do not edit live."
+// longAnnotation is the >120-char annotation the detail page must collapse.
+const longAnnotation = "Managed by GitOps (Argo CD) from github.com/acme/platform — do not edit live; changes must land through the infra pull-request flow and are reconciled automatically within five minutes of merge."
 
-// bigNamespaceRows is the row count of the big namespace, chosen to cross
-// readout's list-virtualization threshold (~500). Exported via a const so the
-// coverage test asserts it without a magic number drift.
-const bigNamespaceRows = 600
+// storefrontFleet is the storefront web tier size, large enough to cross the
+// list-virtualization threshold so the big-list render path is exercised by a
+// realistic fleet (not a dump of empty objects).
+const storefrontFleet = 540
 
-// DemoScenario returns the whole two-cluster demo description. A later unit
-// starts one fakekube.Server per Cluster and calls Server.Seed(cluster).
+// prodWorkers is the worker pool the schedulable workloads spread across (the
+// cordoned worker-5 is deliberately left out so nothing new lands on it).
+var prodWorkers = []string{"worker-1", "worker-2", "worker-3", "worker-4"}
+
+// DemoScenario returns the whole two-cluster demo description; the wiring starts
+// one fakekube.Server per Cluster and calls Server.Seed(cluster).
 func DemoScenario() fakekube.Scenario {
 	return fakekube.Scenario{
 		Clusters: []fakekube.Cluster{prodCluster(), stagingCluster()},
 	}
 }
 
-// prodCluster is the rich cluster: the full status-tone vocabulary, the CRD
-// icon-family zoo, pod + node metrics, empty + big namespaces, the long
-// annotation, and the curated per-kind cells.
 func prodCluster() fakekube.Cluster {
-	nodes := []runtime.Object{
-		node("cp-1", []string{"control-plane"}, true, false),
-		node("worker-1", []string{"worker"}, true, false),
-		node("worker-2", []string{"worker"}, false, true), // NotReady + MemoryPressure pill
-	}
-	nodeMetrics := []fakekube.NodeMetric{
-		{Name: "cp-1", CPU: "1200m", Memory: "6Gi"},
-		{Name: "worker-1", CPU: "6800m", Memory: "28Gi"}, // heavy (>80% → red bar)
-		{Name: "worker-2", CPU: "4400m", Memory: "20Gi"}, // amber band
-	}
-
 	return fakekube.Cluster{
 		Name:           "prod",
-		Nodes:          nodes,
-		NodeMetrics:    nodeMetrics,
-		ClusterObjects: prodClusterObjects(),
-		CRDs:           platformCRDs(),
+		Nodes:          prodNodes(),
+		NodeMetrics:    prodNodeMetrics(),
+		ClusterObjects: prodPVs(),
+		CRDs:           demoCRDs(),
 		FillEmptyLists: true, // a served kind answers an empty 200 in any namespace, never a 404
 		Namespaces: []fakekube.Namespace{
-			shopNamespace(),
+			storefrontNamespace(),
+			checkoutNamespace(),
 			paymentsNamespace(),
-			dataNamespace(),
-			platformNamespace(),
-			batchNamespace(),
+			searchNamespace(),
+			databasesNamespace(),
+			argocdNamespace(),
+			monitoringNamespace(),
+			certManagerNamespace(),
+			fluxNamespace(),
+			externalSecretsNamespace(),
+			gatekeeperNamespace(),
+			ingressNginxNamespace(),
 			kubeSystemNamespace(),
-			emptyNamespace(),
-			bigNamespace(),
+			defaultNamespace(),
 		},
 	}
 }
 
-// prodClusterObjects are the cluster-scoped PersistentVolumes the `data`
-// namespace's PVCs bind to, plus a Released PV (the warn tone) and a Failed PV.
-func prodClusterObjects() []runtime.Object {
+// ---- nodes -----------------------------------------------------------------
+
+func prodNodes() []runtime.Object {
 	return objs(
-		persistentVolume("pv-data-bound", "Bound", "data", "pgdata-postgres-0", ""),
-		persistentVolume("pv-data-released", "Released", "data", "old-claim", "stale bind"),
+		node("cp-1", []string{"control-plane"}, true, false),
+		node("cp-2", []string{"control-plane"}, true, false),
+		node("cp-3", []string{"control-plane"}, true, false),
+		node("worker-1", []string{"worker"}, true, false),
+		node("worker-2", []string{"worker"}, true, false),
+		node("worker-3", []string{"worker"}, true, false),
+		node("worker-4", []string{"worker"}, true, true),   // MemoryPressure pill
+		node("worker-5", []string{"worker"}, false, false), // NotReady (cordoned/down)
 	)
 }
 
-// ---- shop: healthy serving story ------------------------------------------
-//
-// deployments 3/3, keda HPA, ingress + TLS, LoadBalancer w/ external IP.
-func shopNamespace() fakekube.Namespace {
-	web := deployment("web", 3, 3)
-	web.Annotations = map[string]string{"readout.dev/notes": longAnnotation} // >120-char annotation
-	rs := replicaSet("web-7c9", "web", 3, "web")
+func prodNodeMetrics() []fakekube.NodeMetric {
+	return []fakekube.NodeMetric{
+		{Name: "cp-1", CPU: "1100m", Memory: "5Gi"},
+		{Name: "cp-2", CPU: "980m", Memory: "5Gi"},
+		{Name: "cp-3", CPU: "1040m", Memory: "5Gi"},
+		{Name: "worker-1", CPU: "6800m", Memory: "27Gi"}, // hot (>80% → red)
+		{Name: "worker-2", CPU: "5200m", Memory: "21Gi"}, // amber
+		{Name: "worker-3", CPU: "3600m", Memory: "16Gi"},
+		{Name: "worker-4", CPU: "7400m", Memory: "30Gi"}, // hot + MemoryPressure
+		{Name: "worker-5", CPU: "120m", Memory: "1Gi"},   // drained
+	}
+}
 
-	pods := objs(
-		podFrom("web-7c9-aaa", "shop", &podOpts{
-			app: "web", node: "worker-1", ownerRS: "web-7c9", createdMins: 180, // 3h
-			statuses: []corev1.ContainerStatus{readyContainer("web")},
-		}),
-		podFrom("web-7c9-bbb", "shop", &podOpts{
-			app: "web", node: "worker-1", ownerRS: "web-7c9", createdMins: 45, // 45m
-			statuses: []corev1.ContainerStatus{readyContainer("web")},
-		}),
-		podFrom("web-7c9-ccc", "shop", &podOpts{
-			app: "web", node: "worker-2", ownerRS: "web-7c9", createdMins: 17 * 60, // 17h
-			statuses: []corev1.ContainerStatus{readyContainer("web")},
-		}),
+// prodPVs are the cluster-scoped volumes the stateful namespaces bind to, plus a
+// Released one from a decommissioned replica (the warn tone).
+func prodPVs() []runtime.Object {
+	return objs(
+		persistentVolume("pvc-orders-db-0", "Bound", "databases", "data-orders-db-0", ""),
+		persistentVolume("pvc-orders-db-1", "Bound", "databases", "data-orders-db-1", ""),
+		persistentVolume("pvc-search-0", "Bound", "search", "data-opensearch-0", ""),
+		persistentVolume("pvc-search-1", "Bound", "search", "data-opensearch-1", ""),
+		persistentVolume("pvc-search-2", "Bound", "search", "data-opensearch-2", ""),
+		persistentVolume("pvc-orders-db-old", "Released", "databases", "data-orders-db-2", "node drained, replica retired"),
 	)
+}
 
-	svc := service("web", "shop", "web", corev1.ServiceTypeLoadBalancer, "203.0.113.40")
-	ing := ingress("web", "shop", "shop.example.com", "web", true)
-	scaler := hpa("web", "web", 3, 12, 3) // keda-managed target
+// ---- storefront: the healthy hero + the large web fleet --------------------
 
-	all := objs(web, rs, svc, ing, scaler)
+func storefrontNamespace() fakekube.Namespace {
+	const rs = "storefront-web-6f8d94c7"
+	web := deployment("storefront-web", storefrontFleet, storefrontFleet)
+	web.Annotations = map[string]string{
+		"kubernetes.io/change-cause": "rollout v4.2.1 (perf: cache warm on boot)",
+		"readout.dev/runbook":        longAnnotation, // >120-char annotation
+	}
+	rsObj := replicaSet(rs, "storefront-web", storefrontFleet, "storefront-web")
+	pods := fleetPods("storefront", "storefront-web", rs, storefrontFleet, prodWorkers)
+
+	svc := service("storefront-web", "storefront", "storefront-web", corev1.ServiceTypeLoadBalancer, "203.0.113.40")
+	ing := ingress("storefront", "storefront", "shop.acme.example", "storefront-web", true)
+	route := customResource("gateway.networking.k8s.io/v1", "HTTPRoute", "storefront", "storefront")
+	scaler := customResource("keda.sh/v1alpha1", "ScaledObject", "storefront-web", "storefront")
+	cm := configMap("storefront-config", "storefront", map[string]string{
+		"FEATURE_NEW_CART": "true",
+		"CDN_BASE":         "https://cdn.acme.example",
+		"CHECKOUT_URL":     "https://shop.acme.example/checkout",
+		"LOCALE_DEFAULT":   "en-US",
+	})
+
+	all := objs(web, rsObj, svc, ing, route, scaler, cm)
 	all = append(all, pods...)
 
 	return fakekube.Namespace{
-		Name:    "shop",
-		Created: createdAgo(38 * 24 * time.Hour), // ~5w
-		Labels:  map[string]string{"app.kubernetes.io/name": "shop", "team": "storefront"},
+		Name:    "storefront",
+		Created: createdAgo(74 * 24 * time.Hour),
+		Labels:  map[string]string{"app.kubernetes.io/name": "storefront", "team": "web", "tier": "frontend"},
 		Objects: all,
 		PodMetrics: []fakekube.PodMetric{
-			{Name: "web-7c9-aaa", Containers: []fakekube.ContainerMetric{{Name: "web", CPU: "180m", Memory: "256Mi"}}},
-			{Name: "web-7c9-bbb", Containers: []fakekube.ContainerMetric{{Name: "web", CPU: "210m", Memory: "300Mi"}}},
-			{Name: "web-7c9-ccc", Containers: []fakekube.ContainerMetric{{Name: "web", CPU: "0", Memory: "0"}}}, // zero usage (faint)
+			{Name: rs + "-" + fleetHash(0), Containers: []fakekube.ContainerMetric{{Name: "storefront-web", CPU: "240m", Memory: "320Mi"}}},
+			{Name: rs + "-" + fleetHash(1), Containers: []fakekube.ContainerMetric{{Name: "storefront-web", CPU: "180m", Memory: "280Mi"}}},
+			{Name: rs + "-" + fleetHash(2), Containers: []fakekube.ContainerMetric{{Name: "storefront-web", CPU: "320m", Memory: "360Mi"}}},
 		},
 	}
 }
 
-// ---- payments: failing story ----------------------------------------------
+// ---- checkout: the incident (a bad v2 rollout) -----------------------------
 //
-// CrashLoopBackOff w/ rising restarts, job BackoffLimitExceeded, Warning events
-// incl. a count>1 burst, Pending pod.
-func paymentsNamespace() fakekube.Namespace {
-	dep := deployment("checkout", 3, 1)
-	rs := replicaSet("checkout-5d", "checkout", 3, "checkout")
+// The new ReplicaSet is crash-looping while the old one still serves traffic:
+// the deployment reads 4/6, two pods CrashLoopBackOff with rising restarts, one
+// Pending for capacity, and a burst of Warning events. This is the "spot the
+// problem instantly" story.
+func checkoutNamespace() fakekube.Namespace {
+	const oldRS = "checkout-api-7b4f"
+	const newRS = "checkout-api-9f2a"
+	dep := deployment("checkout-api", 6, 4)
+	dep.Annotations = map[string]string{"kubernetes.io/change-cause": "rollout v2.0.0 (new tax engine)"}
+	rsOld := replicaSet(oldRS, "checkout-api", 4, "checkout-api")
+	rsNew := replicaSet(newRS, "checkout-api", 2, "checkout-api")
 
-	crashing := podFrom("checkout-5d-crash", "payments", &podOpts{
-		app: "checkout", node: "worker-1", ownerRS: "checkout-5d", createdMins: 8 * 60, // 8h
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "CrashLoopBackOff", 14)},
-	}) // rising restarts
-	pending := podFrom("checkout-5d-pend", "payments", &podOpts{
-		app: "checkout", phase: corev1.PodPending, createdMins: 12, // 12m
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ContainerCreating", 0)},
+	// Old RS: four healthy pods still serving.
+	healthy := fleetPods("checkout", "checkout-api", oldRS, 4, prodWorkers)
+
+	// New RS: two crash-looping (rising restarts) + one Pending (no capacity).
+	crash1 := podFrom(newRS+"-c4d2x", "checkout", &podOpts{
+		app: "checkout-api", node: "worker-1", ownerRS: newRS, createdMins: 38,
+		containers: []corev1.Container{{Name: "checkout-api", Image: "registry.example.com/checkout-api:v2.0.0"}},
+		statuses:   []corev1.ContainerStatus{waitingContainer("checkout-api", "CrashLoopBackOff", 11)},
 	})
-	imgpull := podFrom("checkout-5d-img", "payments", &podOpts{
-		app: "checkout", node: "worker-2", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ImagePullBackOff", 0)},
+	// A second new-RS pod can't even pull the new image (a registry hiccup) — a
+	// realistic mixed failure in one bad rollout.
+	imgpull := podFrom(newRS+"-h8k7p", "checkout", &podOpts{
+		app: "checkout-api", node: "worker-2", ownerRS: newRS, createdMins: 38,
+		containers: []corev1.Container{{Name: "checkout-api", Image: "registry.example.com/checkout-api:v2.0.0"}},
+		statuses:   []corev1.ContainerStatus{waitingContainer("checkout-api", "ImagePullBackOff", 0)},
 	})
-	errpull := podFrom("checkout-5d-errpull", "payments", &podOpts{
-		app: "checkout", node: "worker-2", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ErrImagePull", 0)},
-	})
-	oom := podFrom("checkout-5d-oom", "payments", &podOpts{
-		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		phase:    corev1.PodFailed, // pod-phase Failed
-		statuses: []corev1.ContainerStatus{terminatedContainer("checkout", "OOMKilled", 137)},
-	})
-	cfgerr := podFrom("checkout-5d-cfg", "payments", &podOpts{
-		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "CreateContainerConfigError", 0)},
-	})
-	badimg := podFrom("checkout-5d-badimg", "payments", &podOpts{
-		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "InvalidImageName", 0)},
-	})
-	evicted := podFrom("checkout-5d-evict", "payments", &podOpts{
-		app: "checkout", node: "worker-2", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{terminatedContainer("checkout", "Evicted", 1)},
-	})
-	errc := podFrom("checkout-5d-err", "payments", &podOpts{
-		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{terminatedContainer("checkout", "Error", 1)},
-	})
-	outofcpu := podFrom("checkout-5d-cpu", "payments", &podOpts{
-		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "OutOfcpu", 0)},
+	pending := podFrom(newRS+"-q2w9z", "checkout", &podOpts{
+		app: "checkout-api", phase: corev1.PodPending, ownerRS: newRS, createdMins: 36,
+		statuses: []corev1.ContainerStatus{waitingContainer("checkout-api", "ContainerCreating", 0)},
 	})
 
-	svc := service("checkout", "payments", "checkout", corev1.ServiceTypeClusterIP, "")
-
-	failedJob := job("settle-batch", "payments", 1, 0, batchv1.JobFailed, "BackoffLimitExceeded")
+	svc := service("checkout-api", "checkout", "checkout-api", corev1.ServiceTypeClusterIP, "")
+	cm := configMap("checkout-config", "checkout", map[string]string{
+		"TAX_PROVIDER": "avalara",
+		"RETRY_LIMIT":  "3",
+	})
+	sec := secret("checkout-signing-key", "checkout", map[string][]byte{
+		"hmac.key": []byte("d34db33f-never-rendered-in-the-ui-0000"),
+	})
 
 	events := objs(
-		event("ev-fail-sched", "payments", "Warning", "FailedScheduling", "0/3 nodes are available: insufficient cpu.", "Pod", "checkout-5d-pend", 1),
-		event("ev-oom", "payments", "Warning", "SystemOOM", "System OOM encountered, victim process: checkout", "Pod", "checkout-5d-oom", 1),
-		event("ev-backoff", "payments", "Warning", "BackOff", "Back-off restarting failed container checkout", "Pod", "checkout-5d-crash", 23), // count>1 burst
-		event("ev-unhealthy", "payments", "Warning", "Unhealthy", "Readiness probe failed: connection refused", "Pod", "checkout-5d-crash", 6),
-		event("ev-deadline", "payments", "Warning", "DeadlineExceeded", "Job was active longer than specified deadline", "Job", "settle-batch", 1),
-		event("ev-preempt", "payments", "Warning", "Preempted", "Preempted by another pod", "Pod", "checkout-5d-pend", 1),
-		event("ev-killing", "payments", "Normal", "Killing", "Stopping container checkout", "Pod", "checkout-5d-crash", 2),
-		event("ev-pulling", "payments", "Normal", "Pulling", "Pulling image checkout:v2", "Pod", "checkout-5d-img", 1),
-		event("ev-blexceeded", "payments", "Warning", "BackoffLimitExceeded", "Job has reached the specified backoff limit", "Job", "settle-batch", 1),
+		event("ev-backoff", "checkout", "Warning", "BackOff", "Back-off restarting failed container checkout-api in pod "+newRS+"-c4d2x", "Pod", newRS+"-c4d2x", 23),
+		event("ev-unhealthy", "checkout", "Warning", "Unhealthy", "Readiness probe failed: HTTP probe returned statuscode 500", "Pod", newRS+"-c4d2x", 18),
+		event("ev-sched", "checkout", "Warning", "FailedScheduling", "0/8 nodes are available: 4 Insufficient cpu, 4 node(s) had untolerated taint.", "Pod", newRS+"-q2w9z", 1),
+		event("ev-pulled", "checkout", "Normal", "Pulled", "Successfully pulled image checkout-api:v2.0.0 in 2.1s", "Pod", newRS+"-c4d2x", 3),
 	)
 
-	all := objs(dep, rs, svc, failedJob)
-	all = append(all, crashing, pending, imgpull, errpull, oom, cfgerr, badimg, evicted, errc, outofcpu)
+	all := objs(dep, rsOld, rsNew, svc, cm, sec, crash1, imgpull, pending)
+	all = append(all, healthy...)
+	all = append(all, events...)
+
+	return fakekube.Namespace{
+		Name:    "checkout",
+		Created: createdAgo(61 * 24 * time.Hour),
+		Labels:  map[string]string{"app.kubernetes.io/name": "checkout", "team": "payments"},
+		Objects: all,
+		PodMetrics: []fakekube.PodMetric{
+			{Name: oldRS + "-" + fleetHash(0), Containers: []fakekube.ContainerMetric{{Name: "checkout-api", CPU: "310m", Memory: "420Mi"}}},
+			{Name: newRS + "-c4d2x", Containers: []fakekube.ContainerMetric{{Name: "checkout-api", CPU: "15m", Memory: "90Mi"}}},
+		},
+	}
+}
+
+// ---- payments: healthy api + nightly batch + one memory incident -----------
+func paymentsNamespace() fakekube.Namespace {
+	apiObjs, apiRS := app("payments", "payments-api", "registry.example.com/payments-api:v3.4.0", 4, prodWorkers, 5*24*60)
+	svc := service("payments-api", "payments", "payments-api", corev1.ServiceTypeClusterIP, "")
+
+	// One pod hit a memory spike and got OOMKilled (a believable single incident).
+	oom := podFrom(apiRS+"-m3r9k", "payments", &podOpts{
+		app: "payments-api", node: "worker-4", ownerRS: apiRS, phase: corev1.PodRunning, createdMins: 5 * 24 * 60,
+		containers: []corev1.Container{{Name: "payments-api", Image: "registry.example.com/payments-api:v3.4.0"}},
+		statuses: []corev1.ContainerStatus{{
+			Name: "payments-api", Ready: true, RestartCount: 2,
+			State:                corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: created(40)}},
+			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}},
+		}},
+	})
+
+	stripeSecret := secret("stripe-api-key", "payments", map[string][]byte{
+		"STRIPE_SECRET_KEY":     []byte("sk_live_never-rendered-in-the-ui-000000"),
+		"STRIPE_WEBHOOK_SECRET": []byte("whsec_never-rendered-000000000000000000"),
+	})
+	tlsSecret := secret("payments-tls", "payments", map[string][]byte{
+		"tls.crt": []byte("-----BEGIN CERTIFICATE-----"),
+		"tls.key": []byte("-----BEGIN PRIVATE KEY-----"),
+	})
+
+	// Nightly settlement batch: an active cron, a suspended legacy export, a
+	// completed run, and a failed reconcile.
+	cronSettle := cronJob("settlement", "payments", "0 2 * * *", false, 1, true)
+	cronExport := cronJob("legacy-export", "payments", "*/15 * * * *", true, 0, true)
+	jobOK := job("settlement-28291", "payments", 1, 1, batchv1.JobComplete, "")
+	jobFail := job("reconcile-28290", "payments", 1, 0, batchv1.JobFailed, "BackoffLimitExceeded")
+
+	events := objs(
+		event("ev-oom", "payments", "Warning", "SystemOOM", "System OOM encountered, victim process: payments-api", "Pod", oom.Name, 1),
+		event("ev-sawjob", "payments", "Normal", "SawCompletedJob", "Saw completed job: settlement-28291", "CronJob", "settlement", 1),
+		event("ev-screate", "payments", "Normal", "SuccessfulCreate", "Created pod: settlement-28291-abcde", "Job", "settlement-28291", 1),
+		event("ev-blexceed", "payments", "Warning", "BackoffLimitExceeded", "Job has reached the specified backoff limit", "Job", "reconcile-28290", 1),
+	)
+
+	scaler := hpa("payments-api", "payments-api", 4, 16, 4)
+	all := apiObjs
+	all = append(all, svc, scaler, oom, stripeSecret, tlsSecret, cronSettle, cronExport, jobOK, jobFail)
 	all = append(all, events...)
 
 	return fakekube.Namespace{
 		Name:    "payments",
-		Created: createdAgo(24 * 24 * time.Hour), // ~3w
-		Labels:  map[string]string{"app.kubernetes.io/name": "payments", "team": "money"},
+		Created: createdAgo(61 * 24 * time.Hour),
+		Labels:  map[string]string{"app.kubernetes.io/name": "payments", "team": "payments", "pci": "in-scope"},
 		Objects: all,
 		PodMetrics: []fakekube.PodMetric{
-			{Name: "checkout-5d-crash", Containers: []fakekube.ContainerMetric{{Name: "checkout", CPU: "50m", Memory: "64Mi"}}},
+			{Name: apiRS + "-" + fleetHash(0*97+nameHash("payments-api")), Containers: []fakekube.ContainerMetric{{Name: "payments-api", CPU: "220m", Memory: "300Mi"}}},
+			{Name: oom.Name, Containers: []fakekube.ContainerMetric{{Name: "payments-api", CPU: "650m", Memory: "980Mi"}}},
 		},
 	}
 }
 
-// ---- data: stateful story --------------------------------------------------
-//
-// CNPG postgres CRD, StatefulSet, PV Bound/Released, heavy metrics,
-// pod-containers + related-pods.
-func dataNamespace() fakekube.Namespace {
-	ss := statefulSet("postgres", 2, 2)
-	pgPVC := pvc("pgdata-postgres-0", "data", "pv-data-bound")
+// ---- search: a stateful OpenSearch cluster (PVCs, heavy metrics) -----------
+func searchNamespace() fakekube.Namespace {
+	ss := statefulSet("opensearch", 3, 3)
+	svc := service("opensearch", "search", "opensearch", corev1.ServiceTypeClusterIP, "")
 
-	// Two pods owned by the StatefulSet (related-pods sub-table), one mounting
-	// the PVC; multi-container so the per-container metrics section renders.
-	pg0 := podFrom("postgres-0", "data", &podOpts{
-		app: "postgres", node: "worker-1", claimName: "pgdata-postgres-0", createdMins: 9 * 24 * 60, // 9d
+	var pods []runtime.Object
+	var metrics []fakekube.PodMetric
+	for i, nodeName := range []string{"worker-1", "worker-2", "worker-3"} {
+		name := "opensearch-" + itoa(i)
+		p := podFrom(name, "search", &podOpts{
+			app: "opensearch", node: nodeName, claimName: "data-opensearch-" + itoa(i), createdMins: 21 * 24 * 60,
+			containers: []corev1.Container{
+				{Name: "opensearch", Image: "opensearchproject/opensearch:2.13.0"},
+				{Name: "exporter", Image: "quay.io/prometheuscommunity/elasticsearch-exporter:v1.7.0"},
+			},
+			statuses: []corev1.ContainerStatus{readyContainer("opensearch"), readyContainer("exporter")},
+		})
+		p.OwnerReferences = ownerStatefulSet("opensearch")
+		pods = append(pods, p)
+		pvcObj := pvc("data-opensearch-"+itoa(i), "search", "pvc-search-"+itoa(i))
+		pods = append(pods, pvcObj)
+		metrics = append(metrics, fakekube.PodMetric{Name: name, Containers: []fakekube.ContainerMetric{
+			{Name: "opensearch", CPU: "3100m", Memory: "14Gi"},
+			{Name: "exporter", CPU: "12m", Memory: "24Mi"},
+		}})
+	}
 
-		containers: []corev1.Container{
-			{Name: "postgres", Image: "ghcr.io/cloudnative-pg/postgresql:16"},
-			{Name: "metrics", Image: "prometheuscommunity/postgres-exporter:v0.15"},
-		},
-		statuses: []corev1.ContainerStatus{readyContainer("postgres"), readyContainer("metrics")},
-	})
-	pg0.OwnerReferences = ownerStatefulSet("postgres")
-	pg1 := podFrom("postgres-1", "data", &podOpts{
-		app: "postgres", node: "worker-2", createdMins: 9 * 24 * 60, // 9d
-
-		containers: []corev1.Container{
-			{Name: "postgres", Image: "ghcr.io/cloudnative-pg/postgresql:16"},
-			{Name: "metrics", Image: "prometheuscommunity/postgres-exporter:v0.15"},
-		},
-		statuses: []corev1.ContainerStatus{readyContainer("postgres"), readyContainer("metrics")},
-	})
-	pg1.OwnerReferences = ownerStatefulSet("postgres")
-
-	// A CNPG Cluster custom resource (postgresql.cnpg.io family glyph).
-	cnpg := customResource("postgresql.cnpg.io/v1", "Cluster", "postgres", "data")
-
-	svc := service("postgres", "data", "postgres", corev1.ServiceTypeClusterIP, "")
-
-	all := objs(ss, pgPVC, cnpg, svc, pg0, pg1)
-
+	all := append(objs(ss, svc), pods...)
 	return fakekube.Namespace{
-		Name:    "data",
-		Created: createdAgo(52 * 24 * time.Hour), // ~7w
-		Labels:  map[string]string{"app.kubernetes.io/name": "data", "team": "platform"},
-		Objects: all,
-		PodMetrics: []fakekube.PodMetric{
-			{Name: "postgres-0", Containers: []fakekube.ContainerMetric{
-				{Name: "postgres", CPU: "2400m", Memory: "12Gi"}, // heavy
-				{Name: "metrics", CPU: "20m", Memory: "32Mi"},
-			}},
-			{Name: "postgres-1", Containers: []fakekube.ContainerMetric{
-				{Name: "postgres", CPU: "2100m", Memory: "11Gi"},
-				{Name: "metrics", CPU: "18m", Memory: "30Mi"},
-			}},
-		},
+		Name:    "search",
+		Created: createdAgo(40 * 24 * time.Hour),
+		Labels:  map[string]string{"app.kubernetes.io/name": "search", "team": "discovery"},
+		Objects: all, PodMetrics: metrics,
 	}
 }
 
-// ---- platform: the CRD icon-family zoo -------------------------------------
-//
-// CRDs covering ALL 11 curated icon families + ≥2 unknown-group CRDs for the
-// monogram path. The CRD list (platformCRDs) registers the discovery
-// group-versions; each family also gets one custom-resource OBJECT here so the
-// list route serves a row carrying that group's icon.
-func platformNamespace() fakekube.Namespace {
-	all := objs(
-		customResource("cert-manager.io/v1", "Certificate", "shop-tls", "platform"),
-		customResource("cilium.io/v2", "CiliumNetworkPolicy", "default-deny", "platform"),
-		customResource("argoproj.io/v1alpha1", "Rollout", "web", "platform"),
-		customResource("operator.victoriametrics.com/v1beta1", "VMAgent", "vmagent", "platform"),
-		customResource("monitoring.coreos.com/v1", "ServiceMonitor", "web", "platform"),
-		customResource("external-secrets.io/v1beta1", "ExternalSecret", "db-creds", "platform"),
-		customResource("keda.sh/v1alpha1", "ScaledObject", "web", "platform"),
-		customResource("gateway.networking.k8s.io/v1", "HTTPRoute", "web", "platform"),
-		customResource("kustomize.toolkit.fluxcd.io/v1", "Kustomization", "apps", "platform"),            // *.fluxcd.io suffix
-		customResource("templates.gatekeeper.sh/v1", "ConstraintTemplate", "require-labels", "platform"), // *.gatekeeper.sh suffix
-		// postgresql.cnpg.io family object lives in `data` (the CNPG Cluster);
-		// register it here too so the family is present cluster-wide.
-		customResource("postgresql.cnpg.io/v1", "Backup", "nightly", "platform"),
-		// ≥2 unknown-group CRDs → HashHue monogram tiles.
-		customResource("widgets.acme.example/v1", "Widget", "blue-widget", "platform"),
-		customResource("gizmos.contoso.example/v1", "Gizmo", "left-gizmo", "platform"),
+// ---- databases: a CNPG postgres cluster -----------------------------------
+func databasesNamespace() fakekube.Namespace {
+	ss := statefulSet("orders-db", 2, 2)
+	cnpg := customResource("postgresql.cnpg.io/v1", "Cluster", "orders-db", "databases")
+	backup := customResource("postgresql.cnpg.io/v1", "Backup", "orders-db-nightly", "databases")
+	svc := service("orders-db-rw", "databases", "orders-db", corev1.ServiceTypeClusterIP, "")
+	sec := secret("orders-db-app", "databases", map[string][]byte{
+		"username": []byte("orders"),
+		"password": []byte("never-rendered-in-the-ui-000000"),
+		"pgpass":   []byte("never-rendered-000000000000000"),
+	})
+
+	var pods []runtime.Object
+	var metrics []fakekube.PodMetric
+	for i, nodeName := range []string{"worker-1", "worker-3"} {
+		name := "orders-db-" + itoa(i)
+		p := podFrom(name, "databases", &podOpts{
+			app: "orders-db", node: nodeName, claimName: "data-orders-db-" + itoa(i), createdMins: 33 * 24 * 60,
+			containers: []corev1.Container{
+				{Name: "postgres", Image: "ghcr.io/cloudnative-pg/postgresql:16.2"},
+				{Name: "metrics", Image: "prometheuscommunity/postgres-exporter:v0.15.0"},
+			},
+			statuses: []corev1.ContainerStatus{readyContainer("postgres"), readyContainer("metrics")},
+		})
+		p.OwnerReferences = ownerStatefulSet("orders-db")
+		pods = append(pods, p, pvc("data-orders-db-"+itoa(i), "databases", "pvc-orders-db-"+itoa(i)))
+		metrics = append(metrics, fakekube.PodMetric{Name: name, Containers: []fakekube.ContainerMetric{
+			{Name: "postgres", CPU: "2200m", Memory: "11Gi"},
+			{Name: "metrics", CPU: "18m", Memory: "30Mi"},
+		}})
+	}
+
+	all := append(objs(ss, cnpg, backup, svc, sec), pods...)
+	return fakekube.Namespace{
+		Name:    "databases",
+		Created: createdAgo(120 * 24 * time.Hour),
+		Labels:  map[string]string{"app.kubernetes.io/name": "databases", "team": "platform"},
+		Objects: all, PodMetrics: metrics,
+	}
+}
+
+// ---- platform / operator namespaces ----------------------------------------
+
+func argocdNamespace() fakekube.Namespace {
+	server, _ := app("argocd", "argocd-server", "quay.io/argoproj/argocd:v2.11.0", 2, prodWorkers, 90*24*60)
+	repo, _ := app("argocd", "argocd-repo-server", "quay.io/argoproj/argocd:v2.11.0", 2, prodWorkers, 90*24*60)
+	ctrl := statefulSet("argocd-application-controller", 1, 1)
+	svc := service("argocd-server", "argocd", "argocd-server", corev1.ServiceTypeClusterIP, "")
+	apps := objs(
+		customResource("argoproj.io/v1alpha1", "Application", "storefront", "argocd"),
+		customResource("argoproj.io/v1alpha1", "Application", "checkout", "argocd"),
+		customResource("argoproj.io/v1alpha1", "Application", "payments", "argocd"),
+		customResource("argoproj.io/v1alpha1", "Rollout", "storefront-web", "argocd"),
 	)
+	all := append(append(server, repo...), append(objs(ctrl, svc), apps...)...)
 	return fakekube.Namespace{
-		Name:    "platform",
-		Created: createdAgo(11 * 24 * time.Hour), // ~11d
-		Labels:  map[string]string{"app.kubernetes.io/name": "platform", "team": "platform"},
+		Name: "argocd", Created: createdAgo(150 * 24 * time.Hour),
+		Labels: map[string]string{"app.kubernetes.io/name": "argocd", "team": "platform"}, Objects: all,
+	}
+}
+
+func monitoringNamespace() fakekube.Namespace {
+	graf, _ := app("monitoring", "grafana", "grafana/grafana:10.4.2", 1, prodWorkers, 60*24*60)
+	prom := statefulSet("prometheus-k8s", 2, 2)
+	am := statefulSet("alertmanager-main", 3, 3)
+	crs := objs(
+		customResource("monitoring.coreos.com/v1", "ServiceMonitor", "storefront-web", "monitoring"),
+		customResource("monitoring.coreos.com/v1", "ServiceMonitor", "checkout-api", "monitoring"),
+		customResource("monitoring.coreos.com/v1", "ServiceMonitor", "orders-db", "monitoring"),
+		customResource("operator.victoriametrics.com/v1beta1", "VMAgent", "vmagent", "monitoring"),
+	)
+	all := graf
+	all = append(all, prom, am)
+	all = append(all, crs...)
+	return fakekube.Namespace{
+		Name: "monitoring", Created: createdAgo(150 * 24 * time.Hour),
+		Labels: map[string]string{"app.kubernetes.io/name": "monitoring", "team": "platform"}, Objects: all,
+	}
+}
+
+func certManagerNamespace() fakekube.Namespace {
+	cm, _ := app("cert-manager", "cert-manager", "quay.io/jetstack/cert-manager-controller:v1.14.4", 1, prodWorkers, 150*24*60)
+	wh, _ := app("cert-manager", "cert-manager-webhook", "quay.io/jetstack/cert-manager-webhook:v1.14.4", 1, prodWorkers, 150*24*60)
+	ca, _ := app("cert-manager", "cert-manager-cainjector", "quay.io/jetstack/cert-manager-cainjector:v1.14.4", 1, prodWorkers, 150*24*60)
+	certs := objs(
+		customResource("cert-manager.io/v1", "Certificate", "storefront-tls", "cert-manager"),
+		customResource("cert-manager.io/v1", "Certificate", "payments-tls", "cert-manager"),
+	)
+	all := append(append(cm, wh...), append(ca, certs...)...)
+	return fakekube.Namespace{
+		Name: "cert-manager", Created: createdAgo(150 * 24 * time.Hour),
+		Labels: map[string]string{"app.kubernetes.io/name": "cert-manager", "team": "platform"}, Objects: all,
+	}
+}
+
+func fluxNamespace() fakekube.Namespace {
+	src, _ := app("flux-system", "source-controller", "ghcr.io/fluxcd/source-controller:v1.2.4", 1, prodWorkers, 150*24*60)
+	kus, _ := app("flux-system", "kustomize-controller", "ghcr.io/fluxcd/kustomize-controller:v1.2.2", 1, prodWorkers, 150*24*60)
+	crs := objs(
+		customResource("kustomize.toolkit.fluxcd.io/v1", "Kustomization", "apps", "flux-system"),
+		customResource("kustomize.toolkit.fluxcd.io/v1", "Kustomization", "infrastructure", "flux-system"),
+	)
+	all := src
+	all = append(all, kus...)
+	all = append(all, crs...)
+	return fakekube.Namespace{
+		Name: "flux-system", Created: createdAgo(150 * 24 * time.Hour),
+		Labels: map[string]string{"app.kubernetes.io/name": "flux", "team": "platform"}, Objects: all,
+	}
+}
+
+func externalSecretsNamespace() fakekube.Namespace {
+	es, _ := app("external-secrets", "external-secrets", "ghcr.io/external-secrets/external-secrets:v0.9.13", 2, prodWorkers, 120*24*60)
+	crs := objs(
+		customResource("external-secrets.io/v1beta1", "ExternalSecret", "stripe-api-key", "external-secrets"),
+		customResource("external-secrets.io/v1beta1", "ExternalSecret", "orders-db-app", "external-secrets"),
+		// A real but uncurated operator → HashHue monogram tile.
+		customResource("bitnami.com/v1alpha1", "SealedSecret", "registry-creds", "external-secrets"),
+	)
+	all := es
+	all = append(all, crs...)
+	return fakekube.Namespace{
+		Name: "external-secrets", Created: createdAgo(120 * 24 * time.Hour),
+		Labels: map[string]string{"app.kubernetes.io/name": "external-secrets", "team": "platform"}, Objects: all,
+	}
+}
+
+func gatekeeperNamespace() fakekube.Namespace {
+	ctrl, _ := app("gatekeeper-system", "gatekeeper-controller-manager", "openpolicyagent/gatekeeper:v3.15.1", 3, prodWorkers, 130*24*60)
+	audit, _ := app("gatekeeper-system", "gatekeeper-audit", "openpolicyagent/gatekeeper:v3.15.1", 1, prodWorkers, 130*24*60)
+	crs := objs(
+		customResource("templates.gatekeeper.sh/v1", "ConstraintTemplate", "k8srequiredlabels", "gatekeeper-system"),
+		customResource("templates.gatekeeper.sh/v1", "ConstraintTemplate", "k8sallowedrepos", "gatekeeper-system"),
+	)
+	all := append(append(ctrl, audit...), crs...)
+	return fakekube.Namespace{
+		Name: "gatekeeper-system", Created: createdAgo(130 * 24 * time.Hour),
+		Labels: map[string]string{"app.kubernetes.io/name": "gatekeeper", "team": "platform"}, Objects: all,
+	}
+}
+
+func ingressNginxNamespace() fakekube.Namespace {
+	ctrl, ctrlRS := app("ingress-nginx", "ingress-nginx-controller", "registry.k8s.io/ingress-nginx/controller:v1.10.0", 3, prodWorkers, 150*24*60)
+	svc := service("ingress-nginx-controller", "ingress-nginx", "ingress-nginx-controller", corev1.ServiceTypeLoadBalancer, "203.0.113.10")
+	gw := customResource("gateway.networking.k8s.io/v1", "Gateway", "acme-gateway", "ingress-nginx")
+	all := ctrl
+	all = append(all, svc, gw)
+	return fakekube.Namespace{
+		Name: "ingress-nginx", Created: createdAgo(150 * 24 * time.Hour),
+		Labels:  map[string]string{"app.kubernetes.io/name": "ingress-nginx", "team": "platform"},
+		Objects: all,
+		PodMetrics: []fakekube.PodMetric{
+			{Name: ctrlRS + "-" + fleetHash(0*97+nameHash("ingress-nginx-controller")), Containers: []fakekube.ContainerMetric{{Name: "ingress-nginx-controller", CPU: "420m", Memory: "260Mi"}}},
+		},
+	}
+}
+
+// ---- kube-system: the cluster's own plumbing -------------------------------
+func kubeSystemNamespace() fakekube.Namespace {
+	coredns, _ := app("kube-system", "coredns", "registry.k8s.io/coredns/coredns:v1.11.1", 2, prodWorkers, 417*24*60)
+	metricsServer, _ := app("kube-system", "metrics-server", "registry.k8s.io/metrics-server/metrics-server:v0.7.1", 1, prodWorkers, 417*24*60)
+	ciliumOp, _ := app("kube-system", "cilium-operator", "quay.io/cilium/operator-generic:v1.15.3", 1, prodWorkers, 417*24*60)
+	kubeProxy := daemonSet("kube-proxy", map[string]string{"kubernetes.io/os": "linux"})
+	cilium := daemonSet("cilium", map[string]string{"kubernetes.io/os": "linux"})
+	netpol := customResource("cilium.io/v2", "CiliumNetworkPolicy", "default-deny-egress", "kube-system")
+
+	// A node-bootstrap pod still running its init containers, and one whose init
+	// step is failing (the Init:* status branches).
+	initProgress := podFrom("node-setup-fb12-zx", "kube-system", &podOpts{
+		app: "node-setup", node: "worker-2",
+		initStatuses: []corev1.ContainerStatus{
+			terminatedContainer("sysctl", "Completed", 0),
+			waitingContainer("install-cni", "PodInitializing", 0),
+		},
+		statuses: []corev1.ContainerStatus{waitingContainer("agent", "PodInitializing", 0)},
+	})
+	initFailed := podFrom("node-setup-fb12-q7", "kube-system", &podOpts{
+		app: "node-setup", node: "worker-5",
+		initStatuses: []corev1.ContainerStatus{waitingContainer("install-cni", "CrashLoopBackOff", 7)},
+		statuses:     []corev1.ContainerStatus{waitingContainer("agent", "PodInitializing", 0)},
+	})
+	// A one-shot migration that completed, and a pod being torn down.
+	migrated := podFrom("schema-migrate-1-abc", "kube-system", &podOpts{
+		app: "schema-migrate", node: "worker-1", phase: corev1.PodSucceeded,
+		statuses: []corev1.ContainerStatus{terminatedContainer("migrate", "Completed", 0)},
+	})
+	terminating := podFrom("cilium-zq4t9", "kube-system", &podOpts{
+		app: "cilium", node: "worker-5",
+		statuses: []corev1.ContainerStatus{waitingContainer("cilium-agent", "Terminating", 0)},
+	})
+	terminating.DeletionTimestamp = ptrTime(created(2))
+
+	regSecret := secret("registry-creds", "kube-system", map[string][]byte{
+		"username":          []byte("acme-ci"),
+		"password":          []byte("never-rendered-in-the-ui-000000"),
+		".dockerconfigjson": []byte("{\"auths\":{}}"),
+		"ca.crt":            []byte("-----BEGIN CERTIFICATE-----"),
+	})
+
+	all := coredns
+	all = append(all, metricsServer...)
+	all = append(all, ciliumOp...)
+	all = append(all, kubeProxy, cilium, netpol, initProgress, initFailed, migrated, terminating, regSecret)
+	return fakekube.Namespace{
+		Name: "kube-system", Created: createdAgo(417 * 24 * time.Hour),
+		Labels:  map[string]string{"kubernetes.io/metadata.name": "kube-system"},
 		Objects: all,
 	}
 }
 
-// platformCRDs registers every custom-resource group-version-kind the scenario
-// serves (across all namespaces), so the list routes resolve and the discovery
-// documents carry the groups.
-func platformCRDs() []fakekube.CRD {
+// defaultNamespace is the empty `default` namespace every cluster has (the
+// empty-list render path), realistic rather than a synthetic "empty".
+func defaultNamespace() fakekube.Namespace {
+	return fakekube.Namespace{
+		Name:    "default",
+		Created: createdAgo(417 * 24 * time.Hour),
+		Labels:  map[string]string{"kubernetes.io/metadata.name": "default"},
+	}
+}
+
+// demoCRDs registers every custom-resource group-version-kind the scenario
+// serves, so the list routes resolve and the discovery documents carry the
+// groups (and the curated icon families + monogram fallbacks render).
+func demoCRDs() []fakekube.CRD {
 	return []fakekube.CRD{
 		{Group: "cert-manager.io", Version: "v1", Kind: "Certificate", Plural: "certificates", Namespaced: true},
 		{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy", Plural: "ciliumnetworkpolicies", Namespaced: true},
+		{Group: "argoproj.io", Version: "v1alpha1", Kind: "Application", Plural: "applications", Namespaced: true},
 		{Group: "argoproj.io", Version: "v1alpha1", Kind: "Rollout", Plural: "rollouts", Namespaced: true},
 		{Group: "operator.victoriametrics.com", Version: "v1beta1", Kind: "VMAgent", Plural: "vmagents", Namespaced: true},
 		{Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor", Plural: "servicemonitors", Namespaced: true},
 		{Group: "external-secrets.io", Version: "v1beta1", Kind: "ExternalSecret", Plural: "externalsecrets", Namespaced: true},
 		{Group: "keda.sh", Version: "v1alpha1", Kind: "ScaledObject", Plural: "scaledobjects", Namespaced: true},
 		{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute", Plural: "httproutes", Namespaced: true},
+		{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway", Plural: "gateways", Namespaced: true},
 		{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization", Plural: "kustomizations", Namespaced: true},
 		{Group: "templates.gatekeeper.sh", Version: "v1", Kind: "ConstraintTemplate", Plural: "constrainttemplates", Namespaced: true},
 		{Group: "postgresql.cnpg.io", Version: "v1", Kind: "Cluster", Plural: "clusters", Namespaced: true},
 		{Group: "postgresql.cnpg.io", Version: "v1", Kind: "Backup", Plural: "backups", Namespaced: true},
-		{Group: "widgets.acme.example", Version: "v1", Kind: "Widget", Plural: "widgets", Namespaced: true},
-		{Group: "gizmos.contoso.example", Version: "v1", Kind: "Gizmo", Plural: "gizmos", Namespaced: true},
+		{Group: "bitnami.com", Version: "v1alpha1", Kind: "SealedSecret", Plural: "sealedsecrets", Namespaced: true},
 	}
 }
 
-// ---- batch: CronJobs + Jobs + the event Reason-map tones --------------------
-func batchNamespace() fakekube.Namespace {
-	cronActive := cronJob("nightly-report", "batch", "0 2 * * *", false, 1, true)    // Active
-	cronSuspended := cronJob("legacy-export", "batch", "*/5 * * * *", true, 0, true) // Suspended
-	cronNever := cronJob("first-run", "batch", "@weekly", false, 0, false)           // never-ran (<never>)
-
-	jobComplete := job("backup-ok", "batch", 1, 1, batchv1.JobComplete, "") // Complete
-	jobRunning := job("reindex", "batch", 5, 2, "", "")                     // in-flight
-	jobFailed := job("export-fail", "batch", 1, 0, batchv1.JobFailed, "DeadlineExceeded")
-
-	// Events carrying the Reason-map tones (success Reasons + the unique info
-	// Reasons), so the events list exercises every Reason→tone branch.
-	events := objs(
-		event("ev-created", "batch", "Normal", "Created", "Created container report", "Job", "backup-ok", 1),
-		event("ev-pulled", "batch", "Normal", "Pulled", "Successfully pulled image", "Job", "backup-ok", 1),
-		event("ev-scheduled", "batch", "Normal", "Scheduled", "Successfully assigned batch/backup-ok to worker-1", "Job", "backup-ok", 1),
-		event("ev-started", "batch", "Normal", "Started", "Started container report", "Job", "backup-ok", 1),
-		event("ev-succreate", "batch", "Normal", "SuccessfulCreate", "Created pod: backup-ok-xyz", "Job", "backup-ok", 1),
-		event("ev-sawjob", "batch", "Normal", "SawCompletedJob", "Saw completed job: backup-ok", "CronJob", "nightly-report", 1),   // info tone
-		event("ev-scaleup", "batch", "Normal", "TriggeredScaleUp", "pod triggered scale-up: 1->2", "CronJob", "nightly-report", 1), // info tone
-		event("ev-getmetric", "batch", "Warning", "FailedGetResourceMetric", "unable to get metric cpu", "CronJob", "legacy-export", 1),
-		event("ev-computemetric", "batch", "Warning", "FailedComputeMetricsReplicas", "invalid metrics", "CronJob", "legacy-export", 1),
-		event("ev-failed", "batch", "Warning", "Failed", "Error: failed to start container", "Job", "export-fail", 3),
-	)
-
-	all := objs(cronActive, cronSuspended, cronNever, jobComplete, jobRunning, jobFailed)
-	all = append(all, events...)
-
-	return fakekube.Namespace{
-		Name:    "batch",
-		Created: createdAgo(6 * 24 * time.Hour), // ~6d
-		Labels:  map[string]string{"app.kubernetes.io/name": "batch", "team": "data"},
-		Objects: all,
-	}
-}
-
-// ---- kube-system: DaemonSets, init containers, multi-key secrets -----------
-func kubeSystemNamespace() fakekube.Namespace {
-	ds := daemonSet("kube-proxy", map[string]string{"kubernetes.io/os": "linux"})
-
-	// A pod with init containers in progress (Init:1/2 → warn) and one with an
-	// errored init container (Init:CrashLoopBackOff → err). These exercise the
-	// StatusTone Init:* branches.
-	initProgress := podFrom("installer-progress", "kube-system", &podOpts{
-		app: "installer", node: "cp-1",
-		initStatuses: []corev1.ContainerStatus{
-			terminatedContainer("step-1", "Completed", 0), // 1 complete
-			waitingContainer("step-2", "PodInitializing", 0),
-		},
-		statuses: []corev1.ContainerStatus{waitingContainer("app", "PodInitializing", 0)},
-	})
-	initErrored := podFrom("installer-failed", "kube-system", &podOpts{
-		app: "installer", node: "cp-1",
-		initStatuses: []corev1.ContainerStatus{
-			waitingContainer("step-1", "CrashLoopBackOff", 5),
-		},
-		statuses: []corev1.ContainerStatus{waitingContainer("app", "PodInitializing", 0)},
-	})
-
-	// A succeeded one-shot pod (phase Succeeded → mute) and a Terminating pod.
-	doneOnce := podFrom("migrate-once", "kube-system", &podOpts{
-		app: "migrate", node: "cp-1",
-		phase:    corev1.PodSucceeded,
-		statuses: []corev1.ContainerStatus{terminatedContainer("migrate", "Completed", 0)},
-	})
-	terminating := podFrom("kube-proxy-term", "kube-system", &podOpts{
-		app: "kube-proxy", node: "worker-1",
-		statuses: []corev1.ContainerStatus{waitingContainer("kube-proxy", "Terminating", 0)},
-	})
-
-	multiSecret := secret("registry-creds", "kube-system", map[string][]byte{
-		"username":   []byte("admin"),
-		"password":   []byte("s3cr3t-value-never-rendered"),
-		"ca.crt":     []byte("-----BEGIN CERTIFICATE-----"),
-		".dockercfg": []byte("{\"auths\":{}}"),
-	})
-	cm := configMap("kube-proxy-config", "kube-system", map[string]string{
-		"config.conf": "mode: iptables",
-		"kubeconfig":  "apiVersion: v1",
-	})
-
-	all := objs(ds, multiSecret, cm, initProgress, initErrored, doneOnce, terminating)
-
-	return fakekube.Namespace{
-		Name:    "kube-system",
-		Created: createdAgo(417 * 24 * time.Hour), // oldest: cluster bootstrap, >1y
-		Labels:  map[string]string{"kubernetes.io/metadata.name": "kube-system"},
-		Objects: all,
-	}
-}
-
-// ---- empty + big namespaces ------------------------------------------------
-
-// emptyNamespace is a real namespace with no objects (the empty-list render
-// path).
-func emptyNamespace() fakekube.Namespace {
-	return fakekube.Namespace{
-		Name:    "empty",
-		Created: createdAgo(3 * 24 * time.Hour), // newer: a few days
-		Labels:  map[string]string{"app.kubernetes.io/name": "empty"},
-	}
-}
-
-// bigNamespace holds ~bigNamespaceRows ConfigMaps so the list crosses readout's
-// virtualization threshold (~500 rows).
-func bigNamespace() fakekube.Namespace {
-	items := make([]runtime.Object, 0, bigNamespaceRows)
-	for i := 0; i < bigNamespaceRows; i++ {
-		items = append(items, configMap(bigName(i), "big", map[string]string{"k": "v"}))
-	}
-	return fakekube.Namespace{
-		Name:    "big",
-		Created: createdAgo(90 * 24 * time.Hour), // ~3mo
-		Labels:  map[string]string{"app.kubernetes.io/name": "big"},
-		Objects: items,
-	}
-}
-
-// stagingCluster is the smaller, healthier variant: a single healthy app, one
-// node, node + pod metrics, a couple of CRDs — enough that cross-cluster
-// overview/search/`_all` views differ from prod.
+// ---- staging: a smaller, all-healthy mirror --------------------------------
 func stagingCluster() fakekube.Cluster {
-	nodes := []runtime.Object{node("staging-1", []string{"control-plane", "worker"}, true, false)}
-
-	web := deployment("web", 2, 2)
-	rs := replicaSet("web-aa1", "web", 2, "web")
-	pods := objs(
-		podFrom("web-aa1-x", "apps", &podOpts{
-			app: "web", node: "staging-1", ownerRS: "web-aa1", createdMins: 5 * 60, // 5h
-			statuses: []corev1.ContainerStatus{readyContainer("web")},
-		}),
-		podFrom("web-aa1-y", "apps", &podOpts{
-			app: "web", node: "staging-1", ownerRS: "web-aa1", createdMins: 5*60 + 12, // 5h12m
-			statuses: []corev1.ContainerStatus{readyContainer("web")},
-		}),
+	nodes := objs(
+		node("staging-cp", []string{"control-plane"}, true, false),
+		node("staging-1", []string{"worker"}, true, false),
+		node("staging-2", []string{"worker"}, true, false),
 	)
-	svc := service("web", "apps", "web", corev1.ServiceTypeClusterIP, "")
-	all := objs(web, rs, svc)
-	all = append(all, pods...)
+	workers := []string{"staging-1", "staging-2"}
+
+	store, storeRS := app("storefront", "storefront-web", "registry.example.com/storefront-web:v4.3.0-rc1", 3, workers, 6*60)
+	storeSvc := service("storefront-web", "storefront", "storefront-web", corev1.ServiceTypeClusterIP, "")
+	storeIng := ingress("storefront", "storefront", "staging.acme.example", "storefront-web", true)
+	cert := customResource("cert-manager.io/v1", "Certificate", "storefront-tls", "storefront")
+
+	checkout, _ := app("checkout", "checkout-api", "registry.example.com/checkout-api:v2.0.0", 2, workers, 3*60)
+	checkoutSvc := service("checkout-api", "checkout", "checkout-api", corev1.ServiceTypeClusterIP, "")
+
+	storeAll := store
+	storeAll = append(storeAll, storeSvc, storeIng, cert)
+	checkoutAll := checkout
+	checkoutAll = append(checkoutAll, checkoutSvc)
 
 	return fakekube.Cluster{
 		Name:           "staging",
 		Nodes:          nodes,
-		FillEmptyLists: true, // a served kind answers an empty 200 in any namespace, never a 404
-		NodeMetrics:    []fakekube.NodeMetric{{Name: "staging-1", CPU: "900m", Memory: "4Gi"}},
+		FillEmptyLists: true,
+		NodeMetrics: []fakekube.NodeMetric{
+			{Name: "staging-cp", CPU: "600m", Memory: "3Gi"},
+			{Name: "staging-1", CPU: "1400m", Memory: "6Gi"},
+			{Name: "staging-2", CPU: "1100m", Memory: "5Gi"},
+		},
 		CRDs: []fakekube.CRD{
 			{Group: "cert-manager.io", Version: "v1", Kind: "Certificate", Plural: "certificates", Namespaced: true},
 		},
-		Namespaces: []fakekube.Namespace{{
-			Name:    "apps",
-			Created: createdAgo(17 * 24 * time.Hour), // ~17d
-			Labels:  map[string]string{"app.kubernetes.io/name": "apps", "env": "staging"},
-			Objects: append(all, customResource("cert-manager.io/v1", "Certificate", "web-tls", "apps")),
-			PodMetrics: []fakekube.PodMetric{
-				{Name: "web-aa1-x", Containers: []fakekube.ContainerMetric{{Name: "web", CPU: "120m", Memory: "180Mi"}}},
-				{Name: "web-aa1-y", Containers: []fakekube.ContainerMetric{{Name: "web", CPU: "140m", Memory: "200Mi"}}},
+		Namespaces: []fakekube.Namespace{
+			{
+				Name: "storefront", Created: createdAgo(20 * 24 * time.Hour),
+				Labels:  map[string]string{"app.kubernetes.io/name": "storefront", "env": "staging"},
+				Objects: storeAll,
+				PodMetrics: []fakekube.PodMetric{
+					{Name: storeRS + "-" + fleetHash(0*97+nameHash("storefront-web")), Containers: []fakekube.ContainerMetric{{Name: "storefront-web", CPU: "90m", Memory: "160Mi"}}},
+				},
 			},
-		}},
+			{
+				Name: "checkout", Created: createdAgo(20 * 24 * time.Hour),
+				Labels:  map[string]string{"app.kubernetes.io/name": "checkout", "env": "staging"},
+				Objects: checkoutAll,
+			},
+			defaultNamespace(),
+		},
 	}
 }

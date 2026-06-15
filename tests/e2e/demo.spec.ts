@@ -29,12 +29,12 @@ import { demoURL } from './playwright.config';
 // The curated demo names this walk descends into (from scenario.go). These are
 // navigation targets, not content assertions: the demo may grow more objects
 // around them without touching this spec.
-const POD_MULTI = '/clusters/prod/namespaces/data/pods/postgres-0'; // multi-container (postgres + metrics)
-const POD_INIT = '/clusters/prod/namespaces/kube-system/pods/installer-progress'; // 2 init containers
+const POD_MULTI = '/clusters/prod/namespaces/databases/pods/orders-db-0'; // multi-container (postgres + exporter)
+const POD_INIT = '/clusters/prod/namespaces/kube-system/pods/node-setup-fb12-zx'; // 2 init containers
 const SECRET = '/clusters/prod/namespaces/kube-system/secrets/registry-creds'; // multi-key secret
-const NODE = '/clusters/prod/nodes/worker-2'; // NotReady + MemoryPressure conditions
-const ANNO_OBJECT = '/clusters/prod/namespaces/shop/deployments/web'; // >120-char annotation
-const POD_BREATHING = '/clusters/prod/namespaces/shop/pods/web-7c9-aaa'; // the breathing loop's pulse target
+const NODE = '/clusters/prod/nodes/worker-4'; // Ready + MemoryPressure condition
+const ANNO_OBJECT = '/clusters/prod/namespaces/storefront/deployments/storefront-web'; // >120-char annotation
+const STOREFRONT_PODS = '/clusters/prod/namespaces/storefront/pods'; // the large fleet (breathing target lives here)
 
 // The repo's screenshot home — the README references docs/screenshots/*.png. The
 // spec runs from tests/e2e, so the repo root is two levels up.
@@ -83,28 +83,28 @@ test.describe('demo render smoke', () => {
       ready: async (p) => expect(p.locator('table.ro-table td.cell-name').first()).toBeVisible(),
     },
     {
-      name: 'shop pods (healthy serving)',
-      path: '/clusters/prod/namespaces/shop/pods',
+      name: 'storefront pods (the large healthy fleet)',
+      path: '/clusters/prod/namespaces/storefront/pods',
       ready: async (p) => expect(p.locator('table.ro-table td.cell-name').first()).toBeVisible(),
     },
     {
-      name: 'payments pods (failing story)',
-      path: '/clusters/prod/namespaces/payments/pods',
+      name: 'checkout pods (the incident: crash-loop + image-pull)',
+      path: '/clusters/prod/namespaces/checkout/pods',
       ready: async (p) => expect(p.locator('table.ro-table td.cell-name').first()).toBeVisible(),
     },
     {
-      name: 'data statefulsets (stateful story)',
-      path: '/clusters/prod/namespaces/data/statefulsets',
+      name: 'databases statefulsets (stateful story)',
+      path: '/clusters/prod/namespaces/databases/statefulsets',
       ready: async (p) => expect(p.locator('table.ro-table td.cell-name').first()).toBeVisible(),
     },
     {
-      name: 'platform crd zoo',
-      path: '/clusters/prod/namespaces/platform/certificates',
+      name: 'cert-manager certificates (CRD list + icon family)',
+      path: '/clusters/prod/namespaces/cert-manager/certificates',
       ready: async (p) => expect(p.locator('table.ro-table td.cell-name').first()).toBeVisible(),
     },
     {
-      name: 'batch cronjobs',
-      path: '/clusters/prod/namespaces/batch/cronjobs',
+      name: 'payments cronjobs (batch)',
+      path: '/clusters/prod/namespaces/payments/cronjobs',
       ready: async (p) => expect(p.locator('table.ro-table td.cell-name').first()).toBeVisible(),
     },
     {
@@ -114,19 +114,18 @@ test.describe('demo render smoke', () => {
     },
     {
       name: 'empty namespace pods (empty-list render path)',
-      path: '/clusters/prod/namespaces/empty/pods',
-      // Empty list: the empty-state card, NOT a table. Asserting the page chrome
-      // is the no-error proof.
+      path: '/clusters/prod/namespaces/default/pods',
+      // The `default` namespace is empty: the empty-state card, NOT a table.
       ready: async (p) => expect(p.locator('.ro-topbar')).toBeVisible(),
     },
     {
-      name: 'empty-OF-KIND namespace list (pods in a CRD-only namespace)',
-      // platform holds only custom resources, no pods. A real apiserver answers
-      // an empty 200 for any served kind in any namespace, so this list must
-      // render the empty-state card, NOT the "Can't reach" error card. This is
-      // the regression guard for the per-namespace empty-list fill (a served kind
-      // a namespace happens to hold none of used to 404 here).
-      path: '/clusters/prod/namespaces/platform/pods',
+      name: 'empty-OF-KIND namespace list (ingresses in cert-manager)',
+      // cert-manager runs no Ingresses. A real apiserver answers an empty 200 for
+      // any served kind in any namespace, so this list must render the empty-state
+      // card, NOT the "Can't reach" error card — the regression guard for the
+      // per-namespace empty-list fill (a served kind a namespace holds none of
+      // used to 404 here).
+      path: '/clusters/prod/namespaces/cert-manager/ingresses',
       ready: async (p) => {
         await expect(p.locator('.ro-empty-lg')).toBeVisible();
         await expect(p.locator('.ro-error-card')).toHaveCount(0);
@@ -134,17 +133,16 @@ test.describe('demo render smoke', () => {
       },
     },
     {
-      name: 'empty-OF-KIND big namespace list (pods in a configmaps-only namespace)',
-      // big holds only configmaps. Same empty-200 guarantee for its pods list.
-      path: '/clusters/prod/namespaces/big/pods',
+      name: 'empty-OF-KIND list (cronjobs in storefront)',
+      path: '/clusters/prod/namespaces/storefront/cronjobs',
       ready: async (p) => {
         await expect(p.locator('.ro-empty-lg')).toBeVisible();
         await expect(p.locator('.ro-error-card')).toHaveCount(0);
       },
     },
     {
-      name: 'big namespace configmaps (virtualized)',
-      path: '/clusters/prod/namespaces/big/configmaps',
+      name: 'storefront pods (virtualized large fleet)',
+      path: '/clusters/prod/namespaces/storefront/pods',
       ready: async (p) => expect(p.locator('.ro-table-wrap.ro-windowed')).toBeVisible(),
     },
     {
@@ -188,13 +186,15 @@ test.describe('demo detail descent', () => {
   });
 
   test('breathing target pod detail: containers section stays populated', async ({ page }) => {
-    // web-7c9-aaa is the pod the breathing loop pulses. The pulse must be
-    // non-destructive: it preserves the pod's full object, so the detail page
-    // keeps its containers section and a real created timestamp. (A pulse that
-    // replaced the pod with a metadata stub blanked both.) The demo here runs
+    // The breathing loop pulses the first healthy storefront pod. The pulse must
+    // be non-destructive: it preserves the pod's full object, so its detail page
+    // keeps its containers section and a real created timestamp (a pulse that
+    // replaced the pod with a metadata stub blanked both). The demo here runs
     // with breathing FROZEN, so this is the seeded baseline the live pulse must
-    // never degrade below.
-    await page.goto(POD_BREATHING);
+    // never degrade below. The exact pod name is fleet-hashed, so navigate via
+    // the list and open the first pod rather than hardcoding a name.
+    await page.goto(STOREFRONT_PODS);
+    await page.locator('table.ro-table td.cell-name a').first().click();
     await expect(page.locator('.ro-containers')).toBeVisible();
     await expect(page.locator('.ro-containers table.ro-table tbody tr').first()).toBeVisible();
     // A real created timestamp rides the detail (not blank/unknown).
@@ -210,7 +210,7 @@ test.describe('demo detail descent', () => {
     await expect(block.locator('.ro-secret-key').first()).toBeVisible();
     await expect(block.locator('.ro-secret-mask').first()).toBeVisible();
     // Read-only guarantee: a real secret value is never serialized to the page.
-    await expect(page.locator('body')).not.toContainText('s3cr3t-value-never-rendered');
+    await expect(page.locator('body')).not.toContainText('never-rendered-in-the-ui');
   });
 
   test('node detail: conditions + capacity kv', async ({ page }) => {
@@ -252,11 +252,11 @@ test.describe('demo export', () => {
   }
 
   test('single-namespace bulk YAML is non-empty multi-doc', async () => {
-    // shop's web deployment fronts three pods (scenario.go); request all three so
-    // the multi-document join is exercised. Names absent would render a
-    // `# not found` comment doc — the ones here resolve.
+    // databases runs the orders-db StatefulSet's two stable-named pods; request
+    // both so the multi-document join is exercised (their names resolve, so no
+    // `# not found` comment doc).
     const { status, body } = await get(
-      '/clusters/prod/namespaces/shop/pods?download=yaml&names=web-7c9-aaa,web-7c9-bbb,web-7c9-ccc'
+      '/clusters/prod/namespaces/databases/pods?download=yaml&names=orders-db-0,orders-db-1'
     );
     expect(status).toBe(200);
     expect(body.length).toBeGreaterThan(0);
@@ -267,7 +267,7 @@ test.describe('demo export', () => {
   });
 
   test('single-namespace bulk TSV is non-empty header + rows', async () => {
-    const { status, body } = await get('/clusters/prod/namespaces/shop/pods?download=tsv');
+    const { status, body } = await get('/clusters/prod/namespaces/databases/pods?download=tsv');
     expect(status).toBe(200);
     const lines = body.split('\n').filter((l) => l.trim().length > 0);
     // A header row plus at least one data row.
@@ -279,7 +279,7 @@ test.describe('demo export', () => {
     // _all-namespaces uses the `ns/name` row grammar. Two pods from different
     // namespaces prove the join across namespaces.
     const { status, body } = await get(
-      '/clusters/prod/namespaces/_all/pods?download=yaml&names=shop/web-7c9-aaa,payments/checkout-5d-crash'
+      '/clusters/prod/namespaces/_all/pods?download=yaml&names=databases/orders-db-0,search/opensearch-0'
     );
     expect(status).toBe(200);
     expect(body.length).toBeGreaterThan(0);
@@ -309,7 +309,7 @@ test.describe('demo landing screenshots', () => {
   test.skip(!process.env.RO_SHOTS, 'set RO_SHOTS=1 to regenerate landing screenshots');
 
   test('capture pods.png', async ({ page }) => {
-    await page.goto('/clusters/prod/namespaces/payments/pods'); // the failing story: rich status cells
+    await page.goto('/clusters/prod/namespaces/checkout/pods'); // the incident: rich status cells
     await expect(page.locator('table.ro-table td.cell-name').first()).toBeVisible();
     await settle(page);
     await page.screenshot({ path: resolve(SHOTS, 'pods.png'), fullPage: false });
@@ -330,7 +330,7 @@ test.describe('demo landing screenshots', () => {
   });
 
   test('capture palette.png', async ({ page }) => {
-    await page.goto('/clusters/prod/namespaces/shop/pods');
+    await page.goto('/clusters/prod/namespaces/storefront/pods');
     await expect(page.locator('table.ro-table td.cell-name').first()).toBeVisible();
     await page.keyboard.press('ControlOrMeta+k');
     await expect(page.locator('#ro-palette')).toHaveClass(/open/);

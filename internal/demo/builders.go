@@ -11,6 +11,7 @@ package demo
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -40,6 +41,9 @@ func firstNonEmpty(values ...string) string {
 
 func i32p(v int32) *int32 { return &v }
 func boolp(v bool) *bool  { return &v }
+
+func itoa(i int) string                  { return strconv.Itoa(i) }
+func ptrTime(t metav1.Time) *metav1.Time { return &t }
 
 func created(minsAgo int) metav1.Time {
 	return metav1.NewTime(refTime.Add(-time.Duration(minsAgo) * time.Minute))
@@ -440,8 +444,9 @@ func node(name string, roles []string, ready, memoryPressure bool) *corev1.Node 
 				ContainerRuntimeVersion: "containerd://1.7.13",
 			},
 			Addresses: []corev1.NodeAddress{
-				{Type: corev1.NodeInternalIP, Address: "10.0.0.5"},
-				{Type: corev1.NodeExternalIP, Address: "203.0.113.5"},
+				{Type: corev1.NodeInternalIP, Address: fmt.Sprintf("10.0.0.%d", 10+nameHash(name)%240)},
+				{Type: corev1.NodeExternalIP, Address: fmt.Sprintf("203.0.113.%d", 10+nameHash(name)%240)},
+				{Type: corev1.NodeHostName, Address: name},
 			},
 		},
 	}
@@ -495,6 +500,74 @@ func ownerStatefulSet(name string) []metav1.OwnerReference {
 	return []metav1.OwnerReference{{Kind: "StatefulSet", Name: name}}
 }
 
-// bigName renders a zero-padded deterministic name for the big-namespace rows,
-// so the sorted list order is stable.
-func bigName(i int) string { return fmt.Sprintf("cm-%04d", i) }
+// nameHash is a small deterministic FNV-1a over a string, used to give each app
+// a stable ReplicaSet suffix that reads like a real pod-template hash.
+func nameHash(s string) int {
+	h := 2166136261
+	for _, c := range s {
+		h = (h ^ int(c)) * 16777619
+	}
+	if h < 0 {
+		h = -h
+	}
+	return h
+}
+
+// app builds a healthy workload: a Deployment, its ReplicaSet, and `replicas`
+// ready pods (one container, round-robin across nodes, a spread of ages). It is
+// the workhorse for the demo's many healthy services so each namespace shows a
+// real running fleet, never an empty pods list. Returns the objects plus the
+// ReplicaSet name (so the caller can name pod metrics).
+func app(namespace, name, image string, replicas int, nodes []string, ageMins int) ([]runtime.Object, string) {
+	rs := replicaSet(name+"-"+fleetHash(nameHash(name)), name, int32(replicas), name)
+	out := []runtime.Object{deployment(name, int32(replicas), int32(replicas)), rs}
+	for i := 0; i < replicas; i++ {
+		out = append(out, podFrom(rs.Name+"-"+fleetHash(i*97+nameHash(name)), namespace, &podOpts{
+			app:         name,
+			node:        nodes[i%len(nodes)],
+			ownerRS:     rs.Name,
+			createdMins: ageMins + i*11,
+			containers:  []corev1.Container{{Name: name, Image: image}},
+			statuses:    []corev1.ContainerStatus{readyContainer(name)},
+		}))
+	}
+	return out, rs.Name
+}
+
+// fleetPods builds n Running pods for a horizontally-scaled Deployment: owned by
+// the ReplicaSet rs, spread round-robin across nodes, each a single ready
+// container, with deterministic random-looking names and a spread of recent ages
+// — a believable large web tier (the list-virtualization story) rather than a
+// dump of empty objects.
+func fleetPods(namespace, app, rs string, n int, nodes []string) []runtime.Object {
+	out := make([]runtime.Object, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, podFrom(rs+"-"+fleetHash(i), namespace, &podOpts{
+			app:         app,
+			node:        nodes[i%len(nodes)],
+			ownerRS:     rs,
+			createdMins: 4 + (i*13)%(7*60), // 4m … ~7h, a recent scale-up
+			containers:  []corev1.Container{{Name: app, Image: "registry.example.com/" + app + ":v4.2.1"}},
+			statuses:    []corev1.ContainerStatus{readyContainer(app)},
+		}))
+	}
+	return out
+}
+
+// fleetHash maps i to a unique 5-char base36 suffix (a bijection mod 36^5), so a
+// large fleet reads like real ReplicaSet pod names without collisions.
+func fleetHash(i int) string {
+	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+	const m = 60466176 // 36^5
+	v := i % m         // reduce first so the multiply below cannot overflow int
+	if v < 0 {
+		v += m
+	}
+	v = (v*2654435761 + 12345) % m // multiplier is coprime with 36^5 → bijection
+	b := []byte("00000")
+	for j := 4; j >= 0; j-- {
+		b[j] = alphabet[v%36]
+		v /= 36
+	}
+	return string(b)
+}
