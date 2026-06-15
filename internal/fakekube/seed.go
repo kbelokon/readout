@@ -402,7 +402,10 @@ func buildStore(c Cluster, reg map[string]gvrInfo) (*store, error) {
 		if err != nil {
 			return nil, err
 		}
-		st.lists[path] = &listState{list: doc}
+		// Fill the Table slot too (D5): a client that negotiates as=Table gets
+		// the meta.k8s.io Table form, with the SAME item set as the List form and
+		// the full object riding each row (readout's curated cells re-read it).
+		st.lists[path] = &listState{list: doc, table: buildTableDoc(b)}
 	}
 
 	// Ensure an EMPTY list route exists for every (resource, namespace) that a
