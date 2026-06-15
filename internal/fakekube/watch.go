@@ -200,6 +200,31 @@ func (s *Server) validateScriptEvent(ev *ScriptEvent) error {
 	return nil
 }
 
+// Apply is the exported in-process mutation/breathing primitive: it validates
+// ev, then applies it to the list state and open watch streams exactly as a
+// POSTed /__control/watch-script entry would — no HTTP, no control prefix
+// (the demo strips /__control/, so the breathing loop drives the engine
+// through here). Data events (ADDED/MODIFIED/DELETED) mutate subsequent LIST
+// responses and stream a Table frame to open watches; BOOKMARK/GONE/EOF drive
+// the stream controls (see the file header). With DelayMs == 0 the call is
+// synchronous (subsequent LISTs reflect the change before Apply returns); a
+// positive DelayMs schedules the application on a timer.
+//
+// Each applied data event (and BOOKMARK) bumps the collection resourceVersion
+// strictly above store.rv (st.rv++ in applyScriptEvent/bookmarkRV), so watch
+// replay ordering holds and an in-process caller can rely on monotonic RVs.
+//
+// Apply is the SAME machinery handleWatchScript drives, so it is the single
+// validate-then-enqueue path for both the in-process driver and the HTTP
+// control surface; a malformed event returns an error and never mutates state.
+func (s *Server) Apply(ev ScriptEvent) error {
+	if err := s.validateScriptEvent(&ev); err != nil {
+		return err
+	}
+	s.enqueueEvent(ev)
+	return nil
+}
+
 // enqueueEvent appends the event to the playback queue and applies it to the
 // list state and open watch streams: synchronously for DelayMs == 0 (the
 // control POST returns only after subsequent LISTs reflect the change), via

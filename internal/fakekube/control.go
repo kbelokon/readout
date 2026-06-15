@@ -113,6 +113,10 @@ func (s *Server) handleWatchScript(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "parse script: " + err.Error()})
 		return
 	}
+	// Validate the WHOLE batch up front so a malformed entry rejects the
+	// entire script before any mutation lands (no partial application). Apply
+	// re-validates each event, but that pass is redundant here and keeps the
+	// in-process and HTTP paths on one validate-then-enqueue primitive.
 	for i := range script.Events {
 		if err := s.validateScriptEvent(&script.Events[i]); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -120,7 +124,10 @@ func (s *Server) handleWatchScript(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for i := range script.Events {
-		s.enqueueEvent(script.Events[i])
+		if err := s.Apply(script.Events[i]); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"queued": len(script.Events)})
 }
