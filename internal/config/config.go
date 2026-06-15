@@ -105,6 +105,12 @@ type Config struct {
 	MetricsPort   int
 	ListenAddress string
 	ShowVersion   bool
+	// Demo is the --demo flag: when set, main.go starts the in-process fake
+	// clusters (internal/demo) on ephemeral loopback ports and registers them as
+	// static cluster connections before building the kube manager. It is a
+	// startup-mode toggle recorded by Parse; the engine URLs are not known until
+	// the engines start (after Parse), so Parse only records the flag.
+	Demo bool
 
 	IncludeNamespaces []*regexp.Regexp
 	ExcludeNamespaces []*regexp.Regexp
@@ -366,13 +372,14 @@ type fileConfig struct {
 func Parse(args []string) (Config, error) {
 	var configPath string
 	var port int
-	var debug, showVersion bool
+	var debug, showVersion, demo bool
 
 	fs := flag.NewFlagSet("readout", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to readout.yaml config file")
 	fs.IntVar(&port, "port", 0, "TCP port to start webserver on (overrides config)")
 	fs.BoolVar(&debug, "debug", false, "Run with debug logging")
 	fs.BoolVar(&showVersion, "version", false, "Print version and exit")
+	fs.BoolVar(&demo, "demo", false, "Run the in-process demo: two fake clusters served against the real UI")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -394,6 +401,7 @@ func Parse(args []string) (Config, error) {
 	}
 
 	cfg.ShowVersion = showVersion
+	cfg.Demo = demo
 	if debug {
 		cfg.Debug = true
 	}

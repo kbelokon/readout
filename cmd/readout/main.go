@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/kbelokon/readout/internal/config"
+	"github.com/kbelokon/readout/internal/demo"
+	fakekube "github.com/kbelokon/readout/internal/fakekube"
 	"github.com/kbelokon/readout/internal/version"
 	"github.com/kbelokon/readout/internal/web"
 )
@@ -130,10 +132,46 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// context.Background() neither ever fired.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Demo mode: start the in-process fake clusters BEFORE web.New builds the
+	// kube manager, and inject them into the static cluster list (cfg.Clusters)
+	// so discoverStatic picks them up and discoverAll treats the run as explicit
+	// (no kubeconfig/in-cluster fallback). The engines carry no /__control/
+	// surface; a shared breathing driver animates Live through Server.Apply.
+	var (
+		demoEngines   []*fakekube.Server
+		breathing     *demo.BreathingDriver
+		demoClusterID []string
+	)
+	if cfg.Demo {
+		engines, conns, derr := demo.StartEngines()
+		if derr != nil {
+			slog.Error("failed to start demo engines", "version", version.Version, "error", derr)
+			return 1
+		}
+		demoEngines = engines
+		cfg.Clusters = append(cfg.Clusters, conns...)
+		for _, c := range conns {
+			demoClusterID = append(demoClusterID, c.Name)
+		}
+		defer func() {
+			for _, e := range demoEngines {
+				e.Close()
+			}
+		}()
+	}
+
 	app, err := web.New(ctx, &cfg)
 	if err != nil {
 		slog.Error("failed to initialize app", "version", version.Version, "error", err)
 		return 1
+	}
+
+	if cfg.Demo {
+		breathing = demo.NewBreathingDriver(demoEngines, demoClusterID)
+		breathing.Start()
+		defer breathing.Stop()
+		slog.Info("demo mode: in-process fake clusters started", "clusters", demoClusterID)
 	}
 	addr := config.Address(cfg.ListenAddress, cfg.Port)
 	if cfg.MetricsPort != 0 {
