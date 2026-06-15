@@ -21,6 +21,23 @@ import (
 	fakekube "github.com/kbelokon/readout/internal/fakekube"
 )
 
+// demoClusterLabels gives each demo cluster the label chips a real cluster
+// carries on the clusters page (environment, region, provider), keyed by the
+// scenario's cluster name.
+var demoClusterLabels = map[string]map[string]string{
+	"prod": {
+		"environment":               "production",
+		"region":                    "us-east-1",
+		"provider":                  "aws",
+		"app.kubernetes.io/part-of": "acme-shop",
+	},
+	"staging": {
+		"environment": "staging",
+		"region":      "us-west-2",
+		"provider":    "aws",
+	},
+}
+
 // StartEngines starts one in-process fakekube engine per demo cluster, seeds it
 // from DemoScenario(), and returns the running engines alongside the static
 // cluster-connection entries that point at them. The connection Name is the
@@ -60,6 +77,7 @@ func StartEngines() (servers []*fakekube.Server, conns []config.ClusterConnectio
 		conns = append(conns, config.ClusterConnection{
 			Name:   cluster.Name,
 			Server: srv.URL,
+			Labels: demoClusterLabels[cluster.Name],
 		})
 	}
 	return servers, conns, nil

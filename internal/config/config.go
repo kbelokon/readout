@@ -63,6 +63,7 @@ type SidebarGroup struct {
 type ClusterConnection struct {
 	Name                     string
 	Server                   string
+	Labels                   map[string]string
 	CertificateAuthority     string
 	CertificateAuthorityData []byte
 	InsecureSkipTLSVerify    bool
@@ -224,6 +225,7 @@ type fileCluster struct {
 type fileClusterConn struct {
 	Name                     string                 `json:"name"`
 	Server                   string                 `json:"server"`
+	Labels                   map[string]string      `json:"labels"`
 	CertificateAuthority     string                 `json:"certificateAuthority"`
 	CertificateAuthorityData []byte                 `json:"certificateAuthorityData"`
 	InsecureSkipTLSVerify    bool                   `json:"insecureSkipTlsVerify"`
@@ -734,6 +736,7 @@ func resolveClusterConnections(clusters []fileClusterConn) ([]ClusterConnection,
 		result = append(result, ClusterConnection{
 			Name:                     c.Name,
 			Server:                   c.Server,
+			Labels:                   c.Labels,
 			CertificateAuthority:     c.CertificateAuthority,
 			CertificateAuthorityData: c.CertificateAuthorityData,
 			InsecureSkipTLSVerify:    c.InsecureSkipTLSVerify,

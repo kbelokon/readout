@@ -269,10 +269,14 @@ func discoverStatic(cfg *appconfig.Config, gate credentialPluginGate) []discover
 	var result []discoveredCluster
 	for i := range cfg.Clusters {
 		cc := &cfg.Clusters[i]
+		labels := cc.Labels
+		if labels == nil {
+			labels = map[string]string{}
+		}
 		dc := discoveredCluster{
 			Name:   cc.Name,
 			Source: SourceStatic,
-			Labels: map[string]string{},
+			Labels: labels,
 			Spec:   map[string]any{"api_server_url": cc.Server},
 		}
 		// Non-https hosts make clientcmd skip the TLS/auth merge
