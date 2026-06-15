@@ -27,7 +27,7 @@
 // as Table watch frames (columnDefinitions only in a connection's first
 // frame), with scripted BOOKMARK/GONE/EOF stream controls and replay of
 // applied data events above the connection's ?resourceVersion. See watch.go.
-package fakeapi
+package fakekube
 
 import (
 	"embed"
@@ -87,13 +87,22 @@ func WithListenAddress(addr string) Option {
 	return func(s *Server) { s.listenAddr = addr }
 }
 
+// WithoutControl suppresses the deterministic /__control/ surface. Control is
+// registered by DEFAULT (every existing control-driving test constructs via a
+// plain New()), so this is the explicit opt-OUT the demo uses to serve a clean
+// fake with no control routes. Nothing else constructs the engine with it.
+func WithoutControl() Option {
+	return func(s *Server) { s.withoutControl = true }
+}
+
 // Server is a running fake apiserver. URL carries the base address, matching
 // the httptest.Server field the embedded test servers used to expose.
 type Server struct {
 	URL string
 
-	httpServer *httptest.Server
-	listenAddr string
+	httpServer     *httptest.Server
+	listenAddr     string
+	withoutControl bool
 	// done releases held-open watch streams before httptest.Server.Close
 	// drains outstanding requests (a held watch would otherwise deadlock it).
 	done      chan struct{}
@@ -177,7 +186,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	for path := range s.store.logs {
 		mux.HandleFunc(path, s.logHandler(path))
 	}
-	s.registerControl(mux)
+	if !s.withoutControl {
+		s.registerControl(mux)
+	}
 }
 
 func (s *Server) discoveryHandler(path string) http.HandlerFunc {

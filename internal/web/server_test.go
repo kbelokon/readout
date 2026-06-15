@@ -14,8 +14,8 @@ import (
 
 	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
+	fakeapi "github.com/kbelokon/readout/internal/fakekube"
 	"github.com/kbelokon/readout/internal/kube"
-	"github.com/kbelokon/readout/tests/unit/fakeapi"
 	"k8s.io/client-go/rest"
 )
 

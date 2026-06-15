@@ -1,4 +1,4 @@
-package fakeapi
+package fakekube
 
 // watch.go owns the scripted watch-event queue and the watch request surface:
 // the queue, immediate list-state mutation, AND stream playback to open

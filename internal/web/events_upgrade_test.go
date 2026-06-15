@@ -25,7 +25,7 @@ import (
 // decode precedence and threshold were review-flagged ambiguities.
 
 // eventsClock is the fixed instant the events fixtures are built against
-// (tests/unit/fakeapi/fixtures/data/events_table.json): the BackOff aggregate
+// (internal/fakekube/fixtures/data/events_table.json): the BackOff aggregate
 // reads 3m/41h from here, the series row 24s/4m, the burst row 45s.
 var eventsClock = time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 

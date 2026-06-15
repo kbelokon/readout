@@ -1,4 +1,4 @@
-package fakeapi
+package fakekube
 
 // control.go is the e2e determinism surface. Everything lives under
 // /__control/ -- a path prefix no Kubernetes client ever requests -- and only

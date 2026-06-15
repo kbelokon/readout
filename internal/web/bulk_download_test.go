@@ -20,8 +20,8 @@ import (
 	"testing"
 	"time"
 
+	fakeapi "github.com/kbelokon/readout/internal/fakekube"
 	"github.com/kbelokon/readout/internal/kube"
-	"github.com/kbelokon/readout/tests/unit/fakeapi"
 )
 
 var bulkClock = time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)

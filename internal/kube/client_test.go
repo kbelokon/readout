@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kbelokon/readout/tests/unit/fakeapi"
+	fakeapi "github.com/kbelokon/readout/internal/fakekube"
 	"k8s.io/client-go/rest"
 )
 

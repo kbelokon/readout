@@ -1,4 +1,4 @@
-package fakeapi
+package fakekube
 
 // bigfixtures.go generates the list-virtualization fixtures: a dedicated "big"
 // namespace whose pods and events collections carry 600 rows each. The data is

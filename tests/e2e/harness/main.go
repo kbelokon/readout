@@ -30,7 +30,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kbelokon/readout/tests/unit/fakeapi"
+	fakeapi "github.com/kbelokon/readout/internal/fakekube"
 )
 
 const kubeconfigTemplate = `apiVersion: v1

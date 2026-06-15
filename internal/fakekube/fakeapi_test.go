@@ -1,4 +1,4 @@
-package fakeapi_test
+package fakekube_test
 
 // These tests pin the control-surface semantics the e2e suite and the
 // downstream units (all-clusters states, list states, live updates, watch
@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kbelokon/readout/tests/unit/fakeapi"
+	fakeapi "github.com/kbelokon/readout/internal/fakekube"
 )
 
 const (

@@ -34,8 +34,8 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/kbelokon/readout/internal/config"
+	fakeapi "github.com/kbelokon/readout/internal/fakekube"
 	"github.com/kbelokon/readout/internal/kube"
-	"github.com/kbelokon/readout/tests/unit/fakeapi"
 )
 
 // TestCountsTableFormula pins the sidebar-count formula on the decoded Table chunk:

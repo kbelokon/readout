@@ -149,7 +149,7 @@ func newToggleableStateAPI(t *testing.T, forbid *atomic.Bool) *httptest.Server {
 // fixtures directory).
 func stateFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "tests", "unit", "fakeapi", "fixtures", name))
+	data, err := os.ReadFile(filepath.Join("..", "fakekube", "fixtures", name))
 	if err != nil {
 		t.Fatalf("read fixture %s: %v", name, err)
 	}
