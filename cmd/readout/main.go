@@ -151,6 +151,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		demoEngines = engines
 		cfg.Clusters = append(cfg.Clusters, conns...)
+		// The demo is a curated tour of EVERY render path, including the masked
+		// Secret detail (scenario.go seeds registry-creds whose values must show
+		// masked). Secrets are dropped by default, so the demo run admits the
+		// Secret type explicitly — values are still never serialized (the detail
+		// build masks them), so this only lights up the masked render, never a
+		// real value.
+		cfg.IncludeSecrets = true
 		for _, c := range conns {
 			demoClusterID = append(demoClusterID, c.Name)
 		}
@@ -169,9 +176,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if cfg.Demo {
 		breathing = demo.NewBreathingDriver(demoEngines, demoClusterID)
-		breathing.Start()
+		// READOUT_DEMO_FREEZE=1 starts the demo with the breathing loop FROZEN:
+		// the seeded state never churns, so a snapshot/e2e pass against the demo
+		// is deterministic (the visual baselines and the landing-screenshot
+		// capture both need a still frame). Any other value (or unset) runs the
+		// loop so a real demo viewer sees the Live surface move.
+		frozen := os.Getenv("READOUT_DEMO_FREEZE") == "1"
+		if !frozen {
+			breathing.Start()
+		}
 		defer breathing.Stop()
-		slog.Info("demo mode: in-process fake clusters started", "clusters", demoClusterID)
+		slog.Info("demo mode: in-process fake clusters started", "clusters", demoClusterID, "breathingFrozen", frozen)
 	}
 	addr := config.Address(cfg.ListenAddress, cfg.Port)
 	if cfg.MetricsPort != 0 {

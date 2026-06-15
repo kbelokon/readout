@@ -179,6 +179,17 @@ func podFrom(name, namespace string, o podOpts) *corev1.Pod {
 		meta.OwnerReferences = []metav1.OwnerReference{{Kind: "ReplicaSet", Name: o.ownerRS}}
 	}
 	spec := corev1.PodSpec{Containers: o.containers}
+	// The detail-page containers section is built from spec.initContainers (not
+	// the status alone — see buildContainersView), so a pod that carries init
+	// statuses must declare the matching init containers in its spec or the
+	// init-container render branch stays dark. Mirror one spec.initContainers
+	// entry per seeded init status so the demo lights up that branch.
+	for _, st := range o.initStatuses {
+		spec.InitContainers = append(spec.InitContainers, corev1.Container{
+			Name:  st.Name,
+			Image: "registry.example.com/" + st.Name + ":v1",
+		})
+	}
 	if o.node != "" {
 		spec.NodeName = o.node
 	}
