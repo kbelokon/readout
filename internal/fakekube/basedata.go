@@ -88,10 +88,19 @@ func withCellsNoRef(obj runtime.Object, cells ...any) *cellObject {
 // identically to the bare object.
 func (c *cellObject) GetObjectKind() schema.ObjectKind { return c.inner.GetObjectKind() }
 
-// DeepCopyObject deep-copies the inner object and rewraps it, preserving the
-// override (runtime.Object contract).
+// DeepCopyObject deep-copies the inner object and rewraps it, preserving every
+// override field (runtime.Object contract). All five fields must be carried: a
+// copy that dropped skipRefIntegrity/tableOnly/listOnly would silently re-arm
+// the waived integrity checks and collapse the divergent node Table/List split.
 func (c *cellObject) DeepCopyObject() runtime.Object {
-	return &cellObject{inner: c.inner.DeepCopyObject(), cells: c.cells, logText: c.logText}
+	return &cellObject{
+		inner:            c.inner.DeepCopyObject(),
+		cells:            c.cells,
+		logText:          c.logText,
+		skipRefIntegrity: c.skipRefIntegrity,
+		tableOnly:        c.tableOnly,
+		listOnly:         c.listOnly,
+	}
 }
 
 // cellOverride is the unwrapped base-cluster override carried alongside the bare

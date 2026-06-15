@@ -252,6 +252,14 @@ func (s *Server) listHandler(path string) http.HandlerFunc {
 func (s *Server) serveList(w http.ResponseWriter, r *http.Request, path string) {
 	s.store.mu.Lock()
 	ls := s.store.lists[path]
+	if ls == nil {
+		// A registered route with no list state (e.g. after a control reset
+		// reseeds the base store while the mux still carries a Seed-only route).
+		// Serve a 404 rather than nil-deref responseDoc.
+		s.store.mu.Unlock()
+		http.NotFound(w, r)
+		return
+	}
 	doc, itemsKey := ls.responseDoc(r.Header.Get("Accept"))
 	doc = applyInvolvedObjectFieldSelector(doc, itemsKey, r.URL.Query().Get("fieldSelector"))
 	doc = applyLimit(doc, itemsKey, r.URL.Query().Get("limit"))
