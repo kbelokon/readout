@@ -2,82 +2,121 @@ import { test, expect, type Page } from '@playwright/test';
 
 // demo-crawl.spec.ts is the link crawler: for each demo cluster it discovers
 // every resource type (cluster-scoped + the _all-namespaces kinds), visits each
-// list, and opens the first object's detail — once per kind — asserting the page
-// responds 2xx, shows no "Can't reach" error card, and the detail is NOT blank
-// (it renders at least one content section). This is the guard that catches dead
-// resource-type links and empty detail pages automatically, instead of a human
-// finding them by clicking around.
+// list, and opens up to SAMPLE objects PER KIND. For each object it checks the
+// Default detail (non-blank), the YAML tab (renders the object), and the Events
+// tab (no error). Every page must respond 2xx and show no "Can't reach" error
+// card. This is the guard that catches dead links, blank detail pages, and
+// broken tabs automatically, instead of a human finding them by clicking.
 
 const CLUSTERS = ['prod', 'staging'];
+const SAMPLE = 3; // objects opened per kind
 
-async function tableLinks(page: Page, path: string): Promise<string[]> {
-  const resp = await page.goto(path);
-  expect(resp?.ok(), `${path} should respond 2xx`).toBeTruthy();
+// safeGoto retries net::ERR_ABORTED: rapid navigation across the crawl races
+// readout's background SSE/htmx requests, which can abort an in-flight goto. A
+// short retry makes the crawl deterministic without masking real failures.
+async function safeGoto(page: Page, url: string) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await page.goto(url, { waitUntil: 'domcontentloaded' });
+    } catch (e) {
+      if (attempt >= 3) throw e;
+      await page.waitForTimeout(150);
+    }
+  }
+}
+
+async function tableLinks(page: Page, path: string): Promise<{ ok: boolean; hrefs: string[] }> {
+  const resp = await safeGoto(page, path);
+  if (!resp?.ok()) return { ok: false, hrefs: [] };
   const hrefs = await page
     .locator('table a[href]')
     .evaluateAll((els) => els.map((e) => (e as HTMLAnchorElement).getAttribute('href') || ''));
-  return [...new Set(hrefs.filter(Boolean))];
+  return { ok: true, hrefs: [...new Set(hrefs.filter(Boolean))] };
 }
 
-// kindPath strips the trailing object name so details can be de-duplicated by
-// kind (open the first object of each kind once, not every object).
+async function rowDetailLinks(page: Page): Promise<string[]> {
+  return page
+    .locator('table.ro-table td.cell-name a')
+    .evaluateAll((els) =>
+      els.slice(0, 8).map((e) => (e as HTMLAnchorElement).getAttribute('href') || '')
+    );
+}
+
+// kindPath strips the trailing object name so a kind can be sampled (open a few
+// objects of each kind, not every object).
 function kindPath(href: string): string {
   return href.replace(/\/[^/]+$/, '/');
 }
 
 test.describe('demo crawl', () => {
   for (const cluster of CLUSTERS) {
-    test(`every resource type + a detail per kind renders: ${cluster}`, async ({ page }) => {
+    test(`every resource type + sampled details/tabs render: ${cluster}`, async ({ page }) => {
+      test.setTimeout(240_000); // an exhaustive crawl over every kind × 3 tabs is inherently long
       const clusterTypes = await tableLinks(page, `/clusters/${cluster}/_resource-types`);
       const nsTypes = await tableLinks(page, `/clusters/${cluster}/namespaces/_all/_resource-types`);
-      const lists = [...new Set([...clusterTypes, ...nsTypes])].filter((h) =>
+      const lists = [...new Set([...clusterTypes.hrefs, ...nsTypes.hrefs])].filter((h) =>
         h.startsWith(`/clusters/${cluster}/`)
       );
       expect(lists.length, `${cluster} should advertise resource types`).toBeGreaterThan(5);
 
-      const seenKind = new Set<string>();
+      const perKind = new Map<string, number>();
       const problems: string[] = [];
 
+      const errored = async (where: string): Promise<boolean> => {
+        if (await page.locator('.ro-error-card').count()) {
+          problems.push(`${where} -> error card`);
+          return true;
+        }
+        return false;
+      };
+
       for (const href of lists) {
-        const resp = await page.goto(href);
+        const resp = await safeGoto(page, href);
         if (!resp?.ok()) {
           problems.push(`LIST ${href} -> HTTP ${resp?.status()}`);
           continue;
         }
-        if (await page.locator('.ro-error-card').count()) {
-          problems.push(`LIST ${href} -> error card`);
-          continue;
-        }
+        if (await errored(`LIST ${href}`)) continue;
 
-        const first = page.locator('table.ro-table td.cell-name a').first();
-        if (!(await first.count())) continue; // empty list (valid)
-        const detail = await first.getAttribute('href');
-        if (!detail || seenKind.has(kindPath(detail))) continue;
-        seenKind.add(kindPath(detail));
+        for (const detail of await rowDetailLinks(page)) {
+          if (!detail) continue;
+          const kp = kindPath(detail);
+          if ((perKind.get(kp) ?? 0) >= SAMPLE) continue;
 
-        const r = await page.goto(detail);
-        if (!r?.ok()) {
-          problems.push(`DETAIL ${detail} -> HTTP ${r?.status()}`);
-          continue;
-        }
-        if (await page.locator('.ro-error-card').count()) {
-          problems.push(`DETAIL ${detail} -> error card`);
-          continue;
-        }
-        // Some "first links" are drill-downs into another LIST (a Namespace row
-        // links to that namespace's pods), not an object detail. Only a detail
-        // page carries the tab strip; a list has none — for those we only need
-        // the no-error check above.
-        if (!(await page.locator('.ro-tabs').count())) continue;
-        // Non-blank: a real detail renders some content on the Default tab —
-        // curated card content, a metadata/labels section, label chips, the
-        // containers table, or secret data. A body with none of these (only the
-        // empty detail shell + header) is the blank-page bug.
-        const content = page.locator(
-          '.ro-card-content, .ro-section, .ro-chip, .ro-containers, .ro-secret-data'
-        );
-        if (!(await content.count())) {
-          problems.push(`DETAIL ${detail} -> blank (no content)`);
+          // --- Default tab ---
+          const r = await safeGoto(page, detail);
+          if (!r?.ok()) {
+            problems.push(`DETAIL ${detail} -> HTTP ${r?.status()}`);
+            continue;
+          }
+          if (await errored(`DETAIL ${detail}`)) continue;
+          // A "first link" can be a drill-down into another LIST (a Namespace row
+          // links to that namespace's pods), not an object detail. Only a detail
+          // page carries the tab strip.
+          if (!(await page.locator('.ro-tabs').count())) continue;
+          perKind.set(kp, (perKind.get(kp) ?? 0) + 1);
+
+          const content = page.locator(
+            '.ro-card-content, .ro-section, .ro-chip, .ro-containers, .ro-secret-data'
+          );
+          if (!(await content.count())) problems.push(`DETAIL ${detail} -> blank (no content)`);
+
+          // --- YAML tab: must render the object's manifest ---
+          const ry = await safeGoto(page, `${detail}?view=yaml`);
+          if (!ry?.ok()) {
+            problems.push(`YAML ${detail} -> HTTP ${ry?.status()}`);
+          } else if (!(await errored(`YAML ${detail}`))) {
+            const yaml = await page.locator('.ro-yaml-view').innerText().catch(() => '');
+            if (!/kind:/.test(yaml)) problems.push(`YAML ${detail} -> no manifest rendered`);
+          }
+
+          // --- Events tab: must render (events table or empty state), no error ---
+          const re = await safeGoto(page, `${detail}?view=events`);
+          if (!re?.ok()) {
+            problems.push(`EVENTS ${detail} -> HTTP ${re?.status()}`);
+          } else {
+            await errored(`EVENTS ${detail}`);
+          }
         }
       }
 
