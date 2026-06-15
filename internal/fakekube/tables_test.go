@@ -415,3 +415,50 @@ func allKindsCluster() Cluster {
 		}},
 	}
 }
+
+func TestCellPodStatus(t *testing.T) {
+	waiting := func(reason string) map[string]any {
+		return map[string]any{"state": map[string]any{"waiting": map[string]any{"reason": reason}}}
+	}
+	terminated := func(reason string, code int64) map[string]any {
+		return map[string]any{"state": map[string]any{"terminated": map[string]any{"reason": reason, "exitCode": code}}}
+	}
+	pod := func(phase string, cs ...map[string]any) map[string]any {
+		items := make([]any, len(cs))
+		for i, c := range cs {
+			items[i] = c
+		}
+		return map[string]any{"status": map[string]any{"phase": phase, "containerStatuses": items}}
+	}
+
+	cases := map[string]struct {
+		obj  map[string]any
+		want string
+	}{
+		"running healthy":     {pod("Running", map[string]any{"state": map[string]any{"running": map[string]any{}}}), "Running"},
+		"crashloop overrides": {pod("Running", waiting("CrashLoopBackOff")), "CrashLoopBackOff"},
+		"imagepull overrides": {pod("Running", waiting("ImagePullBackOff")), "ImagePullBackOff"},
+		"terminated reason":   {pod("Failed", terminated("OOMKilled", 137)), "OOMKilled"},
+		"terminated exitcode": {pod("Failed", terminated("", 2)), "ExitCode:2"},
+		"deletion terminating": {map[string]any{
+			"metadata": map[string]any{"deletionTimestamp": "2026-06-15T00:00:00Z"},
+			"status":   map[string]any{"phase": "Running"},
+		}, "Terminating"},
+		"init in progress": {map[string]any{"status": map[string]any{
+			"phase":                 "Pending",
+			"initContainerStatuses": []any{waiting("PodInitializing")},
+		}}, "Init:0/1"},
+		"init failed": {map[string]any{"status": map[string]any{
+			"phase":                 "Pending",
+			"initContainerStatuses": []any{terminated("Error", 1)},
+		}}, "Init:Error"},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := cellPodStatus(tc.obj); got != tc.want {
+				t.Errorf("cellPodStatus = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

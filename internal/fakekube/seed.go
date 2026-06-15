@@ -326,6 +326,17 @@ func collectObjects(c *Cluster, reg map[string]gvrInfo) ([]seededObject, error) 
 			// keep the served object faithful to a hand-authored pod.
 			pruneEmptyContainerResources(wire)
 		}
+		if info.namespaced && ns != "" {
+			// Stamp the authoritative namespace onto the wire so the all-namespaces
+			// NAMESPACE column populates for every kind, even when a builder left
+			// metadata.namespace unset on the typed object.
+			meta, _ := wire["metadata"].(map[string]any)
+			if meta == nil {
+				meta = map[string]any{}
+				wire["metadata"] = meta
+			}
+			meta["namespace"] = ns
+		}
 		out = append(out, seededObject{
 			info:       info,
 			apiVersion: apiVersion,

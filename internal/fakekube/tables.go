@@ -581,11 +581,62 @@ func valueAt(obj map[string]any, parent, key string) any {
 
 // ---- Pod ----
 
+// cellPodStatus reproduces the apiserver's composite Pod "Status" printer
+// column. The bare phase (Running/Pending/...) is overridden by a deletion, an
+// unfinished init container, or a waiting/terminated container reason — so a
+// CrashLoopBackOff / ImagePullBackOff / Init:... / Terminating pod reads its
+// real state instead of a misleading "Running".
 func cellPodStatus(obj map[string]any) any {
-	if phase := nestedString(obj, "status", "phase"); phase != "" {
-		return phase
+	if nestedString(obj, "metadata", "deletionTimestamp") != "" {
+		return "Terminating"
 	}
-	return "Pending"
+	status := nestedString(obj, "status", "phase")
+	if status == "" {
+		status = "Pending"
+	}
+	if reason := nestedString(obj, "status", "reason"); reason != "" {
+		status = reason // pod-level reason, e.g. Evicted / NodeLost
+	}
+
+	// An unfinished init container dominates the displayed status.
+	inits := nestedSlice(obj, "status", "initContainerStatuses")
+	for i, raw := range inits {
+		cs, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if term := nestedMap(cs, "state", "terminated"); term != nil {
+			if asInt64(term["exitCode"]) == 0 {
+				continue // this init container finished cleanly
+			}
+			if r := nestedString(cs, "state", "terminated", "reason"); r != "" {
+				return "Init:" + r
+			}
+			return fmt.Sprintf("Init:ExitCode:%d", asInt64(term["exitCode"]))
+		}
+		if wr := nestedString(cs, "state", "waiting", "reason"); wr != "" && wr != "PodInitializing" {
+			return "Init:" + wr
+		}
+		return fmt.Sprintf("Init:%d/%d", i, len(inits))
+	}
+
+	// A waiting/terminated regular container reason overrides the phase.
+	for _, raw := range nestedSlice(obj, "status", "containerStatuses") {
+		cs, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if wr := nestedString(cs, "state", "waiting", "reason"); wr != "" {
+			status = wr
+		} else if tr := nestedString(cs, "state", "terminated", "reason"); tr != "" {
+			status = tr
+		} else if term := nestedMap(cs, "state", "terminated"); term != nil {
+			if code := asInt64(term["exitCode"]); code != 0 {
+				status = fmt.Sprintf("ExitCode:%d", code)
+			}
+		}
+	}
+	return status
 }
 
 func cellPodReady(obj map[string]any) any {
