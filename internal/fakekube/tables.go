@@ -277,16 +277,13 @@ var kindTables = map[string]kindTable{
 
 // buildTableDoc renders one collection's Table wire document from its bucket:
 // the meta.k8s.io/v1 Table envelope, the kind's columnDefinitions, and one row
-// per item (its plain cells + the FULL object). Items are sorted by name to
-// mirror the List form's deterministic order.
+// per item (its plain cells + the FULL object) in INSERTION order (the seeder
+// controls it, so the order is deterministic AND mirrors the List form). A row
+// whose object carries EXPLICIT cells (the base test cluster's literal printer
+// cells) serves those verbatim; otherwise the kind's tableForKind extractors
+// derive them (the demo path).
 func buildTableDoc(b *listBucket) map[string]any {
 	kt, _ := tableForKind(b.info.kind)
-
-	items := make([]map[string]any, len(b.items))
-	copy(items, b.items)
-	sort.SliceStable(items, func(i, j int) bool {
-		return itemName(items[i]) < itemName(items[j])
-	})
 
 	columns := make([]any, 0, len(kt.columns))
 	for _, c := range kt.columns {
@@ -297,11 +294,23 @@ func buildTableDoc(b *listBucket) map[string]any {
 		})
 	}
 
-	rows := make([]any, 0, len(items))
-	for _, obj := range items {
-		cells := make([]any, 0, len(kt.cells))
-		for _, fn := range kt.cells {
-			cells = append(cells, fn(obj))
+	rows := make([]any, 0, len(b.items))
+	for i, obj := range b.items {
+		if i < len(b.listOnly) && b.listOnly[i] {
+			continue // List-only item: omitted from the Table wire form.
+		}
+		var explicit []any
+		if i < len(b.cells) {
+			explicit = b.cells[i]
+		}
+		var cells []any
+		if explicit != nil {
+			cells = explicit
+		} else {
+			cells = make([]any, 0, len(kt.cells))
+			for _, fn := range kt.cells {
+				cells = append(cells, fn(obj))
+			}
 		}
 		rows = append(rows, map[string]any{
 			"cells":  cells,

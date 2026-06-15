@@ -61,6 +61,27 @@ type Cluster struct {
 	// not a module dependency, so metrics ride the JSON wire shape the existing
 	// fixtures use (see seed.go); every NodeMetrics name must resolve to a Node.
 	NodeMetrics []NodeMetric
+
+	// DiscoveryResources advertise kinds in discovery WITHOUT seeding objects or
+	// list routes for them — a real apiserver lists every registered type even
+	// when a namespace holds none (the resource-types matrix shows Deployment /
+	// ReplicaSet / CSINode, whose LIST routes 404 because nothing is seeded). A
+	// CRD already advertises its own kind, so these are for BUILT-IN groups only.
+	DiscoveryResources []DiscoveryResource
+}
+
+// DiscoveryResource advertises one built-in kind in discovery without a seeded
+// object or list route. Group is "" for the core group ("" => /api/v1); a
+// non-empty Group rides /apis/<Group>/<Version>. The resource LIST route is
+// intentionally absent (it 404s), matching an apiserver that registers a type a
+// namespace has zero objects of.
+type DiscoveryResource struct {
+	Group      string
+	Version    string
+	Kind       string
+	Plural     string
+	Singular   string
+	Namespaced bool
 }
 
 // Namespace is one namespace and the objects living in it. Objects are typed
@@ -74,6 +95,18 @@ type Namespace struct {
 	// Labels ride the served Namespace object's metadata.labels.
 	Labels map[string]string
 
+	// Created, when set (RFC3339), rides the served Namespace object's
+	// metadata.creationTimestamp (the cluster-overview age-bucket cell reads it).
+	Created string
+
+	// Unlisted, when true, serves this namespace's per-namespace object routes
+	// (its pods etc.) but does NOT emit a synthetic Namespace object — so the
+	// namespace stays OUT of the /api/v1/namespaces list and has no
+	// /api/v1/namespaces/<name> object route. Used for list-render scaffolding
+	// namespaces (the states / empty / big test namespaces) that must serve a
+	// list route without appearing in the cluster's namespaces roster.
+	Unlisted bool
+
 	// Objects are the namespaced typed objects (Pods, Deployments, ReplicaSets,
 	// Services, Ingresses, Events, Secrets, ConfigMaps, CronJobs, Jobs, PVCs,
 	// custom resources, ...). Each object's namespace is taken from this
@@ -84,6 +117,12 @@ type Namespace struct {
 	// PodMetrics carry per-pod container usage keyed by pod name; every entry's
 	// name must resolve to a Pod in this namespace.
 	PodMetrics []PodMetric
+
+	// EmptyLists names resource plurals this namespace must serve as a
+	// REGISTERED but zero-row list (e.g. "pods" in the "empty" namespace), so a
+	// list returns a 0-row Table/List instead of a 404. A kind with no objects
+	// has no route otherwise; this declares the genuinely-empty list state.
+	EmptyLists []string
 }
 
 // CRD registers one custom-resource group-version-kind in discovery so its

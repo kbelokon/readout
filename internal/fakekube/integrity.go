@@ -88,12 +88,14 @@ func validateCluster(c Cluster, reg map[string]gvrInfo) error {
 }
 
 // wireObject is one object's identity plus its JSON wire map, the unit the
-// validator resolves references from.
+// validator resolves references from. skipRefIntegrity exempts it from the
+// reference-resolution checks (a base-cluster event referencing a churned pod).
 type wireObject struct {
-	kind      string
-	namespace string
-	name      string
-	m         map[string]any
+	kind             string
+	namespace        string
+	name             string
+	m                map[string]any
+	skipRefIntegrity bool
 }
 
 // indexCluster resolves every object's kind (erroring on an unregistered
@@ -113,6 +115,13 @@ func indexCluster(c Cluster, reg map[string]gvrInfo) (*objIndex, []wireObject, e
 	var wires []wireObject
 
 	register := func(obj runtime.Object, declaredNS string) error {
+		// Unwrap a base-cluster cell/log override so the validator reads the bare
+		// typed object exactly as discovery / List / the marshal path do.
+		skipRef := false
+		if co, ok := obj.(*cellObject); ok {
+			skipRef = co.skipRefIntegrity
+		}
+		_, _, obj = unwrapCellObject(obj)
 		info, _, kind, err := objectGVK(obj, reg)
 		if err != nil {
 			return fmt.Errorf("integrity: %w", err)
@@ -149,7 +158,7 @@ func indexCluster(c Cluster, reg map[string]gvrInfo) (*objIndex, []wireObject, e
 			}
 			idx.servicesByNS[ns][name] = true
 		}
-		wires = append(wires, wireObject{kind: kind, namespace: ns, name: name, m: m})
+		wires = append(wires, wireObject{kind: kind, namespace: ns, name: name, m: m, skipRefIntegrity: skipRef})
 		return nil
 	}
 
@@ -177,8 +186,12 @@ func indexCluster(c Cluster, reg map[string]gvrInfo) (*objIndex, []wireObject, e
 	return idx, wires, nil
 }
 
-// validateObject resolves the references a single object carries.
+// validateObject resolves the references a single object carries. An object
+// flagged skipRefIntegrity (a base-cluster event about a churned pod) is exempt.
 func validateObject(w wireObject, idx *objIndex) error {
+	if w.skipRefIntegrity {
+		return nil
+	}
 	// ownerReferences resolve to an object in the same namespace.
 	for _, ref := range mapOwnerRefs(w.m) {
 		if !idx.byKey[objKey(w.namespace, ref.kind, ref.name)] {

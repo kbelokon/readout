@@ -262,6 +262,7 @@ func (s *Server) serveList(w http.ResponseWriter, r *http.Request, path string) 
 	s.store.mu.Lock()
 	ls := s.store.lists[path]
 	doc, itemsKey := ls.responseDoc(r.Header.Get("Accept"))
+	doc = applyInvolvedObjectFieldSelector(doc, itemsKey, r.URL.Query().Get("fieldSelector"))
 	doc = applyLimit(doc, itemsKey, r.URL.Query().Get("limit"))
 	data, err := json.Marshal(doc)
 	s.store.mu.Unlock()
@@ -271,6 +272,60 @@ func (s *Server) serveList(w http.ResponseWriter, r *http.Request, path string) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(data)
+}
+
+// applyInvolvedObjectFieldSelector narrows an events List response to the items
+// matching an involvedObject.* field selector (the detail Events tab fetches
+// `client.List(events, fieldSelector=involvedObject.name=<obj>,...)`). A real
+// apiserver server-side-filters events this way; the fake honors the name +
+// namespace + kind + uid keys (an EMPTY selector value matches any item, so a
+// selector key for an object with no uid does not over-filter). Non-event lists
+// carry no involvedObject.* selector and pass through untouched.
+func applyInvolvedObjectFieldSelector(doc map[string]any, itemsKey, fieldSelector string) map[string]any {
+	if doc == nil || fieldSelector == "" || !strings.Contains(fieldSelector, "involvedObject.") {
+		return doc
+	}
+	want := map[string]string{}
+	for _, clause := range strings.Split(fieldSelector, ",") {
+		kv := strings.SplitN(clause, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		key, val := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		if val != "" && strings.HasPrefix(key, "involvedObject.") {
+			want[strings.TrimPrefix(key, "involvedObject.")] = val
+		}
+	}
+	if len(want) == 0 {
+		return doc
+	}
+	items, _ := doc[itemsKey].([]any)
+	kept := make([]any, 0, len(items))
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		ref, _ := m["involvedObject"].(map[string]any)
+		if involvedObjectMatches(ref, want) {
+			kept = append(kept, it)
+		}
+	}
+	out := maps.Clone(doc)
+	out[itemsKey] = kept
+	return out
+}
+
+// involvedObjectMatches reports whether an event's involvedObject map satisfies
+// every wanted field (name/namespace/kind/uid).
+func involvedObjectMatches(ref map[string]any, want map[string]string) bool {
+	for field, val := range want {
+		got, _ := ref[field].(string)
+		if got != val {
+			return false
+		}
+	}
+	return true
 }
 
 // listState is the mutable state behind one or more collection routes. table
@@ -353,275 +408,21 @@ func (st *store) listStateFor(path string) *listState {
 	return st.lists[path]
 }
 
-// namespaceDefaultJSON and nodeMetricsJSON carry the two literal payloads the
-// web suite's embedded server wrote inline. podMetricsNginxJSON is the
-// single-object PodMetrics GET for the nginx render pod (the pod-detail
-// containers table fetches it; the item mirrors data/metrics_pods_list.json).
-const (
-	namespaceDefaultJSON = `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"default","creationTimestamp":"2024-01-01T00:00:00Z","resourceVersion":"1"},"status":{"phase":"Active"}}`
-	nodeMetricsJSON      = `{"apiVersion":"metrics.k8s.io/v1beta1","kind":"NodeMetricsList","items":[{"apiVersion":"metrics.k8s.io/v1beta1","kind":"NodeMetrics","metadata":{"name":"worker-1"},"usage":{"cpu":"1","memory":"256Mi"}}]}`
-	podMetricsNginxJSON  = `{"kind":"PodMetrics","apiVersion":"metrics.k8s.io/v1beta1","metadata":{"name":"nginx","namespace":"default","creationTimestamp":"2024-03-01T10:00:00Z"},"containers":[{"name":"nginx","usage":{"cpu":"250m","memory":"128Mi"}}]}`
-)
-
-// seedStore builds the in-memory state from the embedded fixtures. The route
-// map is the union of the two previously embedded servers; the discovery
-// patches (events on /api/v1, replicasets on /apis/apps/v1) that the web
-// server applied per-request are baked in once here.
+// seedStore builds the in-memory state served by a default New() (no Seed). It
+// runs the SAME typed pipeline Seed(Cluster) uses — validateCluster +
+// buildStore — over baseTestCluster() (basedata.go), the typed object graph that
+// replaces the 44 hand-JSON base fixtures. The store it returns serves the same
+// routes/shapes the embedded-fixture seed did (default pods/services/configmaps/
+// secrets/ingresses/cronjobs/jobs/events, states + empty + big namespaces, the
+// worker-1 node + PVs, metrics, and discovery), with the literal printer cells
+// the suite + e2e assert carried as explicit Table cells. The embedded fixtures
+// (Fixture(), //go:embed) stay for the hand-built-mux tests; the base seed no
+// longer reads them.
 func seedStore() (*store, error) {
-	st := &store{
-		rv:        100000,
-		discovery: map[string][]byte{},
-		objects:   map[string][]byte{},
-		logs:      map[string][]byte{},
-		lists:     map[string]*listState{},
-	}
-
-	for path, name := range map[string]string{
-		"/api":                               "discovery/api.json",
-		"/apis":                              "discovery/apis.json",
-		"/apis/batch/v1":                     "discovery/apis__batch__v1.json",
-		"/apis/cert-manager.io/v1":           "discovery/apis__cert-manager.io__v1.json",
-		"/apis/gateway.networking.k8s.io/v1": "discovery/apis__gateway.networking.k8s.io__v1.json",
-		"/apis/gateway.networking.k8s.io/v1beta1": "discovery/apis__gateway.networking.k8s.io__v1beta1.json",
-		"/apis/metrics.k8s.io/v1beta1":            "discovery/apis__metrics.k8s.io__v1beta1.json",
-		"/apis/networking.k8s.io/v1":              "discovery/apis__networking.k8s.io__v1.json",
-		"/apis/storage.k8s.io/v1":                 "discovery/apis__storage.k8s.io__v1.json",
-		"/version":                                "discovery/version.json",
-	} {
-		data, err := Fixture(name)
-		if err != nil {
-			return nil, err
-		}
-		st.discovery[path] = data
-	}
-
-	apiV1, err := patchedDiscovery("discovery/api__v1.json", map[string]any{
-		"name":         "events",
-		"singularName": "event",
-		"namespaced":   true,
-		"kind":         "Event",
-		"verbs":        []any{"get", "list", "watch"},
-		"shortNames":   []any{"ev"},
-	})
-	if err != nil {
+	c := baseTestCluster()
+	reg := kindRegistry(c.CRDs)
+	if err := validateCluster(c, reg); err != nil {
 		return nil, err
 	}
-	st.discovery["/api/v1"] = apiV1
-	appsV1, err := patchedDiscovery("discovery/apis__apps__v1.json", map[string]any{
-		"name":         "replicasets",
-		"singularName": "replicaset",
-		"namespaced":   true,
-		"kind":         "ReplicaSet",
-		"verbs":        []any{"get", "list", "watch"},
-		"shortNames":   []any{"rs"},
-	})
-	if err != nil {
-		return nil, err
-	}
-	st.discovery["/apis/apps/v1"] = appsV1
-
-	for path, name := range map[string]string{
-		"/api/v1/namespaces/default/pods/nginx":        "data/render_pod_nginx.json",
-		"/api/v1/namespaces/default/secrets/my-secret": "data/render_secret.json",
-		"/api/v1/nodes/worker-1":                       "data/render_node.json",
-	} {
-		data, err := Fixture(name)
-		if err != nil {
-			return nil, err
-		}
-		st.objects[path] = data
-	}
-	st.objects["/api/v1/namespaces/default"] = []byte(namespaceDefaultJSON)
-	st.objects["/apis/metrics.k8s.io/v1beta1/namespaces/default/pods/nginx"] = []byte(podMetricsNginxJSON)
-
-	logData, err := Fixture("data/pod_log.txt")
-	if err != nil {
-		return nil, err
-	}
-	st.logs["/api/v1/namespaces/default/pods/nginx/log"] = logData
-
-	// Pods in "default" (and the all-namespaces route, which shares the same
-	// state): Table + List forms.
-	pods, err := newListState("data/pods_table.json", "data/pods_with_node_list.json")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/namespaces/default/pods"] = pods
-	st.lists["/api/v1/pods"] = pods
-
-	// Pods in "states" exercise the status/ready/restart tones end to end; the
-	// resource-list path always negotiates a Table, so only that form exists.
-	statesPods, err := newListState("data/pods_states_table.json", "")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/namespaces/states/pods"] = statesPods
-
-	// Pods in "empty" return a zero-row Table: the genuinely-EMPTY list state.
-	emptyPods, err := newListState("data/table_empty_rows.json", "")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/namespaces/empty/pods"] = emptyPods
-
-	// Services in "default" exercise the generic no-status fallback.
-	services, err := newListState("data/services_table.json", "")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/namespaces/default/services"] = services
-
-	// Events in "default" carry BOTH forms: the Table form feeds the events
-	// LIST screen (which negotiates as=Table; the dual-API count/timestamp
-	// rows exercise the events decode — a core-shape count=141 aggregate, a
-	// series-shape event, a single event, and a tight-burst spread ≤60s) and
-	// the List form feeds the detail Events tab (client.List).
-	events, err := newListState("data/events_table.json", "data/render_events_nginx.json")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/namespaces/default/events"] = events
-
-	secrets, err := newListState("data/render_secrets_table.json", "data/secrets_list.json")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/namespaces/default/secrets"] = secrets
-
-	// ConfigMaps in "default" exercise the keys chips: the rows
-	// carry FULL ConfigMap objects (data + binaryData) so the `name · size`
-	// chips and the +N-keys in-cell expand have real key/size material -- the
-	// e2e expand spec clicks the app-config row's +2 keys button.
-	configmaps, err := newListState("data/configmaps_table.json", "")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/namespaces/default/configmaps"] = configmaps
-
-	// Ingresses in "default" exercise the hosts/+N, pending-address, and TLS
-	// cells: full Ingress objects ride each row (spec.tls drives the synthetic
-	// TLS column) and the preview-env row carries the literal <pending> address.
-	ingresses, err := newListState("data/ingresses_table.json", "")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/apis/networking.k8s.io/v1/namespaces/default/ingresses"] = ingresses
-
-	// CronJobs in "default" exercise the cronjob cells: schedule verbatim,
-	// the Suspend boolean (false→Active ok / true→Suspended mute), and the
-	// Last Schedule lastrun cell incl. the never-ran <none> → <never>.
-	cronjobs, err := newListState("data/cronjobs_table.json", "")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/apis/batch/v1/namespaces/default/cronjobs"] = cronjobs
-
-	// Jobs in "default" exercise the verbatim job statuses: the printer's
-	// bare "Failed" refines to the Failed condition's BackoffLimitExceeded,
-	// and Completions ride the ready-ratio grammar (1/1 full, 8/10 partial).
-	jobs, err := newListState("data/jobs_table.json", "")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/apis/batch/v1/namespaces/default/jobs"] = jobs
-
-	// PersistentVolumes (cluster-scoped) exercise the uuid-shaped names that
-	// must never split or truncate, plus the Bound/Released/Failed tones.
-	persistentvolumes, err := newListState("data/persistentvolumes_table.json", "")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/persistentvolumes"] = persistentvolumes
-
-	// Namespaces carry BOTH forms: the Table form (rows with labels -- the
-	// resource-list page negotiates as=Table, and the label-chip click-to-filter
-	// e2e spec needs labelled rows) and the List form (the namespace dropdown /
-	// palette feed). The Table rows mirror the List items one to one.
-	namespaces, err := newListState("data/namespaces_table.json", "data/render_namespaces_list.json")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/namespaces"] = namespaces
-
-	// Nodes carry BOTH forms: a REAL nodes Table (kubectl -o wide printer
-	// columns incl. External-IP / OS-Image / Kernel-Version, with the full Node
-	// object riding each row -- the column-visibility surface and the rich
-	// capacity/conditions cells read it) and the node List form consumed by the
-	// pods `join=nodes` custom-column join. The Table's worker-1 row matches the
-	// /api/v1/nodes/worker-1 object route, so the list page's name click
-	// resolves. (Historically the Table form served the namespaces fixture,
-	// which decoded as a ZERO-row table -- the nodes list page rendered empty.)
-	nodes, err := newListState("data/nodes_table.json", "data/nodes_list.json")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/api/v1/nodes"] = nodes
-
-	// The "big" namespace (list virtualization): 600-row pods + events Tables,
-	// generated in bigfixtures.go but ordinary store state like every other
-	// fixture -- the windowing e2e matrix (tick-while-windowed, sort, clamp,
-	// out-of-window free text) runs on plain LIST responses, no injection.
-	st.lists["/api/v1/namespaces/big/pods"] = &listState{table: bigPodsTable()}
-	st.lists["/api/v1/namespaces/big/events"] = &listState{table: bigEventsTable()}
-
-	podMetrics, err := newListState("", "data/metrics_pods_list.json")
-	if err != nil {
-		return nil, err
-	}
-	st.lists["/apis/metrics.k8s.io/v1beta1/namespaces/default/pods"] = podMetrics
-	st.lists["/apis/metrics.k8s.io/v1beta1/pods"] = podMetrics
-
-	nodeMetrics := &listState{}
-	if err := json.Unmarshal([]byte(nodeMetricsJSON), &nodeMetrics.list); err != nil {
-		return nil, fmt.Errorf("fakeapi: parse node metrics literal: %w", err)
-	}
-	st.lists["/apis/metrics.k8s.io/v1beta1/nodes"] = nodeMetrics
-
-	return st, nil
-}
-
-func newListState(tableFixture, listFixture string) (*listState, error) {
-	ls := &listState{}
-	if tableFixture != "" {
-		doc, err := parseFixture(tableFixture)
-		if err != nil {
-			return nil, err
-		}
-		ls.table = doc
-	}
-	if listFixture != "" {
-		doc, err := parseFixture(listFixture)
-		if err != nil {
-			return nil, err
-		}
-		ls.list = doc
-	}
-	return ls, nil
-}
-
-func parseFixture(name string) (map[string]any, error) {
-	data, err := Fixture(name)
-	if err != nil {
-		return nil, err
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("fakeapi: parse fixture %s: %w", name, err)
-	}
-	return doc, nil
-}
-
-// patchedDiscovery appends one resource to a discovery document's resources
-// list, reproducing the web suite's per-request runtime patch at seed time.
-func patchedDiscovery(name string, resource map[string]any) ([]byte, error) {
-	doc, err := parseFixture(name)
-	if err != nil {
-		return nil, err
-	}
-	resources, ok := doc["resources"].([]any)
-	if !ok {
-		return nil, fmt.Errorf("fakeapi: discovery fixture %s has no resources list", name)
-	}
-	doc["resources"] = append(resources, resource)
-	return json.Marshal(doc)
+	return buildStore(c, reg)
 }
