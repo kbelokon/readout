@@ -478,6 +478,21 @@ func objs(items ...runtime.Object) []runtime.Object { return items }
 // caught by the first test run, never runtime data).
 func mustQty(s string) resource.Quantity { return resource.MustParse(s) }
 
+// clusterCR builds a cluster-scoped object (no namespace) of the given
+// apiVersion/kind with an explicit age — for the built-in cluster-scoped kinds
+// the demo serves (StorageClass, ClusterRole, IngressClass, PriorityClass,
+// CustomResourceDefinition, …) so the cluster-resources sidebar reads like a
+// real cluster. The kind must be registered on the cluster (demoCRDs), or the
+// integrity validator rejects the dangling discovery reference.
+func clusterCR(apiVersion, kind, name string, ageMins int) runtime.Object {
+	u := &unstructured.Unstructured{}
+	u.SetAPIVersion(apiVersion)
+	u.SetKind(kind)
+	u.SetName(name)
+	u.SetCreationTimestamp(created(ageMins))
+	return u
+}
+
 // customResource builds an unstructured custom-resource object carrying its
 // apiVersion + kind (so the seeder resolves it against the registered CRD) and
 // metadata. The matching CRD must be registered on the cluster (platformCRDs),

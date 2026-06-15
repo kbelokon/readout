@@ -50,8 +50,8 @@ func prodCluster() fakekube.Cluster {
 		Name:           "prod",
 		Nodes:          prodNodes(),
 		NodeMetrics:    prodNodeMetrics(),
-		ClusterObjects: prodPVs(),
-		CRDs:           demoCRDs(),
+		ClusterObjects: append(prodPVs(), clusterScopedObjects()...),
+		CRDs:           append(demoCRDs(), clusterScopedKinds()...),
 		FillEmptyLists: true, // a served kind answers an empty 200 in any namespace, never a 404
 		Namespaces: []fakekube.Namespace{
 			storefrontNamespace(),
@@ -531,6 +531,52 @@ func defaultNamespace() fakekube.Namespace {
 	}
 }
 
+// clusterScopedKinds registers the built-in cluster-scoped resource types a real
+// cluster serves beyond Namespaces/Nodes/PersistentVolumes, so the
+// cluster-resources sidebar reads like a real cluster instead of a bare three
+// entries. They ride the same kind-registration path as CRDs (the engine treats
+// "register a kind + serve its objects" uniformly).
+func clusterScopedKinds() []fakekube.CRD {
+	return []fakekube.CRD{
+		{Group: "storage.k8s.io", Version: "v1", Kind: "StorageClass", Plural: "storageclasses", Namespaced: false},
+		{Group: "networking.k8s.io", Version: "v1", Kind: "IngressClass", Plural: "ingressclasses", Namespaced: false},
+		{Group: "scheduling.k8s.io", Version: "v1", Kind: "PriorityClass", Plural: "priorityclasses", Namespaced: false},
+		{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole", Plural: "clusterroles", Namespaced: false},
+		{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding", Plural: "clusterrolebindings", Namespaced: false},
+		{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition", Plural: "customresourcedefinitions", Namespaced: false},
+	}
+}
+
+// clusterScopedObjects seeds a believable set of cluster-scoped objects: storage
+// classes, the ingress class, priority classes, the common RBAC cluster roles +
+// bindings, and one CustomResourceDefinition per installed operator CRD (so the
+// CRD list mirrors the operators on the cluster).
+func clusterScopedObjects() []runtime.Object {
+	const bootstrap = 417 * 24 * 60 // cluster-bootstrap age (minutes)
+	out := []runtime.Object{
+		clusterCR("storage.k8s.io/v1", "StorageClass", "fast-ssd", bootstrap),
+		clusterCR("storage.k8s.io/v1", "StorageClass", "standard", bootstrap),
+		clusterCR("storage.k8s.io/v1", "StorageClass", "gp3", 120*24*60),
+		clusterCR("networking.k8s.io/v1", "IngressClass", "nginx", bootstrap),
+		clusterCR("scheduling.k8s.io/v1", "PriorityClass", "system-cluster-critical", bootstrap),
+		clusterCR("scheduling.k8s.io/v1", "PriorityClass", "system-node-critical", bootstrap),
+		clusterCR("scheduling.k8s.io/v1", "PriorityClass", "high-priority", 90*24*60),
+	}
+	for _, name := range []string{
+		"cluster-admin", "admin", "edit", "view",
+		"cert-manager-controller", "argocd-application-controller", "prometheus-k8s", "gatekeeper-manager",
+	} {
+		out = append(out, clusterCR("rbac.authorization.k8s.io/v1", "ClusterRole", name, bootstrap))
+	}
+	for _, name := range []string{"cluster-admin", "cert-manager-controller", "argocd-application-controller"} {
+		out = append(out, clusterCR("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", name, bootstrap))
+	}
+	for _, crd := range demoCRDs() {
+		out = append(out, clusterCR("apiextensions.k8s.io/v1", "CustomResourceDefinition", crd.Plural+"."+crd.Group, 150*24*60))
+	}
+	return out
+}
+
 // demoCRDs registers every custom-resource group-version-kind the scenario
 // serves, so the list routes resolve and the discovery documents carry the
 // groups (and the curated icon families + monogram fallbacks render).
@@ -576,18 +622,34 @@ func stagingCluster() fakekube.Cluster {
 	checkoutAll := checkout
 	checkoutAll = append(checkoutAll, checkoutSvc)
 
+	const bootstrap = 200 * 24 * 60
+	clusterObjs := []runtime.Object{
+		clusterCR("storage.k8s.io/v1", "StorageClass", "fast-ssd", bootstrap),
+		clusterCR("storage.k8s.io/v1", "StorageClass", "standard", bootstrap),
+		clusterCR("networking.k8s.io/v1", "IngressClass", "nginx", bootstrap),
+		clusterCR("scheduling.k8s.io/v1", "PriorityClass", "system-cluster-critical", bootstrap),
+		clusterCR("rbac.authorization.k8s.io/v1", "ClusterRole", "cluster-admin", bootstrap),
+		clusterCR("rbac.authorization.k8s.io/v1", "ClusterRole", "view", bootstrap),
+		clusterCR("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", "cluster-admin", bootstrap),
+		clusterCR("apiextensions.k8s.io/v1", "CustomResourceDefinition", "certificates.cert-manager.io", 150*24*60),
+	}
+
+	stagingCRDs := []fakekube.CRD{
+		{Group: "cert-manager.io", Version: "v1", Kind: "Certificate", Plural: "certificates", Namespaced: true},
+	}
+	stagingCRDs = append(stagingCRDs, clusterScopedKinds()...)
+
 	return fakekube.Cluster{
 		Name:           "staging",
 		Nodes:          nodes,
+		ClusterObjects: clusterObjs,
 		FillEmptyLists: true,
 		NodeMetrics: []fakekube.NodeMetric{
 			{Name: "staging-cp", CPU: "600m", Memory: "3Gi"},
 			{Name: "staging-1", CPU: "1400m", Memory: "6Gi"},
 			{Name: "staging-2", CPU: "1100m", Memory: "5Gi"},
 		},
-		CRDs: []fakekube.CRD{
-			{Group: "cert-manager.io", Version: "v1", Kind: "Certificate", Plural: "certificates", Namespaced: true},
-		},
+		CRDs: stagingCRDs,
 		Namespaces: []fakekube.Namespace{
 			{
 				Name: "storefront", Created: createdAgo(20 * 24 * time.Hour),
