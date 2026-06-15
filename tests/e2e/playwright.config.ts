@@ -87,14 +87,14 @@ export default defineConfig({
     // in its own RO_VISUAL-gated `visual` project.
     {
       name: 'desktop',
-      testIgnore: [/visual\.spec\.ts/, /demo\.spec\.ts/],
+      testIgnore: [/visual\.spec\.ts/, /demo.*\.spec\.ts/],
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
     // Mobile walk: below the 760px breakpoint, where the card layer plus
     // hamburger replace the table chrome (the mobile card layer is kept).
     {
       name: 'mobile',
-      testIgnore: [/visual\.spec\.ts/, /demo\.spec\.ts/],
+      testIgnore: [/visual\.spec\.ts/, /demo.*\.spec\.ts/],
       use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, hasTouch: true },
     },
     // Demo walk: the render smoke + detail descent + export + landing
@@ -104,7 +104,7 @@ export default defineConfig({
     // demo.spec.ts so it only ever runs here, against the real demo.
     {
       name: 'demo',
-      testMatch: /demo\.spec\.ts/,
+      testMatch: /demo.*\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 }, baseURL: demoURL },
     },
     // Visual baselines: the screenshot walk, host-only,

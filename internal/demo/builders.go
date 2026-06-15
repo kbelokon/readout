@@ -290,6 +290,7 @@ func ingress(name, namespace, host, svcName string, tls bool) *networkingv1.Ingr
 			Name:              name,
 			Namespace:         namespace,
 			CreationTimestamp: created(120),
+			Labels:            map[string]string{"app.kubernetes.io/name": svcName},
 		},
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: strp("nginx"),
@@ -478,18 +479,24 @@ func objs(items ...runtime.Object) []runtime.Object { return items }
 // caught by the first test run, never runtime data).
 func mustQty(s string) resource.Quantity { return resource.MustParse(s) }
 
-// clusterCR builds a cluster-scoped object (no namespace) of the given
-// apiVersion/kind with an explicit age — for the built-in cluster-scoped kinds
-// the demo serves (StorageClass, ClusterRole, IngressClass, PriorityClass,
-// CustomResourceDefinition, …) so the cluster-resources sidebar reads like a
-// real cluster. The kind must be registered on the cluster (demoCRDs), or the
-// integrity validator rejects the dangling discovery reference.
-func clusterCR(apiVersion, kind, name string, ageMins int) runtime.Object {
-	u := &unstructured.Unstructured{}
+// clusterObj builds a cluster-scoped object (no namespace) of the given
+// apiVersion/kind carrying labels + real top-level fields (spec/rules/roleRef/…)
+// so its DETAIL page renders meaningfully (label chips on the Default tab, the
+// full object on the YAML tab) instead of a blank page. The kind must be
+// registered on the cluster (clusterScopedKinds), or the integrity validator
+// rejects the dangling discovery reference.
+func clusterObj(apiVersion, kind, name string, ageMins int, labels map[string]string, fields map[string]any) runtime.Object {
+	u := &unstructured.Unstructured{Object: map[string]any{}}
 	u.SetAPIVersion(apiVersion)
 	u.SetKind(kind)
 	u.SetName(name)
 	u.SetCreationTimestamp(created(ageMins))
+	if len(labels) > 0 {
+		u.SetLabels(labels)
+	}
+	for k, v := range fields {
+		u.Object[k] = v
+	}
 	return u
 }
 
@@ -506,6 +513,12 @@ func customResource(apiVersion, kind, name, namespace string) runtime.Object {
 		u.SetNamespace(namespace)
 	}
 	u.SetCreationTimestamp(created(200))
+	// Labels so the detail page renders chips instead of a blank body (the YAML
+	// tab carries the full object; the Default tab needs something to show).
+	u.SetLabels(map[string]string{
+		"app.kubernetes.io/name":       name,
+		"app.kubernetes.io/managed-by": "argocd",
+	})
 	return u
 }
 

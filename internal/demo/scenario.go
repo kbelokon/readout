@@ -16,10 +16,12 @@ package demo
 // dangling reference.
 
 import (
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	fakekube "github.com/kbelokon/readout/internal/fakekube"
@@ -547,34 +549,100 @@ func clusterScopedKinds() []fakekube.CRD {
 	}
 }
 
-// clusterScopedObjects seeds a believable set of cluster-scoped objects: storage
-// classes, the ingress class, priority classes, the common RBAC cluster roles +
-// bindings, and one CustomResourceDefinition per installed operator CRD (so the
-// CRD list mirrors the operators on the cluster).
+// clusterScopedObjects seeds a believable, fully-populated set of cluster-scoped
+// objects (each carries labels + real spec so its detail page is never blank):
+// storage classes, the ingress class, priority classes, the common RBAC cluster
+// roles + bindings, and one CustomResourceDefinition per installed operator CRD.
 func clusterScopedObjects() []runtime.Object {
 	const bootstrap = 417 * 24 * 60 // cluster-bootstrap age (minutes)
 	out := []runtime.Object{
-		clusterCR("storage.k8s.io/v1", "StorageClass", "fast-ssd", bootstrap),
-		clusterCR("storage.k8s.io/v1", "StorageClass", "standard", bootstrap),
-		clusterCR("storage.k8s.io/v1", "StorageClass", "gp3", 120*24*60),
-		clusterCR("networking.k8s.io/v1", "IngressClass", "nginx", bootstrap),
-		clusterCR("scheduling.k8s.io/v1", "PriorityClass", "system-cluster-critical", bootstrap),
-		clusterCR("scheduling.k8s.io/v1", "PriorityClass", "system-node-critical", bootstrap),
-		clusterCR("scheduling.k8s.io/v1", "PriorityClass", "high-priority", 90*24*60),
+		storageClass("fast-ssd", "ebs.csi.aws.com", true, bootstrap),
+		storageClass("standard", "kubernetes.io/aws-ebs", false, bootstrap),
+		storageClass("gp3", "ebs.csi.aws.com", false, 120*24*60),
+		ingressClass("nginx", "k8s.io/ingress-nginx", bootstrap),
+		priorityClass("system-cluster-critical", 2000000000, "Used for system-critical pods that must run in the cluster.", bootstrap),
+		priorityClass("system-node-critical", 2000001000, "Used for system-critical pods that must not be moved from their node.", bootstrap),
+		priorityClass("high-priority", 1000000, "High-priority application workloads.", 90*24*60),
 	}
 	for _, name := range []string{
 		"cluster-admin", "admin", "edit", "view",
 		"cert-manager-controller", "argocd-application-controller", "prometheus-k8s", "gatekeeper-manager",
 	} {
-		out = append(out, clusterCR("rbac.authorization.k8s.io/v1", "ClusterRole", name, bootstrap))
+		out = append(out, clusterRole(name, bootstrap))
 	}
-	for _, name := range []string{"cluster-admin", "cert-manager-controller", "argocd-application-controller"} {
-		out = append(out, clusterCR("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", name, bootstrap))
+	for _, b := range []struct{ name, role, subjectKind, subject string }{
+		{"cluster-admin", "cluster-admin", "Group", "system:masters"},
+		{"cert-manager-controller", "cert-manager-controller", "ServiceAccount", "cert-manager"},
+		{"argocd-application-controller", "argocd-application-controller", "ServiceAccount", "argocd-application-controller"},
+	} {
+		out = append(out, clusterRoleBinding(b.name, b.role, b.subjectKind, b.subject, bootstrap))
 	}
 	for _, crd := range demoCRDs() {
-		out = append(out, clusterCR("apiextensions.k8s.io/v1", "CustomResourceDefinition", crd.Plural+"."+crd.Group, 150*24*60))
+		out = append(out, crdObject(crd, 150*24*60))
 	}
 	return out
+}
+
+func storageClass(name, provisioner string, isDefault bool, ageMins int) runtime.Object {
+	u := clusterObj("storage.k8s.io/v1", "StorageClass", name, ageMins,
+		map[string]string{"app.kubernetes.io/managed-by": "eks"},
+		map[string]any{
+			"provisioner":          provisioner,
+			"reclaimPolicy":        "Delete",
+			"volumeBindingMode":    "WaitForFirstConsumer",
+			"allowVolumeExpansion": true,
+			"parameters":           map[string]any{"type": "gp3", "encrypted": "true"},
+		})
+	if isDefault {
+		u.(*unstructured.Unstructured).SetAnnotations(map[string]string{"storageclass.kubernetes.io/is-default-class": "true"})
+	}
+	return u
+}
+
+func ingressClass(name, controller string, ageMins int) runtime.Object {
+	return clusterObj("networking.k8s.io/v1", "IngressClass", name, ageMins,
+		map[string]string{"app.kubernetes.io/name": "ingress-nginx"},
+		map[string]any{"spec": map[string]any{"controller": controller}})
+}
+
+func priorityClass(name string, value int, desc string, ageMins int) runtime.Object {
+	return clusterObj("scheduling.k8s.io/v1", "PriorityClass", name, ageMins,
+		map[string]string{"kubernetes.io/bootstrapping": "rbac-defaults"},
+		map[string]any{"value": value, "globalDefault": false, "description": desc})
+}
+
+func clusterRole(name string, ageMins int) runtime.Object {
+	return clusterObj("rbac.authorization.k8s.io/v1", "ClusterRole", name, ageMins,
+		map[string]string{"kubernetes.io/bootstrapping": "rbac-defaults"},
+		map[string]any{"rules": []any{
+			map[string]any{"apiGroups": []any{""}, "resources": []any{"pods", "services", "configmaps"}, "verbs": []any{"get", "list", "watch"}},
+		}})
+}
+
+func clusterRoleBinding(name, roleName, subjectKind, subject string, ageMins int) runtime.Object {
+	return clusterObj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", name, ageMins,
+		map[string]string{"kubernetes.io/bootstrapping": "rbac-defaults"},
+		map[string]any{
+			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": roleName},
+			"subjects": []any{map[string]any{"kind": subjectKind, "name": subject, "apiGroup": "rbac.authorization.k8s.io"}},
+		})
+}
+
+func crdObject(crd fakekube.CRD, ageMins int) runtime.Object {
+	scope := "Namespaced"
+	if !crd.Namespaced {
+		scope = "Cluster"
+	}
+	return clusterObj("apiextensions.k8s.io/v1", "CustomResourceDefinition", crd.Plural+"."+crd.Group, ageMins,
+		map[string]string{"app.kubernetes.io/managed-by": "Helm"},
+		map[string]any{"spec": map[string]any{
+			"group": crd.Group,
+			"scope": scope,
+			"names": map[string]any{"kind": crd.Kind, "plural": crd.Plural, "singular": strings.ToLower(crd.Kind)},
+			"versions": []any{map[string]any{
+				"name": crd.Version, "served": true, "storage": true,
+			}},
+		}})
 }
 
 // demoCRDs registers every custom-resource group-version-kind the scenario
@@ -624,14 +692,14 @@ func stagingCluster() fakekube.Cluster {
 
 	const bootstrap = 200 * 24 * 60
 	clusterObjs := []runtime.Object{
-		clusterCR("storage.k8s.io/v1", "StorageClass", "fast-ssd", bootstrap),
-		clusterCR("storage.k8s.io/v1", "StorageClass", "standard", bootstrap),
-		clusterCR("networking.k8s.io/v1", "IngressClass", "nginx", bootstrap),
-		clusterCR("scheduling.k8s.io/v1", "PriorityClass", "system-cluster-critical", bootstrap),
-		clusterCR("rbac.authorization.k8s.io/v1", "ClusterRole", "cluster-admin", bootstrap),
-		clusterCR("rbac.authorization.k8s.io/v1", "ClusterRole", "view", bootstrap),
-		clusterCR("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", "cluster-admin", bootstrap),
-		clusterCR("apiextensions.k8s.io/v1", "CustomResourceDefinition", "certificates.cert-manager.io", 150*24*60),
+		storageClass("fast-ssd", "ebs.csi.aws.com", true, bootstrap),
+		storageClass("standard", "kubernetes.io/aws-ebs", false, bootstrap),
+		ingressClass("nginx", "k8s.io/ingress-nginx", bootstrap),
+		priorityClass("system-cluster-critical", 2000000000, "Used for system-critical pods that must run in the cluster.", bootstrap),
+		clusterRole("cluster-admin", bootstrap),
+		clusterRole("view", bootstrap),
+		clusterRoleBinding("cluster-admin", "cluster-admin", "Group", "system:masters", bootstrap),
+		crdObject(fakekube.CRD{Group: "cert-manager.io", Version: "v1", Kind: "Certificate", Plural: "certificates", Namespaced: true}, 150*24*60),
 	}
 
 	stagingCRDs := []fakekube.CRD{

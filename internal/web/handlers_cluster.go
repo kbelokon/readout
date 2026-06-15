@@ -82,7 +82,19 @@ func (s *Server) renderResourceTypes(w http.ResponseWriter, r *http.Request, clu
 }
 
 func sortedResourceTypesForDisplay(types []kube.ResourceType) []kube.ResourceType {
-	out := append([]kube.ResourceType(nil), types...)
+	out := make([]kube.ResourceType, 0, len(types))
+	for i := range types {
+		// metrics.k8s.io is a virtual aggregated API (PodMetrics/NodeMetrics) that
+		// powers the usage overlays via ?join — it is not a browsable resource
+		// type. readout already skips it in counts and the sidebar, so drop it here
+		// too: otherwise NodeMetrics renders a dead row (its "nodes" resource name
+		// links to the core Nodes list) and a duplicate (readout registers metrics
+		// types itself, so a cluster that also advertises them double-counts).
+		if types[i].Group == "metrics.k8s.io" {
+			continue
+		}
+		out = append(out, types[i])
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Kind != out[j].Kind {
 			return out[i].Kind < out[j].Kind
