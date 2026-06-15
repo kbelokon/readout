@@ -159,32 +159,36 @@ type podOpts struct {
 	createdMins  int
 }
 
-func podFrom(name, namespace string, o podOpts) *corev1.Pod {
-	if o.phase == "" {
-		o.phase = corev1.PodRunning
+func podFrom(name, namespace string, o *podOpts) *corev1.Pod {
+	phase := o.phase
+	if phase == "" {
+		phase = corev1.PodRunning
 	}
-	if len(o.containers) == 0 {
-		o.containers = []corev1.Container{{Name: "app", Image: "registry.example.com/" + name + ":v1"}}
+	containers := o.containers
+	if len(containers) == 0 {
+		containers = []corev1.Container{{Name: "app", Image: "registry.example.com/" + name + ":v1"}}
 	}
-	if o.createdMins == 0 {
-		o.createdMins = 100
+	createdMins := o.createdMins
+	if createdMins == 0 {
+		createdMins = 100
 	}
 	meta := metav1.ObjectMeta{
 		Name:              name,
 		Namespace:         namespace,
-		CreationTimestamp: created(o.createdMins),
+		CreationTimestamp: created(createdMins),
 		Labels:            map[string]string{"app": firstNonEmpty(o.app, name)},
 	}
 	if o.ownerRS != "" {
 		meta.OwnerReferences = []metav1.OwnerReference{{Kind: "ReplicaSet", Name: o.ownerRS}}
 	}
-	spec := corev1.PodSpec{Containers: o.containers}
+	spec := corev1.PodSpec{Containers: containers}
 	// The detail-page containers section is built from spec.initContainers (not
 	// the status alone — see buildContainersView), so a pod that carries init
 	// statuses must declare the matching init containers in its spec or the
 	// init-container render branch stays dark. Mirror one spec.initContainers
 	// entry per seeded init status so the demo lights up that branch.
-	for _, st := range o.initStatuses {
+	for i := range o.initStatuses {
+		st := &o.initStatuses[i]
 		spec.InitContainers = append(spec.InitContainers, corev1.Container{
 			Name:  st.Name,
 			Image: "registry.example.com/" + st.Name + ":v1",
@@ -205,7 +209,7 @@ func podFrom(name, namespace string, o podOpts) *corev1.Pod {
 		ObjectMeta: meta,
 		Spec:       spec,
 		Status: corev1.PodStatus{
-			Phase:                 o.phase,
+			Phase:                 phase,
 			ContainerStatuses:     o.statuses,
 			InitContainerStatuses: o.initStatuses,
 		},

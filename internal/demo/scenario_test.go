@@ -50,7 +50,7 @@ func TestDemoIntegrity(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 			t.Cleanup(srv.Close)
-			if err := srv.Seed(c); err != nil {
+			if err := srv.Seed(&c); err != nil {
 				t.Fatalf("Seed(%s): %v", c.Name, err)
 			}
 		})
@@ -235,7 +235,8 @@ func assertIconFamilyCoverage(t *testing.T, s fakekube.Scenario) {
 
 	// Collect every CRD group across both clusters.
 	groups := map[string]bool{}
-	for _, c := range s.Clusters {
+	for i := range s.Clusters {
+		c := &s.Clusters[i]
 		for _, crd := range c.CRDs {
 			groups[crd.Group] = true
 		}
@@ -365,7 +366,8 @@ func assertCuratedKinds(t *testing.T, s fakekube.Scenario) {
 func assertMetrics(t *testing.T, s fakekube.Scenario) {
 	t.Helper()
 	pods, nodes := 0, 0
-	for _, c := range s.Clusters {
+	for i := range s.Clusters {
+		c := &s.Clusters[i]
 		nodes += len(c.NodeMetrics)
 		for _, ns := range c.Namespaces {
 			pods += len(ns.PodMetrics)
@@ -383,7 +385,8 @@ func assertEdgeNamespaces(t *testing.T, s fakekube.Scenario) {
 	t.Helper()
 	var emptyFound bool
 	var bigCount int
-	for _, c := range s.Clusters {
+	for i := range s.Clusters {
+		c := &s.Clusters[i]
 		for _, ns := range c.Namespaces {
 			if len(ns.Objects) == 0 {
 				emptyFound = true
@@ -408,7 +411,8 @@ func assertLongAnnotation(t *testing.T, s fakekube.Scenario) {
 		t.Fatalf("longAnnotation is %d chars, want >120", len(longAnnotation))
 	}
 	found := false
-	for _, c := range s.Clusters {
+	for i := range s.Clusters {
+		c := &s.Clusters[i]
 		for _, ns := range c.Namespaces {
 			for _, o := range ns.Objects {
 				for _, v := range annotationsOf(o) {
@@ -431,7 +435,8 @@ func assertLongAnnotation(t *testing.T, s fakekube.Scenario) {
 // ---------------------------------------------------------------------------
 
 func eachObject(s fakekube.Scenario, fn func(o runtime.Object, ns string)) {
-	for _, c := range s.Clusters {
+	for i := range s.Clusters {
+		c := &s.Clusters[i]
 		for _, n := range c.Nodes {
 			fn(n, "")
 		}
@@ -642,8 +647,10 @@ func between(t *testing.T, src, start, end string) string {
 // MULTIPLE lines (the StatusTone err case wraps over two lines). The (?s) flag
 // lets `.` cross newlines; the non-greedy `.*?` stops at the first clause-ending
 // `:` followed by a newline, so a multi-line case is captured whole.
-var caseClauseRe = regexp.MustCompile(`(?s)\bcase\s+(.*?):[ \t]*\n`)
-var quotedRe = regexp.MustCompile(`"([^"]+)"`)
+var (
+	caseClauseRe = regexp.MustCompile(`(?s)\bcase\s+(.*?):[ \t]*\n`)
+	quotedRe     = regexp.MustCompile(`"([^"]+)"`)
+)
 
 // caseStringLiterals extracts the quoted strings from every `case ...:` clause
 // in a code block, including clauses whose value list wraps across lines.

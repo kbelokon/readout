@@ -1,7 +1,7 @@
 package fakekube_test
 
-// scenario_test.go pins the typed-graph Seed path (D3) and the integrity law
-// (D5): a small scenario yields the expected List/object/log/metrics/discovery
+// scenario_test.go pins the typed-graph Seed path and the integrity law:
+// a small scenario yields the expected List/object/log/metrics/discovery
 // responses, and a scenario with a dangling reference is rejected at Seed time
 // (never served). The embedded-JSON seed path (fakeapi_test.go) stays green in
 // parallel — Seed is additive.
@@ -65,7 +65,7 @@ func goodCluster() fakeapi.Cluster {
 	}
 }
 
-func seededServer(t *testing.T, c fakeapi.Cluster) *fakeapi.Server {
+func seededServer(t *testing.T, c *fakeapi.Cluster) *fakeapi.Server {
 	t.Helper()
 	srv, err := fakeapi.New(fakeapi.WithoutControl())
 	if err != nil {
@@ -79,7 +79,8 @@ func seededServer(t *testing.T, c fakeapi.Cluster) *fakeapi.Server {
 }
 
 func TestSeed(t *testing.T) {
-	srv := seededServer(t, goodCluster())
+	c := goodCluster()
+	srv := seededServer(t, &c)
 
 	// List form: pods in default, with the all-namespaces alias sharing it.
 	t.Run("pod list", func(t *testing.T) {
@@ -186,7 +187,7 @@ func TestSeedIntegrity(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(srv.Close)
-		err = srv.Seed(c)
+		err = srv.Seed(&c)
 		if err == nil {
 			t.Fatal("Seed accepted a Service selector matching no Pod; want a dangling-reference error")
 		}
@@ -202,7 +203,7 @@ func TestSeedIntegrity(t *testing.T) {
 				rs.OwnerReferences = []metav1.OwnerReference{{Kind: "Deployment", Name: "ghost"}}
 			}
 		}
-		if err := mustSeedErr(c); err == nil || !strings.Contains(err.Error(), "owner reference") {
+		if err := mustSeedErr(&c); err == nil || !strings.Contains(err.Error(), "owner reference") {
 			t.Fatalf("error = %v, want owner reference dangling", err)
 		}
 	})
@@ -214,7 +215,7 @@ func TestSeedIntegrity(t *testing.T) {
 				pod.Spec.NodeName = "ghost-node"
 			}
 		}
-		if err := mustSeedErr(c); err == nil || !strings.Contains(err.Error(), "spec.nodeName") {
+		if err := mustSeedErr(&c); err == nil || !strings.Contains(err.Error(), "spec.nodeName") {
 			t.Fatalf("error = %v, want nodeName dangling", err)
 		}
 	})
@@ -222,13 +223,14 @@ func TestSeedIntegrity(t *testing.T) {
 	t.Run("pod metrics for missing pod", func(t *testing.T) {
 		c := goodCluster()
 		c.Namespaces[0].PodMetrics[0].Name = "ghost-pod"
-		if err := mustSeedErr(c); err == nil || !strings.Contains(err.Error(), "references no Pod") {
+		if err := mustSeedErr(&c); err == nil || !strings.Contains(err.Error(), "references no Pod") {
 			t.Fatalf("error = %v, want pod-metrics dangling", err)
 		}
 	})
 
 	t.Run("good cluster passes", func(t *testing.T) {
-		if err := seedOnly(goodCluster()); err != nil {
+		c := goodCluster()
+		if err := seedOnly(&c); err != nil {
 			t.Fatalf("good cluster rejected: %v", err)
 		}
 	})
@@ -236,11 +238,11 @@ func TestSeedIntegrity(t *testing.T) {
 
 // mustSeedErr seeds a throwaway server and returns the Seed error (server is
 // closed on return).
-func mustSeedErr(c fakeapi.Cluster) error {
+func mustSeedErr(c *fakeapi.Cluster) error {
 	return seedOnly(c)
 }
 
-func seedOnly(c fakeapi.Cluster) error {
+func seedOnly(c *fakeapi.Cluster) error {
 	srv, err := fakeapi.New(fakeapi.WithoutControl())
 	if err != nil {
 		return err

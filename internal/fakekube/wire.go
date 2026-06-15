@@ -41,7 +41,7 @@ type Wire struct {
 // for a route from a typed Cluster without an embedded JSON fixture or a running
 // Server. The returned Table/List bytes are exactly what the engine's list
 // handler serves for an `as=Table` vs plain Accept.
-func WireResponses(c Cluster) (*Wire, error) {
+func WireResponses(c *Cluster) (*Wire, error) {
 	reg := kindRegistry(c.CRDs)
 	if err := validateCluster(c, reg); err != nil {
 		return nil, err

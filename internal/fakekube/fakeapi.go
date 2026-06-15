@@ -420,8 +420,8 @@ func (st *store) listStateFor(path string) *listState {
 func seedStore() (*store, error) {
 	c := baseTestCluster()
 	reg := kindRegistry(c.CRDs)
-	if err := validateCluster(c, reg); err != nil {
+	if err := validateCluster(&c, reg); err != nil {
 		return nil, err
 	}
-	return buildStore(c, reg)
+	return buildStore(&c, reg)
 }

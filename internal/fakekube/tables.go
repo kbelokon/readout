@@ -1,6 +1,6 @@
 package fakekube
 
-// tables.go is the D5 Table-form generator: it fills the per-list Table slot
+// tables.go is the Table-form generator: it fills the per-list Table slot
 // (listState.table) the seeder leaves empty for the List form, so a client that
 // negotiates `as=Table` gets the same meta.k8s.io Table shape readout's list
 // renderer consumes. The 44 embedded-JSON fixtures carried hand-written Table

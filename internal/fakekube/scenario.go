@@ -1,7 +1,7 @@
 package fakekube
 
-// scenario.go is the TYPED object-graph model the engine seeds from (design D3,
-// D5). It is the additive alternative to the embedded-JSON seedStore path:
+// scenario.go is the TYPED object-graph model the engine seeds from. It is the
+// additive alternative to the embedded-JSON seedStore path:
 // instead of //go:embed'd fixtures, a Scenario describes clusters -> namespaces
 // / nodes -> typed Kubernetes objects, and Seed() (seed.go) turns one Cluster
 // into the discovery + List + object + log + metrics responses the server

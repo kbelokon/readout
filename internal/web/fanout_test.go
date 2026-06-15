@@ -52,7 +52,7 @@ func newClusterFakeAPI(t *testing.T, opts clusterFakeOptions) *httptest.Server {
 	if opts.searchFixtures {
 		cluster = searchScenarioCluster()
 	}
-	wire := buildWire(t, cluster)
+	wire := buildWire(t, &cluster)
 
 	mux := http.NewServeMux()
 	delay := func(h http.HandlerFunc) http.HandlerFunc {

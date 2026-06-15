@@ -158,8 +158,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// build masks them), so this only lights up the masked render, never a
 		// real value.
 		cfg.IncludeSecrets = true
-		for _, c := range conns {
-			demoClusterID = append(demoClusterID, c.Name)
+		for i := range conns {
+			demoClusterID = append(demoClusterID, conns[i].Name)
 		}
 		defer func() {
 			for _, e := range demoEngines {

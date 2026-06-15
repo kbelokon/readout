@@ -1,6 +1,6 @@
 package demo
 
-// scenario.go is the curated demo object graph (design D5/D6/D7): two
+// scenario.go is the curated demo object graph: two
 // in-process fake clusters, `prod` and `staging`, whose namespaces are
 // STORIES, not a flat one-of-each dump. `prod` carries the rich healthy +
 // failing narratives that light up every render path; `staging` carries a
@@ -95,12 +95,18 @@ func shopNamespace() fakekube.Namespace {
 	rs := replicaSet("web-7c9", "web", 3, "web")
 
 	pods := objs(
-		podFrom("web-7c9-aaa", "shop", podOpts{app: "web", node: "worker-1", ownerRS: "web-7c9",
-			statuses: []corev1.ContainerStatus{readyContainer("web")}}),
-		podFrom("web-7c9-bbb", "shop", podOpts{app: "web", node: "worker-1", ownerRS: "web-7c9",
-			statuses: []corev1.ContainerStatus{readyContainer("web")}}),
-		podFrom("web-7c9-ccc", "shop", podOpts{app: "web", node: "worker-2", ownerRS: "web-7c9",
-			statuses: []corev1.ContainerStatus{readyContainer("web")}}),
+		podFrom("web-7c9-aaa", "shop", &podOpts{
+			app: "web", node: "worker-1", ownerRS: "web-7c9",
+			statuses: []corev1.ContainerStatus{readyContainer("web")},
+		}),
+		podFrom("web-7c9-bbb", "shop", &podOpts{
+			app: "web", node: "worker-1", ownerRS: "web-7c9",
+			statuses: []corev1.ContainerStatus{readyContainer("web")},
+		}),
+		podFrom("web-7c9-ccc", "shop", &podOpts{
+			app: "web", node: "worker-2", ownerRS: "web-7c9",
+			statuses: []corev1.ContainerStatus{readyContainer("web")},
+		}),
 	)
 
 	svc := service("web", "shop", "web", corev1.ServiceTypeLoadBalancer, "203.0.113.40")
@@ -130,27 +136,47 @@ func paymentsNamespace() fakekube.Namespace {
 	dep := deployment("checkout", 3, 1)
 	rs := replicaSet("checkout-5d", "checkout", 3, "checkout")
 
-	crashing := podFrom("checkout-5d-crash", "payments", podOpts{app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "CrashLoopBackOff", 14)}}) // rising restarts
-	pending := podFrom("checkout-5d-pend", "payments", podOpts{app: "checkout", phase: corev1.PodPending,
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ContainerCreating", 0)}})
-	imgpull := podFrom("checkout-5d-img", "payments", podOpts{app: "checkout", node: "worker-2", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ImagePullBackOff", 0)}})
-	errpull := podFrom("checkout-5d-errpull", "payments", podOpts{app: "checkout", node: "worker-2", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ErrImagePull", 0)}})
-	oom := podFrom("checkout-5d-oom", "payments", podOpts{app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
+	crashing := podFrom("checkout-5d-crash", "payments", &podOpts{
+		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
+		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "CrashLoopBackOff", 14)},
+	}) // rising restarts
+	pending := podFrom("checkout-5d-pend", "payments", &podOpts{
+		app: "checkout", phase: corev1.PodPending,
+		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ContainerCreating", 0)},
+	})
+	imgpull := podFrom("checkout-5d-img", "payments", &podOpts{
+		app: "checkout", node: "worker-2", ownerRS: "checkout-5d",
+		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ImagePullBackOff", 0)},
+	})
+	errpull := podFrom("checkout-5d-errpull", "payments", &podOpts{
+		app: "checkout", node: "worker-2", ownerRS: "checkout-5d",
+		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "ErrImagePull", 0)},
+	})
+	oom := podFrom("checkout-5d-oom", "payments", &podOpts{
+		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
 		phase:    corev1.PodFailed, // pod-phase Failed
-		statuses: []corev1.ContainerStatus{terminatedContainer("checkout", "OOMKilled", 137)}})
-	cfgerr := podFrom("checkout-5d-cfg", "payments", podOpts{app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "CreateContainerConfigError", 0)}})
-	badimg := podFrom("checkout-5d-badimg", "payments", podOpts{app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "InvalidImageName", 0)}})
-	evicted := podFrom("checkout-5d-evict", "payments", podOpts{app: "checkout", node: "worker-2", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{terminatedContainer("checkout", "Evicted", 1)}})
-	errc := podFrom("checkout-5d-err", "payments", podOpts{app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{terminatedContainer("checkout", "Error", 1)}})
-	outofcpu := podFrom("checkout-5d-cpu", "payments", podOpts{app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
-		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "OutOfcpu", 0)}})
+		statuses: []corev1.ContainerStatus{terminatedContainer("checkout", "OOMKilled", 137)},
+	})
+	cfgerr := podFrom("checkout-5d-cfg", "payments", &podOpts{
+		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
+		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "CreateContainerConfigError", 0)},
+	})
+	badimg := podFrom("checkout-5d-badimg", "payments", &podOpts{
+		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
+		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "InvalidImageName", 0)},
+	})
+	evicted := podFrom("checkout-5d-evict", "payments", &podOpts{
+		app: "checkout", node: "worker-2", ownerRS: "checkout-5d",
+		statuses: []corev1.ContainerStatus{terminatedContainer("checkout", "Evicted", 1)},
+	})
+	errc := podFrom("checkout-5d-err", "payments", &podOpts{
+		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
+		statuses: []corev1.ContainerStatus{terminatedContainer("checkout", "Error", 1)},
+	})
+	outofcpu := podFrom("checkout-5d-cpu", "payments", &podOpts{
+		app: "checkout", node: "worker-1", ownerRS: "checkout-5d",
+		statuses: []corev1.ContainerStatus{waitingContainer("checkout", "OutOfcpu", 0)},
+	})
 
 	svc := service("checkout", "payments", "checkout", corev1.ServiceTypeClusterIP, "")
 
@@ -192,19 +218,23 @@ func dataNamespace() fakekube.Namespace {
 
 	// Two pods owned by the StatefulSet (related-pods sub-table), one mounting
 	// the PVC; multi-container so the per-container metrics section renders.
-	pg0 := podFrom("postgres-0", "data", podOpts{app: "postgres", node: "worker-1", claimName: "pgdata-postgres-0",
+	pg0 := podFrom("postgres-0", "data", &podOpts{
+		app: "postgres", node: "worker-1", claimName: "pgdata-postgres-0",
 		containers: []corev1.Container{
 			{Name: "postgres", Image: "ghcr.io/cloudnative-pg/postgresql:16"},
 			{Name: "metrics", Image: "prometheuscommunity/postgres-exporter:v0.15"},
 		},
-		statuses: []corev1.ContainerStatus{readyContainer("postgres"), readyContainer("metrics")}})
+		statuses: []corev1.ContainerStatus{readyContainer("postgres"), readyContainer("metrics")},
+	})
 	pg0.OwnerReferences = ownerStatefulSet("postgres")
-	pg1 := podFrom("postgres-1", "data", podOpts{app: "postgres", node: "worker-2",
+	pg1 := podFrom("postgres-1", "data", &podOpts{
+		app: "postgres", node: "worker-2",
 		containers: []corev1.Container{
 			{Name: "postgres", Image: "ghcr.io/cloudnative-pg/postgresql:16"},
 			{Name: "metrics", Image: "prometheuscommunity/postgres-exporter:v0.15"},
 		},
-		statuses: []corev1.ContainerStatus{readyContainer("postgres"), readyContainer("metrics")}})
+		statuses: []corev1.ContainerStatus{readyContainer("postgres"), readyContainer("metrics")},
+	})
 	pg1.OwnerReferences = ownerStatefulSet("postgres")
 
 	// A CNPG Cluster custom resource (postgresql.cnpg.io family glyph).
@@ -253,8 +283,8 @@ func platformNamespace() fakekube.Namespace {
 		// register it here too so the family is present cluster-wide.
 		customResource("postgresql.cnpg.io/v1", "Backup", "nightly", "platform"),
 		// ≥2 unknown-group CRDs → HashHue monogram tiles.
-		customResource("widgets.acme.example", "Widget", "blue-widget", "platform"),
-		customResource("gizmos.contoso.example", "Gizmo", "left-gizmo", "platform"),
+		customResource("widgets.acme.example/v1", "Widget", "blue-widget", "platform"),
+		customResource("gizmos.contoso.example/v1", "Gizmo", "left-gizmo", "platform"),
 	)
 	return fakekube.Namespace{
 		Name:    "platform",
@@ -327,24 +357,32 @@ func kubeSystemNamespace() fakekube.Namespace {
 	// A pod with init containers in progress (Init:1/2 → warn) and one with an
 	// errored init container (Init:CrashLoopBackOff → err). These exercise the
 	// StatusTone Init:* branches.
-	initProgress := podFrom("installer-progress", "kube-system", podOpts{app: "installer", node: "cp-1",
+	initProgress := podFrom("installer-progress", "kube-system", &podOpts{
+		app: "installer", node: "cp-1",
 		initStatuses: []corev1.ContainerStatus{
 			terminatedContainer("step-1", "Completed", 0), // 1 complete
 			waitingContainer("step-2", "PodInitializing", 0),
 		},
-		statuses: []corev1.ContainerStatus{waitingContainer("app", "PodInitializing", 0)}})
-	initErrored := podFrom("installer-failed", "kube-system", podOpts{app: "installer", node: "cp-1",
+		statuses: []corev1.ContainerStatus{waitingContainer("app", "PodInitializing", 0)},
+	})
+	initErrored := podFrom("installer-failed", "kube-system", &podOpts{
+		app: "installer", node: "cp-1",
 		initStatuses: []corev1.ContainerStatus{
 			waitingContainer("step-1", "CrashLoopBackOff", 5),
 		},
-		statuses: []corev1.ContainerStatus{waitingContainer("app", "PodInitializing", 0)}})
+		statuses: []corev1.ContainerStatus{waitingContainer("app", "PodInitializing", 0)},
+	})
 
 	// A succeeded one-shot pod (phase Succeeded → mute) and a Terminating pod.
-	doneOnce := podFrom("migrate-once", "kube-system", podOpts{app: "migrate", node: "cp-1",
+	doneOnce := podFrom("migrate-once", "kube-system", &podOpts{
+		app: "migrate", node: "cp-1",
 		phase:    corev1.PodSucceeded,
-		statuses: []corev1.ContainerStatus{terminatedContainer("migrate", "Completed", 0)}})
-	terminating := podFrom("kube-proxy-term", "kube-system", podOpts{app: "kube-proxy", node: "worker-1",
-		statuses: []corev1.ContainerStatus{waitingContainer("kube-proxy", "Terminating", 0)}})
+		statuses: []corev1.ContainerStatus{terminatedContainer("migrate", "Completed", 0)},
+	})
+	terminating := podFrom("kube-proxy-term", "kube-system", &podOpts{
+		app: "kube-proxy", node: "worker-1",
+		statuses: []corev1.ContainerStatus{waitingContainer("kube-proxy", "Terminating", 0)},
+	})
 
 	multiSecret := secret("registry-creds", "kube-system", map[string][]byte{
 		"username":   []byte("admin"),
@@ -400,10 +438,14 @@ func stagingCluster() fakekube.Cluster {
 	web := deployment("web", 2, 2)
 	rs := replicaSet("web-aa1", "web", 2, "web")
 	pods := objs(
-		podFrom("web-aa1-x", "apps", podOpts{app: "web", node: "staging-1", ownerRS: "web-aa1",
-			statuses: []corev1.ContainerStatus{readyContainer("web")}}),
-		podFrom("web-aa1-y", "apps", podOpts{app: "web", node: "staging-1", ownerRS: "web-aa1",
-			statuses: []corev1.ContainerStatus{readyContainer("web")}}),
+		podFrom("web-aa1-x", "apps", &podOpts{
+			app: "web", node: "staging-1", ownerRS: "web-aa1",
+			statuses: []corev1.ContainerStatus{readyContainer("web")},
+		}),
+		podFrom("web-aa1-y", "apps", &podOpts{
+			app: "web", node: "staging-1", ownerRS: "web-aa1",
+			statuses: []corev1.ContainerStatus{readyContainer("web")},
+		}),
 	)
 	svc := service("web", "apps", "web", corev1.ServiceTypeClusterIP, "")
 	all := objs(web, rs, svc)

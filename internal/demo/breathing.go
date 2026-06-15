@@ -1,6 +1,6 @@
 package demo
 
-// breathing.go is the shared looping driver (design D8) that produces gentle,
+// breathing.go is the shared looping driver that produces gentle,
 // referentially-safe churn so readout's Live/SSE surface looks alive in the
 // demo. It drives each fakekube engine through Server.Apply (NOT the /__control/
 // surface, which the demo omits): on every tick it emits one MODIFIED event per

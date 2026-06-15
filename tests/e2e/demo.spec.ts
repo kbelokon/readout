@@ -2,8 +2,8 @@ import { test, expect, type Page, request as pwRequest } from '@playwright/test'
 import { resolve } from 'node:path';
 import { demoURL } from './playwright.config';
 
-// demo.spec.ts is the thin, deterministic walk over `readout --demo` (design D9
-// smoke + D7 export). The demo is the curated two-cluster tour (prod + staging,
+// demo.spec.ts is the thin, deterministic walk over `readout --demo` (render
+// smoke + bulk-export coverage). The demo is the curated two-cluster tour (prod + staging,
 // see internal/demo/scenario.go); because it lights up every render path, a
 // single descent gives near-total render coverage. Four jobs, all against the
 // real demo server (the `demo` Playwright project + its own webServer, breathing
@@ -197,7 +197,7 @@ test.describe('demo detail descent', () => {
 });
 
 test.describe('demo export', () => {
-  // Export is a download ACTION, not a page (design D7). The bulk YAML/TSV
+  // Export is a download ACTION, not a page. The bulk YAML/TSV
   // endpoints are invoked directly via the request context (the same
   // `?download=yaml|tsv` grammar the bulk button drives) and asserted non-empty +
   // multi-doc. Both a single-namespace list and an _all-namespaces list are

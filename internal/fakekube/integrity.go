@@ -1,6 +1,6 @@
 package fakekube
 
-// integrity.go is the D5 "integrity-as-law" validator: it runs inside Seed
+// integrity.go is the "integrity-as-law" validator: it runs inside Seed
 // (seed.go) BEFORE any store is built, and rejects a Cluster whose object graph
 // has a dangling reference. The guarantee is load-bearing — a forgotten link
 // must fail a test, never ship as a dead click — so every reference is resolved
@@ -59,7 +59,7 @@ func objKey(namespace, kind, name string) string {
 
 // validateCluster runs the integrity law over a Cluster. It returns the first
 // dangling reference as an error naming it; nil means every reference resolves.
-func validateCluster(c Cluster, reg map[string]gvrInfo) error {
+func validateCluster(c *Cluster, reg map[string]gvrInfo) error {
 	idx, wires, err := indexCluster(c, reg)
 	if err != nil {
 		return err
@@ -103,7 +103,7 @@ type wireObject struct {
 // index, and returns the per-object wire maps for reference checking. It also
 // enforces that an object's explicit metadata.namespace matches the namespace
 // it is declared in.
-func indexCluster(c Cluster, reg map[string]gvrInfo) (*objIndex, []wireObject, error) {
+func indexCluster(c *Cluster, reg map[string]gvrInfo) (*objIndex, []wireObject, error) {
 	idx := &objIndex{
 		byKey:         map[string]bool{},
 		nodes:         map[string]bool{},

@@ -1,6 +1,6 @@
 package demo
 
-// runner.go is the in-process demo wiring (design D2/D6): it mirrors the e2e
+// runner.go is the in-process demo wiring: it mirrors the e2e
 // harness (tests/e2e/harness/main.go) but WITHOUT writing a kubeconfig — it
 // starts one fakekube engine per demo cluster on an ephemeral loopback port and
 // returns the static cluster-connection entries that point straight at those
@@ -10,7 +10,7 @@ package demo
 // (no kubeconfig/in-cluster fallback fires).
 //
 // Each engine is built with fakekube.WithoutControl(): the demo serves a clean
-// fake with NO /__control/ surface (design D2). The breathing loop (breathing.go)
+// fake with NO /__control/ surface. The breathing loop (breathing.go)
 // drives churn through Server.Apply, not the control prefix, so the control
 // routes are never needed.
 
@@ -47,7 +47,8 @@ func StartEngines() (servers []*fakekube.Server, conns []config.ClusterConnectio
 		}
 	}()
 
-	for _, cluster := range scenario.Clusters {
+	for i := range scenario.Clusters {
+		cluster := &scenario.Clusters[i]
 		srv, newErr := fakekube.New(fakekube.WithoutControl())
 		if newErr != nil {
 			return servers, conns, fmt.Errorf("demo: start engine for cluster %q: %w", cluster.Name, newErr)

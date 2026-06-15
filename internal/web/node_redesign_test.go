@@ -465,7 +465,8 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 // left short two cells.
 func newNodeMetricsRaggedAPI(t *testing.T) *httptest.Server {
 	t.Helper()
-	wire := buildWire(t, podsScenarioCluster())
+	cluster := podsScenarioCluster()
+	wire := buildWire(t, &cluster)
 	mux := http.NewServeMux()
 	registerDiscovery(mux, wire, plainWrap)
 	// Metrics DISCOVERY (the resource list) succeeds, but the NodeMetrics LIST 500s.
@@ -561,7 +562,8 @@ func TestMetricsRaggedGuardRendersThroughHandler(t *testing.T) {
 // newNodeMetricsRaggedAPI.
 func newNodeListMetricsFailAPI(t *testing.T) *httptest.Server {
 	t.Helper()
-	wire := buildWire(t, podsScenarioCluster())
+	cluster := podsScenarioCluster()
+	wire := buildWire(t, &cluster)
 	mux := http.NewServeMux()
 	registerDiscovery(mux, wire, plainWrap)
 	mux.HandleFunc("/api/v1/nodes", func(w http.ResponseWriter, r *http.Request) {

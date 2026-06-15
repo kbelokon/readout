@@ -1,6 +1,6 @@
 package fakekube
 
-// tables_test.go pins the D5 Table-form generation: every supported kind serves
+// tables_test.go pins the Table-form generation: every supported kind serves
 // a meta.k8s.io Table whose columnDefinitions contain the column NAMES readout's
 // curated list cells actually read. The oracle is NOT a hand-written blob — it
 // is DERIVED at test time from readout's own consuming code:
@@ -226,7 +226,7 @@ func TestTableColumnsServed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Close)
-	if err := srv.Seed(c); err != nil {
+	if err := srv.Seed(&c); err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
 

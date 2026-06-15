@@ -360,7 +360,8 @@ func TestAuthorizedViewerClusterErrorStaysVerbatim(t *testing.T) {
 
 func newErrorPageCountingFakeAPI(t *testing.T, namespaceLists *atomic.Int64) *httptest.Server {
 	t.Helper()
-	wire := buildWire(t, podsScenarioCluster())
+	cluster := podsScenarioCluster()
+	wire := buildWire(t, &cluster)
 	namespacesList := wire.Lists["/api/v1/namespaces"].List
 	mux := http.NewServeMux()
 	registerDiscovery(mux, wire, plainWrap)

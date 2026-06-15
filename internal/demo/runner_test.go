@@ -1,6 +1,6 @@
 package demo
 
-// runner_test.go pins the demo wiring contract (design D2/D6/D8): StartEngines
+// runner_test.go pins the demo wiring contract: StartEngines
 // builds exactly the two scenario clusters as in-process engines WITHOUT the
 // /__control/ surface, returning static connections that point at their
 // ephemeral loopback URLs.

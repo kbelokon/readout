@@ -1,6 +1,6 @@
 package fakekube
 
-// seed.go is the D3 Seed entry point: it turns ONE typed Cluster graph into the
+// seed.go is the Seed entry point: it turns ONE typed Cluster graph into the
 // served store (discovery + List + object + log + metrics responses) the engine
 // answers from, replacing the embedded-JSON seedStore path additively. The
 // referential-integrity validator (integrity.go) runs FIRST; a dangling
@@ -54,7 +54,7 @@ type gvrInfo struct {
 
 // groupVersion renders the discovery groupVersion string ("v1" for core,
 // "<group>/<version>" otherwise).
-func (g gvrInfo) groupVersion() string {
+func (g *gvrInfo) groupVersion() string {
 	if g.group == "" {
 		return g.version
 	}
@@ -63,7 +63,7 @@ func (g gvrInfo) groupVersion() string {
 
 // gvPath renders the group-version path segment under apiPrefix
 // (/api/v1 or /apis/<group>/<version>).
-func (g gvrInfo) gvPath() string {
+func (g *gvrInfo) gvPath() string {
 	if g.group == "" {
 		return g.apiPrefix + "/" + g.version
 	}
@@ -71,7 +71,7 @@ func (g gvrInfo) gvPath() string {
 }
 
 // listPath builds the collection route for a (possibly namespaced) resource.
-func (g gvrInfo) listPath(namespace string) string {
+func (g *gvrInfo) listPath(namespace string) string {
 	if g.namespaced && namespace != "" {
 		return fmt.Sprintf("%s/namespaces/%s/%s", g.gvPath(), namespace, g.resource)
 	}
@@ -80,7 +80,7 @@ func (g gvrInfo) listPath(namespace string) string {
 
 // objectPath builds the single-object route for a named (possibly namespaced)
 // object.
-func (g gvrInfo) objectPath(namespace, name string) string {
+func (g *gvrInfo) objectPath(namespace, name string) string {
 	return g.listPath(namespace) + "/" + name
 }
 
@@ -151,7 +151,7 @@ func gvkKey(apiVersion, kind string) string {
 // returns an error and nothing is swapped. Routes are re-registered from the
 // freshly seeded path set, so handlers registered before Seed keep resolving
 // and the new routes resolve too.
-func (s *Server) Seed(c Cluster) error {
+func (s *Server) Seed(c *Cluster) error {
 	reg := kindRegistry(c.CRDs)
 	if err := validateCluster(c, reg); err != nil {
 		return err
@@ -205,13 +205,15 @@ func objectGVK(obj runtime.Object, reg map[string]gvrInfo) (gvrInfo, string, str
 	// When apiVersion is carried, the (apiVersion, kind) key is exact.
 	if apiVersion != "" {
 		if info, ok := reg[gvkKey(apiVersion, kind)]; ok {
-			return info, info.groupVersion(), info.kind, nil
+			gv := info.groupVersion()
+			return info, gv, info.kind, nil
 		}
 	}
 	// Empty TypeMeta (the common typed-constructor case) or an unmatched
 	// apiVersion: resolve by kind alone. Kinds are unique across the registry.
 	if info, ok := infoByKind(reg, kind); ok {
-		return info, info.groupVersion(), info.kind, nil
+		gv := info.groupVersion()
+		return info, gv, info.kind, nil
 	}
 	return gvrInfo{}, "", "", fmt.Errorf("fakeapi: no kind registered for %q (kind %q): register a CRD or use a builtin kind", apiVersion, kind)
 }
@@ -242,7 +244,7 @@ func goTypeName(obj runtime.Object) string {
 // marshalObject renders a typed object to the apiserver JSON wire shape, with
 // apiVersion + kind stamped (typed constructors leave TypeMeta blank). The
 // returned map is the object's wire form, also used as a List item.
-func marshalObject(obj runtime.Object, info gvrInfo, apiVersion, kind string) (map[string]any, error) {
+func marshalObject(obj runtime.Object, info *gvrInfo, apiVersion, kind string) (map[string]any, error) {
 	data, err := json.Marshal(obj)
 	if err != nil {
 		return nil, fmt.Errorf("fakeapi: marshal %s/%s: %w", apiVersion, kind, err)
@@ -291,7 +293,7 @@ type seededObject struct {
 // collectObjects resolves and marshals every object in the cluster (nodes,
 // cluster objects, namespaced objects) once, plus a synthetic Namespace object
 // per declared namespace so the namespaces list/object routes resolve.
-func collectObjects(c Cluster, reg map[string]gvrInfo) ([]seededObject, error) {
+func collectObjects(c *Cluster, reg map[string]gvrInfo) ([]seededObject, error) {
 	var out []seededObject
 	add := func(obj runtime.Object, nsOverride string) error {
 		// Unwrap a base-cluster cell/log override; the inner typed object drives
@@ -311,7 +313,7 @@ func collectObjects(c Cluster, reg map[string]gvrInfo) ([]seededObject, error) {
 		if info.namespaced && nsOverride != "" {
 			ns = nsOverride
 		}
-		wire, err := marshalObject(obj, info, apiVersion, kind)
+		wire, err := marshalObject(obj, &info, apiVersion, kind)
 		if err != nil {
 			return err
 		}
@@ -355,7 +357,7 @@ func collectObjects(c Cluster, reg map[string]gvrInfo) ([]seededObject, error) {
 		// An Unlisted namespace (list-render scaffolding) serves its per-namespace
 		// routes but emits no Namespace object, staying out of the namespaces list.
 		if !ns.Unlisted {
-			nsObj := namespaceWire(ns)
+			nsObj := namespaceWire(&ns)
 			out = append(out, seededObject{
 				info:       builtinKinds["/v1/Namespace"],
 				apiVersion: "v1",
@@ -401,7 +403,7 @@ func pruneEmptyContainerResources(wire map[string]any) {
 }
 
 // namespaceWire builds the served Namespace object for a declared namespace.
-func namespaceWire(ns Namespace) map[string]any {
+func namespaceWire(ns *Namespace) map[string]any {
 	metadata := map[string]any{"name": ns.Name}
 	if len(ns.Labels) > 0 {
 		labels := make(map[string]any, len(ns.Labels))
@@ -425,7 +427,7 @@ func namespaceWire(ns Namespace) map[string]any {
 // routes, namespace-grouped List routes (with the cross-namespace alias route
 // for namespaced kinds, mirroring /api/v1/pods sharing /api/v1/namespaces/*/pods
 // state), pod-log routes, metrics list routes, and discovery documents.
-func buildStore(c Cluster, reg map[string]gvrInfo) (*store, error) {
+func buildStore(c *Cluster, reg map[string]gvrInfo) (*store, error) {
 	objs, err := collectObjects(c, reg)
 	if err != nil {
 		return nil, err
@@ -463,7 +465,8 @@ func buildStore(c Cluster, reg map[string]gvrInfo) (*store, error) {
 	// objects of a kind gets a standalone union for that all-namespaces route.
 	allNamespaceAlias := map[string]string{}
 
-	for _, o := range objs {
+	for i := range objs {
+		o := &objs[i]
 		// Object route.
 		objData, err := json.Marshal(o.wire)
 		if err != nil {
@@ -509,7 +512,7 @@ func buildStore(c Cluster, reg map[string]gvrInfo) (*store, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Fill the Table slot too (D5): a client that negotiates as=Table gets
+		// Fill the Table slot too: a client that negotiates as=Table gets
 		// the meta.k8s.io Table form, with the SAME item set as the List form and
 		// the full object riding each row (readout's curated cells re-read it).
 		st.lists[path] = &listState{list: doc, table: buildTableDoc(b)}
@@ -525,7 +528,8 @@ func buildStore(c Cluster, reg map[string]gvrInfo) (*store, error) {
 	// Pod log routes: the object's explicit log payload when carried (the base
 	// test cluster reproduces the 40-line fixture log), else a deterministic
 	// one-liner (the demo's path).
-	for _, o := range objs {
+	for i := range objs {
+		o := &objs[i]
 		if o.isPod {
 			logPath := o.info.objectPath(o.namespace, o.name) + "/log"
 			if o.logText != "" {
@@ -574,7 +578,7 @@ func (b *listBucket) appendItem(wire map[string]any, cells []any, tableOnly, lis
 // resource) a Cluster declares EMPTY — a namespace that must serve a kind with
 // no objects (the "empty" namespace's pods list returns a 0-row table, not a
 // 404). The route is registered only if it does not already hold objects.
-func registerEmptyLists(c Cluster, reg map[string]gvrInfo, buckets map[string]*listBucket, bucketFor func(string, gvrInfo) *listBucket) error {
+func registerEmptyLists(c *Cluster, reg map[string]gvrInfo, buckets map[string]*listBucket, bucketFor func(string, gvrInfo) *listBucket) error {
 	for _, ns := range c.Namespaces {
 		for _, plural := range ns.EmptyLists {
 			info, ok := infoByResource(reg, plural)
@@ -623,18 +627,9 @@ func listDocFor(b *listBucket) (map[string]any, error) {
 	}, nil
 }
 
-func itemName(m map[string]any) string {
-	meta, ok := m["metadata"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	name, _ := meta["name"].(string)
-	return name
-}
-
 // buildMetrics seeds the per-namespace PodMetrics list routes and the cluster
 // NodeMetrics list route in the metrics.k8s.io JSON wire shape.
-func buildMetrics(c Cluster, st *store) error {
+func buildMetrics(c *Cluster, st *store) error {
 	const mAPI = "metrics.k8s.io/v1beta1"
 	for _, ns := range c.Namespaces {
 		if len(ns.PodMetrics) == 0 {
@@ -699,7 +694,7 @@ func buildMetrics(c Cluster, st *store) error {
 // (APIGroupList), and one /apis/<group>/<version> APIResourceList per non-core
 // group present. A CR object whose group-version is not registered fails the
 // integrity validator before this runs, so every served kind has discovery.
-func buildDiscovery(c Cluster, objs []seededObject, st *store) error {
+func buildDiscovery(c *Cluster, objs []seededObject, st *store) error {
 	// Collect the gvrInfo for every kind that appears, deduped by groupVersion
 	// + resource. The metrics group is always present (pods + nodes metrics).
 	type gvKey struct{ apiPrefix, group, version string }
@@ -714,8 +709,8 @@ func buildDiscovery(c Cluster, objs []seededObject, st *store) error {
 		k := gvKey{info.apiPrefix, info.group, info.version}
 		groups[k] = append(groups[k], info)
 	}
-	for _, o := range objs {
-		addInfo(o.info)
+	for i := range objs {
+		addInfo(objs[i].info)
 	}
 	// Namespace kind is always served (synthetic objects) — collectObjects adds
 	// it, so it is already covered. Metrics resources:

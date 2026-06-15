@@ -27,7 +27,7 @@ import (
 
 // buildWire turns a typed Cluster into its served wire bytes, failing the test
 // on a build/validation error.
-func buildWire(t *testing.T, c fakeapi.Cluster) *fakeapi.Wire {
+func buildWire(t *testing.T, c *fakeapi.Cluster) *fakeapi.Wire {
 	t.Helper()
 	w, err := fakeapi.WireResponses(c)
 	if err != nil {

@@ -48,7 +48,8 @@ const serverErrorFixtureMessage = "Internal error occurred: state fixture 500 mo
 // way the production fixtures do.
 func newStateFakeAPI(t *testing.T, opts stateFakeOptions) *httptest.Server {
 	t.Helper()
-	wire := buildWire(t, podsScenarioCluster())
+	cluster := podsScenarioCluster()
+	wire := buildWire(t, &cluster)
 	podsWire := wire.Lists["/api/v1/namespaces/default/pods"]
 	namespacesList := wire.Lists["/api/v1/namespaces"].List
 	mux := http.NewServeMux()
@@ -93,7 +94,8 @@ func newStateFakeAPI(t *testing.T, opts stateFakeOptions) *httptest.Server {
 // It models a list that loaded rows, then went forbidden on the next refresh.
 func newToggleableStateAPI(t *testing.T, forbid *atomic.Bool) *httptest.Server {
 	t.Helper()
-	wire := buildWire(t, podsScenarioCluster())
+	cluster := podsScenarioCluster()
+	wire := buildWire(t, &cluster)
 	podsWire := wire.Lists["/api/v1/namespaces/default/pods"]
 	namespacesList := wire.Lists["/api/v1/namespaces"].List
 	mux := http.NewServeMux()
