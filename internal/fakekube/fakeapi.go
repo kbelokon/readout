@@ -112,6 +112,12 @@ type Server struct {
 	ctrl    *controlState
 	watches *watchHub
 
+	// mux is the active route table. It is swappable so Seed() can register
+	// routes derived from a typed Cluster graph after construction; the root
+	// handler reads it under muxMu on every request.
+	muxMu sync.RWMutex
+	mux   *http.ServeMux
+
 	requestRecorders   []func(*http.Request)
 	discoveryRecorders []func(*http.Request)
 	listRecorders      []func(*http.Request)
@@ -138,13 +144,17 @@ func New(opts ...Option) (*Server, error) {
 
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
+	s.mux = mux
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, controlPrefix) {
 			for _, fn := range s.requestRecorders {
 				fn(r)
 			}
 		}
-		mux.ServeHTTP(w, r)
+		s.muxMu.RLock()
+		active := s.mux
+		s.muxMu.RUnlock()
+		active.ServeHTTP(w, r)
 	})
 
 	s.httpServer = httptest.NewUnstartedServer(root)
