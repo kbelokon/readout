@@ -48,23 +48,11 @@ const serverErrorFixtureMessage = "Internal error occurred: state fixture 500 mo
 // way the production fixtures do.
 func newStateFakeAPI(t *testing.T, opts stateFakeOptions) *httptest.Server {
 	t.Helper()
+	wire := buildWire(t, podsScenarioCluster())
+	podsWire := wire.Lists["/api/v1/namespaces/default/pods"]
+	namespacesList := wire.Lists["/api/v1/namespaces"].List
 	mux := http.NewServeMux()
-	fixture := func(name string) http.HandlerFunc {
-		return func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(stateFixture(t, name))
-		}
-	}
-	mux.HandleFunc("/api", fixture("discovery/api.json"))
-	mux.HandleFunc("/api/v1", fixture("discovery/api__v1.json"))
-	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
-	mux.HandleFunc("/apis/apps/v1", fixture("discovery/apis__apps__v1.json"))
-	mux.HandleFunc("/apis/cert-manager.io/v1", fixture("discovery/apis__cert-manager.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", fixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", fixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
-	mux.HandleFunc("/version", fixture("discovery/version.json"))
+	registerDiscovery(mux, wire, plainWrap)
 	podsHandler := func(w http.ResponseWriter, r *http.Request) {
 		if opts.forbidPods {
 			// A real apiserver 403: a Status object with reason Forbidden naming the
@@ -85,15 +73,15 @@ func newStateFakeAPI(t *testing.T, opts stateFakeOptions) *httptest.Server {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.Header.Get("Accept"), "as=Table") {
-			_, _ = w.Write(stateFixture(t, "data/pods_table.json"))
+			_, _ = w.Write(podsWire.Table)
 			return
 		}
-		_, _ = w.Write(stateFixture(t, "data/pods_with_node_list.json"))
+		_, _ = w.Write(podsWire.List)
 	}
 	mux.HandleFunc("/api/v1/namespaces/default/pods", podsHandler)
 	mux.HandleFunc("/api/v1/namespaces/default/pods/", podsHandler) // detail Get
 	mux.HandleFunc("/api/v1/pods", podsHandler)
-	mux.HandleFunc("/api/v1/namespaces", fixture("data/render_namespaces_list.json"))
+	mux.HandleFunc("/api/v1/namespaces", jsonBytes(namespacesList))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
@@ -105,23 +93,11 @@ func newStateFakeAPI(t *testing.T, opts stateFakeOptions) *httptest.Server {
 // It models a list that loaded rows, then went forbidden on the next refresh.
 func newToggleableStateAPI(t *testing.T, forbid *atomic.Bool) *httptest.Server {
 	t.Helper()
+	wire := buildWire(t, podsScenarioCluster())
+	podsWire := wire.Lists["/api/v1/namespaces/default/pods"]
+	namespacesList := wire.Lists["/api/v1/namespaces"].List
 	mux := http.NewServeMux()
-	fixture := func(name string) http.HandlerFunc {
-		return func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(stateFixture(t, name))
-		}
-	}
-	mux.HandleFunc("/api", fixture("discovery/api.json"))
-	mux.HandleFunc("/api/v1", fixture("discovery/api__v1.json"))
-	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
-	mux.HandleFunc("/apis/apps/v1", fixture("discovery/apis__apps__v1.json"))
-	mux.HandleFunc("/apis/cert-manager.io/v1", fixture("discovery/apis__cert-manager.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", fixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", fixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
-	mux.HandleFunc("/version", fixture("discovery/version.json"))
+	registerDiscovery(mux, wire, plainWrap)
 	podsHandler := func(w http.ResponseWriter, r *http.Request) {
 		if forbid.Load() {
 			w.Header().Set("Content-Type", "application/json")
@@ -131,29 +107,17 @@ func newToggleableStateAPI(t *testing.T, forbid *atomic.Bool) *httptest.Server {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.Header.Get("Accept"), "as=Table") {
-			_, _ = w.Write(stateFixture(t, "data/pods_table.json"))
+			_, _ = w.Write(podsWire.Table)
 			return
 		}
-		_, _ = w.Write(stateFixture(t, "data/pods_with_node_list.json"))
+		_, _ = w.Write(podsWire.List)
 	}
 	mux.HandleFunc("/api/v1/namespaces/default/pods", podsHandler)
 	mux.HandleFunc("/api/v1/pods", podsHandler)
-	mux.HandleFunc("/api/v1/namespaces", fixture("data/render_namespaces_list.json"))
+	mux.HandleFunc("/api/v1/namespaces", jsonBytes(namespacesList))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
-}
-
-// stateFixture reads a fakeapi fixture (a sibling of readFixture, kept local so
-// this file does not depend on server_test.go internals beyond the shared
-// fixtures directory).
-func stateFixture(t *testing.T, name string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "fakekube", "fixtures", name))
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
-	}
-	return data
 }
 
 // newDeadCluster returns the URL of an httptest server that has been closed, so

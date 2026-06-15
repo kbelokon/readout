@@ -721,15 +721,6 @@ func newRecordingServerFakeAPIWithRecorders(t *testing.T, lastAuth *authRecorder
 	return server
 }
 
-func readFixture(t *testing.T, name string) []byte {
-	t.Helper()
-	data, err := fakeapi.Fixture(name)
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
-	}
-	return data
-}
-
 func queryValue(rawURL, key string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {

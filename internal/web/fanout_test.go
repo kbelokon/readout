@@ -42,9 +42,18 @@ type clusterFakeOptions struct {
 // newClusterFakeAPI builds a minimal fake kube API (discovery + pods table/list)
 // for one cluster in the multi-cluster fan-out tests. The pods table carries two
 // rows (nginx, my-app) so merged multi-cluster output groups rows per cluster in
-// merge order, exposing the cluster ordering.
+// merge order, exposing the cluster ordering. The discovery docs + pods/
+// deployments Table/List forms are the engine's WIRE BYTES generated from a
+// typed Cluster (fakeapi.WireResponses), keyed by their served route, served
+// through this mux's delay/failure/search wrappers.
 func newClusterFakeAPI(t *testing.T, opts clusterFakeOptions) *httptest.Server {
 	t.Helper()
+	cluster := podsScenarioCluster()
+	if opts.searchFixtures {
+		cluster = searchScenarioCluster()
+	}
+	wire := buildWire(t, cluster)
+
 	mux := http.NewServeMux()
 	delay := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -54,26 +63,7 @@ func newClusterFakeAPI(t *testing.T, opts clusterFakeOptions) *httptest.Server {
 			h(w, r)
 		}
 	}
-	fixture := func(name string) http.HandlerFunc {
-		return delay(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(readFixture(t, name))
-		})
-	}
-	mux.HandleFunc("/api", fixture("discovery/api.json"))
-	mux.HandleFunc("/api/v1", fixture("discovery/api__v1.json"))
-	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
-	mux.HandleFunc("/apis/apps/v1", fixture("discovery/apis__apps__v1.json"))
-	mux.HandleFunc("/apis/cert-manager.io/v1", fixture("discovery/apis__cert-manager.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", fixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", fixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
-	mux.HandleFunc("/version", fixture("discovery/version.json"))
-	podsFixture := "data/pods_table.json"
-	if opts.searchFixtures {
-		podsFixture = "data/search_pods_table.json"
-	}
+	registerDiscovery(mux, wire, delay)
 	listDelay := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if opts.listDelay > 0 {
@@ -90,6 +80,7 @@ func newClusterFakeAPI(t *testing.T, opts clusterFakeOptions) *httptest.Server {
 			h(w, r)
 		}
 	}
+	podsWire := wire.Lists["/api/v1/namespaces/default/pods"]
 	podsHandler := delay(listDelay(func(w http.ResponseWriter, r *http.Request) {
 		if opts.failList {
 			http.Error(w, "boom: pods backend unavailable", http.StatusInternalServerError)
@@ -97,27 +88,28 @@ func newClusterFakeAPI(t *testing.T, opts clusterFakeOptions) *httptest.Server {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.Header.Get("Accept"), "as=Table") {
-			_, _ = w.Write(readFixture(t, podsFixture))
+			_, _ = w.Write(podsWire.Table)
 			return
 		}
-		_, _ = w.Write(readFixture(t, "data/pods_with_node_list.json"))
+		_, _ = w.Write(podsWire.List)
 	}))
 	mux.HandleFunc("/api/v1/namespaces/default/pods", podsHandler)
 	mux.HandleFunc("/api/v1/pods", podsHandler)
 	if opts.searchFixtures {
+		depWire := wire.Lists["/apis/apps/v1/namespaces/default/deployments"]
 		deploymentsHandler := delay(listDelay(func(w http.ResponseWriter, _ *http.Request) {
 			if opts.failList {
 				http.Error(w, "boom: deployments backend unavailable", http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(readFixture(t, "data/search_deployments_table.json"))
+			_, _ = w.Write(depWire.Table)
 		}))
 		mux.HandleFunc("/apis/apps/v1/namespaces/default/deployments", deploymentsHandler)
 		mux.HandleFunc("/apis/apps/v1/deployments", deploymentsHandler)
 	}
 	// Namespaces list (the navbar / _all-namespaces resolution may touch it).
-	mux.HandleFunc("/api/v1/namespaces", fixture("data/render_namespaces_list.json"))
+	mux.HandleFunc("/api/v1/namespaces", delay(jsonBytes(wire.Lists["/api/v1/namespaces"].List)))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server

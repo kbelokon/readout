@@ -465,17 +465,9 @@ func TestNodeListRendersRichCellsThroughRender(t *testing.T) {
 // left short two cells.
 func newNodeMetricsRaggedAPI(t *testing.T) *httptest.Server {
 	t.Helper()
+	wire := buildWire(t, podsScenarioCluster())
 	mux := http.NewServeMux()
-	fixture := func(name string) http.HandlerFunc {
-		return func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(readFixture(t, name))
-		}
-	}
-	mux.HandleFunc("/api", fixture("discovery/api.json"))
-	mux.HandleFunc("/api/v1", fixture("discovery/api__v1.json"))
-	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
+	registerDiscovery(mux, wire, plainWrap)
 	// Metrics DISCOVERY (the resource list) succeeds, but the NodeMetrics LIST 500s.
 	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1/nodes", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom: metrics backend unavailable", http.StatusInternalServerError)
@@ -569,18 +561,9 @@ func TestMetricsRaggedGuardRendersThroughHandler(t *testing.T) {
 // newNodeMetricsRaggedAPI.
 func newNodeListMetricsFailAPI(t *testing.T) *httptest.Server {
 	t.Helper()
+	wire := buildWire(t, podsScenarioCluster())
 	mux := http.NewServeMux()
-	fixture := func(name string) http.HandlerFunc {
-		return func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(readFixture(t, name))
-		}
-	}
-	mux.HandleFunc("/api", fixture("discovery/api.json"))
-	mux.HandleFunc("/api/v1", fixture("discovery/api__v1.json"))
-	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/version", fixture("discovery/version.json"))
+	registerDiscovery(mux, wire, plainWrap)
 	mux.HandleFunc("/api/v1/nodes", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(nodesTableJSON))

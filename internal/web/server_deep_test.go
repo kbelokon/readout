@@ -360,23 +360,10 @@ func TestAuthorizedViewerClusterErrorStaysVerbatim(t *testing.T) {
 
 func newErrorPageCountingFakeAPI(t *testing.T, namespaceLists *atomic.Int64) *httptest.Server {
 	t.Helper()
+	wire := buildWire(t, podsScenarioCluster())
+	namespacesList := wire.Lists["/api/v1/namespaces"].List
 	mux := http.NewServeMux()
-	fixture := func(name string) http.HandlerFunc {
-		return func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(readFixture(t, name))
-		}
-	}
-	mux.HandleFunc("/api", fixture("discovery/api.json"))
-	mux.HandleFunc("/api/v1", fixture("discovery/api__v1.json"))
-	mux.HandleFunc("/apis", fixture("discovery/apis.json"))
-	mux.HandleFunc("/apis/apps/v1", fixture("discovery/apis__apps__v1.json"))
-	mux.HandleFunc("/apis/cert-manager.io/v1", fixture("discovery/apis__cert-manager.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1", fixture("discovery/apis__gateway.networking.k8s.io__v1.json"))
-	mux.HandleFunc("/apis/gateway.networking.k8s.io/v1beta1", fixture("discovery/apis__gateway.networking.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/metrics.k8s.io/v1beta1", fixture("discovery/apis__metrics.k8s.io__v1beta1.json"))
-	mux.HandleFunc("/apis/storage.k8s.io/v1", fixture("discovery/apis__storage.k8s.io__v1.json"))
-	mux.HandleFunc("/version", fixture("discovery/version.json"))
+	registerDiscovery(mux, wire, plainWrap)
 	mux.HandleFunc("/api/v1/namespaces/default/pods/nginx", func(w http.ResponseWriter, _ *http.Request) {
 		// A 4xx (not 5xx): the designed state card captures forbidden/unreachable/5xx,
 		// so this failure falls through to the bare s.error page -- the surface
@@ -386,7 +373,7 @@ func newErrorPageCountingFakeAPI(t *testing.T, namespaceLists *atomic.Int64) *ht
 	mux.HandleFunc("/api/v1/namespaces", func(w http.ResponseWriter, _ *http.Request) {
 		namespaceLists.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(readFixture(t, "data/render_namespaces_list.json"))
+		_, _ = w.Write(namespacesList)
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)

@@ -4,10 +4,11 @@
 // runtime-patched discovery) and internal/kube/client_test.go (Accept-header
 // tracking) behind one constructor:
 //
-//   - Fixtures are //go:embed'd, so the server works from any working
-//     directory (unit tests, the e2e harness binary). Fixture loading happens
-//     once at New() time and returns errors instead of calling t.Fatal from
-//     inside handlers.
+//   - The served state is seeded from a typed Go object graph (basedata.go's
+//     baseTestCluster, through Seed/buildStore), so the server works from any
+//     working directory (unit tests, the e2e harness binary) with no embedded
+//     files. Seeding happens once at New() time and returns errors instead of
+//     calling t.Fatal from inside handlers.
 //   - Recorder hooks are functional options (WithRequestRecorder,
 //     WithDiscoveryRecorder, WithListRecorder, WithLogRecorder).
 //   - The fixture store is MUTABLE in-memory state seeded from the JSON
@@ -30,7 +31,6 @@
 package fakekube
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -41,15 +41,6 @@ import (
 	"strings"
 	"sync"
 )
-
-//go:embed fixtures
-var fixturesFS embed.FS
-
-// Fixture returns the raw bytes of an embedded fixture, e.g.
-// "data/pods_table.json" or "discovery/api.json".
-func Fixture(name string) ([]byte, error) {
-	return fixturesFS.ReadFile("fixtures/" + name)
-}
 
 // Option configures the fake apiserver at construction time.
 type Option func(*Server)
