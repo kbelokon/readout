@@ -77,7 +77,7 @@ docker run --rm -p 8080:8080 -v "$PWD/readout.yaml:/readout.yaml" \
 **On Kubernetes**, with the Helm chart (the supported install path):
 
 ```sh
-helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.11.0
+helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.11.1
 ```
 
 See [`chart/README.md`](chart/README.md) for values, RBAC presets, ingress/Gateway options, and upgrade notes.
@@ -247,7 +247,7 @@ When `metricsPort` is set, `/metrics` moves to its own listener and is disabled 
 If you want raw manifests instead of a Helm release — to commit them to git, pipe them into another tool, or just read them — render the chart locally:
 
 ```sh
-helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.11.0 > readout-manifests.yaml
+helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.11.1 > readout-manifests.yaml
 ```
 
 readout deploys on its own host (its own domain or subdomain); it builds root-absolute URLs everywhere and does not support being served under a subpath. The chart's `image.tag` / `appVersion` track the app release they target; the chart's own version moves independently.

@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.11.0
-appVersion: 0.11.0
+version: 0.11.1
+appVersion: 0.11.1
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,9 +29,9 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.11.0
+      image: ghcr.io/kbelokon/readout:0.11.1
   artifacthub.io/changes: |
-    - kind: added
-      description: "readout --demo: a single flag serves a built-in two-cluster fake Kubernetes environment, so you can run a live, clickable demo of the whole UI with no real cluster"
-    - kind: changed
-      description: "Internal: the fake apiserver became a first-class internal/fakekube engine and the entire test suite now authors its data through a typed Go scenario generator (no runtime or behaviour change for users)"
+    - kind: fixed
+      description: "The container image now runs as a numeric UID (65532) instead of the username 'nonroot'. Under the chart's runAsNonRoot the kubelet could not verify a named user and the pod failed to start with 'non-numeric user' -- a default install now starts cleanly with no runAsUser override"
+    - kind: fixed
+      description: "A same-origin form POST (e.g. switching the theme) is no longer rejected with 403 when the browser sends an opaque 'Origin: null' header, which Firefox does under the app's Referrer-Policy: no-referrer"
