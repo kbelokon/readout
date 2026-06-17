@@ -305,8 +305,18 @@ networkPolicy:
       #     - protocol: TCP
       #       port: 443
 
+# readout's own image already runs as the numeric non-root UID 65532, so
+# runAsNonRoot verifies with no runAsUser here. If you point image.repository at
+# an image whose USER is a NAME (e.g. `nonroot`) rather than a number, the
+# kubelet cannot verify non-root and the pod fails admission with "non-numeric
+# user" -- in that case set runAsUser/runAsGroup below to that image's numeric
+# non-root UID/GID. fsGroup is intentionally unset: the only mounts are a
+# read-only ConfigMap and the SA token (both world-readable) and the root
+# filesystem is read-only, so no group-owned writable volume needs it.
 podSecurityContext:
   runAsNonRoot: true
+  # runAsUser: 65532
+  # runAsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
 

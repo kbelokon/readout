@@ -10,9 +10,15 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -o /out/readout ./cmd/readout
 
 # distroless static-debian12, tag :nonroot (informational, for Dependabot). The
-# digest is authoritative. USER nonroot is set explicitly below regardless.
+# digest is authoritative. The base image's own USER is 0 (root), so we set the
+# non-root user explicitly below regardless.
 FROM gcr.io/distroless/static-debian12@sha256:9c346e4be81b5ca7ff31a0d89eaeade58b0f95cfd3baed1f36083ddb47ca3160
 COPY --from=build /out/readout /readout
-USER nonroot:nonroot
+# 65532:65532 is the numeric UID:GID of distroless' `nonroot` user. It MUST be
+# numeric, not the name `nonroot`: under Kubernetes runAsNonRoot the kubelet
+# verifies non-root from the image's USER and cannot resolve a username to a UID,
+# so a named USER fails admission with "non-numeric user" and the pod never
+# starts. Numeric here lets the chart's runAsNonRoot pass with no runAsUser.
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/readout"]
