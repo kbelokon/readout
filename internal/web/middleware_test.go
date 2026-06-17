@@ -104,6 +104,36 @@ func TestSameOriginSecFetchFallback(t *testing.T) {
 	}
 }
 
+// TestSameOriginNullOriginFallsThrough proves the opaque-origin case: a browser
+// sends Origin: null on a same-origin top-level form POST when the page carries
+// Referrer-Policy: no-referrer (which readout sets; Firefox ties Origin to the
+// referrer policy). "null" has no host to match, so the guard must treat it as
+// no usable Origin and fall through to the unspoofable Sec-Fetch-Site signal --
+// admitting the genuine same-origin POST while still rejecting a cross-site one.
+func TestSameOriginNullOriginFallsThrough(t *testing.T) {
+	s := &Server{cfg: config.Config{}}
+	h := s.sameOrigin(okNext())
+
+	cases := []struct {
+		site string
+		want int
+	}{
+		{"same-origin", http.StatusOK},
+		{"cross-site", http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, "http://readout.example/preferences", nil)
+		req.Host = "readout.example"
+		req.Header.Set("Origin", "null")
+		req.Header.Set("Sec-Fetch-Site", tc.site)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("Origin null + Sec-Fetch-Site %q: status = %d, want %d", tc.site, rec.Code, tc.want)
+		}
+	}
+}
+
 // TestSameOriginRefererFallback proves the Referer fallback when neither Origin
 // nor Sec-Fetch-Site is present: a cross-site Referer rejects, a same-host
 // Referer admits.

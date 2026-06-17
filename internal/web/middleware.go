@@ -65,16 +65,21 @@ func (s *Server) sameOrigin(next http.Handler) http.Handler {
 // sameSitePermitted reports whether a state-changing request is same-origin
 // enough to admit. The ladder, strongest signal first:
 //
-//  1. Origin present — its host must equal the request Host or the configured
-//     publicUrl host; a mismatch is a cross-site form post and is rejected.
-//  2. No Origin (older browsers omit it on same-origin form posts) — fall back
-//     to Sec-Fetch-Site: same-origin/same-site/none allow, cross-site rejects.
+//  1. Origin present and not the opaque "null" — its host must equal the request
+//     Host or the configured publicUrl host; a mismatch is a cross-site form post
+//     and is rejected. "null" is the opaque-origin sentinel a browser sends on a
+//     same-origin top-level form POST under Referrer-Policy: no-referrer (which
+//     readout sets; Firefox ties Origin to the referrer policy). It has no host
+//     to match, so it is treated as no usable Origin and falls through.
+//  2. No usable Origin (older browsers omit it on same-origin form posts; or the
+//     opaque "null" above) — fall back to Sec-Fetch-Site: same-origin/same-site/
+//     none allow, cross-site rejects.
 //  3. Neither Origin nor Sec-Fetch-Site — fall back to Referer host the same way
 //     Origin is matched.
 //  4. None of the three present — allow (an old browser with no usable signal;
 //     this is the SameSite=Lax-only annoyance-grade gap the unit accepts).
 func sameSitePermitted(r *http.Request, publicURL string) bool {
-	if origin := r.Header.Get("Origin"); origin != "" {
+	if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
 		return originHostMatches(origin, r.Host, publicURL)
 	}
 	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
