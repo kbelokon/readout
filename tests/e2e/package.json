@@ -3,6 +3,6 @@
   "private": true,
   "description": "Playwright e2e suite for readout, driven against the fakeapi harness (make e2e)",
   "devDependencies": {
-    "@playwright/test": "1.60.0"
+    "@playwright/test": "1.61.0"
   }
 }
