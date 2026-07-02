@@ -16,6 +16,8 @@ coverage.*
 # root-anchored: locally downloaded tool binaries, not any nested dir of that name
 /kind
 /kubectl
+# mise task `mise run setup` installs Go helper binaries here.
+/.mise/bin/
 
 #bmad
 .agents/

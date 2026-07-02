@@ -1,0 +1,43 @@
+# Local development toolchain. Keep this in sync with CI/Makefile pins.
+[tools]
+go = "1.26.4"
+node = "24.15.0"
+golangci-lint = "2.11.2"
+make = "4.4.1"
+zig = "0.16.0"
+helm = "3.21.0"
+kubeconform = "0.8.0"
+
+[env]
+# Repository-local Go-installed helper binaries (templ, govulncheck).
+GOBIN = "{{ config_root }}/.mise/bin"
+# The required `make ci` race gate needs cgo. Use mise-managed Zig as the C compiler
+# so a fresh machine does not need a system gcc/clang just to run local tests.
+CGO_ENABLED = "1"
+CC = "zig cc"
+
+[env._]
+path = ["{{ env.GOBIN }}"]
+
+[tasks.setup]
+description = "Install mise-managed tools plus Go helper binaries used by local gates"
+run = [
+  "mise install",
+  "go install github.com/a-h/templ/cmd/templ@v0.3.1020",
+  "go install golang.org/x/vuln/cmd/govulncheck@v1.3.0",
+]
+
+[tasks.doctor]
+description = "Print the local toolchain versions expected by this repository"
+run = [
+  "go version",
+  "node --version",
+  "npm --version",
+  "make --version | head -n 1",
+  "zig version",
+  "golangci-lint --version",
+  "templ version",
+  "govulncheck -version",
+  "helm version --short",
+  "kubeconform -v",
+]
