@@ -4,8 +4,10 @@ import { defineConfig, devices } from '@playwright/test';
 // apiserver plus the built readout binary launched with a generated
 // KUBECONFIG. Specs drive deterministic fixture state via the control surface
 // at `${controlURL}/__control/` (fail-lists, watch-script, watch-401, reset).
-const readoutPort = process.env.READOUT_E2E_PORT ?? '8090';
-const fakeapiPort = process.env.FAKEAPI_E2E_PORT ?? '8091';
+// Avoid commonly occupied local dev ports by default. Env vars still let CI or a
+// developer override these.
+const readoutPort = process.env.READOUT_E2E_PORT ?? '18090';
+const fakeapiPort = process.env.FAKEAPI_E2E_PORT ?? '18091';
 const baseURL = `http://127.0.0.1:${readoutPort}`;
 export const controlURL = `http://127.0.0.1:${fakeapiPort}`;
 
@@ -17,7 +19,7 @@ export const controlURL = `http://127.0.0.1:${fakeapiPort}`;
 // deterministic. The demo carries NO /__control/ surface, so demo.spec.ts never
 // touches the control helper; the behavioural/visual projects testIgnore
 // demo.spec.ts so they never run it against the harness.
-const demoPort = process.env.READOUT_DEMO_E2E_PORT ?? '8092';
+const demoPort = process.env.READOUT_DEMO_E2E_PORT ?? '18092';
 export const demoURL = `http://127.0.0.1:${demoPort}`;
 
 // The visual baselines run ONLY when RO_VISUAL=1 (the Makefile e2e-visual /
@@ -43,6 +45,13 @@ const visualEnabled = process.env.RO_VISUAL === '1';
 // baselines. The default stays 0 so the grid compares pixel-exact unless a knob
 // is set explicitly.
 const visualMaxDiff = Number(process.env.RO_VISUAL_MAXDIFF ?? 0);
+
+// Allow systems with a managed Chromium package to skip Playwright's sudo-based
+// browser dependency bootstrap and use that executable instead.
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+const chromiumLaunchOptions = chromiumExecutablePath
+  ? { launchOptions: { executablePath: chromiumExecutablePath } }
+  : {};
 
 const visualProject = {
   name: 'visual',
@@ -79,6 +88,7 @@ export default defineConfig({
     baseURL,
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
+    ...chromiumLaunchOptions,
   },
   projects: [
     // Desktop walk: the full chrome (sidebar + topbar + table layer).

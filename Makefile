@@ -144,7 +144,12 @@ e2e-docker-binaries:
 ## e2e-deps: install the e2e suite's npm deps and Chromium (both steps are idempotent)
 e2e-deps:
 	cd tests/e2e && npm install --no-audit --no-fund
-	cd tests/e2e && npx playwright install --with-deps chromium
+	@if [ -n "$${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH:-}" ]; then \
+		test -x "$${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}" || { echo "ERROR: PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is not executable: $${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}"; exit 1; }; \
+		echo "using system Chromium: $${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}"; \
+	else \
+		cd tests/e2e && npx playwright install --with-deps chromium; \
+	fi
 
 ## air: local live-reload dev server (dev-only; not a CI gate)
 air:
