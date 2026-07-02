@@ -1,5 +1,5 @@
 # golang:1.26-alpine, digest-pinned (tag in the ref is informational for Dependabot).
-FROM golang:1.26-alpine@sha256:7a3e50096189ad57c9f9f865e7e4aa8585ed1585248513dc5cda498e2f41812c AS build
+FROM golang:1.26-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS build
 WORKDIR /src
 ARG VERSION=dev
 COPY go.mod go.sum ./
