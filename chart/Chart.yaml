@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.11.1
-appVersion: 0.11.1
+version: 0.11.2
+appVersion: 0.11.2
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,9 +29,7 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.11.1
+      image: ghcr.io/kbelokon/readout:0.11.2
   artifacthub.io/changes: |
-    - kind: fixed
-      description: "The container image now runs as a numeric UID (65532) instead of the username 'nonroot'. Under the chart's runAsNonRoot the kubelet could not verify a named user and the pod failed to start with 'non-numeric user' -- a default install now starts cleanly with no runAsUser override"
-    - kind: fixed
-      description: "A same-origin form POST (e.g. switching the theme) is no longer rejected with 403 when the browser sends an opaque 'Origin: null' header, which Firefox does under the app's Referrer-Policy: no-referrer"
+    - kind: changed
+      description: "Update the default readout image to v0.11.2, including dependency refreshes and local host e2e tooling improvements."
