@@ -9,11 +9,10 @@
   "scripts": {
     "build": "node scripts/build-assets.mjs",
     "lint": "biome check internal/assets/src scripts",
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.4",
-    "@typescript/native-preview": "7.0.0-dev.20260707.2",
     "esbuild": "0.28.1",
     "lightningcss": "1.32.0",
     "typescript": "7.0.2"

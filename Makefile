@@ -64,14 +64,14 @@ fmt:
 ## assets: rebuild the embedded frontend artifacts from internal/assets/src and typecheck them (npm ci on first run)
 # Frontend build gate, the mirror of templ codegen for the static/ artifacts:
 # esbuild + Lightning CSS regenerate internal/assets/static/readout.{js,css} from
-# the src tree, then BOTH typecheckers run (tsgo is the fast TS7 native preview,
-# tsc is the stable cross-check -- kept until TS7 is stable). Deliberately NOT a
-# `make ci` gate -- `make ci` stays Go-only; the frontend lives in CI's separate
-# `frontend` job. node_modules is installed via `npm ci` only when absent.
+# the src tree, then tsc typechecks it (since TS 7 the stable compiler is the
+# native one, so the old tsgo preview + tsc cross-check pair collapsed into one
+# gate). Deliberately NOT a `make ci` gate -- `make ci` stays Go-only; the
+# frontend lives in CI's separate `frontend` job. node_modules is installed via
+# `npm ci` only when absent.
 assets:
 	@test -d node_modules || npm ci
 	node scripts/build-assets.mjs
-	npx tsgo --noEmit
 	npx tsc --noEmit
 
 ## assets-check: rebuild the artifacts and fail if they drift from what is committed (the freshness gate)

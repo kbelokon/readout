@@ -74,9 +74,11 @@ jobs:
 
   # Frontend asset gate: lints + typechecks the src tree and proves the committed
   # static/ artifacts are fresh. Node 24 (matches package.json engines), npm cache
-  # keyed off the root package-lock.json. Both typecheckers run (tsgo = TS7 native
-  # preview, tsc = stable cross-check) until TS7 is stable. The node-test step is a
-  # the find-guard keeps this step deterministic: it runs the suite when *.test.ts files exist (95 today) and no-ops cleanly if they are ever absent.
+  # keyed off the root package-lock.json. Typechecking is plain tsc: since TS 7 the
+  # stable compiler IS the native one, so the old tsgo preview + tsc cross-check
+  # pair collapsed into a single gate. The find-guard keeps the node-test step
+  # deterministic: it runs the suite when *.test.ts files exist (95 today) and
+  # no-ops cleanly if they are ever absent.
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -92,9 +94,7 @@ jobs:
         run: npm audit --audit-level=high
       - name: Gate - Biome lint/format
         run: npx biome check internal/assets/src scripts
-      - name: Gate - typecheck (tsgo, TS7 native preview)
-        run: npx tsgo --noEmit
-      - name: Gate - typecheck (tsc, stable cross-check)
+      - name: Gate - typecheck
         run: npx tsc --noEmit
       - name: JS unit tests
         run: find internal/assets/src/js -name '*.test.ts' | grep -q . && node --test 'internal/assets/src/js/**/*.test.ts' || echo 'no JS tests yet — step skipped'
