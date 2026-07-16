@@ -5,7 +5,7 @@ is a strictly read-only Kubernetes web viewer. It serves on its own host
 (subdomain or root domain) — no subpath. Follow this flow top to bottom; each
 step is concrete commands, not theory.
 
-Chart source (OCI): `oci://ghcr.io/kbelokon/charts/readout` (version `0.11.1`).
+Chart source (OCI): `oci://ghcr.io/kbelokon/charts/readout` (version `0.11.3`).
 
 ## 1. Detect cluster routing options
 

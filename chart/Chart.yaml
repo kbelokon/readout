@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.11.2
-appVersion: 0.11.2
+version: 0.11.3
+appVersion: 0.11.3
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,7 +29,9 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.11.2
+      image: ghcr.io/kbelokon/readout:0.11.3
   artifacthub.io/changes: |
+    - kind: security
+      description: "Build with Go 1.26.5, fixing GO-2026-5856 (Encrypted Client Hello privacy leak in crypto/tls)."
     - kind: changed
-      description: "Update the default readout image to v0.11.2, including dependency refreshes and local host e2e tooling improvements."
+      description: "Update the default readout image to v0.11.3 with dependency refreshes (go-oidc 3.20.0, golang.org/x/sync 0.22.0, updated base image digests)."
