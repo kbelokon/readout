@@ -14,7 +14,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.4",
     "esbuild": "0.28.1",
-    "lightningcss": "1.32.0",
+    "lightningcss": "1.33.0",
     "typescript": "7.0.2"
   }
 }
