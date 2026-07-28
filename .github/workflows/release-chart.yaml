@@ -2,6 +2,9 @@ name: release-chart
 on:
   push:
     tags: ["chart-v*"]
+concurrency:
+  group: release-chart
+  cancel-in-progress: false
 permissions:
   contents: read
   packages: write
@@ -24,10 +27,16 @@ jobs:
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
           printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-      - name: Guard - appVersion image exists
+      - name: Guard - tag, chart metadata, and app image agree
         run: |
+          VERSION="${GITHUB_REF_NAME#chart-v}"
+          CHART=$(awk '$1 == "version:" {print $2}' chart/Chart.yaml | tr -d '"')
           APP=$(grep '^appVersion:' chart/Chart.yaml | awk '{print $2}' | tr -d '"')
+          test -n "$VERSION"
+          test -n "$CHART"
           test -n "$APP"
+          test "$VERSION" = "$CHART"
+          test "$VERSION" = "$APP"
           docker manifest inspect "ghcr.io/kbelokon/readout:${APP}" > /dev/null
       - name: Package and push chart
         run: |
