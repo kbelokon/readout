@@ -1,6 +1,6 @@
 // palette.ts -- the ⌘K jump-to command palette v2 DOM + dispatch.
 // Migrated from the monolith (legacy.js) verbatim in behavior; the PURE ranking
-// + group order lives in palette-rank.ts (node-tested), this file owns the DOM:
+// + group order lives in palette-rank.ts (unit-tested), this file owns the DOM:
 // reading the server feed, building rows, the active-row model, recents
 // persistence, open/close + focus restore, and the dispatcher bindings.
 //
@@ -32,6 +32,7 @@ import {
     type PageObject,
     type PaletteFeed,
     type PaletteGroup,
+    paletteRecentTarget,
     type RecentEntry,
     roFuzzyScore,
 } from './palette-rank.js';
@@ -76,14 +77,20 @@ function readPaletteData(): PaletteData {
     }
     try {
         const data = JSON.parse(raw);
-        if (!data || typeof data !== 'object') {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
             return empty;
         }
-        // Normalise: every group is an array even if the blob omitted/nulled it.
+        // Normalise: every group is an array of records even if the blob
+        // omitted/nulled it or contains malformed scalar/null entries.
         (['clusters', 'namespaces', 'kinds', 'actions'] as const).forEach((k) => {
             if (!Array.isArray(data[k])) {
                 data[k] = [];
+                return;
             }
+            data[k] = data[k].filter(
+                (entry: unknown) =>
+                    entry !== null && typeof entry === 'object' && !Array.isArray(entry),
+            );
         });
         return data as PaletteData;
     } catch {
@@ -129,18 +136,45 @@ function readPaletteRecents(): RecentEntry[] {
         if (!Array.isArray(list)) {
             return [];
         }
-        // Shape-check every entry: a label plus a SAFE href or a named action.
-        return list
-            .filter(
-                (entry: RecentEntry) =>
-                    entry &&
-                    typeof entry === 'object' &&
-                    typeof entry.label === 'string' &&
-                    entry.label !== '' &&
-                    ((typeof entry.href === 'string' && paletteHrefSafe(entry.href) !== '') ||
-                        (typeof entry.action === 'string' && entry.action !== '')),
-            )
-            .slice(0, PALETTE_RECENTS_MAX);
+        // Shape-check, normalise and dedupe every entry. The store is newest
+        // first, so the first occurrence of a destination wins. Apply the cap
+        // after dedupe so corrupt/legacy duplicates do not crowd out valid rows.
+        const recents: RecentEntry[] = [];
+        const seen = new Set<string>();
+        for (const value of list) {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) {
+                continue;
+            }
+            const candidate = value as Record<string, unknown>;
+            if (typeof candidate.label !== 'string' || candidate.label === '') {
+                continue;
+            }
+            const href = paletteHrefSafe(candidate.href);
+            const action =
+                typeof candidate.action === 'string' && candidate.action !== ''
+                    ? candidate.action
+                    : '';
+            if (!href && !action) {
+                continue;
+            }
+            const recent: RecentEntry = { label: candidate.label };
+            if (href) {
+                recent.href = href;
+            }
+            if (action) {
+                recent.action = action;
+            }
+            const target = paletteRecentTarget(recent);
+            if (seen.has(target)) {
+                continue;
+            }
+            seen.add(target);
+            recents.push(recent);
+            if (recents.length === PALETTE_RECENTS_MAX) {
+                break;
+            }
+        }
+        return recents;
     } catch {
         return []; // corrupt store -> ignored (next record starts fresh)
     }
@@ -302,7 +336,7 @@ function harvestPageObjects(): PageObject[] {
         if (!a) {
             return;
         }
-        const href = a.getAttribute('href');
+        const href = paletteHrefSafe(a.getAttribute('href'));
         const name = (a.textContent || '').trim();
         if (!href || !name) {
             return;

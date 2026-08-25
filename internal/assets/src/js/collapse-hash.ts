@@ -1,9 +1,6 @@
 // collapse-hash.ts -- the PURE collapse-section URL-fragment codec.
-// Split out of misc-ui.ts so it has NO runtime imports: Node's native
-// type-stripping (`node --test`) resolves `.js` specifiers literally and cannot
-// follow a runtime `./x.js` import to its `.ts` source, so a node-tested module
-// must stay free of runtime cross-module imports. misc-ui.ts (which DOES carry
-// runtime imports for its bindings) re-uses parseCollapsedNames from here.
+// Split out of misc-ui.ts so the URL codec stays independently unit-testable and
+// free of DOM state. misc-ui.ts reuses parseCollapsedNames from here.
 //
 // The section-collapse feature round-trips through the URL fragment
 // (#collapsed=a,b,c): the .collapsible h4.title write builds

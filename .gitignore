@@ -8,6 +8,8 @@
 /readout
 *.out
 coverage.*
+/coverage/
+/.vitest/
 
 # Local tooling / editor / scratch
 .DS_Store

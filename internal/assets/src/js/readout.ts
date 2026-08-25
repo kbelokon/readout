@@ -14,11 +14,12 @@
 //      ro-morph extension. Defining the extension before init's lifecycle hooks
 //      attach is harmless (htmx dispatches swaps later), but morph also has no
 //      ordering dependency on the dispatcher, so it sits right after the config.
-//   3. ./events + ./bindings -> registerBindings(bindings): the delegated-event
-//      dispatcher installs ONE document listener per event type over the ordered
-//      binding list. Registered BEFORE init attaches its document-level htmx
-//      hooks -- the dispatch contract's "registered first" (the migrated leaf
-//      bindings front-run the lifecycle orchestration). Idempotent at load.
+//   3. ./register-bindings -- its module body composes ./events + ./bindings and
+//      calls registerBindings(bindings). Keeping that side effect behind an
+//      import boundary makes ESM evaluation itself install the delegated-event
+//      dispatcher BEFORE init attaches its document-level htmx hooks -- the
+//      dispatch contract's "registered first" (the migrated leaf bindings
+//      front-run the lifecycle orchestration). Idempotent at load.
 //   4. ./init LAST -- the resident htmx-lifecycle orchestration (the sort-write
 //      hook, the afterSwap pipeline, the body-swap teardown, the history-restore
 //      repaint) + the idempotent runInit chain on DOMContentLoaded / htmx:load /
@@ -33,9 +34,5 @@
 
 import './htmx-config.js';
 import './morph.js';
-import { bindings } from './bindings.js';
-import { registerBindings } from './events.js';
-
-registerBindings(bindings);
-
+import './register-bindings.js';
 import './init.js';

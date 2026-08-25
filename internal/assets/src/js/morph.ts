@@ -48,6 +48,11 @@ declare const Idiomorph:
       }
     | undefined;
 
+// Reading an undeclared classic-script global directly throws before optional
+// chaining can help. Resolve it through typeof once so the bundle also loads on
+// pages where the optional vendor script is absent.
+const idiomorph = typeof Idiomorph === 'undefined' ? undefined : Idiomorph;
+
 // ---------------------------------------------------------------------------
 // Auto-refresh CHANGED-CELL flash -- honest + reduced-motion-safe.
 // ---------------------------------------------------------------------------
@@ -67,17 +72,17 @@ declare const Idiomorph:
 // too, and refresh-spin is dropped in CSS). beforeNodeMorphed returns undefined
 // (NOT false) so it never cancels a morph; we read text only on element nodes.
 if (
-    Idiomorph?.defaults?.callbacks &&
+    idiomorph?.defaults?.callbacks &&
     !window.matchMedia('(prefers-reduced-motion: reduce)').matches
 ) {
     const PRIOR = new WeakMap<Element, string | null>();
-    Idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode: Node) => {
+    idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode: Node) => {
         if (oldNode && oldNode.nodeType === 1 && (oldNode as Element).tagName === 'TD') {
             PRIOR.set(oldNode as Element, oldNode.textContent);
         }
         // return undefined -> idiomorph proceeds with the morph (false would skip it)
     };
-    Idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode: Node) => {
+    idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode: Node) => {
         if (oldNode?.nodeType !== 1 || (oldNode as Element).tagName !== 'TD') {
             return;
         }
@@ -116,7 +121,7 @@ if (
 // re-sorted fragment MOVES the existing <tr> nodes instead of rewriting them
 // positionally. defaults.callbacks (the cell-flash hooks above) still merge in:
 // an explicit config object without `callbacks` inherits Idiomorph.defaults.
-if (typeof htmx !== 'undefined' && typeof Idiomorph !== 'undefined') {
+if (typeof htmx !== 'undefined' && idiomorph) {
     htmx.defineExtension('ro-morph', {
         isInlineSwap: (swapStyle: string) => swapStyle === 'morph',
         handleSwap: (swapStyle: string, target: Element, fragment: DocumentFragment) => {
@@ -137,7 +142,7 @@ if (typeof htmx !== 'undefined' && typeof Idiomorph !== 'undefined') {
                 // in); virtualizeAfterSwap re-windows once the morph lands.
                 virtualizePrepareSwap(fragment);
             }
-            return (Idiomorph as NonNullable<typeof Idiomorph>).morph(target, fragment.children, {
+            return idiomorph.morph(target, fragment.children, {
                 morphStyle: 'innerHTML',
                 ignoreActiveValue: true,
             });

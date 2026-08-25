@@ -16,7 +16,7 @@
 //
 // Branches that early-returned in the monolith become stop:true bindings. The
 // section-collapse hash codec is split into a PURE parser (parseCollapsedNames)
-// pinned by node:test; the DOM application + the write path stay here.
+// pinned by Vitest; the DOM application + the write path stay here.
 
 import { parseCollapsedNames } from './collapse-hash.js';
 import type { Binding } from './events.js';
@@ -24,7 +24,7 @@ import { roPrefsSetNamespace } from './prefs.js';
 import { yamlCodeText } from './yaml-folds.js';
 
 // parseCollapsedNames (the PURE read half of the collapse-hash codec) lives in
-// collapse-hash.ts so it stays node-testable (no runtime imports); imported
+// collapse-hash.ts so it stays independently unit-testable; imported
 // above and applied to the DOM here.
 
 // collapseSectionsFromHash -- on load, collapse every section named in the URL

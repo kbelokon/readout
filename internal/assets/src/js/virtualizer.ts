@@ -12,7 +12,7 @@
 // rows.
 //
 // The PURE arithmetic (window boundaries, spacer heights, the focus-jump scroll
-// delta, the focus clamp) lives in virtualizer-math.ts (node-tested); this
+// delta, the focus clamp) lives in virtualizer-math.ts (unit-tested); this
 // module is the DOM + state machine around it: measuring, building spacers,
 // re-rendering the slice, and the morph-adoption pipeline.
 //

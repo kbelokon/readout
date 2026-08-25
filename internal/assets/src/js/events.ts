@@ -26,8 +26,10 @@
 //      sibling `addEventListener` listeners (a throw in one does not abort the
 //      dispatch to the next). A failing binding is logged and skipped.
 //
-//   4. Registration order is fixed by ONE explicit list in readout.ts -- the
+//   4. Registration order is fixed by ONE explicit list in bindings.ts -- the
 //      single place the ordering lives, so it is auditable in one read.
+//      register-bindings.ts performs the one module-load registration; readout.ts
+//      imports that side-effect boundary before init.ts.
 //
 // A binding may omit `selector` (it then matches every event of its type and
 // decides for itself inside the handler -- used for the listeners that key off

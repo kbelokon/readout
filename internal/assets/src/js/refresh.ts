@@ -8,7 +8,7 @@
 // (a setTimeout chain, not setInterval -- the backoff wait re-derives every
 // tick), the failure-stage backoff, and the two xhr-Set in-flight gates that
 // keep ticks from stomping user requests or queueing inside htmx. The pure
-// cadence/backoff math lives in live-policy.ts (node-tested); this module is
+// cadence/backoff math lives in live-policy.ts (unit-tested); this module is
 // the DOM/htmx glue around it. The request-lifecycle listeners
 // (configRequest/beforeRequest/afterRequest) are attached at module load.
 //

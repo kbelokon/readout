@@ -13,10 +13,21 @@ mise exec -- make ci
 `mise run setup` installs Go, Node, GNU Make, Zig (as the cgo compiler for
 `go test -race`), golangci-lint, Helm, kubeconform, plus the Go helper binaries
 used by the gates (`templ` and `govulncheck`) into a repo-local ignored
-directory. `make ci` runs the required gates (templ freshness,
-lint, comment hygiene, and the race test suite) — the same gates CI enforces.
-Run it before sending a patch. Use `mise run doctor` to print the active tool
-versions when debugging local setup.
+directory. `make ci` runs the local Go fast path (templ freshness, lint, comment
+hygiene, and the race test suite); GitHub CI additionally runs vet,
+`govulncheck`, frontend, Playwright, and chart jobs. Run the relevant local gates
+before sending a patch. Use `mise run doctor` to print the active tool versions
+when debugging local setup.
+
+The frontend has a separate fast gate:
+
+```sh
+mise exec -- make frontend-check
+```
+
+It lints and typechecks both production and test TypeScript, runs Vitest with
+the enforced V8 coverage floor, rebuilds the embedded assets, and fails if the
+committed bundle is stale. Use `npm run test:watch` for the local Vitest loop.
 
 The Playwright e2e target is intentionally heavier: `mise` provides Go/Node, but
 `make e2e` may still need privileged OS browser dependencies via `npx playwright

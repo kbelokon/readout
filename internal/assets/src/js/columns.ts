@@ -18,7 +18,7 @@
 //
 // The popover-submit form MERGES into the live query (the labelcols/selector
 // apply): popFormMergedHref keeps every un-owned `?f=` chip byte-exact -- the
-// pure merge lives in filters-parse.ts (mergeColParams, node-tested), this is
+// pure merge lives in filters-parse.ts (mergeColParams, unit-tested), this is
 // the thin DOM read of the form fields around it. The Go needle contract
 // (internal/web/colvis_test.go, TestColsPopoverSubmitMergeJSContract) pins the
 // FORMS preserved here: 'popFormMergedHref', 'form.ro-pop-form', and the wiring
@@ -119,7 +119,7 @@ function commitColumnVisibility(pop: Element | null): void {
 // keeps byte-exact (they exist for the no-JS fallback); only the visible inputs
 // (labelcols / selector) replace their pairs -- a cleared visible input drops
 // its pair, exactly like the native path's blank-empty-names trick. The pure
-// string-concat merge is filters-parse.ts's mergeColParams (node-tested).
+// string-concat merge is filters-parse.ts's mergeColParams (unit-tested).
 function popFormMergedHref(form: HTMLFormElement): string {
     const owned = new Set<string>();
     const fields: string[] = [];

@@ -21,7 +21,7 @@
 // virtualizeOnFilterChange), not the reverse -- no import cycle.
 //
 // The PURE grammar + suggestion ranking + the value-frequency scan live in
-// filters-parse.ts (node-tested); this module is the DOM + dispatch around it:
+// filters-parse.ts (unit-tested); this module is the DOM + dispatch around it:
 // the row-model capture, the autocomplete mount, the chip-commit requests, and
 // the dispatcher bindings (the chip-✕/AC-item/field click branches that headed
 // the monolith's big click listener; the #ro-filter-input input branch; the

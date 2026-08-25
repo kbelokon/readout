@@ -1,12 +1,12 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.16/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.5/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["internal/assets/src/js/**", "scripts/**/*.mjs"]
+    "includes": ["internal/assets/src/js/**", "scripts/**/*.mjs", "vitest.config.ts"]
   },
   "formatter": {
     "enabled": true,

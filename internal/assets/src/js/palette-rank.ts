@@ -1,10 +1,6 @@
-// palette-rank.ts -- the PURE ⌘K palette ranking + grouping. Split
-// out of palette.ts so it has NO runtime imports: Node's native type-stripping
-// (`node --test`) resolves `.js` specifiers literally and cannot follow a
-// runtime `./x.js` import to its `.ts` source, so a node-tested module must
-// stay free of runtime cross-module imports (the collapse-hash.ts precedent).
-// palette.ts (which DOES carry runtime imports for its DOM + bindings) re-uses
-// every export here.
+// palette-rank.ts -- the PURE ⌘K palette ranking + grouping. Split out of
+// palette.ts so the ranking model stays independently unit-testable and free of
+// DOM state. palette.ts reuses every export here.
 //
 // This module owns the palette matching + ordering decisions that are pure data
 // transforms -- the fuzzy SUBSEQUENCE ranker, per-group ranking, the recents

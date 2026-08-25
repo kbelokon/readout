@@ -1,7 +1,7 @@
 // filters-parse.ts -- the PURE expression parsing + suggestion matching of the
 // v2 filter chips editor, extracted from legacy.js so the operator split,
 // the field-name normalization, the autocomplete ranking, and the value-
-// frequency scan are node-tested in isolation. No DOM: every function takes a
+// frequency scan are unit-tested in isolation. No DOM: every function takes a
 // plain string or a plain row-model object, so a regression in the grammar (the
 // part the e2e filter-chips spec only sees through rendered chips) is caught at
 // the unit boundary.
@@ -11,7 +11,7 @@
 // splitFilterOperator): typed fields resolve case-insensitively with dashes and
 // spaces interchangeable; `label` always resolves; `cpu`/`memory` bind ONLY the
 // joined usage columns, never the capacity columns; the FIRST operator
-// occurrence splits field from value. Keeping these here lets node:test pin them
+// occurrence splits field from value. Keeping these here lets Vitest pin them
 // against the documented server behavior without a browser.
 
 // A captured table column. `hint` is '' for synthetic/non-filterable columns

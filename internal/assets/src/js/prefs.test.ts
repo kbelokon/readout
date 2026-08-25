@@ -1,19 +1,17 @@
-// prefs.test.ts -- node:test pins the JS prefs codec to the SAME golden
+// prefs.test.ts -- Vitest pins the JS prefs codec to the SAME golden
 // fixtures the Go codec uses (internal/web/testdata/prefs_golden, the SINGLE
 // source -- no copies). This is the JS half of the Go<->JS seam: if the two
 // codecs drift (key order, eviction victims, HTML escaping, the cap), BOTH
 // test stacks (prefs_golden_test.go and this file) go red.
 //
-// Run: `node --test internal/assets/src/js/prefs.test.ts` (Node 24 strips the
-// types natively -- no framework, erasable-only TS).
+// Run: `npm test`.
 
-import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { expect, test } from 'vitest';
 
-import { decodePrefsValue, encodePrefsValue, type Prefs } from './prefs.ts';
+import { decodePrefsValue, encodePrefsValue, type Prefs } from './prefs.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // js -> src -> assets -> internal -> repo root, then into the Go testdata dir.
@@ -50,11 +48,11 @@ const fixtureFiles = readdirSync(goldenDir)
 
 // Sanity: the directory the Go test reads is the one we read.
 test('golden fixtures discovered', () => {
-    assert.ok(
-        fixtureFiles.length >= 7,
+    expect(
+        fixtureFiles.length,
         `expected >=7 golden fixtures, found ${fixtureFiles.length}`,
-    );
-    assert.ok(fixtureFiles.includes('07_corrupt_decode.json'), 'corrupt-decode fixture missing');
+    ).toBeGreaterThanOrEqual(7);
+    expect(fixtureFiles, 'corrupt-decode fixture missing').toContain('07_corrupt_decode.json');
 });
 
 for (const file of fixtureFiles) {
@@ -75,21 +73,20 @@ for (const file of fixtureFiles) {
                 // bad field stripped; for every structural-corruption case JS
                 // matches Go: ok=false and empty prefs.
                 if (dc.why === 'mistyped inner field (all-or-nothing)') {
-                    assert.equal(ok, true, `${dc.why}: JS self-heals (ok=true, bad field dropped)`);
-                    assert.deepEqual(
+                    expect(ok, `${dc.why}: JS self-heals (ok=true, bad field dropped)`).toBe(true);
+                    expect(
                         prefs,
-                        { kinds: [{ k: 'pods' }], refresh: '', ns: {} },
                         `${dc.why}: JS keeps the well-typed kind, drops the mistyped sort`,
-                    );
+                    ).toStrictEqual({ kinds: [{ k: 'pods' }], refresh: '', ns: {} });
                     continue;
                 }
-                assert.equal(ok, dc.want_ok, `${dc.why}: ok mismatch`);
-                assert.equal(ok, false, `${dc.why}: structural corruption is ok=false`);
-                assert.deepEqual(
-                    prefs,
-                    { kinds: [], refresh: '', ns: {} },
-                    `${dc.why}: corrupt value must decode to empty prefs`,
-                );
+                expect(ok, `${dc.why}: ok mismatch`).toBe(dc.want_ok);
+                expect(ok, `${dc.why}: structural corruption is ok=false`).toBe(false);
+                expect(prefs, `${dc.why}: corrupt value must decode to empty prefs`).toStrictEqual({
+                    kinds: [],
+                    refresh: '',
+                    ns: {},
+                });
             }
         });
         continue;
@@ -102,7 +99,7 @@ for (const file of fixtureFiles) {
     const fx = loadFixture<EncodeFixture>(file);
     test(`${file}: encodePrefsValue reproduces the golden wire value`, () => {
         const got = encodePrefsValue(fx.payload);
-        assert.equal(got, fx.encoded);
+        expect(got).toBe(fx.encoded);
     });
 
     if (fx.evicted && fx.kept) {
@@ -115,16 +112,13 @@ for (const file of fixtureFiles) {
         // kinds, in order -- the dropped tail entries are gone.
         test(`${file}: post-eviction value keeps exactly ${kept.join(',')}`, () => {
             const { prefs, ok } = decodePrefsValue(fx.encoded);
-            assert.ok(ok, 'post-eviction value must decode cleanly');
-            assert.deepEqual(
-                prefs.kinds.map((k) => k.k),
-                kept,
-            );
+            expect(ok, 'post-eviction value must decode cleanly').toBe(true);
+            expect(prefs.kinds.map((k) => k.k)).toStrictEqual(kept);
             for (const dropped of evicted) {
-                assert.ok(
-                    !prefs.kinds.some((k) => k.k === dropped),
+                expect(
+                    prefs.kinds.map((kind) => kind.k),
                     `evicted kind ${dropped} must be absent`,
-                );
+                ).not.toContain(dropped);
             }
         });
     }

@@ -1855,14 +1855,15 @@ ${piece}`;
   ];
 
   // internal/assets/src/js/morph.ts
-  if (Idiomorph?.defaults?.callbacks && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  var idiomorph = typeof Idiomorph === "undefined" ? void 0 : Idiomorph;
+  if (idiomorph?.defaults?.callbacks && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     const PRIOR = /* @__PURE__ */ new WeakMap();
-    Idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode) => {
+    idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode) => {
       if (oldNode && oldNode.nodeType === 1 && oldNode.tagName === "TD") {
         PRIOR.set(oldNode, oldNode.textContent);
       }
     };
-    Idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode) => {
+    idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode) => {
       if (oldNode?.nodeType !== 1 || oldNode.tagName !== "TD") {
         return;
       }
@@ -1879,7 +1880,7 @@ ${piece}`;
       }
     };
   }
-  if (typeof htmx !== "undefined" && typeof Idiomorph !== "undefined") {
+  if (typeof htmx !== "undefined" && idiomorph) {
     htmx.defineExtension("ro-morph", {
       isInlineSwap: (swapStyle) => swapStyle === "morph",
       handleSwap: (swapStyle, target, fragment) => {
@@ -1890,7 +1891,7 @@ ${piece}`;
           captureRowModel(fragment);
           virtualizePrepareSwap(fragment);
         }
-        return Idiomorph.morph(target, fragment.children, {
+        return idiomorph.morph(target, fragment.children, {
           morphStyle: "innerHTML",
           ignoreActiveValue: true
         });
@@ -3025,13 +3026,17 @@ ${piece}`;
     }
     try {
       const data = JSON.parse(raw);
-      if (!data || typeof data !== "object") {
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
         return empty;
       }
       ["clusters", "namespaces", "kinds", "actions"].forEach((k) => {
         if (!Array.isArray(data[k])) {
           data[k] = [];
+          return;
         }
+        data[k] = data[k].filter(
+          (entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry)
+        );
       });
       return data;
     } catch {
@@ -3065,9 +3070,39 @@ ${piece}`;
       if (!Array.isArray(list)) {
         return [];
       }
-      return list.filter(
-        (entry) => entry && typeof entry === "object" && typeof entry.label === "string" && entry.label !== "" && (typeof entry.href === "string" && paletteHrefSafe(entry.href) !== "" || typeof entry.action === "string" && entry.action !== "")
-      ).slice(0, PALETTE_RECENTS_MAX);
+      const recents = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const value of list) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          continue;
+        }
+        const candidate = value;
+        if (typeof candidate.label !== "string" || candidate.label === "") {
+          continue;
+        }
+        const href = paletteHrefSafe(candidate.href);
+        const action = typeof candidate.action === "string" && candidate.action !== "" ? candidate.action : "";
+        if (!href && !action) {
+          continue;
+        }
+        const recent = { label: candidate.label };
+        if (href) {
+          recent.href = href;
+        }
+        if (action) {
+          recent.action = action;
+        }
+        const target = paletteRecentTarget(recent);
+        if (seen.has(target)) {
+          continue;
+        }
+        seen.add(target);
+        recents.push(recent);
+        if (recents.length === PALETTE_RECENTS_MAX) {
+          break;
+        }
+      }
+      return recents;
     } catch {
       return [];
     }
@@ -3188,7 +3223,7 @@ ${piece}`;
       if (!a) {
         return;
       }
-      const href = a.getAttribute("href");
+      const href = paletteHrefSafe(a.getAttribute("href"));
       const name = (a.textContent || "").trim();
       if (!href || !name) {
         return;
@@ -3596,6 +3631,9 @@ ${piece}`;
     });
   }
 
+  // internal/assets/src/js/register-bindings.ts
+  registerBindings(bindings);
+
   // internal/assets/src/js/theme.ts
   var PREFERS_DARK = window.matchMedia("(prefers-color-scheme: dark)");
   function syncThemeTogglePostTarget() {
@@ -3787,7 +3825,4 @@ ${piece}`;
   document.addEventListener("htmx:load", runInit);
   document.addEventListener("htmx:afterSettle", setupStickyNamespace);
   window.addEventListener("resize", setupStickyNamespace);
-
-  // internal/assets/src/js/readout.ts
-  registerBindings(bindings);
 })();

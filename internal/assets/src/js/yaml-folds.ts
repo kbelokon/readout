@@ -32,7 +32,7 @@ import type { Binding } from './events.js';
 // spaces give the depth, but a YAML block-sequence item ("- ...") sits at the
 // SAME visual indent as its parent key, so we count a leading "- " (or a bare
 // "-") as one extra level (+2). This makes "- name: x" nest under "containers:"
-// exactly as the object structure does. Exported for node:test (pure, no DOM).
+// exactly as the object structure does. Exported for Vitest (pure, no DOM).
 export function yamlEffectiveIndent(text: string): number {
     const stripped = text.replace(/^\n+/, '');
     let i = 0;

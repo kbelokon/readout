@@ -20,7 +20,7 @@
 // deterministic, no timestamps).
 //
 // The encode/decode functions (encodePrefsValue, decodePrefsValue) are PURE
-// string<->payload transforms with NO DOM: node:test exercises them directly
+// string<->payload transforms with NO DOM: Vitest exercises them directly
 // against the SAME golden fixtures the Go codec uses (internal/web/testdata/
 // prefs_golden). readPrefs/writePrefs are the thin document.cookie wrappers.
 

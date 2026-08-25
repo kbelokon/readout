@@ -15,7 +15,7 @@
 //
 // The PURE decisions -- the close-reason taxonomy (classifyStreamClose) and the
 // morph-time discard gate (shouldDiscardPush) -- live in live-policy.ts
-// (node-tested as a discriminated union); this module is the transport + state
+// (unit-tested as a discriminated union); this module is the transport + state
 // machine around them. The refresh tick chain (refresh.ts) is reused for the 5s
 // fallback; the stale banner (stale.ts) for the honest degradations.
 //
@@ -276,7 +276,7 @@ function liveHandleFrame(name: string, text: string, ctrl: AbortController): boo
     pruneSettledListRequests(userListRequestsInFlight);
     pruneSettledListRequests(containerListRequestsInFlight);
     // The morph-time discard gate, as the ordered taxonomy of
-    // live-policy.ts (node-tested): stale generation -> wrong page -> a _table
+    // live-policy.ts (unit-tested): stale generation -> wrong page -> a _table
     // request in flight. The WRONG-PAGE fact is computed here with its literal
     // form, `liveStreamBase() !== liveState.streamPath`: it is the independent
     // morph-time layer that backs the structural body-swap teardown (a boosted

@@ -1,8 +1,8 @@
 // virtualizer-math.ts -- the PURE windowing arithmetic of the >~500-row list
 // virtualizer, extracted from legacy.js so the offset/height/
-// visible-range/spacer math is node-tested instead of trusted "by eye". No DOM,
+// visible-range/spacer math is unit-tested instead of trusted "by eye". No DOM,
 // no globals: every input is a plain number, every output a plain object, so
-// node:test can pin the window boundaries the e2e windowing spec only exercises
+// Vitest can pin the window boundaries the e2e windowing spec only exercises
 // through 600 rendered rows.
 //
 // The fixed-row-height contract (every windowed row has the SAME measured
