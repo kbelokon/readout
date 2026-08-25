@@ -1,6 +1,7 @@
 package web
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -278,6 +279,23 @@ func TestFilterQuantityAlias(t *testing.T) {
 	greaterTable := both()
 	if got := runFilter(t, "nodes", "f=cpu>500m", &greaterTable); len(got) != 0 {
 		t.Fatalf("cpu>500m matched %v: the alias bound the 8-core CAPACITY column, want zero rows via the 0.4-core usage cell", got)
+	}
+
+	// Non-finite cells are malformed metrics, not numeric values. They must not
+	// satisfy either side of a numeric filter or crowd out the finite match.
+	nonFinite := kube.Table{
+		Resource: kube.ResourceType{Plural: "pods", Kind: "Pod", Namespaced: true},
+		Columns:  []kube.Column{{Name: "Name"}, {Name: "CPU Usage"}},
+		Rows: []kube.Row{
+			{Cells: []any{"finite", 0.25}},
+			{Cells: []any{"nan", math.NaN()}},
+			{Cells: []any{"positive-infinity", math.Inf(1)}},
+			{Cells: []any{"negative-infinity", math.Inf(-1)}},
+			{Cells: []any{"encoded-nan", "NaN"}},
+		},
+	}
+	if got := runFilter(t, "pods", "f=cpu>0", &nonFinite); !reflect.DeepEqual(got, []string{"finite"}) {
+		t.Fatalf("cpu>0 with non-finite metrics matched %v, want only the finite row", got)
 	}
 }
 

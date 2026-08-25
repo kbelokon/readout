@@ -459,7 +459,7 @@ type detailView struct {
 
 	HighlightedYAML string // precomputed when IsYAMLView (else "")
 
-	Owners []config.Link
+	Owners []ownerLinkView
 
 	ShowNamespaceLinks bool   // Namespace-kind extra links
 	AllObjectsHref     string // "Show all objects in this namespace"
@@ -496,6 +496,17 @@ type detailView struct {
 	// the user gets an actionable state, not a bare error panel). NotFound stays a
 	// real 404 via s.error (a missing object is not a cluster failure).
 	State *detailStateView
+}
+
+// ownerLinkView carries the Kubernetes owner identity without flattening it
+// into a display title that the render bridge must later parse. Title remains
+// the canonical accessible/plain-text label for callers that need one; Kind
+// and Name are the structured rendering fields.
+type ownerLinkView struct {
+	Href  string
+	Kind  string
+	Name  string
+	Title string
 }
 
 // detailStateView is the resolved detail-page failure state, mirroring

@@ -87,6 +87,48 @@ func TestRenderingHelpersCoverBranches(t *testing.T) {
 	}
 }
 
+func TestSearchScopeClusterLabelStates(t *testing.T) {
+	tests := []struct {
+		name string
+		view searchView
+		want string
+	}{
+		{
+			name: "empty all-clusters scope",
+			view: searchView{IsAllClusters: true},
+			want: "all clusters",
+		},
+		{
+			name: "empty explicit scope",
+			view: searchView{},
+			want: "0 clusters",
+		},
+		{
+			name: "one resolved cluster",
+			view: searchView{
+				IsAllClusters: true,
+				ScopeClusters: []searchScopeCluster{{Name: "prod/eu"}},
+			},
+			want: "prod/eu",
+		},
+		{
+			name: "multiple resolved clusters",
+			view: searchView{
+				ScopeClusters: []searchScopeCluster{{Name: "prod"}, {Name: "staging"}},
+			},
+			want: "2 clusters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := searchScopeClusterLabel(&tt.view); got != tt.want {
+				t.Fatalf("searchScopeClusterLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // YAML serialization is now handled by internal/yamlview (sigs.k8s.io/yaml); the
 // value-level intent -- top-level keys present, deterministic sorted-key output,
 // and parse-equivalence -- is pinned hermetically by
@@ -136,7 +178,7 @@ func TestObjectRenderingLinksAndSearchHelpers(t *testing.T) {
 	// block in TestBehaviorSecretBarrierMaskedOn, and the timestamp-link YAML
 	// decoration in TestTimestampLinksDecorateYAML. What stays HERE is the
 	// behavioral helper coverage (objectLinks/splitSearchQuery/
-	// sortResults/matchLabels/selectorString), which is not render markup.
+	// sortResults/podSelector), which is not render markup.
 	links := s.objectLinks("test", "default", &obj)
 	if len(links) != 2 || !strings.Contains(links[0].Href, "/test/default/nginx") || !strings.Contains(links[1].Href, "app/web") {
 		t.Fatalf("object links = %#v", links)
@@ -163,6 +205,47 @@ func TestObjectRenderingLinksAndSearchHelpers(t *testing.T) {
 	labels = matchLabels(map[string]any{"spec": map[string]any{"selector": map[string]any{"app": "api"}}})
 	if selectorString(labels) != "app=api" {
 		t.Fatalf("direct selectorString = %q labels=%#v", selectorString(labels), labels)
+	}
+	selectors := []struct {
+		name string
+		obj  map[string]any
+		want string
+	}{
+		{
+			name: "match labels",
+			obj:  map[string]any{"spec": map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"app": "web"}}}},
+			want: "app=web",
+		},
+		{
+			name: "match expressions",
+			obj: map[string]any{"spec": map[string]any{"selector": map[string]any{"matchExpressions": []any{
+				map[string]any{"key": "app", "operator": "In", "values": []any{"api", "web"}},
+			}}}},
+			want: "app in (api,web)",
+		},
+		{
+			name: "bare service selector",
+			obj:  map[string]any{"spec": map[string]any{"selector": map[string]any{"app": "api"}}},
+			want: "app=api",
+		},
+		{
+			name: "invalid structured selector",
+			obj: map[string]any{"spec": map[string]any{"selector": map[string]any{"matchExpressions": []any{
+				map[string]any{"key": "app", "operator": "Invalid", "values": []any{"api"}},
+			}}}},
+			want: "",
+		},
+		{
+			name: "malformed structured selector",
+			obj:  map[string]any{"spec": map[string]any{"selector": map[string]any{"matchExpressions": "not-a-list"}}},
+			want: "",
+		},
+		{name: "missing selector", obj: map[string]any{}, want: ""},
+	}
+	for _, tc := range selectors {
+		if got := podSelector(tc.obj); got != tc.want {
+			t.Fatalf("podSelector(%s) = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 

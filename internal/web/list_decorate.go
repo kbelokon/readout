@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -221,27 +222,31 @@ func applyHiddenColumns(table *kube.Table, spec string) []columnVis {
 // mergeColumnVis unions two column-visibility universes the way MergeTables
 // unions columns: the left order wins and unseen right entries append -- but
 // BEFORE the trailing Created entry, so the synthetic column stays last,
-// mirroring the rendered header order. A nil left passes right through.
+// mirroring the rendered header order. The result owns its storage: fan-in
+// cannot mutate either per-cluster visibility slice through spare capacity or
+// the nil-left fast path.
 func mergeColumnVis(left, right []columnVis) []columnVis {
-	if left == nil {
-		return right
-	}
-	seen := map[string]bool{}
-	for _, entry := range left {
-		seen[entry.Name] = true
-	}
-	for _, entry := range right {
-		if seen[entry.Name] {
+	entries := slices.Concat(left, right)
+	merged := entries[:0]
+	seen := make(map[string]struct{}, len(entries))
+	var created columnVis
+	hasCreated := false
+	for _, entry := range entries {
+		if _, exists := seen[entry.Name]; exists {
 			continue
 		}
-		seen[entry.Name] = true
-		if n := len(left); n > 0 && left[n-1].Name == "Created" {
-			left = append(left[:n-1], entry, left[n-1])
-		} else {
-			left = append(left, entry)
+		seen[entry.Name] = struct{}{}
+		if entry.Name == "Created" {
+			created = entry
+			hasCreated = true
+			continue
 		}
+		merged = append(merged, entry)
 	}
-	return left
+	if hasCreated {
+		merged = append(merged, created)
+	}
+	return merged
 }
 
 // fetchMetricsUsage resolves the metrics.k8s.io usage overlay for a pods or

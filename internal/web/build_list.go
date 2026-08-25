@@ -38,10 +38,6 @@ type listContext struct {
 	ColVis map[string][]columnVis
 }
 
-func (lc *listContext) Title() string {
-	return lc.Plural + " in " + lc.Cluster
-}
-
 func (s *Server) listContext(r *http.Request) (listContext, error) {
 	start := s.clock()
 	clusterName := r.PathValue("cluster")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"strings"
 
 	"k8s.io/client-go/rest"
 )
@@ -109,7 +110,7 @@ func (g credentialPluginGate) applyCredentialPluginPolicy(cfg *rest.Config, name
 		return nil
 	}
 	command := cfg.ExecProvider.Command
-	base := path.Base(command)
+	base := execCommandBase(command)
 	policy, allowlist := g.policyForSource(source)
 
 	switch policy {
@@ -134,16 +135,18 @@ func (g credentialPluginGate) applyCredentialPluginPolicy(cfg *rest.Config, name
 }
 
 // execCommandAllowed reports whether an exec command is permitted by the effective
-// allowlist. An allowlist entry that contains a "/" is an absolute/explicit path
-// and must match the full command string exactly; a bare entry matches the
-// command's basename. This lets an operator pin an exact binary path while a bare
-// name keeps the kubectl-style basename match.
+// allowlist. An allowlist entry that contains either path separator is an
+// absolute/explicit path and must match the full command string exactly; a bare
+// entry matches the command's basename. Separator handling is independent of the
+// host OS because a kubeconfig can carry either POSIX or Windows command syntax.
+// This lets an operator pin an exact binary path while a bare name keeps the
+// kubectl-style basename match.
 func execCommandAllowed(command, base string, allowlist []string) bool {
 	for _, entry := range allowlist {
 		if entry == "" {
 			continue
 		}
-		if containsSlash(entry) {
+		if containsPathSeparator(entry) {
 			if command == entry {
 				return true
 			}
@@ -156,11 +159,13 @@ func execCommandAllowed(command, base string, allowlist []string) bool {
 	return false
 }
 
-func containsSlash(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '/' {
-			return true
-		}
-	}
-	return false
+// execCommandBase returns a display/allowlist basename for both command-path
+// syntaxes, regardless of the OS running readout. path.Base supplies stable
+// slash semantics after Windows separators are normalized.
+func execCommandBase(command string) string {
+	return path.Base(strings.ReplaceAll(command, `\`, "/"))
+}
+
+func containsPathSeparator(s string) bool {
+	return strings.ContainsAny(s, `/\`)
 }

@@ -16,9 +16,10 @@ import (
 // use the strongest typing the data allows.
 //
 //   - Where the kind is FIXED (pod/node metrics, Node, Pod, Secret,
-//     ownerReferences, the cluster-registry response), decode once into a full
-//     struct via runtime.DefaultUnstructuredConverter.FromUnstructured at a named
-//     seam, then read typed fields.
+//     ownerReferences, the cluster-registry response), decode into typed structs
+//     via runtime.DefaultUnstructuredConverter.FromUnstructured at a named seam,
+//     then read typed fields. Decode independently repeated entries whose partial
+//     availability matters, so one corrupt sibling cannot erase valid data.
 //   - Where the kind is NOT known at compile time (the generic browsed resource:
 //     list / detail / YAML / Table), stay on map[string]any but navigate it with
 //     apimachinery's typed accessors — u.GetName()/GetLabels() and
@@ -312,22 +313,35 @@ type ContainerUsage struct {
 // by container name (the pod-detail containers table joins on it). It
 // lives next to MetricsUsage so the metrics-object -> typed-values conversion
 // stays at this one seam. An undecodable object or one without a containers
-// list yields nil — the caller renders the no-metrics placeholder.
+// list yields nil — the caller renders the no-metrics placeholder. Containers
+// are decoded independently: a malformed or nameless entry is ignored without
+// hiding valid siblings, and the first valid entry wins if a corrupt response
+// repeats a container name.
 func PodContainerUsage(obj map[string]any) map[string]ContainerUsage {
-	var item metricsItem
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &item); err != nil {
+	containers, found, err := unstructured.NestedSlice(obj, "containers")
+	if err != nil || !found || len(containers) == 0 {
 		return nil
 	}
-	if len(item.Containers) == 0 {
-		return nil
-	}
-	out := make(map[string]ContainerUsage, len(item.Containers))
-	for i := range item.Containers {
-		c := &item.Containers[i]
+	out := make(map[string]ContainerUsage, len(containers))
+	for _, raw := range containers {
+		values, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		var c containerUsage
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(values, &c); err != nil || c.Name == "" {
+			continue
+		}
+		if _, duplicate := out[c.Name]; duplicate {
+			continue
+		}
 		out[c.Name] = ContainerUsage{
 			CPU:    c.Usage.CPU.AsApproximateFloat64(),
 			Memory: c.Usage.Memory.AsApproximateFloat64(),
 		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

@@ -193,32 +193,11 @@ func sidebarResourceText(plural string) string {
 	}
 }
 
-// nodeConditionTone maps a Node condition (type + status) to the redesign pill
-// tone token (ok/warn/err/mute). buildNodeSummaryView (build_resource.go)
-// consumes it to resolve the detail-page Node condition pills, which render under
-// the .ro-rd marker as `.ro-cond-pill.<tone>` with a `.ro-dot` -- matching the
-// redesign detail CSS. (The list-cell node conditions use nodeConditionListTone,
-// which shares this healthy/abnormal polarity.)
+// nodeConditionTone maps the shared Node condition semantics to the detail-page
+// pill vocabulary. Keeping classification in one place prevents list and detail
+// views from disagreeing about tri-state condition health.
 func nodeConditionTone(typ, status string) string {
-	switch typ {
-	case "Ready":
-		if status == "True" {
-			return "ok"
-		}
-		return "err"
-	case "NetworkUnavailable":
-		if status == "True" {
-			return "err"
-		}
-		return "ok"
-	case "MemoryPressure", "DiskPressure", "PIDPressure":
-		if status == "True" {
-			return "warn"
-		}
-		return "ok"
-	default:
-		return "mute"
-	}
+	return classifyNodeCondition(typ, status).detailTone
 }
 
 // commandPalette renders the templ CommandPalette component to a string. The

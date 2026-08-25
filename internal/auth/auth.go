@@ -77,12 +77,15 @@ type Authenticator struct {
 	// process, so the next request retries discovery from scratch.
 	oidcMu       sync.Mutex
 	oidcProvider *oidc.Provider
+	// oidcDiscoveryTimeout bounds provider discovery for this Authenticator. It
+	// is copied from the production default in New; tests can shorten one
+	// instance without changing another Authenticator that may run concurrently.
+	oidcDiscoveryTimeout time.Duration
 }
 
-// oidcDiscoveryTimeout bounds the OIDC discovery-document fetch. It is a package
-// var (not a const) so tests can shrink it to verify that a stalled issuer
-// releases oidcMu within the timeout instead of hanging.
-var oidcDiscoveryTimeout = 10 * time.Second
+// defaultOIDCDiscoveryTimeout bounds the OIDC discovery-document fetch. Each
+// Authenticator owns a copy so there is no mutable process-wide timing state.
+const defaultOIDCDiscoveryTimeout = 10 * time.Second
 
 // New builds an Authenticator from the resolved config, the session secret
 // (READOUT_SESSION_SECRET), an injectable clock, and the shared hooks client. A
@@ -99,10 +102,11 @@ func New(cfg *config.Config, secret string, now func() time.Time, hooksClient *h
 		now = time.Now
 	}
 	return &Authenticator{
-		cfg:      *cfg,
-		sessions: codec,
-		hooks:    hooksClient,
-		now:      now,
+		cfg:                  *cfg,
+		sessions:             codec,
+		hooks:                hooksClient,
+		now:                  now,
+		oidcDiscoveryTimeout: defaultOIDCDiscoveryTimeout,
 	}, nil
 }
 
@@ -368,30 +372,36 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		RefreshToken: token.RefreshToken,
 		Expires:      oauthExpiry(token).Unix(),
 	}
-	if idToken, _ := token.Extra("id_token").(string); idToken != "" {
-		session.IDToken = idToken
-		if verifier != nil {
-			verified, err := verifier.Verify(r.Context(), idToken)
-			if err != nil {
-				authEdgeError(w, r, "OIDC ID token verification failed", err, http.StatusUnauthorized)
-				return
-			}
-			var claims struct {
-				Subject           string   `json:"sub"`
-				Email             string   `json:"email"`
-				PreferredUsername string   `json:"preferred_username"`
-				Name              string   `json:"name"`
-				Groups            []string `json:"groups"`
-			}
-			if err := verified.Claims(&claims); err != nil {
-				authEdgeError(w, r, "OIDC claims parse failed", err, http.StatusUnauthorized)
-				return
-			}
-			session.User = first(claims.PreferredUsername, claims.Name, claims.Subject)
-			session.Email = claims.Email
-			session.Groups = claims.Groups
+	idToken, _ := token.Extra("id_token").(string)
+	if verifier != nil {
+		// An issuer-backed flow is OIDC, not generic OAuth2: the ID token is the
+		// identity proof. A provider that returns only an access token must not mint
+		// an identity-less session and defer the mistake to authorization or the UI.
+		if idToken == "" {
+			authEdgeError(w, r, "OIDC ID token missing", errors.New("token response did not include an ID token"), http.StatusUnauthorized)
+			return
 		}
+		verified, err := verifier.Verify(r.Context(), idToken)
+		if err != nil {
+			authEdgeError(w, r, "OIDC ID token verification failed", err, http.StatusUnauthorized)
+			return
+		}
+		var claims struct {
+			Subject           string   `json:"sub"`
+			Email             string   `json:"email"`
+			PreferredUsername string   `json:"preferred_username"`
+			Name              string   `json:"name"`
+			Groups            []string `json:"groups"`
+		}
+		if err := verified.Claims(&claims); err != nil {
+			authEdgeError(w, r, "OIDC claims parse failed", err, http.StatusUnauthorized)
+			return
+		}
+		session.User = first(claims.PreferredUsername, claims.Name, claims.Subject)
+		session.Email = claims.Email
+		session.Groups = claims.Groups
 	}
+	session.IDToken = idToken
 	allowed, err := a.authorizationHook(r.Context(), token, &session)
 	if err != nil {
 		slog.Error("authorization hook failed", "path", r.URL.Path, "error", err)
@@ -479,8 +489,8 @@ func (a *Authenticator) startOAuth2(w http.ResponseWriter, r *http.Request, orig
 }
 
 func (a *Authenticator) oauth2Config(ctx context.Context, r *http.Request) (*oauth2.Config, *oidc.IDTokenVerifier, error) {
-	if a.cfg.OIDCClientID == "" {
-		return nil, nil, errors.New("missing OIDC/OAuth2 client ID")
+	if err := a.cfg.ValidateOAuth2Provider(); err != nil {
+		return nil, nil, err
 	}
 	// Redirect-URL precedence: an explicit oidc.redirectUrl wins; otherwise a
 	// configured publicUrl (origin only) gives a stable callback that does not
@@ -496,8 +506,7 @@ func (a *Authenticator) oauth2Config(ctx context.Context, r *http.Request) (*oau
 	scopes := strings.Fields(a.cfg.OAuth2Scope)
 	var endpoint oauth2.Endpoint
 	var verifier *oidc.IDTokenVerifier
-	switch {
-	case a.cfg.OIDCIssuerURL != "":
+	if a.cfg.OIDCIssuerURL != "" {
 		provider, err := a.oidcDiscover()
 		if err != nil {
 			return nil, nil, fmt.Errorf("OIDC discovery failed: %w", err)
@@ -507,13 +516,11 @@ func (a *Authenticator) oauth2Config(ctx context.Context, r *http.Request) (*oau
 			scopes = []string{oidc.ScopeOpenID, "email", "profile"}
 		}
 		verifier = provider.Verifier(&oidc.Config{ClientID: a.cfg.OIDCClientID})
-	case a.cfg.OAuth2AuthorizeURL != "" && a.cfg.OAuth2TokenURL != "":
+	} else {
 		endpoint = oauth2.Endpoint{
 			AuthURL:  a.cfg.OAuth2AuthorizeURL,
 			TokenURL: a.cfg.OAuth2TokenURL,
 		}
-	default:
-		return nil, nil, errors.New("missing OIDC issuer URL or generic OAuth2 authorize/token URLs")
 	}
 	return &oauth2.Config{
 		ClientID:     a.cfg.OIDCClientID,
@@ -530,7 +537,8 @@ func (a *Authenticator) oauth2Config(ctx context.Context, r *http.Request) (*oau
 // remote key-set fetcher used by every later token verification to the context
 // passed here, so a request context (which can be canceled when the client
 // disconnects) would later break verification for unrelated requests. The
-// background context is bounded by oidcDiscoveryTimeout via WithTimeout, and a
+// background context is bounded by the Authenticator's discovery timeout via
+// WithTimeout, and a
 // discovery HTTP client with the same timeout is injected through
 // oidc.ClientContext, so a stalled issuer cannot hold oidcMu indefinitely and
 // queue every login behind it. The timeout only bounds the discovery-document
@@ -544,9 +552,9 @@ func (a *Authenticator) oidcDiscover() (*oidc.Provider, error) {
 	if a.oidcProvider != nil {
 		return a.oidcProvider, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), a.oidcDiscoveryTimeout)
 	defer cancel()
-	client := &http.Client{Timeout: oidcDiscoveryTimeout}
+	client := &http.Client{Timeout: a.oidcDiscoveryTimeout}
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), a.cfg.OIDCIssuerURL)
 	if err != nil {
 		return nil, err

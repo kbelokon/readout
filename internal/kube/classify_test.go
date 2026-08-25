@@ -46,12 +46,15 @@ func TestClassifyError(t *testing.T) {
 		{"not found 404", kerrors.NewNotFound(schema.GroupResource{Resource: "pods"}, "x"), FailureNotFound},
 		{"upstream 500", apiStatusErr(http.StatusInternalServerError, metav1.StatusReasonInternalError, "Internal error occurred"), FailureUpstream5xx},
 		{"upstream 503", apiStatusErr(http.StatusServiceUnavailable, metav1.StatusReasonServiceUnavailable, "unavailable"), FailureUpstream5xx},
+		{"upstream upper boundary 599", apiStatusErr(599, metav1.StatusReasonUnknown, "last server error"), FailureUpstream5xx},
 
 		// Total-taxonomy merge targets: any other apiserver status folds to internal.
 		{"bad request 400", apiStatusErr(http.StatusBadRequest, metav1.StatusReasonBadRequest, "bad selector"), FailureInternal},
 		{"too many requests 429", apiStatusErr(http.StatusTooManyRequests, metav1.StatusReasonTooManyRequests, "slow down"), FailureInternal},
 		{"conflict 409", apiStatusErr(http.StatusConflict, metav1.StatusReasonConflict, "conflict"), FailureInternal},
 		{"gone 410", apiStatusErr(http.StatusGone, metav1.StatusReasonGone, "expired"), FailureInternal},
+		{"below server-error boundary 499", apiStatusErr(499, metav1.StatusReasonUnknown, "client extension"), FailureInternal},
+		{"above server-error boundary 600", apiStatusErr(600, metav1.StatusReasonUnknown, "extension status"), FailureInternal},
 
 		// Timeouts.
 		{"context deadline", context.DeadlineExceeded, FailureTimeout},
@@ -72,6 +75,48 @@ func TestClassifyError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ClassifyError(tc.err); got != tc.want {
 				t.Errorf("ClassifyError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFailurePredicatesShareCanonicalClassification proves the convenience
+// predicates cannot drift from ClassifyError. Wrapped API statuses retain their
+// classification, the local resource-not-found sentinel remains non-API-status
+// not-found, and an out-of-range 600 Status is answered-but-internal rather than
+// being mislabeled as an upstream 5xx.
+func TestFailurePredicatesShareCanonicalClassification(t *testing.T) {
+	cases := []struct {
+		name           string
+		err            error
+		kind           FailureKind
+		forbidden      bool
+		notFound       bool
+		apiStatusError bool
+	}{
+		{"forbidden", kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "x", nil), FailureForbidden, true, false, true},
+		{"unauthorized", apiStatusErr(http.StatusUnauthorized, metav1.StatusReasonUnauthorized, "Unauthorized"), FailureUnauthorized, true, false, true},
+		{"not found", kerrors.NewNotFound(schema.GroupResource{Resource: "pods"}, "x"), FailureNotFound, false, true, true},
+		{"server upper boundary", apiStatusErr(599, metav1.StatusReasonUnknown, "last server error"), FailureUpstream5xx, false, false, true},
+		{"extension status", apiStatusErr(600, metav1.StatusReasonUnknown, "extension"), FailureInternal, false, false, true},
+		{"resource sentinel", ErrResourceTypeNotFound, FailureNotFound, false, true, false},
+		{"opaque", errors.New("opaque"), FailureInternal, false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, err := range []error{tc.err, fmt.Errorf("wrapped: %w", tc.err)} {
+				if got := ClassifyError(err); got != tc.kind {
+					t.Errorf("ClassifyError(%v) = %q, want %q", err, got, tc.kind)
+				}
+				if got := IsForbidden(err); got != tc.forbidden {
+					t.Errorf("IsForbidden(%v) = %t, want %t", err, got, tc.forbidden)
+				}
+				if got := IsNotFound(err); got != tc.notFound {
+					t.Errorf("IsNotFound(%v) = %t, want %t", err, got, tc.notFound)
+				}
+				if got := IsAPIStatusError(err); got != tc.apiStatusError {
+					t.Errorf("IsAPIStatusError(%v) = %t, want %t", err, got, tc.apiStatusError)
+				}
 			}
 		})
 	}

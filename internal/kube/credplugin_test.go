@@ -1,8 +1,10 @@
 package kube
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -146,6 +148,48 @@ func TestCredPluginBasenameEntryMatchesPathCommand(t *testing.T) {
 	cfg := execRESTConfig(t, "c", "/usr/local/bin/aws")
 	if err := gate.applyCredentialPluginPolicy(cfg, "c", SourceStatic); err != nil {
 		t.Fatalf("a bare basename entry must match a path command by basename: %v", err)
+	}
+}
+
+// TestCredPluginWindowsPathHandling proves the policy interprets kubeconfig
+// command paths by their own syntax, not by the OS running this test. A bare
+// plugin entry admits a Windows path, an explicit Windows entry remains an exact
+// path pin, and denial output carries only the basename promised by the audit
+// contract. The leading empty entry also proves blank config values are ignored
+// without preventing a later valid match.
+func TestCredPluginWindowsPathHandling(t *testing.T) {
+	const command = `C:\Program Files\Kubernetes\kubelogin.exe`
+	basenameGate := resolveCredentialPluginGate(
+		appconfig.CredentialPluginPolicyAllowlist,
+		[]string{"", "kubelogin.exe"},
+	)
+	if err := basenameGate.applyCredentialPluginPolicy(execRESTConfig(t, "win", command), "win", SourceKubeconfig); err != nil {
+		t.Fatalf("a bare plugin entry must match a Windows command path by basename: %v", err)
+	}
+
+	exactGate := resolveCredentialPluginGate(
+		appconfig.CredentialPluginPolicyAllowlist,
+		[]string{command},
+	)
+	if err := exactGate.applyCredentialPluginPolicy(execRESTConfig(t, "win", command), "win", SourceKubeconfig); err != nil {
+		t.Fatalf("the exact Windows path entry must match: %v", err)
+	}
+
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	const otherPath = `D:\Untrusted\kubelogin.exe`
+	err := exactGate.applyCredentialPluginPolicy(execRESTConfig(t, "win", otherPath), "win", SourceKubeconfig)
+	if err == nil {
+		t.Fatal("a pinned Windows path must not admit the same basename from another path")
+	}
+	if got := err.Error(); !strings.Contains(got, `plugin "kubelogin.exe"`) || strings.Contains(got, `D:\Untrusted`) {
+		t.Fatalf("denial error = %q, want basename only", got)
+	}
+	if got := logs.String(); !strings.Contains(got, "command=kubelogin.exe") || strings.Contains(got, `D:\Untrusted`) {
+		t.Fatalf("denial audit log = %q, want basename only", got)
 	}
 }
 

@@ -2,10 +2,13 @@ package web
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -421,6 +424,79 @@ func TestLogsDisabledAndFilteredBranches(t *testing.T) {
 	}
 }
 
+// TestLogsAllFetchFailuresSurfaceForbidden proves that a Kubernetes logs RBAC
+// denial is not swallowed into a successful empty logs page. The proxy leaves
+// discovery and object reads healthy, then returns a real Status response only
+// for the pod log subresource so the handler reaches its log-read failure path.
+func TestLogsAllFetchFailuresSurfaceForbidden(t *testing.T) {
+	backend := newServerFakeAPI(t)
+	target, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	const denial = "pod logs forbidden by fixture"
+	forbiddenLogs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/log") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","message":"` + denial + `","reason":"Forbidden","details":{"name":"nginx","kind":"pods"},"code":403}`))
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(forbiddenLogs.Close)
+
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:              8080,
+		Clusters:          []config.ClusterConnection{{Name: "test", Server: forbiddenLogs.URL}},
+		DefaultTheme:      "dark",
+		ShowContainerLogs: true,
+	})
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/nginx/logs?container=nginx", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("denied logs status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), denial) {
+		t.Fatalf("denied logs response hid the upstream 4xx detail: %s", rec.Body.String())
+	}
+}
+
+// TestControllerLogsPreserveMatchExpressions drives a non-Pod resource through
+// the real logs handler. The Deployment uses only a set-based selector, proving
+// controller log resolution sends the complete Kubernetes LabelSelector instead
+// of silently reducing it to matchLabels and reporting "resource has no logs".
+func TestControllerLogsPreserveMatchExpressions(t *testing.T) {
+	backend := newServerFakeAPI(t)
+	target, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	controllerAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/apis/apps/v1/namespaces/default/deployments/nginx" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"nginx","namespace":"default"},"spec":{"selector":{"matchExpressions":[{"key":"app","operator":"In","values":["nginx"]}]}}}`)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(controllerAPI.Close)
+
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:              8080,
+		Clusters:          []config.ClusterConnection{{Name: "test", Server: controllerAPI.URL}},
+		DefaultTheme:      "dark",
+		ShowContainerLogs: true,
+	})
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/deployments/nginx/logs", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "GET / 200") {
+		t.Fatalf("controller logs status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestObjectLinkOwnerLinkAndSelectorPodsHelpers(t *testing.T) {
 	app := newTestServerWithConfig(t, &config.Config{
 		Port:         8080,
@@ -659,6 +735,50 @@ func TestDecodedSecretLen(t *testing.T) {
 				t.Fatalf("decodedSecretLen(%q)=%d want %d", tc.secret, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestUnauthenticatedExposureWarning pins the operator-visible security warning
+// at startup. Auth-enabled configurations emit nothing; no-auth loopback binds
+// identify the host-only posture; no-auth network binds identify the exposed
+// address. Both warning flavours carry the exact loaded cluster inventory so an
+// operator can see the blast radius. Not parallel: it swaps the default logger.
+func TestUnauthenticatedExposureWarning(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	record := func(t *testing.T, cfg config.Config, clusters []*kube.Cluster) map[string]any {
+		t.Helper()
+		var buf bytes.Buffer
+		slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		warnUnauthenticatedExposure(&cfg, clusters)
+		if buf.Len() == 0 {
+			return nil
+		}
+		var got map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("decode warning record: %v; log=%q", err, buf.String())
+		}
+		return got
+	}
+
+	clusters := []*kube.Cluster{{Name: "alpha"}, {Name: "beta"}}
+	if got := record(t, config.Config{AuthMode: config.AuthModeHeaders, ListenAddress: "0.0.0.0", Port: 8080}, clusters); got != nil {
+		t.Fatalf("auth-enabled startup warning = %#v, want none", got)
+	}
+
+	loopback := record(t, config.Config{AuthMode: config.AuthModeNone, ListenAddress: "::1", Port: 8443}, clusters)
+	if loopback["msg"] != "auth is disabled (auth.mode=none); serving on loopback only" ||
+		loopback["authMode"] != config.AuthModeNone || loopback["addr"] != "[::1]:8443" ||
+		fmt.Sprint(loopback["clusters"]) != "[alpha beta]" {
+		t.Fatalf("loopback warning record = %#v", loopback)
+	}
+
+	network := record(t, config.Config{AuthMode: config.AuthModeNone, ListenAddress: "0.0.0.0", Port: 9090}, clusters)
+	if network["msg"] != "serving unauthenticated cluster data on 0.0.0.0:9090" ||
+		network["authMode"] != config.AuthModeNone || network["addr"] != "0.0.0.0:9090" ||
+		fmt.Sprint(network["clusters"]) != "[alpha beta]" {
+		t.Fatalf("network exposure warning record = %#v", network)
 	}
 }
 

@@ -4,16 +4,15 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
 )
 
-func (s *Server) ownerLinks(r *http.Request, client *kube.Client, cluster *kube.Cluster, object *kube.Object) []config.Link {
+func (s *Server) ownerLinks(r *http.Request, client *kube.Client, cluster *kube.Cluster, object *kube.Object) []ownerLinkView {
 	refs := object.OwnerReferences()
 	if len(refs) == 0 {
 		return nil
 	}
-	var links []config.Link
+	var links []ownerLinkView
 	for i := range refs {
 		ref := &refs[i]
 		if ref.Kind == "" || ref.Name == "" {
@@ -30,8 +29,10 @@ func (s *Server) ownerLinks(r *http.Request, client *kube.Client, cluster *kube.
 		if rt.Namespaced {
 			namespace = object.Namespace()
 		}
-		links = append(links, config.Link{
+		links = append(links, ownerLinkView{
 			Href:  resourceHref(cluster.Name, &rt, namespace, ref.Name),
+			Kind:  ref.Kind,
+			Name:  ref.Name,
 			Title: fmt.Sprintf("%s/%s", ref.Kind, ref.Name),
 		})
 	}

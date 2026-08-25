@@ -17,10 +17,62 @@ package web
 
 import (
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+// TestMergeColumnVisStablePureUnion pins the cross-cluster schema merge: the
+// first occurrence owns a column's visibility metadata, unseen columns retain
+// first-seen order, and the synthetic Created column remains last. The merge
+// must not alias either input: fan-in callers retain independent per-cluster
+// snapshots even when an input has spare capacity or the left side is nil.
+func TestMergeColumnVisStablePureUnion(t *testing.T) {
+	left := make([]columnVis, 3, 8)
+	copy(left, []columnVis{
+		{Name: "Name", Identity: true},
+		{Name: "Status", Hidden: true},
+		{Name: "Created", Hidden: true},
+	})
+	right := []columnVis{
+		{Name: "Name"},
+		{Name: "Ready"},
+		{Name: "Created"},
+		{Name: "Status"},
+	}
+	leftBefore := append([]columnVis(nil), left...)
+	rightBefore := append([]columnVis(nil), right...)
+
+	got := mergeColumnVis(left, right)
+	want := []columnVis{
+		{Name: "Name", Identity: true},
+		{Name: "Status", Hidden: true},
+		{Name: "Ready"},
+		{Name: "Created", Hidden: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged visibility = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(left, leftBefore) || !reflect.DeepEqual(right, rightBefore) {
+		t.Fatalf("merge mutated inputs: left=%#v right=%#v", left, right)
+	}
+	got[0].Name = "changed"
+	if !reflect.DeepEqual(left, leftBefore) || !reflect.DeepEqual(right, rightBefore) {
+		t.Fatalf("merged result aliases inputs: left=%#v right=%#v", left, right)
+	}
+
+	rightOnly := []columnVis{{Name: "Created"}, {Name: "Age"}}
+	got = mergeColumnVis(nil, rightOnly)
+	want = []columnVis{{Name: "Age"}, {Name: "Created"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("nil-left visibility = %#v, want %#v", got, want)
+	}
+	got[0].Name = "changed"
+	if rightOnly[1].Name != "Age" {
+		t.Fatalf("nil-left result aliases right input: %#v", rightOnly)
+	}
+}
 
 // TestColvisSyntheticColumnsHide pins the moved removal point: synthetic
 // columns added by the decorations are hideable via ?hidecols= -- node

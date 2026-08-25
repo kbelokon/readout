@@ -25,6 +25,151 @@ import (
 // k8s Table schema are ADAPTED in place -- a user-added label/custom column falls
 // through to the generic (plain/truncated) cell, so hidecols/labelcols/customcols/
 // sort/TSV are untouched.
+type cellViewBranch uint8
+
+const (
+	branchPlain cellViewBranch = iota
+	branchName
+	branchLabel
+	branchNode
+	branchNodeUsage
+	branchNodeCapacity
+	branchNodeRoles
+	branchNodeConditions
+	branchDeploymentReady
+	branchDeploymentRollout
+	branchNamespaceLabels
+	branchPending
+	branchServicePorts
+	branchIngressHosts
+	branchServiceSelector
+	branchIngressTLS
+	branchConfigMapData
+	branchSecretData
+	branchCronSuspend
+	branchCronLastSchedule
+	branchJobCompletions
+	branchEventType
+	branchEventObject
+	branchEventCount
+	branchEventLastSeen
+	branchEventMessage
+	branchCPUUsage
+	branchMemoryUsage
+	branchStatus
+	branchReady
+	branchRestarts
+)
+
+// cellViewBranchFor separates branch selection from presentation assembly. Its
+// order is the buildCellView precedence contract: Name beats a user label named
+// Name, user label columns beat built-in columns, and resource-specific columns
+// beat the generic column vocabulary.
+func cellViewBranchFor(plural, colName, label, value string) cellViewBranch {
+	if colName == "Name" {
+		return branchName
+	}
+	if label != "" && label != "*" {
+		return branchLabel
+	}
+	if colName == "Node" {
+		return branchNode
+	}
+
+	switch plural {
+	case "nodes":
+		switch colName {
+		case "CPU Usage", "Memory Usage":
+			return branchNodeUsage
+		case "CPU", "Memory":
+			return branchNodeCapacity
+		case "Roles":
+			return branchNodeRoles
+		case "Conditions":
+			return branchNodeConditions
+		}
+	case "deployments":
+		switch colName {
+		case "Ready":
+			return branchDeploymentReady
+		case "Rollout":
+			return branchDeploymentRollout
+		}
+	case "namespaces":
+		if label == "" && colName == "Labels" {
+			return branchNamespaceLabels
+		}
+	case "services":
+		switch colName {
+		case "External-IP":
+			return branchPending
+		case "Port(s)":
+			return branchServicePorts
+		case "Selector":
+			if label == "" {
+				return branchServiceSelector
+			}
+		}
+	case "ingresses":
+		switch colName {
+		case "Address":
+			return branchPending
+		case "Hosts":
+			return branchIngressHosts
+		case "TLS":
+			return branchIngressTLS
+		}
+	case "configmaps":
+		if colName == "Data" {
+			return branchConfigMapData
+		}
+	case "secrets":
+		if colName == "Data" {
+			return branchSecretData
+		}
+	case "cronjobs":
+		switch colName {
+		case "Suspend":
+			return branchCronSuspend
+		case "Last Schedule":
+			return branchCronLastSchedule
+		}
+	case "jobs":
+		if colName == "Completions" && strings.Contains(value, "/") {
+			return branchJobCompletions
+		}
+	case "events":
+		switch colName {
+		case "Type":
+			return branchEventType
+		case "Object":
+			return branchEventObject
+		case "Count":
+			return branchEventCount
+		case "Last Seen":
+			return branchEventLastSeen
+		case "Message":
+			return branchEventMessage
+		}
+	}
+
+	switch colName {
+	case "CPU Usage":
+		return branchCPUUsage
+	case "Memory Usage":
+		return branchMemoryUsage
+	case "Status":
+		return branchStatus
+	case "Ready":
+		if strings.Contains(value, "/") {
+			return branchReady
+		}
+	case "Restarts":
+		return branchRestarts
+	}
+	return branchPlain
+}
+
 func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row, i int, cell any, ns, name string) cellView {
 	value := cellDisplayString(cell)
 	if i >= len(table.Columns) {
@@ -36,8 +181,8 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cls = strings.TrimSpace(cls + " " + s.ageClass(nestedString(row.Object, "metadata", "creationTimestamp")))
 	}
 	cv := cellView{Value: value, Class: cls, ColClass: table.Columns[i].Class}
-	switch {
-	case colName == "Name":
+	switch cellViewBranchFor(table.Resource.Plural, colName, table.Columns[i].Label, value) {
+	case branchName:
 		cv.Kind = cellName
 		cv.NameHead, cv.NameTail = splitObjectName(table.Resource.Plural, value)
 		// Middle truncation: a head longer than 42 chars displays as
@@ -52,32 +197,35 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 			href = fmt.Sprintf("/clusters/%s/namespaces/%s/pods", url.PathEscape(row.Cluster), url.PathEscape(name))
 		}
 		cv.Href = href
-	case table.Columns[i].Label != "" && table.Columns[i].Label != "*":
+	case branchLabel:
 		// A user-added single label column: still a selector link, but the label
 		// VALUE is secondary free-text, so it truncates with a tooltip.
 		cv.Kind = cellLabel
 		cv.Href = addQuery(r.URL, "selector", table.Columns[i].Label+"="+value)
 		cv.Trunc, cv.Title = true, value
-	case colName == "Node":
+	case branchNode:
 		cv.Kind = cellNode
-		cv.Href = "/clusters/" + url.PathEscape(row.Cluster) + "/nodes/" + url.PathEscape(value)
-	case table.Resource.Plural == "nodes" && (colName == "CPU Usage" || colName == "Memory Usage"):
+		// Node references are always cluster-scoped, even when they appear in a
+		// namespaced workload table. Use the same ResourceType-aware route builder
+		// as object and related-resource links so scope and escaping cannot drift.
+		cv.Href = resourceHref(row.Cluster, &kube.ResourceType{Plural: "nodes"}, "", value)
+	case branchNodeUsage:
 		// Nodes reskin the joined metrics usage column as a capacity bar: the cell
 		// carries the usage (cores/bytes from applyMetricsUsage), the node's
 		// capacity comes from status.capacity, and the bucket + fill come from
 		// usage/capacity.
 		usage, haveUsage := numericCell(cell)
 		cv = capacityCellView(row.Object, nodeCapacityKey(colName), usage, haveUsage)
-	case table.Resource.Plural == "nodes" && (colName == "CPU" || colName == "Memory"):
+	case branchNodeCapacity:
 		// No-metrics node capacity column: capacity value text, no usage overlay.
 		cv = capacityCellView(row.Object, nodeCapacityKey(colName), 0, false)
-	case table.Resource.Plural == "nodes" && colName == "Roles":
+	case branchNodeRoles:
 		cv.Kind = cellRoles
 		cv.Roles = nodeRoles(row.Object)
-	case table.Resource.Plural == "nodes" && colName == "Conditions":
+	case branchNodeConditions:
 		cv.Kind = cellConditions
 		cv.Conds = nodeAbnormalConditions(row.Object)
-	case table.Resource.Plural == "deployments" && colName == "Ready":
+	case branchDeploymentReady:
 		// Deployments reskin the Ready column as the replica track: the segment
 		// states + the ready/desired ratio come from the deployment status/spec
 		// (readyReplicas / updatedReplicas / spec.replicas), capped at
@@ -86,13 +234,13 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		desired, ready, updated := deploymentReplicas(row.Object)
 		cv.RepSegments, cv.RepNum = replicaTrack(desired, ready, updated)
 		cv.Ratio = readyRatioClass(cv.RepNum)
-	case table.Resource.Plural == "deployments" && colName == "Rollout":
+	case branchDeploymentRollout:
 		// The synthetic Rollout column (added by decorateDeploymentColumns) renders
 		// the rollout status pill; the state + label come from the deployment
 		// status/conditions/spec.paused.
 		cv.Kind = cellRollout
 		cv.RolloutState, cv.Value = rolloutState(row.Object)
-	case table.Resource.Plural == "namespaces" && colName == "Labels" && table.Columns[i].Label == "":
+	case branchNamespaceLabels:
 		// The synthetic Labels column (added by decorateNamespaceColumns) renders the
 		// namespace label chips read from metadata.labels (the .app accent for
 		// app.kubernetes.io/*). The Label=="" guard keeps a user-added labelcols
@@ -108,42 +256,41 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 				cv.Chips[ci].Href = addFilterChipHref(r.URL, "label:"+cv.Chips[ci].Key+"="+cv.Chips[ci].Val)
 			}
 		}
-	case (table.Resource.Plural == "services" && colName == "External-IP") ||
-		(table.Resource.Plural == "ingresses" && colName == "Address"):
+	case branchPending:
 		// Pending cell: the printer's `<none>` (or an empty address) is
 		// the faint none; the literal `<pending>` of an unprovisioned LB/ingress is
 		// the amber pulsing in-flight state; an ExternalName target / provisioned
 		// address renders verbatim.
 		cv = pendingCellView(value)
-	case table.Resource.Plural == "services" && colName == "Port(s)":
+	case branchServicePorts:
 		// Ports cell over the printer's comma-joined list: first 2 +
 		// faint "+N", the full list in the tooltip; portless (`<none>`) -> "—".
 		cv = portsCellView(commaListValues(value))
-	case table.Resource.Plural == "ingresses" && colName == "Hosts":
+	case branchIngressHosts:
 		// Hosts cell: the first host + faint "+N hosts" with the full
 		// newline-joined list in the tooltip.
 		cv = hostsCellView(commaListValues(value))
-	case table.Resource.Plural == "services" && colName == "Selector" && table.Columns[i].Label == "":
+	case branchServiceSelector:
 		// The services Selector column renders neutral chips read from
 		// spec.selector. Deliberately NO click-to-filter href (see
 		// selectorChips); the Label=="" guard keeps a user-added labelcols
 		// "Selector" column on the label path.
 		cv.Kind = cellChips
 		cv.Chips = selectorChips(row.Object)
-	case table.Resource.Plural == "ingresses" && colName == "TLS":
+	case branchIngressTLS:
 		// The synthetic TLS column (added by decorateIngressColumns) renders the
 		// earned-green lock only when spec.tls terminates, else "—".
 		cv = tlsCellView(ingressTLSTerminated(row.Object))
-	case table.Resource.Plural == "configmaps" && colName == "Data":
+	case branchConfigMapData:
 		// The configmap Data column renders `name · size` key chips decoded from
 		// the row object's data/binaryData; the server's count cell
 		// stays in the kube.Table for sort/TSV/filter.
 		cv = keysCellView(configMapKeyChips(row.Object))
-	case table.Resource.Plural == "secrets" && colName == "Data":
+	case branchSecretData:
 		// The secret Data column renders key chips with DECODED byte sizes; the
 		// VALUE bytes never reach the view model (secretKeyChips).
 		cv = keysCellView(secretKeyChips(row.Object))
-	case table.Resource.Plural == "cronjobs" && colName == "Suspend":
+	case branchCronSuspend:
 		// The cronjob Suspend cell renders the prototype's status vocabulary:
 		// the printer's boolean maps false→Active (ok, live health) /
 		// true→Suspended (mute) with the tone owned by kube.StatusTone
@@ -156,7 +303,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		cv.Kind = cellStatus
 		cv.Value = label
 		cv.Tone = statusTone(kube.CellClass(table.Resource.Plural, "Status", label))
-	case table.Resource.Plural == "cronjobs" && colName == "Last Schedule":
+	case branchCronLastSchedule:
 		// Lastrun cell: the printer's compressed duration gains the
 		// age-bucket colour + " ago"; a cronjob that never ran prints the
 		// literal <none> on the wire — that IS the empty case → faint <never>.
@@ -164,19 +311,19 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 			value = ""
 		}
 		cv = lastRunCellView(value)
-	case table.Resource.Plural == "jobs" && colName == "Completions" && strings.Contains(value, "/"):
+	case branchJobCompletions:
 		// Completions share the ready-ratio grammar (full green when
 		// n==m, partial amber, zero faint).
 		cv.Kind = cellReady
 		cv.Ratio = readyRatioClass(value)
-	case table.Resource.Plural == "events" && colName == "Type":
+	case branchEventType:
 		// The events Type cell is a status cell whose vocabulary IS the status table
 		// (Normal→mute, Warning→warn — never an invented stronger severity);
 		// CellClass("events","Type",…) delegates to kube.StatusTone. Neither
 		// word is transient, so no pulse.
 		cv.Kind = cellStatus
 		cv.Tone = statusTone(cls)
-	case table.Resource.Plural == "events" && colName == "Object":
+	case branchEventObject:
 		// Events Object cell: kind icon + faint "Kind/" + the 20…8 middle-truncated
 		// name, decoded from involvedObject (core/v1) or regarding
 		// (events.k8s.io/v1). An undecodable ref keeps the printer's plain
@@ -186,16 +333,16 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		} else {
 			cv.Kind = cellPlain
 		}
-	case table.Resource.Plural == "events" && colName == "Count":
+	case branchEventCount:
 		// The ×N cell over the dual-API count decode (≥20 amber, 1
 		// faint). Re-decoded from the row object so a server-provided Count
 		// column shows the same pinned-precedence truth as the decorated one.
-		n := 1
+		n := int64(1)
 		if item, ok := decodeEventItem(row.Object); ok {
-			n = int(item.eventCount())
+			n = item.eventCount()
 		}
 		cv = countCellView(n)
-	case table.Resource.Plural == "events" && colName == "Last Seen":
+	case branchEventLastSeen:
 		// Events Age cell: the two-layer age built from the timestamp decode
 		// (last-seen lead token bucket-coloured; "(first <dur> ago)" faint when
 		// count > 1 and the spread exceeds 60s). When no timestamp decodes the
@@ -207,17 +354,17 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 			}
 		}
 		cv = evAgeCellView(text)
-	case table.Resource.Plural == "events" && colName == "Message":
+	case branchEventMessage:
 		// Message cell: THE only wrapping column in the system (the 520px
 		// clamp lives in CSS on td.ro-event-msg).
 		cv = msgCellView(value)
-	case colName == "CPU Usage":
+	case branchCPUUsage:
 		cv.Kind = cellCPU
 		cv.Value = cpuFormat(cell)
-	case colName == "Memory Usage":
+	case branchMemoryUsage:
 		cv.Kind = cellMemory
 		cv.Value = memoryMiBFormat(cell)
-	case colName == "Status":
+	case branchStatus:
 		cv.Kind = cellStatus
 		// cls is kube.CellClass's encoding of kube.StatusTone (the single
 		// value->tone owner), so the dot tone always exists (fallback mute).
@@ -226,10 +373,10 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 		// itself gates (steady and err states never pulse), so a Terminating
 		// namespace pulses exactly like a Terminating pod.
 		cv.Pulse = transientStatus(value)
-	case colName == "Ready" && strings.Contains(value, "/"):
+	case branchReady:
 		cv.Kind = cellReady
 		cv.Ratio = readyRatioClass(value)
-	case colName == "Restarts":
+	case branchRestarts:
 		cv.Kind = cellRestarts
 		cv.Value, cv.Ago = splitRestarts(value)
 		cv.Tone = restartsTone(cv.Value)
@@ -364,14 +511,16 @@ func keysCellView(keys []keyChipView) cellView {
 // thousands separator; ≥20 reads chronic (the amber .restarts.some ink), a
 // 0/1 count fades. The class strings are final span classes lifted from the
 // reference countCell.
-func countCellView(n int) cellView {
-	cv := cellView{Kind: cellCount, Value: groupThousands(strconv.Itoa(n))}
-	switch {
-	case n >= 20:
+func countCellView(n int64) cellView {
+	cv := cellView{Kind: cellCount, Value: groupThousands(strconv.FormatInt(n, 10))}
+	// Collapse the unbounded Event count into the three display buckets before
+	// selecting presentation. Keeping n as int64 preserves the Kubernetes
+	// series.count value on every architecture; max also keeps malformed
+	// non-positive counts in the same faint bucket as the historical code.
+	switch min(max(n, 1), 20) {
+	case 20:
 		cv.Class = "restarts some"
-	case n > 1:
-		cv.Class = ""
-	default:
+	case 1:
 		cv.Class = "faint"
 	}
 	return cv

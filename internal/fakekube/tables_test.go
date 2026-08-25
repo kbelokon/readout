@@ -2,16 +2,12 @@ package fakekube
 
 // tables_test.go pins the Table-form generation: every supported kind serves
 // a meta.k8s.io Table whose columnDefinitions contain the column NAMES readout's
-// curated list cells actually read. The oracle is NOT a hand-written blob — it
-// is DERIVED at test time from readout's own consuming code:
-//
-//   - internal/web/list_cells.go: the `Plural == "<plural>" && colName == "<col>"`
-//     cases are the per-kind columns a curated cell reads FROM the served Table.
-//   - internal/web/list_decorate.go: the columns the per-request decorators ADD
-//     (Rollout, Labels, TLS, External-IP, Selector, the jobs Status, the events
-//     Count, the node CPU/Memory/Pods/Conditions, the metrics usage columns) are
-//     SUBTRACTED — readout guarantees those even when the Table omits them, so
-//     they are not part of the Table contract this unit owns.
+// curated list cells actually read. The expected columns below are an independent
+// contract, not a parser for internal/web implementation syntax. Columns added by
+// per-request decorators (Rollout, Labels, TLS, External-IP, Selector, the jobs
+// Status, the events Count, the node CPU/Memory/Pods/Conditions, and metrics usage)
+// are intentionally absent: readout guarantees those even when the Table omits
+// them, so they are not part of the Table contract this unit owns.
 //
 // So the test catches "the columns readout's renderer needs from the Table", and
 // would FAIL if the registry served a kind List-only (the historical empty-nodes
@@ -22,9 +18,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
-	"regexp"
 	"sort"
 	"testing"
 
@@ -51,61 +44,21 @@ func pluralForKind(kind string) string {
 	return ""
 }
 
-// readSource reads a readout web-layer source file relative to the module root.
-func readSource(t *testing.T, rel string) string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", rel))
-	if err != nil {
-		t.Fatalf("read %s: %v", rel, err)
+// consumedColumns is the source-Table side of the web/fakekube contract.
+// Name and Age are universal and asserted separately. Keeping this oracle as
+// explicit data lets production code be refactored without weakening the test.
+func consumedColumns() map[string]map[string]bool {
+	return map[string]map[string]bool{
+		"configmaps":  {"Data": true},
+		"cronjobs":    {"Last Schedule": true, "Suspend": true},
+		"deployments": {"Ready": true},
+		"events":      {"Last Seen": true, "Message": true, "Object": true, "Type": true},
+		"ingresses":   {"Address": true, "Hosts": true},
+		"jobs":        {"Completions": true},
+		"nodes":       {"Roles": true},
+		"secrets":     {"Data": true},
+		"services":    {"Port(s)": true},
 	}
-	return string(data)
-}
-
-var (
-	// reCuratedCell matches `table.Resource.Plural == "<plural>" && colName == "<col>"`
-	// in list_cells.go — one curated per-kind column read from the served Table.
-	reCuratedCell = regexp.MustCompile(`table\.Resource\.Plural == "([^"]+)" && colName == "([^"]+)"`)
-	// reSyntheticColumn matches the column names the decorators ADD in
-	// list_decorate.go (the forms they use to append/insert a Column).
-	reSyntheticColumn = regexp.MustCompile(`(?:kube\.Column\{Name: "([^"]+)"\}|insertTableColumn\(table, .+?, "([^"]+)", func|nodeCol\{"([^"]+)"|\{"([^"]+)", func\(obj map\[string\]any\))`)
-)
-
-// consumedColumns derives, per plural, the set of column names readout's curated
-// cells read FROM the served Table — the plural-scoped colName cases minus the
-// columns the decorators synthesize. Name and Age are always required (the
-// identity column and the universal age cell, list_cells.go lines 35/40/246).
-func consumedColumns(t *testing.T) map[string]map[string]bool {
-	t.Helper()
-	cells := readSource(t, "internal/web/list_cells.go")
-	decorate := readSource(t, "internal/web/list_decorate.go")
-
-	synthesized := map[string]bool{}
-	for _, m := range reSyntheticColumn.FindAllStringSubmatch(decorate, -1) {
-		for _, g := range m[1:] {
-			if g != "" {
-				synthesized[g] = true
-			}
-		}
-	}
-	if len(synthesized) == 0 {
-		t.Fatal("derived an EMPTY synthesized-column set from list_decorate.go; the oracle regex is stale")
-	}
-
-	per := map[string]map[string]bool{}
-	for _, m := range reCuratedCell.FindAllStringSubmatch(cells, -1) {
-		plural, col := m[1], m[2]
-		if synthesized[col] {
-			continue // readout guarantees this column even if the Table omits it
-		}
-		if per[plural] == nil {
-			per[plural] = map[string]bool{}
-		}
-		per[plural][col] = true
-	}
-	if len(per) == 0 {
-		t.Fatal("derived an EMPTY curated-column set from list_cells.go; the oracle regex is stale")
-	}
-	return per
 }
 
 // supportedKinds is one representative object per supported kind, used to seed a
@@ -123,7 +76,7 @@ func tableColumnNames(t *testing.T, kind string) []string {
 }
 
 func TestTableColumns(t *testing.T) {
-	consumed := consumedColumns(t)
+	consumed := consumedColumns()
 
 	// Every kind the registry serves must carry the columns readout's curated
 	// cells read for that kind's plural, plus Name and Age.
@@ -141,8 +94,8 @@ func TestTableColumns(t *testing.T) {
 				have[n] = true
 			}
 
-			// Identity + age are required for every kind (the Name cell open and
-			// the Age bucket cell read them — list_cells.go lines 40/35/246).
+			// Identity + age are required for every kind: the Name cell opens the
+			// object and the Age cell assigns its recency bucket.
 			// Events are the one printer with no Name column: their identity is
 			// the Object column and their age is Last Seen, both curated below.
 			if kind != "Event" {
@@ -218,7 +171,7 @@ func sortedKeys(m map[string]bool) []string {
 // List-only would return the List form (no columnDefinitions) when readout
 // negotiates Table, and the per-kind assertion would fail.
 func TestTableColumnsServed(t *testing.T) {
-	consumed := consumedColumns(t)
+	consumed := consumedColumns()
 
 	c := allKindsCluster()
 	srv, err := New(WithoutControl())

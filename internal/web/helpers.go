@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,14 +9,18 @@ import (
 	"hash/crc32"
 	"html"
 	"io/fs"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/kbelokon/readout/internal/config"
 	"github.com/kbelokon/readout/internal/kube"
@@ -204,19 +209,24 @@ func restartsTone(count string) string {
 	return "some"
 }
 
-// capacityBucket classifies a usage percentage into the node capacity-bar bucket
-// lifted verbatim from the mockup capCell: pct > 80 -> "hi" (red), pct > 55 ->
-// "mid" (amber), else "lo" (green). The bucket (and its coloured fill) is meant
-// to apply ONLY when a real usage % exists; the no-metrics path never calls this.
-func capacityBucket(pct float64) string {
-	switch {
-	case pct > 80:
+// capacityBucket classifies the rounded percentage rendered by the node
+// capacity bar: pct > 80 -> "hi" (red), pct > 55 -> "mid" (amber), else "lo"
+// (green). Classifying the displayed integer avoids contradictory output at a
+// floating-point boundary (for example a 55% label with a mid bucket). The
+// bucket applies only when a real usage percentage exists.
+const (
+	capacityMidWatermark  = 55
+	capacityHighWatermark = 80
+)
+
+func capacityBucket(pct int) string {
+	if pct > capacityHighWatermark {
 		return "hi"
-	case pct > 55:
-		return "mid"
-	default:
-		return "lo"
 	}
+	if pct > capacityMidWatermark {
+		return "mid"
+	}
+	return "lo"
 }
 
 // nodeRoles reads a node's role labels (`node-role.kubernetes.io/<role>`) off the
@@ -232,13 +242,9 @@ func nodeRoles(obj map[string]any) []string {
 			roles = append(roles, role)
 		}
 	}
-	sort.Slice(roles, func(i, j int) bool {
+	slices.SortFunc(roles, func(a, b string) int {
 		// control-plane / master lead; the rest stay alphabetical.
-		li, lj := roleRank(roles[i]), roleRank(roles[j])
-		if li != lj {
-			return li < lj
-		}
-		return roles[i] < roles[j]
+		return cmp.Or(cmp.Compare(roleRank(a), roleRank(b)), strings.Compare(a, b))
 	})
 	return roles
 }
@@ -280,37 +286,53 @@ func nodeAbnormalConditions(obj map[string]any) []condPill {
 	return pills
 }
 
-// nodeConditionListTone maps a node condition (type + status) to the LIST pill
-// tone (ok/warn/err) and reports whether the condition is ABNORMAL (worth a pill).
-// The healthy polarity matches the detail-page nodeConditionTone: Ready is healthy
-// True; MemoryPressure/DiskPressure/PIDPressure are healthy False (warn when set);
-// NetworkUnavailable is healthy False (err when set). A condition in its healthy
-// state is not abnormal (abnormal=false), so only the off-normal ones surface.
-func nodeConditionListTone(typ, status string) (tone string, abnormal bool) {
+// nodeConditionSemantics is the shared list/detail interpretation of a Kubernetes
+// Node condition. Kubernetes conditions are tri-state: for negative-polarity
+// conditions, only an explicit False is healthy. Unknown (and malformed values)
+// must remain visible rather than being collapsed into the healthy branch.
+type nodeConditionSemantics struct {
+	detailTone string
+	listTone   string
+	abnormal   bool
+}
+
+func classifyNodeCondition(typ, status string) nodeConditionSemantics {
 	switch typ {
 	case "Ready":
-		if status == "True" {
-			return "ok", false
+		if status == string(corev1.ConditionTrue) {
+			return nodeConditionSemantics{detailTone: "ok", listTone: "ok"}
 		}
-		return "err", true
+		return nodeConditionSemantics{detailTone: "err", listTone: "err", abnormal: true}
 	case "NetworkUnavailable":
-		if status == "True" {
-			return "err", true
+		switch status {
+		case string(corev1.ConditionFalse):
+			return nodeConditionSemantics{detailTone: "ok", listTone: "ok"}
+		case string(corev1.ConditionTrue):
+			return nodeConditionSemantics{detailTone: "err", listTone: "err", abnormal: true}
+		default:
+			return nodeConditionSemantics{detailTone: "warn", listTone: "warn", abnormal: true}
 		}
-		return "ok", false
 	case "MemoryPressure", "DiskPressure", "PIDPressure":
-		if status == "True" {
-			return "warn", true
+		if status == string(corev1.ConditionFalse) {
+			return nodeConditionSemantics{detailTone: "ok", listTone: "ok"}
 		}
-		return "ok", false
+		return nodeConditionSemantics{detailTone: "warn", listTone: "warn", abnormal: true}
 	default:
-		// An unknown condition type is surfaced only when it is explicitly not True
-		// (a True unknown condition is treated as informational/healthy).
-		if status == "True" {
-			return "warn", false
+		// Preserve the existing generic-condition behavior: detail views keep an
+		// unclassified tone, while list views surface only a non-True value.
+		return nodeConditionSemantics{
+			detailTone: "mute",
+			listTone:   "warn",
+			abnormal:   status != string(corev1.ConditionTrue),
 		}
-		return "warn", true
 	}
+}
+
+// nodeConditionListTone maps a node condition to the list pill vocabulary and
+// reports whether the condition is off-normal enough to display.
+func nodeConditionListTone(typ, status string) (tone string, abnormal bool) {
+	semantics := classifyNodeCondition(typ, status)
+	return semantics.listTone, semantics.abnormal
 }
 
 // nodeCapacityQuantity reads a node capacity quantity (cpu/memory/pods) off the row
@@ -363,8 +385,8 @@ func capacityCellView(obj map[string]any, key string, usage float64, haveUsage b
 	if clamped > 100 {
 		clamped = 100
 	}
-	cv.CapBucket = capacityBucket(pct)
 	cv.CapPct = int(clamped + 0.5)
+	cv.CapBucket = capacityBucket(cv.CapPct)
 	cv.CapBar = true
 	cv.Value = capacityUsageLabel(key, usage, cap)
 	return cv
@@ -375,14 +397,10 @@ func capacityCellView(obj map[string]any, key string, usage float64, haveUsage b
 // cores; memory usage is in bytes and is rendered as a binary-suffixed quantity so
 // it reads in the same unit family as the capacity.
 func capacityUsageLabel(key string, usage float64, cap resource.Quantity) string {
-	switch key {
-	case "cpu":
-		return trimFloat(usage) + "/" + cap.String()
-	case "memory":
+	if key == "memory" {
 		return humanBytes(int64(usage)) + "/" + humanMemory(cap)
-	default:
-		return trimFloat(usage) + "/" + cap.String()
 	}
+	return trimFloat(usage) + "/" + cap.String()
 }
 
 // capacityText renders a node capacity quantity for display: CPU keeps the plain
@@ -465,7 +483,10 @@ func deploymentReplicas(obj map[string]any) (desired, ready, updated int) {
 }
 
 // replicaTrack builds the deployment replica-track segments + the `ready/desired`
-// ratio text for the cellReplicas view. Each of the `ready` filled segments is "",
+// ratio text for the cellReplicas view. The ratio preserves the nonnegative
+// source counts even when ready temporarily exceeds desired during a rollout or
+// scale-down; only the bounded visual track clamps counts to desired. Each of the
+// track's `ready` filled segments is "",
 // the segments in [ready, updated) pulse amber ("updating"), and [updated, desired)
 // are hollow ("pending") -- mirroring the design repCell, generalised from its
 // single-updating-slot form to the full updated-beyond-ready window. The rendered
@@ -477,38 +498,32 @@ func replicaTrack(desired, ready, updated int) (segments []repSegment, repNum st
 	if desired < 0 {
 		desired = 0
 	}
-	ready = clampInt(ready, 0, desired)
-	updated = clampInt(updated, 0, desired)
-	if updated < ready {
-		updated = ready
-	}
-	repNum = strconv.Itoa(ready) + "/" + strconv.Itoa(desired)
+	repNum = strconv.Itoa(max(ready, 0)) + "/" + strconv.Itoa(desired)
 
-	filled, updatingSlots, total := ready, updated-ready, desired
+	// Status counters can briefly exceed spec.replicas or disagree with each
+	// other while the Deployment controller converges. Keep that truth in repNum,
+	// but normalize the visual buckets into [0, desired] so the track remains a
+	// bounded partition. Making updated start at ready also establishes
+	// updatingSlots >= 0; scaleToCap preserves that ordering.
+	barReady := clampInt(ready, 0, desired)
+	barUpdated := clampInt(updated, barReady, desired)
+
+	filled, updatingSlots, total := barReady, barUpdated-barReady, desired
 	if desired > replicaTrackCap {
 		// Scale the three buckets into the cap, preserving their proportions. Filled
 		// rounds to nearest; updating takes its proportional share next; pending fills
 		// the remainder so the rendered total is exactly the cap.
 		total = replicaTrackCap
-		filled = scaleToCap(ready, desired)
-		updatingSlots = scaleToCap(updated, desired) - filled
-		if updatingSlots < 0 {
-			updatingSlots = 0
-		}
-		if filled+updatingSlots > total {
-			updatingSlots = total - filled
-		}
+		filled = scaleToCap(barReady, desired)
+		updatingSlots = scaleToCap(barUpdated, desired) - filled
 	}
-	for k := 0; k < total; k++ {
-		switch {
-		case k < filled:
-			segments = append(segments, repSegment{State: ""})
-		case k < filled+updatingSlots:
-			segments = append(segments, repSegment{State: "updating"})
-		default:
-			segments = append(segments, repSegment{State: "pending"})
-		}
-	}
+	// The track is three contiguous buckets, not a per-segment decision tree.
+	// Start with the pending tail, then overlay the filled and updating prefixes;
+	// the normalization above guarantees every Repeat count is non-negative and
+	// the final slice never exceeds replicaTrackCap.
+	segments = slices.Repeat([]repSegment{{State: "pending"}}, total)
+	copy(segments, slices.Repeat([]repSegment{{}}, filled))
+	copy(segments[filled:], slices.Repeat([]repSegment{{State: "updating"}}, updatingSlots))
 	return segments, repNum
 }
 
@@ -593,21 +608,26 @@ func rolloutIconName(state string) string {
 func humanTitle(value string) string {
 	words := strings.Fields(strings.NewReplacer(".", " ", "_", " ", "-", " ").Replace(value))
 	for i, word := range words {
-		if word == "" {
-			continue
-		}
-		words[i] = strings.ToUpper(word[:1]) + word[1:]
+		words[i] = uppercaseFirstRune(word)
 	}
 	return strings.Join(words, " ")
 }
 
-// capitalizeWord upper-cases the first byte and lower-cases the rest, so a
+// capitalizeWord upper-cases the first rune and lower-cases the rest, so a
 // camelCase section key like "eventTime" renders as the title "Eventtime".
 func capitalizeWord(value string) string {
+	return uppercaseFirstRune(strings.ToLower(value))
+}
+
+// uppercaseFirstRune preserves a UTF-8 string while capitalizing its leading
+// code point. Kubernetes custom resources can expose non-ASCII field and column
+// names, so byte slicing here would corrupt the first character.
+func uppercaseFirstRune(value string) string {
 	if value == "" {
 		return ""
 	}
-	return strings.ToUpper(value[:1]) + strings.ToLower(value[1:])
+	first, width := utf8.DecodeRuneInString(value)
+	return string(unicode.ToUpper(first)) + value[width:]
 }
 
 // pluralizeKind renders a Kind as its display plural. A kind that IS its own
@@ -720,57 +740,95 @@ func memoryMiBFormat(cell any) string {
 }
 
 func numericCell(cell any) (float64, bool) {
+	var f float64
+	var err error
 	switch v := cell.(type) {
 	case float64:
-		return v, true
+		f = v
 	case float32:
-		return float64(v), true
+		f = float64(v)
 	case int:
-		return float64(v), true
+		f = float64(v)
 	case int64:
-		return float64(v), true
+		f = float64(v)
 	case json.Number:
-		f, err := v.Float64()
-		return f, err == nil
+		f, err = v.Float64()
 	default:
-		f, err := strconv.ParseFloat(fmt.Sprint(v), 64)
-		return f, err == nil
+		f, err = strconv.ParseFloat(fmt.Sprint(v), 64)
 	}
+	return f, err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
 }
 
 func formatTimestamp(value string) string {
 	return strings.TrimSuffix(strings.ReplaceAll(value, "T", " "), "Z")
 }
 
-// durationToken matches one `<count><unit>` segment of a kubectl-style
-// compressed duration ("3h2m", "41d", "1y127d"). The unit vocabulary is the
-// designed duration parser set: s m h d w y.
-var durationToken = regexp.MustCompile(`(\d+)([smhdwy])`)
-
-// durationUnitMinutes maps the duration units onto minutes,
-// mirroring the design reference ageMinutes (render.js) byte-faithfully.
-var durationUnitMinutes = map[byte]float64{
-	's': 1.0 / 60,
-	'm': 1,
-	'h': 60,
-	'd': 1440,
-	'w': 10080,
-	'y': 525600,
+// ageUnitSeconds resolves one unit in readout's kubectl-style duration grammar.
+// Keep these as explicit values: this is policy shared by display bucketing and
+// filtering, not an independent set of arithmetic formulas for each consumer.
+func ageUnitSeconds(unit byte) (float64, bool) {
+	switch unit {
+	case 's':
+		return 1, true
+	case 'm':
+		return 60, true
+	case 'h':
+		return 3600, true
+	case 'd':
+		return 86400, true
+	case 'w':
+		return 604800, true
+	case 'y':
+		return 31536000, true
+	default:
+		return 0, false
+	}
 }
 
-// ageMinutes parses a kubectl-style compressed duration string into minutes by
-// summing its `<count><unit>` tokens. Unrecognized text contributes nothing
-// ("<unknown>" -> 0), matching the reference parser's regex scan.
-func ageMinutes(value string) float64 {
-	var minutes float64
-	for _, m := range durationToken.FindAllStringSubmatch(value, -1) {
-		n, err := strconv.ParseFloat(m[1], 64)
-		if err != nil {
-			continue
-		}
-		minutes += n * durationUnitMinutes[m[2][0]]
+// parseAgeToken parses one complete kubectl-style duration into seconds.
+// apimachinery's HumanDuration emits one- and two-unit tokens (59s, 5m33s,
+// 3h, 2d3h, 1y127d), while filter input may use fractional counts. Every byte
+// must belong to a number+unit group: rejecting embedded or signed fragments
+// prevents display bucketing and filtering from assigning different ages to
+// the same value. Units are lowercase so quantities such as "100Mi" do not
+// half-parse as durations; a bare number has no unit and fails.
+func parseAgeToken(value string) (float64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
 	}
-	return minutes
+	var total float64
+	for i := 0; i < len(value); {
+		start := i
+		for i < len(value) && (value[i] >= '0' && value[i] <= '9' || value[i] == '.') {
+			i++
+		}
+		if i == start || i >= len(value) {
+			return 0, false
+		}
+		count, err := strconv.ParseFloat(value[start:i], 64)
+		if err != nil {
+			return 0, false
+		}
+		unit, ok := ageUnitSeconds(value[i])
+		if !ok {
+			return 0, false
+		}
+		i++
+		total += count * unit
+	}
+	return total, true
+}
+
+// ageMinutes parses the same complete duration token used by list filters and
+// converts it for the display bucket thresholds. Invalid text contributes no
+// age ("<unknown>" -> 0) instead of regex-scanning a valid-looking substring.
+func ageMinutes(value string) float64 {
+	seconds, ok := parseAgeToken(value)
+	if !ok {
+		return 0
+	}
+	return seconds / 60
 }
 
 // durationAgeClass buckets a kubectl-style duration STRING as a fraction of
@@ -781,18 +839,19 @@ func ageMinutes(value string) float64 {
 // timestamp.
 func durationAgeClass(value string) string {
 	fraction := ageMinutes(value) / (24 * 60)
-	switch {
-	case fraction < 0.10:
+	if fraction < 0.10 {
 		return "age-fresh"
-	case fraction < 0.35:
-		return "age-recent"
-	case fraction < 0.65:
-		return "age-day"
-	case fraction < 1.0:
-		return "age-week"
-	default:
-		return "age-old"
 	}
+	if fraction < 0.35 {
+		return "age-recent"
+	}
+	if fraction < 0.65 {
+		return "age-day"
+	}
+	if fraction < 1.0 {
+		return "age-week"
+	}
+	return "age-old"
 }
 
 func (s *Server) ageClass(value string) string {
@@ -808,18 +867,19 @@ func (s *Server) ageClass(value string) string {
 		seconds = 0
 	}
 	fraction := seconds / (24 * time.Hour).Seconds()
-	switch {
-	case fraction < 0.10:
+	if fraction < 0.10 {
 		return "age-fresh"
-	case fraction < 0.35:
-		return "age-recent"
-	case fraction < 0.65:
-		return "age-day"
-	case fraction < 1.0:
-		return "age-week"
-	default:
-		return "age-old"
 	}
+	if fraction < 0.35 {
+		return "age-recent"
+	}
+	if fraction < 0.65 {
+		return "age-day"
+	}
+	if fraction < 1.0 {
+		return "age-week"
+	}
+	return "age-old"
 }
 
 func assetHashes(fsys fs.FS) map[string]string {
@@ -904,14 +964,6 @@ func truncate(value string, max int) string {
 		prefix = prefix[:idx]
 	}
 	return prefix + "..."
-}
-
-func splitOwnerTitle(title string) (string, string) {
-	kind, name, ok := strings.Cut(title, "/")
-	if !ok {
-		return "", ""
-	}
-	return kind, name
 }
 
 func allowedTheme(value string, cfg *config.Config) bool {
@@ -1076,23 +1128,20 @@ func safeSpreadsheetCell(value string) string {
 }
 
 // safeAttachmentFilename builds a conservative Content-Disposition attachment
-// filename token: it strips path separators and control characters (anything
-// below U+0020, which would let a CR/LF split the header) so the result is a
-// single safe line. A value that collapses to empty falls back to "download".
-// mime.FormatMediaType handles the quoting/encoding of the returned value.
+// filename token: it replaces path separators and strips every Unicode control
+// character so the result is a single safe line. A value that collapses to empty
+// falls back to "download". mime.FormatMediaType handles the quoting/encoding of
+// the returned value.
 func safeAttachmentFilename(name string) string {
-	var b strings.Builder
-	for _, r := range name {
-		switch {
-		case r < 0x20, r == 0x7f:
-			// drop control characters (incl. CR/LF/tab)
-		case r == '/', r == '\\':
-			b.WriteByte('_')
-		default:
-			b.WriteRune(r)
+	out := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
 		}
-	}
-	out := b.String()
+		if r == '/' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, name)
 	if out == "" {
 		return "download"
 	}
@@ -1109,11 +1158,20 @@ func attachmentDisposition(filename string) string {
 	})
 }
 
-func resourceHref(cluster string, rt *kube.ResourceType, namespace, name string) string {
-	if rt.Namespaced {
-		return fmt.Sprintf("/clusters/%s/namespaces/%s/%s/%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(rt.Plural), url.PathEscape(name))
+// resourceListHref is the canonical resource-list route builder. Callers pass
+// the resource's real scope explicitly so a non-empty namespace cannot put a
+// cluster-scoped resource under /namespaces by accident. Keeping the list route
+// here also makes object links and both detail breadcrumb paths share identical
+// segment escaping.
+func resourceListHref(cluster, namespace, plural string, namespaced bool) string {
+	if namespaced {
+		return fmt.Sprintf("/clusters/%s/namespaces/%s/%s", url.PathEscape(cluster), url.PathEscape(namespace), url.PathEscape(plural))
 	}
-	return fmt.Sprintf("/clusters/%s/%s/%s", url.PathEscape(cluster), url.PathEscape(rt.Plural), url.PathEscape(name))
+	return fmt.Sprintf("/clusters/%s/%s", url.PathEscape(cluster), url.PathEscape(plural))
+}
+
+func resourceHref(cluster string, rt *kube.ResourceType, namespace, name string) string {
+	return resourceListHref(cluster, namespace, rt.Plural, rt.Namespaced) + "/" + url.PathEscape(name)
 }
 
 func objectDownloadYAMLHref(cluster, namespace string, object *kube.Object) string {

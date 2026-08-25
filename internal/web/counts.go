@@ -15,7 +15,7 @@ package web
 // Counts are cached on the Server (TTL-invalidated, hardcoded -- deliberately
 // NO config knob), fetched concurrently during layout assembly with one shared
 // short deadline so a slow or dead kind can never delay a page render beyond
-// countFetchTimeout, and render on full page loads only -- the `_table`
+// the count policy's fetch timeout, and render on full page loads only -- the `_table`
 // refresh partial never rebuilds the sidebar, so ticks never re-fetch
 // (a deliberate cost cut: the design calls for live counts, but page-load +
 // TTL is the sanctioned trade-off). A failed fetch renders NO count (and the failure is
@@ -34,15 +34,25 @@ import (
 	"github.com/kbelokon/readout/internal/kube"
 )
 
-const (
-	// countTTL is how long a fetched count (or a fetch failure) is served from
-	// the Server cache before a page load re-fetches it.
-	countTTL = 15 * time.Second
-	// countFetchTimeout bounds the whole per-render count fan-out: every fetch
-	// shares one deadline, so layout assembly stalls at most this long even if
-	// every kind hangs.
-	countFetchTimeout = 800 * time.Millisecond
-)
+// countPolicy is the immutable sidebar-count timing policy copied into each
+// Server. Keeping it with the Server makes timing ownership explicit and lets
+// independently constructed servers (including tests) use different policies
+// without sharing mutable package state.
+type countPolicy struct {
+	ttl          time.Duration
+	fetchTimeout time.Duration
+}
+
+// defaultCountPolicy returns the production sidebar-count timing policy. A
+// fetched count (or fetch failure) is served for 15 seconds, while every count
+// in one render shares a single 800 ms deadline so a dead backend cannot hold
+// up page assembly.
+func defaultCountPolicy() countPolicy {
+	return countPolicy{
+		ttl:          15 * time.Second,
+		fetchTimeout: 800 * time.Millisecond,
+	}
+}
 
 // countKey identifies one cached count. The unit of caching is the exact list
 // the sidebar entry points at: the cluster, the resolved type (apiVersion +
@@ -74,11 +84,11 @@ type countCache struct {
 }
 
 // lookup returns the cached entry when it exists and is fresher than the TTL.
-func (c *countCache) lookup(key countKey, now time.Time) (countEntry, bool) {
+func (c *countCache) lookup(key countKey, now time.Time, ttl time.Duration) (countEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
-	if !ok || now.Sub(entry.fetchedAt) >= countTTL {
+	if !ok || now.Sub(entry.fetchedAt) >= ttl {
 		return countEntry{}, false
 	}
 	return entry, true
@@ -124,10 +134,11 @@ func (s *Server) attachSidebarCounts(ctx context.Context, client *kube.Client, c
 	if client == nil || cluster == "" || cluster == kube.AllClusters || len(targets) == 0 {
 		return
 	}
-	fetchCtx, cancel := context.WithTimeout(ctx, countFetchTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, s.countPolicy.fetchTimeout)
 	defer cancel()
-	// One shared 800ms deadline over an UNBOUNDED fan-out (limit = len(targets)),
-	// so a slow or dead kind can never delay the page beyond countFetchTimeout.
+	// One shared policy deadline over an UNBOUNDED fan-out (limit = len(targets)),
+	// so a slow or dead kind can never delay the page beyond the Server's count
+	// fetch timeout (800 ms in production).
 	// Each closure mutates its own target in place and returns nothing; the
 	// returned slot array is ignored. Errors degrade to an absent count and are
 	// never raised -- a sibling count must still land. The fan-out is mechanism
@@ -159,7 +170,7 @@ func (s *Server) cachedCount(ctx context.Context, client *kube.Client, cluster s
 		namespace:  target.namespace,
 	}
 	now := s.clock()
-	if entry, ok := s.counts.lookup(key, now); ok {
+	if entry, ok := s.counts.lookup(key, now, s.countPolicy.ttl); ok {
 		return entry.count, entry.ok
 	}
 	table, err := client.Table(ctx, &target.resource, kube.ListOptions{Namespace: target.namespace, Limit: 1})
@@ -171,7 +182,7 @@ func (s *Server) cachedCount(ctx context.Context, client *kube.Client, cluster s
 		// The CALLER's own cancellation (an aborted page load propagating into
 		// the fan-out ctx) says nothing about the kind -- never negative-cache
 		// it, or one aborted load blanks every sidebar count for a full TTL.
-		// The per-fetch deadline stays cached deliberately: countFetchTimeout
+		// The per-fetch deadline stays cached deliberately: the count policy's
 		// firing surfaces as DeadlineExceeded (not Canceled), so a dead-slow
 		// kind still costs one probe per TTL window, not one per page load.
 		return 0, false

@@ -45,6 +45,31 @@ func TestFormattingHelpers(t *testing.T) {
 	}
 }
 
+func TestTitleFormattingPreservesUTF8(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "human title Cyrillic", got: humanTitle("приложение.имя-поля"), want: "Приложение Имя Поля"},
+		{name: "human title accented", got: humanTitle("metadata.über_name"), want: "Metadata Über Name"},
+		{name: "human title repeated separators", got: humanTitle("..приложение__имя--"), want: "Приложение Имя"},
+		{name: "capitalized Cyrillic", got: capitalizeWord("сТАТУС"), want: "Статус"},
+		{name: "capitalized accented", got: capitalizeWord("überStatus"), want: "Überstatus"},
+		{name: "capitalized empty", got: capitalizeWord(""), want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !utf8.ValidString(tt.got) {
+				t.Fatalf("title = %q is not valid UTF-8", tt.got)
+			}
+			if tt.got != tt.want {
+				t.Fatalf("title = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTableCellFormattingHelpers(t *testing.T) {
 	table := kube.Table{Resource: kube.ResourceType{Plural: "pods"}, Columns: []kube.Column{{Name: "Name"}, {Name: "Status"}, {Name: "CPU Usage"}, {Name: "Memory Usage"}}}
 	// Completed encodes mute under the status-tone table (was the retired info tone).
@@ -360,6 +385,9 @@ func TestAgeClassThresholds(t *testing.T) {
 		// Exact boundary behaviour: strict `<` means the boundary value falls
 		// into the NEXT (older) bucket.
 		{"fraction exactly 0.10 -> recent not fresh", at(8700 * time.Second), "age-recent"},
+		{"fraction exactly 0.35 -> day not recent", at(30300 * time.Second), "age-day"},
+		{"fraction exactly 0.65 -> week not day", at(56220 * time.Second), "age-week"},
+		{"fraction exactly 1.0 -> old not week", at(86460 * time.Second), "age-old"},
 		{"fraction just under 1.0 -> week not old", at(86459 * time.Second), "age-week"},
 	}
 	for _, tc := range cases {

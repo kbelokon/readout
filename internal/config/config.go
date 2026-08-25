@@ -589,8 +589,13 @@ func resolve(file *fileConfig) (Config, error) {
 		(cfg.OIDCIssuerURL != "" || (cfg.OAuth2AuthorizeURL != "" && cfg.OAuth2TokenURL != "")) {
 		return Config{}, errors.New(`oidc settings present but auth.mode is "none"; set auth.mode: oidc (implicit promotion was removed)`)
 	}
-	if oidcEnabled(&cfg) && cfg.OIDCRedirectURL == "" && cfg.PublicURL == "" {
-		return Config{}, errors.New("auth.oidc.redirectUrl or publicUrl is required when OIDC is enabled")
+	if oidcEnabled(&cfg) {
+		if err := cfg.ValidateOAuth2Provider(); err != nil {
+			return Config{}, err
+		}
+		if cfg.OIDCRedirectURL == "" && cfg.PublicURL == "" {
+			return Config{}, errors.New("auth.oidc.redirectUrl or publicUrl is required when OIDC is enabled")
+		}
 	}
 	if cfg.SearchMaxConcurrency <= 0 {
 		return Config{}, errors.New("search maxConcurrency must be positive")
@@ -678,6 +683,34 @@ func firstNonZero(values ...int) int {
 // fields is rejected at load before this is consulted.
 func oidcEnabled(cfg *Config) bool {
 	return cfg.AuthMode == AuthModeOIDC
+}
+
+// ValidateOAuth2Provider checks the credentials and provider endpoints required
+// for an authorization-code flow. Parse calls it after file, environment, and
+// secret-file precedence has been resolved, so an impossible active OIDC
+// deployment fails at startup instead of returning HTTP 500 from every login.
+// Auth also calls it defensively for directly constructed Config values.
+//
+// An issuer selects discovery and takes precedence over generic OAuth2
+// endpoints. Without an issuer, authorizeUrl and tokenUrl are an inseparable
+// pair. A client secret remains optional because public clients are valid.
+func (cfg *Config) ValidateOAuth2Provider() error {
+	if cfg.OIDCClientID == "" {
+		return errors.New("auth.oidc.clientId or clientIdFile is required when OIDC is enabled")
+	}
+	if cfg.OIDCIssuerURL != "" {
+		return nil
+	}
+	if cfg.OAuth2AuthorizeURL == "" {
+		if cfg.OAuth2TokenURL != "" {
+			return errors.New("auth.oidc.authorizeUrl is required when tokenUrl is set")
+		}
+		return errors.New("auth.oidc.issuerUrl or both authorizeUrl and tokenUrl are required when OIDC is enabled")
+	}
+	if cfg.OAuth2TokenURL == "" {
+		return errors.New("auth.oidc.tokenUrl is required when authorizeUrl is set")
+	}
+	return nil
 }
 
 func mapOrEmpty(m map[string]string) map[string]string {

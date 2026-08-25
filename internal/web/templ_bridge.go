@@ -504,12 +504,13 @@ func toDetailData(v *detailView) templates.DetailData {
 		d.Containers = c
 	}
 	for _, owner := range v.Owners {
-		kind, name := splitOwnerTitle(owner.Title)
-		if kind != "" && name != "" {
-			d.Owners = append(d.Owners, templates.OwnerLink{Href: owner.Href, Kind: kind, Name: name, Split: true})
-		} else {
-			d.Owners = append(d.Owners, templates.OwnerLink{Href: owner.Href, Title: owner.Title})
-		}
+		d.Owners = append(d.Owners, templates.OwnerLink{
+			Href:  owner.Href,
+			Kind:  owner.Kind,
+			Name:  owner.Name,
+			Title: owner.Title,
+			Split: true,
+		})
 	}
 	if v.Secret != nil {
 		d.Secret = &templates.SecretData{KeyCount: v.Secret.KeyCount, Keys: v.Secret.Keys}
@@ -549,40 +550,37 @@ func toDetailBreadcrumb(v *detailView) templates.DetailBreadcrumb {
 // name crumbs.
 func detailStateBreadcrumb(v *detailView) templates.DetailBreadcrumb {
 	s := v.State
+	namespaced := s.Namespace != "" && s.Resource != "namespaces"
 	b := templates.DetailBreadcrumb{
 		ClusterHref: "/clusters/" + url.PathEscape(v.Cluster),
 		Cluster:     v.Cluster,
 		Name:        s.Name,
+		PluralHref:  resourceListHref(v.Cluster, s.Namespace, s.Resource, namespaced),
+		Plural:      s.Resource,
 	}
-	if s.Namespace != "" && s.Resource != "namespaces" {
+	if namespaced {
 		b.ShowNamespace = true
 		b.NamespaceHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(s.Namespace)
 		b.Namespace = s.Namespace
-		b.PluralHref = "/clusters/" + url.PathEscape(v.Cluster) + "/namespaces/" + url.PathEscape(s.Namespace) + "/" + url.PathEscape(s.Resource)
-	} else {
-		b.PluralHref = "/clusters/" + url.PathEscape(v.Cluster) + "/" + url.PathEscape(s.Resource)
 	}
-	b.Plural = s.Resource
 	return b
 }
 
 // objectBreadcrumb builds the object breadcrumb (cluster [+ namespace + plural]
 // + the active object name) shared by the resource-view and logs pages.
 func objectBreadcrumb(cluster, namespace string, object *kube.Object) templates.DetailBreadcrumb {
+	namespaced := object.Resource.Namespaced && namespace != ""
 	b := templates.DetailBreadcrumb{
 		ClusterHref: "/clusters/" + url.PathEscape(cluster),
 		Cluster:     cluster,
 		Name:        object.Name(),
+		PluralHref:  resourceListHref(cluster, namespace, object.Resource.Plural, namespaced),
+		Plural:      object.Resource.Plural,
 	}
-	if namespace != "" && object.Kind() != "Namespace" {
+	if namespaced {
 		b.ShowNamespace = true
 		b.NamespaceHref = "/clusters/" + url.PathEscape(cluster) + "/namespaces/" + url.PathEscape(namespace)
 		b.Namespace = namespace
-		b.PluralHref = "/clusters/" + url.PathEscape(cluster) + "/namespaces/" + url.PathEscape(namespace) + "/" + url.PathEscape(object.Resource.Plural)
-		b.Plural = object.Resource.Plural
-	} else {
-		b.PluralHref = "/clusters/" + url.PathEscape(cluster) + "/" + url.PathEscape(object.Resource.Plural)
-		b.Plural = object.Resource.Plural
 	}
 	return b
 }
@@ -730,14 +728,19 @@ func searchTotals(v *searchView) (line, meta string) {
 	return line, meta
 }
 
-// searchScopeClusterLabel is the scope-opts cluster fragment: "all clusters" for
-// an all-clusters search with no resolved scope chips, the single cluster name
-// when exactly one was searched, else "N clusters".
+// searchScopeClusterLabel is the scope-opts cluster fragment. Resolved cluster
+// cardinality is the primary state: one cluster names itself and multiple
+// clusters use a count. An empty resolved scope preserves the distinction
+// between an all-clusters request ("all clusters") and an explicitly empty
+// scope ("0 clusters").
 func searchScopeClusterLabel(v *searchView) string {
-	switch {
-	case v.IsAllClusters && len(v.ScopeClusters) == 0:
-		return "all clusters"
-	case len(v.ScopeClusters) == 1:
+	switch len(v.ScopeClusters) {
+	case 0:
+		if v.IsAllClusters {
+			return "all clusters"
+		}
+		return "0 clusters"
+	case 1:
 		return v.ScopeClusters[0].Name
 	default:
 		return fmt.Sprintf("%d clusters", len(v.ScopeClusters))

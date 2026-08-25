@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -309,6 +310,99 @@ func TestArgoSecretSourceMalformedSecretSkipped(t *testing.T) {
 	var cle *ContextLoadError
 	if !errors.As(b.Err, &cle) {
 		t.Fatalf("bad secret error should be a *ContextLoadError, got %T: %v", b.Err, b.Err)
+	}
+}
+
+// TestDiscoverArgoSecretsWarnsOnlyForAdmittedClusters pins the per-Secret
+// admission order and identity model. An insecure exec-plugin Secret rejected
+// by policy and a syntactically valid Secret whose client certificate is
+// incomplete are both broken under their parsed cluster names and emit no TLS
+// warning. Their admitted insecure sibling remains usable and emits the only TLS
+// warning, proving failure isolation and avoiding false active-cluster alarms.
+func TestDiscoverArgoSecretsWarnsOnlyForAdmittedClusters(t *testing.T) {
+	stubResolver(t, map[string][]string{
+		"retained.example.com": {"10.0.0.20"},
+		"blocked.example.com":  {"10.0.0.21"},
+		"invalid.example.com":  {"10.0.0.22"},
+	})
+	retained := argoClusterSecret("retained-secret", map[string]string{
+		"name":   "retained",
+		"server": "https://retained.example.com",
+		"config": `{"bearerToken":"tok","tlsClientConfig":{"insecure":true}}`,
+	})
+	blocked := argoClusterSecret("blocked-secret", map[string]string{
+		"name":   "blocked",
+		"server": "https://blocked.example.com",
+		"config": `{"execProviderConfig":{"apiVersion":"client.authentication.k8s.io/v1","command":"unknown-auth-plugin"},"tlsClientConfig":{"insecure":true}}`,
+	})
+	invalid := argoClusterSecret("invalid-secret", map[string]string{
+		"name":   "invalid-logical",
+		"server": "https://invalid.example.com",
+		"config": `{"tlsClientConfig":{"insecure":true,"certData":"Y2VydA=="}}`,
+	})
+
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	discovered, err := discoverArgoSecrets(
+		context.Background(),
+		fake.NewClientset(retained, blocked, invalid),
+		"argocd",
+		credentialPluginGate{},
+	)
+	if err != nil {
+		t.Fatalf("discoverArgoSecrets: %v", err)
+	}
+	if len(discovered) != 3 {
+		t.Fatalf("discovered clusters = %d, want 3: %#v", len(discovered), discovered)
+	}
+	byName := make(map[string]discoveredCluster, len(discovered))
+	for _, dc := range discovered {
+		byName[dc.Name] = dc
+	}
+
+	good := byName["retained"]
+	if good.Err != nil || good.Config == nil || !good.Config.Insecure {
+		t.Fatalf("retained cluster = %#v, want admitted insecure config", good)
+	}
+	if good.Spec["argo_secret"] != "retained-secret" {
+		t.Fatalf("retained Secret provenance = %v, want retained-secret", good.Spec["argo_secret"])
+	}
+	for _, name := range []string{"blocked", "invalid-logical"} {
+		dc, ok := byName[name]
+		if !ok {
+			t.Fatalf("logical failure %q missing; Secret-name attribution leaked: %#v", name, discovered)
+		}
+		if dc.Err == nil || dc.Config != nil {
+			t.Fatalf("failed cluster %q = %#v, want typed error and nil Config", name, dc)
+		}
+		var loadErr *ContextLoadError
+		if !errors.As(dc.Err, &loadErr) || loadErr.Name != name {
+			t.Fatalf("failed cluster %q error = %#v, want matching ContextLoadError", name, dc.Err)
+		}
+	}
+	if _, leaked := byName["blocked-secret"]; leaked {
+		t.Fatalf("post-parse gate failure used Secret object name: %#v", discovered)
+	}
+	if _, leaked := byName["invalid-secret"]; leaked {
+		t.Fatalf("post-parse REST config failure used Secret object name: %#v", discovered)
+	}
+
+	output := logs.String()
+	if !strings.Contains(output, "exec credential plugin denied") || !strings.Contains(output, "cluster=blocked") {
+		t.Fatalf("blocked cluster lost its policy warning: %q", output)
+	}
+	var tlsWarnings []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "TLS verification disabled") {
+			tlsWarnings = append(tlsWarnings, line)
+		}
+	}
+	if len(tlsWarnings) != 1 || !strings.Contains(tlsWarnings[0], "cluster=retained") ||
+		strings.Contains(tlsWarnings[0], "cluster=blocked") || strings.Contains(tlsWarnings[0], "cluster=invalid-logical") {
+		t.Fatalf("TLS warnings = %q, want exactly one for retained", output)
 	}
 }
 

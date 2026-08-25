@@ -1,6 +1,6 @@
 module github.com/kbelokon/readout
 
-go 1.26.5
+go 1.26.7
 
 require (
 	github.com/PuerkitoBio/goquery v1.12.0

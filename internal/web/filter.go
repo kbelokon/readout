@@ -151,14 +151,16 @@ func parseFilterChip(raw string) filterChip {
 // operator bytes are ASCII and never occur inside multi-byte sequences.
 func splitFilterOperator(s string) (string, filterOp, string) {
 	for i := 0; i < len(s); i++ {
-		switch {
-		case s[i] == '!' && i+1 < len(s) && s[i+1] == '=':
-			return s[:i], opNotContains, s[i+2:]
-		case s[i] == ':':
+		switch s[i] {
+		case '!':
+			if i+1 < len(s) && s[i+1] == '=' {
+				return s[:i], opNotContains, s[i+2:]
+			}
+		case ':':
 			return s[:i], opContains, s[i+1:]
-		case s[i] == '>':
+		case '>':
 			return s[:i], opGreater, s[i+1:]
-		case s[i] == '<':
+		case '<':
 			return s[:i], opLess, s[i+1:]
 		}
 	}
@@ -476,54 +478,6 @@ func parseCellAgeToken(text string) (float64, bool) {
 		token = token[:i]
 	}
 	return parseAgeToken(token)
-}
-
-// parseAgeToken parses a kubectl-age token into seconds. apimachinery's
-// HumanDuration emits one- AND two-unit tokens (59s, 5m33s, 3h, 2d3h, 1y127d),
-// so the parser accepts any run of number+unit groups and sums them. Units
-// are the s/m/h/d/w/y duration set, lowercase only -- case-sensitivity keeps
-// quantity suffixes like "100Mi" from half-parsing as durations. A bare
-// number has no unit and fails, so `restarts>0` stays a numeric compare.
-func parseAgeToken(s string) (float64, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, false
-	}
-	var total float64
-	i := 0
-	for i < len(s) {
-		start := i
-		for i < len(s) && (s[i] >= '0' && s[i] <= '9' || s[i] == '.') {
-			i++
-		}
-		if i == start || i >= len(s) {
-			return 0, false
-		}
-		n, err := strconv.ParseFloat(s[start:i], 64)
-		if err != nil {
-			return 0, false
-		}
-		var unit float64
-		switch s[i] {
-		case 's':
-			unit = 1
-		case 'm':
-			unit = 60
-		case 'h':
-			unit = 60 * 60
-		case 'd':
-			unit = 24 * 60 * 60
-		case 'w':
-			unit = 7 * 24 * 60 * 60
-		case 'y':
-			unit = 365 * 24 * 60 * 60
-		default:
-			return 0, false
-		}
-		i++
-		total += n * unit
-	}
-	return total, true
 }
 
 // addFilterChipHref returns u with one `f=<chip>` pair APPENDED to RawQuery.

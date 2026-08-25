@@ -29,7 +29,7 @@ const hookTimeout = 10 * time.Second
 // hook may echo back a modified resource, and a single Kubernetes object can
 // legitimately approach the ~1.5 MiB etcd object ceiling, with JSON inflation
 // on top; 4 MiB leaves room for that while still stopping a runaway hook.
-const responseCap = 4 << 20
+const responseCap = 4_194_304 // 4 MiB
 
 // Observer is the callback the web layer hands a Client so it can record hook
 // call duration without internal/hooks importing Prometheus. It carries the hook
@@ -164,9 +164,19 @@ func (c *Client) postJSON(ctx context.Context, endpoint string, payload any, out
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, responseCap))
+	// Read one byte beyond the advertised cap so the boundary is enforced
+	// independently of JSON syntax. Reading exactly responseCap bytes and then
+	// unmarshalling is insufficient: a complete JSON value followed by enough
+	// whitespace to exceed the cap still decodes successfully after truncation.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, responseCap+1))
 	if err != nil {
 		return err
+	}
+	oversized := len(data) > responseCap
+	if oversized {
+		// Keep status-body logging bounded as well. Non-2xx responses retain their
+		// status error below; successful oversized responses are rejected explicitly.
+		data = data[:responseCap]
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// The hook response body can carry endpoint-internal detail (and, on a
@@ -174,8 +184,11 @@ func (c *Client) postJSON(ctx context.Context, endpoint string, payload any, out
 		// browser through a surfaced error. Log status+body server-side and return
 		// an error carrying only the status -- no body. Callers map this to a
 		// generic client message.
-		slog.Error("hook call failed", "endpoint", endpoint, "status", resp.Status, "body", string(data))
+		slog.Error("hook call failed", "endpoint", endpoint, "status", resp.Status, "body", string(data), "body_truncated", oversized)
 		return fmt.Errorf("hook returned %s", resp.Status)
+	}
+	if oversized {
+		return fmt.Errorf("hook response exceeds %d-byte limit", responseCap)
 	}
 	if len(data) == 0 || out == nil {
 		return nil
