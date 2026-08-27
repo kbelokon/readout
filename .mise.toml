@@ -1,7 +1,7 @@
 # Local development toolchain. Keep this in sync with CI/Makefile pins.
 [tools]
 go = "1.26.7"
-node = "24.15.0"
+node = "24.19.0"
 golangci-lint = "2.11.2"
 make = "4.4.1"
 zig = "0.16.0"

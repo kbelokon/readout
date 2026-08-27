@@ -6,7 +6,12 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["internal/assets/src/js/**", "scripts/**/*.mjs", "vitest.config.ts"]
+    "includes": [
+      "internal/assets/src/js/**",
+      "scripts/**/*.mjs",
+      "vitest.config.ts",
+      "stryker.config.mjs"
+    ]
   },
   "formatter": {
     "enabled": true,
