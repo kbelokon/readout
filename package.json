@@ -33,7 +33,7 @@
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@testing-library/dom": "10.4.1",
     "@testing-library/jest-dom": "7.0.1",
-    "@types/node": "24.13.3",
+    "@types/node": "26.3.0",
     "@typescript/legacy": "npm:@typescript/typescript6@6.0.2",
     "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "4.1.11",
