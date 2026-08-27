@@ -63,18 +63,15 @@ export interface Binding {
 // Element node (a text node from a click on a text run); we walk to the nearest
 // Element first so closest() is always defined.
 function closestElement(event: Event, selector: string): Element | null {
-    let node: Node | null = event.target as Node | null;
-    while (node && node.nodeType !== 1) {
-        node = node.parentNode;
-    }
-    return node ? (node as Element).closest(selector) : null;
+    const target = event.target;
+    const element = target instanceof Element ? target : (target as Node | null)?.parentElement;
+    return element?.closest(selector) ?? null;
 }
 
 // dispatch runs the bindings for ONE event type against ONE event instance, in
 // order, honouring per-binding match/stop/isolation per the contract above.
 function dispatch(bindings: Binding[], event: Event): void {
-    for (let i = 0; i < bindings.length; i++) {
-        const binding = bindings[i];
+    for (const binding of bindings) {
         let matched: Element | null = null;
         if (binding.selector !== undefined) {
             matched = closestElement(event, binding.selector);

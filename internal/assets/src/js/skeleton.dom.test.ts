@@ -55,6 +55,21 @@ describe('list skeleton lifecycle', () => {
         document.getElementById('ro-skel-template')?.remove();
         document.dispatchEvent(requestEvent('htmx:beforeRequest'));
         expect(document.querySelector('#resource-list-content .ro-skel')).not.toBeInTheDocument();
+
+        document.getElementById('resource-list-content')?.remove();
+        expect(() => document.dispatchEvent(requestEvent('htmx:beforeRequest'))).not.toThrow();
+    });
+
+    test('an error clears every skeleton root created by the request lifecycle', () => {
+        document.dispatchEvent(requestEvent('htmx:beforeRequest'));
+        const content = document.getElementById('resource-list-content') as HTMLElement;
+        content.insertAdjacentHTML('beforeend', '<p>Diagnostic</p>');
+        expect(content.querySelectorAll(':scope > .ro-skel')).toHaveLength(2);
+
+        document.dispatchEvent(requestEvent('htmx:responseError'));
+
+        expect(content.querySelectorAll(':scope > .ro-skel')).toHaveLength(0);
+        expect(content).toHaveTextContent('Diagnostic');
     });
 
     test.each(['htmx:responseError', 'htmx:sendError'])(
@@ -73,11 +88,14 @@ describe('list skeleton lifecycle', () => {
         },
     );
 
-    test('error events do not touch a skeleton belonging to another request', () => {
-        renderSkeleton('<div class="ro-skel">Loading</div>');
+    test.each(['htmx:responseError', 'htmx:sendError'])(
+        '%s does not touch a skeleton belonging to another request',
+        (eventType) => {
+            renderSkeleton('<div class="ro-skel">Loading</div>');
 
-        document.dispatchEvent(requestEvent('htmx:responseError', false));
+            document.dispatchEvent(requestEvent(eventType, false));
 
-        expect(document.querySelector('#resource-list-content .ro-skel')).toBeInTheDocument();
-    });
+            expect(document.querySelector('#resource-list-content .ro-skel')).toBeInTheDocument();
+        },
+    );
 });

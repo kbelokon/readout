@@ -19,9 +19,11 @@ import {
     type ModelRow,
     mergeColParams,
     normalizeFieldName,
+    normalizeFieldWhitespace,
     rankFieldSuggestions,
     rankValueSuggestions,
     splitFilterDraft,
+    trimFilterWhitespace,
 } from './filters-parse.js';
 
 // A pod-like model: Name + the data-hint Status/Node columns, plus a synthetic
@@ -43,15 +45,34 @@ const PODS_ROWS: ModelRow[] = [
 
 // --- normalizeFieldName / fieldSuggestionText -------------------------------
 
-test('normalizeFieldName lowercases, dashes->spaces, trims', () => {
+test('normalizeFieldName lowercases, dashes->spaces, and collapses whitespace', () => {
     expect(normalizeFieldName('Nominated-Node')).toBe('nominated node');
     expect(normalizeFieldName('  NOMINATED NODE  ')).toBe('nominated node');
+    expect(normalizeFieldName('\tWorkload   \n Status\u00a0')).toBe('workload status');
+    expect(normalizeFieldName('\u0085Workload\u0085Status\u0085')).toBe('workload status');
+    expect(normalizeFieldName('\uFEFFWorkload\uFEFFStatus\uFEFF')).toBe(
+        '\uFEFFworkload\uFEFFstatus\uFEFF',
+    );
     expect(normalizeFieldName('')).toBe('');
 });
 
-test('fieldSuggestionText dashes the lowercase label', () => {
+test('header whitespace normalization uses Go unicode.IsSpace rather than JavaScript trim', () => {
+    expect(normalizeFieldWhitespace('\u0085 Workload\u00a0 Status \u0085')).toBe('Workload Status');
+    expect(normalizeFieldWhitespace('\uFEFFStatus\uFEFF')).toBe('\uFEFFStatus\uFEFF');
+    expect(trimFilterWhitespace('\u0085 status \u0085')).toBe('status');
+    expect(trimFilterWhitespace('\uFEFFstatus\uFEFF')).toBe('\uFEFFstatus\uFEFF');
+});
+
+test('fieldSuggestionText emits the dashed form of the shared field normalization', () => {
     expect(fieldSuggestionText('Nominated Node')).toBe('nominated-node');
     expect(fieldSuggestionText('Status')).toBe('status');
+    const oddWhitespaceLabel = ' \tWorkload   \n Status\u00a0 ';
+    const suggestion = fieldSuggestionText(oddWhitespaceLabel);
+    expect(suggestion).toBe('workload-status');
+    expect(normalizeFieldName(suggestion)).toBe(normalizeFieldName(oddWhitespaceLabel));
+    expect(fieldSuggestionText('Workload\u0085Status')).toBe('workload-status');
+    expect(fieldSuggestionText('Workload\uFEFFStatus')).toBe('workload\uFEFFstatus');
+    expect(fieldSuggestionText('')).toBe('');
 });
 
 // --- splitFilterDraft -------------------------------------------------------
@@ -81,16 +102,58 @@ test('!= is recognized as a two-char operator before a later single-char op', ()
     expect(splitFilterDraft('a!=b<c')).toStrictEqual({ field: 'a', op: '!=', value: 'b<c' });
 });
 
+test('field whitespace is trimmed while value whitespace is preserved', () => {
+    expect(splitFilterDraft('  status : Running ')).toStrictEqual({
+        field: 'status',
+        op: ':',
+        value: ' Running ',
+    });
+    expect(splitFilterDraft('  status != Pending')).toStrictEqual({
+        field: 'status',
+        op: '!=',
+        value: ' Pending',
+    });
+    expect(splitFilterDraft('\u0085status\u0085:Running')).toStrictEqual({
+        field: 'status',
+        op: ':',
+        value: 'Running',
+    });
+    expect(splitFilterDraft('\uFEFFstatus\uFEFF:Running')).toStrictEqual({
+        field: '\uFEFFstatus\uFEFF',
+        op: ':',
+        value: 'Running',
+    });
+});
+
+test('a lone bang or equals is data, not an operator', () => {
+    expect(splitFilterDraft('note!draft')).toBe(null);
+    expect(splitFilterDraft('note=value')).toBe(null);
+    expect(splitFilterDraft('note!:ready')).toStrictEqual({
+        field: 'note!',
+        op: ':',
+        value: 'ready',
+    });
+    expect(splitFilterDraft('note=:ready')).toStrictEqual({
+        field: 'note=',
+        op: ':',
+        value: 'ready',
+    });
+});
+
 // --- filterSuggestionFields -------------------------------------------------
 
 test('suggestion fields exclude synthetic columns and add the virtual label/cpu/memory', () => {
-    const texts = filterSuggestionFields(PODS_FIELDS).map((f) => f.text);
+    const suggestions = filterSuggestionFields(PODS_FIELDS);
+    const texts = suggestions.map((f) => f.text);
     expect(texts).toContain('status');
     expect(texts).toContain('nominated-node');
     expect(texts, 'hintless Created column is not suggested').not.toContain('created');
     expect(texts, 'label is always offered').toContain('label');
     expect(texts, 'cpu alias offered when CPU Usage exists').toContain('cpu');
     expect(texts, 'memory alias offered when Memory Usage exists').toContain('memory');
+    expect(suggestions).toContainEqual({ text: 'label', hint: 'key=value' });
+    expect(suggestions).toContainEqual({ text: 'cpu', hint: 'quantity' });
+    expect(suggestions).toContainEqual({ text: 'memory', hint: 'quantity' });
 });
 
 test('bare cpu/memory CAPACITY columns are not suggested under those names', () => {
@@ -114,12 +177,33 @@ test('label always resolves; typed columns resolve normalized; unknowns do not',
     expect(filterFieldKnown(PODS_FIELDS, 'nominated node')).toBe(true);
     expect(filterFieldKnown(PODS_FIELDS, 'bogus')).toBe(false);
     expect(filterFieldKnown(PODS_FIELDS, '')).toBe(false);
+    expect(filterFieldKnown([{ label: '', name: '', hint: 'string' }], '')).toBe(false);
+});
+
+test('a suggestion generated from an odd-whitespace header resolves back to that column', () => {
+    const fields: ModelField[] = [
+        {
+            label: ' Workload\t  Status ',
+            name: fieldSuggestionText(' Workload\t  Status '),
+            hint: 'enum',
+        },
+    ];
+    const suggestedField = filterSuggestionFields(fields)[0].text;
+
+    expect(suggestedField).toBe('workload-status');
+    expect(filterFieldKnown(fields, suggestedField)).toBe(true);
+    expect(fieldColumnIndex(fields, suggestedField)).toBe(0);
 });
 
 test('cpu/memory resolve via the joined usage columns, never the capacity columns', () => {
     expect(filterFieldKnown(PODS_FIELDS, 'cpu')).toBe(true); // CPU Usage present
-    const capacity: ModelField[] = [{ label: 'CPU', name: 'cpu', hint: 'quantity' }];
+    expect(filterFieldKnown(PODS_FIELDS, 'memory')).toBe(true); // Memory Usage present
+    const capacity: ModelField[] = [
+        { label: 'CPU', name: 'cpu', hint: 'quantity' },
+        { label: 'Memory', name: 'memory', hint: 'quantity' },
+    ];
     expect(filterFieldKnown(capacity, 'cpu')).toBe(false); // capacity-only -> unknown
+    expect(filterFieldKnown(capacity, 'memory')).toBe(false);
 });
 
 // --- fieldColumnIndex -------------------------------------------------------
@@ -149,6 +233,29 @@ test('a substring match that is not a prefix ranks after a prefix match', () => 
     expect(items.map((item) => item.label)).toContain('status');
 });
 
+test('field ranking excludes non-matches and moves prefixes ahead of earlier substrings', () => {
+    const fields: ModelField[] = [
+        { label: 'Restart Count', name: 'restart-count', hint: 'number' },
+        { label: 'Status', name: 'status', hint: 'enum' },
+        { label: 'Namespace', name: 'namespace', hint: 'string' },
+    ];
+
+    expect(rankFieldSuggestions(fields, 'sta')).toStrictEqual([
+        {
+            label: 'status',
+            hint: 'enum',
+            insert: 'status:',
+            kind: 'field',
+        },
+        {
+            label: 'restart-count',
+            hint: 'number',
+            insert: 'restart-count:',
+            kind: 'field',
+        },
+    ]);
+});
+
 // --- rankValueSuggestions ---------------------------------------------------
 
 test('value suggestions are top-N distinct by frequency descending', () => {
@@ -169,9 +276,62 @@ test('value suggestions substring-filter by the typed value', () => {
     expect(items[0].label).toBe('Pending');
 });
 
-test('value suggestions are empty for an unresolved column', () => {
-    const split = { field: 'bogus', op: ':', value: '' };
-    expect(rankValueSuggestions(PODS_FIELDS, PODS_ROWS, split)).toStrictEqual([]);
+test('value matching trims the draft and emits a canonical trimmed field', () => {
+    const split = { field: ' status ', op: ':', value: ' PEND ' };
+    expect(rankValueSuggestions(PODS_FIELDS, PODS_ROWS, split)).toStrictEqual([
+        {
+            label: 'Pending',
+            hint: '×1',
+            insert: 'status:Pending',
+            kind: 'value',
+        },
+    ]);
+});
+
+test('value suggestions rank a later frequent value first and cap distinct results at eight', () => {
+    const fields: ModelField[] = [{ label: 'Name', name: 'name', hint: 'string' }];
+    const values = ['rare', 'common', 'common', 'v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8'];
+    const rows = values.map((value, index) => ({
+        key: `row-${index}`,
+        name: value,
+        cells: [value],
+    }));
+
+    const items = rankValueSuggestions(fields, rows, { field: 'name', op: ':', value: '' });
+    expect(items).toHaveLength(8);
+    expect(items[0]).toMatchObject({ label: 'common', hint: '×2' });
+    expect(items.map((item) => item.label)).not.toContain('v8');
+});
+
+test('value suggestions work for a real column at index zero', () => {
+    const items = rankValueSuggestions(PODS_FIELDS, PODS_ROWS, {
+        field: 'name',
+        op: ':',
+        value: 'web-2',
+    });
+    expect(items.map((item) => item.label)).toStrictEqual(['web-2']);
+});
+
+test('fields without a model column return before reading the full row set', () => {
+    let cellReads = 0;
+    const rows: ModelRow[] = [
+        {
+            key: 'prod/default/api-0',
+            name: 'api-0',
+            get cells() {
+                cellReads++;
+                return ['api-0'];
+            },
+        },
+    ];
+
+    expect(
+        rankValueSuggestions(PODS_FIELDS, rows, { field: 'bogus', op: ':', value: '' }),
+    ).toStrictEqual([]);
+    expect(
+        rankValueSuggestions(PODS_FIELDS, rows, { field: 'label', op: ':', value: 'app=web' }),
+    ).toStrictEqual([]);
+    expect(cellReads).toBe(0);
 });
 
 // --- liveNameMatchKeys ------------------------------------------------------
@@ -180,11 +340,26 @@ test('a free-text draft narrows to the matching row keys', () => {
     const keys = liveNameMatchKeys(PODS_ROWS, 'web');
     expect(keys).not.toBeNull();
     expect([...(keys as Set<string>)].sort()).toStrictEqual(['c/ns/web-1', 'c/ns/web-2']);
+    expect([...(liveNameMatchKeys(PODS_ROWS, ' WEB ') as Set<string>)].sort()).toStrictEqual([
+        'c/ns/web-1',
+        'c/ns/web-2',
+    ]);
 });
 
 test('an empty draft or a chip-in-progress is no live filter (null)', () => {
     expect(liveNameMatchKeys(PODS_ROWS, '')).toBe(null);
     expect(liveNameMatchKeys(PODS_ROWS, 'status:Running')).toBe(null);
+});
+
+test('free-text matching trims Go whitespace without erasing U+FEFF data', () => {
+    const rows: ModelRow[] = [
+        { key: 'plain', name: 'api', cells: [] },
+        { key: 'bom', name: '\uFEFFapi', cells: [] },
+    ];
+
+    expect([...(liveNameMatchKeys(rows, '\u0085\uFEFF\u0085') as Set<string>)]).toStrictEqual([
+        'bom',
+    ]);
 });
 
 // --- mergeColParams ---------------------------------------------------------
@@ -221,4 +396,8 @@ test('an empty result query yields a bare pathname (no trailing ?)', () => {
     const owned = new Set(['labelcols', 'selector']);
     expect(mergeColParams('/p', '?selector=x', owned, [])).toBe('/p');
     expect(mergeColParams('/p', '', owned, [])).toBe('/p');
+});
+
+test('a question mark inside a raw value survives when search has no leading marker', () => {
+    expect(mergeColParams('/p', 'f=note:?ready', new Set(), [])).toBe('/p?f=note:?ready');
 });

@@ -34,7 +34,7 @@ export function openRowMenu(tr: HTMLElement, x: number, y: number): void {
     if (!menu) {
         return;
     }
-    const bind = (action: string, href: string): void => {
+    const bind = (action: string, href?: string): void => {
         const item = menu.querySelector(`[data-ro-action="${action}"]`) as HTMLElement | null;
         if (!item) {
             return;
@@ -47,11 +47,17 @@ export function openRowMenu(tr: HTMLElement, x: number, y: number): void {
             item.hidden = true; // e.g. View logs on a non-pod row
         }
     };
-    bind('open', tr.dataset.href || '');
-    bind('yaml', tr.dataset.yaml || '');
-    bind('logs', tr.dataset.logs || '');
-    bind('download', tr.dataset.download || '');
-    (menu as HTMLElement).dataset.name = tr.dataset.name || lastKeySegment(tr.dataset.key || '');
+    bind('open', tr.dataset.href);
+    bind('yaml', tr.dataset.yaml);
+    bind('logs', tr.dataset.logs);
+    bind('download', tr.dataset.download);
+    const key = tr.dataset.key;
+    const name = tr.dataset.name || (key ? lastKeySegment(key) : undefined);
+    if (name) {
+        (menu as HTMLElement).dataset.name = name;
+    } else {
+        delete (menu as HTMLElement).dataset.name;
+    }
     (menu as HTMLElement).style.left =
         `${Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W))}px`;
     (menu as HTMLElement).style.top =
@@ -90,13 +96,17 @@ export const contextMenuBindings: Binding[] = [
             event.preventDefault();
             const item = matched as HTMLElement;
             const menu = item.closest('#ro-ctxmenu') as HTMLElement | null;
-            const name = menu?.dataset.name || '';
-            const href = item.dataset.href || '';
             closeRowMenu();
             if (item.dataset.roAction === 'copy') {
-                roCopyText(name, () => {});
-            } else if (href) {
-                window.location.assign(href);
+                const name = menu?.dataset.name;
+                if (name !== undefined) {
+                    roCopyText(name, () => {});
+                }
+            } else {
+                const href = item.dataset.href;
+                if (href) {
+                    window.location.assign(href);
+                }
             }
             return true;
         },

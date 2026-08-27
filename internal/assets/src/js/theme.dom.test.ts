@@ -61,6 +61,7 @@ describe('theme toggle target', () => {
     test('registers exactly one OS-scheme listener at module load', async () => {
         const { listener, syncThemeTogglePostTarget } = await loadTheme(false);
 
+        expect(window.matchMedia).toHaveBeenCalledExactlyOnceWith('(prefers-color-scheme: dark)');
         expect(listener).toHaveBeenCalledOnce();
         expect(listener).toHaveBeenCalledWith('change', syncThemeTogglePostTarget);
     });

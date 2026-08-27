@@ -12,14 +12,10 @@
 // Returns the names in order, empty when the fragment has no usable `collapsed`.
 // No DOM, no decode -- the names are matched verbatim against `[data-name]`.
 export function parseCollapsedNames(hash: string): string[] {
-    if (!hash) {
-        return [];
-    }
     const names: string[] = [];
-    // substring(1) drops a leading '#' the same way the monolith did; a
-    // fragment with no '#' is parsed verbatim. Each param is split on '=' and
-    // only the `collapsed` key's value (the element AT index 1, mirroring the
-    // monolith's keyVal[1]) contributes names.
+    // Drop only the fragment marker at the beginning; a '#' inside a name is
+    // data and must survive verbatim. Each param is split on '=' and only the
+    // `collapsed` key's value (the element at index 1) contributes names.
     hash.replace(/^#/, '')
         .split(';')
         .forEach((param) => {

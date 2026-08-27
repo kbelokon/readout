@@ -258,9 +258,10 @@ func filterFieldAlias(field string) (string, bool) {
 }
 
 // resolveFilterColumn resolves a field name against the table columns: exact
-// case-insensitive first, then dash/space-normalized so multi-word columns
-// match both ways (`nominated node` / `nominated-node` -> "Nominated Node",
-// while "External-IP" still matches `external-ip` exactly).
+// case-insensitive first, then dash/whitespace-normalized so multi-word columns
+// match despite dashes or irregular whitespace (`nominated node` /
+// `nominated-node` -> "Nominated Node", while "External-IP" still matches
+// `external-ip` exactly).
 func resolveFilterColumn(cols []kube.Column, field string) int {
 	for i := range cols {
 		if strings.EqualFold(cols[i].Name, field) {
@@ -277,7 +278,7 @@ func resolveFilterColumn(cols []kube.Column, field string) int {
 }
 
 func normalizeFieldName(s string) string {
-	return strings.ToLower(strings.ReplaceAll(s, "-", " "))
+	return strings.Join(strings.Fields(strings.ReplaceAll(strings.ToLower(s), "-", " ")), " ")
 }
 
 // substringMatcher implements `:` (any alternative is a case-insensitive

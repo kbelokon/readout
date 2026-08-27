@@ -55,6 +55,21 @@ function renderPopover(): HTMLElement {
     return document.getElementById('ro-cols-pop') as HTMLElement;
 }
 
+test('starts with the popover closed', () => {
+    expect(colsPopOpen()).toBe(false);
+});
+
+test('declares the exact delegated-event contract', () => {
+    expect(columnsBindings.map(({ event, selector, stop }) => ({ event, selector, stop }))).toEqual(
+        [
+            { event: 'click', selector: '[data-ro-cols-toggle]', stop: undefined },
+            { event: 'click', selector: '[data-ro-action="toggle-column"]', stop: true },
+            { event: 'click', selector: undefined, stop: undefined },
+            { event: 'submit', selector: 'form.ro-pop-form', stop: true },
+        ],
+    );
+});
+
 describe('column popover state', () => {
     beforeEach(() => {
         renderPopover();
@@ -93,6 +108,20 @@ describe('column popover state', () => {
         expect(event.defaultPrevented).toBe(true);
         expect(colsPopOpen()).toBe(true);
         expect(document.getElementById('ro-cols-pop')).toHaveClass('is-open');
+
+        binding('[data-ro-cols-toggle]').handler(targetedEvent('click', opener), opener);
+        expect(colsPopOpen()).toBe(false);
+        expect(document.getElementById('ro-cols-pop')).not.toHaveClass('is-open');
+    });
+
+    test('opener remains closed when the server did not render a popover', () => {
+        document.getElementById('ro-cols-pop')?.remove();
+        const opener = document.getElementById('ro-cols-btn') as HTMLElement;
+
+        binding('[data-ro-cols-toggle]').handler(targetedEvent('click', opener), opener);
+
+        expect(colsPopOpen()).toBe(false);
+        expect(opener).toHaveAttribute('aria-expanded', 'false');
     });
 
     test('outside click closes while clicks inside the popover do not', () => {
@@ -105,8 +134,26 @@ describe('column popover state', () => {
         outsideBinding.handler(targetedEvent('click', pop), null);
         expect(colsPopOpen()).toBe(true);
 
+        outsideBinding.handler(
+            targetedEvent('click', document.getElementById('ro-cols-btn') as HTMLElement),
+            null,
+        );
+        expect(colsPopOpen()).toBe(true);
+
         outsideBinding.handler(targetedEvent('click', outside), null);
         expect(colsPopOpen()).toBe(false);
+    });
+
+    test('closed-state outside clicks are a no-op', () => {
+        const pop = document.getElementById('ro-cols-pop') as HTMLElement;
+        const outside = document.createElement('button');
+        document.body.appendChild(outside);
+        setColsPopOpen(false);
+        pop.classList.add('is-open');
+
+        binding(undefined).handler(targetedEvent('click', outside), null);
+
+        expect(pop).toHaveClass('is-open');
     });
 });
 
@@ -168,6 +215,8 @@ describe('column form navigation', () => {
                 <input type="hidden" name="f" value="stale-hidden-copy">
                 <input name="labelcols" value="metadata.name">
                 <input name="selector" value="">
+                <select name="ignored-select"><option value="wrong" selected>wrong</option></select>
+                <input value="ignored-without-name">
             </form>
         `;
         const form = document.querySelector('form') as HTMLFormElement;

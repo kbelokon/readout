@@ -33,6 +33,23 @@ function setClipboard(writeText?: (text: string) => Promise<void>): void {
     });
 }
 
+test('binding descriptors preserve their dispatcher event, selector, and stop contracts', () => {
+    expect(miscBindings.map(({ event, selector, stop }) => [event, selector, stop])).toStrictEqual([
+        ['click', '[data-ro-action="toggle-sidebar"]', true],
+        ['click', '[data-ro-action="copy"]', true],
+        ['click', 'main .collapsible h4.title', true],
+        ['click', '#namespace-dropdown [data-ro-action="pick-namespace"]', true],
+        ['click', '#namespace-dropdown .context-trigger', true],
+        ['input', '#namespace-searchbox', true],
+        ['keyup', '#namespace-searchbox', true],
+        ['click', '[data-ro-more]', true],
+        ['click', '[data-ro-annolong]', true],
+        ['click', '[data-ro-action="toggle-tools"]', true],
+        ['change', 'input[data-ro-toggle-button]', true],
+        ['submit', 'form.tools-form', undefined],
+    ]);
+});
+
 function renderCopySection(): { button: HTMLElement; label: HTMLElement } {
     document.body.innerHTML = `
         <main>
@@ -137,6 +154,19 @@ describe('sidebar and copy controls', () => {
         vi.advanceTimersByTime(1500);
         expect(button.querySelector('.ro-copy-text')).toHaveTextContent('copy');
     });
+
+    test('falls back safely when YAML exists but the Clipboard API is absent', () => {
+        vi.useFakeTimers();
+        const { button, label } = renderCopySection();
+        const event = clickEvent();
+
+        expect(binding('click', '[data-ro-action="copy"]').handler(event, button)).toBe(true);
+        expect(event.defaultPrevented).toBe(true);
+        expect(label).toHaveTextContent('press ⌘C');
+
+        vi.advanceTimersByTime(1500);
+        expect(label).toHaveTextContent('copy');
+    });
 });
 
 describe('section collapse and hash state', () => {
@@ -172,8 +202,10 @@ describe('section collapse and hash state', () => {
         window.history.replaceState(null, '', '/objects?kind=pods');
         const titles = document.querySelectorAll('h4.title');
         const fold = binding('click', 'main .collapsible h4.title');
+        const foldEvent = clickEvent();
 
-        expect(fold.handler(clickEvent(), titles[0])).toBe(true);
+        expect(fold.handler(foldEvent, titles[0])).toBe(true);
+        expect(foldEvent.defaultPrevented).toBe(false);
         expect(titles[0].closest('.collapsible')).toHaveClass('is-collapsed');
         expect(window.location.hash).toBe('#collapsed=alpha,beta');
 
@@ -182,6 +214,17 @@ describe('section collapse and hash state', () => {
 
         fold.handler(clickEvent(), titles[1]);
         expect(window.location.href).toBe('https://readout.test/objects?kind=pods');
+    });
+
+    test('a detached title remains a safe stopped no-op', () => {
+        document.body.innerHTML = '<h4 class="title">Detached</h4>';
+        window.history.replaceState(null, '', '/objects#collapsed=alpha');
+        const title = document.querySelector('h4.title') as HTMLElement;
+
+        expect(binding('click', 'main .collapsible h4.title').handler(clickEvent(), title)).toBe(
+            true,
+        );
+        expect(window.location.hash).toBe('#collapsed=alpha');
     });
 });
 
@@ -192,6 +235,9 @@ describe('namespace dropdown', () => {
                 <a id="valid" data-ro-action="pick-namespace"
                     href="/clusters/prod%20east/namespaces/team%2Fblue/pods">Team</a>
                 <a id="invalid" data-ro-action="pick-namespace" href="/clusters">Invalid</a>
+                <a id="embedded" data-ro-action="pick-namespace"
+                    href="/prefix/clusters/prod/namespaces/team/pods">Embedded</a>
+                <a id="missing" data-ro-action="pick-namespace">Missing</a>
             </div>
         `;
         const pick = binding('click', '#namespace-dropdown [data-ro-action="pick-namespace"]');
@@ -203,6 +249,8 @@ describe('namespace dropdown', () => {
         expect(preferences.setNamespace).toHaveBeenCalledExactlyOnceWith('prod east', 'team/blue');
 
         pick.handler(clickEvent(), document.getElementById('invalid'));
+        pick.handler(clickEvent(), document.getElementById('embedded'));
+        pick.handler(clickEvent(), document.getElementById('missing'));
         expect(preferences.setNamespace).toHaveBeenCalledOnce();
     });
 
@@ -217,13 +265,25 @@ describe('namespace dropdown', () => {
         const trigger = dropdown.querySelector('.context-trigger') as HTMLElement;
         const search = document.getElementById('namespace-searchbox') as HTMLInputElement;
         const toggle = binding('click', '#namespace-dropdown .context-trigger');
+        const focus = vi.spyOn(search, 'focus');
 
-        toggle.handler(clickEvent(), trigger);
+        expect(toggle.handler(clickEvent(), trigger)).toBe(true);
         expect(dropdown).toHaveClass('is-active');
         expect(document.activeElement).toBe(search);
+        expect(focus).toHaveBeenCalledOnce();
 
-        toggle.handler(clickEvent(), trigger);
+        expect(toggle.handler(clickEvent(), trigger)).toBe(true);
         expect(dropdown).not.toHaveClass('is-active');
+        expect(focus).toHaveBeenCalledOnce();
+    });
+
+    test('a detached dropdown trigger remains a safe stopped no-op', () => {
+        document.body.innerHTML = '<button class="context-trigger">Namespaces</button>';
+        const trigger = document.querySelector('.context-trigger') as HTMLElement;
+
+        expect(
+            binding('click', '#namespace-dropdown .context-trigger').handler(clickEvent(), trigger),
+        ).toBe(true);
     });
 
     test('filters case-insensitively and Enter clicks the first visible namespace', () => {
@@ -243,22 +303,44 @@ describe('namespace dropdown', () => {
         links[1].innerText = 'Development';
         links[2].innerText = 'Developer Tools';
         const clicks = links.map((link) => vi.spyOn(link, 'click').mockImplementation(() => {}));
-        search.value = 'DEV';
+        const filter = binding('input', '#namespace-searchbox');
+        search.value = 'prod';
 
-        binding('input', '#namespace-searchbox').handler(new InputEvent('input'), search);
+        expect(filter.handler(new InputEvent('input'), search)).toBe(true);
+
+        expect(links[0]).not.toHaveClass('is-hidden');
+        expect(links[1]).toHaveClass('is-hidden');
+        expect(links[2]).toHaveClass('is-hidden');
+
+        search.value = 'DEV';
+        expect(filter.handler(new InputEvent('input'), search)).toBe(true);
 
         expect(links[0]).toHaveClass('is-hidden');
         expect(links[1]).not.toHaveClass('is-hidden');
         expect(links[2]).not.toHaveClass('is-hidden');
 
         const enter = binding('keyup', '#namespace-searchbox');
-        enter.handler(new KeyboardEvent('keyup', { key: 'Escape' }), search);
+        expect(enter.handler(new KeyboardEvent('keyup', { key: 'Escape' }), search)).toBe(true);
         expect(clicks.every((click) => click.mock.calls.length === 0)).toBe(true);
 
-        enter.handler(new KeyboardEvent('keyup', { key: 'Enter' }), search);
+        expect(enter.handler(new KeyboardEvent('keyup', { key: 'Enter' }), search)).toBe(true);
         expect(clicks[0]).not.toHaveBeenCalled();
         expect(clicks[1]).toHaveBeenCalledOnce();
         expect(clicks[2]).not.toHaveBeenCalled();
+
+        clicks.forEach((click) => {
+            click.mockClear();
+        });
+        links.forEach((link) => {
+            link.classList.add('is-hidden');
+        });
+        expect(enter.handler(new KeyboardEvent('keyup', { key: 'Enter' }), search)).toBe(true);
+        expect(clicks.every((click) => click.mock.calls.length === 0)).toBe(true);
+
+        links.forEach((link) => {
+            link.remove();
+        });
+        expect(enter.handler(new KeyboardEvent('keyup', { key: 'Enter' }), search)).toBe(true);
     });
 });
 
@@ -273,13 +355,15 @@ describe('transient detail controls', () => {
         const more = binding('click', '[data-ro-more]');
         const openEvent = clickEvent();
 
-        more.handler(openEvent, button);
+        expect(more.handler(openEvent, button)).toBe(true);
         expect(openEvent).toHaveProperty('defaultPrevented', true);
         expect(chips).toHaveClass('expanded');
         expect(document.getElementById('second')).not.toHaveClass('expanded');
         expect(button).toHaveAttribute('aria-expanded', 'true');
 
-        more.handler(clickEvent(), button);
+        const closeEvent = clickEvent();
+        expect(more.handler(closeEvent, button)).toBe(true);
+        expect(closeEvent.defaultPrevented).toBe(true);
         expect(chips).not.toHaveClass('expanded');
         expect(button).toHaveAttribute('aria-expanded', 'false');
     });
@@ -294,13 +378,17 @@ describe('transient detail controls', () => {
         const button = document.querySelector('[data-ro-annolong]') as HTMLElement;
         const pre = document.querySelector('.anno-pre') as HTMLElement;
         const annotation = binding('click', '[data-ro-annolong]');
+        const openEvent = clickEvent();
 
-        annotation.handler(clickEvent(), button);
+        expect(annotation.handler(openEvent, button)).toBe(true);
+        expect(openEvent.defaultPrevented).toBe(true);
         expect(pre).not.toHaveAttribute('hidden');
         expect(button).toHaveClass('open');
         expect(button).toHaveAttribute('aria-expanded', 'true');
 
-        annotation.handler(clickEvent(), button);
+        const closeEvent = clickEvent();
+        expect(annotation.handler(closeEvent, button)).toBe(true);
+        expect(closeEvent.defaultPrevented).toBe(true);
         expect(pre).toHaveAttribute('hidden');
         expect(button).not.toHaveClass('open');
         expect(button).toHaveAttribute('aria-expanded', 'false');
@@ -314,12 +402,16 @@ describe('transient detail controls', () => {
         const button = document.querySelector('[data-ro-action="toggle-tools"]') as HTMLElement;
         const panel = document.getElementById('tools-panel') as HTMLElement;
         const tools = binding('click', '[data-ro-action="toggle-tools"]');
+        const openEvent = clickEvent();
 
-        tools.handler(clickEvent(), button);
+        expect(tools.handler(openEvent, button)).toBe(true);
+        expect(openEvent.defaultPrevented).toBe(true);
         expect(button).toHaveClass('is-active');
         expect(panel).toHaveClass('is-active');
 
-        tools.handler(clickEvent(), button);
+        const closeEvent = clickEvent();
+        expect(tools.handler(closeEvent, button)).toBe(true);
+        expect(closeEvent.defaultPrevented).toBe(true);
         expect(button).not.toHaveClass('is-active');
         expect(panel).not.toHaveClass('is-active');
     });
@@ -339,17 +431,31 @@ describe('form glue', () => {
         const change = binding('change', 'input[data-ro-toggle-button]');
 
         one.checked = true;
-        change.handler(new Event('change'), one);
+        expect(change.handler(new Event('change'), one)).toBe(true);
         expect(button).toBeEnabled();
 
         two.checked = true;
         one.checked = false;
-        change.handler(new Event('change'), one);
+        expect(change.handler(new Event('change'), one)).toBe(true);
         expect(button).toBeEnabled();
 
         two.checked = false;
-        change.handler(new Event('change'), two);
+        expect(change.handler(new Event('change'), two)).toBe(true);
         expect(button).toBeDisabled();
+    });
+
+    test('a checkbox naming an absent button remains a safe stopped no-op', () => {
+        document.body.innerHTML = `
+            <input type="checkbox" data-ro-toggle-button="missing-button" checked>
+        `;
+        const checkbox = document.querySelector('input') as HTMLInputElement;
+
+        expect(
+            binding('change', 'input[data-ro-toggle-button]').handler(
+                new Event('change'),
+                checkbox,
+            ),
+        ).toBe(true);
     });
 
     test('removes names only from empty inputs and leaves the GET submit unblocked', () => {
@@ -362,8 +468,10 @@ describe('form glue', () => {
         `;
         const form = document.querySelector('form.tools-form') as HTMLFormElement;
         const submit = binding('submit', 'form.tools-form');
+        const event = new SubmitEvent('submit', { cancelable: true });
 
-        expect(submit.handler(new SubmitEvent('submit'), form)).toBeUndefined();
+        expect(submit.handler(event, form)).toBeUndefined();
+        expect(event.defaultPrevented).toBe(false);
         expect(submit.stop).toBeUndefined();
         expect(document.getElementById('empty')).toHaveAttribute('name', '');
         expect(document.getElementById('filled')).toHaveAttribute('name', 'filled');

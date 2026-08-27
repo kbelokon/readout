@@ -46,14 +46,12 @@ export function effectivePollSeconds(
 // 3 (where it stays) quadruples it, the backoff wait capped at 60s. A
 // non-positive cadence means "no timer" -> 0 (the chain disarms).
 export function refreshDelaySeconds(effectiveSeconds: number, failureStage: number): number {
-    if (effectiveSeconds <= 0) {
-        return 0;
-    }
+    const baseSeconds = Math.max(effectiveSeconds, 0);
     if (failureStage <= 1) {
-        return effectiveSeconds;
+        return baseSeconds;
     }
     const factor = failureStage === 2 ? 2 : 4;
-    return Math.min(effectiveSeconds * factor, 60);
+    return Math.min(baseSeconds * factor, 60);
 }
 
 // nextFailureStage escalates the consecutive-failure counter one notch, clamped

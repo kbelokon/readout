@@ -31,6 +31,8 @@ test('a chosen numeric interval wins over everything', () => {
 test('Off with no interval polls never', () => {
     expect(effectivePollSeconds('Off', 0, 0)).toBe(0);
     expect(effectivePollSeconds('', 0, 0)).toBe(0);
+    // A stale fallback value must not make a non-Live mode start polling.
+    expect(effectivePollSeconds('Off', 0, 5)).toBe(0);
 });
 
 test('Live with a riding stream (fallback 0) self-disarms the poll chain', () => {

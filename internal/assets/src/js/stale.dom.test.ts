@@ -89,15 +89,26 @@ describe('stale UI lifecycle', () => {
         refresh.refreshNextAtMs.mockReturnValue(Date.now() + 2501);
 
         updateStaleCountdown();
-        expect(document.querySelector('[data-stale-countdown]')).toHaveTextContent('3s');
+        expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('3s');
 
         refresh.refreshNextAtMs.mockReturnValue(Date.now() - 1);
         updateStaleCountdown();
-        expect(document.querySelector('[data-stale-countdown]')).toHaveTextContent('0s');
+        expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('0s');
 
         refresh.refreshNextAtMs.mockReturnValue(0);
         updateStaleCountdown();
-        expect(document.querySelector('[data-stale-countdown]')).toHaveTextContent('…');
+        expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('…');
+    });
+
+    test('missing stale UI is safe and does not start a useless countdown ticker', () => {
+        vi.useFakeTimers();
+        document.body.replaceChildren();
+
+        expect(() => markListStale()).not.toThrow();
+
+        expect(vi.getTimerCount()).toBe(0);
+        expect(() => updateStaleCountdown()).not.toThrow();
+        expect(() => clearListStale()).not.toThrow();
     });
 
     test('clear restores fresh state, hides the banner, and stops the ticker', () => {
@@ -126,12 +137,15 @@ describe('stale UI lifecycle', () => {
         },
     );
 
-    test('ignores unrelated error events', () => {
-        document.dispatchEvent(
-            htmxEvent('htmx:responseError', { target: document.createElement('main') }),
-        );
+    test.each(['htmx:responseError', 'htmx:sendError'])(
+        '%s ignores unrelated error events',
+        (eventType) => {
+            document.dispatchEvent(
+                htmxEvent(eventType, { target: document.createElement('main') }),
+            );
 
-        expect(refresh.noteRefreshFailure).not.toHaveBeenCalled();
-        expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
-    });
+            expect(refresh.noteRefreshFailure).not.toHaveBeenCalled();
+            expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
+        },
+    );
 });

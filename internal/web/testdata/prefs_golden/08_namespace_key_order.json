@@ -1,0 +1,20 @@
+{
+  "doc": "Namespace-map canonical JSON: Go encoding/json sorts map keys lexicographically by UTF-8 bytes and always escapes U+2028/U+2029. The input order is deliberately non-canonical; 2/10 catch JavaScript's numeric property enumeration, a/aa exercise prefix ordering, __proto__/constructor/toString pin special own keys, U+E000 versus U+10000 catches default JavaScript UTF-16 sorting (which orders the astral key first while UTF-8 orders U+E000 first), and the line/paragraph separators catch JSON.stringify's literal spelling.",
+  "payload": {
+    "kinds": [],
+    "refresh": "",
+    "ns": {
+      "\ud800\udc00": "astral",
+      "\ue000": "bmp-private",
+      "2": "two",
+      "aa": "double-a",
+      "a": "single-a",
+      "10": "ten",
+      "toString": "string-ns",
+      "__proto__": "proto-ns",
+      "constructor": "constructor-ns",
+      "\u2028": "line\u2029separator"
+    }
+  },
+  "encoded": "v1.eyJucyI6eyIxMCI6InRlbiIsIjIiOiJ0d28iLCJfX3Byb3RvX18iOiJwcm90by1ucyIsImEiOiJzaW5nbGUtYSIsImFhIjoiZG91YmxlLWEiLCJjb25zdHJ1Y3RvciI6ImNvbnN0cnVjdG9yLW5zIiwidG9TdHJpbmciOiJzdHJpbmctbnMiLCJcdTIwMjgiOiJsaW5lXHUyMDI5c2VwYXJhdG9yIiwi7oCAIjoiYm1wLXByaXZhdGUiLCLwkICAIjoiYXN0cmFsIn19"
+}

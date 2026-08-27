@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { Binding } from './events.js';
 
@@ -34,7 +34,7 @@ function binding(event: string): Binding {
 }
 
 function targetedKey(
-    target: Element,
+    target: EventTarget | null,
     key: string,
     modifiers: KeyboardEventInit = {},
 ): KeyboardEvent {
@@ -48,7 +48,7 @@ function targetedKey(
     return event;
 }
 
-function targetedClick(target: Element): MouseEvent {
+function targetedClick(target: EventTarget | null): MouseEvent {
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     Object.defineProperty(event, 'target', { configurable: true, value: target });
     return event;
@@ -84,6 +84,7 @@ function renderKeyboard(): { first: HTMLElement; second: HTMLElement; wrap: HTML
 
 beforeEach(() => {
     renderKeyboard();
+    closeKbdOverlay();
     let focused: string | null = null;
     const state: RowState = {
         focusedKey: () => focused,
@@ -100,6 +101,24 @@ beforeEach(() => {
     window.history.replaceState(null, '', '/');
 });
 
+afterEach(() => {
+    vi.restoreAllMocks();
+});
+
+describe('binding contract', () => {
+    test('exports non-stopping click and keydown bindings with undefined returns', () => {
+        expect(
+            keyboardBindings.map(({ event, selector, stop }) => ({ event, selector, stop })),
+        ).toStrictEqual([
+            { event: 'click', selector: undefined, stop: undefined },
+            { event: 'keydown', selector: undefined, stop: undefined },
+        ]);
+
+        expect(binding('click').handler(targetedClick(document.body), null)).toBeUndefined();
+        expect(binding('keydown').handler(targetedKey(document.body, 'x'), null)).toBeUndefined();
+    });
+});
+
 describe('keyboard help overlay', () => {
     test('opens on ?, traps Tab, and restores prior focus on Escape', () => {
         const prior = document.getElementById('prior-focus') as HTMLButtonElement;
@@ -108,12 +127,17 @@ describe('keyboard help overlay', () => {
         prior.focus();
         const open = targetedKey(prior, '?');
 
-        binding('keydown').handler(open, null);
+        expect(binding('keydown').handler(open, null)).toBeUndefined();
 
         expect(open.defaultPrevented).toBe(true);
         expect(overlay).toHaveClass('open');
         expect(overlay).toHaveAttribute('aria-hidden', 'false');
         expect(card).toHaveFocus();
+
+        const other = targetedKey(card, 'x');
+        binding('keydown').handler(other, null);
+        expect(other.defaultPrevented).toBe(false);
+        expect(overlay).toHaveClass('open');
 
         const tab = targetedKey(card, 'Tab');
         binding('keydown').handler(tab, null);
@@ -128,6 +152,37 @@ describe('keyboard help overlay', () => {
         expect(prior).toHaveFocus();
     });
 
+    test('? closes an open overlay and restores prior focus', () => {
+        const prior = document.getElementById('prior-focus') as HTMLButtonElement;
+        const overlay = document.getElementById('ro-kbd-overlay') as HTMLElement;
+        const card = overlay.querySelector('.kbd-card') as HTMLElement;
+        prior.focus();
+        binding('keydown').handler(targetedKey(prior, '?'), null);
+
+        const close = targetedKey(card, '?');
+        binding('keydown').handler(close, null);
+
+        expect(close.defaultPrevented).toBe(true);
+        expect(overlay).not.toHaveClass('open');
+        expect(overlay.getAttribute('aria-hidden')).toBe('true');
+        expect(prior).toHaveFocus();
+    });
+
+    test('does not try to restore prior focus after that element detaches', () => {
+        const prior = document.getElementById('prior-focus') as HTMLButtonElement;
+        const overlay = document.getElementById('ro-kbd-overlay') as HTMLElement;
+        prior.focus();
+        binding('keydown').handler(targetedKey(prior, '?'), null);
+        const restoreFocus = vi.spyOn(prior, 'focus');
+        restoreFocus.mockClear();
+        prior.remove();
+
+        closeKbdOverlay();
+
+        expect(overlay).not.toHaveClass('open');
+        expect(restoreFocus).not.toHaveBeenCalled();
+    });
+
     test('closes only when the backdrop itself is clicked', () => {
         const overlay = document.getElementById('ro-kbd-overlay') as HTMLElement;
         const card = overlay.querySelector('.kbd-card') as HTMLElement;
@@ -136,7 +191,12 @@ describe('keyboard help overlay', () => {
         binding('click').handler(targetedClick(card), null);
         expect(overlay).toHaveClass('open');
 
-        binding('click').handler(targetedClick(overlay), null);
+        const text = document.createTextNode('not the backdrop');
+        card.append(text);
+        expect(() => binding('click').handler(targetedClick(text), null)).not.toThrow();
+        expect(overlay).toHaveClass('open');
+
+        expect(binding('click').handler(targetedClick(overlay), null)).toBeUndefined();
         expect(overlay).not.toHaveClass('open');
     });
 
@@ -176,6 +236,41 @@ describe('row keyboard navigation', () => {
         expect(second.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
     });
 
+    test('j/k are inert and safe when there are no identity rows', () => {
+        const wrap = document.getElementById('table-wrap') as HTMLElement;
+        document.querySelector('#resource-list-content tbody')?.replaceChildren();
+        const setFocus = vi.fn();
+        (window as unknown as { roRowState: RowState }).roRowState = {
+            focusedKey: () => null,
+            setFocus,
+        };
+        const event = targetedKey(wrap, 'j');
+
+        expect(() => binding('keydown').handler(event, null)).not.toThrow();
+
+        expect(event.defaultPrevented).toBe(false);
+        expect(setFocus).not.toHaveBeenCalled();
+    });
+
+    test('a detached prior focus starts the rendered walk at the first visible row', () => {
+        const { first, wrap } = renderKeyboard();
+        let focused: string | null = 'detached';
+        const setFocus = vi.fn((key: string) => {
+            focused = key;
+        });
+        (window as unknown as { roRowState: RowState }).roRowState = {
+            focusedKey: () => focused,
+            setFocus,
+        };
+        const event = targetedKey(wrap, 'k');
+
+        binding('keydown').handler(event, null);
+
+        expect(event.defaultPrevented).toBe(true);
+        expect(setFocus).toHaveBeenCalledExactlyOnceWith('one');
+        expect(first.scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'nearest' });
+    });
+
     test('delegates movement to the virtualizer and prevents only a handled key', () => {
         const wrap = document.getElementById('table-wrap') as HTMLElement;
         dependencies.virtualizerActive.mockReturnValue(true);
@@ -192,53 +287,178 @@ describe('row keyboard navigation', () => {
         expect(up.defaultPrevented).toBe(false);
     });
 
-    test('Enter opens the focused rendered or virtual row, never a filtered row', () => {
+    test('Enter prefers an already rendered row even while virtualization is active', () => {
         const wrap = document.getElementById('table-wrap') as HTMLElement;
-        let focused: string | null = 'two';
+        (window as unknown as { roRowState: RowState }).roRowState = {
+            focusedKey: () => 'two',
+            setFocus: vi.fn(),
+        };
+        const unrelatedVirtualRow = document.createElement('tr');
+        unrelatedVirtualRow.dataset.key = 'two';
+        unrelatedVirtualRow.dataset.href = '#wrong-virtual-row';
+        dependencies.virtualizerActive.mockReturnValue(true);
+        dependencies.virtRowByKey.mockReturnValue(unrelatedVirtualRow);
+        dependencies.virtVisible.mockReturnValue([unrelatedVirtualRow]);
+
+        const rendered = targetedKey(wrap, 'Enter');
+        binding('keydown').handler(rendered, null);
+
+        expect(rendered.defaultPrevented).toBe(true);
+        expect(window.location.hash).toBe('#two');
+        expect(dependencies.virtRowByKey).not.toHaveBeenCalled();
+    });
+
+    test('Enter ignores a focused filtered row and an absent focus key', () => {
+        const wrap = document.getElementById('table-wrap') as HTMLElement;
+        let focused: string | null = 'hidden';
         (window as unknown as { roRowState: RowState }).roRowState = {
             focusedKey: () => focused,
             setFocus: vi.fn(),
         };
 
-        const rendered = targetedKey(wrap, 'Enter');
-        binding('keydown').handler(rendered, null);
-        expect(rendered.defaultPrevented).toBe(true);
-        expect(window.location.hash).toBe('#two');
-
-        focused = 'hidden';
-        window.history.replaceState(null, '', '/');
         const hidden = targetedKey(wrap, 'Enter');
         binding('keydown').handler(hidden, null);
         expect(hidden.defaultPrevented).toBe(false);
         expect(window.location.hash).toBe('');
 
+        focused = null;
+        const absent = targetedKey(wrap, 'Enter');
+        binding('keydown').handler(absent, null);
+        expect(absent.defaultPrevented).toBe(false);
+        expect(window.location.hash).toBe('');
+    });
+
+    test('Enter opens a detached virtual row only when it is logically visible', () => {
+        const wrap = document.getElementById('table-wrap') as HTMLElement;
         const detached = document.createElement('tr');
         detached.dataset.key = 'virtual';
         detached.dataset.href = '#virtual';
-        focused = 'virtual';
+        const firstVirtual = document.createElement('tr');
+        (window as unknown as { roRowState: RowState }).roRowState = {
+            focusedKey: () => 'virtual',
+            setFocus: vi.fn(),
+        };
         dependencies.virtualizerActive.mockReturnValue(true);
         dependencies.virtRowByKey.mockReturnValue(detached);
-        dependencies.virtVisible.mockReturnValue([detached]);
+        dependencies.virtVisible.mockReturnValue([firstVirtual, detached]);
+
         const virtual = targetedKey(wrap, 'Enter');
         binding('keydown').handler(virtual, null);
+
         expect(virtual.defaultPrevented).toBe(true);
         expect(window.location.hash).toBe('#virtual');
+
+        window.history.replaceState(null, '', '/');
+        dependencies.virtVisible.mockReturnValue([firstVirtual]);
+        const filteredVirtual = targetedKey(wrap, 'Enter');
+        binding('keydown').handler(filteredVirtual, null);
+        expect(filteredVirtual.defaultPrevented).toBe(false);
+        expect(window.location.hash).toBe('');
     });
 
-    test('does not hijack text entry, chords, controls, or open surfaces', () => {
-        const input = document.createElement('input');
-        const button = document.createElement('button');
-        document.body.append(input, button);
-        const inertEvents = [
-            targetedKey(input, 'j'),
-            targetedKey(document.body, 'j', { metaKey: true }),
-            targetedKey(button, 'Enter'),
-        ];
-        for (const event of inertEvents) {
-            binding('keydown').handler(event, null);
-            expect(event.defaultPrevented).toBe(false);
-        }
+    test.each(['input', 'textarea', 'select'] as const)(
+        'does not hijack j from a focused %s',
+        (tag) => {
+            const control = document.createElement(tag);
+            document.body.append(control);
+            const event = targetedKey(control, 'j');
 
+            binding('keydown').handler(event, null);
+
+            expect(event.defaultPrevented).toBe(false);
+            expect(
+                (window as unknown as { roRowState: RowState }).roRowState.focusedKey(),
+            ).toBeNull();
+        },
+    );
+
+    test('does not hijack j from a contenteditable surface', () => {
+        const editor = document.createElement('div');
+        Object.defineProperty(editor, 'isContentEditable', {
+            configurable: true,
+            value: true,
+        });
+        document.body.append(editor);
+        const event = targetedKey(editor, 'j');
+
+        binding('keydown').handler(event, null);
+
+        expect(event.defaultPrevented).toBe(false);
+        expect((window as unknown as { roRowState: RowState }).roRowState.focusedKey()).toBeNull();
+    });
+
+    test.each([
+        ['meta', { metaKey: true }],
+        ['control', { ctrlKey: true }],
+        ['alt', { altKey: true }],
+    ] as const)('does not hijack a %s-modified j chord', (_name, modifiers) => {
+        const event = targetedKey(document.body, 'j', modifiers);
+
+        binding('keydown').handler(event, null);
+
+        expect(event.defaultPrevented).toBe(false);
+        expect((window as unknown as { roRowState: RowState }).roRowState.focusedKey()).toBeNull();
+    });
+
+    test.each(['a', 'button', 'summary'] as const)(
+        'does not hijack Enter from a descendant of %s',
+        (tag) => {
+            (window as unknown as { roRowState: RowState }).roRowState = {
+                focusedKey: () => 'two',
+                setFocus: vi.fn(),
+            };
+            const control = document.createElement(tag);
+            const child = document.createElement('span');
+            control.append(child);
+            document.body.append(control);
+            const event = targetedKey(child, 'Enter');
+
+            binding('keydown').handler(event, null);
+
+            expect(event.defaultPrevented).toBe(false);
+            expect(window.location.hash).toBe('');
+        },
+    );
+
+    test('handles non-Element targets without losing row navigation', () => {
+        const wrap = document.getElementById('table-wrap') as HTMLElement;
+        const text = document.createTextNode('plain text target');
+        wrap.append(text);
+        let focused: string | null = null;
+        (window as unknown as { roRowState: RowState }).roRowState = {
+            focusedKey: () => focused,
+            setFocus: (key) => {
+                focused = key;
+            },
+        };
+
+        const move = targetedKey(text, 'j');
+        expect(() => binding('keydown').handler(move, null)).not.toThrow();
+        expect(move.defaultPrevented).toBe(true);
+        expect(focused).toBe('one');
+
+        focused = 'two';
+        const enter = targetedKey(text, 'Enter');
+        expect(() => binding('keydown').handler(enter, null)).not.toThrow();
+        expect(enter.defaultPrevented).toBe(true);
+        expect(window.location.hash).toBe('#two');
+    });
+
+    test('does not treat an unrelated key as Enter when a row is focused', () => {
+        const wrap = document.getElementById('table-wrap') as HTMLElement;
+        (window as unknown as { roRowState: RowState }).roRowState = {
+            focusedKey: () => 'two',
+            setFocus: vi.fn(),
+        };
+        const event = targetedKey(wrap, 'x');
+
+        binding('keydown').handler(event, null);
+
+        expect(event.defaultPrevented).toBe(false);
+        expect(window.location.hash).toBe('');
+    });
+
+    test('does not hijack keys while another surface is open', () => {
         const surfaces = [
             document.getElementById('ro-palette'),
             document.getElementById('ro-ctxmenu'),

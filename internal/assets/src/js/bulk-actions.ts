@@ -55,10 +55,10 @@ function bulkDownloadYAML(bar: HTMLElement | null): void {
     if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
         return; // the button is disabled in both states; belt for direct calls
     }
-    const clusterPrefix = `${bar.dataset.bulkCluster || ''}/`;
+    const cluster = bar.dataset.bulkCluster;
     const names = entries.map((entry) => {
-        if (bar.dataset.bulkAllns === 'true' && entry.key.indexOf(clusterPrefix) === 0) {
-            return entry.key.slice(clusterPrefix.length);
+        if (bar.dataset.bulkAllns === 'true' && cluster && entry.key.startsWith(`${cluster}/`)) {
+            return entry.key.slice(cluster.length + 1);
         }
         return entry.name;
     });
