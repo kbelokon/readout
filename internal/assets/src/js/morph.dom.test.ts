@@ -29,31 +29,30 @@ interface VendorHarness {
     callbacks: MorphCallbacks;
     defineExtension: ReturnType<typeof vi.fn>;
     extension(): MorphExtension;
+    matchMedia: ReturnType<typeof vi.fn>;
     morph: ReturnType<typeof vi.fn>;
 }
 
-function stubReducedMotion(matches: boolean): void {
-    vi.stubGlobal(
-        'matchMedia',
-        vi.fn().mockImplementation((query: string) => ({
-            matches,
-            media: query,
-            onchange: null,
-            addEventListener: vi.fn(),
-            removeEventListener: vi.fn(),
-            addListener: vi.fn(),
-            removeListener: vi.fn(),
-            dispatchEvent: vi.fn(),
-        })),
-    );
+function stubReducedMotion(matches: boolean): ReturnType<typeof vi.fn> {
+    const matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+    }));
+    vi.stubGlobal('matchMedia', matchMedia);
+    return matchMedia;
 }
 
 function installVendors(reducedMotion = false): VendorHarness {
-    stubReducedMotion(reducedMotion);
+    const matchMedia = stubReducedMotion(reducedMotion);
 
     let registered: MorphExtension | undefined;
-    const defineExtension = vi.fn((name: string, extension: MorphExtension) => {
-        expect(name).toBe('ro-morph');
+    const defineExtension = vi.fn((_name: string, extension: MorphExtension) => {
         registered = extension;
     });
     const callbacks: MorphCallbacks = {};
@@ -72,6 +71,7 @@ function installVendors(reducedMotion = false): VendorHarness {
             expect(registered).toBeDefined();
             return registered as MorphExtension;
         },
+        matchMedia,
         morph,
     };
 }
@@ -89,7 +89,11 @@ afterEach(() => {
 });
 
 describe('ro-morph vendor guards and extension', () => {
-    test('loads without Idiomorph and does not register a half-working extension', async () => {
+    test('loads when both optional vendor globals are absent', async () => {
+        await expect(importMorph()).resolves.toBeUndefined();
+    });
+
+    test('does not register a half-working extension without Idiomorph', async () => {
         const defineExtension = vi.fn();
         vi.stubGlobal('htmx', { defineExtension });
 
@@ -98,11 +102,65 @@ describe('ro-morph vendor guards and extension', () => {
         expect(defineExtension).not.toHaveBeenCalled();
     });
 
+    test('ignores an incomplete Idiomorph global', async () => {
+        const defineExtension = vi.fn();
+        const callbacks: MorphCallbacks = {};
+        stubReducedMotion(false);
+        vi.stubGlobal('htmx', { defineExtension });
+        vi.stubGlobal('Idiomorph', { defaults: { callbacks } });
+
+        await expect(importMorph()).resolves.toBeUndefined();
+
+        expect(callbacks.beforeNodeMorphed).toBeUndefined();
+        expect(callbacks.afterNodeMorphed).toBeUndefined();
+        expect(defineExtension).not.toHaveBeenCalled();
+    });
+
+    test('installs callbacks but does not throw when htmx is absent or incomplete', async () => {
+        for (const htmxVendor of [undefined, {}]) {
+            vi.resetModules();
+            vi.unstubAllGlobals();
+            const matchMedia = stubReducedMotion(false);
+            const callbacks: MorphCallbacks = {};
+            vi.stubGlobal('Idiomorph', { defaults: { callbacks }, morph: vi.fn() });
+            if (htmxVendor !== undefined) {
+                vi.stubGlobal('htmx', htmxVendor);
+            }
+
+            await expect(importMorph()).resolves.toBeUndefined();
+
+            expect(callbacks.beforeNodeMorphed).toBeTypeOf('function');
+            expect(callbacks.afterNodeMorphed).toBeTypeOf('function');
+            expect(matchMedia).toHaveBeenCalledExactlyOnceWith('(prefers-reduced-motion: reduce)');
+        }
+    });
+
+    test.each([
+        ['no defaults', { morph: vi.fn() }],
+        ['no callbacks', { defaults: {}, morph: vi.fn() }],
+    ])('registers with partial Idiomorph defaults: %s', async (_case, idiomorphVendor) => {
+        const defineExtension = vi.fn();
+        const matchMedia = stubReducedMotion(false);
+        vi.stubGlobal('htmx', { defineExtension });
+        vi.stubGlobal('Idiomorph', idiomorphVendor);
+
+        await expect(importMorph()).resolves.toBeUndefined();
+
+        expect(defineExtension).toHaveBeenCalledOnce();
+        expect(matchMedia).not.toHaveBeenCalled();
+    });
+
     test('registers ro-morph and declines non-morph swaps', async () => {
         const vendor = installVendors();
         await importMorph();
 
-        expect(vendor.defineExtension).toHaveBeenCalledOnce();
+        expect(vendor.defineExtension).toHaveBeenCalledExactlyOnceWith('ro-morph', {
+            isInlineSwap: expect.any(Function),
+            handleSwap: expect.any(Function),
+        });
+        expect(vendor.matchMedia).toHaveBeenCalledExactlyOnceWith(
+            '(prefers-reduced-motion: reduce)',
+        );
         const extension = vendor.extension();
         expect(extension.isInlineSwap('morph')).toBe(true);
         expect(extension.isInlineSwap('innerHTML')).toBe(false);
@@ -113,6 +171,26 @@ describe('ro-morph vendor guards and extension', () => {
         expect(dependencies.captureRowModel).not.toHaveBeenCalled();
         expect(dependencies.virtualizePrepareSwap).not.toHaveBeenCalled();
         expect(vendor.morph).not.toHaveBeenCalled();
+    });
+
+    test('morphs non-list targets without list-model side effects and returns vendor result', async () => {
+        const vendor = installVendors();
+        vendor.morph.mockReturnValueOnce(false);
+        await importMorph();
+        const extension = vendor.extension();
+
+        const target = document.createElement('section');
+        target.id = 'details';
+        const fragment = document.createDocumentFragment();
+        fragment.append(document.createElement('p'));
+
+        expect(extension.handleSwap('morph', target, fragment)).toBe(false);
+        expect(dependencies.captureRowModel).not.toHaveBeenCalled();
+        expect(dependencies.virtualizePrepareSwap).not.toHaveBeenCalled();
+        expect(vendor.morph).toHaveBeenCalledExactlyOnceWith(target, fragment.children, {
+            morphStyle: 'innerHTML',
+            ignoreActiveValue: true,
+        });
     });
 
     test('captures the complete model before preparing virtualization and morphs exactly', async () => {
@@ -163,10 +241,43 @@ describe('changed-cell flash', () => {
 
         const nonCell = document.createElement('div');
         nonCell.textContent = 'before';
-        onBeforeNodeMorphed?.(nonCell);
-        nonCell.textContent = 'after';
-        onAfterNodeMorphed?.(nonCell);
+        Object.defineProperty(nonCell, 'textContent', {
+            configurable: true,
+            get: () => {
+                throw new Error('non-cell subtree was read');
+            },
+        });
+        expect(() => onBeforeNodeMorphed?.(nonCell)).not.toThrow();
+        expect(() => onAfterNodeMorphed?.(nonCell)).not.toThrow();
         expect(nonCell).not.toHaveClass('ro-cell-changed');
+    });
+
+    test('does not flash a TD without a matching before callback', async () => {
+        const vendor = installVendors();
+        await importMorph();
+
+        const cell = document.createElement('td');
+        cell.textContent = 'Already morphed';
+        vendor.callbacks.afterNodeMorphed?.(cell);
+
+        expect(cell).not.toHaveClass('ro-cell-changed');
+    });
+
+    test('consumes each before snapshot exactly once', async () => {
+        const vendor = installVendors();
+        await importMorph();
+
+        const cell = document.createElement('td');
+        cell.textContent = 'Queued';
+        vendor.callbacks.beforeNodeMorphed?.(cell);
+        cell.textContent = 'Running';
+        vendor.callbacks.afterNodeMorphed?.(cell);
+        expect(cell).toHaveClass('ro-cell-changed');
+
+        cell.classList.remove('ro-cell-changed');
+        cell.textContent = 'Done';
+        vendor.callbacks.afterNodeMorphed?.(cell);
+        expect(cell).not.toHaveClass('ro-cell-changed');
     });
 
     test('does not install flash callbacks for reduced-motion users', async () => {
@@ -177,5 +288,8 @@ describe('changed-cell flash', () => {
         expect(vendor.callbacks.beforeNodeMorphed).toBeUndefined();
         expect(vendor.callbacks.afterNodeMorphed).toBeUndefined();
         expect(vendor.defineExtension).toHaveBeenCalledOnce();
+        expect(vendor.matchMedia).toHaveBeenCalledExactlyOnceWith(
+            '(prefers-reduced-motion: reduce)',
+        );
     });
 });

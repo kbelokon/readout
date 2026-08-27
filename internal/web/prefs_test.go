@@ -67,8 +67,16 @@ func TestPrefsEnvelopeRoundTrip(t *testing.T) {
 			{Plural: "deployments", Hide: &[]string{}}, // explicit "hide nothing"
 			{Plural: "nodes", Sort: "Created"},         // no column preference at all
 		},
-		Refresh:    "30",
-		Namespaces: map[string]string{"test": "_all", "prod": "kube-system"},
+		Refresh: "30",
+		Namespaces: map[string]string{
+			"test":           "_all",
+			"prod":           "kube-system",
+			"__proto__":      "proto-ns",
+			"constructor":    "constructor-ns",
+			"prototype":      "prototype-ns",
+			"toString":       "string-ns",
+			"hasOwnProperty": "own-ns",
+		},
 	}
 	value := encodePrefs(in)
 	if !strings.HasPrefix(value, "v1.") {
@@ -102,6 +110,11 @@ func TestPrefsEnvelopeRoundTrip(t *testing.T) {
 	if out.Namespaces["test"] != "_all" {
 		t.Fatalf("namespace _all round-trip = %q, want _all", out.Namespaces["test"])
 	}
+	for cluster, namespace := range in.Namespaces {
+		if out.Namespaces[cluster] != namespace {
+			t.Fatalf("special namespace key %q round-trip = %q, want %q", cluster, out.Namespaces[cluster], namespace)
+		}
+	}
 }
 
 // TestPrefsDecodeLenient: a corrupt/foreign cookie yields zero prefs (never an
@@ -123,6 +136,21 @@ func TestPrefsDecodeLenient(t *testing.T) {
 	p := prefsGet(t, app, "/clusters/test/namespaces/default/pods", "v1.!!!", nil)
 	if got := p.texts("table.ro-table td.cell-name"); strings.Join(got, "|") != "nginx|my-app" {
 		t.Fatalf("junk-cookie render rows = %v, want the plain fixture order", got)
+	}
+}
+
+// TestPrefsRawURLNewlineParity pins the non-obvious RawURLEncoding rule shared
+// with the browser decoder: CR and LF are ignored anywhere in the payload, but
+// other ASCII whitespace is not.
+func TestPrefsRawURLNewlineParity(t *testing.T) {
+	for _, value := range []string{"v1.\r\ne30", "v1.e\r\n30", "v1.e\n3\r0\n"} {
+		p, ok := decodePrefs(value)
+		if !ok || len(p.Kinds) != 0 || p.Refresh != "" || len(p.Namespaces) != 0 {
+			t.Fatalf("decodePrefs(%q) = (%+v, %v), want accepted empty prefs", value, p, ok)
+		}
+	}
+	if p, ok := decodePrefs("v1.e\t30"); ok || len(p.Kinds) != 0 || p.Refresh != "" || len(p.Namespaces) != 0 {
+		t.Fatalf("decodePrefs with tab = (%+v, %v), want zero prefs and ok=false", p, ok)
 	}
 }
 
@@ -481,19 +509,14 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 		"#namespace-dropdown [data-ro-action='pick-namespace']", // the namespace-switch surface
 		"localStorage.getItem(REFRESH_KEY)",                     // the read-once roRefresh migration
 		"refreshMode",                                           // cookie-canonical mode reader
-		// readPrefs drops wrongly-typed INNER fields instead of perpetuating
-		// them: Go's decodePrefs rejects the whole payload on one mistyped
-		// field (json.Unmarshal is all-or-nothing), so a passthrough JS reader
-		// would keep rewriting a cookie SSR can never apply. Field-level type
-		// guards make the next JS write self-heal the cookie.
-		"typeof e.sort === 'string'",              // kind sort kept only as a string
-		"Array.isArray(e.hide) && e.hide.every",   // hide kept only as an all-string array
-		"typeof decoded.ns[cluster] === 'string'", // ns map rebuilt from string values only
 	} {
 		if !strings.Contains(js, needle) {
 			t.Fatalf("readout.js prefs contract missing %q", needle)
 		}
 	}
+	// Decoder normalization is behavior-tested in prefs.test.ts against the
+	// shared Go/TypeScript golden fixtures. Do not pin its emitted JavaScript
+	// spelling here: equivalent iteration or narrowing must remain a safe refactor.
 	// The sort-write hook treats programmatic traffic as do-not-write: the
 	// RO-No-Push marker and preload warm-ups are guarded in the SAME
 	// beforeRequest gate (one expression) that then discriminates on the

@@ -125,6 +125,10 @@ test('a row already in the band needs no scroll', () => {
     expect(scrollAdjustToReveal(100, 20, 56, 800)).toBe(0);
 });
 
+test('a row aligned with the top edge still scrolls down when the band is shorter than the row', () => {
+    expect(scrollAdjustToReveal(56, 20, 56, 70)).toBe(6);
+});
+
 // --- clampFocusIndex --------------------------------------------------------
 
 test('a forward step from an unknown focus (-1) lands on row 0', () => {

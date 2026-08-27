@@ -121,6 +121,14 @@ func TestFilterChipParsing(t *testing.T) {
 			[]filterChip{{Field: "nominated node", Op: opContains, Values: []string{"worker"}, Raw: "nominated+node:worker"}},
 		},
 		{
+			"U+0085 trims like unicode.IsSpace", "f=%C2%85status%C2%85:Running",
+			[]filterChip{{Field: "status", Op: opContains, Values: []string{"Running"}, Raw: "%C2%85status%C2%85:Running"}},
+		},
+		{
+			"U+FEFF is field data, not unicode.IsSpace", "f=%EF%BB%BFstatus%EF%BB%BF:Running",
+			[]filterChip{{Field: "\uFEFFstatus\uFEFF", Op: opContains, Values: []string{"Running"}, Raw: "%EF%BB%BFstatus%EF%BB%BF:Running"}},
+		},
+		{
 			"trailing comma dropped", "f=status:Running,",
 			[]filterChip{{Field: "status", Op: opContains, Values: []string{"Running"}, Raw: "status:Running,"}},
 		},
@@ -191,6 +199,47 @@ func TestFilterRowMatching(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFilterSuggestedFieldNormalization pins the client/server contract for a
+// generated autocomplete field: the client collapses an irregularly spaced
+// header to `workload-status`, which must resolve back to the original column.
+func TestFilterSuggestedFieldNormalization(t *testing.T) {
+	newTable := func() kube.Table {
+		return kube.Table{
+			Resource: kube.ResourceType{Plural: "widgets", Kind: "Widget", Namespaced: true},
+			Columns: []kube.Column{
+				{Name: "Name"},
+				{Name: " Workload\t\u0085 Status\u00a0\n"},
+				{Name: "\uFEFFBuild\uFEFFState\uFEFF"},
+			},
+			Rows: []kube.Row{{
+				Cells:  []any{"api-1", "Active", "Ready"},
+				Object: map[string]any{"metadata": map[string]any{"name": "api-1", "namespace": "default"}},
+			}},
+		}
+	}
+
+	t.Run("unicode.IsSpace includes U+0085", func(t *testing.T) {
+		table := newTable()
+		got := runFilter(t, "widgets", "f=workload-status:active", &table)
+		if !reflect.DeepEqual(got, []string{"api-1"}) {
+			t.Fatalf("client-suggested odd-whitespace field matched %v, want api-1", got)
+		}
+	})
+
+	t.Run("unicode.IsSpace excludes U+FEFF", func(t *testing.T) {
+		table := newTable()
+		if got := runFilter(t, "widgets", "f=build-state:ready", &table); len(got) != 0 {
+			t.Fatalf("dashed field incorrectly erased U+FEFF and matched %v", got)
+		}
+
+		table = newTable()
+		got := runFilter(t, "widgets", "f=\uFEFFbuild\uFEFFstate\uFEFF:ready", &table)
+		if !reflect.DeepEqual(got, []string{"api-1"}) {
+			t.Fatalf("field preserving U+FEFF matched %v, want api-1", got)
+		}
+	})
 }
 
 // TestFilterQuantityAlias pins the cpu/memory alias contract: the fields bind

@@ -41,10 +41,12 @@ document.addEventListener('htmx:beforeRequest', (event) => {
 // a region that had none.
 function clearListSkeleton(): void {
     const content = document.getElementById('resource-list-content');
-    const skel = content?.querySelector(':scope > .ro-skel');
-    if (skel) {
-        skel.remove();
+    if (!content) {
+        return;
     }
+    content.querySelectorAll(':scope > .ro-skel').forEach((skeleton) => {
+        skeleton.remove();
+    });
 }
 document.addEventListener('htmx:responseError', (event) => {
     if (isListRefreshEvent(event)) {

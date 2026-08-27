@@ -40,6 +40,16 @@ beforeEach(() => {
 });
 
 describe('logs follow mode', () => {
+    test('exports the delegated logs event contract', () => {
+        expect(
+            logsBindings.map(({ event, selector, stop }) => ({ event, selector, stop })),
+        ).toStrictEqual([
+            { event: 'click', selector: '#logFollow', stop: true },
+            { event: 'change', selector: '#logTs', stop: true },
+            { event: 'change', selector: '#logWrap', stop: true },
+        ]);
+    });
+
     test('initializes an active stream at the tail and ignores quiet mode', () => {
         const { follow, pre } = renderLogs();
         initLogsFollow();
@@ -54,19 +64,30 @@ describe('logs follow mode', () => {
     test('toggles label and aria, snapping only when follow is re-enabled', () => {
         const { follow, pre } = renderLogs();
         const followBinding = binding('#logFollow');
+        pre.scrollTop = 17;
 
         expect(followBinding.handler(new MouseEvent('click'), follow)).toBe(true);
         expect(followBinding.stop).toBe(true);
         expect(follow).toHaveClass('quiet');
         expect(follow).toHaveAttribute('aria-pressed', 'false');
-        expect(follow.querySelector('.follow-label')).toHaveTextContent('Follow');
+        expect(follow.querySelector('.follow-label')?.textContent).toBe('Follow');
+        expect(pre.scrollTop).toBe(17);
 
         pre.scrollTop = 12;
         followBinding.handler(new MouseEvent('click'), follow);
         expect(follow).not.toHaveClass('quiet');
         expect(follow).toHaveAttribute('aria-pressed', 'true');
-        expect(follow.querySelector('.follow-label')).toHaveTextContent('Following');
+        expect(follow.querySelector('.follow-label')?.textContent).toBe('Following');
         expect(pre.scrollTop).toBe(640);
+    });
+
+    test('still toggles follow state when its optional label is absent', () => {
+        const { follow } = renderLogs();
+        follow.querySelector('.follow-label')?.remove();
+
+        expect(() => binding('#logFollow').handler(new MouseEvent('click'), follow)).not.toThrow();
+        expect(follow).toHaveClass('quiet');
+        expect(follow).toHaveAttribute('aria-pressed', 'false');
     });
 });
 
@@ -95,6 +116,17 @@ describe('logs display controls', () => {
 
         expect(pre).toHaveClass('wrap');
         expect(pre.scrollTop).toBe(25);
+    });
+
+    test('wrap repins a stream whose follow mode is active', () => {
+        const { pre, wrap } = renderLogs();
+        pre.scrollTop = 25;
+        wrap.checked = true;
+
+        expect(binding('#logWrap').handler(new Event('change'), wrap)).toBe(true);
+
+        expect(pre).toHaveClass('wrap');
+        expect(pre.scrollTop).toBe(640);
     });
 
     test('all operations degrade safely when the stream element is absent', () => {

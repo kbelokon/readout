@@ -22,7 +22,7 @@ vi.mock('./virtualizer.js', () => ({
     virtualizerActive: dependencies.virtualizerActive,
 }));
 
-import { closePalette, openPalette, paletteBindings } from './palette.js';
+import { closePalette, openPalette, paletteBindings, paletteHrefSafe } from './palette.js';
 
 interface PaletteFeed {
     currentCluster: string | null;
@@ -83,6 +83,30 @@ function activeLabel(): string | undefined {
     return document.querySelector<HTMLElement>('.ro-pal-item.active')?.dataset.label;
 }
 
+function expectPaletteRowContract(row: HTMLElement): void {
+    expect(row.classList.contains('ro-pal-item')).toBe(true);
+    expect(row.dataset.roAction).toBe('pick-palette-row');
+    expect(row.getAttribute('role')).toBe('option');
+    expect(row.querySelector(':scope > .pal-label')).not.toBeNull();
+}
+
+function expectPaletteBindingContract(bindings: Binding[]): void {
+    expect(bindings.map(({ event, selector, stop }) => ({ event, selector, stop }))).toStrictEqual([
+        {
+            event: 'click',
+            selector: '[data-ro-action="pick-palette-row"]',
+            stop: true,
+        },
+        { event: 'click', selector: '[data-ro-palette-open]', stop: true },
+        { event: 'click', selector: '[data-ro-search-refine]', stop: true },
+        { event: 'click', selector: '#ro-palette', stop: true },
+        { event: 'input', selector: '#ro-palette-input', stop: true },
+        { event: 'keydown', selector: undefined, stop: undefined },
+        { event: 'keydown', selector: undefined, stop: undefined },
+        { event: 'focusin', selector: '[data-ro-palette-open]', stop: undefined },
+    ]);
+}
+
 function targetedKeyboardEvent(
     key: string,
     target: Element,
@@ -93,7 +117,7 @@ function targetedKeyboardEvent(
     return event;
 }
 
-function targetedMouseEvent(target: Element): MouseEvent {
+function targetedMouseEvent(target: EventTarget): MouseEvent {
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     Object.defineProperty(event, 'target', { configurable: true, value: target });
     return event;
@@ -119,6 +143,53 @@ beforeEach(() => {
     });
 });
 
+describe('binding contract', () => {
+    test('exports the complete delegated palette contract in order', () => {
+        expectPaletteBindingContract(paletteBindings);
+        expect((window as unknown as { roOpenPalette: unknown }).roOpenPalette).toBe(openPalette);
+    });
+
+    test('re-evaluates module-owned static contracts under an isolated import', async () => {
+        const seams = window as unknown as {
+            roFuzzy: (query: string, text: string) => number;
+            roOpenPalette: typeof openPalette;
+        };
+        const priorFuzzy = seams.roFuzzy;
+        const priorOpen = seams.roOpenPalette;
+        vi.resetModules();
+
+        try {
+            const freshRank = await import('./palette-rank.js');
+            const freshPalette = await import('./palette.js');
+            const feed = emptyFeed();
+            feed.clusters = [{ name: 'Fresh cluster', href: '#fresh-cluster' }];
+            const data = document.getElementById('ro-palette-data') as HTMLElement;
+            data.textContent = JSON.stringify({
+                ...feed,
+                clusters: [null, ...feed.clusters],
+            });
+            window.localStorage.setItem(
+                'ro-pref-recents',
+                JSON.stringify([null, { label: 'Fresh recent', href: '#fresh-recent' }]),
+            );
+
+            expectPaletteBindingContract(freshPalette.paletteBindings);
+            expect(seams.roFuzzy).toBe(freshRank.roFuzzyScore);
+            expect(seams.roFuzzy('dpl', 'Deployments')).toBeGreaterThanOrEqual(0);
+            expect(seams.roOpenPalette).toBe(freshPalette.openPalette);
+
+            freshPalette.openPalette();
+
+            expect(document.getElementById('ro-palette')?.classList.contains('open')).toBe(true);
+            expect(rowByLabel('Fresh recent').dataset.href).toBe('#fresh-recent');
+            expect(rowByLabel('Fresh cluster').dataset.href).toBe('#fresh-cluster');
+        } finally {
+            seams.roFuzzy = priorFuzzy;
+            seams.roOpenPalette = priorOpen;
+        }
+    });
+});
+
 describe('feed and recent-storage validation', () => {
     test('malformed feed and localStorage degrade to an open empty palette', () => {
         renderPaletteHarness('{not-json');
@@ -131,6 +202,9 @@ describe('feed and recent-storage validation', () => {
             'No matching targets.',
         );
         expect(document.querySelectorAll('.ro-pal-item')).toHaveLength(0);
+        const empty = document.querySelector('.ro-pal-empty') as HTMLElement;
+        expect(empty.className).toBe('ro-pal-empty');
+        expect(empty.textContent).toBe('No matching targets.');
     });
 
     test.each([
@@ -146,12 +220,19 @@ describe('feed and recent-storage validation', () => {
             },
         },
         {
-            name: 'non-object JSON',
+            name: 'null JSON',
             prepare: () => {
                 const data = document.getElementById('ro-palette-data');
                 if (data) data.textContent = 'null';
             },
         },
+        ...['false', '42', '"scalar"'].map((json) => ({
+            name: `${json} JSON primitive`,
+            prepare: () => {
+                const data = document.getElementById('ro-palette-data');
+                if (data) data.textContent = json;
+            },
+        })),
         {
             name: 'array JSON',
             prepare: () => {
@@ -179,19 +260,39 @@ describe('feed and recent-storage validation', () => {
     test('drops null, scalar, and array feed entries while keeping valid records', () => {
         renderPaletteHarness(
             JSON.stringify({
-                currentCluster: null,
-                currentNamespace: null,
+                currentCluster: 42,
+                currentNamespace: [],
                 clusters: [
                     null,
                     42,
                     'invalid',
                     false,
                     [],
+                    {},
+                    { name: '', href: '#empty-name' },
+                    { name: '   ', href: '#blank-name' },
+                    { name: 42, href: '#numeric-name' },
+                    { label: 'Cluster alias', href: '#cluster-alias' },
                     { name: 'Safe cluster', href: '#safe-cluster' },
                 ],
-                namespaces: [null, { name: 'Safe namespace', href: '#safe-namespace' }],
-                kinds: [null, { kind: 'Pod', namespaced: true, href: '#pods' }],
-                actions: [null, { label: 'Switch theme', action: 'theme' }],
+                namespaces: [
+                    null,
+                    { label: '', href: '#empty-namespace' },
+                    { name: 'Safe namespace', href: '#safe-namespace' },
+                ],
+                kinds: [
+                    null,
+                    { plural: '', href: '#empty-kind' },
+                    { kind: 42, href: '#numeric-kind' },
+                    { kind: 'Pod', namespaced: true, href: '#pods' },
+                ],
+                actions: [
+                    null,
+                    { label: '   ', action: 'theme' },
+                    { label: 'No target' },
+                    { label: 'Numeric action', action: 42 },
+                    { label: 'Switch theme', action: 'theme' },
+                ],
             }),
         );
 
@@ -201,29 +302,118 @@ describe('feed and recent-storage validation', () => {
             Array.from(document.querySelectorAll<HTMLElement>('.ro-pal-item')).map(
                 (row) => row.dataset.label,
             ),
-        ).toStrictEqual(['Pod', 'Safe namespace', 'Safe cluster', 'Switch theme']);
+        ).toStrictEqual(['Pod', 'Safe namespace', 'Cluster alias', 'Safe cluster', 'Switch theme']);
+        const scope = document.getElementById('ro-palette-scope') as HTMLElement;
+        expect(scope.hidden).toBe(true);
+        expect(scope.textContent).toBe('');
+        expect(document.querySelector('[data-label="No target"]')).toBeNull();
+        expect(document.querySelector('[data-label="Numeric action"]')).toBeNull();
     });
 
     test('unsafe recent hrefs and malformed entries are re-validated before rendering', () => {
         window.localStorage.setItem(
             'ro-pref-recents',
             JSON.stringify([
+                null,
+                42,
+                'scalar',
+                [],
                 { label: 'unsafe js', href: 'javascript:alert(1)' },
                 { label: 'unsafe data', href: 'data:text/html,pwned' },
                 { label: 'safe recent', href: '#safe-recent' },
                 { label: 'theme recent', action: 'theme' },
+                { label: ' padded recent ', action: ' future-action ' },
                 { label: '', href: '#blank-label' },
+                { label: '   ', href: '#whitespace-label' },
+                { label: 42, href: '#numeric-label' },
+                { label: 'numeric action', action: 42 },
+                { label: 'whitespace action', action: '   ' },
+                { label: 'numeric href', href: 42 },
+                { label: 'whitespace href', href: '   ' },
+                { label: 'invalid URL', href: 'http://[' },
                 { label: 'no target' },
             ]),
         );
 
         openPalette();
 
-        expect(rowByLabel('safe recent')).toHaveAttribute('data-href', '#safe-recent');
-        expect(rowByLabel('theme recent')).toHaveAttribute('data-action', 'theme');
+        const safeRecent = rowByLabel('safe recent');
+        expect(safeRecent.dataset.href).toBe('#safe-recent');
+        expect(safeRecent.dataset.action).toBeUndefined();
+        const themeRecent = rowByLabel('theme recent');
+        expect(themeRecent.dataset.action).toBe('theme');
+        expect(themeRecent.dataset.href).toBeUndefined();
+        expect(rowByLabel('padded recent').dataset.action).toBe('future-action');
         expect(document.querySelector('[data-label="unsafe js"]')).not.toBeInTheDocument();
         expect(document.querySelector('[data-label="unsafe data"]')).not.toBeInTheDocument();
+        expect(document.querySelector('[data-label="numeric action"]')).not.toBeInTheDocument();
+        expect(document.querySelector('[data-label="whitespace action"]')).not.toBeInTheDocument();
+        expect(document.querySelector('[data-label="numeric href"]')).not.toBeInTheDocument();
+        expect(document.querySelector('[data-label="whitespace href"]')).not.toBeInTheDocument();
+        expect(document.querySelector('[data-label="invalid URL"]')).not.toBeInTheDocument();
         expect(document.querySelector('[data-label="no target"]')).not.toBeInTheDocument();
+    });
+
+    test.each(['', '{}', '42', '"scalar"', 'null'])(
+        'treats unusable recent payload %s as empty',
+        (stored) => {
+            window.localStorage.setItem('ro-pref-recents', stored);
+
+            expect(() => openPalette()).not.toThrow();
+
+            expect(document.querySelectorAll('.ro-pal-item')).toHaveLength(0);
+            expect(document.querySelector('.ro-pal-empty')?.textContent).toBe(
+                'No matching targets.',
+            );
+        },
+    );
+
+    test('accepts only same-origin HTTP destinations after trimming', () => {
+        const feed = emptyFeed();
+        const origin = window.location.origin;
+        feed.clusters = [
+            { name: 'relative', href: '  /clusters/prod  ' },
+            { name: 'same origin', href: `${origin}/clusters/stage` },
+            { name: 'external http', href: 'http://example.test/clusters' },
+            { name: 'external https', href: 'https://example.test/clusters' },
+            { name: 'protocol relative', href: '//example.test/clusters' },
+            { name: 'same-origin blob', href: `blob:${origin}/opaque-id` },
+            { name: 'invalid URL', href: 'http://[' },
+            { name: 'blank href', href: '   ' },
+            { name: 'numeric href', href: 42 },
+        ];
+        renderPaletteHarness(feed);
+
+        openPalette();
+
+        expect(rowByLabel('relative').dataset.href).toBe('/clusters/prod');
+        expect(rowByLabel('same origin').dataset.href).toBe(`${origin}/clusters/stage`);
+        for (const label of [
+            'external http',
+            'external https',
+            'protocol relative',
+            'same-origin blob',
+            'invalid URL',
+            'blank href',
+            'numeric href',
+        ]) {
+            expect(document.querySelector(`[data-label="${label}"]`)).toBeNull();
+        }
+    });
+
+    test('the href policy explicitly accepts both same-origin HTTP and HTTPS', () => {
+        expect(paletteHrefSafe('/clusters/prod', 'http://readout.test/current')).toBe(
+            '/clusters/prod',
+        );
+        expect(
+            paletteHrefSafe('https://readout.test/clusters/prod', 'https://readout.test/current'),
+        ).toBe('https://readout.test/clusters/prod');
+        expect(paletteHrefSafe('blob:http://readout.test/id', 'http://readout.test/current')).toBe(
+            '',
+        );
+        expect(
+            paletteHrefSafe('blob:https://readout.test/id', 'https://readout.test/current'),
+        ).toBe('');
     });
 
     test('dedupes recents by normalized destination, keeps the newest, and caps distinct rows', () => {
@@ -262,6 +452,7 @@ describe('feed and recent-storage validation', () => {
             JSON.stringify([
                 { label: 'Old pods label', href: '#pods' },
                 { label: 'Other', href: '#other' },
+                { label: 'Theme', href: '   ', action: 'theme' },
                 { label: 'Unsafe', href: 'vbscript:msgbox(1)' },
             ]),
         );
@@ -276,6 +467,7 @@ describe('feed and recent-storage validation', () => {
         expect(JSON.parse(window.localStorage.getItem('ro-pref-recents') || 'null')).toStrictEqual([
             { label: 'Pods', href: '#pods' },
             { label: 'Other', href: '#other' },
+            { label: 'Theme', action: 'theme' },
         ]);
         expect(window.location.hash).toBe('#pods');
     });
@@ -284,10 +476,10 @@ describe('feed and recent-storage validation', () => {
         const feed = emptyFeed();
         feed.clusters = [{ name: 'Pods', href: '#pods' }];
         renderPaletteHarness(feed);
-        vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
             throw new DOMException('blocked', 'SecurityError');
         });
-        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
             throw new DOMException('blocked', 'SecurityError');
         });
 
@@ -301,58 +493,217 @@ describe('feed and recent-storage validation', () => {
 
         expect(window.location.hash).toBe('#pods');
         expect(document.getElementById('ro-palette')).not.toHaveClass('open');
+        expect(getItem).toHaveBeenCalledWith('ro-pref-recents');
+        expect(setItem).toHaveBeenCalledWith(
+            'ro-pref-recents',
+            JSON.stringify([{ label: 'Pods', href: '#pods' }]),
+        );
+    });
+
+    test('re-reads a swapped feed and replaces the active row model on every open', () => {
+        const first = emptyFeed();
+        first.clusters = [{ name: 'Alpha', href: '#alpha' }];
+        renderPaletteHarness(first);
+        openPalette();
+        expect(activeLabel()).toBe('Alpha');
+
+        const second = emptyFeed();
+        second.clusters = [{ name: 'Beta', href: '#beta' }];
+        const data = document.getElementById('ro-palette-data') as HTMLElement;
+        data.textContent = JSON.stringify(second);
+        openPalette();
+
+        expect(document.querySelector('[data-label="Alpha"]')).toBeNull();
+        expect(activeLabel()).toBe('Beta');
+        const enter = targetedKeyboardEvent(
+            'Enter',
+            document.getElementById('ro-palette-input') as HTMLInputElement,
+        );
+        binding('keydown', undefined, 1).handler(enter, null);
+        expect(enter.defaultPrevented).toBe(true);
+        expect(window.location.hash).toBe('#beta');
     });
 });
 
 describe('safe DOM rendering and actions', () => {
+    test('all row types expose one exact delegated option contract', () => {
+        const feed = emptyFeed();
+        feed.clusters = [{ name: 'Production', href: '#production' }];
+        feed.kinds = [{ kind: 'Pod', href: '#pods' }];
+        renderPaletteHarness(feed);
+        window.localStorage.setItem(
+            'ro-pref-recents',
+            JSON.stringify([{ label: 'Recent', href: '#recent' }]),
+        );
+        document.body.insertAdjacentHTML(
+            'beforeend',
+            `<div id="resource-list-content"><table class="ro-table"><tbody><tr>
+                <td class="cell-name"><a href="#api">api-0</a></td>
+            </tr></tbody></table></div>`,
+        );
+
+        openPalette();
+
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('.ro-pal-item'));
+        expect(rows.map((row) => row.dataset.label)).toStrictEqual([
+            'Recent',
+            'api-0',
+            'Pod',
+            'Production',
+        ]);
+        rows.forEach(expectPaletteRowContract);
+        expect(rows[0].getAttribute('aria-selected')).toBe('true');
+        rows.slice(1).forEach((row) => {
+            expect(row.getAttribute('aria-selected')).toBe('false');
+        });
+        expect(document.querySelector('.ro-pal-empty')).toBeNull();
+        expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+
+        const input = document.getElementById('ro-palette-input') as HTMLInputElement;
+        input.value = 'api';
+        binding('input', '#ro-palette-input').handler(new Event('input'), input);
+        const everywhere = document.querySelector<HTMLElement>('.ro-pal-item');
+        expect(everywhere).not.toBeNull();
+        expectPaletteRowContract(everywhere as HTMLElement);
+        expect(everywhere?.querySelector(':scope > .pal-label')?.textContent).toBe(
+            'Search all clusters for “api”',
+        );
+        expect(everywhere?.dataset.href).toBe('/search?q=api');
+        expect(document.querySelector('[data-label="Recent"]')).toBeNull();
+    });
+
+    test('the everywhere row clones the optional glyph and URL-encodes the trimmed query', () => {
+        const original = document.querySelector('#ro-palette .ro-pal-search .ico') as HTMLElement;
+
+        openPalette('  api/v1 ? ready  ');
+
+        const everywhere = document.querySelector('.ro-pal-item') as HTMLElement;
+        const clone = everywhere.querySelector('.ico');
+        expect(document.querySelector('.ro-pal-group')?.textContent).toBe('Everywhere');
+        expect(everywhere.dataset.label).toBe('Search all clusters for “api/v1 ? ready”');
+        expect(everywhere.querySelector('.pal-label')?.textContent).toBe(
+            'Search all clusters for “api/v1 ? ready”',
+        );
+        expect(everywhere.dataset.href).toBe('/search?q=api%2Fv1%20%3F%20ready');
+        expect(clone).not.toBe(original);
+        expect(clone?.textContent).toBe('search');
+
+        original.remove();
+        const input = document.getElementById('ro-palette-input') as HTMLInputElement;
+        input.value = 'pods';
+        binding('input', '#ro-palette-input').handler(new Event('input'), input);
+        expect(document.querySelector('.ro-pal-item .ico')).toBeNull();
+        expect(document.querySelector('.ro-pal-item')?.getAttribute('data-label')).toBe(
+            'Search all clusters for “pods”',
+        );
+    });
+
     test('renders feed context, kind metadata, display names, and safe icon markup', () => {
         const feed = emptyFeed();
-        feed.currentCluster = 'prod';
-        feed.currentNamespace = 'team-a';
-        feed.clusters = [{ name: 'prod', display: 'Production', href: '#prod' }];
-        feed.namespaces = [{ name: 'team-a', href: '#team-a' }];
+        feed.currentCluster = ' prod ';
+        feed.currentNamespace = ' team-a ';
+        feed.clusters = [
+            { name: ' prod ', display: ' Production ', href: '#prod' },
+            { name: 'staging', display: '', icon: '<b>not a kind</b>', href: '#staging' },
+            { name: 'Primary cluster', label: 'Secondary cluster', href: '#primary' },
+        ];
+        feed.namespaces = [
+            { name: 'team-a', href: '#team-a' },
+            { name: 'team-b', href: '#team-b' },
+        ];
         feed.kinds = [
             {
                 kind: 'Deployment',
                 display: 'Deploy',
-                group: 'apps',
+                group: ' apps ',
                 namespaced: true,
                 icon: '<span class="kind-icon" aria-hidden="true">D</span>',
+                name: 'team-a',
                 href: '#deployments',
             },
-            { plural: 'nodes', namespaced: false, href: '#nodes' },
+            { plural: 'nodes', namespaced: false, icon: 42, href: '#nodes' },
+            { kind: 'Service', plural: 'services', href: '#services' },
         ];
-        feed.actions = [{ label: 'Switch theme', action: 'theme' }];
+        feed.actions = [{ label: 'Switch theme', action: ' theme ', icon: '<b>not a kind</b>' }];
         renderPaletteHarness(feed);
 
         openPalette();
 
         const scope = document.getElementById('ro-palette-scope');
-        expect(scope).toHaveTextContent('team-a');
-        expect(scope).not.toHaveAttribute('hidden');
+        expect(scope?.textContent).toBe('team-a');
+        expect((scope as HTMLElement).hidden).toBe(false);
+
+        expect(
+            Array.from(document.querySelectorAll<HTMLElement>('.ro-pal-group')).map(
+                (heading) => heading.textContent,
+            ),
+        ).toStrictEqual(['Resource types', 'Namespaces', 'Clusters', 'Actions']);
 
         const cluster = rowByLabel('prod');
-        expect(cluster).toHaveAttribute('title', 'prod');
-        expect(cluster.querySelector('.pal-label')).toHaveTextContent('Productioncurrent');
-        expect(cluster.querySelector('.pal-ctx')).toHaveTextContent('current');
-        expect(rowByLabel('team-a').querySelector('.pal-ctx')).toHaveTextContent('current');
+        expect(cluster.getAttribute('title')).toBe('prod');
+        expect(cluster.querySelector('.pal-label')?.firstChild?.textContent).toBe('Production');
+        expect(cluster.querySelector('.pal-ctx')?.className).toBe('pal-ctx');
+        expect(cluster.querySelector('.pal-ctx')?.textContent).toBe('current');
+        expect(rowByLabel('team-a').querySelector('.pal-ctx')?.textContent).toBe('current');
+        const staging = rowByLabel('staging');
+        expect(staging.getAttribute('title')).toBeNull();
+        expect(staging.querySelector('.pal-label')?.textContent).toBe('staging');
+        expect(staging.querySelector('.pal-ctx')).toBeNull();
+        expect(staging.querySelector('b')).toBeNull();
+        expect(staging.dataset.action).toBeUndefined();
+        expect(rowByLabel('Primary cluster').querySelector('.pal-label')?.textContent).toBe(
+            'Primary cluster',
+        );
+        expect(document.querySelector('[data-label="Secondary cluster"]')).toBeNull();
+        expect(rowByLabel('team-b').querySelector('.pal-ctx')).toBeNull();
 
         const deployment = rowByLabel('Deployment');
-        expect(deployment).toHaveAttribute('title', 'Deployment');
-        expect(deployment.querySelector('.kind-icon')).toHaveTextContent('D');
-        expect(deployment.querySelector('.pal-meta')).toHaveTextContent('apps');
-        expect(deployment.querySelector('.pal-scope')).toHaveClass('ns');
-        expect(deployment.querySelector('.pal-scope')).toHaveTextContent('namespaced');
+        expect(deployment.getAttribute('title')).toBe('Deployment');
+        expect(deployment.querySelector('.kind-icon')?.textContent).toBe('D');
+        expect(deployment.querySelector('.pal-meta')?.textContent).toBe('apps');
+        expect(deployment.querySelector('.pal-scope')?.className).toBe('pal-scope ns');
+        expect(deployment.querySelector('.pal-scope')?.textContent).toBe('namespaced');
+        expect(deployment.querySelector('.pal-ctx')).toBeNull();
 
         const nodes = rowByLabel('nodes');
-        expect(nodes.querySelector('.pal-meta')).toHaveTextContent('core');
-        expect(nodes.querySelector('.pal-scope')).toHaveClass('cluster');
-        expect(nodes.querySelector('.pal-scope')).toHaveTextContent('cluster');
-        expect(rowByLabel('Switch theme')).toHaveAttribute('data-action', 'theme');
+        expect(nodes.getAttribute('title')).toBeNull();
+        expect(nodes.querySelector('.pal-meta')?.textContent).toBe('core');
+        expect(nodes.querySelector('.pal-scope')?.className).toBe('pal-scope cluster');
+        expect(nodes.querySelector('.pal-scope')?.textContent).toBe('cluster');
+        expect(nodes.querySelector('.kind-icon')).toBeNull();
+        expect(rowByLabel('Service').querySelector('.pal-label')?.textContent).toBe('Service');
+        expect(document.querySelector('[data-label="services"]')).toBeNull();
+        const action = rowByLabel('Switch theme');
+        expect(action.dataset.action).toBe('theme');
+        expect(action.dataset.href).toBeUndefined();
+        expect(action.querySelector('.pal-meta')).toBeNull();
+        expect(action.querySelector('.pal-scope')).toBeNull();
+        expect(action.querySelector('b')).toBeNull();
 
+        const nodeScroll = vi.spyOn(nodes, 'scrollIntoView');
+        nodeScroll.mockClear();
         nodes.dispatchEvent(new MouseEvent('mousemove'));
         expect(activeLabel()).toBe('nodes');
-        expect(nodes).toHaveAttribute('aria-selected', 'true');
+        expect(nodes.getAttribute('aria-selected')).toBe('true');
+        expect(deployment.getAttribute('aria-selected')).toBe('false');
+        expect(nodeScroll).toHaveBeenCalledOnce();
+        expect(nodeScroll).toHaveBeenCalledWith({ block: 'nearest' });
+    });
+
+    test.each([
+        { cluster: 'prod', namespace: null, text: 'prod', hidden: false },
+        { cluster: null, namespace: null, text: '', hidden: true },
+    ])('renders the exact scope fallback for $text', ({ cluster, namespace, text, hidden }) => {
+        const feed = emptyFeed();
+        feed.currentCluster = cluster;
+        feed.currentNamespace = namespace;
+        renderPaletteHarness(feed);
+
+        openPalette();
+
+        const scope = document.getElementById('ro-palette-scope') as HTMLElement;
+        expect(scope.textContent).toBe(text);
+        expect(scope.hidden).toBe(hidden);
     });
 
     test('harvests usable table rows with status tone and skips incomplete rows', () => {
@@ -377,10 +728,53 @@ describe('safe DOM rendering and actions', () => {
         expect(document.querySelector('[data-label="No link"]')).not.toBeInTheDocument();
         expect(document.querySelector('[data-label=""]')).not.toBeInTheDocument();
         const api = rowByLabel('api-0');
-        expect(api).toHaveAttribute('data-href', '#api');
-        expect(api.querySelector('.pal-status')).toHaveTextContent('CrashLoop');
-        expect(api.querySelector('.pal-status')).toHaveClass('err');
-        expect(rowByLabel('backend').querySelector('.pal-status')).not.toBeInTheDocument();
+        expect(api.dataset.href).toBe('#api');
+        expect(api.querySelector('.pal-status')?.textContent).toBe('CrashLoop');
+        expect(api.querySelector('.pal-status')?.className).toBe('pal-status err');
+        expect(rowByLabel('backend').querySelector('.pal-status')).toBeNull();
+    });
+
+    test('preserves every supported status tone with deterministic precedence', () => {
+        const rows = [
+            ['healthy', ' ok ', 'ok'],
+            ['warning', ' warn ', 'warn'],
+            ['failed', ' err ', 'err'],
+            ['working', ' info ', 'info'],
+            ['quiet', ' mute ', 'mute'],
+            ['plain', ' custom ', 'other'],
+            ['priority', ' first ', 'err warn info'],
+            ['empty', '   ', 'ok'],
+        ]
+            .map(
+                ([name, status, classes]) => `<tr>
+                    <td class="cell-name"><a href="#${name}"> ${name} </a></td>
+                    <td class="cell-status ${classes}">${status}</td>
+                </tr>`,
+            )
+            .join('');
+        document.body.insertAdjacentHTML(
+            'beforeend',
+            `<div id="resource-list-content"><table class="ro-table"><tbody>${rows}</tbody></table></div>`,
+        );
+
+        openPalette();
+
+        for (const tone of ['ok', 'warn', 'err', 'info', 'mute']) {
+            const status = rowByLabel(
+                { ok: 'healthy', warn: 'warning', err: 'failed', info: 'working', mute: 'quiet' }[
+                    tone
+                ] as string,
+            ).querySelector('.pal-status') as HTMLElement;
+            expect(status.textContent).toBe(tone);
+            expect(status.className).toBe(`pal-status ${tone}`);
+        }
+        const plain = rowByLabel('plain').querySelector('.pal-status') as HTMLElement;
+        expect(plain.textContent).toBe('custom');
+        expect(plain.className).toBe('pal-status');
+        const priority = rowByLabel('priority').querySelector('.pal-status') as HTMLElement;
+        expect(priority.textContent).toBe('first');
+        expect(priority.className).toBe('pal-status warn');
+        expect(rowByLabel('empty').querySelector('.pal-status')).toBeNull();
     });
 
     test('rejects unsafe href schemes harvested from rendered table rows', () => {
@@ -445,14 +839,8 @@ describe('safe DOM rendering and actions', () => {
         expect(document.querySelector('#ro-palette-list img')).not.toBeInTheDocument();
         expect(document.querySelector('#ro-palette-list script')).not.toBeInTheDocument();
         for (const label of ['javascript target', 'data target', 'vbscript target']) {
-            expect(rowByLabel(label)).not.toHaveAttribute('data-href');
+            expect(document.querySelector(`[data-label="${label}"]`)).toBeNull();
         }
-
-        const unsafe = rowByLabel('javascript target');
-        binding('click', '[data-ro-action="pick-palette-row"]').handler(
-            new MouseEvent('click', { cancelable: true }),
-            unsafe,
-        );
         expect(window.location.hash).toBe('');
     });
 
@@ -525,6 +913,62 @@ describe('safe DOM rendering and actions', () => {
             { label: 'Switch theme', action: 'theme' },
         ]);
     });
+
+    test('theme wins over a mixed href target and remains safe without a toggle', () => {
+        const feed = emptyFeed();
+        feed.actions = [{ label: 'Theme with href', action: 'theme', href: '#must-not-navigate' }];
+        renderPaletteHarness(feed);
+        window.location.hash = '#before';
+        document.getElementById('btn-theme-toggle')?.remove();
+        openPalette();
+
+        expect(() =>
+            binding('click', '[data-ro-action="pick-palette-row"]').handler(
+                new MouseEvent('click', { cancelable: true }),
+                rowByLabel('Theme with href'),
+            ),
+        ).not.toThrow();
+
+        expect(window.location.hash).toBe('#before');
+        expect(document.getElementById('ro-palette')).not.toHaveClass('open');
+        expect(JSON.parse(window.localStorage.getItem('ro-pref-recents') || 'null')).toStrictEqual([
+            { label: 'Theme with href', href: '#must-not-navigate', action: 'theme' },
+        ]);
+    });
+
+    test('an unknown action may still carry its explicit navigation destination', () => {
+        const feed = emptyFeed();
+        feed.actions = [{ label: 'Navigate action', action: 'future-action', href: '#future' }];
+        renderPaletteHarness(feed);
+        openPalette();
+
+        binding('click', '[data-ro-action="pick-palette-row"]').handler(
+            new MouseEvent('click', { cancelable: true }),
+            rowByLabel('Navigate action'),
+        );
+
+        expect(window.location.hash).toBe('#future');
+        expect(JSON.parse(window.localStorage.getItem('ro-pref-recents') || 'null')).toStrictEqual([
+            { label: 'Navigate action', href: '#future', action: 'future-action' },
+        ]);
+    });
+
+    test('delegated malformed rows can act, but are never persisted as recents', () => {
+        const choose = binding('click', '[data-ro-action="pick-palette-row"]');
+        const missingLabel = document.createElement('div');
+        missingLabel.dataset.href = '#raw-target';
+
+        choose.handler(new MouseEvent('click', { cancelable: true }), missingLabel);
+
+        expect(window.location.hash).toBe('#raw-target');
+        expect(window.localStorage.getItem('ro-pref-recents')).toBeNull();
+
+        const missingTarget = document.createElement('div');
+        missingTarget.dataset.label = 'Dead row';
+        choose.handler(new MouseEvent('click', { cancelable: true }), missingTarget);
+
+        expect(window.localStorage.getItem('ro-pref-recents')).toBeNull();
+    });
 });
 
 describe('delegated entry points and dismissal', () => {
@@ -544,7 +988,9 @@ describe('delegated entry points and dismissal', () => {
         expect(input).toHaveFocus();
 
         input.value = 'deploy';
-        expect(binding('input', '#ro-palette-input').handler(new Event('input'), input)).toBe(true);
+        const inputEvent = new Event('input', { cancelable: true });
+        expect(binding('input', '#ro-palette-input').handler(inputEvent, input)).toBe(true);
+        expect(inputEvent.defaultPrevented).toBe(false);
         expect(rowByLabel('Deployments')).toBeInTheDocument();
         expect(document.querySelector('.ro-pal-item .ico')).toHaveTextContent('search');
         expect(document.querySelector('.ro-pal-item')).toHaveAttribute(
@@ -569,6 +1015,30 @@ describe('delegated entry points and dismissal', () => {
         expect(rowByLabel('Services')).toBeInTheDocument();
     });
 
+    test('missing or non-string programmatic prefills reset to the empty query', () => {
+        const feed = emptyFeed();
+        feed.clusters = [{ name: 'Pods', href: '#pods' }];
+        renderPaletteHarness(feed);
+        const input = document.getElementById('ro-palette-input') as HTMLInputElement;
+        const refine = document.createElement('button');
+        const refineEvent = targetedMouseEvent(refine);
+
+        input.value = 'stale';
+        expect(binding('click', '[data-ro-search-refine]').handler(refineEvent, refine)).toBe(true);
+        expect(refineEvent.defaultPrevented).toBe(true);
+        expect(input.value).toBe('');
+        expect(document.querySelector('.ro-pal-group')?.textContent).toBe('Clusters');
+
+        input.value = 'stale again';
+        (
+            window as unknown as {
+                roOpenPalette: (prefill: unknown) => void;
+            }
+        ).roOpenPalette(42);
+        expect(input.value).toBe('');
+        expect(rowByLabel('Pods')).toBeInTheDocument();
+    });
+
     test('only a click on the backdrop itself dismisses the palette', () => {
         openPalette('pods');
         const palette = document.getElementById('ro-palette') as HTMLElement;
@@ -578,12 +1048,19 @@ describe('delegated entry points and dismissal', () => {
         expect(backdrop.handler(targetedMouseEvent(panel), palette)).toBe(false);
         expect(palette).toHaveClass('open');
 
+        const text = document.createTextNode('not an element');
+        panel.appendChild(text);
+        expect(() => backdrop.handler(targetedMouseEvent(text), palette)).not.toThrow();
+        expect(backdrop.handler(targetedMouseEvent(text), palette)).toBe(false);
+        expect(palette).toHaveClass('open');
+
         expect(backdrop.handler(targetedMouseEvent(palette), palette)).toBe(true);
         expect(palette).not.toHaveClass('open');
     });
 
     test('focus-opening restores the opener without immediately reopening the palette', () => {
         const opener = document.getElementById('palette-opener') as HTMLButtonElement;
+        const blur = vi.spyOn(opener, 'blur');
         const focusBinding = binding('focusin', '[data-ro-palette-open]');
         const listener = (event: FocusEvent): void => {
             if (event.target === opener) {
@@ -596,11 +1073,13 @@ describe('delegated entry points and dismissal', () => {
             opener.focus();
             expect(document.getElementById('ro-palette')).toHaveClass('open');
             expect(document.getElementById('ro-palette-input')).toHaveFocus();
+            expect(blur).toHaveBeenCalledOnce();
 
             closePalette();
 
             expect(opener).toHaveFocus();
             expect(document.getElementById('ro-palette')).not.toHaveClass('open');
+            expect(blur).toHaveBeenCalledOnce();
         } finally {
             document.removeEventListener('focusin', listener);
         }
@@ -622,6 +1101,10 @@ describe('delegated entry points and dismissal', () => {
         expect(filterEscape.defaultPrevented).toBe(false);
         expect(document.getElementById('ro-palette')).toHaveClass('open');
 
+        const filterArrow = targetedKeyboardEvent('ArrowDown', filter);
+        openKeys.handler(filterArrow, null);
+        expect(filterArrow.defaultPrevented).toBe(false);
+
         const unrelated = targetedKeyboardEvent('x', document.body);
         openKeys.handler(unrelated, null);
         expect(unrelated.defaultPrevented).toBe(false);
@@ -631,6 +1114,15 @@ describe('delegated entry points and dismissal', () => {
         openKeys.handler(escapeKey, null);
         expect(escapeKey.defaultPrevented).toBe(true);
         expect(document.getElementById('ro-palette')).not.toHaveClass('open');
+
+        openPalette();
+        const targetlessEscape = new KeyboardEvent('keydown', {
+            key: 'Escape',
+            cancelable: true,
+        });
+        openKeys.handler(targetlessEscape, null);
+        expect(targetlessEscape.defaultPrevented).toBe(true);
+        expect(document.getElementById('ro-palette')).not.toHaveClass('open');
     });
 
     test('does not hijack modified or unrelated keyboard shortcuts', () => {
@@ -638,6 +1130,8 @@ describe('delegated entry points and dismissal', () => {
         const events = [
             targetedKeyboardEvent('k', document.body),
             targetedKeyboardEvent('k', document.body, { metaKey: true, altKey: true }),
+            targetedKeyboardEvent('k', document.body, { ctrlKey: true, altKey: true }),
+            targetedKeyboardEvent('k', document.body, { metaKey: true, shiftKey: true }),
             targetedKeyboardEvent('k', document.body, { ctrlKey: true, shiftKey: true }),
             targetedKeyboardEvent('x', document.body, { metaKey: true }),
         ];
@@ -654,9 +1148,19 @@ describe('delegated entry points and dismissal', () => {
     test('defensive DOM gaps are no-ops instead of breaking the page', () => {
         document.getElementById('ro-palette-input')?.remove();
         expect(() => openPalette()).not.toThrow();
+        expect(document.getElementById('ro-palette')).not.toHaveClass('open');
+
+        renderPaletteHarness();
+        document.getElementById('ro-palette')?.remove();
+        expect(() => openPalette()).not.toThrow();
 
         renderPaletteHarness();
         document.getElementById('ro-palette-list')?.remove();
+        expect(() => openPalette()).not.toThrow();
+        expect(document.getElementById('ro-palette')).toHaveClass('open');
+
+        renderPaletteHarness();
+        document.getElementById('ro-palette-scope')?.remove();
         expect(() => openPalette()).not.toThrow();
         expect(document.getElementById('ro-palette')).toHaveClass('open');
 
@@ -670,6 +1174,7 @@ describe('focus and keyboard model', () => {
         const prior = document.getElementById('prior-focus') as HTMLButtonElement;
         const input = document.getElementById('ro-palette-input') as HTMLInputElement;
         prior.focus();
+        const restore = vi.spyOn(prior, 'focus');
 
         openPalette('pods');
         openPalette('services');
@@ -684,6 +1189,78 @@ describe('focus and keyboard model', () => {
         expect(document.getElementById('ro-palette')).not.toHaveClass('open');
         expect(document.getElementById('ro-palette')).toHaveAttribute('aria-hidden', 'true');
         expect(prior).toHaveFocus();
+        expect(restore).toHaveBeenCalledOnce();
+
+        closePalette();
+        expect(restore).toHaveBeenCalledOnce();
+    });
+
+    test('close refuses stale and inside-palette restore targets', () => {
+        const palette = document.getElementById('ro-palette') as HTMLElement;
+        const inside = document.createElement('button');
+        palette.appendChild(inside);
+        inside.focus();
+        const insideRestore = vi.spyOn(inside, 'focus');
+
+        openPalette();
+        closePalette();
+
+        expect(insideRestore).not.toHaveBeenCalled();
+
+        const detached = document.getElementById('prior-focus') as HTMLButtonElement;
+        detached.focus();
+        const detachedRestore = vi.spyOn(detached, 'focus');
+        openPalette();
+        detached.remove();
+        closePalette();
+        expect(detachedRestore).not.toHaveBeenCalled();
+    });
+
+    test('close restores a connected focusable SVG target', () => {
+        const palette = document.getElementById('ro-palette') as HTMLElement;
+
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('tabindex', '0');
+        document.body.appendChild(svg);
+        svg.focus();
+        expect(document.activeElement).toBe(svg);
+        const svgRestore = vi.spyOn(svg, 'focus');
+        openPalette();
+        closePalette();
+        expect(svgRestore).toHaveBeenCalledOnce();
+        expect(document.activeElement).toBe(svg);
+        expect(palette).not.toHaveClass('open');
+    });
+
+    test('close safely skips a connected prior Element without a focus method', () => {
+        const inert = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        document.body.appendChild(inert);
+        Object.defineProperty(inert, 'focus', { configurable: true, value: undefined });
+        const activeElement = vi.spyOn(document, 'activeElement', 'get').mockReturnValue(inert);
+        openPalette();
+        activeElement.mockRestore();
+
+        expect(() => closePalette()).not.toThrow();
+        expect(document.getElementById('ro-palette')).not.toHaveClass('open');
+    });
+
+    test('a throwing focus restore always releases the reopen gate', () => {
+        const prior = document.getElementById('prior-focus') as HTMLButtonElement;
+        const opener = document.getElementById('palette-opener') as HTMLButtonElement;
+        prior.focus();
+        openPalette();
+        vi.spyOn(prior, 'focus').mockImplementation(() => {
+            throw new Error('focus failed');
+        });
+
+        expect(() => closePalette()).toThrow('focus failed');
+
+        const blur = vi.spyOn(opener, 'blur');
+        const event = new FocusEvent('focusin');
+        Object.defineProperty(event, 'target', { configurable: true, value: opener });
+        binding('focusin', '[data-ro-palette-open]').handler(event, opener);
+        expect(document.getElementById('ro-palette')).toHaveClass('open');
+        expect(blur).toHaveBeenCalledOnce();
     });
 
     test('Arrow and Tab keys wrap the active row, and Enter activates it', () => {
@@ -691,35 +1268,56 @@ describe('focus and keyboard model', () => {
         feed.clusters = [
             { name: 'Alpha', href: '#alpha' },
             { name: 'Beta', href: '#beta' },
+            { name: 'Gamma', href: '#gamma' },
         ];
         renderPaletteHarness(feed);
         openPalette();
         const input = document.getElementById('ro-palette-input') as HTMLInputElement;
         const openKeys = binding('keydown', undefined, 1);
+        const alpha = rowByLabel('Alpha');
+        const beta = rowByLabel('Beta');
+        const gamma = rowByLabel('Gamma');
+        const alphaScroll = vi.spyOn(alpha, 'scrollIntoView');
+        const betaScroll = vi.spyOn(beta, 'scrollIntoView');
+        const gammaScroll = vi.spyOn(gamma, 'scrollIntoView');
 
         expect(activeLabel()).toBe('Alpha');
 
         const up = targetedKeyboardEvent('ArrowUp', input);
         openKeys.handler(up, null);
         expect(up.defaultPrevented).toBe(true);
-        expect(activeLabel()).toBe('Beta');
+        expect(activeLabel()).toBe('Gamma');
+        expect(alpha.getAttribute('aria-selected')).toBe('false');
+        expect(gamma.getAttribute('aria-selected')).toBe('true');
+        expect(gammaScroll).toHaveBeenLastCalledWith({ block: 'nearest' });
 
-        openKeys.handler(targetedKeyboardEvent('ArrowDown', input), null);
+        const down = targetedKeyboardEvent('ArrowDown', input);
+        openKeys.handler(down, null);
+        expect(down.defaultPrevented).toBe(true);
         expect(activeLabel()).toBe('Alpha');
+        expect(alphaScroll).toHaveBeenLastCalledWith({ block: 'nearest' });
 
-        openKeys.handler(targetedKeyboardEvent('Tab', input), null);
+        const tab = targetedKeyboardEvent('Tab', input);
+        openKeys.handler(tab, null);
+        expect(tab.defaultPrevented).toBe(true);
         expect(activeLabel()).toBe('Beta');
+        expect(betaScroll).toHaveBeenLastCalledWith({ block: 'nearest' });
 
-        openKeys.handler(targetedKeyboardEvent('Tab', input, { shiftKey: true }), null);
+        const shiftTab = targetedKeyboardEvent('Tab', input, { shiftKey: true });
+        openKeys.handler(shiftTab, null);
+        expect(shiftTab.defaultPrevented).toBe(true);
         expect(activeLabel()).toBe('Alpha');
-        openKeys.handler(targetedKeyboardEvent('ArrowUp', input), null);
-        expect(activeLabel()).toBe('Beta');
-        expect(rowByLabel('Beta')).toHaveAttribute('aria-selected', 'true');
+        expect(alphaScroll).toHaveBeenLastCalledWith({ block: 'nearest' });
+        const secondUp = targetedKeyboardEvent('ArrowUp', input);
+        openKeys.handler(secondUp, null);
+        expect(secondUp.defaultPrevented).toBe(true);
+        expect(activeLabel()).toBe('Gamma');
+        expect(gamma.getAttribute('aria-selected')).toBe('true');
 
         const enter = targetedKeyboardEvent('Enter', input);
         openKeys.handler(enter, null);
         expect(enter.defaultPrevented).toBe(true);
-        expect(window.location.hash).toBe('#beta');
+        expect(window.location.hash).toBe('#gamma');
     });
 
     test('keyboard navigation is a safe no-op for an empty open palette', () => {
@@ -728,20 +1326,38 @@ describe('focus and keyboard model', () => {
         const input = document.getElementById('ro-palette-input') as HTMLInputElement;
         const openKeys = binding('keydown', undefined, 1);
 
-        expect(() => {
-            openKeys.handler(targetedKeyboardEvent('ArrowDown', input), null);
-            openKeys.handler(targetedKeyboardEvent('ArrowUp', input), null);
-            openKeys.handler(targetedKeyboardEvent('Enter', input), null);
-        }).not.toThrow();
+        const events = [
+            targetedKeyboardEvent('ArrowDown', input),
+            targetedKeyboardEvent('ArrowUp', input),
+            targetedKeyboardEvent('Enter', input),
+            targetedKeyboardEvent('Tab', input),
+            targetedKeyboardEvent('Tab', input, { shiftKey: true }),
+        ];
+        expect(() =>
+            events.forEach((event) => {
+                openKeys.handler(event, null);
+            }),
+        ).not.toThrow();
 
+        events.forEach((event) => {
+            expect(event.defaultPrevented).toBe(true);
+        });
         expect(window.location.hash).toBe('');
+        expect(window.localStorage.getItem('ro-pref-recents')).toBeNull();
         expect(document.getElementById('ro-palette')).toHaveClass('open');
+        expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
     });
 
-    test('the command chord closes competing surfaces before opening the palette', () => {
+    test.each([
+        { key: 'k', modifiers: { metaKey: true } },
+        { key: 'K', modifiers: { metaKey: true } },
+        { key: 'k', modifiers: { ctrlKey: true } },
+        { key: 'K', modifiers: { ctrlKey: true } },
+        { key: 'k', modifiers: { metaKey: true, ctrlKey: true } },
+    ])('the $key command chord closes competing surfaces for $modifiers', ({ key, modifiers }) => {
         const chord = binding('keydown', undefined, 0);
         const target = document.body;
-        const event = targetedKeyboardEvent('k', target, { metaKey: true });
+        const event = targetedKeyboardEvent(key, target, modifiers);
 
         chord.handler(event, null);
 

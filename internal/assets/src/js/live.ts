@@ -70,7 +70,6 @@ export const liveState: {
     gen: '', // the minted generation every frame must echo (string compare)
     streamPath: '', // the stream URL sans ?g= -- the page/params identity
 };
-let liveGenSeq = 0;
 // liveDiscards counts ro-table frames DISCARDED at morph time (stale
 // generation, wrong page identity, in-flight `_table` request). Exposed via the
 // window.roLive debug seam so the e2e suite can await "the push arrived AND was
@@ -125,11 +124,7 @@ export function liveTeardown(): void {
     liveState.abort = null;
     liveFallbackSecs = 0;
     if (ctrl) {
-        try {
-            ctrl.abort();
-        } catch {
-            // already settled -- nothing to abort
-        }
+        ctrl.abort();
     }
 }
 
@@ -153,26 +148,25 @@ function liveEngageFallback(banner: boolean): void {
 // -- is what makes the morph-time echo check sufficient.
 function liveOpen(base: string): void {
     liveTeardown();
-    liveFallbackSecs = 0;
     liveState.streamPath = base;
     if (!base) {
         liveEngageFallback(false);
         return;
     }
     liveState.status = 'connecting';
-    liveGenSeq += 1;
-    liveState.gen = `${Date.now().toString(36)}.${liveGenSeq}`;
+    liveState.gen = window.crypto.getRandomValues(new Uint32Array(4)).toString();
     const ctrl = new AbortController();
     liveState.abort = ctrl;
-    const url = `${base + (base.indexOf('?') === -1 ? '?' : '&')}g=${encodeURIComponent(liveState.gen)}`;
+    const separator = base.includes('?') ? '&' : '?';
+    const url = `${base}${separator}g=${liveState.gen}`;
     scheduleRefreshTick(); // effective cadence is 0 now -> the poll chain disarms
     void liveConnect(url, ctrl);
 }
 
 // liveConnect is the transport core: a streaming fetch + an SSE line parser.
 // Frames are `event: <name>` + `data: <one JSON line>` + a blank line. Every
-// await resumption re-checks the supersession token; all exits funnel into the
-// taxonomy (classifyStreamClose).
+// await resumption re-checks the supersession token; equivalent read-error/EOF
+// exits share one banner-fallback path.
 async function liveConnect(url: string, ctrl: AbortController): Promise<void> {
     let res: Response;
     try {
@@ -193,48 +187,56 @@ async function liveConnect(url: string, ctrl: AbortController): Promise<void> {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffered = '';
-    let eventName = '';
-    let dataText = '';
-    try {
-        for (;;) {
-            const chunk = await reader.read();
-            if (liveState.abort !== ctrl) {
-                return; // torn down while awaiting -- go inert
-            }
-            if (chunk.done) {
-                break;
-            }
-            buffered += decoder.decode(chunk.value, { stream: true });
-            let nl = buffered.indexOf('\n');
-            while (nl !== -1) {
-                const line = buffered.slice(0, nl).replace(/\r$/, '');
-                buffered = buffered.slice(nl + 1);
-                if (line === '') {
-                    const ended = liveHandleFrame(eventName, dataText, ctrl);
-                    eventName = '';
-                    dataText = '';
-                    if (ended || liveState.abort !== ctrl) {
-                        return; // terminal handled (or superseded mid-frame)
-                    }
-                } else if (line.indexOf('event:') === 0) {
-                    eventName = line.slice(6).trim();
-                } else if (line.indexOf('data:') === 0) {
-                    const piece = line.slice(5).replace(/^ /, '');
-                    dataText = dataText === '' ? piece : `${dataText}\n${piece}`;
+    let eventName: string | null = null;
+    let dataLines: string[] = [];
+    const readAndHandleChunk = async (): Promise<Uint8Array | undefined> => {
+        const chunk = await reader.read();
+        if (liveState.abort !== ctrl) {
+            return; // torn down while awaiting -- go inert
+        }
+        // EOF has no value. Dereferencing the spec-mandated Uint8Array maps EOF
+        // (and a malformed value-less result) into the same caught close path as
+        // a reader rejection, without another unconditional read iteration.
+        const value = chunk.value as Uint8Array;
+        buffered += decoder.decode(value.subarray(), { stream: true });
+        const completeLines = buffered.split('\n');
+        buffered = completeLines.pop() as string;
+        for (const rawLine of completeLines) {
+            // Splitting CRLF on LF leaves a lone CR for the blank frame
+            // delimiter. Event names are trimmed below and JSON accepts a
+            // trailing CR, so normalizing every field line is redundant.
+            const line = rawLine === '\r' ? '' : rawLine;
+            if (line.length === 0) {
+                liveHandleFrame(eventName, dataLines.join('\n'));
+                eventName = null;
+                dataLines = [];
+                if (liveState.abort !== ctrl) {
+                    return; // terminal handled (or superseded mid-frame)
                 }
-                nl = buffered.indexOf('\n');
+            } else if (line.startsWith('event:')) {
+                eventName = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+                // JSON accepts the SSE field's optional leading space, so
+                // keep the payload bytes and avoid a redundant normalization.
+                dataLines.push(line.slice(5));
             }
         }
+        return value;
+    };
+    try {
+        // Each condition evaluation consumes exactly one reader result. EOF,
+        // supersession, and terminal frames therefore stop the loop without an
+        // unconditional body that could spin independently of the stream.
+        while (await readAndHandleChunk()) {}
     } catch {
-        applyClose({ superseded: liveState.abort !== ctrl, cause: 'read-error' });
-        return;
+        // A reader error and a terminal-less EOF have the same user-visible
+        // outcome: the last good table stays visible and 5s fallback polling
+        // takes over. Fall through to that shared close path.
     }
     if (liveState.abort !== ctrl) {
         return;
     }
-    // The server closed without a terminal frame (its graceful paths always send
-    // one): treat it like a terminal -- banner + 5s polling.
-    applyClose({ superseded: false, cause: 'eof' });
+    liveEngageFallback(true);
 }
 
 // applyClose maps a close fact to its action via the pure taxonomy. 'ignore'
@@ -247,31 +249,31 @@ function applyClose(facts: Parameters<typeof classifyStreamClose>[0]): void {
     liveEngageFallback(action.banner);
 }
 
-// liveHandleFrame dispatches one parsed SSE frame. Returns true when the stream
-// must stop reading (a terminal was handled). THE morph-time gates live here:
+// liveHandleFrame dispatches one parsed SSE frame. THE morph-time gates live here:
 // the generation echo, the page identity, and the in-flight `_table` check all
 // run at dispatch -- which IS morph time, synchronously before htmx.swap -- so
 // a stale or racing push is dropped whole (shouldDiscardPush), never queued.
-function liveHandleFrame(name: string, text: string, ctrl: AbortController): boolean {
-    if (liveState.abort !== ctrl || text === '') {
-        return false;
-    }
-    let payload: { g?: unknown; html?: unknown } | null = null;
+function liveHandleFrame(name: string | null, text: string): void {
+    let parsed: unknown;
     try {
-        payload = JSON.parse(text);
+        parsed = JSON.parse(text);
     } catch {
-        return false; // malformed frame -> skipped (the next push is a full snapshot)
+        // Malformed frames are skipped; every later push is a full snapshot.
     }
-    if (!payload || typeof payload !== 'object') {
-        return false;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return;
     }
+    const payload = parsed as { g?: unknown; html?: unknown };
     if (name === 'ro-terminal') {
         // idle / auth / watch-failed / shutdown: close WITHOUT reconnecting.
         applyClose({ superseded: false, cause: 'terminal-frame' });
-        return true;
+        return;
     }
     if (name !== 'ro-table') {
-        return false;
+        return;
+    }
+    if (typeof payload.g !== 'string' || typeof payload.html !== 'string') {
+        return;
     }
     pruneSettledListRequests(userListRequestsInFlight);
     pruneSettledListRequests(containerListRequestsInFlight);
@@ -285,21 +287,28 @@ function liveHandleFrame(name: string, text: string, ctrl: AbortController): boo
     // container), and the Go wrong-page-gate contract pins exactly that form in
     // the bundle (internal/web/list_redesign_test.go).
     const reason = shouldDiscardPush({
-        frameGeneration: String(payload.g),
+        frameGeneration: payload.g,
         currentGeneration: liveState.gen,
-        liveStreamBase: liveStreamBase(),
+        // The Go bundle contract pins the literal page comparison below. Feed
+        // equal page identities here so the policy supplies the first and third
+        // ordered gates (generation, then request); the literal supplies the
+        // page gate between them without evaluating it twice.
+        liveStreamBase: liveState.streamPath,
         openedStreamBase: liveState.streamPath,
         requestInFlight:
             userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0,
     });
-    if (reason !== 'none' || liveStreamBase() !== liveState.streamPath) {
+    if (
+        reason === 'stale-generation' ||
+        liveStreamBase() !== liveState.streamPath ||
+        reason === 'request-in-flight'
+    ) {
         // STALE GENERATION / WRONG PAGE / a _table request in flight -> dropped
         // whole at morph time, never deferred (every push is a full snapshot).
         liveDiscards += 1;
-        return false;
+        return;
     }
-    liveMorph(String(payload.html));
-    return false;
+    liveMorph(payload.html);
 }
 
 // liveMorph swaps one pushed fragment into the list container through the htmx
@@ -339,10 +348,14 @@ export function liveOnListSwap(event: Event): void {
         return;
     }
     let base = liveStreamBase();
-    const pathInfo = detail?.pathInfo;
-    const requestPath = pathInfo && (pathInfo.finalRequestPath || pathInfo.requestPath);
-    if (requestPath && requestPath.indexOf('/_table') !== -1) {
-        base = requestPath.replace('/_table', '/_stream');
+    const requestPath = detail?.pathInfo?.finalRequestPath || detail?.pathInfo?.requestPath;
+    if (typeof requestPath === 'string') {
+        const queryStart = requestPath.indexOf('?');
+        const pathname = queryStart === -1 ? requestPath : requestPath.slice(0, queryStart);
+        if (pathname.endsWith('/_table')) {
+            const query = queryStart === -1 ? '' : requestPath.slice(queryStart);
+            base = `${pathname.slice(0, -'/_table'.length)}/_stream${query}`;
+        }
     }
     liveOpen(base);
 }
@@ -353,12 +366,9 @@ export function liveOnListSwap(event: Event): void {
 // `force` (the explicit dropdown pick) always reopens.
 export function liveApply(force?: boolean): void {
     if (refreshMode() !== 'Live') {
-        if (liveState.status !== 'idle') {
-            liveTeardown();
-            liveState.status = 'idle';
-            liveState.streamPath = '';
-            liveFallbackSecs = 0;
-        }
+        liveTeardown();
+        liveState.status = 'idle';
+        liveState.streamPath = '';
         return;
     }
     const base = liveSupported() ? liveStreamBase() : '';

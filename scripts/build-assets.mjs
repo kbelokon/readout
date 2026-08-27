@@ -23,9 +23,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import { bundle as lightningBundle } from 'lightningcss';
+import { frontendJavaScriptBuildOptions } from './frontend-build-config.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SRC_JS = join(repoRoot, 'internal/assets/src/js/readout.ts');
 const SRC_CSS = join(repoRoot, 'internal/assets/src/css/readout.css');
 const OUT_JS = join(repoRoot, 'internal/assets/static/readout.js');
 const OUT_CSS = join(repoRoot, 'internal/assets/static/readout.css');
@@ -36,17 +36,7 @@ function fail(msg) {
 
 // --- JS: esbuild -> classic IIFE ------------------------------------------
 async function buildJS() {
-  const result = await esbuild.build({
-    entryPoints: [SRC_JS],
-    bundle: true,
-    format: 'iife',
-    target: 'es2022',
-    minify: false,
-    sourcemap: false,
-    legalComments: 'none',
-    charset: 'utf8',
-    write: false,
-  });
+  const result = await esbuild.build(frontendJavaScriptBuildOptions(repoRoot));
   const out = result.outputFiles[0].text;
 
   // (strict-mode) the legacy bundle assumes 'use strict'; the IIFE wrapper must

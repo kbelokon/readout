@@ -37,12 +37,10 @@ function roRowState(): { setFocus(key: string): void; focusedKey(): string | nul
 // keyboardTargetIsTextEntry: the focused element owns typed characters, so the
 // gesture keys pass through untouched (j in the filter editor is the letter j).
 function keyboardTargetIsTextEntry(target: EventTarget | null): boolean {
-    const el = target as (Element & { isContentEditable?: boolean }) | null;
-    if (el?.nodeType !== 1) {
+    if (!(target instanceof HTMLElement)) {
         return false;
     }
-    const tag = el.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!el.isContentEditable;
+    return target.matches('input, textarea, select') || target.isContentEditable;
 }
 
 // keyboardSurfaceBusy: an open palette / context menu / namespace dropdown /
@@ -101,12 +99,12 @@ function openFocusedRow(): boolean {
     if (!key) {
         return false;
     }
-    let row: HTMLElement | null = visibleKeyRows().find((tr) => tr.dataset.key === key) || null;
+    let row: HTMLElement | null = visibleKeyRows().find((tr) => tr.dataset.key === key) ?? null;
     if (!row && virtualizerActive()) {
         // Windowed: the focused row may have scrolled out of the
         // rendered window -- it is still logically visible.
         const tr = virtRowByKey(key);
-        if (tr && virtVisible().indexOf(tr) !== -1) {
+        if (tr && virtVisible().includes(tr)) {
             row = tr;
         }
     }
@@ -157,7 +155,7 @@ export function closeKbdOverlay(): void {
     overlay.classList.remove('open');
     overlay.setAttribute('aria-hidden', 'true');
     const prior = kbdPriorFocus as HTMLElement | null;
-    if (prior && document.contains(prior) && typeof prior.focus === 'function') {
+    if (prior && document.contains(prior)) {
         prior.focus();
     }
     kbdPriorFocus = null;
@@ -170,7 +168,7 @@ export const keyboardBindings: Binding[] = [
     {
         event: 'click',
         handler: (event) => {
-            if ((event.target as Element).id === 'ro-kbd-overlay') {
+            if (event.target === kbdOverlayEl()) {
                 closeKbdOverlay();
             }
         },
@@ -216,8 +214,8 @@ export const keyboardBindings: Binding[] = [
                 // control (a focused sort-header link, button, or summary keeps
                 // its native activation; the focusable table wrap is intentionally
                 // NOT excluded -- ⏎ there is the aria-activedescendant pattern).
-                const target = e.target as Element | null;
-                if (target?.closest?.('a, button, summary')) {
+                const target = e.target;
+                if (target instanceof Element && target.closest('a, button, summary')) {
                     return;
                 }
                 if (openFocusedRow()) {

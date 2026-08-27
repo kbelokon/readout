@@ -27,6 +27,13 @@ test('the leading # is optional', () => {
     expect(parseCollapsedNames('collapsed=spec,status')).toStrictEqual(['spec', 'status']);
 });
 
+test('only a leading # is structural; a # inside a name is preserved', () => {
+    expect(parseCollapsedNames('collapsed=spec#details,status')).toStrictEqual([
+        'spec#details',
+        'status',
+    ]);
+});
+
 test('collapsed is selected out of a multi-param fragment', () => {
     // The fragment is a `;`-separated list of key=value params; only the
     // `collapsed` value contributes names.
