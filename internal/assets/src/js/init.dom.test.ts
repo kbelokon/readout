@@ -186,6 +186,52 @@ describe('runInit orchestration', () => {
 });
 
 describe('htmx swap lifecycle', () => {
+    test.each([400, 403, 404, 500, 503, 599])(
+        'allows a designed %s error screen to replace the body',
+        (status) => {
+            const detail = {
+                target: document.body,
+                xhr: { status },
+                shouldSwap: false,
+            };
+
+            document.dispatchEvent(new CustomEvent('htmx:beforeSwap', { detail }));
+
+            expect(detail.shouldSwap).toBe(true);
+            expect(steps.liveTeardown).toHaveBeenCalledOnce();
+        },
+    );
+
+    test.each([0, 200, 304, 399, 600, '500', undefined])(
+        'does not override the body swap decision for status %s',
+        (status) => {
+            const detail = {
+                target: document.body,
+                xhr: { status },
+                shouldSwap: false,
+            };
+
+            document.dispatchEvent(new CustomEvent('htmx:beforeSwap', { detail }));
+
+            expect(detail.shouldSwap).toBe(false);
+        },
+    );
+
+    test('keeps a failed list refresh non-swapping', () => {
+        const content = document.createElement('div');
+        const detail = {
+            target: content,
+            xhr: { status: 500 },
+            shouldSwap: false,
+        };
+
+        document.dispatchEvent(new CustomEvent('htmx:beforeSwap', { detail }));
+
+        expect(detail.shouldSwap).toBe(false);
+        expect(steps.closeRowMenu).not.toHaveBeenCalled();
+        expect(steps.liveTeardown).not.toHaveBeenCalled();
+    });
+
     test('tears down the old screen only for a body swap and resets live identity', () => {
         const content = document.createElement('div');
         document.body.appendChild(content);

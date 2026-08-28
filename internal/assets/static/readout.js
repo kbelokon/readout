@@ -3735,6 +3735,10 @@
   document.addEventListener("htmx:beforeSwap", (event) => {
     const detail = event.detail;
     if (detail && detail.target === document.body) {
+      const status = detail.xhr?.status;
+      if (typeof status === "number" && status >= 400 && status <= 599) {
+        detail.shouldSwap = true;
+      }
       closeRowMenu();
       clearRowState();
       clearListStale();

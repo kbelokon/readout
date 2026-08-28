@@ -38,14 +38,10 @@ function isNoPushTableResponse(r: Response): boolean {
 }
 
 // A user-initiated table request (a chip commit, the popover form submit):
-// no RO-No-Push marker, no preload warm-up.
+// no RO-No-Push marker.
 function isUserTableResponse(r: Response): boolean {
   const headers = r.request().headers();
-  return (
-    r.url().includes('/_table') &&
-    headers['ro-no-push'] !== 'true' &&
-    headers['hx-preloaded'] !== 'true'
-  );
+  return r.url().includes('/_table') && headers['ro-no-push'] !== 'true';
 }
 
 function headers(page: Page) {

@@ -317,7 +317,7 @@ templ ResourceView(d DetailData) {
 				}
 			>@nameSplit(d.NameHead, d.NameTail, d.Name)
 			// The download anchor opts out of hx-boost: boost would swap the
-			// attachment body into <body> instead of downloading (htmx 2.0.4).
+			// attachment body into <body> instead of downloading.
 			</h1> <span class="ro-kind-badge">{ d.Kind }</span><div class="ro-detail-actions"><a href={ templ.SafeURL(d.DownloadHref) } hx-boost="false" title="Download resource object as YAML" class="ro-iconbtn"><span class="icon">@templ.Raw(d.DownloadIcon)</span></a>
 				for _, link := range d.Links {
 					// Config/hook-influenced href: templ.URL sanitizes any scheme

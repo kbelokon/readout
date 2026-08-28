@@ -151,22 +151,47 @@ func (s *Server) MetricsHandler() http.Handler {
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status     int
+	wroteFinal bool
 }
 
 func (w *statusWriter) WriteHeader(status int) {
+	if w.wroteFinal {
+		return
+	}
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		// Informational responses (for example, 103 Early Hints) precede the
+		// final response and must not become the status metric.
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
+	w.wroteFinal = true
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
 }
 
-// Flush forwards to the wrapped writer's http.Flusher. The embedded
-// ResponseWriter field hides the interface (a struct-embedded interface only
-// re-exposes its OWN methods), which would buffer SSE pushes indefinitely —
-// the `_stream` endpoint flushes per message through this.
-func (w *statusWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
+func (w *statusWriter) Write(p []byte) (int, error) {
+	if !w.wroteFinal {
+		w.wroteFinal = true
+		w.status = http.StatusOK
 	}
+	return w.ResponseWriter.Write(p)
+}
+
+// FlushError preserves an underlying error-aware flush through the metrics
+// wrapper. ResponseController stops at the first Flush/FlushError method it
+// finds, so a void-only Flush here would otherwise hide transport failures from
+// compression and SSE callers.
+func (w *statusWriter) FlushError() error {
+	if !w.wroteFinal {
+		w.wroteFinal = true
+		w.status = http.StatusOK
+	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *statusWriter) Flush() {
+	_ = w.FlushError()
 }
 
 // Unwrap exposes the wrapped writer for http.ResponseController, so any

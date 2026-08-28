@@ -29,7 +29,7 @@ templ resourceTables(d ListData) {
 				// hx-boost="false": the body-level boost intercepts a plain
 				// anchor click and swaps the response into <body> -- for an
 				// attachment URL that pastes the raw TSV bytes over the page
-				// instead of downloading (htmx 2.0.4, verified live). Every
+				// instead of downloading (verified against the vendored HTMX runtime). Every
 				// download-serving anchor must opt out.
 				<a href={ templ.SafeURL(table.DownloadTSVHref) } hx-boost="false" title="Download resource list as Tab-Separated-Values (TSV)" class="ro-iconbtn"><span class="icon">@templ.Raw(table.DownloadIcon)</span></a>
 				if table.Cols != nil {

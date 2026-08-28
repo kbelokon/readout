@@ -31,11 +31,7 @@ async function control(path: string): Promise<void> {
 
 function isUserTableResponse(r: Response): boolean {
   const headers = r.request().headers();
-  return (
-    r.url().includes('/_table') &&
-    headers['ro-no-push'] !== 'true' &&
-    headers['hx-preloaded'] !== 'true'
-  );
+  return r.url().includes('/_table') && headers['ro-no-push'] !== 'true';
 }
 
 async function clickSort(page: Page, label: string): Promise<void> {

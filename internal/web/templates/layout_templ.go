@@ -361,7 +361,7 @@ func layoutBody(d LayoutData, body templ.Component) templ.Component {
 			templ_7745c5c3_Var10 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<body class=\"has-ro-topbar\" hx-boost=\"true\" hx-indicator=\"#ro-progress\" hx-ext=\"preload\" preload=\"mouseover\"><div id=\"ro-progress\" class=\"ro-progress htmx-indicator\" aria-hidden=\"true\"><span class=\"ro-progress-bar\"></span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<body class=\"has-ro-topbar\" hx-boost=\"true\" hx-indicator=\"#ro-progress\"><div id=\"ro-progress\" class=\"ro-progress htmx-indicator\" aria-hidden=\"true\"><span class=\"ro-progress-bar\"></span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -81,6 +81,42 @@ test('mode=500 renders the unreachable card with the verbatim error string', asy
   await expect(page.locator('#resource-list-content table.ro-table tbody tr')).not.toHaveCount(0);
 });
 
+test('a failed boosted navigation replaces the old screen with the server error page', async ({
+  page,
+}) => {
+  await page.goto(PODS);
+  await expect(page.locator('#resource-list-content table.ro-table')).toBeVisible();
+
+  // Exercise a real non-2xx readout response through HTMX's body-boost path.
+  // The fixture sidebar has no intentionally broken destination, so install a
+  // test-only anchor and hand it to the same HTMX processor as server-rendered
+  // links. Before the body-specific beforeSwap policy, HTMX kept the pod table
+  // on screen and this click appeared to do nothing.
+  await page.evaluate(() => {
+    const link = document.createElement('a');
+    link.id = 'boosted-missing-cluster';
+    link.href = '/clusters/missing';
+    link.textContent = 'Missing cluster';
+    document.body.append(link);
+    (
+      window as unknown as {
+        htmx: { process(root: Element): void };
+      }
+    ).htmx.process(link);
+  });
+
+  const response = page.waitForResponse(
+    (candidate) =>
+      candidate.url().endsWith('/clusters/missing') && candidate.status() === 500
+  );
+  await page.locator('#boosted-missing-cluster').click();
+  await response;
+
+  await expect(page.locator('.ro-error-card h2')).toHaveText('Internal Server Error');
+  await expect(page.locator('.ro-error-card p')).toContainText('Internal server error (reference ');
+  await expect(page.locator('#resource-list-content table.ro-table')).toHaveCount(0);
+});
+
 test('empty-filtered shows the active chips inline plus Clear filters', async ({ page }) => {
   await page.goto(`${PODS}?filter=zzz-no-such-pod`);
 

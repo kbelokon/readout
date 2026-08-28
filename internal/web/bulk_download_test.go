@@ -315,7 +315,7 @@ func TestBulkBarHrefAndBoundsFlags(t *testing.T) {
 // TestBulkDownloadSurfaceAnchorsOptOutOfBoost pins the hx-boost="false"
 // opt-out on the existing download anchors: the body-level boost intercepts a
 // plain anchor click and swaps the attachment bytes into <body> instead of
-// downloading (htmx 2.0.4, verified live), so every download-serving anchor
+// downloading (verified against the vendored HTMX runtime), so every download-serving anchor
 // must carry the opt-out. The bulk Download button needs none -- it is a
 // <button> navigated via location.assign, which boost never captures.
 func TestBulkDownloadSurfaceAnchorsOptOutOfBoost(t *testing.T) {

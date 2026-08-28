@@ -60,11 +60,7 @@ async function addPod(name: string, cells: string[]): Promise<void> {
 
 function isUserTableResponse(r: Response): boolean {
   const headers = r.request().headers();
-  return (
-    r.url().includes('/_table') &&
-    headers['ro-no-push'] !== 'true' &&
-    headers['hx-preloaded'] !== 'true'
-  );
+  return r.url().includes('/_table') && headers['ro-no-push'] !== 'true';
 }
 
 function isTickResponse(r: Response): boolean {
@@ -113,13 +109,10 @@ test('free text narrows rows live with no network request', async ({ page }) => 
   await page.goto(PODS);
   await expect(visibleNames(page)).toHaveText(['nginx', 'my-app', 'api-server']);
 
-  // Count every request from here on (preload warm-ups excluded -- hovering
-  // chrome may legitimately warm a link; typing must trigger NOTHING).
+  // Count every request from here on: typing must trigger NOTHING.
   const requests: string[] = [];
   page.on('request', (r) => {
-    if ((r.headers()['hx-preloaded'] ?? '') !== 'true') {
-      requests.push(r.url());
-    }
+    requests.push(r.url());
   });
 
   await filterInput(page).click();

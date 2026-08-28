@@ -65,11 +65,9 @@ func TestBehaviorAppChromeAndJSContract(t *testing.T) {
 	// Strict CSP head wiring: htmx-config opts out of eval/script tags.
 	p.wantAttr(`meta[name="htmx-config"]`, "content", `{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false}`)
 
-	// hx-boost body shell + preload ext. The redesign shell offsets content under
-	// the sticky topbar via body.has-ro-topbar (chrome migration to the redesign
-	// page-shell).
+	// hx-boost body shell. The redesign shell offsets content under the sticky
+	// topbar via body.has-ro-topbar.
 	p.wantAttr("body", "hx-boost", "true")
-	p.wantAttr("body", "hx-ext", "preload")
 	p.wantHas("body.has-ro-topbar")
 
 	// Redesign chrome scoping: the topbar is a <header class="ro-topbar">

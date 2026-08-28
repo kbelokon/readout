@@ -153,7 +153,7 @@ templ layoutHead(d LayoutData) {
 // a navigation is a screen change). readout.js appends one .ro-toast per
 // message, only for the two sanctioned detached-result triggers.
 templ layoutBody(d LayoutData, body templ.Component) {
-	<body class="has-ro-topbar" hx-boost="true" hx-indicator="#ro-progress" hx-ext="preload" preload="mouseover">
+	<body class="has-ro-topbar" hx-boost="true" hx-indicator="#ro-progress">
 		<div id="ro-progress" class="ro-progress htmx-indicator" aria-hidden="true"><span class="ro-progress-bar"></span></div>
 		@topbarC(d.Navbar)
 		<div class="ro-shell">

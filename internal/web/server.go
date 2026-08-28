@@ -284,7 +284,7 @@ func warnSessionTokenDeniesViewers(passthrough bool, clusters []*kube.Cluster) {
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.hostAllowlist(s.readOnly(s.sameOrigin(s.securityHeaders(s.observeMetrics(s.auth.Middleware(s.mux))))))
+	return s.hostAllowlist(s.readOnly(s.sameOrigin(s.securityHeaders(s.observeMetrics(compressResponses(s.auth.Middleware(s.mux)))))))
 }
 
 func (s *Server) routes() {

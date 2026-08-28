@@ -47,13 +47,6 @@ of the bundled file. Each remains under its own license.
   (bundled: internal/assets/static/idiomorph-ext.min.js;
    license: internal/assets/static/LICENSES/idiomorph.txt)
 
-  htmx preload extension
-  Copyright (c) 2024 Alexander Petros and Mariss Tubelis
-  BSD Zero Clause License (0BSD).
-  https://github.com/bigskysoftware/htmx-extensions
-  (bundled: internal/assets/static/preload.min.js;
-   license: internal/assets/static/LICENSES/htmx-ext-preload.txt)
-
   Lucide icons
   Copyright (c) Lucide Icons and Contributors
   ISC License (Lucide); a subset of icons is derived from Feather under the MIT

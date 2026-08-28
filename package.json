@@ -11,7 +11,7 @@
   },
   "type": "module",
   "scripts": {
-    "build": "node scripts/build-assets.mjs",
+    "build": "npm run verify:vendor && node scripts/build-assets.mjs",
     "check": "npm run lint && npm run typecheck && npm run typecheck:test && npm run test:coverage",
     "lint": "biome check internal/assets/src scripts vitest.config.ts stryker.config.mjs",
     "test": "vitest run",
@@ -24,7 +24,9 @@
     "test:mutation:run": "node scripts/run-mutation.mjs --mode=full",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "typecheck:test": "tsc -p tsconfig.test.json --noEmit"
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "verify:vendor": "node --test scripts/vendor-assets.test.mjs && node scripts/check-vendor-assets.mjs",
+    "verify:vendor:upstream": "node scripts/check-vendor-upstream.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.10",

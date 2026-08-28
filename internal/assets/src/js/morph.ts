@@ -116,8 +116,8 @@ if (
 // NEEDS non-default morph config: ignoreActiveValue keeps the user's filter
 // draft + caret when a refresh tick morphs the fragment mid-typing (the server
 // fragment would otherwise sync the stale value over the draft; hx-preserve is
-// no alternative -- htmx 2.0.4 detaches/reattaches preserved nodes, dropping
-// focus). So the config is delivered FROM JS: this handleSwap hook calls
+// no alternative -- HTMX detaches/reattaches preserved nodes, dropping focus).
+// So the config is delivered FROM JS: this handleSwap hook calls
 // Idiomorph.morph with an explicit config OBJECT -- no attribute eval anywhere.
 // Used by #resource-list-content (hx-ext="ro-morph" + hx-swap="morph") and the
 // sort-header partial requests inside it (hx-ext is inherited). morphStyle

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 2,
+  "scope": "runtime-vendored-javascript",
+  "artifacts": [
+    {
+      "name": "htmx.org",
+      "version": "2.0.10",
+      "sourceURL": "https://registry.npmjs.org/htmx.org/-/htmx.org-2.0.10.tgz",
+      "sourceIntegrity": "sha512-kdeJe7ZVwaS6QMz/ebBIVtZdpwen6L0OQ5GOhPV9MKBb196TCZeZu4yA7ZIQsaLKv7EpXz+So7KSXNuHXhj7Cw==",
+      "packagePath": "package/dist/htmx.min.js",
+      "licensePackagePath": "package/LICENSE",
+      "artifactPath": "internal/assets/static/htmx.min.js",
+      "artifactSHA256": "71ea67185bfa8c98c39d31717c6fce5d852370fcdfd129db4543774d3145c0de",
+      "license": "0BSD",
+      "licensePath": "internal/assets/static/LICENSES/htmx.txt",
+      "licenseSHA256": "d3d2456f76414f2456104660ebd65aff1c04cd7966b942bdabd63f3cdb316a38"
+    },
+    {
+      "name": "idiomorph",
+      "version": "0.7.4",
+      "sourceURL": "https://registry.npmjs.org/idiomorph/-/idiomorph-0.7.4.tgz",
+      "sourceIntegrity": "sha512-uCdSpLo3uMfqOmrwXTpR1k/sq4sSmKC7l4o/LdJOEU+MMMq+wkevRqOQYn3lP7vfz9Mv+USBEqPvi0XhdL9ENw==",
+      "packagePath": "package/dist/idiomorph-ext.min.js",
+      "licensePackagePath": "package/LICENSE",
+      "artifactPath": "internal/assets/static/idiomorph-ext.min.js",
+      "artifactSHA256": "a6437e55b1b6a07bc421f0d230266a39399b6826c6ed19e0ed9c63b707444a5f",
+      "license": "0BSD",
+      "licensePath": "internal/assets/static/LICENSES/idiomorph.txt",
+      "licenseSHA256": "d3d2456f76414f2456104660ebd65aff1c04cd7966b942bdabd63f3cdb316a38"
+    }
+  ]
+}

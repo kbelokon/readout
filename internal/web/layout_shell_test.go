@@ -83,6 +83,30 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantAttr(".tb-group .tb-btn.ro-search-mobile", "aria-label", "Search Kubernetes objects")
 }
 
+// TestPreloadRuntimeAbsent pins the removal of speculative navigation warm-ups.
+// Readout pages are private/dynamic and do not currently emit a cache contract
+// that lets the preload extension reuse its response, so a warm-up is a second
+// request rather than a faster navigation.
+func TestPreloadRuntimeAbsent(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
+
+	p.wantAbsent("[preload], [data-preload]")
+	p.wantAbsent(`[hx-ext~="preload"], [data-hx-ext~="preload"]`)
+	p.wantAbsent(`script[src*="preload"]`)
+
+	wantScripts := []string{"htmx.min.js", "idiomorph-ext.min.js", "readout.js"}
+	scripts := p.attrs("script[src]", "src")
+	if len(scripts) != len(wantScripts) {
+		t.Fatalf("runtime scripts = %v, want exactly %v", scripts, wantScripts)
+	}
+	for i, want := range wantScripts {
+		if !strings.HasPrefix(scripts[i], "/assets/"+want+"?v=") {
+			t.Fatalf("runtime script[%d] = %q, want versioned %s", i, scripts[i], want)
+		}
+	}
+}
+
 // TestNavbarNamespaceContext pins the namespace context dropdown (.ctx-dd): it
 // renders only with a cluster in scope, shows the current namespace, and keeps
 // the JS hooks (#namespace-dropdown / #namespace-searchbox / .namespace-item).

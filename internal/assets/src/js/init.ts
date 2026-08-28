@@ -189,6 +189,16 @@ document.addEventListener('htmx:afterSwap', (event) => {
 document.addEventListener('htmx:beforeSwap', (event) => {
     const detail = (event as CustomEvent).detail;
     if (detail && detail.target === document.body) {
+        // HTMX deliberately treats 4xx/5xx responses as non-swapping by
+        // default. That is the right policy for an in-place list refresh --
+        // the last-good table must stay visible -- but it leaves a failed
+        // boosted navigation looking like a dead click. A body response is a
+        // complete, server-rendered screen (including our designed error
+        // states), so let that response replace the old page.
+        const status = detail.xhr?.status;
+        if (typeof status === 'number' && status >= 400 && status <= 599) {
+            detail.shouldSwap = true;
+        }
         closeRowMenu();
         clearRowState();
         clearListStale();
