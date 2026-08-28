@@ -132,7 +132,8 @@ func unwrapCellObject(obj runtime.Object) (cells []any, logText string, inner ru
 
 // node builders for the divergent nodes route.
 func tableOnlyNode(obj runtime.Object) *cellObject { return &cellObject{inner: obj, tableOnly: true} }
-func listOnlyNode(obj runtime.Object) *cellObject  { return &cellObject{inner: obj, listOnly: true} }
+
+func listOnlyNode(obj runtime.Object) *cellObject { return &cellObject{inner: obj, listOnly: true} }
 
 // ---------------------------------------------------------------------------
 // Base cluster.

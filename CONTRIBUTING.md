@@ -11,7 +11,8 @@ mise exec -- make ci
 ```
 
 `mise run setup` installs Go, Node, Python, Gremlins, GNU Make, Zig (as the
-cgo compiler for `go test -race`), golangci-lint, Helm, and kubeconform. It
+default cgo compiler), golangci-lint, Helm, and kubeconform. On macOS, the race
+gate uses Apple clang because Go 1.27 emits a Darwin linker flag Zig cannot handle. It
 puts the Go helper binaries used by the gates (`templ` and `govulncheck`) in
 a repo-local ignored directory. `make ci` runs the local Go fast path (templ freshness, lint, comment
 hygiene, mutation-harness guards, and the race test suite); GitHub CI

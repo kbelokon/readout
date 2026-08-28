@@ -242,6 +242,27 @@ class MutationHarnessTests(unittest.TestCase):
         self.assertNotIn("KUBECONFIG", identity["preserved_sha256"])
         self.assertTrue(base.get("PATH"))
 
+    def test_isolated_go_metadata_disables_telemetry_inside_its_root(self) -> None:
+        real_go = evaluate.resolve_executable("go")
+        with evaluate.isolated_go_metadata_environment(
+            real_go,
+            reuse_module_cache=False,
+        ) as env:
+            root = Path(env["HOME"]).parent
+            state = json.loads(
+                evaluate.run_checked(
+                    [real_go, "env", "-json", "GOTELEMETRY", "GOTELEMETRYDIR"],
+                    env=evaluate.go_child_environment(env),
+                ).stdout
+            )
+            self.assertEqual(state["GOTELEMETRY"], "off")
+            self.assertTrue(
+                Path(state["GOTELEMETRYDIR"])
+                .resolve(strict=False)
+                .is_relative_to(root.resolve())
+            )
+        self.assertFalse(root.exists())
+
     def test_nonempty_goflags_is_rejected(self) -> None:
         with mock.patch.dict(os.environ, {"GOFLAGS": "-overlay=/tmp/escape.json"}):
             with self.assertRaises(evaluate.EvaluationError):
