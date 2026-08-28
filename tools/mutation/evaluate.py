@@ -37,7 +37,7 @@ FULL_ATTEMPT = REPORT_DIR / "full-attempt.json"
 SANITY_PACKAGE = "tools/mutation/testdata/sanity"
 GREMLINS_MODULE = "github.com/go-gremlins/gremlins"
 GREMLINS_VERSION = "v0.6.0"
-GO_VERSION = "1.26.7"
+GO_VERSION = "1.27.0"
 PYTHON_VERSION = "3.13.15"
 ZIG_VERSION = "0.16.0"
 REPORT_SCHEMA_VERSION = 2
@@ -281,6 +281,32 @@ def go_child_environment(env: dict[str, str]) -> dict[str, str]:
     return child
 
 
+def disable_go_telemetry(
+    real_go: str,
+    env: dict[str, str],
+    expected_root: Path,
+) -> None:
+    child_env = go_child_environment(env)
+    run_checked([real_go, "telemetry", "off"], env=child_env)
+    try:
+        state = json.loads(
+            run_checked(
+                [real_go, "env", "-json", "GOTELEMETRY", "GOTELEMETRYDIR"],
+                env=child_env,
+            ).stdout
+        )
+        telemetry_dir = Path(state["GOTELEMETRYDIR"]).resolve(strict=False)
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise EvaluationError("cannot verify isolated Go telemetry state") from exc
+    expected_root = expected_root.resolve()
+    if state.get("GOTELEMETRY") != "off" or not telemetry_dir.is_relative_to(
+        expected_root
+    ):
+        raise EvaluationError(
+            "Go telemetry must be disabled inside the runner-owned isolated root"
+        )
+
+
 def validate_ambient_mutation_environment() -> None:
     if platform.python_version() != PYTHON_VERSION:
         raise EvaluationError(
@@ -321,7 +347,16 @@ def isolated_go_metadata_environment(
         root = Path(directory)
         paths = {
             name: root / name
-            for name in ("go-build", "go-mod", "go-path", "go-tmp", "home", "tmp")
+            for name in (
+                "go-build",
+                "go-mod",
+                "go-path",
+                "go-tmp",
+                "home",
+                "tmp",
+                "xdg-cache",
+                "xdg-config",
+            )
         }
         for path in paths.values():
             path.mkdir()
@@ -352,11 +387,14 @@ def isolated_go_metadata_environment(
                 "GOWORK": "off",
                 "HOME": str(paths["home"]),
                 "TMPDIR": str(paths["tmp"]),
+                "XDG_CACHE_HOME": str(paths["xdg-cache"]),
+                "XDG_CONFIG_HOME": str(paths["xdg-config"]),
                 "TZ": "UTC",
                 "GIT_CONFIG_GLOBAL": "/dev/null",
                 "GIT_CONFIG_NOSYSTEM": "1",
             }
         )
+        disable_go_telemetry(real_go, env, root)
         yield env
 
 
@@ -1328,6 +1366,7 @@ def mutation_environment(
                 "READOUT_GO_GUARD_FAILURE": str(runtime / "go-guard-failure"),
             }
         )
+        disable_go_telemetry(str(tool["go_path"]), env, runtime)
         return runtime, env
     except BaseException:
         cleanup_runtime(runtime)
