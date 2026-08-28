@@ -17,6 +17,8 @@ coverage.*
 
 # Local tooling / editor / scratch
 .DS_Store
+__pycache__/
+*.py[cod]
 .idea/
 .vscode/
 # root-anchored: locally downloaded tool binaries, not any nested dir of that name
