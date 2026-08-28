@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
     test: {
+        // Node 26's process-global experimental Web Storage shadows jsdom's
+        // per-window implementation unless it is disabled in Vitest workers.
+        execArgv: ['--no-experimental-webstorage'],
         include: ['internal/assets/src/js/**/*.test.ts'],
         environment: 'node',
         globals: false,

@@ -14,6 +14,13 @@ TEMPL_VERSION := v0.3.1020
 # daemon is arm64; Rosetta emulation runs it).
 PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.62.1-noble
 
+# Go 1.27's Darwin race linker emits -Wl,-U,..., which Zig 0.16 does not
+# implement. Keep Zig for normal cgo/mutation work and use Apple ld only here.
+RACE_CC_ENV :=
+ifeq ($(shell uname -s),Darwin)
+RACE_CC_ENV := CC=/usr/bin/clang
+endif
+
 .DEFAULT_GOAL := ci
 
 .PHONY: ci tools generate templ-check lint comment-check test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-update assets assets-check frontend-deps frontend-test frontend-coverage frontend-check
@@ -49,7 +56,7 @@ test:
 
 ## race: the REQUIRED race-detector test gate
 race:
-	go test ./... -race
+	$(RACE_CC_ENV) go test ./... -race
 
 ## build: compile everything
 build:
