@@ -113,6 +113,7 @@ function expectInitOrder(): void {
         steps.initLogsFollow,
         steps.syncThemeTogglePostTarget,
         steps.captureRowModelFromDocument,
+        steps.applyLiveNameFilter,
         steps.virtualizeInit,
         steps.syncColsPopState,
         steps.reapplyRowState,
@@ -165,6 +166,7 @@ describe('runInit orchestration', () => {
             steps.liveApply,
             steps.applyRefresh,
             steps.captureRowModelFromDocument,
+            steps.applyLiveNameFilter,
             steps.virtualizeInit,
             steps.updateBulkBar,
         );

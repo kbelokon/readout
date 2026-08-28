@@ -2,10 +2,10 @@
 // migrated from legacy.js. Lists always render COMPLETE server-side (no
 // pagination, ever). Above the threshold the server marks the table wrap
 // `.ro-windowed` (the threshold has ONE owner: resource_table.templ; this module
-// only follows the marker) and the virtualizer takes ownership of the tbody: it
-// holds the FULL identity row set in memory and keeps only the viewport's slice
-// (+ buffer) in the DOM, framed by two spacer rows whose heights stand in for
-// everything off-window. The fixed row height (--row-py×2 + line-height,
+// only follows the marker) and the virtualizer takes ownership of tbody
+// geometry: it renders a viewport slice (+ buffer) from the canonical full row
+// set owned by list-projection.ts, framed by two spacer rows whose heights stand
+// in for everything off-window. The fixed row height (--row-py×2 + line-height,
 // guaranteed by the windowed clamp CSS + the server-side expansion flattening)
 // makes the offset math exact: it is MEASURED once per engagement as the mean
 // row pitch of the full render, so no per-row rounding accumulates across 600
@@ -25,20 +25,27 @@
 // and changed cells still flash (the idiomorph cell-flash callbacks never see
 // windowed rows, so the diff runs here against the prior row set).
 //
-// The free-text matcher and the autocomplete frequency scan (filters.ts) are
-// UNTOUCHED by design: they read window.roRowModel, captured from the incoming
-// server fragment BEFORE any windowing -- the virtualizer only CONSUMES
-// roRowModel.visibleKeys to decide which rows are renderable. It reads that
-// through the window seam (NOT a module import) so filters.ts depends on the
-// virtualizer, not the other way round (the matcher calls
-// virtualizeOnFilterChange). Everything is pure DOM: CSP-clean, read-only floor
-// untouched.
+// The free-text matcher, autocomplete and virtualizer all consume the same
+// list-projection snapshot.  This module never keeps a second rows/byKey/order
+// store; its state is limited to geometry, mounts and the derived visible view.
+// Everything is pure DOM: CSP-clean, read-only floor untouched.
 //
 // keyboard.ts / palette.ts import the windowed-walk + harvest surfaces here
 // DIRECTLY (the Unit-12 dismantling of the window.roClusterBridge seam): the
 // virtualizer is a module now, so those callers reach it by name at call time.
 
 import { clearListValidator } from './list-etag.js';
+import {
+    commitListProjectionSwap,
+    ensureListProjection,
+    listProjectionRowByKey,
+    listProjectionRows,
+    listProjectionSwapPending,
+    listProjectionVisibleRows,
+    listProjectionWindowed,
+    prepareListProjectionSwap,
+    resetListProjection,
+} from './list-projection.js';
 import { requestListRefresh } from './refresh.js';
 import { reapplyRowState } from './row-selection.js';
 import {
@@ -54,12 +61,6 @@ import {
 // rather than imported so the matcher->virtualizer dependency stays one-way).
 const FILTER_HIDE_CLASS = 'ro-row-filtered';
 
-// roRowModel seam (owned by filters.ts), read at call time so the bundle's
-// module-eval order is irrelevant. Only visibleKeys is read here.
-function roRowModel(): { visibleKeys: Set<string> | null } {
-    return (window as unknown as { roRowModel: { visibleKeys: Set<string> | null } }).roRowModel;
-}
-
 // roRowState focus seam (owned by row-selection.ts), read at call time.
 function roRowState(): { setFocus(key: string): void; focusedKey(): string | null } {
     return (
@@ -71,9 +72,7 @@ function roRowState(): { setFocus(key: string): void; focusedKey(): string | nul
 
 interface VirtState {
     active: boolean;
-    rows: HTMLElement[]; // the FULL identity row set, server order
-    byKey: Map<string, HTMLElement>; // key -> tr over `rows` (rendered or detached)
-    visible: HTMLElement[]; // rows passing the live free-text filter, in order
+    visible: HTMLElement[]; // derived rows passing the live free-text filter, in order
     rowH: number; // the measured fixed row pitch (px)
     start: number; // rendered slice bounds over `visible`
     end: number;
@@ -82,14 +81,11 @@ interface VirtState {
     topSpacer: HTMLTableRowElement | null;
     bottomSpacer: HTMLTableRowElement | null;
     pinnedWidths: number[]; // engagement-time column widths (full-render truth)
-    pendingRows: HTMLElement[] | null; // adoption handoff from the ro-morph handleSwap
     pendingScrollY: number | null;
 }
 
 const virtState: VirtState = {
     active: false,
-    rows: [],
-    byKey: new Map(),
     visible: [],
     rowH: 0,
     start: 0,
@@ -99,7 +95,6 @@ const virtState: VirtState = {
     topSpacer: null,
     bottomSpacer: null,
     pinnedWidths: [],
-    pendingRows: null,
     pendingScrollY: null,
 };
 
@@ -118,8 +113,6 @@ export function virtualizerActive(): boolean {
 
 function virtReset(): void {
     virtState.active = false;
-    virtState.rows = [];
-    virtState.byKey = new Map();
     virtState.visible = [];
     virtState.rowH = 0;
     virtState.start = 0;
@@ -129,7 +122,6 @@ function virtReset(): void {
     virtState.topSpacer = null;
     virtState.bottomSpacer = null;
     virtState.pinnedWidths = [];
-    virtState.pendingRows = null;
     virtState.pendingScrollY = null;
 }
 
@@ -215,14 +207,11 @@ function virtPinColumns(): void {
     virtApplyPins();
 }
 
-// virtComputeVisible derives the renderable row list from the full set and the
-// live free-text match (roRowModel.visibleKeys; null = no filter). The MATCH
-// itself ran on the full row model -- never the DOM window.
+// virtComputeVisible derives the renderable row list from the canonical full
+// projection and its live free-text match. The MATCH itself ran on the full row
+// model -- never the DOM window.
 function virtComputeVisible(): void {
-    const keys = roRowModel().visibleKeys;
-    virtState.visible = keys
-        ? virtState.rows.filter((tr) => keys.has(tr.dataset.key as string))
-        : virtState.rows;
+    virtState.visible = listProjectionVisibleRows();
 }
 
 // virtRenderWindow renders the current slice between the two spacers and re-keys
@@ -261,19 +250,28 @@ function virtBindMounts(): boolean {
     return tbody !== null;
 }
 
-// virtualizeInit is the runInit engagement step. ORDER CONTRACT: it runs AFTER
-// captureRowModelFromDocument -- at engagement the DOM still IS the complete
-// dataset, and the model must capture it before the window prunes the rows.
+// virtualizeInit is the runInit engagement step. At engagement the DOM still IS
+// the complete dataset, so the canonical projection adopts it before this step
+// prunes the tbody to a viewport window.
 export function virtualizeInit(): void {
     const content = document.getElementById('resource-list-content');
     const wrap = content?.querySelector('.ro-table-wrap.ro-windowed');
-    if (!content || !wrap) {
+    if (!content) {
+        resetListProjection();
+        virtReset();
+        return;
+    }
+    if (!wrap) {
+        // A small list still belongs to the canonical projection; only viewport
+        // geometry disengages.
+        ensureListProjection(content);
         virtReset(); // small list / non-list page: windowing disengaged
         return;
     }
     const table = wrap.querySelector<HTMLTableElement>('table.ro-table');
     const tbody = table?.tBodies.item(0) ?? null;
     if (!tbody) {
+        ensureListProjection(content);
         virtReset();
         return;
     }
@@ -291,6 +289,7 @@ export function virtualizeInit(): void {
         // only a viewport slice, so its otherwise-valid ETag cannot authorize a
         // bodyless 304: force one full 200 model before conditionals resume.
         virtReset();
+        ensureListProjection(content);
         historyRecoveryPending = { content, tbody };
         clearListValidator();
         requestListRefresh();
@@ -299,7 +298,8 @@ export function virtualizeInit(): void {
     // A fresh full render (initial load or a boosted body swap): the DOM holds
     // the COMPLETE dataset right now -- collect it, measure the row pitch and the
     // true column widths against it, then window.
-    const rows = Array.from(tbody.querySelectorAll(':scope > tr[data-key]')) as HTMLElement[];
+    ensureListProjection(content);
+    const rows = listProjectionRows();
     if (rows.length === 0) {
         virtReset(); // a v1 multi-type page: no identity rows -> no windowing
         return;
@@ -308,8 +308,6 @@ export function virtualizeInit(): void {
     virtReset();
     virtState.table = table;
     virtState.tbody = tbody;
-    virtState.rows = rows;
-    virtState.byKey = new Map(rows.map((tr) => [tr.dataset.key as string, tr]));
     virtState.topSpacer = virtMakeSpacer();
     virtState.bottomSpacer = virtMakeSpacer();
     virtSetSpacerColspan();
@@ -320,27 +318,28 @@ export function virtualizeInit(): void {
     virtRenderWindow();
 }
 
-// virtualizePrepareSwap runs INSIDE the ro-morph handleSwap, after the row model
-// was captured from the fragment: a >threshold fragment's rows are detached for
-// adoption and replaced with two height-preserving spacers, so 600 rows never
-// ride the morph and the document height never dips mid-swap.
+// virtualizePrepareSwap runs INSIDE the ro-morph handleSwap, after the canonical
+// projection was prepared from the fragment: a >threshold fragment's rows are
+// detached for adoption and replaced with two height-preserving spacers, so 600
+// rows never ride the morph and the document height never dips mid-swap.
 export function virtualizePrepareSwap(fragment: DocumentFragment): void {
-    virtState.pendingRows = null;
     virtState.pendingScrollY = null;
+    // Idempotent for the same fragment: morph.ts prepares first, while this
+    // defensive call keeps the virtualization boundary independently usable in
+    // DOM tests and future swap adapters.
+    const incoming = prepareListProjectionSwap(fragment);
+    if (!incoming.windowed || incoming.rows.length === 0) {
+        return;
+    }
     const wrap = fragment.querySelector('.ro-table-wrap.ro-windowed');
     const tbody = wrap ? wrap.querySelector('table.ro-table tbody') : null;
     if (!tbody) {
         return; // below-threshold fragment -> plain morph; afterSwap disengages
     }
-    const rows = Array.from(tbody.querySelectorAll<HTMLElement>(':scope > tr[data-key]'));
-    if (rows.length === 0) {
-        return;
-    }
-    virtState.pendingRows = rows;
     virtState.pendingScrollY = window.scrollY;
     const rowH = virtState.rowH || virtFallbackRowHeight();
     const priorStart = virtState.active ? virtState.start : 0;
-    const heights = prepareSwapSpacers(priorStart, rows.length, rowH);
+    const heights = prepareSwapSpacers(priorStart, incoming.rows.length, rowH);
     const topSpacer = virtMakeSpacer();
     const bottomSpacer = virtMakeSpacer();
     (topSpacer.firstElementChild as HTMLElement).style.height = `${heights.top}px`;
@@ -355,23 +354,20 @@ export function virtualizeAfterSwap(): void {
     // htmx only emits afterSwap after a response actually landed. That success
     // resolves any one-shot history rebuild gate; HTTP failures never get here.
     historyRecoveryPending = null;
-    const pending = virtState.pendingRows;
-    virtState.pendingRows = null;
-    if (!pending) {
+    const wasActive = virtState.active;
+    const previousByKey = commitListProjectionSwap();
+    if (!previousByKey || !listProjectionWindowed() || listProjectionRows().length === 0) {
         // The fragment fell below the threshold (or was a whole-list state
         // block): the morph landed the complete content in the DOM, so the
         // virtualizer disengages and leaves it alone.
         virtReset();
         return;
     }
-    const prior = virtState.byKey;
-    const wasActive = virtState.active;
     if (!virtBindMounts()) {
+        resetListProjection();
         virtReset();
         return;
     }
-    virtState.rows = pending;
-    virtState.byKey = new Map(pending.map((tr) => [tr.dataset.key as string, tr]));
     if (!virtState.topSpacer) {
         virtState.topSpacer = virtMakeSpacer();
         virtState.bottomSpacer = virtMakeSpacer();
@@ -406,14 +402,14 @@ export function virtualizeAfterSwap(): void {
         virtRenderWindow();
     }
     virtState.pendingScrollY = null;
-    virtFlashChangedCells(prior);
+    virtFlashChangedCells(previousByKey);
 }
 
 // virtFlashChangedCells keeps the changed-cell flash honest while windowed:
 // rows bypass idiomorph (its cell-flash callbacks never fire), so the rendered
 // window is diffed here against the prior row set by identity. Disabled under
 // prefers-reduced-motion exactly like the idiomorph hooks.
-function virtFlashChangedCells(prior: Map<string, HTMLElement>): void {
+function virtFlashChangedCells(prior: ReadonlyMap<string, HTMLElement>): void {
     if (prior.size === 0 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         return;
     }
@@ -445,7 +441,7 @@ function virtFlashChangedCells(prior: Map<string, HTMLElement>): void {
 // row here. No-op mid-adoption: virtualizeAfterSwap is about to recompute
 // everything anyway.
 export function virtualizeOnFilterChange(): void {
-    if (!virtualizerActive() || virtState.pendingRows) {
+    if (!virtualizerActive() || listProjectionSwapPending()) {
         return;
     }
     virtComputeVisible();
@@ -489,13 +485,13 @@ function virtualizeScrollToIndex(index: number): void {
 // palette.ts harvest from while windowed (the DOM holds only a window). Imported
 // directly (the Unit-12 cluster-bridge dismantling).
 export function virtRows(): HTMLElement[] {
-    return virtState.rows;
+    return virtualizerActive() ? Array.from(listProjectionRows()) : [];
 }
 export function virtVisible(): HTMLElement[] {
     return virtState.visible;
 }
 export function virtRowByKey(key: string): HTMLElement | null {
-    return virtState.byKey.get(key) || null;
+    return virtualizerActive() ? listProjectionRowByKey(key) : null;
 }
 
 // The scroll re-window: one passive document-level listener, rAF-throttled,
@@ -572,7 +568,7 @@ if (fontReady && typeof fontReady.then === 'function') {
         if (!virtualizerActive()) {
             return false;
         }
-        const tr = virtState.byKey.get(key);
+        const tr = listProjectionRowByKey(key);
         const index = tr ? virtState.visible.indexOf(tr) : -1;
         if (index === -1) {
             return false;

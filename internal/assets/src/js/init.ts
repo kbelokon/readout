@@ -297,6 +297,10 @@ function runInit(): void {
         // init that prunes rows from the DOM -- at this point
         // the DOM still IS the complete dataset.
         captureRowModelFromDocument,
+        // A new projection deliberately clears stale visibleKeys. Re-derive
+        // them from the current draft before windowing so navigation/history
+        // cannot carry an old page's filter set into this one.
+        applyLiveNameFilter,
         // Virtualization engagement: windows the >threshold
         // table the server marked `.ro-windowed`. AFTER the model capture,
         // per the order contract above.

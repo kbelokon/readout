@@ -141,12 +141,13 @@ export interface StreamTerminalPayloadWire {
 // Row model + filter autocomplete -- CLIENT-side, see filters-parse.ts.
 // ---------------------------------------------------------------------------
 // The row model is captured from the FULL server fragment (never the windowed
-// DOM) in filters.ts; rows are identified by their `data-key` (the same identity
-// the idiomorph morph + the selection store key off). ModelField/ModelRow/ACItem
-// are re-exported above from filters-parse.ts (their canonical, unit-tested
-// home) -- the in-memory shapes filters.ts / virtualizer.ts share. There is NO
-// Go wire seam here: the server emits the <tr data-key> + per-column data-hint
-// markup the capture reads, but the model itself never crosses the wire.
+// DOM) by list-projection.ts; rows are identified by their `data-key` (the same
+// identity the idiomorph morph + the selection store key off).
+// ModelField/ModelRow/ACItem are re-exported above from filters-parse.ts (their
+// canonical, unit-tested home) -- the in-memory shapes the projection and
+// filters share. There is NO Go wire seam here: the server emits the
+// <tr data-key> + per-column data-hint markup the capture reads, but the model
+// itself never crosses the wire.
 
 // RowModelWire: the assembled in-memory model (the Window.roRowModel seam shape).
 export interface RowModelWire {
@@ -191,7 +192,7 @@ declare global {
         roFuzzy: (query: string, text: string) => number;
         // palette.ts: open the ⌘K palette programmatically.
         roOpenPalette: () => void;
-        // filters.ts: the full server-render row model capture.
+        // list-projection.ts: the full server-render row model capture.
         roRowModel: RowModelWire;
         // refresh.ts: re-fire the read-only list refresh (e2e + stale Retry).
         requestListRefresh: () => void;

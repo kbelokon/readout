@@ -3,12 +3,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const dependencies = vi.hoisted(() => ({
-    captureRowModel: vi.fn(),
+    prepareListProjectionSwap: vi.fn(),
     virtualizePrepareSwap: vi.fn(),
 }));
 
-vi.mock('./filters.js', () => ({
-    captureRowModel: dependencies.captureRowModel,
+vi.mock('./list-projection.js', () => ({
+    prepareListProjectionSwap: dependencies.prepareListProjectionSwap,
 }));
 
 vi.mock('./virtualizer.js', () => ({
@@ -168,7 +168,7 @@ describe('ro-morph vendor guards and extension', () => {
         const target = document.createElement('div');
         const fragment = document.createDocumentFragment();
         expect(extension.handleSwap('innerHTML', target, fragment)).toBe(false);
-        expect(dependencies.captureRowModel).not.toHaveBeenCalled();
+        expect(dependencies.prepareListProjectionSwap).not.toHaveBeenCalled();
         expect(dependencies.virtualizePrepareSwap).not.toHaveBeenCalled();
         expect(vendor.morph).not.toHaveBeenCalled();
     });
@@ -185,7 +185,7 @@ describe('ro-morph vendor guards and extension', () => {
         fragment.append(document.createElement('p'));
 
         expect(extension.handleSwap('morph', target, fragment)).toBe(false);
-        expect(dependencies.captureRowModel).not.toHaveBeenCalled();
+        expect(dependencies.prepareListProjectionSwap).not.toHaveBeenCalled();
         expect(dependencies.virtualizePrepareSwap).not.toHaveBeenCalled();
         expect(vendor.morph).toHaveBeenCalledExactlyOnceWith(target, fragment.children, {
             morphStyle: 'innerHTML',
@@ -204,9 +204,9 @@ describe('ro-morph vendor guards and extension', () => {
         fragment.append(document.createElement('table'));
 
         expect(extension.handleSwap('morph', target, fragment)).toBe(true);
-        expect(dependencies.captureRowModel).toHaveBeenCalledExactlyOnceWith(fragment);
+        expect(dependencies.prepareListProjectionSwap).toHaveBeenCalledExactlyOnceWith(fragment);
         expect(dependencies.virtualizePrepareSwap).toHaveBeenCalledExactlyOnceWith(fragment);
-        expect(dependencies.captureRowModel.mock.invocationCallOrder[0]).toBeLessThan(
+        expect(dependencies.prepareListProjectionSwap.mock.invocationCallOrder[0]).toBeLessThan(
             dependencies.virtualizePrepareSwap.mock.invocationCallOrder[0] as number,
         );
         expect(vendor.morph).toHaveBeenCalledExactlyOnceWith(target, fragment.children, {

@@ -9,10 +9,11 @@
 // Vendor globals: htmx + Idiomorph are classic-script globals (the vendored
 // idiomorph extension exposes Idiomorph; htmx loads before this bundle), reached
 // through typeof guards -- never imported (no module exists for the vendored
-// libs). Cross-module surfaces this module's handleSwap calls (captureRowModel /
-// virtualizePrepareSwap) ARE imported -- they live in the typed modules.
+// libs). Cross-module surfaces this module's handleSwap calls
+// (prepareListProjectionSwap / virtualizePrepareSwap) ARE imported -- they live
+// in the typed modules.
 
-import { captureRowModel } from './filters.js';
+import { prepareListProjectionSwap } from './list-projection.js';
 import { virtualizePrepareSwap } from './virtualizer.js';
 
 // Minimal vendor typings (classic-script globals). Only the surfaces this module
@@ -133,15 +134,14 @@ if (typeof htmx !== 'undefined' && typeof htmx.defineExtension === 'function' &&
             if (swapStyle !== 'morph') {
                 return false; // not ours -> htmx falls through to its native swaps
             }
-            // Filters v2: capture the FULL row model from the incoming
+            // Capture the canonical FULL list projection from the incoming
             // SERVER fragment before the morph. The server always renders the
-            // complete list (no pagination), so the fragment is the full dataset
-            // even when a client-side windowing layer keeps only a
-            // window of rows in the live DOM -- the free-text matcher and the
-            // value-frequency autocomplete must never read the windowed DOM.
+            // complete list (no pagination), so rows, cards, identity order and
+            // the filter model all come from one snapshot even when the live DOM
+            // contains only a virtualized window.
             if (target.id === 'resource-list-content') {
-                captureRowModel(fragment);
-                // Virtualization, AFTER the model capture: a
+                prepareListProjectionSwap(fragment);
+                // Virtualization, AFTER the projection capture: a
                 // >threshold fragment's rows are detached for adoption so
                 // they never ride the morph (height-preserving spacers stand
                 // in); virtualizeAfterSwap re-windows once the morph lands.

@@ -141,10 +141,7 @@ function directRowKeys(tbody: ParentNode): string[] {
 }
 
 function setVisibleKeys(keys: ReadonlySet<string> | null): void {
-    (window as unknown as { roRowModel: { visibleKeys: ReadonlySet<string> | null } }).roRowModel =
-        {
-            visibleKeys: keys,
-        };
+    window.roRowModel.visibleKeys = keys ? new Set(keys) : null;
 }
 
 function virtualizerSeam(): VirtualizerSeam {
