@@ -1,0 +1,34 @@
+silent: true
+unleash:
+  integration: false
+  dry-run: false
+  workers: 1
+  timeout-coefficient: 10
+  exclude-files:
+    - "_templ\\.go$"
+    - "^templates/"
+    - "^icons/"
+
+mutants:
+  arithmetic-base:
+    enabled: true
+  conditionals-boundary:
+    enabled: true
+  conditionals-negation:
+    enabled: true
+  increment-decrement:
+    enabled: true
+  invert-assignments:
+    enabled: true
+  invert-bitwise:
+    enabled: true
+  invert-bwassign:
+    enabled: true
+  invert-negatives:
+    enabled: true
+  invert-logical:
+    enabled: true
+  invert-loopctrl:
+    enabled: true
+  remove-self-assignments:
+    enabled: true
