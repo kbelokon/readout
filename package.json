@@ -3,9 +3,9 @@
   "private": true,
   "description": "Frontend asset build for readout: esbuild bundles internal/assets/src/js -> static/readout.js (IIFE), Lightning CSS bundles internal/assets/src/css -> static/readout.css. The Go binary embeds the static/ artifacts and builds with NO Node toolchain.",
   "engines": {
-    "node": ">=24.19.0 <25"
+    "node": ">=26.8.1 <27"
   },
-  "packageManager": "npm@11.17.0",
+  "packageManager": "npm@11.19.0",
   "overrides": {
     "qs": "6.15.3"
   },
@@ -33,7 +33,7 @@
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@testing-library/dom": "10.4.1",
     "@testing-library/jest-dom": "7.0.1",
-    "@types/node": "26.3.0",
+    "@types/node": "26.4.0",
     "@typescript/legacy": "npm:@typescript/typescript6@6.0.2",
     "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "4.1.11",
