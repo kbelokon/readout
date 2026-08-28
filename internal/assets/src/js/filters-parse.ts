@@ -1,7 +1,7 @@
 // filters-parse.ts -- the PURE expression parsing + suggestion matching of the
 // v2 filter chips editor, extracted from legacy.js so the operator split,
 // the field-name normalization, the autocomplete ranking, and the value-
-// frequency scan are node-tested in isolation. No DOM: every function takes a
+// frequency scan are unit-tested in isolation. No DOM: every function takes a
 // plain string or a plain row-model object, so a regression in the grammar (the
 // part the e2e filter-chips spec only sees through rendered chips) is caught at
 // the unit boundary.
@@ -11,7 +11,7 @@
 // splitFilterOperator): typed fields resolve case-insensitively with dashes and
 // spaces interchangeable; `label` always resolves; `cpu`/`memory` bind ONLY the
 // joined usage columns, never the capacity columns; the FIRST operator
-// occurrence splits field from value. Keeping these here lets node:test pin them
+// occurrence splits field from value. Keeping these here lets Vitest pin them
 // against the documented server behavior without a browser.
 
 // A captured table column. `hint` is '' for synthetic/non-filterable columns
@@ -46,17 +46,38 @@ export interface ACItem {
     kind: 'field' | 'value';
 }
 
+// Go strings.Fields splits on unicode.IsSpace, whose stable White_Space set is
+// NOT JavaScript's `\s`/trim set: Go includes U+0085 (NEXT LINE) and excludes
+// U+FEFF (BOM). Keep the exact run here so client suggestions and server field
+// resolution cannot disagree at that language boundary.
+const goFieldWhitespaceRun = /\p{White_Space}+/gu;
+const goFieldWhitespaceEdges = /^\p{White_Space}+|\p{White_Space}+$/gu;
+
+// trimFilterWhitespace mirrors strings.TrimSpace for fields and values parsed
+// from a draft. In particular, it trims U+0085 and preserves U+FEFF.
+export function trimFilterWhitespace(s: string): string {
+    return (s || '').replace(goFieldWhitespaceEdges, '');
+}
+
+// normalizeFieldWhitespace collapses the same whitespace runs as
+// strings.Join(strings.Fields(s), " ") while preserving case and punctuation.
+// Header capture uses it instead of String.trim(), which would wrongly discard
+// a leading/trailing U+FEFF that the Go resolver treats as field-name data.
+export function normalizeFieldWhitespace(s: string): string {
+    return trimFilterWhitespace((s || '').replace(goFieldWhitespaceRun, ' '));
+}
+
 // normalizeFieldName mirrors the server's resolveFilterColumn: lowercase, dashes
-// to spaces, trimmed -- so "Nominated-Node" / "nominated node" / "NOMINATED NODE"
-// all resolve to the one canonical key.
+// to spaces, and Go-whitespace runs collapsed -- so "Nominated-Node" /
+// " nominated\t node " / "NOMINATED NODE" all resolve to one canonical key.
 export function normalizeFieldName(s: string): string {
-    return (s || '').toLowerCase().replace(/-/g, ' ').trim();
+    return normalizeFieldWhitespace((s || '').toLowerCase().replace(/-/g, ' '));
 }
 
 // fieldSuggestionText turns a column label into the dashed lowercase form the
 // server resolves ("Nominated Node" -> "nominated-node").
 export function fieldSuggestionText(label: string): string {
-    return (label || '').toLowerCase().trim().replace(/\s+/g, '-');
+    return normalizeFieldName(label).replace(/ /g, '-');
 }
 
 // splitFilterDraft mirrors splitFilterOperator: the FIRST operator occurrence
@@ -64,16 +85,16 @@ export function fieldSuggestionText(label: string): string {
 // checked before the single-char operators so "a!=b" splits on `!=`, not a
 // stray `<`/`>`/`:` later in the value.
 export function splitFilterDraft(s: string): DraftSplit | null {
-    for (let i = 0; i < s.length; i++) {
-        const c = s[i];
-        if (c === '!' && s[i + 1] === '=') {
-            return { field: s.slice(0, i).trim(), op: '!=', value: s.slice(i + 2) };
-        }
-        if (c === ':' || c === '>' || c === '<') {
-            return { field: s.slice(0, i).trim(), op: c, value: s.slice(i + 1) };
-        }
+    const operator = /!=|[:<>]/.exec(s);
+    if (!operator) {
+        return null;
     }
-    return null;
+    const op = operator[0];
+    return {
+        field: trimFilterWhitespace(s.slice(0, operator.index)),
+        op,
+        value: s.slice(operator.index + op.length),
+    };
 }
 
 // hasModelColumn: a filterable (hinted) column whose normalized label matches.
@@ -147,15 +168,14 @@ export function fieldColumnIndex(fields: ModelField[], field: string): number {
 // sort keeps the schema order within each tier).
 export function rankFieldSuggestions(fields: ModelField[], draft: string): ACItem[] {
     const q = normalizeFieldName(draft);
-    const matched = filterSuggestionFields(fields).filter(
-        (f) => normalizeFieldName(f.text).indexOf(q) !== -1,
-    );
-    matched.sort((a, b) => {
-        const ap = normalizeFieldName(a.text).indexOf(q) === 0 ? 0 : 1;
-        const bp = normalizeFieldName(b.text).indexOf(q) === 0 ? 0 : 1;
-        return ap - bp;
+    const ranked: { text: string; hint: string }[][] = [[], []];
+    filterSuggestionFields(fields).forEach((field) => {
+        const matchAt = normalizeFieldName(field.text).indexOf(q);
+        if (matchAt >= 0) {
+            ranked[matchAt === 0 ? 0 : 1].push(field);
+        }
     });
-    return matched.map((f) => ({
+    return [...ranked[0], ...ranked[1]].map((f) => ({
         label: f.text,
         hint: f.hint,
         insert: `${f.text}:`,
@@ -174,6 +194,9 @@ export function rankValueSuggestions(
 ): ACItem[] {
     const idx = fieldColumnIndex(fields, split.field);
     if (idx < 0) {
+        // Virtual/unknown fields have no row-model column. Besides returning no
+        // suggestions, stop before touching the complete (possibly windowed)
+        // row set: `label:` must stay O(fields), not O(all server rows).
         return [];
     }
     const freq = new Map<string, number>();
@@ -183,16 +206,15 @@ export function rankValueSuggestions(
             freq.set(v, (freq.get(v) || 0) + 1);
         }
     });
-    const typed = split.value.trim().toLowerCase();
-    let entries = Array.from(freq.entries());
-    if (typed) {
-        entries = entries.filter(([v]) => v.toLowerCase().indexOf(typed) !== -1);
-    }
+    const typed = trimFilterWhitespace(split.value).toLowerCase();
+    const entries = Array.from(freq.entries()).filter(
+        ([v]) => v.toLowerCase().indexOf(typed) !== -1,
+    );
     entries.sort((a, b) => b[1] - a[1]);
     return entries.slice(0, 8).map(([v, n]) => ({
         label: v,
         hint: `×${n}`,
-        insert: `${split.field.trim()}:${v}`,
+        insert: `${trimFilterWhitespace(split.field)}:${v}`,
         kind: 'value' as const,
     }));
 }
@@ -203,7 +225,7 @@ export function rankValueSuggestions(
 // nothing). The MATCH runs on the full row model; the DOM application is the
 // caller's job.
 export function liveNameMatchKeys(rows: ModelRow[], draft: string): Set<string> | null {
-    const text = !draft || splitFilterDraft(draft) ? '' : draft.trim().toLowerCase();
+    const text = !draft || splitFilterDraft(draft) ? '' : trimFilterWhitespace(draft).toLowerCase();
     if (!text) {
         return null;
     }

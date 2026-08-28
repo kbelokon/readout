@@ -242,6 +242,56 @@ func TestMetricsUsageDecodesQuantitiesForPodAndNode(t *testing.T) {
 	}
 }
 
+func TestPodContainerUsageIsolatesInvalidEntries(t *testing.T) {
+	usage := PodContainerUsage(map[string]any{
+		"containers": []any{
+			map[string]any{"name": "api", "usage": map[string]any{"cpu": "250m", "memory": "128Mi"}},
+			map[string]any{"name": "broken", "usage": map[string]any{"cpu": "not-a-quantity", "memory": "1Mi"}},
+			map[string]any{"name": "", "usage": map[string]any{"cpu": "1", "memory": "1Gi"}},
+			"not-an-object",
+			map[string]any{"name": "api", "usage": map[string]any{"cpu": "900m", "memory": "2Gi"}},
+			map[string]any{"name": "sidecar"},
+		},
+	})
+
+	if len(usage) != 2 {
+		t.Fatalf("usage = %#v, want only the two valid named containers", usage)
+	}
+	if got := usage["api"]; got.CPU != 0.25 || got.Memory != float64(128*1024*1024) {
+		t.Fatalf("api usage = %#v, want first valid value 0.25 cores/128Mi", got)
+	}
+	if got := usage["sidecar"]; got.CPU != 0 || got.Memory != 0 {
+		t.Fatalf("sidecar missing-resource usage = %#v, want typed zero values", got)
+	}
+	if _, ok := usage["broken"]; ok {
+		t.Fatalf("malformed sibling must be omitted without hiding valid usage: %#v", usage)
+	}
+}
+
+func TestPodContainerUsageEmptyAndWhollyInvalidInputs(t *testing.T) {
+	cases := []struct {
+		name string
+		obj  map[string]any
+	}{
+		{name: "missing containers", obj: map[string]any{}},
+		{name: "empty containers", obj: map[string]any{"containers": []any{}}},
+		{name: "wrong container field type", obj: map[string]any{"containers": "invalid"}},
+		{name: "only malformed quantity", obj: map[string]any{"containers": []any{
+			map[string]any{"name": "broken", "usage": map[string]any{"cpu": "bad"}},
+		}}},
+		{name: "only blank name", obj: map[string]any{"containers": []any{
+			map[string]any{"name": "", "usage": map[string]any{"cpu": "100m"}},
+		}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PodContainerUsage(tc.obj); got != nil {
+				t.Fatalf("PodContainerUsage(%#v) = %#v, want nil", tc.obj, got)
+			}
+		})
+	}
+}
+
 func TestStatusHelpers(t *testing.T) {
 	// Pin every arm of the three enum methods directly: slug() is the
 	// row-status-<slug> CSS source, class() the has-text-* cell color, label()
@@ -415,6 +465,26 @@ func TestRowStatusStripeOnlyErrAndWarn(t *testing.T) {
 	// An ok-Reason row (Started) must NOT stripe green -- ok stripes are retired.
 	if got := RowStatusClass(&events, Row{Cells: []any{"Normal", "Started"}}); got != "" {
 		t.Fatalf("events ok-Reason stripe = %q, want none", got)
+	}
+}
+
+// TestRowStatusIgnoresUnmatchedTailCells pins malformed upstream Table
+// handling: only cells with matching column definitions have display semantics.
+// An unmatched danger-looking tail cannot upgrade an aligned warning stripe,
+// and a row with no columns remains neutral instead of indexing past the schema.
+func TestRowStatusIgnoresUnmatchedTailCells(t *testing.T) {
+	pods := Table{
+		Resource: ResourceType{Plural: "pods", Kind: "Pod"},
+		Columns:  []Column{{Name: "Name"}, {Name: "Status"}},
+	}
+	overlong := Row{Cells: []any{"api", "Pending", "CrashLoopBackOff"}}
+	if got := RowStatusClass(&pods, overlong); got != "row-status-warn" {
+		t.Fatalf("overlong row stripe = %q, want aligned warning; cells=%#v columns=%#v", got, overlong.Cells, pods.Columns)
+	}
+
+	columnless := Table{Resource: pods.Resource}
+	if got := RowStatusClass(&columnless, Row{Cells: []any{"CrashLoopBackOff"}}); got != "" {
+		t.Fatalf("columnless row stripe = %q, want neutral", got)
 	}
 }
 

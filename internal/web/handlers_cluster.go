@@ -1,8 +1,9 @@
 package web
 
 import (
+	"cmp"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/kbelokon/readout/internal/kube"
@@ -82,32 +83,33 @@ func (s *Server) renderResourceTypes(w http.ResponseWriter, r *http.Request, clu
 }
 
 func sortedResourceTypesForDisplay(types []kube.ResourceType) []kube.ResourceType {
-	out := make([]kube.ResourceType, 0, len(types))
-	for i := range types {
+	out := slices.DeleteFunc(slices.Clone(types), func(rt kube.ResourceType) bool {
 		// metrics.k8s.io is a virtual aggregated API (PodMetrics/NodeMetrics) that
 		// powers the usage overlays via ?join — it is not a browsable resource
 		// type. readout already skips it in counts and the sidebar, so drop it here
 		// too: otherwise NodeMetrics renders a dead row (its "nodes" resource name
 		// links to the core Nodes list) and a duplicate (readout registers metrics
 		// types itself, so a cluster that also advertises them double-counts).
-		if types[i].Group == "metrics.k8s.io" {
-			continue
-		}
-		out = append(out, types[i])
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind < out[j].Kind
-		}
-		if out[i].APIVersion != out[j].APIVersion {
-			return out[i].APIVersion < out[j].APIVersion
-		}
-		if out[i].Plural != out[j].Plural {
-			return out[i].Plural < out[j].Plural
-		}
-		return !out[i].Namespaced && out[j].Namespaced
+		return rt.Group == "metrics.k8s.io"
+	})
+	slices.SortStableFunc(out, func(a, b kube.ResourceType) int {
+		return cmp.Or(
+			cmp.Compare(a.Kind, b.Kind),
+			cmp.Compare(a.APIVersion, b.APIVersion),
+			cmp.Compare(a.Plural, b.Plural),
+			cmp.Compare(resourceScopeSortRank(a.Namespaced), resourceScopeSortRank(b.Namespaced)),
+		)
 	})
 	return out
+}
+
+// resourceScopeSortRank keeps otherwise-identical cluster-scoped resources
+// before namespaced resources, matching the resource-types display contract.
+func resourceScopeSortRank(namespaced bool) int {
+	if namespaced {
+		return 1
+	}
+	return 0
 }
 
 func uniqueResourceTypesForDisplay(types []kube.ResourceType) []kube.ResourceType {

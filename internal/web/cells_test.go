@@ -1,8 +1,10 @@
 package web
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -399,14 +401,41 @@ func TestCountCellFormat(t *testing.T) {
 	if cv := countCellView(1); cv.Class != "faint" {
 		t.Fatalf("count 1 = %#v, want faint", cv)
 	}
+	if cv := countCellView(0); cv.Value != "0" || cv.Class != "faint" {
+		t.Fatalf("count 0 = %#v, want faint with its original value preserved", cv)
+	}
 	if cv := countCellView(1047); cv.Value != "1,047" {
 		t.Fatalf("count 1047 = %#v, want the thousands separator", cv)
+	}
+	if cv := countCellView(3_000_000_000); cv.Value != "3,000,000,000" || cv.Class != "restarts some" {
+		t.Fatalf("count above int32 = %#v, want the exact int64 value in the chronic bucket", cv)
 	}
 
 	doc := renderCellViews(t, "events", "Events", []string{"Count"}, []cellView{countCellView(141)})
 	td := firstRowTD(t, doc, 0)
 	if got := normSpace(td.Find(".restarts.some").Text()); got != "×141" {
 		t.Fatalf("count DOM = %q, want ×141 in the amber span", got)
+	}
+}
+
+// TestNodeCellUsesCanonicalClusterScopedRoute pins Node references at the real
+// cell-assembly seam. A Node link ignores the workload namespace and escapes
+// reserved cluster and node-name segments exactly like every canonical object
+// route.
+func TestNodeCellUsesCanonicalClusterScopedRoute(t *testing.T) {
+	table := &kube.Table{
+		Resource: kube.ResourceType{Plural: "pods", Kind: "Pod", Namespaced: true},
+		Columns:  []kube.Column{{Name: "Node"}},
+	}
+	row := kube.Row{Cluster: "prod/eu", Cells: []any{"worker/a"}}
+	req := httptest.NewRequest(http.MethodGet, "/clusters/prod%2Feu/namespaces/team%2Fa/pods", nil)
+
+	got := (&Server{}).buildCellView(req, table, row, 0, row.Cells[0], "team/a", "pod-a")
+	if got.Kind != cellNode {
+		t.Fatalf("Node cell kind = %v, want cellNode", got.Kind)
+	}
+	if want := "/clusters/prod%2Feu/nodes/worker%2Fa"; got.Href != want {
+		t.Fatalf("Node href = %q, want canonical cluster-scoped href %q", got.Href, want)
 	}
 }
 
@@ -585,10 +614,12 @@ func TestChipsCellOverflowInTable(t *testing.T) {
 	}
 }
 
-// TestCapacityBucketCellBoundaries pins the capacity-bucket cell thresholds at
-// the exact boundary values the unit names: 54 -> lo, 56 -> mid, 81 -> hi
-// (>55 mid, >80 hi -- 55 and 80 stay in the lower bucket).
+// TestCapacityBucketCellBoundaries pins the capacity-bucket thresholds through
+// the real node-cell assembly path: 54 -> lo, 56 -> mid, 81 -> hi (>55 mid,
+// >80 hi -- 55 and 80 stay in the lower bucket).
 func TestCapacityBucketCellBoundaries(t *testing.T) {
+	columns := []string{"Name", "CPU Usage"}
+	obj := nodeObject("node-a", map[string]any{"cpu": "100"}, nil)
 	cases := []struct {
 		pct  float64
 		want string
@@ -596,9 +627,32 @@ func TestCapacityBucketCellBoundaries(t *testing.T) {
 		{54, "lo"}, {55, "lo"}, {56, "mid"}, {80, "mid"}, {81, "hi"},
 	}
 	for _, c := range cases {
-		if got := capacityBucket(c.pct); got != c.want {
-			t.Fatalf("capacityBucket(%v) = %q, want %q", c.pct, got, c.want)
+		cv := nodesCellView(t, columns, []any{"node-a", c.pct}, obj, 1)
+		if cv.CapBucket != c.want || cv.CapPct != int(c.pct) || !cv.CapBar {
+			t.Fatalf("node capacity at %v%% = %#v, want bucket %q, pct %d, and a bar", c.pct, cv, c.want, int(c.pct))
 		}
+	}
+}
+
+// TestNodeCapacityRejectsNonFiniteUsage proves corrupt joined metrics cannot
+// produce NaN/infinite labels or an invalid CSS percentage. Such a cell falls
+// back to the known capacity exactly like a missing metrics join.
+func TestNodeCapacityRejectsNonFiniteUsage(t *testing.T) {
+	columns := []string{"Name", "CPU Usage"}
+	obj := nodeObject("node-a", map[string]any{"cpu": "4"}, nil)
+	for name, usage := range map[string]any{
+		"float NaN":        math.NaN(),
+		"float positive":   math.Inf(1),
+		"float negative":   math.Inf(-1),
+		"encoded NaN":      "NaN",
+		"encoded positive": "+Inf",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cv := nodesCellView(t, columns, []any{"node-a", usage}, obj, 1)
+			if cv.Kind != cellCapacity || cv.Value != "4" || cv.CapBucket != "" || cv.CapPct != 0 || cv.CapBar {
+				t.Fatalf("non-finite usage %v produced %#v, want capacity-only fallback", usage, cv)
+			}
+		})
 	}
 }
 
@@ -606,6 +660,14 @@ func TestCapacityBucketCellBoundaries(t *testing.T) {
 // with MORE desired replicas than the 12-segment cap renders exactly 12
 // segments while the honest ratio text keeps the real numbers.
 func TestReplicaTrackCellCap(t *testing.T) {
+	segmentStates := func(segments []repSegment) []string {
+		states := make([]string, len(segments))
+		for i := range segments {
+			states[i] = segments[i].State
+		}
+		return states
+	}
+
 	segments, repNum := replicaTrack(20, 20, 20)
 	if len(segments) != 12 {
 		t.Fatalf("desired=20 renders %d segments, want the 12-segment cap", len(segments))
@@ -623,6 +685,34 @@ func TestReplicaTrackCellCap(t *testing.T) {
 	segments, repNum = replicaTrack(3, 2, 2)
 	if len(segments) != 3 || repNum != "2/3" {
 		t.Fatalf("desired=3 = %d segments %q, want 3 segments 2/3", len(segments), repNum)
+	}
+	if got, want := segmentStates(segments), []string{"", "", "pending"}; !slices.Equal(got, want) {
+		t.Fatalf("under-cap states = %#v, want contiguous filled then pending %#v", got, want)
+	}
+
+	// A large rollout exercises all three proportional buckets. Pin their exact
+	// order, not only their totals: the track must read left-to-right as 3 filled,
+	// 4 updating, then 5 pending while the ratio remains the real unscaled count.
+	segments, repNum = replicaTrack(120, 30, 70)
+	wantStates := []string{"", "", "", "updating", "updating", "updating", "updating", "pending", "pending", "pending", "pending", "pending"}
+	if got := segmentStates(segments); !slices.Equal(got, wantStates) {
+		t.Fatalf("mixed over-cap states = %#v, want contiguous filled/updating/pending %#v", got, wantStates)
+	}
+	if repNum != "30/120" {
+		t.Fatalf("mixed over-cap ratio = %q, want real 30/120", repNum)
+	}
+
+	// Kubernetes status can transiently lead spec during a rollout or scale-down.
+	// The bar stays bounded, but the numeric status must not turn 13/12 into the
+	// falsely settled 12/12.
+	segments, repNum = replicaTrack(12, 13, 14)
+	if len(segments) != 12 || repNum != "13/12" {
+		t.Fatalf("transient over-ready state = %d segments %q, want bounded 12-segment bar and truthful 13/12", len(segments), repNum)
+	}
+	for i, segment := range segments {
+		if segment.State != "" {
+			t.Fatalf("transient over-ready segment %d state = %q, want filled", i, segment.State)
+		}
 	}
 }
 
@@ -656,6 +746,43 @@ func TestDurationAgeCellBuckets(t *testing.T) {
 		}
 	}
 
+	// Display and filter parsing share one full-token grammar. Pin every unit,
+	// fractional and compound values, and surrounding whitespace at that seam.
+	for _, tc := range []struct {
+		value string
+		want  float64
+	}{
+		{"1s", 1},
+		{"1m", 60},
+		{"1h", 3600},
+		{"1d", 86400},
+		{"1w", 604800},
+		{"1y", 31536000},
+		{".5h", 1800},
+		{"1.5h30m", 7200},
+		{" 3h2m ", 10920},
+	} {
+		got, ok := parseAgeToken(tc.value)
+		if !ok || got != tc.want {
+			t.Fatalf("parseAgeToken(%q) = %v, %t; want %v, true", tc.value, got, ok, tc.want)
+		}
+	}
+	for _, value := range []string{"", "1", "1q", "-3h", "note-2d", "1h trailing", ".", "1..5h"} {
+		if got, ok := parseAgeToken(value); ok || got != 0 {
+			t.Fatalf("parseAgeToken(%q) = %v, %t; want 0, false", value, got, ok)
+		}
+	}
+
+	// The renderer now shares fractional and strict parsing with the filter.
+	if got := ageMinutes(".5h"); got != 30 {
+		t.Fatalf("ageMinutes(.5h) = %v, want 30", got)
+	}
+	for _, value := range []string{"-3h", "note-2d"} {
+		if got := ageMinutes(value); got != 0 {
+			t.Fatalf("ageMinutes(%q) = %v, want 0 for an invalid full token", value, got)
+		}
+	}
+
 	// The parser sums multi-unit tokens (3h2m = 182 minutes).
 	if got := ageMinutes("3h2m"); got != 182 {
 		t.Fatalf("ageMinutes(3h2m) = %v, want 182", got)
@@ -663,7 +790,7 @@ func TestDurationAgeCellBuckets(t *testing.T) {
 	if got := ageMinutes("1y127d"); got != 525600+127*1440 {
 		t.Fatalf("ageMinutes(1y127d) = %v", got)
 	}
-	// Unparseable text contributes nothing (matches the reference scan).
+	// Unparseable text contributes nothing.
 	if got := ageMinutes("<unknown>"); got != 0 {
 		t.Fatalf("ageMinutes(<unknown>) = %v, want 0", got)
 	}

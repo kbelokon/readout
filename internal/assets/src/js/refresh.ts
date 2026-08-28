@@ -8,7 +8,7 @@
 // (a setTimeout chain, not setInterval -- the backoff wait re-derives every
 // tick), the failure-stage backoff, and the two xhr-Set in-flight gates that
 // keep ticks from stomping user requests or queueing inside htmx. The pure
-// cadence/backoff math lives in live-policy.ts (node-tested); this module is
+// cadence/backoff math lives in live-policy.ts (unit-tested); this module is
 // the DOM/htmx glue around it. The request-lifecycle listeners
 // (configRequest/beforeRequest/afterRequest) are attached at module load.
 //
@@ -77,6 +77,21 @@ export const userListRequestsInFlight = new Set<XMLHttpRequest>();
 // QUEUE inside htmx and replay on the next htmx:abort with its stale URL.
 export const containerListRequestsInFlight = new Set<XMLHttpRequest>();
 
+interface HtmxRequestDetail {
+    elt?: unknown;
+    headers?: unknown;
+    requestConfig?: unknown;
+    target?: unknown;
+    xhr?: unknown;
+}
+
+function requestDetail(event: Event): HtmxRequestDetail {
+    // HTMX normally supplies an object, but lifecycle events are public DOM
+    // events. Box an absent or malformed detail so every resident handler is
+    // total instead of relying on optional chains at each read site.
+    return Object((event as CustomEvent).detail) as HtmxRequestDetail;
+}
+
 // A settled xhr is DONE (4: the load/error/timeout callbacks ran) or UNSENT
 // (0: aborted). Either way htmx is no longer waiting on it, so the entry is
 // reclaimable even when its htmx:afterRequest was dispatched on a detached
@@ -90,48 +105,56 @@ export function pruneSettledListRequests(requests: Set<XMLHttpRequest>): void {
 }
 
 function isPreloadRequest(event: Event): boolean {
-    const cfg = (event as CustomEvent).detail?.requestConfig;
-    return !!cfg && !!cfg.headers && cfg.headers['HX-Preloaded'] === 'true';
+    const config = Object(requestDetail(event).requestConfig) as { headers?: unknown };
+    const headers = Object(config.headers) as Record<string, unknown>;
+    return headers['HX-Preloaded'] === 'true';
 }
 
 // Re-exported for stale.ts (isListRefreshEvent) so the preload exclusion lives
 // in exactly one place.
 export { isPreloadRequest };
 
-// True for a USER-initiated request that will swap #resource-list-content: the
-// target is the container but the issuing element is something else.
+// True for a USER-initiated request that will swap #resource-list-content.
+// The caller has already returned for requests issued by the container itself.
 function isUserListRequest(event: Event): boolean {
-    const detail = (event as CustomEvent).detail;
-    if (!detail?.elt || !detail.target) {
-        return false;
-    }
-    if (detail.elt.id === 'resource-list-content') {
-        return false;
-    }
-    return detail.target.id === 'resource-list-content' && !isPreloadRequest(event);
+    const detail = requestDetail(event);
+    return (
+        detail.elt instanceof Element &&
+        detail.target instanceof Element &&
+        detail.target.id === 'resource-list-content' &&
+        !isPreloadRequest(event)
+    );
 }
 
 // Mark every request the container itself issues (tick / retry / programmatic
 // re-fetch) as non-push: the `_table` handler omits HX-Push-Url for these, so
 // only genuine user gestures create history entries.
-document.addEventListener('htmx:configRequest', (event) => {
-    const elt = (event as CustomEvent).detail?.elt;
-    if (elt && elt.id === 'resource-list-content') {
-        (event as CustomEvent).detail.headers['RO-No-Push'] = 'true';
+export function handleRefreshConfigRequest(event: Event): void {
+    const detail = requestDetail(event);
+    const elt = Object(detail.elt) as { id?: unknown };
+    if (elt.id !== 'resource-list-content') {
+        return;
     }
-});
+    const headers = Object(detail.headers) as Record<string, string>;
+    headers['RO-No-Push'] = 'true';
+}
 
-document.addEventListener('htmx:beforeRequest', (event) => {
-    const detail = (event as CustomEvent).detail;
-    if (detail?.xhr && detail.elt && detail.elt.id === 'resource-list-content') {
-        containerListRequestsInFlight.add(detail.xhr);
+document.addEventListener('htmx:configRequest', handleRefreshConfigRequest);
+
+export function handleRefreshBeforeRequest(event: Event): void {
+    const detail = requestDetail(event);
+    const elt = Object(detail.elt) as { id?: unknown };
+    if (elt.id === 'resource-list-content') {
+        if (detail.xhr) {
+            containerListRequestsInFlight.add(detail.xhr as XMLHttpRequest);
+        }
         return; // container-issued (tick/retry/programmatic) -- tracked, never aborts anything
     }
     if (!isUserListRequest(event)) {
         return;
     }
-    if (detail?.xhr) {
-        userListRequestsInFlight.add(detail.xhr);
+    if (detail.xhr) {
+        userListRequestsInFlight.add(detail.xhr as XMLHttpRequest);
     }
     // The user action wins: abort the container's own in-flight request (a tick
     // that started before the click). htmx aborts the request belonging to the
@@ -142,18 +165,40 @@ document.addEventListener('htmx:beforeRequest', (event) => {
     if (content && htmx) {
         htmx.trigger(content, 'htmx:abort');
     }
-});
+}
+
+document.addEventListener('htmx:beforeRequest', handleRefreshBeforeRequest);
 
 // htmx:afterRequest fires on load, error, abort, AND timeout. When it reaches
 // the document the entry is removed here; when it does not (dispatched on a
 // detached element), the readyState pruning in fireRefresh reclaims it instead.
-document.addEventListener('htmx:afterRequest', (event) => {
-    const xhr = (event as CustomEvent).detail?.xhr;
-    if (xhr) {
-        userListRequestsInFlight.delete(xhr);
-        containerListRequestsInFlight.delete(xhr);
+export function handleRefreshAfterRequest(event: Event): void {
+    const xhr = requestDetail(event).xhr as XMLHttpRequest;
+    // Set.delete is deliberately total for undefined/non-members, so missing
+    // request metadata needs no semantically empty guard branch.
+    userListRequestsInFlight.delete(xhr);
+    containerListRequestsInFlight.delete(xhr);
+}
+
+document.addEventListener('htmx:afterRequest', handleRefreshAfterRequest);
+
+// Persisted numeric modes share one strict parser across migration, polling,
+// UI paint, and explicit picks. Number.parseInt accepts a numeric prefix
+// ("5junk" -> 5), which disagrees with the Go SSR reader and can silently turn a
+// corrupt preference into polling. Fold a finite array of ASCII digits instead
+// of using a mutable regular expression; this accepts the integer spellings
+// strconv.Atoi accepts for a positive cadence and rejects every partial parse.
+function parseRefreshSeconds(mode: unknown): number {
+    if (typeof mode !== 'string') {
+        return 0;
     }
-});
+    const unsigned = mode.startsWith('+') ? mode.slice(1) : mode;
+    const seconds = Array.from(unsigned).reduce((value, char) => {
+        const digit = char.charCodeAt(0) - 48;
+        return digit >= 0 && digit <= 9 ? value * 10 + digit : Number.NaN;
+    }, 0);
+    return Number.isSafeInteger(seconds) ? seconds : 0;
+}
 
 // refreshMode returns the persisted auto-refresh mode ('Off', an interval in
 // seconds as a string, 'Live'; '' = no preference) from the ro_prefs cookie.
@@ -169,20 +214,19 @@ export function refreshMode(): string {
     try {
         legacy = window.localStorage.getItem(REFRESH_KEY);
     } catch {
-        return ''; // localStorage unavailable (e.g. privacy mode) -> no pref
+        // localStorage unavailable (e.g. privacy mode): keep the absent value.
     }
-    if (legacy === null || legacy === '') {
+    if (!legacy) {
         return '';
     }
-    const secs = parseInt(legacy, 10) || 0;
+    const secs = parseRefreshSeconds(legacy);
     const mode = secs > 0 ? String(secs) : 'Off';
     roPrefsSetRefresh(mode); // write-through: the cookie is canonical from here
     return mode;
 }
 
 export function refreshInterval(): number {
-    const secs = parseInt(refreshMode(), 10);
-    return Number.isFinite(secs) && secs > 0 ? secs : 0; // 'Off'/'Live'/junk -> 0
+    return parseRefreshSeconds(refreshMode()); // 'Off'/'Live'/junk -> 0
 }
 
 // listTableURL derives the `_table` partial URL from the LIVE document URL at
@@ -243,7 +287,8 @@ export function fireRefresh(): void {
 // 'Live' with a riding stream stays 0 (the chain self-disarms). The fold lives
 // in live-policy.ts; this reads the live facts.
 export function effectivePollSeconds(): number {
-    return policyEffectivePollSeconds(refreshMode(), refreshInterval(), liveFallbackSeconds());
+    const mode = refreshMode();
+    return policyEffectivePollSeconds(mode, parseRefreshSeconds(mode), liveFallbackSeconds());
 }
 
 // refreshDelaySeconds is the wait until the NEXT tick: the backoff over
@@ -268,12 +313,16 @@ export function scheduleRefreshTick(): void {
         updateStaleCountdown();
         return;
     }
-    refreshNextAt = Date.now() + delay * 1000;
+    // Derive milliseconds once. Besides keeping the countdown and timeout on the
+    // exact same clock, this makes a bad unit conversion immediately observable
+    // without executing a recursively short timer chain.
+    const delayMs = delay * 1000;
+    refreshNextAt = Date.now() + delayMs;
     refreshTimerId = window.setTimeout(() => {
         refreshTimerId = null;
         scheduleRefreshTick();
         fireRefresh();
-    }, delay * 1000);
+    }, delayMs);
     updateStaleCountdown();
 }
 
@@ -291,17 +340,25 @@ export function applyRefresh(): void {
 // Live substate. Re-run on every init pass because an hx-boost swap re-renders
 // the navbar.
 export function syncRefreshUI(): void {
-    const live = refreshMode() === 'Live';
-    const secs = refreshInterval();
+    const mode = refreshMode();
+    const live = mode === 'Live';
+    const secs = parseRefreshSeconds(mode);
     const label = document.getElementById('refresh-label');
     if (label) {
-        label.textContent = live ? 'Live' : secs > 0 ? `${secs}s` : 'Off';
+        if (live) {
+            label.textContent = 'Live';
+        } else if (secs > 0) {
+            label.textContent = `${secs}s`;
+        } else {
+            label.textContent = 'Off';
+        }
     }
     document.querySelectorAll('[data-ro-action="set-refresh"]').forEach((opt) => {
-        const value = (opt as HTMLElement).dataset.roInterval ?? '';
+        const value = (opt as HTMLElement).dataset.roInterval;
         opt.classList.toggle(
             'is-active',
-            live ? value === 'Live' : value !== 'Live' && (parseInt(value, 10) || 0) === secs,
+            value !== undefined &&
+                (live ? value === 'Live' : value !== 'Live' && parseRefreshSeconds(value) === secs),
         );
     });
     const dropdown = document.getElementById('refresh-dropdown');
@@ -337,11 +394,13 @@ export function noteRefreshRecovery(): void {
 // updates right away instead of waiting up to a full poll cadence (the Live
 // fallback's 5s counts -- effectivePollSeconds; a RIDING stream needs no
 // catch-up poll: its reopen pushes a fresh full frame).
-document.addEventListener('visibilitychange', () => {
+export function handleRefreshVisibilityChange(): void {
     if (!document.hidden && effectivePollSeconds() > 0) {
         fireRefresh();
     }
-});
+}
+
+document.addEventListener('visibilitychange', handleRefreshVisibilityChange);
 
 // --- dispatcher bindings ----------------------------------------------------
 // The two refresh-domain click branches that were the LAST resident tails of the
@@ -398,7 +457,7 @@ export const refreshBindings: Binding[] = [
             if (option.dataset.roInterval === 'Live') {
                 roPrefsSetRefresh('Live');
             } else {
-                const interval = parseInt(option.dataset.roInterval ?? '', 10) || 0;
+                const interval = parseRefreshSeconds(option.dataset.roInterval as string);
                 roPrefsSetRefresh(interval > 0 ? String(interval) : 'Off');
             }
             liveApply(true); // force: an explicit pick re-attempts even after a fallback

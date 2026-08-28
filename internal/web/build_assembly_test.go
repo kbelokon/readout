@@ -336,6 +336,63 @@ func TestHasLogTimestamp(t *testing.T) {
 	}
 }
 
+// TestContainerLogLinesFiltersCompleteEntries proves filtering happens after
+// timestamp grouping. A continuation match keeps the entry's timestamp/header
+// and sibling context; a header match keeps its non-matching stack trace. The
+// response delimiter must not become a phantom blank continuation or entry.
+func TestContainerLogLinesFiltersCompleteEntries(t *testing.T) {
+	raw := "2026-01-02T15:04:05Z request failed\n" +
+		"  at worker.matchTarget(worker.go:42)\n" +
+		"  caused by timeout\n" +
+		"2026-01-02T15:04:06Z request recovered\n" +
+		"  cleanup completed\n"
+
+	wantFirst := logLine{
+		Text:      "2026-01-02T15:04:05Z request failed\n  at worker.matchTarget(worker.go:42)\n  caused by timeout",
+		Pod:       "pod-a",
+		Container: "app",
+	}
+	if got := containerLogLines(raw, "pod-a", "app", "matchTarget"); !reflect.DeepEqual(got, []logLine{wantFirst}) {
+		t.Fatalf("continuation-filtered entries = %#v, want full first entry %#v", got, wantFirst)
+	}
+
+	wantSecond := logLine{
+		Text:      "2026-01-02T15:04:06Z request recovered\n  cleanup completed",
+		Pod:       "pod-a",
+		Container: "app",
+	}
+	if got := containerLogLines(raw, "pod-a", "app", "recovered"); !reflect.DeepEqual(got, []logLine{wantSecond}) {
+		t.Fatalf("header-filtered entries = %#v, want full second entry %#v", got, wantSecond)
+	}
+
+	if got := containerLogLines("", "pod-a", "app", ""); got != nil {
+		t.Fatalf("empty log response = %#v, want nil (no phantom entry)", got)
+	}
+}
+
+// TestSortLogLinesDeterministicSourceTies pins the merged-stream order all the
+// way through both source tie-breakers: text, then pod, then container.
+func TestSortLogLinesDeterministicSourceTies(t *testing.T) {
+	lines := []logLine{
+		{Text: "same", Pod: "pod-b", Container: "app"},
+		{Text: "later", Pod: "pod-z", Container: "app"},
+		{Text: "same", Pod: "pod-a", Container: "sidecar"},
+		{Text: "earlier", Pod: "pod-z", Container: "app"},
+		{Text: "same", Pod: "pod-a", Container: "app"},
+	}
+	sortLogLines(lines)
+	want := []logLine{
+		{Text: "earlier", Pod: "pod-z", Container: "app"},
+		{Text: "later", Pod: "pod-z", Container: "app"},
+		{Text: "same", Pod: "pod-a", Container: "app"},
+		{Text: "same", Pod: "pod-a", Container: "sidecar"},
+		{Text: "same", Pod: "pod-b", Container: "app"},
+	}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("sorted log lines = %#v, want %#v", lines, want)
+	}
+}
+
 // TestToTableDataPhaseChipCarry pins the bridge: kube.PhaseCount -> templates
 // .PhaseChip. The kube-side typed output and the rendered Label/Count are pinned
 // elsewhere, but the field-for-field carry here (incl. the int->string Count via

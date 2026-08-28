@@ -8,6 +8,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/kbelokon/readout/internal/kube"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -273,6 +274,32 @@ func TestContainerStateToneByReason(t *testing.T) {
 	slow := rows.Eq(1)
 	if slow.Find(".cell-status.warn .ro-dot.warn.pulse").Length() != 1 {
 		t.Fatalf("ContainerCreating must render the warn-toned PULSING dot: %s", normSpace(slow.Text()))
+	}
+}
+
+// TestContainerStateWordValidStatesAndFallbacks pins the canonical word for
+// every valid ContainerState variant, including the API's reason-less and
+// not-yet-reported states. The rendered container tests independently pin how
+// these words are toned and presented in the detail table.
+func TestContainerStateWordValidStatesAndFallbacks(t *testing.T) {
+	tests := []struct {
+		name  string
+		state corev1.ContainerState
+		want  string
+	}{
+		{name: "not reported", want: ""},
+		{name: "running", state: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}, want: "Running"},
+		{name: "terminated reason", state: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled"}}, want: "OOMKilled"},
+		{name: "terminated without reason", state: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}, want: "Terminated"},
+		{name: "waiting reason", state: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"}}, want: "ImagePullBackOff"},
+		{name: "waiting without reason", state: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}, want: "Waiting"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := containerStateWord(test.state); got != test.want {
+				t.Fatalf("containerStateWord() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

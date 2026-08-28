@@ -394,7 +394,7 @@ func containerRow(spec *corev1.Container, statuses map[string]*corev1.ContainerS
 		row.RestartsTone = restartsTone(row.Restarts)
 		return row
 	}
-	row.State = containerStateWord(status)
+	row.State = containerStateWord(status.State)
 	row.StateTone = kube.StatusTone(row.State)
 	row.StatePulse = transientStatus(row.State)
 	if !init {
@@ -421,14 +421,15 @@ func containerRow(spec *corev1.Container, statuses map[string]*corev1.ContainerS
 // waiting reason (CrashLoopBackOff, ContainerCreating, ...) — the same words
 // the pod list's Status column speaks, so kube.StatusTone owns their tones. A
 // reason-less terminated/waiting state falls back to the bare state name; a
-// status carrying none of the three yields "" (rendered as the faint "—").
-func containerStateWord(status *corev1.ContainerStatus) string {
-	switch state := &status.State; {
-	case state.Running != nil:
+// state carrying none of the three yields "" (rendered as the faint "—").
+func containerStateWord(state corev1.ContainerState) string {
+	if state.Running != nil {
 		return "Running"
-	case state.Terminated != nil:
+	}
+	if state.Terminated != nil {
 		return first(state.Terminated.Reason, "Terminated")
-	case state.Waiting != nil:
+	}
+	if state.Waiting != nil {
 		return first(state.Waiting.Reason, "Waiting")
 	}
 	return ""
@@ -742,7 +743,7 @@ func (s *Server) buildEventViews(events []map[string]any) []eventView {
 		if tone == "" {
 			tone = "mute"
 		}
-		countCell := countCellView(int(event.eventCount()))
+		countCell := countCellView(event.eventCount())
 		ev := eventView{
 			Type:       event.Type,
 			Tone:       tone,
@@ -805,11 +806,10 @@ func (s *Server) buildSubtableView(r *http.Request, table *kube.Table, namespace
 			if idx == 0 {
 				sc.Kind = cellName
 				sc.Value = cellString(row, idx)
-				if rowNamespace != "" {
-					sc.Href = fmt.Sprintf("/clusters/%s/namespaces/%s/%s/%s", url.PathEscape(rowCluster), url.PathEscape(rowNamespace), url.PathEscape(table.Resource.Plural), url.PathEscape(rowName))
-				} else {
-					sc.Href = fmt.Sprintf("/clusters/%s/%s/%s", url.PathEscape(rowCluster), url.PathEscape(table.Resource.Plural), url.PathEscape(rowName))
-				}
+				// Scope comes from discovery, not from whether this particular row
+				// happens to carry namespace metadata. This keeps subtable links on
+				// the same canonical route/escaping policy as every other object link.
+				sc.Href = resourceHref(rowCluster, &table.Resource, rowNamespace, rowName)
 				sr.Cells = append(sr.Cells, sc)
 				continue
 			}
@@ -821,7 +821,7 @@ func (s *Server) buildSubtableView(r *http.Request, table *kube.Table, namespace
 			switch columnName {
 			case "Node":
 				sc.Kind = cellNode
-				sc.Href = "/clusters/" + url.PathEscape(rowCluster) + "/nodes/" + url.PathEscape(sc.Value)
+				sc.Href = resourceHref(rowCluster, &kube.ResourceType{Plural: "nodes"}, "", sc.Value)
 			case "Status":
 				sc.Kind = cellStatus
 				sc.Tone = statusTone(cellClass(table, idx, cell))
@@ -839,8 +839,8 @@ func (s *Server) relatedPods(r *http.Request, client *kube.Client, cluster *kube
 	var labelSelector, fieldSelector string
 	if object.Kind() == "Node" {
 		fieldSelector = "spec.nodeName=" + object.Name()
-	} else if labels := matchLabels(object.Raw); len(labels) > 0 {
-		labelSelector = selectorString(labels)
+	} else if selector := podSelector(object.Raw); selector != "" {
+		labelSelector = selector
 	}
 	if labelSelector == "" && fieldSelector == "" {
 		return nil
@@ -888,15 +888,15 @@ func (s *Server) events(r *http.Request, client *kube.Client, object *kube.Objec
 }
 
 func (s *Server) podsForSelector(r *http.Request, client *kube.Client, object *kube.Object, namespace string) []kube.Object {
-	labels := matchLabels(object.Raw)
-	if len(labels) == 0 {
+	selector := podSelector(object.Raw)
+	if selector == "" {
 		return nil
 	}
 	podRT, err := client.FindResource(r.Context(), "pods", true, "")
 	if err != nil {
 		return nil
 	}
-	list, err := client.List(r.Context(), &podRT, kube.ListOptions{Namespace: namespace, LabelSelector: selectorString(labels)})
+	list, err := client.List(r.Context(), &podRT, kube.ListOptions{Namespace: namespace, LabelSelector: selector})
 	if err != nil {
 		return nil
 	}

@@ -2,14 +2,18 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	fakeapi "github.com/kbelokon/readout/internal/fakekube"
@@ -120,6 +124,126 @@ func TestPassthroughClientCache(t *testing.T) {
 	}
 	if twoAfterEvict == two {
 		t.Fatal("least-recently used passthrough client should be evicted when max size is exceeded")
+	}
+}
+
+func TestPassthroughClientCacheCoalescesConcurrentConstruction(t *testing.T) {
+	const callers = 32
+
+	cache := NewPassthroughClientCache(time.Hour, 8)
+	base := &Client{}
+	start := make(chan struct{})
+	buildStarted := make(chan struct{})
+	releaseBuild := make(chan struct{})
+	var builds atomic.Int32
+	build := func(_ *Client, token string) (*Client, error) {
+		if token != "viewer-token" {
+			return nil, fmt.Errorf("builder token = %q, want normalized viewer-token", token)
+		}
+		if builds.Add(1) == 1 {
+			close(buildStarted)
+		}
+		<-releaseBuild
+		return &Client{config: &rest.Config{BearerToken: token}}, nil
+	}
+
+	clients := make([]*Client, callers)
+	errs := make([]error, callers)
+	var ready sync.WaitGroup
+	var done sync.WaitGroup
+	ready.Add(callers)
+	done.Add(callers)
+	for i := range callers {
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			clients[i], errs[i] = cache.Get(base, "Bearer viewer-token", build)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	<-buildStarted
+	// Let every released goroutine reach either the shared flight or the
+	// builder before allowing the first construction to finish.
+	for range callers * 4 {
+		runtime.Gosched()
+	}
+	close(releaseBuild)
+	done.Wait()
+
+	if got := builds.Load(); got != 1 {
+		t.Fatalf("concurrent cache miss built %d clients, want exactly one", got)
+	}
+	for i := range callers {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: %v", i, errs[i])
+		}
+		if clients[i] != clients[0] {
+			t.Fatalf("caller %d received client %p, want shared client %p", i, clients[i], clients[0])
+		}
+	}
+}
+
+func TestPassthroughClientCacheRetriesBuildErrors(t *testing.T) {
+	cache := NewPassthroughClientCache(time.Hour, 8)
+	base := &Client{}
+	wantErr := errors.New("temporary client construction failure")
+	builds := 0
+	build := func(_ *Client, token string) (*Client, error) {
+		builds++
+		if builds == 1 {
+			return nil, wantErr
+		}
+		return &Client{config: &rest.Config{BearerToken: token}}, nil
+	}
+
+	if _, err := cache.Get(base, "viewer-token", build); !errors.Is(err, wantErr) {
+		t.Fatalf("first build error = %v, want %v", err, wantErr)
+	}
+	client, err := cache.Get(base, "viewer-token", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 2 || client.config.BearerToken != "viewer-token" {
+		t.Fatalf("retry = builds %d token %q, want builds 2 token viewer-token", builds, client.config.BearerToken)
+	}
+}
+
+func TestPassthroughClientCacheTTLStartsAfterConstruction(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	cache := NewPassthroughClientCache(5*time.Minute, 8)
+	cache.now = func() time.Time { return now }
+	base := &Client{}
+	builds := 0
+	build := func(_ *Client, token string) (*Client, error) {
+		builds++
+		if builds == 1 {
+			now = now.Add(4 * time.Minute)
+		}
+		return &Client{config: &rest.Config{BearerToken: token}}, nil
+	}
+
+	first, err := cache.Get(base, "viewer-token", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	withinTTL, err := cache.Get(base, "viewer-token", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withinTTL != first || builds != 1 {
+		t.Fatalf("client two minutes after construction = %p with %d builds, want cached %p with 1 build", withinTTL, builds, first)
+	}
+
+	now = now.Add(4 * time.Minute)
+	afterTTL, err := cache.Get(base, "viewer-token", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterTTL == first || builds != 2 {
+		t.Fatalf("client six minutes after construction = %p with %d builds, want rebuilt client distinct from %p", afterTTL, builds, first)
 	}
 }
 
@@ -466,67 +590,59 @@ func podsResourceType() *ResourceType {
 	return &ResourceType{Version: "v1", APIVersion: "v1", Plural: "pods", Namespaced: true}
 }
 
-// TestTableReadCap pins the bounded Table read: a body over maxTableBytes is
-// rejected with an error (never buffered whole), while a body at the cap is
-// read and decoded normally.
-func TestTableReadCap(t *testing.T) {
-	t.Run("over cap errors", func(t *testing.T) {
-		oversized := make([]byte, maxTableBytes+1)
-		srv := bodyServer(t, http.StatusOK, oversized)
-		client, err := NewClient(&rest.Config{Host: srv.URL}, nil, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = client.Table(context.Background(), podsResourceType(), ListOptions{Namespace: "default"})
-		if err == nil {
-			t.Fatal("expected an error for an over-cap Table response, got nil")
-		}
-		if !strings.Contains(err.Error(), "exceeds") {
-			t.Fatalf("expected a cap error, got %v", err)
-		}
-	})
+// TestProductionReadCaps pins operator-facing resource policy independently of
+// the implementation constants. The previous tests derived their payload sizes
+// from those constants, so changing a cap moved the test boundary with it.
+func TestProductionReadCaps(t *testing.T) {
+	const (
+		wantTableBytes = 64 * 1024 * 1024
+		wantLogBytes   = 4 * 1024 * 1024
+	)
+	if maxTableBytes != wantTableBytes {
+		t.Fatalf("Table response cap = %d, want %d bytes", maxTableBytes, wantTableBytes)
+	}
+	if maxLogBytes != wantLogBytes {
+		t.Fatalf("log stream cap = %d, want %d bytes", maxLogBytes, wantLogBytes)
+	}
+}
 
-	t.Run("at cap ok", func(t *testing.T) {
-		atCap := []byte(`{"columnDefinitions":[{"name":"Name"}],"rows":[]}`)
-		if len(atCap) > maxTableBytes {
-			t.Fatalf("fixture body %d exceeds cap %d", len(atCap), maxTableBytes)
-		}
-		srv := bodyServer(t, http.StatusOK, atCap)
+// TestReadAtMost pins the shared mechanism at an independent small boundary:
+// exactly-at-cap succeeds, one byte over fails, and source errors retain their
+// identity. This proves the behavior without allocating multi-megabyte bodies.
+func TestReadAtMost(t *testing.T) {
+	got, err := readAtMost(strings.NewReader("four"), 4, "test body")
+	if err != nil || string(got) != "four" {
+		t.Fatalf("exact-cap read = %q, %v; want four, nil", got, err)
+	}
+	if got, err = readAtMost(strings.NewReader("fives"), 4, "test body"); err == nil || got != nil || !strings.Contains(err.Error(), "test body exceeds 4 byte cap") {
+		t.Fatalf("over-cap read = %q, %v; want nil and descriptive cap error", got, err)
+	}
+	wantErr := errors.New("source failed")
+	if _, err = readAtMost(iotest.ErrReader(wantErr), 4, "test body"); !errors.Is(err, wantErr) {
+		t.Fatalf("read error = %v, want wrapped %v", err, wantErr)
+	}
+}
+
+// TestTableAndLogsReadValidResponses keeps both real client call paths bound to
+// their decoders while the small-boundary test above owns cap enforcement.
+func TestTableAndLogsReadValidResponses(t *testing.T) {
+	t.Run("table", func(t *testing.T) {
+		payload := []byte(`{"columnDefinitions":[{"name":"Name"}],"rows":[]}`)
+		srv := bodyServer(t, http.StatusOK, payload)
 		client, err := NewClient(&rest.Config{Host: srv.URL}, nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
 		table, err := client.Table(context.Background(), podsResourceType(), ListOptions{Namespace: "default"})
 		if err != nil {
-			t.Fatalf("under-cap Table read should succeed: %v", err)
+			t.Fatalf("valid Table read should succeed: %v", err)
 		}
 		if len(table.Columns) != 1 || table.Columns[0].Name != "Name" {
 			t.Fatalf("unexpected decoded columns: %#v", table.Columns)
 		}
 	})
-}
 
-// TestLogsReadCap pins the bounded log read: a stream over maxLogBytes returns a
-// cap error rather than a giant string, while an under-cap stream is returned
-// whole.
-func TestLogsReadCap(t *testing.T) {
-	t.Run("over cap errors", func(t *testing.T) {
-		oversized := make([]byte, maxLogBytes+1)
-		srv := bodyServer(t, http.StatusOK, oversized)
-		client, err := NewClient(&rest.Config{Host: srv.URL}, nil, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		logs, err := client.Logs(context.Background(), LogOptions{Namespace: "default", Pod: "nginx", Container: "nginx", TailLines: 20})
-		if err == nil {
-			t.Fatalf("expected an error for an over-cap log stream, got %d bytes", len(logs))
-		}
-		if !strings.Contains(err.Error(), "exceeds") {
-			t.Fatalf("expected a cap error, got %v", err)
-		}
-	})
-
-	t.Run("under cap ok", func(t *testing.T) {
+	t.Run("logs", func(t *testing.T) {
 		payload := []byte("hello log\n")
 		srv := bodyServer(t, http.StatusOK, payload)
 		client, err := NewClient(&rest.Config{Host: srv.URL}, nil, false)
@@ -535,7 +651,7 @@ func TestLogsReadCap(t *testing.T) {
 		}
 		logs, err := client.Logs(context.Background(), LogOptions{Namespace: "default", Pod: "nginx", Container: "nginx", TailLines: 20})
 		if err != nil {
-			t.Fatalf("under-cap log read should succeed: %v", err)
+			t.Fatalf("valid log read should succeed: %v", err)
 		}
 		if logs != string(payload) {
 			t.Fatalf("unexpected log payload %q", logs)

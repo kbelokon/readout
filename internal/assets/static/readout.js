@@ -6,23 +6,31 @@
   }
 
   // internal/assets/src/js/filters-parse.ts
+  var goFieldWhitespaceRun = /\p{White_Space}+/gu;
+  var goFieldWhitespaceEdges = /^\p{White_Space}+|\p{White_Space}+$/gu;
+  function trimFilterWhitespace(s) {
+    return (s || "").replace(goFieldWhitespaceEdges, "");
+  }
+  function normalizeFieldWhitespace(s) {
+    return trimFilterWhitespace((s || "").replace(goFieldWhitespaceRun, " "));
+  }
   function normalizeFieldName(s) {
-    return (s || "").toLowerCase().replace(/-/g, " ").trim();
+    return normalizeFieldWhitespace((s || "").toLowerCase().replace(/-/g, " "));
   }
   function fieldSuggestionText(label) {
-    return (label || "").toLowerCase().trim().replace(/\s+/g, "-");
+    return normalizeFieldName(label).replace(/ /g, "-");
   }
   function splitFilterDraft(s) {
-    for (let i = 0; i < s.length; i++) {
-      const c = s[i];
-      if (c === "!" && s[i + 1] === "=") {
-        return { field: s.slice(0, i).trim(), op: "!=", value: s.slice(i + 2) };
-      }
-      if (c === ":" || c === ">" || c === "<") {
-        return { field: s.slice(0, i).trim(), op: c, value: s.slice(i + 1) };
-      }
+    const operator = /!=|[:<>]/.exec(s);
+    if (!operator) {
+      return null;
     }
-    return null;
+    const op = operator[0];
+    return {
+      field: trimFilterWhitespace(s.slice(0, operator.index)),
+      op,
+      value: s.slice(operator.index + op.length)
+    };
   }
   function hasModelColumn(fields, normName) {
     return fields.some((f) => !!f.hint && normalizeFieldName(f.label) === normName);
@@ -76,15 +84,14 @@
   }
   function rankFieldSuggestions(fields, draft) {
     const q = normalizeFieldName(draft);
-    const matched = filterSuggestionFields(fields).filter(
-      (f) => normalizeFieldName(f.text).indexOf(q) !== -1
-    );
-    matched.sort((a, b) => {
-      const ap = normalizeFieldName(a.text).indexOf(q) === 0 ? 0 : 1;
-      const bp = normalizeFieldName(b.text).indexOf(q) === 0 ? 0 : 1;
-      return ap - bp;
+    const ranked = [[], []];
+    filterSuggestionFields(fields).forEach((field) => {
+      const matchAt = normalizeFieldName(field.text).indexOf(q);
+      if (matchAt >= 0) {
+        ranked[matchAt === 0 ? 0 : 1].push(field);
+      }
     });
-    return matched.map((f) => ({
+    return [...ranked[0], ...ranked[1]].map((f) => ({
       label: f.text,
       hint: f.hint,
       insert: `${f.text}:`,
@@ -103,21 +110,20 @@
         freq.set(v, (freq.get(v) || 0) + 1);
       }
     });
-    const typed = split.value.trim().toLowerCase();
-    let entries = Array.from(freq.entries());
-    if (typed) {
-      entries = entries.filter(([v]) => v.toLowerCase().indexOf(typed) !== -1);
-    }
+    const typed = trimFilterWhitespace(split.value).toLowerCase();
+    const entries = Array.from(freq.entries()).filter(
+      ([v]) => v.toLowerCase().indexOf(typed) !== -1
+    );
     entries.sort((a, b) => b[1] - a[1]);
     return entries.slice(0, 8).map(([v, n]) => ({
       label: v,
       hint: `×${n}`,
-      insert: `${split.field.trim()}:${v}`,
+      insert: `${trimFilterWhitespace(split.field)}:${v}`,
       kind: "value"
     }));
   }
   function liveNameMatchKeys(rows, draft) {
-    const text = !draft || splitFilterDraft(draft) ? "" : draft.trim().toLowerCase();
+    const text = !draft || splitFilterDraft(draft) ? "" : trimFilterWhitespace(draft).toLowerCase();
     if (!text) {
       return null;
     }
@@ -148,14 +154,12 @@
     return mode === "Live" ? liveFallbackSeconds2 : 0;
   }
   function refreshDelaySeconds(effectiveSeconds, failureStage) {
-    if (effectiveSeconds <= 0) {
-      return 0;
-    }
+    const baseSeconds = Math.max(effectiveSeconds, 0);
     if (failureStage <= 1) {
-      return effectiveSeconds;
+      return baseSeconds;
     }
     const factor = failureStage === 2 ? 2 : 4;
-    return Math.min(effectiveSeconds * factor, 60);
+    return Math.min(baseSeconds * factor, 60);
   }
   function nextFailureStage(stage) {
     return Math.min(stage + 1, 3);
@@ -222,9 +226,10 @@
       content.classList.add(STALE_DIM_CLASS);
     }
     const banner = document.querySelector(".ro-stale-banner");
-    if (banner) {
-      banner.hidden = false;
+    if (!banner) {
+      return;
     }
+    banner.hidden = false;
     if (staleCountdownId === null) {
       staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
     }
@@ -271,7 +276,6 @@
     streamPath: ""
     // the stream URL sans ?g= -- the page/params identity
   };
-  var liveGenSeq = 0;
   var liveDiscards = 0;
   var liveFallbackSecs = 0;
   function liveFallbackSeconds() {
@@ -296,10 +300,7 @@
     liveState.abort = null;
     liveFallbackSecs = 0;
     if (ctrl) {
-      try {
-        ctrl.abort();
-      } catch {
-      }
+      ctrl.abort();
     }
   }
   function liveEngageFallback(banner) {
@@ -313,18 +314,17 @@
   }
   function liveOpen(base) {
     liveTeardown();
-    liveFallbackSecs = 0;
     liveState.streamPath = base;
     if (!base) {
       liveEngageFallback(false);
       return;
     }
     liveState.status = "connecting";
-    liveGenSeq += 1;
-    liveState.gen = `${Date.now().toString(36)}.${liveGenSeq}`;
+    liveState.gen = window.crypto.getRandomValues(new Uint32Array(4)).toString();
     const ctrl = new AbortController();
     liveState.abort = ctrl;
-    const url = `${base + (base.indexOf("?") === -1 ? "?" : "&")}g=${encodeURIComponent(liveState.gen)}`;
+    const separator = base.includes("?") ? "&" : "?";
+    const url = `${base}${separator}g=${liveState.gen}`;
     scheduleRefreshTick();
     void liveConnect(url, ctrl);
   }
@@ -347,47 +347,43 @@
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffered = "";
-    let eventName = "";
-    let dataText = "";
-    try {
-      for (; ; ) {
-        const chunk = await reader.read();
-        if (liveState.abort !== ctrl) {
-          return;
-        }
-        if (chunk.done) {
-          break;
-        }
-        buffered += decoder.decode(chunk.value, { stream: true });
-        let nl = buffered.indexOf("\n");
-        while (nl !== -1) {
-          const line = buffered.slice(0, nl).replace(/\r$/, "");
-          buffered = buffered.slice(nl + 1);
-          if (line === "") {
-            const ended = liveHandleFrame(eventName, dataText, ctrl);
-            eventName = "";
-            dataText = "";
-            if (ended || liveState.abort !== ctrl) {
-              return;
-            }
-          } else if (line.indexOf("event:") === 0) {
-            eventName = line.slice(6).trim();
-          } else if (line.indexOf("data:") === 0) {
-            const piece = line.slice(5).replace(/^ /, "");
-            dataText = dataText === "" ? piece : `${dataText}
-${piece}`;
+    let eventName = null;
+    let dataLines = [];
+    const readAndHandleChunk = async () => {
+      const chunk = await reader.read();
+      if (liveState.abort !== ctrl) {
+        return;
+      }
+      const value = chunk.value;
+      buffered += decoder.decode(value.subarray(), { stream: true });
+      const completeLines = buffered.split("\n");
+      buffered = completeLines.pop();
+      for (const rawLine of completeLines) {
+        const line = rawLine === "\r" ? "" : rawLine;
+        if (line.length === 0) {
+          liveHandleFrame(eventName, dataLines.join("\n"));
+          eventName = null;
+          dataLines = [];
+          if (liveState.abort !== ctrl) {
+            return;
           }
-          nl = buffered.indexOf("\n");
+        } else if (line.startsWith("event:")) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5));
         }
       }
+      return value;
+    };
+    try {
+      while (await readAndHandleChunk()) {
+      }
     } catch {
-      applyClose({ superseded: liveState.abort !== ctrl, cause: "read-error" });
-      return;
     }
     if (liveState.abort !== ctrl) {
       return;
     }
-    applyClose({ superseded: false, cause: "eof" });
+    liveEngageFallback(true);
   }
   function applyClose(facts) {
     const action = classifyStreamClose(facts);
@@ -396,41 +392,44 @@ ${piece}`;
     }
     liveEngageFallback(action.banner);
   }
-  function liveHandleFrame(name, text, ctrl) {
-    if (liveState.abort !== ctrl || text === "") {
-      return false;
-    }
-    let payload = null;
+  function liveHandleFrame(name, text) {
+    let parsed;
     try {
-      payload = JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch {
-      return false;
     }
-    if (!payload || typeof payload !== "object") {
-      return false;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return;
     }
+    const payload = parsed;
     if (name === "ro-terminal") {
       applyClose({ superseded: false, cause: "terminal-frame" });
-      return true;
+      return;
     }
     if (name !== "ro-table") {
-      return false;
+      return;
+    }
+    if (typeof payload.g !== "string" || typeof payload.html !== "string") {
+      return;
     }
     pruneSettledListRequests(userListRequestsInFlight);
     pruneSettledListRequests(containerListRequestsInFlight);
     const reason = shouldDiscardPush({
-      frameGeneration: String(payload.g),
+      frameGeneration: payload.g,
       currentGeneration: liveState.gen,
-      liveStreamBase: liveStreamBase(),
+      // The Go bundle contract pins the literal page comparison below. Feed
+      // equal page identities here so the policy supplies the first and third
+      // ordered gates (generation, then request); the literal supplies the
+      // page gate between them without evaluating it twice.
+      liveStreamBase: liveState.streamPath,
       openedStreamBase: liveState.streamPath,
       requestInFlight: userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0
     });
-    if (reason !== "none" || liveStreamBase() !== liveState.streamPath) {
+    if (reason === "stale-generation" || liveStreamBase() !== liveState.streamPath || reason === "request-in-flight") {
       liveDiscards += 1;
-      return false;
+      return;
     }
-    liveMorph(String(payload.html));
-    return false;
+    liveMorph(payload.html);
   }
   function liveMorph(html) {
     const content = document.getElementById("resource-list-content");
@@ -457,21 +456,22 @@ ${piece}`;
       return;
     }
     let base = liveStreamBase();
-    const pathInfo = detail?.pathInfo;
-    const requestPath = pathInfo && (pathInfo.finalRequestPath || pathInfo.requestPath);
-    if (requestPath && requestPath.indexOf("/_table") !== -1) {
-      base = requestPath.replace("/_table", "/_stream");
+    const requestPath = detail?.pathInfo?.finalRequestPath || detail?.pathInfo?.requestPath;
+    if (typeof requestPath === "string") {
+      const queryStart = requestPath.indexOf("?");
+      const pathname = queryStart === -1 ? requestPath : requestPath.slice(0, queryStart);
+      if (pathname.endsWith("/_table")) {
+        const query = queryStart === -1 ? "" : requestPath.slice(queryStart);
+        base = `${pathname.slice(0, -"/_table".length)}/_stream${query}`;
+      }
     }
     liveOpen(base);
   }
   function liveApply(force) {
     if (refreshMode() !== "Live") {
-      if (liveState.status !== "idle") {
-        liveTeardown();
-        liveState.status = "idle";
-        liveState.streamPath = "";
-        liveFallbackSecs = 0;
-      }
+      liveTeardown();
+      liveState.status = "idle";
+      liveState.streamPath = "";
       return;
     }
     const base = liveSupported() ? liveStreamBase() : "";
@@ -506,39 +506,68 @@ ${piece}`;
   var REFRESH_KEY = "roRefresh";
   function b64urlEncodeUTF8(text) {
     const bytes = new TextEncoder().encode(text);
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) {
-      bin += String.fromCharCode(bytes[i]);
-    }
-    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const bin = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+    return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
   }
   function b64urlDecodeUTF8(encoded) {
-    const b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
-    const bin = atob(b64 + "====".slice(b64.length % 4 || 4));
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) {
-      bytes[i] = bin.charCodeAt(i);
+    const compact = encoded.replaceAll("\r", "").replaceAll("\n", "");
+    if (!/^[A-Za-z0-9_-]*$/.test(compact)) {
+      throw new TypeError();
     }
-    return new TextDecoder().decode(bytes);
+    const b64 = compact.replaceAll("-", "+").replaceAll("_", "/");
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, (char) => char.charCodeAt(0));
+    return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+  }
+  function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+  function setOwnNamespace(ns, cluster, namespace) {
+    Object.defineProperty(ns, cluster, {
+      value: namespace,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+  }
+  function compareUTF8(left, right) {
+    const mismatch = left.subarray(0, right.length).findIndex((byte, index) => byte !== right[index]);
+    if (mismatch !== -1) {
+      return left[mismatch] - right[mismatch];
+    }
+    return left.length - right.length;
+  }
+  function stringifyPrefsJSON(value) {
+    const encoded = JSON.stringify(value);
+    return encoded.replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+  }
+  function canonicalNamespaceJSON(ns) {
+    const encoder = new TextEncoder();
+    const entries = Object.entries(ns).map(([cluster, namespace]) => ({
+      cluster,
+      namespace,
+      encodedCluster: encoder.encode(cluster)
+    }));
+    entries.sort((left, right) => compareUTF8(left.encodedCluster, right.encodedCluster));
+    return `{${entries.map(
+      ({ cluster, namespace }) => `${stringifyPrefsJSON(cluster)}:${stringifyPrefsJSON(namespace)}`
+    ).join(",")}}`;
   }
   function decodePrefsValue(value) {
     const empty = { kinds: [], refresh: "", ns: {} };
-    if (value?.indexOf(PREFS_VERSION_PREFIX) !== 0) {
+    if (!value?.startsWith(PREFS_VERSION_PREFIX)) {
       return { prefs: empty, ok: false };
     }
     const payload = value.slice(PREFS_VERSION_PREFIX.length);
-    if (!payload) {
-      return { prefs: empty, ok: false };
-    }
     try {
       const decoded = JSON.parse(b64urlDecodeUTF8(payload));
-      if (!decoded || typeof decoded !== "object") {
+      if (!isRecord(decoded)) {
         return { prefs: empty, ok: false };
       }
       const kinds = [];
       if (Array.isArray(decoded.kinds)) {
         decoded.kinds.forEach((raw) => {
-          if (!raw || typeof raw !== "object") {
+          if (!isRecord(raw)) {
             return;
           }
           const e = raw;
@@ -556,10 +585,10 @@ ${piece}`;
         });
       }
       const ns = {};
-      if (decoded.ns && typeof decoded.ns === "object" && !Array.isArray(decoded.ns)) {
-        Object.keys(decoded.ns).forEach((cluster) => {
-          if (typeof decoded.ns[cluster] === "string") {
-            ns[cluster] = decoded.ns[cluster];
+      if (isRecord(decoded.ns)) {
+        Object.entries(decoded.ns).forEach(([cluster, namespace]) => {
+          if (typeof namespace === "string") {
+            setOwnNamespace(ns, cluster, namespace);
           }
         });
       }
@@ -575,35 +604,38 @@ ${piece}`;
       return { prefs: empty, ok: false };
     }
   }
+  function encodePrefsCandidate(kinds, refresh, ns) {
+    const fields = [];
+    if (kinds.length > 0) {
+      fields.push(`"kinds":${stringifyPrefsJSON(kinds)}`);
+    }
+    if (refresh) {
+      fields.push(`"refresh":${stringifyPrefsJSON(refresh)}`);
+    }
+    if (Object.keys(ns).length > 0) {
+      fields.push(`"ns":${canonicalNamespaceJSON(ns)}`);
+    }
+    return PREFS_VERSION_PREFIX + b64urlEncodeUTF8(`{${fields.join(",")}}`);
+  }
   function encodePrefsValue(prefs) {
-    const out = {};
-    if (prefs.kinds && prefs.kinds.length > 0) {
-      out.kinds = prefs.kinds;
+    const kinds = prefs.kinds ?? [];
+    const refresh = prefs.refresh ?? "";
+    const ns = prefs.ns ?? {};
+    const evictionBoundary = PREFS_MAX_ENCODED + 1;
+    let value = encodePrefsCandidate(kinds, refresh, ns);
+    if (value.length < evictionBoundary) {
+      return value;
     }
-    if (prefs.refresh) {
-      out.refresh = prefs.refresh;
-    }
-    if (prefs.ns && Object.keys(prefs.ns).length > 0) {
-      out.ns = prefs.ns;
-    }
-    let value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
-    while (value.length > PREFS_MAX_ENCODED && out.kinds && out.kinds.length > 0) {
-      out.kinds = out.kinds.slice(0, -1);
-      if (out.kinds.length === 0) {
-        delete out.kinds;
-      }
-      value = PREFS_VERSION_PREFIX + b64urlEncodeUTF8(JSON.stringify(out));
-    }
+    Array.from({ length: kinds.length }).some((_, evicted) => {
+      const kept = kinds.length - evicted - 1;
+      value = encodePrefsCandidate(kinds.slice(0, kept), refresh, ns);
+      return value.length < evictionBoundary;
+    });
     return value;
   }
   function prefsCookieValue() {
-    const parts = document.cookie ? document.cookie.split("; ") : [];
-    for (let i = 0; i < parts.length; i++) {
-      if (parts[i].indexOf(`${PREFS_COOKIE}=`) === 0) {
-        return parts[i].slice(PREFS_COOKIE.length + 1);
-      }
-    }
-    return "";
+    const prefix = `${PREFS_COOKIE}=`;
+    return document.cookie.split("; ").find((part) => part.startsWith(prefix))?.slice(prefix.length);
   }
   function readPrefs() {
     return decodePrefsValue(prefsCookieValue()).prefs;
@@ -619,16 +651,10 @@ ${piece}`;
     }
   }
   function prefsTouchKind(prefs, plural) {
-    for (let i = 0; i < prefs.kinds.length; i++) {
-      if (prefs.kinds[i].k === plural) {
-        const entry = prefs.kinds.splice(i, 1)[0];
-        prefs.kinds.unshift(entry);
-        return entry;
-      }
-    }
-    const fresh = { k: plural };
-    prefs.kinds.unshift(fresh);
-    return fresh;
+    const index = prefs.kinds.findIndex((entry2) => entry2.k === plural);
+    const entry = index < 0 ? { k: plural } : prefs.kinds.splice(index, 1)[0];
+    prefs.kinds.unshift(entry);
+    return entry;
   }
   function roPrefsSetSort(plural, sort) {
     const prefs = readPrefs();
@@ -637,7 +663,7 @@ ${piece}`;
   }
   function roPrefsSetHiddenColumns(plural, names) {
     const prefs = readPrefs();
-    prefsTouchKind(prefs, plural).hide = Array.isArray(names) ? names : [];
+    prefsTouchKind(prefs, plural).hide = names;
     writePrefs(prefs);
   }
   function roPrefsSetRefresh(mode) {
@@ -650,7 +676,7 @@ ${piece}`;
       return;
     }
     const prefs = readPrefs();
-    prefs.ns[cluster] = namespace;
+    setOwnNamespace(prefs.ns, cluster, namespace);
     writePrefs(prefs);
   }
 
@@ -666,6 +692,9 @@ ${piece}`;
   }
   var userListRequestsInFlight = /* @__PURE__ */ new Set();
   var containerListRequestsInFlight = /* @__PURE__ */ new Set();
+  function requestDetail(event) {
+    return Object(event.detail);
+  }
   function pruneSettledListRequests(requests) {
     requests.forEach((xhr) => {
       if (xhr.readyState === 4 || xhr.readyState === 0) {
@@ -674,35 +703,37 @@ ${piece}`;
     });
   }
   function isPreloadRequest(event) {
-    const cfg = event.detail?.requestConfig;
-    return !!cfg && !!cfg.headers && cfg.headers["HX-Preloaded"] === "true";
+    const config = Object(requestDetail(event).requestConfig);
+    const headers = Object(config.headers);
+    return headers["HX-Preloaded"] === "true";
   }
   function isUserListRequest(event) {
-    const detail = event.detail;
-    if (!detail?.elt || !detail.target) {
-      return false;
-    }
-    if (detail.elt.id === "resource-list-content") {
-      return false;
-    }
-    return detail.target.id === "resource-list-content" && !isPreloadRequest(event);
+    const detail = requestDetail(event);
+    return detail.elt instanceof Element && detail.target instanceof Element && detail.target.id === "resource-list-content" && !isPreloadRequest(event);
   }
-  document.addEventListener("htmx:configRequest", (event) => {
-    const elt = event.detail?.elt;
-    if (elt && elt.id === "resource-list-content") {
-      event.detail.headers["RO-No-Push"] = "true";
+  function handleRefreshConfigRequest(event) {
+    const detail = requestDetail(event);
+    const elt = Object(detail.elt);
+    if (elt.id !== "resource-list-content") {
+      return;
     }
-  });
-  document.addEventListener("htmx:beforeRequest", (event) => {
-    const detail = event.detail;
-    if (detail?.xhr && detail.elt && detail.elt.id === "resource-list-content") {
-      containerListRequestsInFlight.add(detail.xhr);
+    const headers = Object(detail.headers);
+    headers["RO-No-Push"] = "true";
+  }
+  document.addEventListener("htmx:configRequest", handleRefreshConfigRequest);
+  function handleRefreshBeforeRequest(event) {
+    const detail = requestDetail(event);
+    const elt = Object(detail.elt);
+    if (elt.id === "resource-list-content") {
+      if (detail.xhr) {
+        containerListRequestsInFlight.add(detail.xhr);
+      }
       return;
     }
     if (!isUserListRequest(event)) {
       return;
     }
-    if (detail?.xhr) {
+    if (detail.xhr) {
       userListRequestsInFlight.add(detail.xhr);
     }
     const content = document.getElementById("resource-list-content");
@@ -710,14 +741,25 @@ ${piece}`;
     if (content && htmx2) {
       htmx2.trigger(content, "htmx:abort");
     }
-  });
-  document.addEventListener("htmx:afterRequest", (event) => {
-    const xhr = event.detail?.xhr;
-    if (xhr) {
-      userListRequestsInFlight.delete(xhr);
-      containerListRequestsInFlight.delete(xhr);
+  }
+  document.addEventListener("htmx:beforeRequest", handleRefreshBeforeRequest);
+  function handleRefreshAfterRequest(event) {
+    const xhr = requestDetail(event).xhr;
+    userListRequestsInFlight.delete(xhr);
+    containerListRequestsInFlight.delete(xhr);
+  }
+  document.addEventListener("htmx:afterRequest", handleRefreshAfterRequest);
+  function parseRefreshSeconds(mode) {
+    if (typeof mode !== "string") {
+      return 0;
     }
-  });
+    const unsigned = mode.startsWith("+") ? mode.slice(1) : mode;
+    const seconds = Array.from(unsigned).reduce((value, char) => {
+      const digit = char.charCodeAt(0) - 48;
+      return digit >= 0 && digit <= 9 ? value * 10 + digit : Number.NaN;
+    }, 0);
+    return Number.isSafeInteger(seconds) ? seconds : 0;
+  }
   function refreshMode() {
     const stored = readPrefs().refresh;
     if (stored) {
@@ -727,19 +769,14 @@ ${piece}`;
     try {
       legacy = window.localStorage.getItem(REFRESH_KEY);
     } catch {
+    }
+    if (!legacy) {
       return "";
     }
-    if (legacy === null || legacy === "") {
-      return "";
-    }
-    const secs = parseInt(legacy, 10) || 0;
+    const secs = parseRefreshSeconds(legacy);
     const mode = secs > 0 ? String(secs) : "Off";
     roPrefsSetRefresh(mode);
     return mode;
-  }
-  function refreshInterval() {
-    const secs = parseInt(refreshMode(), 10);
-    return Number.isFinite(secs) && secs > 0 ? secs : 0;
   }
   function listTableURL() {
     const u = new URL(window.location.href);
@@ -777,7 +814,8 @@ ${piece}`;
     requestListRefresh();
   }
   function effectivePollSeconds2() {
-    return effectivePollSeconds(refreshMode(), refreshInterval(), liveFallbackSeconds());
+    const mode = refreshMode();
+    return effectivePollSeconds(mode, parseRefreshSeconds(mode), liveFallbackSeconds());
   }
   function refreshDelaySeconds2() {
     return refreshDelaySeconds(effectivePollSeconds2(), refreshFailureStage);
@@ -793,12 +831,13 @@ ${piece}`;
       updateStaleCountdown();
       return;
     }
-    refreshNextAt = Date.now() + delay * 1e3;
+    const delayMs = delay * 1e3;
+    refreshNextAt = Date.now() + delayMs;
     refreshTimerId = window.setTimeout(() => {
       refreshTimerId = null;
       scheduleRefreshTick();
       fireRefresh();
-    }, delay * 1e3);
+    }, delayMs);
     updateStaleCountdown();
   }
   function applyRefresh() {
@@ -806,17 +845,24 @@ ${piece}`;
     scheduleRefreshTick();
   }
   function syncRefreshUI() {
-    const live = refreshMode() === "Live";
-    const secs = refreshInterval();
+    const mode = refreshMode();
+    const live = mode === "Live";
+    const secs = parseRefreshSeconds(mode);
     const label = document.getElementById("refresh-label");
     if (label) {
-      label.textContent = live ? "Live" : secs > 0 ? `${secs}s` : "Off";
+      if (live) {
+        label.textContent = "Live";
+      } else if (secs > 0) {
+        label.textContent = `${secs}s`;
+      } else {
+        label.textContent = "Off";
+      }
     }
     document.querySelectorAll('[data-ro-action="set-refresh"]').forEach((opt) => {
-      const value = opt.dataset.roInterval ?? "";
+      const value = opt.dataset.roInterval;
       opt.classList.toggle(
         "is-active",
-        live ? value === "Live" : value !== "Live" && (parseInt(value, 10) || 0) === secs
+        value !== void 0 && (live ? value === "Live" : value !== "Live" && parseRefreshSeconds(value) === secs)
       );
     });
     const dropdown = document.getElementById("refresh-dropdown");
@@ -839,11 +885,12 @@ ${piece}`;
       toast("Refresh resumed");
     }
   }
-  document.addEventListener("visibilitychange", () => {
+  function handleRefreshVisibilityChange() {
     if (!document.hidden && effectivePollSeconds2() > 0) {
       fireRefresh();
     }
-  });
+  }
+  document.addEventListener("visibilitychange", handleRefreshVisibilityChange);
   var refreshBindings = [
     // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
     // #resource-list-content through the shared refresh path (the v2 loop derives
@@ -889,7 +936,7 @@ ${piece}`;
         if (option.dataset.roInterval === "Live") {
           roPrefsSetRefresh("Live");
         } else {
-          const interval = parseInt(option.dataset.roInterval ?? "", 10) || 0;
+          const interval = parseRefreshSeconds(option.dataset.roInterval);
           roPrefsSetRefresh(interval > 0 ? String(interval) : "Off");
         }
         liveApply(true);
@@ -985,7 +1032,7 @@ ${piece}`;
     }
   };
   var BULK_NAMES_MAX = 100;
-  var bulkOverCapToasted = false;
+  var bulkOverCapToasted;
   function updateBulkBar() {
     const bar = document.getElementById("ro-bulkbar");
     if (!bar) {
@@ -993,7 +1040,7 @@ ${piece}`;
     }
     const count = rowSelection.size;
     const label = document.getElementById("ro-bulk-count");
-    if (label && count > 0) {
+    if (label) {
       label.textContent = `${count} selected`;
     }
     bar.classList.toggle("is-open", count > 0);
@@ -1019,19 +1066,18 @@ ${piece}`;
     const fallback = () => {
       const ta = document.createElement("textarea");
       ta.value = text;
-      ta.setAttribute("readonly", "");
+      ta.readOnly = true;
       ta.style.position = "fixed";
       ta.style.top = "-1000px";
       document.body.appendChild(ta);
-      ta.select();
-      let ok = false;
       try {
-        ok = document.execCommand("copy");
+        ta.select();
+        return document.execCommand("copy");
       } catch {
-        ok = false;
+        return false;
+      } finally {
+        ta.remove();
       }
-      ta.remove();
-      return ok;
     };
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(text).then(
@@ -1076,14 +1122,8 @@ ${piece}`;
     const n = visibleCount;
     const first = Math.floor((0 - tbodyTop) / pitch);
     const last = Math.ceil((innerHeight - tbodyTop) / pitch);
-    let start = Math.max(0, first - buffer);
-    let end = Math.min(n, last + buffer);
-    if (start > n) {
-      start = n;
-    }
-    if (end < start) {
-      end = start;
-    }
+    const start = Math.min(n, Math.max(0, first - buffer));
+    const end = Math.max(start, Math.min(n, last + buffer));
     return { start, end };
   }
   function spacerHeights(start, end, visibleCount, rowH) {
@@ -1103,14 +1143,11 @@ ${piece}`;
     return tbodyTop + index * rowH;
   }
   function scrollAdjustToReveal(rowTop, rowH, topMin, innerHeight) {
-    const rowBottom = rowTop + rowH;
-    if (rowTop < topMin) {
-      return rowTop - topMin;
+    const topOverflow = rowTop - topMin;
+    if (topOverflow < 0) {
+      return topOverflow;
     }
-    if (rowBottom > innerHeight) {
-      return rowBottom - innerHeight;
-    }
-    return 0;
+    return Math.max(0, rowTop + rowH - innerHeight);
   }
   function clampFocusIndex(current, delta, visibleCount) {
     return Math.max(0, Math.min(visibleCount - 1, current + delta));
@@ -1141,7 +1178,7 @@ ${piece}`;
     pendingScrollY: null
   };
   function virtualizerActive() {
-    return virtState.active && !!virtState.tbody && virtState.tbody.isConnected;
+    return virtState.active && virtState.tbody?.isConnected === true;
   }
   function virtReset() {
     virtState.active = false;
@@ -1181,7 +1218,7 @@ ${piece}`;
     const first = rendered[0].getBoundingClientRect();
     const last = rendered[rendered.length - 1].getBoundingClientRect();
     const pitch = (last.bottom - first.top) / rendered.length;
-    return pitch > 0 ? pitch : 0;
+    return Math.max(0, pitch);
   }
   function virtFallbackRowHeight() {
     let py = 9;
@@ -1215,7 +1252,7 @@ ${piece}`;
   }
   function virtComputeVisible() {
     const keys = roRowModel().visibleKeys;
-    virtState.visible = keys ? virtState.rows.filter((tr) => keys.has(tr.dataset.key)) : virtState.rows.slice();
+    virtState.visible = keys ? virtState.rows.filter((tr) => keys.has(tr.dataset.key)) : virtState.rows;
   }
   function virtRenderWindow() {
     const s = virtState;
@@ -1237,11 +1274,11 @@ ${piece}`;
   function virtBindMounts() {
     const content = document.getElementById("resource-list-content");
     const wrap = content?.querySelector(".ro-table-wrap.ro-windowed");
-    const table = wrap?.querySelector("table.ro-table");
-    const tbody = table && table.tBodies.length > 0 ? table.tBodies[0] : null;
-    virtState.table = table || null;
-    virtState.tbody = tbody || null;
-    return !!tbody;
+    const table = wrap?.querySelector("table.ro-table") ?? null;
+    const tbody = table?.tBodies.item(0) ?? null;
+    virtState.table = table;
+    virtState.tbody = tbody;
+    return tbody !== null;
   }
   function virtualizeInit() {
     const content = document.getElementById("resource-list-content");
@@ -1251,7 +1288,7 @@ ${piece}`;
       return;
     }
     const table = wrap.querySelector("table.ro-table");
-    const tbody = table && table.tBodies.length > 0 ? table.tBodies[0] : null;
+    const tbody = table?.tBodies.item(0) ?? null;
     if (!tbody) {
       virtReset();
       return;
@@ -1291,12 +1328,7 @@ ${piece}`;
     if (!tbody) {
       return;
     }
-    const rows = [];
-    Array.prototype.forEach.call(tbody.children, (el) => {
-      if (el.tagName === "TR" && el.dataset.key) {
-        rows.push(el);
-      }
-    });
+    const rows = Array.from(tbody.querySelectorAll(":scope > tr[data-key]"));
     if (rows.length === 0) {
       return;
     }
@@ -1315,9 +1347,7 @@ ${piece}`;
     const pending = virtState.pendingRows;
     virtState.pendingRows = null;
     if (!pending) {
-      if (virtState.active) {
-        virtReset();
-      }
+      virtReset();
       return;
     }
     const prior = virtState.byKey;
@@ -1357,7 +1387,7 @@ ${piece}`;
     virtFlashChangedCells(prior);
   }
   function virtFlashChangedCells(prior) {
-    if (!prior || prior.size === 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (prior.size === 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       return;
     }
     virtState.tbody.querySelectorAll(":scope > tr[data-key]").forEach((tr) => {
@@ -1365,17 +1395,14 @@ ${piece}`;
       if (!old) {
         return;
       }
-      const oldCells = old.children;
-      const newCells = tr.children;
-      for (let i = 0; i < newCells.length; i++) {
-        const o = oldCells[i];
-        const nd = newCells[i];
-        if (o && nd && nd.tagName === "TD" && o.textContent !== nd.textContent) {
-          nd.classList.remove("ro-cell-changed");
-          void nd.offsetWidth;
-          nd.classList.add("ro-cell-changed");
+      Array.from(tr.children).forEach((newCell, index) => {
+        const oldCell = old.children.item(index);
+        if (oldCell && newCell.tagName === "TD" && oldCell.textContent !== newCell.textContent) {
+          newCell.classList.remove("ro-cell-changed");
+          void newCell.offsetWidth;
+          newCell.classList.add("ro-cell-changed");
         }
-      }
+      });
     });
   }
   function virtualizeOnFilterChange() {
@@ -1390,14 +1417,8 @@ ${piece}`;
     if (list.length === 0) {
       return false;
     }
-    let current = -1;
     const focusKey = roRowState().focusedKey();
-    for (let i = 0; i < list.length; i++) {
-      if (list[i].dataset.key === focusKey) {
-        current = i;
-        break;
-      }
-    }
+    const current = list.findIndex((row) => row.dataset.key === focusKey);
     const next = clampFocusIndex(current, delta, list.length);
     virtualizeScrollToIndex(next);
     roRowState().setFocus(list[next].dataset.key);
@@ -1454,8 +1475,9 @@ ${piece}`;
     { passive: true }
   );
   window.addEventListener("resize", virtOnScroll);
-  if (document.fonts?.ready && typeof document.fonts.ready.then === "function") {
-    document.fonts.ready.then(() => {
+  var fontReady = document.fonts?.ready;
+  if (fontReady && typeof fontReady.then === "function") {
+    void fontReady.then(() => {
       if (!virtualizerActive()) {
         return;
       }
@@ -1504,7 +1526,7 @@ ${piece}`;
     }
     const fields = [];
     table.querySelectorAll("thead th").forEach((th) => {
-      const label = (th.textContent || "").trim();
+      const label = normalizeFieldWhitespace(th.textContent || "");
       fields.push({
         label,
         name: fieldSuggestionText(label),
@@ -1515,12 +1537,12 @@ ${piece}`;
     table.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
       const cells = [];
       tr.querySelectorAll("td").forEach((td) => {
-        cells.push((td.textContent || "").trim());
+        cells.push(trimFilterWhitespace(td.textContent || ""));
       });
       const nameLink = tr.querySelector("td.cell-name a");
       rows.push({
         key: tr.dataset.key,
-        name: nameLink ? (nameLink.textContent || "").trim() : cells[0] || "",
+        name: nameLink ? trimFilterWhitespace(nameLink.textContent || "") : cells[0] || "",
         cells
       });
     });
@@ -1566,13 +1588,11 @@ ${piece}`;
       target: "#resource-list-content",
       swap: "morph"
     });
-    if (request && typeof request.catch === "function") {
-      request.catch(() => {
-      });
-    }
+    void request?.catch(() => {
+    });
   }
   function commitFilterChip(draft) {
-    const text = draft.trim();
+    const text = trimFilterWhitespace(draft);
     const parsed = splitFilterDraft(text);
     if (!parsed) {
       return;
@@ -1611,7 +1631,7 @@ ${piece}`;
       return;
     }
     const names = filterSuggestionFields(roRowModel2.fields).slice(0, 3).map((f) => f.text);
-    el.textContent = `no such field — try ${names.length ? names.join(", ") : "status, node, age"}…`;
+    el.textContent = `no such field — try ${names.join(", ")}…`;
     el.hidden = false;
   }
   function hideFilterFieldHint() {
@@ -1621,7 +1641,7 @@ ${piece}`;
     }
   }
   var filterACItems = [];
-  var filterACActive = -1;
+  var filterACActive = 0;
   function filterACOpen() {
     const ac = document.getElementById("ro-filter-ac");
     return !!ac && !ac.hidden;
@@ -1633,7 +1653,7 @@ ${piece}`;
       ac.textContent = "";
     }
     filterACItems = [];
-    filterACActive = -1;
+    filterACActive = 0;
   }
   function openFilterAC(items) {
     const ac = document.getElementById("ro-filter-ac");
@@ -1656,21 +1676,16 @@ ${piece}`;
       name.className = "ac-name";
       name.textContent = item.label;
       row.appendChild(name);
-      if (item.hint) {
-        const hint = document.createElement("span");
-        hint.className = "ac-hint";
-        hint.textContent = item.hint;
-        row.appendChild(hint);
-      }
+      const hint = document.createElement("span");
+      hint.className = "ac-hint";
+      hint.textContent = item.hint;
+      row.appendChild(hint);
       row.addEventListener("mousemove", () => setFilterACActive(idx));
       ac.appendChild(row);
     });
     ac.hidden = false;
   }
   function setFilterACActive(index) {
-    if (filterACItems.length === 0) {
-      return;
-    }
     filterACActive = Math.max(0, Math.min(filterACItems.length - 1, index));
     const ac = document.getElementById("ro-filter-ac");
     if (!ac) {
@@ -1683,9 +1698,6 @@ ${piece}`;
     });
   }
   function moveFilterACActive(delta) {
-    if (filterACItems.length === 0) {
-      return;
-    }
     setFilterACActive((filterACActive + delta + filterACItems.length) % filterACItems.length);
   }
   function updateFilterAC() {
@@ -1694,7 +1706,7 @@ ${piece}`;
       return;
     }
     const draft = input.value;
-    if (!draft.trim()) {
+    if (!trimFilterWhitespace(draft)) {
       closeFilterAC();
       return;
     }
@@ -1703,17 +1715,11 @@ ${piece}`;
       openFilterAC(rankFieldSuggestions(roRowModel2.fields, draft));
       return;
     }
-    const isLabel = normalizeFieldName(parsed.field) === "label";
-    if (parsed.op !== ":" || isLabel || !filterFieldKnown(roRowModel2.fields, parsed.field)) {
+    if (parsed.op !== ":" || !filterFieldKnown(roRowModel2.fields, parsed.field)) {
       closeFilterAC();
       return;
     }
-    const items = rankValueSuggestions(roRowModel2.fields, roRowModel2.rows, parsed);
-    if (items.length === 0) {
-      closeFilterAC();
-      return;
-    }
-    openFilterAC(items);
+    openFilterAC(rankValueSuggestions(roRowModel2.fields, roRowModel2.rows, parsed));
   }
   function acceptFilterAC(commitValues) {
     const input = document.getElementById("ro-filter-input");
@@ -1722,7 +1728,6 @@ ${piece}`;
       return;
     }
     input.value = item.insert;
-    closeFilterAC();
     if (item.kind === "value" && commitValues) {
       commitFilterChip(input.value);
     } else {
@@ -1734,7 +1739,7 @@ ${piece}`;
     const input = event.target;
     if (event.key === "Enter") {
       event.preventDefault();
-      if (filterACOpen() && filterACActive >= 0) {
+      if (filterACOpen() && filterACItems.length > 0) {
         acceptFilterAC(true);
         return;
       }
@@ -1855,23 +1860,22 @@ ${piece}`;
   ];
 
   // internal/assets/src/js/morph.ts
-  if (Idiomorph?.defaults?.callbacks && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  var idiomorph = typeof Idiomorph !== "undefined" && typeof Idiomorph.morph === "function" ? Idiomorph : void 0;
+  if (idiomorph?.defaults?.callbacks && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     const PRIOR = /* @__PURE__ */ new WeakMap();
-    Idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode) => {
-      if (oldNode && oldNode.nodeType === 1 && oldNode.tagName === "TD") {
-        PRIOR.set(oldNode, oldNode.textContent);
+    idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode) => {
+      if (oldNode.nodeName !== "TD") {
+        return;
       }
+      PRIOR.set(oldNode, oldNode.textContent);
     };
-    Idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode) => {
-      if (oldNode?.nodeType !== 1 || oldNode.tagName !== "TD") {
+    idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode) => {
+      if (!PRIOR.has(oldNode)) {
         return;
       }
       const el = oldNode;
-      if (!PRIOR.has(el)) {
-        return;
-      }
-      const before = PRIOR.get(el);
-      PRIOR.delete(el);
+      const before = PRIOR.get(oldNode);
+      PRIOR.delete(oldNode);
       if (before !== el.textContent) {
         el.classList.remove("ro-cell-changed");
         void el.offsetWidth;
@@ -1879,18 +1883,18 @@ ${piece}`;
       }
     };
   }
-  if (typeof htmx !== "undefined" && typeof Idiomorph !== "undefined") {
+  if (typeof htmx !== "undefined" && typeof htmx.defineExtension === "function" && idiomorph) {
     htmx.defineExtension("ro-morph", {
       isInlineSwap: (swapStyle) => swapStyle === "morph",
       handleSwap: (swapStyle, target, fragment) => {
         if (swapStyle !== "morph") {
           return false;
         }
-        if (target && target.id === "resource-list-content") {
+        if (target.id === "resource-list-content") {
           captureRowModel(fragment);
           virtualizePrepareSwap(fragment);
         }
-        return Idiomorph.morph(target, fragment.children, {
+        return idiomorph.morph(target, fragment.children, {
           morphStyle: "innerHTML",
           ignoreActiveValue: true
         });
@@ -1926,10 +1930,10 @@ ${piece}`;
     if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
       return;
     }
-    const clusterPrefix = `${bar.dataset.bulkCluster || ""}/`;
+    const cluster = bar.dataset.bulkCluster;
     const names = entries.map((entry) => {
-      if (bar.dataset.bulkAllns === "true" && entry.key.indexOf(clusterPrefix) === 0) {
-        return entry.key.slice(clusterPrefix.length);
+      if (bar.dataset.bulkAllns === "true" && cluster && entry.key.startsWith(`${cluster}/`)) {
+        return entry.key.slice(cluster.length + 1);
       }
       return entry.name;
     });
@@ -2129,11 +2133,17 @@ ${piece}`;
         item.hidden = true;
       }
     };
-    bind("open", tr.dataset.href || "");
-    bind("yaml", tr.dataset.yaml || "");
-    bind("logs", tr.dataset.logs || "");
-    bind("download", tr.dataset.download || "");
-    menu.dataset.name = tr.dataset.name || lastKeySegment(tr.dataset.key || "");
+    bind("open", tr.dataset.href);
+    bind("yaml", tr.dataset.yaml);
+    bind("logs", tr.dataset.logs);
+    bind("download", tr.dataset.download);
+    const key = tr.dataset.key;
+    const name = tr.dataset.name || (key ? lastKeySegment(key) : void 0);
+    if (name) {
+      menu.dataset.name = name;
+    } else {
+      delete menu.dataset.name;
+    }
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - CTX_CLAMP_W))}px`;
     menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - CTX_CLAMP_H))}px`;
     menu.classList.add("is-open");
@@ -2168,14 +2178,18 @@ ${piece}`;
         event.preventDefault();
         const item = matched;
         const menu = item.closest("#ro-ctxmenu");
-        const name = menu?.dataset.name || "";
-        const href = item.dataset.href || "";
         closeRowMenu();
         if (item.dataset.roAction === "copy") {
-          roCopyText(name, () => {
-          });
-        } else if (href) {
-          window.location.assign(href);
+          const name = menu?.dataset.name;
+          if (name !== void 0) {
+            roCopyText(name, () => {
+            });
+          }
+        } else {
+          const href = item.dataset.href;
+          if (href) {
+            window.location.assign(href);
+          }
         }
         return true;
       }
@@ -2211,12 +2225,10 @@ ${piece}`;
     return window.roRowState;
   }
   function keyboardTargetIsTextEntry(target) {
-    const el = target;
-    if (el?.nodeType !== 1) {
+    if (!(target instanceof HTMLElement)) {
       return false;
     }
-    const tag = el.tagName;
-    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!el.isContentEditable;
+    return target.matches("input, textarea, select") || target.isContentEditable;
   }
   function keyboardSurfaceBusy() {
     const palette = document.getElementById(PALETTE_ID);
@@ -2258,10 +2270,10 @@ ${piece}`;
     if (!key) {
       return false;
     }
-    let row = visibleKeyRows().find((tr) => tr.dataset.key === key) || null;
+    let row = visibleKeyRows().find((tr) => tr.dataset.key === key) ?? null;
     if (!row && virtualizerActive()) {
       const tr = virtRowByKey(key);
-      if (tr && virtVisible().indexOf(tr) !== -1) {
+      if (tr && virtVisible().includes(tr)) {
         row = tr;
       }
     }
@@ -2300,7 +2312,7 @@ ${piece}`;
     overlay.classList.remove("open");
     overlay.setAttribute("aria-hidden", "true");
     const prior = kbdPriorFocus;
-    if (prior && document.contains(prior) && typeof prior.focus === "function") {
+    if (prior && document.contains(prior)) {
       prior.focus();
     }
     kbdPriorFocus = null;
@@ -2311,7 +2323,7 @@ ${piece}`;
     {
       event: "click",
       handler: (event) => {
-        if (event.target.id === "ro-kbd-overlay") {
+        if (event.target === kbdOverlayEl()) {
           closeKbdOverlay();
         }
       }
@@ -2352,7 +2364,7 @@ ${piece}`;
         }
         if (e.key === "Enter") {
           const target = e.target;
-          if (target?.closest?.("a, button, summary")) {
+          if (target instanceof Element && target.closest("a, button, summary")) {
             return;
           }
           if (openFocusedRow()) {
@@ -2442,9 +2454,6 @@ ${piece}`;
 
   // internal/assets/src/js/collapse-hash.ts
   function parseCollapsedNames(hash) {
-    if (!hash) {
-      return [];
-    }
     const names = [];
     hash.replace(/^#/, "").split(";").forEach((param) => {
       const keyVal = param.split("=");
@@ -2462,25 +2471,47 @@ ${piece}`;
   // internal/assets/src/js/yaml-folds.ts
   function yamlEffectiveIndent(text) {
     const stripped = text.replace(/^\n+/, "");
-    let i = 0;
-    while (i < stripped.length && stripped[i] === " ") {
-      i++;
-    }
-    const rest = stripped.slice(i);
+    const indent = stripped.length - stripped.replace(/^ +/, "").length;
+    const rest = stripped.slice(indent);
     if (rest === "-" || rest.startsWith("- ") || rest.startsWith("-	")) {
-      return i + 2;
+      return indent + 2;
     }
-    return i;
+    return indent;
+  }
+  function planYamlFolds(indents, isBlank) {
+    const bodyCounts = new Array(indents.length).fill(0);
+    const ownersByLine = Array.from({ length: indents.length }, () => []);
+    const active = [];
+    let previous;
+    indents.forEach((indent, index) => {
+      if (isBlank[index]) {
+        return;
+      }
+      const firstClosed = active.findIndex((owner) => owner.indent >= indent);
+      if (firstClosed !== -1) {
+        active.splice(firstClosed);
+      }
+      if (previous && previous.indent < indent) {
+        active.push(previous);
+      }
+      active.forEach((owner) => {
+        ownersByLine[index].push(owner.index);
+        bodyCounts[owner.index] += 1;
+      });
+      previous = { index, indent };
+    });
+    return { bodyCounts, ownersByLine };
   }
   function yamlCodeText(codeCell) {
-    if (!codeCell.querySelector('[data-ro-action="toggle-fold"], [data-ro-fold-control]')) {
-      return codeCell.textContent || "";
+    const controlSelector = '[data-ro-action="toggle-fold"], [data-ro-fold-control]';
+    if (!codeCell.querySelector(controlSelector)) {
+      return codeCell.textContent;
     }
     const clone = codeCell.cloneNode(true);
-    clone.querySelectorAll('[data-ro-action="toggle-fold"], [data-ro-fold-control]').forEach((el) => {
+    clone.querySelectorAll(controlSelector).forEach((el) => {
       el.remove();
     });
-    return clone.textContent || "";
+    return clone.textContent;
   }
   function toggleYamlFold(toggle) {
     const id = toggle.dataset.fold;
@@ -2495,7 +2526,7 @@ ${piece}`;
     toggle.classList.toggle("is-folded", folded);
     toggle.setAttribute("aria-expanded", folded ? "false" : "true");
     pre.querySelectorAll("[data-fold-of]").forEach((line) => {
-      const owners = (line.dataset.foldOf || "").split(" ");
+      const owners = line.dataset.foldOf.split(" ");
       if (owners.indexOf(id) !== -1) {
         line.classList.toggle("ro-line-folded", folded);
       }
@@ -2523,7 +2554,7 @@ ${piece}`;
       lineSpan.insertBefore(toggle, lineSpan.firstChild);
     }
     const last = lineSpan.lastChild;
-    if (last && last.nodeType === 3 && (last.textContent || "").indexOf("\n") !== -1) {
+    if (last?.nodeType === Node.TEXT_NODE && last.data.includes("\n")) {
       lineSpan.insertBefore(note, last);
     } else {
       lineSpan.appendChild(note);
@@ -2543,40 +2574,24 @@ ${piece}`;
         if (lines.length < 3) {
           return;
         }
-        const indents = lines.map((el) => yamlEffectiveIndent(el.textContent || ""));
-        const isBlank = lines.map((el) => (el.textContent || "").trim() === "");
-        for (let i = 0; i < lines.length; i++) {
-          if (isBlank[i]) {
-            continue;
+        const texts = lines.map((line) => line.textContent);
+        const indents = texts.map(yamlEffectiveIndent);
+        const isBlank = texts.map((text) => text.trim() === "");
+        const { bodyCounts, ownersByLine } = planYamlFolds(indents, isBlank);
+        lines.forEach((line, index) => {
+          const owners = ownersByLine[index];
+          if (owners.length === 0) {
+            return;
           }
-          let j = i + 1;
-          while (j < lines.length && isBlank[j]) {
-            j++;
+          const element = line;
+          const ownerIds = owners.map((owner) => lines[owner].id).join(" ");
+          element.dataset.foldOf = ownerIds;
+        });
+        lines.forEach((line, index) => {
+          if (bodyCounts[index] > 0) {
+            injectFoldControls(line, bodyCounts[index]);
           }
-          if (j >= lines.length || indents[j] <= indents[i]) {
-            continue;
-          }
-          let end = i + 1;
-          let bodyCount = 0;
-          while (end < lines.length) {
-            if (isBlank[end]) {
-              end++;
-              continue;
-            }
-            if (indents[end] > indents[i]) {
-              const cur = lines[end];
-              cur.dataset.foldOf = cur.dataset.foldOf ? `${cur.dataset.foldOf} ${lines[i].id}` : lines[i].id;
-              bodyCount++;
-              end++;
-            } else {
-              break;
-            }
-          }
-          if (bodyCount === 0) {
-            continue;
-          }
-          injectFoldControls(lines[i], bodyCount);
-        }
+        });
       } catch (_e) {
       }
     });
@@ -2725,7 +2740,7 @@ ${piece}`;
         } else {
           window.history.replaceState(
             null,
-            "",
+            document.title,
             window.location.pathname + window.location.search
           );
         }
@@ -2743,9 +2758,8 @@ ${piece}`;
       selector: '#namespace-dropdown [data-ro-action="pick-namespace"]',
       stop: true,
       handler: (_event, matched) => {
-        const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(
-          matched.getAttribute("href") || ""
-        );
+        const href = matched.getAttribute("href");
+        const hrefMatch = href ? /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(href) : null;
         if (hrefMatch) {
           roPrefsSetNamespace(
             decodeURIComponent(hrefMatch[1]),
@@ -2786,7 +2800,7 @@ ${piece}`;
       handler: (_event, matched) => {
         const filterText = matched.value.toLowerCase();
         document.querySelectorAll('[data-ro-action="pick-namespace"]').forEach((element) => {
-          const text = (element.innerText || "").toLowerCase();
+          const text = element.innerText.toLowerCase();
           if (text.indexOf(filterText) === -1) {
             element.classList.add("is-hidden");
           } else {
@@ -2806,13 +2820,10 @@ ${piece}`;
         if (event.key !== "Enter") {
           return true;
         }
-        const elements = document.querySelectorAll('[data-ro-action="pick-namespace"]');
-        for (let i = 0; i < elements.length; i++) {
-          if (!elements[i].classList.contains("is-hidden")) {
-            elements[i].click();
-            break;
-          }
-        }
+        const firstVisible = Array.from(
+          document.querySelectorAll('[data-ro-action="pick-namespace"]')
+        ).find((element) => !element.classList.contains("is-hidden"));
+        firstVisible?.click();
         return true;
       }
     },
@@ -2915,35 +2926,41 @@ ${piece}`;
   ];
 
   // internal/assets/src/js/palette-rank.ts
+  var WORD_SEPARATORS = " -_./:";
+  function isAsciiUppercase(character) {
+    return character >= "A" && character <= "Z";
+  }
   function roFuzzyScore(query, text) {
-    const source = String(text || "");
-    const q = String(query || "").toLowerCase();
+    const source = text;
+    const q = query.toLowerCase();
     const t = source.toLowerCase();
     if (!q) {
       return 0;
     }
-    let from = 0;
-    let first = -1;
-    let last = -1;
-    for (let i = 0; i < q.length; i++) {
+    const first = t.indexOf(q[0]);
+    if (first === -1) {
+      return -1;
+    }
+    let from = first + 1;
+    for (let i = 1; i < q.length; i++) {
       const at = t.indexOf(q[i], from);
       if (at === -1) {
         return -1;
       }
-      if (first === -1) {
-        first = at;
-      }
-      last = at;
       from = at + 1;
     }
-    const gaps = last - first + 1 - q.length;
-    const camelHump = source[first] >= "A" && source[first] <= "Z" && !(source[first - 1] >= "A" && source[first - 1] <= "Z");
-    const wordStart = first === 0 || " -_./:".indexOf(t[first - 1]) !== -1 || camelHump;
+    const gaps = from - first - q.length;
     let tier = 2;
-    if (gaps === 0 && first === 0) {
-      tier = 0;
-    } else if (gaps === 0 && wordStart) {
-      tier = 1;
+    if (gaps === 0) {
+      if (first === 0) {
+        tier = 0;
+      } else {
+        const separatorBoundary = WORD_SEPARATORS.includes(t[first - 1]);
+        const camelHump = isAsciiUppercase(source[first]) && !isAsciiUppercase(source[first - 1]);
+        if (separatorBoundary || camelHump) {
+          tier = 1;
+        }
+      }
     }
     return tier * 1e5 + gaps * 100 + Math.min(first, 99);
   }
@@ -2982,7 +2999,7 @@ ${piece}`;
     return String(entry.name || entry.label || "");
   }
   function buildPaletteGroups(query, feed, recents, pageObjects) {
-    const q = (query || "").trim();
+    const q = query.trim();
     const groups = [];
     if (q) {
       groups.push({ title: "Everywhere", key: "everywhere", entries: [{ query: q }] });
@@ -3006,6 +3023,19 @@ ${piece}`;
   // internal/assets/src/js/palette.ts
   var PALETTE_ID2 = "ro-palette";
   window.roFuzzy = roFuzzyScore;
+  function asPropertyRecord(value) {
+    return Object(value);
+  }
+  function nonEmptyString(value) {
+    if (typeof value !== "string") {
+      return void 0;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : void 0;
+  }
+  function feedEntryLabel2(entry, kindEntry) {
+    return kindEntry ? nonEmptyString(entry.kind) ?? nonEmptyString(entry.plural) : nonEmptyString(entry.name) ?? nonEmptyString(entry.label);
+  }
   function readPaletteData() {
     const empty = {
       currentCluster: null,
@@ -3019,55 +3049,71 @@ ${piece}`;
     if (!el) {
       return empty;
     }
-    const raw = (el.textContent || "").trim();
-    if (!raw) {
-      return empty;
-    }
     try {
-      const data = JSON.parse(raw);
-      if (!data || typeof data !== "object") {
-        return empty;
-      }
-      ["clusters", "namespaces", "kinds", "actions"].forEach((k) => {
-        if (!Array.isArray(data[k])) {
-          data[k] = [];
-        }
-      });
-      return data;
+      const data = asPropertyRecord(JSON.parse(el.textContent));
+      const records = (value, kindEntries = false) => Array.isArray(value) ? value.map(asPropertyRecord).filter((entry) => feedEntryLabel2(entry, kindEntries) !== void 0).filter(
+        (entry) => paletteHrefSafe(entry.href) !== "" || nonEmptyString(entry.action) !== void 0
+      ) : [];
+      return {
+        currentCluster: nonEmptyString(data.currentCluster) ?? null,
+        currentNamespace: nonEmptyString(data.currentNamespace) ?? null,
+        clusters: records(data.clusters),
+        namespaces: records(data.namespaces),
+        kinds: records(data.kinds, true),
+        actions: records(data.actions)
+      };
     } catch {
       return empty;
     }
   }
-  function paletteHrefSafe(href) {
-    if (!href || typeof href !== "string") {
+  function paletteHrefSafe(href, pageHref = window.location.href) {
+    if (typeof href !== "string") {
       return "";
     }
     const trimmed = href.trim();
-    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
+    try {
+      const page = new URL(pageHref);
+      const parsed = new URL(trimmed, page);
+      const networkProtocol = parsed.protocol === "http:" || parsed.protocol === "https:";
+      return networkProtocol && parsed.origin === page.origin ? trimmed : "";
+    } catch {
       return "";
     }
-    return trimmed;
   }
   var PALETTE_RECENTS_KEY = "ro-pref-recents";
   var PALETTE_RECENTS_MAX = 5;
   function readPaletteRecents() {
-    let raw = null;
     try {
-      raw = window.localStorage.getItem(PALETTE_RECENTS_KEY);
-    } catch {
-      return [];
-    }
-    if (!raw) {
-      return [];
-    }
-    try {
-      const list = JSON.parse(raw);
-      if (!Array.isArray(list)) {
+      const raw = window.localStorage.getItem(PALETTE_RECENTS_KEY);
+      if (!raw) {
         return [];
       }
-      return list.filter(
-        (entry) => entry && typeof entry === "object" && typeof entry.label === "string" && entry.label !== "" && (typeof entry.href === "string" && paletteHrefSafe(entry.href) !== "" || typeof entry.action === "string" && entry.action !== "")
-      ).slice(0, PALETTE_RECENTS_MAX);
+      const list = JSON.parse(raw);
+      const recents = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const value of list) {
+        const record = asPropertyRecord(value);
+        const label = nonEmptyString(record.label);
+        if (!label) {
+          continue;
+        }
+        const href = paletteHrefSafe(record.href);
+        const action = nonEmptyString(record.action);
+        if (!href && !action) {
+          continue;
+        }
+        const recent = { label, href: href || void 0, action };
+        const target = paletteRecentTarget(recent);
+        if (seen.has(target)) {
+          continue;
+        }
+        seen.add(target);
+        recents.push(recent);
+        if (recents.length === PALETTE_RECENTS_MAX) {
+          break;
+        }
+      }
+      return recents;
     } catch {
       return [];
     }
@@ -3076,13 +3122,7 @@ ${piece}`;
     if (!label || !href && !action) {
       return;
     }
-    const entry = { label };
-    if (href) {
-      entry.href = href;
-    }
-    if (action) {
-      entry.action = action;
-    }
+    const entry = { label, href, action };
     const kept = dedupeRecents(readPaletteRecents(), entry, PALETTE_RECENTS_MAX);
     try {
       window.localStorage.setItem(PALETTE_RECENTS_KEY, JSON.stringify(kept));
@@ -3095,91 +3135,78 @@ ${piece}`;
     cluster: null,
     namespace: null
   };
-  function buildPaletteRow(entry, key) {
+  function createPaletteRow() {
     const row = document.createElement("div");
     row.className = "ro-pal-item";
     row.dataset.roAction = "pick-palette-row";
     row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", "false");
-    if (key === "kinds" && entry.icon) {
-      const holder = document.createElement("template");
-      holder.innerHTML = String(entry.icon);
-      row.appendChild(holder.content);
-    }
-    const labelText = key === "kinds" ? String(entry.kind || entry.plural || "") : String(entry.name || entry.label || "");
-    const display = typeof entry.display === "string" && entry.display !== "" ? entry.display : labelText;
+    return row;
+  }
+  function appendPaletteLabel(row, text) {
     const label = document.createElement("span");
     label.className = "pal-label";
-    label.textContent = display;
+    label.textContent = text;
+    row.appendChild(label);
+    return label;
+  }
+  function buildPaletteRow(entry, key) {
+    const row = createPaletteRow();
+    const kindRow = key === "kinds";
+    const icon = nonEmptyString(entry.icon);
+    if (kindRow && icon) {
+      const holder = document.createElement("template");
+      holder.innerHTML = icon;
+      row.appendChild(holder.content);
+    }
+    const labelText = feedEntryLabel2(entry, kindRow);
+    const display = nonEmptyString(entry.display) ?? labelText;
+    const label = appendPaletteLabel(row, display);
     if (display !== labelText) {
       row.title = labelText;
     }
-    const isCurrent = key === "clusters" && entry.name && entry.name === paletteScope.cluster || key === "namespaces" && entry.name && entry.name === paletteScope.namespace;
-    if (isCurrent) {
+    const entryName = nonEmptyString(entry.name);
+    const currentScope = key === "clusters" ? paletteScope.cluster : key === "namespaces" ? paletteScope.namespace : null;
+    if (entryName && entryName === currentScope) {
       const ctx = document.createElement("span");
       ctx.className = "pal-ctx";
       ctx.textContent = "current";
       label.appendChild(ctx);
     }
-    row.appendChild(label);
-    if (key === "kinds") {
+    if (kindRow) {
       const meta = document.createElement("span");
       meta.className = "pal-meta";
-      meta.textContent = String(entry.group || "core");
+      meta.textContent = nonEmptyString(entry.group) ?? "core";
       row.appendChild(meta);
       const scope = document.createElement("span");
-      scope.className = `pal-scope ${entry.namespaced ? "ns" : "cluster"}`;
-      scope.textContent = entry.namespaced ? "namespaced" : "cluster";
+      const namespaced = entry.namespaced === true;
+      scope.className = `pal-scope ${namespaced ? "ns" : "cluster"}`;
+      scope.textContent = namespaced ? "namespaced" : "cluster";
       row.appendChild(scope);
     }
     const href = paletteHrefSafe(entry.href);
     if (href) {
       row.dataset.href = href;
     }
-    if (entry.action) {
-      row.dataset.action = String(entry.action);
+    const action = nonEmptyString(entry.action);
+    if (action) {
+      row.dataset.action = action;
     }
     row.dataset.label = labelText;
     return row;
   }
   function buildEverywhereRow(query) {
-    const row = document.createElement("div");
-    row.className = "ro-pal-item";
-    row.dataset.roAction = "pick-palette-row";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", "false");
+    const row = createPaletteRow();
     const glyph = document.querySelector(`#${PALETTE_ID2} .ro-pal-search .ico`);
     if (glyph) {
       row.appendChild(glyph.cloneNode(true));
     }
-    const label = document.createElement("span");
-    label.className = "pal-label";
-    label.textContent = `Search all clusters for “${query}”`;
-    row.appendChild(label);
+    const labelText = `Search all clusters for “${query}”`;
+    appendPaletteLabel(row, labelText);
     row.dataset.href = `/search?q=${encodeURIComponent(query)}`;
-    row.dataset.label = label.textContent;
+    row.dataset.label = labelText;
     return row;
   }
-  function buildRecentRow(entry) {
-    const row = document.createElement("div");
-    row.className = "ro-pal-item";
-    row.dataset.roAction = "pick-palette-row";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", "false");
-    const label = document.createElement("span");
-    label.className = "pal-label";
-    label.textContent = entry.label;
-    row.appendChild(label);
-    const href = paletteHrefSafe(entry.href);
-    if (href) {
-      row.dataset.href = href;
-    }
-    if (entry.action) {
-      row.dataset.action = entry.action;
-    }
-    row.dataset.label = entry.label;
-    return row;
-  }
+  var PALETTE_STATUS_TONES = ["ok", "warn", "err", "info", "mute"];
   function harvestPageObjects() {
     const out = [];
     const rows = virtualizerActive() ? virtRows() : document.querySelectorAll("#resource-list-content table.ro-table tbody tr");
@@ -3188,43 +3215,33 @@ ${piece}`;
       if (!a) {
         return;
       }
-      const href = a.getAttribute("href");
-      const name = (a.textContent || "").trim();
+      const href = paletteHrefSafe(a.getAttribute("href"));
+      const name = a.textContent.trim();
       if (!href || !name) {
         return;
       }
-      let status = "";
-      let tone = "";
+      const object = { name, href };
       const st = tr.querySelector(".cell-status");
       if (st) {
-        status = (st.textContent || "").trim();
-        ["ok", "warn", "err", "info", "mute"].forEach((t) => {
-          if (!tone && st.classList.contains(t)) {
-            tone = t;
-          }
-        });
+        object.status = st.textContent.trim();
+        object.tone = PALETTE_STATUS_TONES.find(
+          (candidate) => st.classList.contains(candidate)
+        );
       }
-      out.push({ name, href, status, tone });
+      out.push(object);
     });
     return out;
   }
   function buildObjectRow(o) {
-    const row = document.createElement("div");
-    row.className = "ro-pal-item";
-    row.dataset.roAction = "pick-palette-row";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", "false");
-    const label = document.createElement("span");
-    label.className = "pal-label";
-    label.textContent = o.name;
-    row.appendChild(label);
+    const row = createPaletteRow();
+    appendPaletteLabel(row, o.name);
     if (o.status) {
       const st = document.createElement("span");
-      st.className = `pal-status${o.tone ? ` ${String(o.tone)}` : ""}`;
-      st.textContent = String(o.status);
+      st.className = `pal-status${o.tone ? ` ${o.tone}` : ""}`;
+      st.textContent = o.status;
       row.appendChild(st);
     }
-    row.dataset.href = String(o.href);
+    row.dataset.href = o.href;
     row.dataset.label = o.name;
     return row;
   }
@@ -3234,23 +3251,21 @@ ${piece}`;
       return;
     }
     const data = readPaletteData();
-    paletteScope.cluster = data.currentCluster || null;
-    paletteScope.namespace = data.currentNamespace || null;
+    paletteScope.cluster = data.currentCluster;
+    paletteScope.namespace = data.currentNamespace;
     const scope = document.getElementById("ro-palette-scope");
     if (scope) {
-      const scopeText = paletteScope.namespace || paletteScope.cluster || "";
-      scope.textContent = scopeText;
-      scope.hidden = scopeText === "";
+      const scopeText = paletteScope.namespace ?? paletteScope.cluster;
+      scope.textContent = scopeText ?? "";
+      scope.hidden = scopeText === null;
     }
-    const q = (query || "").trim();
-    list.textContent = "";
+    const q = query;
+    list.replaceChildren();
     paletteRows = [];
     const rowFor = (item, key) => {
       switch (key) {
         case "everywhere":
           return buildEverywhereRow(item.query);
-        case "recents":
-          return buildRecentRow(item);
         case "objects":
           return buildObjectRow(item);
         default:
@@ -3278,7 +3293,7 @@ ${piece}`;
         const idx = paletteRows.length;
         row.addEventListener("mousemove", () => setPaletteActive(idx));
         list.appendChild(row);
-        paletteRows.push({ el: row, item, key: group.key });
+        paletteRows.push({ el: row });
       });
     });
     if (paletteRows.length === 0) {
@@ -3301,39 +3316,21 @@ ${piece}`;
     }
   }
   function setPaletteActive(index) {
-    if (paletteRows.length === 0) {
-      return;
-    }
-    let i = index;
-    if (i < 0) {
-      i = 0;
-    }
-    if (i > paletteRows.length - 1) {
-      i = paletteRows.length - 1;
-    }
-    paletteActive = i;
+    paletteActive = index;
     paintPaletteActive();
   }
   function movePaletteActive(delta) {
-    if (paletteRows.length === 0) {
-      return;
-    }
-    paletteActive = (paletteActive + delta + paletteRows.length) % paletteRows.length;
+    const length = paletteRows.length;
+    paletteActive = (paletteActive + delta + length) % length;
     paintPaletteActive();
   }
   function choosePaletteRow(rowEl) {
-    if (!rowEl) {
-      return;
-    }
     const action = rowEl.dataset.action;
     const href = rowEl.dataset.href;
-    recordPaletteRecent(rowEl.dataset.label || "", href || "", action || "");
+    recordPaletteRecent(rowEl.dataset.label, href, action);
     closePalette();
     if (action === "theme") {
-      const toggle = document.getElementById("btn-theme-toggle");
-      if (toggle) {
-        toggle.click();
-      }
+      document.getElementById("btn-theme-toggle")?.click();
       return;
     }
     if (href) {
@@ -3347,7 +3344,7 @@ ${piece}`;
     }
   }
   var palettePriorFocus = null;
-  var paletteRestoringFocus = false;
+  var paletteRestoringFocus;
   function openPalette(prefill) {
     const palette = document.getElementById(PALETTE_ID2);
     const input = document.getElementById("ro-palette-input");
@@ -3371,12 +3368,21 @@ ${piece}`;
     }
     palette.classList.remove("open");
     palette.setAttribute("aria-hidden", "true");
-    if (palettePriorFocus && document.contains(palettePriorFocus) && !palette.contains(palettePriorFocus) && typeof palettePriorFocus.focus === "function") {
-      paletteRestoringFocus = true;
-      palettePriorFocus.focus();
-      paletteRestoringFocus = false;
-    }
+    const prior = palettePriorFocus;
     palettePriorFocus = null;
+    if (!prior || !document.contains(prior) || palette.contains(prior)) {
+      return;
+    }
+    const focus = prior.focus;
+    if (typeof focus !== "function") {
+      return;
+    }
+    paletteRestoringFocus = true;
+    try {
+      focus.call(prior);
+    } finally {
+      paletteRestoringFocus = void 0;
+    }
   }
   var paletteBindings = [
     // ⌘K palette result row: a click on a result row activates it (navigate or
@@ -3412,21 +3418,20 @@ ${piece}`;
       stop: true,
       handler: (event, matched) => {
         event.preventDefault();
-        openPalette(matched.dataset.query || "");
+        openPalette(matched.dataset.query);
         return true;
       }
     },
     // A click on the palette backdrop ITSELF (the dimmed area outside the panel)
     // closes it, like Esc. A click inside the panel does not match. The selector
-    // is the backdrop root id; the handler still verifies target.id === PALETTE_ID
-    // so a click that bubbles from a descendant (closest matched the root) does
-    // NOT close it -- the monolith's exact `target.id === PALETTE_ID` test.
+    // is the backdrop root id; the handler still verifies that the original
+    // target is that matched root, so a descendant click does NOT close it.
     {
       event: "click",
       selector: `#${PALETTE_ID2}`,
       stop: true,
-      handler: (event) => {
-        if (event.target.id === PALETTE_ID2) {
+      handler: (event, matched) => {
+        if (event.target === matched) {
           closePalette();
           return true;
         }
@@ -3517,9 +3522,7 @@ ${piece}`;
         }
         openPalette();
         const t = event.target;
-        if (typeof t.blur === "function") {
-          t.blur();
-        }
+        t.blur();
       }
     }
   ];
@@ -3553,15 +3556,12 @@ ${piece}`;
 
   // internal/assets/src/js/events.ts
   function closestElement(event, selector) {
-    let node = event.target;
-    while (node && node.nodeType !== 1) {
-      node = node.parentNode;
-    }
-    return node ? node.closest(selector) : null;
+    const target = event.target;
+    const element = target instanceof Element ? target : target?.parentElement;
+    return element?.closest(selector) ?? null;
   }
   function dispatch(bindings2, event) {
-    for (let i = 0; i < bindings2.length; i++) {
-      const binding = bindings2[i];
+    for (const binding of bindings2) {
       let matched = null;
       if (binding.selector !== void 0) {
         matched = closestElement(event, binding.selector);
@@ -3595,6 +3595,9 @@ ${piece}`;
       document.addEventListener(type, (event) => dispatch(list, event));
     });
   }
+
+  // internal/assets/src/js/register-bindings.ts
+  registerBindings(bindings);
 
   // internal/assets/src/js/theme.ts
   var PREFERS_DARK = window.matchMedia("(prefers-color-scheme: dark)");
@@ -3649,10 +3652,12 @@ ${piece}`;
   });
   function clearListSkeleton() {
     const content = document.getElementById("resource-list-content");
-    const skel = content?.querySelector(":scope > .ro-skel");
-    if (skel) {
-      skel.remove();
+    if (!content) {
+      return;
     }
+    content.querySelectorAll(":scope > .ro-skel").forEach((skeleton) => {
+      skeleton.remove();
+    });
   }
   document.addEventListener("htmx:responseError", (event) => {
     if (isListRefreshEvent(event)) {
@@ -3667,33 +3672,49 @@ ${piece}`;
 
   // internal/assets/src/js/init.ts
   window.roToast = showToast;
-  document.addEventListener("htmx:beforeRequest", (event) => {
-    const detail = event.detail;
-    const cfg = detail?.requestConfig;
-    if (!cfg || !detail.elt || !detail.target || detail.target.id !== "resource-list-content") {
+  function handleSortPreferenceRequest(event) {
+    const detail = Object(event.detail);
+    const rawCfg = Object(detail.requestConfig);
+    const cfg = {
+      ...rawCfg,
+      headers: Object(rawCfg.headers)
+    };
+    const target = Object(detail.target);
+    if (target.id !== "resource-list-content") {
       return;
     }
-    if (cfg.headers && (cfg.headers["RO-No-Push"] || cfg.headers["HX-Preloaded"] === "true")) {
+    if (cfg.headers["RO-No-Push"] || cfg.headers["HX-Preloaded"] === "true") {
       return;
     }
-    if (typeof detail.elt.closest !== "function" || !detail.elt.closest("thead th")) {
-      return;
-    }
-    const pathMatch = /\/([^/]+)\/_table(?:[?#]|$)/.exec(cfg.path || "");
-    if (!pathMatch) {
-      return;
-    }
-    let sort = "";
+    const elt = Object(detail.elt);
+    let sortHeader = null;
     try {
-      sort = new URL(cfg.path, window.location.href).searchParams.get("sort") || "";
+      sortHeader = elt.closest("thead th");
+    } catch {
+    }
+    if (!sortHeader) {
+      return;
+    }
+    let plural;
+    let sort;
+    try {
+      const requestURL = new URL(String(cfg.path), window.location.href);
+      const rawSort = requestURL.searchParams.get("sort");
+      if (!rawSort) {
+        return;
+      }
+      const pathMatch = /\/([^/]+)\/_table$/.exec(requestURL.pathname);
+      if (!pathMatch) {
+        return;
+      }
+      sort = rawSort;
+      plural = decodeURIComponent(pathMatch[1]);
     } catch {
       return;
     }
-    const plural = decodeURIComponent(pathMatch[1]);
-    if (plural && sort) {
-      roPrefsSetSort(plural, sort);
-    }
-  });
+    roPrefsSetSort(plural, sort);
+  }
+  document.addEventListener("htmx:beforeRequest", handleSortPreferenceRequest);
   document.addEventListener("htmx:afterSwap", (event) => {
     if (isListRefreshEvent(event)) {
       noteRefreshRecovery();
@@ -3787,7 +3808,4 @@ ${piece}`;
   document.addEventListener("htmx:load", runInit);
   document.addEventListener("htmx:afterSettle", setupStickyNamespace);
   window.addEventListener("resize", setupStickyNamespace);
-
-  // internal/assets/src/js/readout.ts
-  registerBindings(bindings);
 })();

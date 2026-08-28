@@ -14,8 +14,13 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.7"
           cache-dependency-path: go.sum
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13.15"
+      - name: Gate - Go mutation infrastructure
+        run: make go-mutation-guards
       - name: Install templ (pinned to go.mod)
         run: go install github.com/a-h/templ/cmd/templ@v0.3.1020
       - name: Gate - templ output is fresh
@@ -50,7 +55,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.7"
           cache-dependency-path: go.sum
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -76,13 +81,10 @@ jobs:
             tests/e2e/test-results
           if-no-files-found: ignore
 
-  # Frontend asset gate: lints + typechecks the src tree and proves the committed
-  # static/ artifacts are fresh. Node 24 (matches package.json engines), npm cache
-  # keyed off the root package-lock.json. Typechecking is plain tsc: since TS 7 the
-  # stable compiler IS the native one, so the old tsgo preview + tsc cross-check
-  # pair collapsed into a single gate. The find-guard keeps the node-test step
-  # deterministic: it runs the suite when *.test.ts files exist (95 today) and
-  # no-ops cleanly if they are ever absent.
+  # Frontend gate: lint and typecheck production plus test code, run the Vitest
+  # suite with its coverage floor, then prove the committed static assets are
+  # fresh. Node is pinned to the same exact release as mise/jsdom, and npm cache
+  # is keyed off the root package-lock.json.
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -91,22 +93,26 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "24.19.0"
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install deps
-        run: npm ci
+        run: npm ci --no-audit --no-fund
       - name: Gate - npm audit (root)
         run: npm audit --audit-level=high
       - name: Gate - Biome lint/format
-        run: npx biome check internal/assets/src scripts
-      - name: Gate - typecheck
-        run: npx tsc --noEmit
-      - name: JS unit tests
-        run: find internal/assets/src/js -name '*.test.ts' | grep -q . && node --test 'internal/assets/src/js/**/*.test.ts' || echo 'no JS tests yet — step skipped'
+        run: npm run lint
+      - name: Gate - production typecheck
+        run: npm run typecheck
+      - name: Gate - test typecheck
+        run: npm run typecheck:test
+      - name: Gate - mutation infrastructure guards
+        run: npm run test:mutation:guards
+      - name: Gate - Vitest unit and DOM coverage
+        run: npm run test:coverage
       - name: Gate - embedded assets are fresh
         run: |
-          node scripts/build-assets.mjs
+          npm run build
           git diff --exit-code -- internal/assets/static
 
   # Helm chart gate. Users run helm 3, so CI pins helm 3 (local dev runs helm 4;

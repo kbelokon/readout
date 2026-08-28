@@ -1,8 +1,10 @@
 package kube
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +37,29 @@ func TestManagerSelectAndClusterOrdering(t *testing.T) {
 	}
 	if _, _, err := m.Select("missing"); err == nil {
 		t.Fatal("Select(missing) unexpectedly succeeded")
+	}
+}
+
+func TestManagerBrokenOrderingAndIsolation(t *testing.T) {
+	m := &Manager{broken: []BrokenCluster{
+		{Name: "beta", Source: SourceSecret, Err: errors.New("one")},
+		{Name: "alpha", Source: SourceSecret, Err: errors.New("zeta")},
+		{Name: "alpha", Source: SourceStatic, Err: errors.New("zeta")},
+		{Name: "alpha", Source: SourceSecret, Err: errors.New("alpha")},
+	}}
+
+	broken := m.Broken()
+	var order []string
+	for _, item := range broken {
+		order = append(order, item.Name+"/"+item.Source.String()+"/"+item.Err.Error())
+	}
+	if got, want := strings.Join(order, ","), "alpha/static/zeta,alpha/secret/alpha,alpha/secret/zeta,beta/secret/one"; got != want {
+		t.Fatalf("Broken order = %q, want %q", got, want)
+	}
+
+	broken[0] = BrokenCluster{Name: "mutated"}
+	if again := m.Broken(); len(again) != 4 || again[0].Name != "alpha" || again[0].Source != SourceStatic {
+		t.Fatalf("mutating returned snapshot changed Manager state: %#v", again)
 	}
 }
 
@@ -113,6 +138,47 @@ func TestDiscoverStaticBuildsConnectionThroughClientcmd(t *testing.T) {
 	if got[0].Source != SourceStatic {
 		t.Fatalf("static source = %v", got[0].Source)
 	}
+}
+
+// TestArgoHostRESTConfigAppliesConfiguredClusterSafetyPolicy pins the second-use
+// seam for a static ClusterConnection. A server rejected for normal static use
+// must not be rebuilt as the Argo Secret-list host, while supported local
+// apiservers keep working. Calling the builder directly proves rejection happens
+// before any network request can be made to the unsafe endpoint.
+func TestArgoHostRESTConfigAppliesConfiguredClusterSafetyPolicy(t *testing.T) {
+	gate := resolveCredentialPluginGate("", nil)
+
+	t.Run("metadata endpoint is rejected", func(t *testing.T) {
+		cfg := &appconfig.Config{
+			Clusters: []appconfig.ClusterConnection{{
+				Name:   "host",
+				Server: "https://169.254.169.254",
+			}},
+			ArgoCD: &appconfig.ArgoCDSource{HostCluster: "host", Namespace: "argocd"},
+		}
+		if _, err := argoHostRESTConfig(cfg, gate); err == nil {
+			t.Fatal("a link-local metadata server must not be usable as the Argo host")
+		} else if !strings.Contains(err.Error(), "link-local") {
+			t.Fatalf("Argo host rejection should identify the server policy, got %v", err)
+		}
+	})
+
+	t.Run("loopback apiserver remains supported", func(t *testing.T) {
+		cfg := &appconfig.Config{
+			Clusters: []appconfig.ClusterConnection{{
+				Name:   "host",
+				Server: "https://127.0.0.1:6443",
+			}},
+			ArgoCD: &appconfig.ArgoCDSource{HostCluster: "host", Namespace: "argocd"},
+		}
+		restCfg, err := argoHostRESTConfig(cfg, gate)
+		if err != nil {
+			t.Fatalf("a loopback apiserver is supported for local clusters: %v", err)
+		}
+		if restCfg.Host != "https://127.0.0.1:6443" {
+			t.Fatalf("Argo host changed during validated construction: %q", restCfg.Host)
+		}
+	})
 }
 
 // TestStaticAuthThreadsBearerToken is a regression guard: a static cluster
@@ -263,6 +329,68 @@ func TestDiscoverKubeconfigLoadsSelectedContext(t *testing.T) {
 	}
 	if len(discovered) != 1 || discovered[0].Name != "ctx-b" || discovered[0].Config.Host != "https://b" {
 		t.Fatalf("discoverKubeconfig = %#v", discovered)
+	}
+}
+
+// TestDiscoverKubeconfigWarnsOnlyForRetainedContexts pins the operator-facing
+// ordering of blocking policy and warnings. A denied exec context is returned as
+// broken and must not emit the retained-cluster TLS warning; its policy-denial
+// warning remains visible, while its retained insecure sibling emits the TLS
+// warning and keeps its usable rest.Config.
+func TestDiscoverKubeconfigWarnsOnlyForRetainedContexts(t *testing.T) {
+	stubResolver(t, map[string][]string{
+		"retained.example": {"10.0.0.10"},
+		"blocked.example":  {"10.0.0.11"},
+	})
+	kubeconfigPath := writeExecKubeconfig(t,
+		"retained", "https://retained.example",
+		"blocked", "https://blocked.example", "unknown-auth-plugin")
+	raw, err := clientcmd.LoadFromFile(kubeconfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.Clusters["retained"].InsecureSkipTLSVerify = true
+	raw.Clusters["blocked"].InsecureSkipTLSVerify = true
+	if err := clientcmd.WriteToFile(*raw, kubeconfigPath); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	discovered, err := discoverKubeconfig(
+		&appconfig.Config{KubeconfigPath: kubeconfigPath},
+		resolveCredentialPluginGate("", nil),
+	)
+	if err != nil {
+		t.Fatalf("discoverKubeconfig: %v", err)
+	}
+	byName := make(map[string]discoveredCluster, len(discovered))
+	for _, dc := range discovered {
+		byName[dc.Name] = dc
+	}
+	blocked := byName["blocked"]
+	if blocked.Err == nil || blocked.Config != nil {
+		t.Fatalf("blocked context = %#v, want broken with no Config", blocked)
+	}
+	retained := byName["retained"]
+	if retained.Err != nil || retained.Config == nil || !retained.Config.Insecure {
+		t.Fatalf("retained context = %#v, want usable insecure Config", retained)
+	}
+	output := logs.String()
+	if !strings.Contains(output, "exec credential plugin denied") || !strings.Contains(output, "cluster=blocked") {
+		t.Fatalf("gate-rejected context lost its policy warning: %q", output)
+	}
+	var tlsWarnings []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "TLS verification disabled") {
+			tlsWarnings = append(tlsWarnings, line)
+		}
+	}
+	if len(tlsWarnings) != 1 || !strings.Contains(tlsWarnings[0], "cluster=retained") || strings.Contains(tlsWarnings[0], "cluster=blocked") {
+		t.Fatalf("retained insecure context warning = %q, want exactly one named warning", output)
 	}
 }
 

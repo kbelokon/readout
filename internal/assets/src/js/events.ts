@@ -26,8 +26,10 @@
 //      sibling `addEventListener` listeners (a throw in one does not abort the
 //      dispatch to the next). A failing binding is logged and skipped.
 //
-//   4. Registration order is fixed by ONE explicit list in readout.ts -- the
+//   4. Registration order is fixed by ONE explicit list in bindings.ts -- the
 //      single place the ordering lives, so it is auditable in one read.
+//      register-bindings.ts performs the one module-load registration; readout.ts
+//      imports that side-effect boundary before init.ts.
 //
 // A binding may omit `selector` (it then matches every event of its type and
 // decides for itself inside the handler -- used for the listeners that key off
@@ -61,18 +63,15 @@ export interface Binding {
 // Element node (a text node from a click on a text run); we walk to the nearest
 // Element first so closest() is always defined.
 function closestElement(event: Event, selector: string): Element | null {
-    let node: Node | null = event.target as Node | null;
-    while (node && node.nodeType !== 1) {
-        node = node.parentNode;
-    }
-    return node ? (node as Element).closest(selector) : null;
+    const target = event.target;
+    const element = target instanceof Element ? target : (target as Node | null)?.parentElement;
+    return element?.closest(selector) ?? null;
 }
 
 // dispatch runs the bindings for ONE event type against ONE event instance, in
 // order, honouring per-binding match/stop/isolation per the contract above.
 function dispatch(bindings: Binding[], event: Event): void {
-    for (let i = 0; i < bindings.length; i++) {
-        const binding = bindings[i];
+    for (const binding of bindings) {
         let matched: Element | null = null;
         if (binding.selector !== undefined) {
             matched = closestElement(event, binding.selector);

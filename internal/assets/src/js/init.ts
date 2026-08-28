@@ -69,33 +69,60 @@ window.roToast = showToast;
 // filter-chip commits are sourced from the editor input -- none of them match a
 // thead ancestor. A URL that merely ARRIVES with ?sort= (deep link, history
 // restore) never passes here at all: only the direct interaction writes the pref.
-document.addEventListener('htmx:beforeRequest', (event) => {
-    const detail = (event as CustomEvent).detail;
-    const cfg = detail?.requestConfig;
-    if (!cfg || !detail.elt || !detail.target || detail.target.id !== 'resource-list-content') {
+export function handleSortPreferenceRequest(event: Event): void {
+    // htmx owns this event shape, but document-level listeners are public: tests,
+    // extensions, and browser tooling can dispatch a partial CustomEvent. Box
+    // every unknown value so property reads remain total even for null/primitives.
+    const detail = Object((event as CustomEvent).detail) as {
+        elt?: unknown;
+        requestConfig?: unknown;
+        target?: unknown;
+    };
+    const rawCfg = Object(detail.requestConfig) as { headers?: unknown; path?: unknown };
+    const cfg = {
+        ...rawCfg,
+        headers: Object(rawCfg.headers) as Record<string, unknown>,
+    };
+    const target = Object(detail.target) as { id?: unknown };
+    if (target.id !== 'resource-list-content') {
         return;
     }
-    if (cfg.headers && (cfg.headers['RO-No-Push'] || cfg.headers['HX-Preloaded'] === 'true')) {
+    if (cfg.headers['RO-No-Push'] || cfg.headers['HX-Preloaded'] === 'true') {
         return; // programmatic / warm-up traffic never writes prefs
     }
-    if (typeof detail.elt.closest !== 'function' || !detail.elt.closest('thead th')) {
+    const elt = Object(detail.elt) as { closest(selector: string): Element | null };
+    let sortHeader: Element | null = null;
+    try {
+        sortHeader = elt.closest('thead th');
+    } catch {
+        // Absent/non-Element source: keep the null sentinel below.
+    }
+    if (!sortHeader) {
         return; // not a sort-header gesture
     }
-    const pathMatch = /\/([^/]+)\/_table(?:[?#]|$)/.exec(cfg.path || '');
-    if (!pathMatch) {
-        return;
-    }
-    let sort = '';
+    let plural: string;
+    let sort: string;
     try {
-        sort = new URL(cfg.path, window.location.href).searchParams.get('sort') || '';
+        const requestURL = new URL(String(cfg.path), window.location.href);
+        const rawSort = requestURL.searchParams.get('sort');
+        if (!rawSort) {
+            return;
+        }
+        const pathMatch = /\/([^/]+)\/_table$/.exec(requestURL.pathname);
+        if (!pathMatch) {
+            return;
+        }
+        sort = rawSort;
+        // The route segment can contain percent escapes. Treat a malformed escape
+        // exactly like an unparseable URL: it is not a trustworthy preference key,
+        // and it must never throw out of the resident document listener.
+        plural = decodeURIComponent(pathMatch[1]);
     } catch {
-        return; // unparseable request URL -> nothing trustworthy to persist
+        return; // unparseable URL/route escape -> nothing trustworthy to persist
     }
-    const plural = decodeURIComponent(pathMatch[1]);
-    if (plural && sort) {
-        roPrefsSetSort(plural, sort);
-    }
-});
+    roPrefsSetSort(plural, sort);
+}
+document.addEventListener('htmx:beforeRequest', handleSortPreferenceRequest);
 
 // ---------------------------------------------------------------------------
 // Post-swap PIPELINE: htmx:afterSwap (the FIXED order of repairs).

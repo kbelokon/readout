@@ -27,30 +27,20 @@ import (
 	"github.com/kbelokon/readout/internal/auth"
 	"github.com/kbelokon/readout/internal/config"
 	fakeapi "github.com/kbelokon/readout/internal/fakekube"
+	"github.com/kbelokon/readout/internal/kube"
 )
 
 const streamPodsPath = "/api/v1/namespaces/default/pods"
 
-// setStreamVar swaps a stream tuning knob for one test and restores it at
-// cleanup. MUST be called BEFORE newStreamFixture: cleanups run LIFO, so the
-// later-registered test-server Close (which waits out every live handler)
-// runs first and no handler can read the knob after it is restored.
-func setStreamVar[T any](t *testing.T, v *T, val T) {
-	t.Helper()
-	old := *v
-	*v = val
-	t.Cleanup(func() { *v = old })
-}
-
 // newStreamFixture builds the standard one-cluster app over a fresh fakeapi
 // and serves it on a REAL HTTP server (SSE needs live flushing, which
 // httptest.NewRecorder cannot exercise).
-func newStreamFixture(t *testing.T) (*httptest.Server, *fakeapi.Server) {
+func newStreamFixture(t *testing.T, tune ...func(*streamTuning)) (*httptest.Server, *fakeapi.Server) {
 	t.Helper()
-	return newStreamFixtureWithRecorder(t, nil)
+	return newStreamFixtureWithRecorder(t, nil, tune...)
 }
 
-func newStreamFixtureWithRecorder(t *testing.T, listRecorder func(*http.Request)) (*httptest.Server, *fakeapi.Server) {
+func newStreamFixtureWithRecorder(t *testing.T, listRecorder func(*http.Request), tune ...func(*streamTuning)) (*httptest.Server, *fakeapi.Server) {
 	t.Helper()
 	var opts []fakeapi.Option
 	if listRecorder != nil {
@@ -62,6 +52,9 @@ func newStreamFixtureWithRecorder(t *testing.T, listRecorder func(*http.Request)
 	}
 	t.Cleanup(fake.Close)
 	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
+	for _, apply := range tune {
+		apply(&app.streamTuning)
+	}
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
 	return ts, fake
@@ -271,6 +264,59 @@ func decodeFrame(t *testing.T, ev sseEvent) streamFrame {
 	return f
 }
 
+// TestMergeTableEventDeleteReleasesRows pins both halves of snapshot deletion:
+// visible rows retain their order, and the obsolete backing-array slot is zeroed
+// so a long-lived Live stream does not retain deleted cells or object maps. A
+// delete for an already-absent object is a no-op.
+func TestMergeTableEventDeleteReleasesRows(t *testing.T) {
+	row := func(name string) kube.Row {
+		return kube.Row{
+			Cells:   []any{name},
+			Object:  map[string]any{"metadata": map[string]any{"name": name, "namespace": "default"}},
+			Cluster: "test",
+		}
+	}
+	deleted := func(name string) kube.WatchEvent {
+		return kube.WatchEvent{Type: kube.WatchDeleted, Table: kube.Table{Rows: []kube.Row{row(name)}}}
+	}
+	snapshot := kube.Table{Rows: []kube.Row{row("alpha"), row("beta"), row("gamma")}}
+	assertNames := func(want ...string) {
+		t.Helper()
+		if len(want) != len(snapshot.Rows) {
+			t.Fatalf("snapshot row count = %d, want %d", len(snapshot.Rows), len(want))
+		}
+		for i, name := range want {
+			if got := nestedString(snapshot.Rows[i].Object, "metadata", "name"); got != name {
+				t.Fatalf("snapshot row %d name = %q, want %q", i, got, name)
+			}
+		}
+	}
+	assertClearedTail := func() {
+		t.Helper()
+		backing := snapshot.Rows[:cap(snapshot.Rows)]
+		for i := len(snapshot.Rows); i < len(backing); i++ {
+			if backing[i].Cells != nil || backing[i].Object != nil || backing[i].Cluster != "" {
+				t.Fatalf("obsolete backing row %d retained data: %#v", i, backing[i])
+			}
+		}
+	}
+
+	beta := deleted("beta")
+	mergeTableEvent(&snapshot, &beta)
+	assertNames("alpha", "gamma")
+	assertClearedTail()
+
+	missing := deleted("missing")
+	mergeTableEvent(&snapshot, &missing)
+	assertNames("alpha", "gamma")
+	assertClearedTail()
+
+	gamma := deleted("gamma")
+	mergeTableEvent(&snapshot, &gamma)
+	assertNames("alpha")
+	assertClearedTail()
+}
+
 // TestStreamHandshakeInitialPush pins the SSE handshake: event-stream
 // headers (Content-Type / no-store / X-Accel-Buffering through the real
 // middleware chain incl. statusWriter flushing) and the initial full push as
@@ -319,6 +365,28 @@ func TestStreamModifiedEventPushes(t *testing.T) {
 	}
 	if push.G != "1" {
 		t.Fatalf("push generation = %q, want \"1\" on every message", push.G)
+	}
+}
+
+// TestStreamBookmarkAdvancesSilently pins the BOOKMARK lane at the real SSE
+// seam: a bookmark advances only the upstream re-watch point, so it must not
+// dirty or push the table. The same watch must still deliver the next data event.
+func TestStreamBookmarkAdvancesSilently(t *testing.T) {
+	ts, fake := newStreamFixture(t)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=bookmark")
+	s.requireEvent(t, "ro-table", 5*time.Second)
+
+	// BOOKMARK is a non-replayable control frame, so arm it only after the
+	// upstream watch is open. A regressed data-path treatment schedules a push
+	// after the 300ms minimum gap; the wider quiet window observes that failure.
+	waitForOpenWatch(t, fake.URL)
+	postStreamScript(t, fake.URL, fmt.Sprintf(`{"events":[{"path":%q,"type":"BOOKMARK"}]}`, streamPodsPath))
+	s.requireQuiet(t, 750*time.Millisecond)
+
+	postStreamScript(t, fake.URL, `{"events":[`+podModifiedEvent("Error", 0)+`]}`)
+	after := decodeFrame(t, s.requireEvent(t, "ro-table", 3*time.Second))
+	if !strings.Contains(after.HTML, "Error") {
+		t.Fatal("data event after BOOKMARK did not update the Live table")
 	}
 }
 
@@ -556,12 +624,12 @@ func TestStreamCapAndRelease(t *testing.T) {
 	}
 }
 
-// TestStreamIdleTerminal pins the idle cap (test-injectable package var): a
-// stream with no watch data for the cap emits `ro-terminal` reason "idle"
-// and closes.
+// TestStreamIdleTerminal pins the server-local idle cap: a stream with no
+// watch data for the cap emits `ro-terminal` reason "idle" and closes.
 func TestStreamIdleTerminal(t *testing.T) {
-	setStreamVar(t, &streamIdleCap, 250*time.Millisecond)
-	ts, _ := newStreamFixture(t)
+	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
+		tuning.idleCap = 250 * time.Millisecond
+	})
 	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=5")
 	s.requireEvent(t, "ro-table", 5*time.Second)
 	term := s.requireEvent(t, "ro-terminal", 3*time.Second)
@@ -582,9 +650,6 @@ func TestStreamIdleTerminal(t *testing.T) {
 // pinned at its real defaults by TestStreamBackoffSchedule; here it is
 // compressed so the storm completes quickly.
 func TestStreamEOFStormTerminal(t *testing.T) {
-	setStreamVar(t, &streamBackoffBase, 20*time.Millisecond)
-	setStreamVar(t, &streamBackoffCap, 100*time.Millisecond)
-
 	var mu sync.Mutex
 	watchConnects := 0
 	ts, fake := newStreamFixtureWithRecorder(t, func(r *http.Request) {
@@ -593,6 +658,9 @@ func TestStreamEOFStormTerminal(t *testing.T) {
 			watchConnects++
 			mu.Unlock()
 		}
+	}, func(tuning *streamTuning) {
+		tuning.backoffBase = 20 * time.Millisecond
+		tuning.backoffCap = 100 * time.Millisecond
 	})
 	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=6")
 	s.requireEvent(t, "ro-table", 5*time.Second)
@@ -628,7 +696,8 @@ func TestStreamEOFStormTerminal(t *testing.T) {
 // 250ms doubling to the 10s cap, and the healthy-minute reset — a short-lived
 // attempt must NOT reset the schedule.
 func TestStreamBackoffSchedule(t *testing.T) {
-	var b streamBackoff
+	tuning := defaultStreamTuning()
+	b := streamBackoff{tuning: tuning}
 	want := []time.Duration{
 		250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second,
 		4 * time.Second, 8 * time.Second, 10 * time.Second, 10 * time.Second,
@@ -638,13 +707,39 @@ func TestStreamBackoffSchedule(t *testing.T) {
 			t.Fatalf("backoff attempt %d = %s, want %s", i, got, w)
 		}
 	}
-	b.noteAttempt(streamHealthyReset) // a healthy minute resets the schedule
+	b.noteAttempt(tuning.healthyReset) // a healthy minute resets the schedule
 	if got := b.next(); got != 250*time.Millisecond {
 		t.Fatalf("backoff after a healthy attempt = %s, want the 250ms base", got)
 	}
 	b.noteAttempt(time.Second) // a short-lived attempt must NOT reset
 	if got := b.next(); got != 500*time.Millisecond {
 		t.Fatalf("backoff after a short attempt = %s, want 500ms (no reset)", got)
+	}
+}
+
+func TestDefaultStreamTuning(t *testing.T) {
+	got := defaultStreamTuning()
+	want := streamTuning{
+		idleCap:         30 * time.Minute,
+		backoffBase:     250 * time.Millisecond,
+		backoffCap:      10 * time.Second,
+		healthyReset:    time.Minute,
+		immediateWindow: time.Second,
+		metricsPoll:     30 * time.Second,
+		maxLifetime:     12 * time.Hour,
+		writeTimeout:    30 * time.Second,
+	}
+	if got != want {
+		t.Fatalf("default stream tuning = %#v, want %#v", got, want)
+	}
+
+	// A session owns the connection-time snapshot. Later setup of another
+	// Server (or accidental mutation of this Server in a test) cannot alter an
+	// already-running stream's timing behavior.
+	session := streamSession{tuning: got}
+	got.idleCap = time.Millisecond
+	if session.tuning.idleCap != 30*time.Minute {
+		t.Fatalf("session idle cap changed through server-local tuning: %s", session.tuning.idleCap)
 	}
 }
 
@@ -700,14 +795,14 @@ func TestStreamShutdownTerminal(t *testing.T) {
 // TestStreamMaxLifetimeTerminal pins the hard lifetime bound (security
 // review, waves E+F): in trusted-headers/none auth modes a stream has no
 // per-session expiry, and the idle cap resets on every watch event — without
-// a total-lifetime bound a stream runs forever. The streamMaxLifetime package
-// var (test-injectable, 12h default) terminates it with reason "idle". The
-// 30-minute default idle cap is four orders of magnitude above the injected
-// bound, so a terminal arriving within seconds can only be the lifetime
-// timer.
+// a total-lifetime bound a stream runs forever. The server-local 12h default
+// terminates it with reason "idle". The 30-minute default idle cap is four
+// orders of magnitude above the injected bound, so a terminal arriving within
+// seconds can only be the lifetime timer.
 func TestStreamMaxLifetimeTerminal(t *testing.T) {
-	setStreamVar(t, &streamMaxLifetime, 300*time.Millisecond)
-	ts, _ := newStreamFixture(t)
+	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
+		tuning.maxLifetime = 300 * time.Millisecond
+	})
 	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=12")
 	s.requireEvent(t, "ro-table", 5*time.Second)
 	term := s.requireEvent(t, "ro-terminal", 3*time.Second)
@@ -766,18 +861,18 @@ func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
 // (security review, waves E+F): a connected peer that stops READING wedges
 // the SSE write (Fprintf/Flush block once TCP buffers fill) — the handler
 // never returns to its select loop, no timer can fire, and the deferred cap
-// slot leaks until restart. The per-write deadline (streamWriteTimeout,
-// test-injectable) turns the wedge into a write error — the normal
-// client-gone exit — and the slot releases. The 600-row "big" fixture makes
-// each push large enough to fill the loopback buffers within a few frames.
+// slot leaks until restart. The server-local per-write deadline turns the wedge
+// into a write error — the normal client-gone exit — and the slot releases. The
+// 600-row "big" fixture makes each push large enough to fill the loopback
+// buffers within a few frames.
 func TestStreamWriteDeadlineFreesWedgedSlot(t *testing.T) {
-	setStreamVar(t, &streamWriteTimeout, 250*time.Millisecond)
 	fake, err := fakeapi.New()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(fake.Close)
 	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
+	app.streamTuning.writeTimeout = 250 * time.Millisecond
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
 
@@ -820,8 +915,9 @@ func TestStreamWriteDeadlineFreesWedgedSlot(t *testing.T) {
 // push carries the merged usage cells, and the 30s sub-poll (compressed here)
 // picks up changed usage and pushes it — without any per-push metrics fetch.
 func TestStreamMetricsJoinSubPoll(t *testing.T) {
-	setStreamVar(t, &streamMetricsPoll, 150*time.Millisecond)
-	ts, fake := newStreamFixture(t)
+	ts, fake := newStreamFixture(t, func(tuning *streamTuning) {
+		tuning.metricsPoll = 150 * time.Millisecond
+	})
 	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=10&join=metrics")
 	initial := decodeFrame(t, s.requireEvent(t, "ro-table", 5*time.Second))
 	if !strings.Contains(initial.HTML, "250m") {

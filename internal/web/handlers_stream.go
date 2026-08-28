@@ -36,50 +36,44 @@ import (
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
-// Stream tuning for Live mode. The values are pinned by design — they live as package
-// vars only so tests can compress time (the idle cap is explicitly
-// test-injectable per the design; the defaults are asserted by
-// TestStreamBackoffSchedule and never configurable at runtime).
-var (
-	// streamIdleCap terminates a stream that saw no watch data for this long
-	// (`ro-terminal` reason "idle"). 30 minutes, hardcoded; test-injectable.
-	streamIdleCap = 30 * time.Minute
+// streamTuning is the immutable timing policy copied from a Server into each
+// Live stream at connect time. Keeping it server-local avoids hidden mutable
+// package state: independently constructed servers cannot change one another's
+// backoff, lifetime, polling, idle, or write-deadline behavior. Production uses
+// defaultStreamTuning; tests can adjust a server before it starts serving.
+type streamTuning struct {
+	idleCap         time.Duration
+	backoffBase     time.Duration
+	backoffCap      time.Duration
+	healthyReset    time.Duration
+	immediateWindow time.Duration
+	metricsPoll     time.Duration
+	maxLifetime     time.Duration
+	writeTimeout    time.Duration
+}
 
-	// streamBackoffBase/streamBackoffCap shape the re-watch backoff schedule:
-	// base, doubling per attempt, capped (250ms → 500ms → 1s → … → 10s).
-	streamBackoffBase = 250 * time.Millisecond
-	streamBackoffCap  = 10 * time.Second
-
-	// streamHealthyReset: a watch attempt that lived this long resets the
-	// backoff schedule to its base.
-	streamHealthyReset = time.Minute
-
-	// streamImmediateWindow: a watch attempt that ends faster than this
-	// without delivering a single event counts as an "immediate EOF" toward
-	// the storm terminal.
-	streamImmediateWindow = time.Second
-
-	// streamMetricsPoll is the ?join=metrics usage sub-poll interval.
-	streamMetricsPoll = 30 * time.Second
-
-	// streamMaxLifetime bounds a stream's TOTAL lifetime in trusted-headers /
-	// none auth modes (`ro-terminal` reason "idle"): there is no per-session
-	// expiry in those modes, and the idle cap resets on every watch event, so
-	// without this bound a stream lives forever. In OIDC mode the session's
-	// own expiry bounds the stream instead (reason "auth") — the connect-time
-	// cookie check is the only auth check an SSE stream ever gets, and the
-	// stream must not outlive the session that authorized it. 12 hours,
-	// hardcoded; test-injectable.
-	streamMaxLifetime = 12 * time.Hour
-
-	// streamWriteTimeout is the per-frame write deadline: a connected peer
-	// that stopped READING would otherwise wedge Fprintf/Flush forever once
-	// TCP buffers fill — the handler never returns to its select loop, no
-	// timer can fire, and the deferred cap slot leaks until restart. A
-	// deadline error is treated as client-gone (the normal exit path). 30
-	// seconds, hardcoded; test-injectable.
-	streamWriteTimeout = 30 * time.Second
-)
+func defaultStreamTuning() streamTuning {
+	return streamTuning{
+		// A stream with no watch data ends as idle after 30 minutes.
+		idleCap: 30 * time.Minute,
+		// Re-watch delay doubles from 250ms to a 10s cap. A watch that lives for
+		// one minute resets the schedule to its base.
+		backoffBase:  250 * time.Millisecond,
+		backoffCap:   10 * time.Second,
+		healthyReset: time.Minute,
+		// An event-less watch ending inside one second contributes to the
+		// immediate-EOF storm limit.
+		immediateWindow: time.Second,
+		// Joined metrics are refreshed independently every 30 seconds.
+		metricsPoll: 30 * time.Second,
+		// Trusted-headers / none streams have no session expiry, so bound their
+		// total lifetime to 12 hours.
+		maxLifetime: 12 * time.Hour,
+		// Bound every SSE frame write so a non-reading peer cannot retain a
+		// stream-cap slot indefinitely.
+		writeTimeout: 30 * time.Second,
+	}
+}
 
 const (
 	// streamCapMax bounds concurrent Live streams; the next stream beyond it
@@ -122,22 +116,22 @@ type streamTerminalPayload struct {
 	Reason string `json:"reason"`
 }
 
-// streamBackoff is the re-watch delay schedule: streamBackoffBase doubling
-// per attempt up to streamBackoffCap. noteAttempt resets the schedule after a
-// healthy attempt (one that lived at least streamHealthyReset).
+// streamBackoff is the re-watch delay schedule: the server's base doubles per
+// attempt up to its cap. noteAttempt resets the schedule after a healthy watch.
 type streamBackoff struct {
+	tuning  streamTuning
 	attempt int
 }
 
 // next returns the delay before the upcoming re-watch attempt and advances
 // the schedule.
 func (b *streamBackoff) next() time.Duration {
-	d := streamBackoffBase
-	for i := 0; i < b.attempt && d < streamBackoffCap; i++ {
+	d := b.tuning.backoffBase
+	for i := 0; i < b.attempt && d < b.tuning.backoffCap; i++ {
 		d *= 2
 	}
-	if d > streamBackoffCap {
-		d = streamBackoffCap
+	if d > b.tuning.backoffCap {
+		d = b.tuning.backoffCap
 	}
 	if b.attempt < 63 {
 		b.attempt++
@@ -148,7 +142,7 @@ func (b *streamBackoff) next() time.Duration {
 // noteAttempt records a finished watch attempt's lifetime: a healthy attempt
 // resets the schedule so the next re-watch waits only the base delay again.
 func (b *streamBackoff) noteAttempt(lived time.Duration) {
-	if lived >= streamHealthyReset {
+	if lived >= b.tuning.healthyReset {
 		b.attempt = 0
 	}
 }
@@ -251,6 +245,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		wantMetrics:    r.URL.Query().Get("join") == "metrics" && (plural == "pods" || plural == "nodes"),
 		lifetime:       lifetime,
 		lifetimeReason: lifetimeReason,
+		tuning:         s.streamTuning,
 	}
 	sess.run(ctx)
 }
@@ -260,7 +255,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 // data, so without this a revoked/expired session keeps receiving cluster
 // state indefinitely). OIDC mode: the session cookie's own Expires, terminal
 // reason "auth" (the client's no-reconnect taxonomy). Trusted-headers / none
-// modes have no per-session expiry: the hard streamMaxLifetime cap applies,
+// modes have no per-session expiry: the server's hard max-lifetime cap applies,
 // terminal reason "idle".
 func (s *Server) streamLifetime(r *http.Request) (time.Duration, string) {
 	if s.cfg.AuthMode == config.AuthModeOIDC {
@@ -268,7 +263,7 @@ func (s *Server) streamLifetime(r *http.Request) (time.Duration, string) {
 			return time.Until(time.Unix(session.Expires, 0)), "auth"
 		}
 	}
-	return streamMaxLifetime, "idle"
+	return s.streamTuning.maxLifetime, "idle"
 }
 
 // streamSession is one open Live stream: the unfiltered snapshot, the cached
@@ -303,6 +298,7 @@ type streamSession struct {
 	// at connect by streamLifetime; the loop arms a single never-reset timer).
 	lifetime       time.Duration
 	lifetimeReason string
+	tuning         streamTuning
 
 	dirty      bool
 	lastPush   time.Time
@@ -366,7 +362,7 @@ func (st *streamSession) fetchMetrics(ctx context.Context) map[string][2]float64
 // with backoff, relist on 410, terminal taxonomy), push pacing, the metrics
 // sub-poll, and the idle cap all live in one select so no state needs locks.
 func (st *streamSession) loop(ctx context.Context) {
-	idleTimer := time.NewTimer(streamIdleCap)
+	idleTimer := time.NewTimer(st.tuning.idleCap)
 	defer idleTimer.Stop()
 	// The total-lifetime bound (session expiry in OIDC mode, the hard cap
 	// otherwise). NEVER reset — unlike the idle timer, watch data must not
@@ -382,7 +378,7 @@ func (st *streamSession) loop(ctx context.Context) {
 	defer rewatchTimer.Stop()
 	var metricsCh <-chan time.Time
 	if st.wantMetrics {
-		ticker := time.NewTicker(streamMetricsPoll)
+		ticker := time.NewTicker(st.tuning.metricsPoll)
 		defer ticker.Stop()
 		metricsCh = ticker.C
 	}
@@ -392,7 +388,7 @@ func (st *streamSession) loop(ctx context.Context) {
 		events          chan watchResult
 		attemptStart    time.Time
 		attemptSawEvent bool
-		backoff         streamBackoff
+		backoff         = streamBackoff{tuning: st.tuning}
 		immediateEOFs   int
 	)
 	defer func() {
@@ -422,7 +418,7 @@ func (st *streamSession) loop(ctx context.Context) {
 				st.terminal("watch-failed")
 				return false
 			}
-			backoff = streamBackoff{}
+			backoff = streamBackoff{tuning: st.tuning}
 			immediateEOFs = 0
 			st.schedulePush(pushTimer)
 			rewatchTimer.Reset(0)
@@ -433,7 +429,7 @@ func (st *streamSession) loop(ctx context.Context) {
 			st.terminal("auth")
 			return false
 		}
-		if !attemptSawEvent && lived < streamImmediateWindow {
+		if !attemptSawEvent && lived < st.tuning.immediateWindow {
 			immediateEOFs++
 			if immediateEOFs >= streamMaxImmediateEOFs {
 				st.terminal("watch-failed")
@@ -471,11 +467,11 @@ func (st *streamSession) loop(ctx context.Context) {
 				if !endAttempt(err) {
 					return
 				}
-				continue
+			} else {
+				cur = w
+				events = make(chan watchResult)
+				go watchReader(ctx, w, events)
 			}
-			cur = w
-			events = make(chan watchResult)
-			go watchReader(ctx, w, events)
 		case res := <-events:
 			if res.err != nil {
 				if ctx.Err() != nil {
@@ -484,23 +480,24 @@ func (st *streamSession) loop(ctx context.Context) {
 				if !endAttempt(res.err) {
 					return
 				}
-				continue
+			} else {
+				attemptSawEvent = true
+				immediateEOFs = 0
+				if res.ev.ResourceVersion != "" {
+					st.lastRV = res.ev.ResourceVersion
+				}
+				switch res.ev.Type {
+				case kube.WatchBookmark:
+					// Bookmarks advance the re-watch point only; their rows are
+					// NEVER read (the real apiserver may attach one).
+				default:
+					mergeTableEvent(&st.snapshot, &res.ev)
+					st.dirty = true
+					st.noteEvent(time.Now())
+					idleTimer.Reset(st.tuning.idleCap)
+					st.schedulePush(pushTimer)
+				}
 			}
-			attemptSawEvent = true
-			immediateEOFs = 0
-			if res.ev.ResourceVersion != "" {
-				st.lastRV = res.ev.ResourceVersion
-			}
-			if res.ev.Type == kube.WatchBookmark {
-				// Bookmarks advance the re-watch point only; their rows are
-				// NEVER read (the real apiserver may attach one).
-				continue
-			}
-			mergeTableEvent(&st.snapshot, &res.ev)
-			st.dirty = true
-			st.noteEvent(time.Now())
-			idleTimer.Reset(streamIdleCap)
-			st.schedulePush(pushTimer)
 		case <-pushTimer.C:
 			if st.dirty {
 				if err := st.push(ctx); err != nil {
@@ -623,7 +620,7 @@ func (st *streamSession) writeEvent(event string, payload any) error {
 	if err != nil {
 		return err
 	}
-	_ = st.rc.SetWriteDeadline(time.Now().Add(streamWriteTimeout))
+	_ = st.rc.SetWriteDeadline(time.Now().Add(st.tuning.writeTimeout))
 	if _, err := fmt.Fprintf(st.w, "event: %s\ndata: %s\n\n", event, data); err != nil {
 		return err
 	}
@@ -661,7 +658,11 @@ func mergeTableEvent(snapshot *kube.Table, ev *kube.WatchEvent) {
 		switch ev.Type {
 		case kube.WatchDeleted:
 			if idx >= 0 {
-				snapshot.Rows = append(snapshot.Rows[:idx], snapshot.Rows[idx+1:]...)
+				// A Live snapshot can outlive many delete events. slices.Delete
+				// preserves row order and clears the obsolete backing-array slot,
+				// so deleted row cells and object maps are not retained until the
+				// slice grows again or the stream ends.
+				snapshot.Rows = slices.Delete(snapshot.Rows, idx, idx+1)
 			}
 		default: // ADDED / MODIFIED
 			if idx >= 0 {

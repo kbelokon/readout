@@ -395,15 +395,14 @@ type PhaseCount struct {
 	Count int
 }
 
-// rowStatus is the strongest cell status across a row (the iota rank means the
-// strongest wins by `>`). RowStatusClass and the generic PhaseSummary path both
-// build on it.
+// rowStatus is the strongest cell status across the aligned column/cell prefix
+// of a row (the iota rank means the strongest wins by `>`). A malformed Table
+// row may contain trailing cells without column definitions; those cells have
+// no display semantics and cannot contribute status. RowStatusClass and the
+// generic PhaseSummary path both build on this invariant.
 func rowStatus(table *Table, row Row) status {
 	strongest := statusNeutral
-	for i, cell := range row.Cells {
-		if i >= len(table.Columns) {
-			continue
-		}
+	for i, cell := range row.Cells[:min(len(row.Cells), len(table.Columns))] {
 		if s := cellStatus(table.Resource.Plural, table.Columns[i].Name, cell); s > strongest {
 			strongest = s
 		}
@@ -680,7 +679,10 @@ func statusToneClass(tone string) string {
 // CellClass cannot hold a second opinion about a status word. The remaining
 // branches are the non-status vocabularies kept on purpose: the events Reason
 // map (Reasons are not status words) and the numeric severity rules (pod
-// restarts, zero usage, zero available).
+// restarts and zero usage). Deployment availability is deliberately not judged
+// from the Available cell alone: zero is healthy when spec.replicas is zero,
+// and the web layer's richer Deployment cells have the object context needed to
+// distinguish that state from an unavailable rollout.
 func CellClass(plural, col string, cell any) string {
 	value := strings.TrimSpace(fmt.Sprint(cell))
 	switch plural {
@@ -699,10 +701,6 @@ func CellClass(plural, col string, cell any) string {
 			case "SawCompletedJob", "TriggeredScaleUp":
 				return "has-text-info"
 			}
-		}
-	case "deployments":
-		if col == "Available" && value == "0" {
-			return "has-text-danger"
 		}
 	case "pods":
 		switch col {

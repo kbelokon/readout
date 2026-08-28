@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,37 +238,92 @@ func TestNodeConditionsAbnormalOnly(t *testing.T) {
 	if len(cv.Conds) != 1 || cv.Conds[0].Name != "DiskPressure" || cv.Conds[0].Tone != "warn" {
 		t.Fatalf("DiskPressure node conditions = %#v, want one DiskPressure/warn pill", cv.Conds)
 	}
+
+	// Unknown is a real Kubernetes ConditionStatus, not a synonym for the healthy
+	// False state of negative-polarity conditions. Keep both indeterminate
+	// conditions visible so the list cannot present an uncertain node as clean.
+	indeterminate := nodeObject("uncertain", nil, []any{
+		map[string]any{"type": "Ready", "status": "True"},
+		map[string]any{"type": "MemoryPressure", "status": "Unknown"},
+		map[string]any{"type": "NetworkUnavailable", "status": "Unknown"},
+	})
+	cv = nodesCellView(t, cols, []any{"uncertain", "MemoryPressure,NetworkUnavailable"}, indeterminate, 1)
+	if len(cv.Conds) != 2 {
+		t.Fatalf("Unknown node conditions = %#v, want two visible warning pills", cv.Conds)
+	}
+	for _, cond := range cv.Conds {
+		if cond.Tone != "warn" {
+			t.Fatalf("Unknown %s tone = %q, want warn", cond.Name, cond.Tone)
+		}
+	}
+}
+
+func TestNodeConditionTriStateSemantics(t *testing.T) {
+	tests := []struct {
+		name           string
+		typ            string
+		status         string
+		wantDetailTone string
+		wantListTone   string
+		wantAbnormal   bool
+	}{
+		{name: "ready true", typ: "Ready", status: "True", wantDetailTone: "ok", wantListTone: "ok"},
+		{name: "ready false", typ: "Ready", status: "False", wantDetailTone: "err", wantListTone: "err", wantAbnormal: true},
+		{name: "ready unknown", typ: "Ready", status: "Unknown", wantDetailTone: "err", wantListTone: "err", wantAbnormal: true},
+		{name: "network false", typ: "NetworkUnavailable", status: "False", wantDetailTone: "ok", wantListTone: "ok"},
+		{name: "network true", typ: "NetworkUnavailable", status: "True", wantDetailTone: "err", wantListTone: "err", wantAbnormal: true},
+		{name: "network unknown", typ: "NetworkUnavailable", status: "Unknown", wantDetailTone: "warn", wantListTone: "warn", wantAbnormal: true},
+		{name: "pressure false", typ: "MemoryPressure", status: "False", wantDetailTone: "ok", wantListTone: "ok"},
+		{name: "pressure true", typ: "DiskPressure", status: "True", wantDetailTone: "warn", wantListTone: "warn", wantAbnormal: true},
+		{name: "pressure unknown", typ: "PIDPressure", status: "Unknown", wantDetailTone: "warn", wantListTone: "warn", wantAbnormal: true},
+		{name: "generic true", typ: "CustomCondition", status: "True", wantDetailTone: "mute", wantListTone: "warn"},
+		{name: "generic unknown", typ: "CustomCondition", status: "Unknown", wantDetailTone: "mute", wantListTone: "warn", wantAbnormal: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nodeConditionTone(tt.typ, tt.status); got != tt.wantDetailTone {
+				t.Fatalf("nodeConditionTone(%q, %q) = %q, want %q", tt.typ, tt.status, got, tt.wantDetailTone)
+			}
+			listTone, abnormal := nodeConditionListTone(tt.typ, tt.status)
+			if listTone != tt.wantListTone || abnormal != tt.wantAbnormal {
+				t.Fatalf("nodeConditionListTone(%q, %q) = (%q, %t), want (%q, %t)", tt.typ, tt.status, listTone, abnormal, tt.wantListTone, tt.wantAbnormal)
+			}
+		})
+	}
 }
 
 // TestRolesControlPlaneAccent pins the role-chip mapping: roles come from the
-// node-role.kubernetes.io/* labels, control-plane leads and earns the .cp accent
-// (asserted via the render-side roleClass), a worker stays a plain chip, and a node
-// with no role label renders nothing (the "—" fallback). Driven through
-// buildCellView + the render helper.
+// node-role.kubernetes.io/* labels, privileged roles lead in their canonical
+// order, same-rank custom roles stay alphabetical, privileged roles earn the
+// .cp accent (asserted via the render-side roleClass), and a node with no role
+// label renders nothing (the "—" fallback). Driven through buildCellView + the
+// render helper.
 func TestRolesControlPlaneAccent(t *testing.T) {
 	cols := []string{"Name", "Roles"}
 
-	// control-plane + worker -> control-plane leads (regardless of label-map order);
-	// the .cp accent on the control-plane chip is asserted through the render below.
-	multi := nodeObject("cp", nil, nil, "worker", "control-plane")
-	cv := nodesCellView(t, cols, []any{"cp", "control-plane,worker"}, multi, 1)
-	if cv.Kind != cellRoles || len(cv.Roles) != 2 || cv.Roles[0] != "control-plane" || cv.Roles[1] != "worker" {
-		t.Fatalf("multi-role cell = %#v, want cellRoles [control-plane worker]", cv)
+	// The source labels are a map, so their iteration order is unspecified. The
+	// cell contract is total: control-plane, then master, then custom roles in
+	// alphabetical order.
+	multi := nodeObject("cp", nil, nil, "worker", "master", "database", "control-plane")
+	cv := nodesCellView(t, cols, []any{"cp", "control-plane,master,database,worker"}, multi, 1)
+	wantRoles := []string{"control-plane", "master", "database", "worker"}
+	if cv.Kind != cellRoles || !slices.Equal(cv.Roles, wantRoles) {
+		t.Fatalf("multi-role cell = %#v, want cellRoles %v", cv, wantRoles)
 	}
-	// Render the roles cell and assert the control-plane chip earns .cp while the
-	// worker chip stays plain (the render-side roleClass mapping). Scoped to the
+	// Render the roles cell and assert the privileged chips earn .cp while custom
+	// roles stay plain (the render-side roleClass mapping). Scoped to the
 	// .ro-table: the engine now ALSO emits the mobile `.ro-cardlist` projection of
 	// the same row (the mobile cards layer), repeating the roles as a card meta row;
 	// TestMobileCards pins the card projection.
 	doc := renderRolesCell(t, cv.Roles)
-	cpChip := doc.Find("table.ro-table .ro-role-chip.cp")
-	if cpChip.Length() != 1 || normSpace(cpChip.Text()) != "control-plane" {
-		t.Fatalf("control-plane chip not rendered with .cp: %s", normSpace(doc.Text()))
+	cpChips := doc.Find("table.ro-table .ro-role-chip.cp")
+	if cpChips.Length() != 2 || normSpace(cpChips.Eq(0).Text()) != "control-plane" || normSpace(cpChips.Eq(1).Text()) != "master" {
+		t.Fatalf("privileged chips not rendered in order with .cp: %s", normSpace(doc.Text()))
 	}
-	// The worker chip is a plain .ro-role-chip without .cp.
+	// Custom roles remain plain.
 	plainChips := doc.Find("table.ro-table .ro-role-chip:not(.cp)")
-	if plainChips.Length() != 1 || normSpace(plainChips.Text()) != "worker" {
-		t.Fatalf("worker chip should be a plain .ro-role-chip (no .cp): %s", normSpace(doc.Text()))
+	if plainChips.Length() != 2 || normSpace(plainChips.Eq(0).Text()) != "database" || normSpace(plainChips.Eq(1).Text()) != "worker" {
+		t.Fatalf("custom-role chips should stay ordered and plain: %s", normSpace(doc.Text()))
 	}
 
 	// No role label -> no chips (the renderer shows the muted "—").

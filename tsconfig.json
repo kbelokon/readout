@@ -13,5 +13,9 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["internal/assets/src/js/**/*.ts"],
-  "exclude": ["node_modules", "internal/assets/src/js/**/*.test.ts"]
+  "exclude": [
+    "node_modules",
+    "internal/assets/src/js/**/*.test.ts",
+    "internal/assets/src/js/test/**"
+  ]
 }

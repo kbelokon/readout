@@ -23,7 +23,7 @@
 
 // The chips-editor row model + autocomplete shapes are CLIENT-side (no Go wire
 // seam): the model is captured from the server fragment but lives only in JS.
-// Their canonical definitions are filters-parse.ts (the node-tested pure half);
+// Their canonical definitions are filters-parse.ts (the unit-tested pure half);
 // re-exported here so the Window.roRowModel seam below references the SAME shape
 // the runtime builds, and so the "row model (data-key) + filter autocomplete"
 // contracts have one documented home alongside the Go wire types.
@@ -143,7 +143,7 @@ export interface StreamTerminalPayloadWire {
 // The row model is captured from the FULL server fragment (never the windowed
 // DOM) in filters.ts; rows are identified by their `data-key` (the same identity
 // the idiomorph morph + the selection store key off). ModelField/ModelRow/ACItem
-// are re-exported above from filters-parse.ts (their canonical, node-tested
+// are re-exported above from filters-parse.ts (their canonical, unit-tested
 // home) -- the in-memory shapes filters.ts / virtualizer.ts share. There is NO
 // Go wire seam here: the server emits the <tr data-key> + per-column data-hint
 // markup the capture reads, but the model itself never crosses the wire.

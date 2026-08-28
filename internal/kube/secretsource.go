@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -77,7 +78,9 @@ type argoClusterConfig struct {
 // base64-decodes the inner caData/certData/keyData, and maps everything onto the
 // canonical Connection triple (Cluster TLS + AuthInfo credentials), Source =
 // SourceSecret. No rest.Config field is set by hand: the produced Connection
-// defers entirely to clientcmd via RESTConfig.
+// defers entirely to clientcmd via RESTConfig. Parsing is side-effect-free;
+// operator warnings belong to the discovery admission pipeline, after all
+// blocking policy has accepted the connection.
 //
 // Errors (skip-with-error fuel for the caller): a missing/empty server, an
 // unparseable config blob, or undecodable base64 in the TLS material.
@@ -111,9 +114,6 @@ func parseArgoClusterSecret(data map[string][]byte) (*Connection, error) {
 	if err := validateClusterServerURL(server); err != nil {
 		return nil, fmt.Errorf("argo cluster secret %q: %w", name, err)
 	}
-	// Insecure TLS is honored, not blocked (zero blocking gates): warn so a
-	// disabled TLS verification on this cluster is visible to the operator.
-	warnInsecureTLS(name, SourceSecret, conf.TLSClientConfig.Insecure)
 	// awsAuthConfig is the legacy EKS IAM path; readout does not ship the aws
 	// binary (out of scope / Accepted Risk), so honoring it would mean building a
 	// credential-less connection that silently runs anonymous -- exactly the class
@@ -229,46 +229,49 @@ func discoverArgoSecrets(ctx context.Context, client kubernetes.Interface, names
 		return nil, fmt.Errorf("list argo cluster secrets in %q: %w", namespace, err)
 	}
 
-	var result []discoveredCluster
+	result := make([]discoveredCluster, 0, len(list.Items))
 	for i := range list.Items {
-		secret := &list.Items[i]
-		conn, perr := parseArgoClusterSecret(secret.Data)
-		if perr != nil {
-			result = append(result, discoveredCluster{
-				Name:   secret.Name,
-				Source: SourceSecret,
-				Err:    &ContextLoadError{Name: secret.Name, Source: SourceSecret, Err: perr},
-			})
-			continue
-		}
-		restCfg, rerr := conn.RESTConfig()
-		if rerr != nil {
-			result = append(result, discoveredCluster{
-				Name:   secret.Name,
-				Source: SourceSecret,
-				Err:    &ContextLoadError{Name: secret.Name, Source: SourceSecret, Err: rerr},
-			})
-			continue
-		}
-		// Exec-plugin gate. The Argo-Secret source is the real injection vector (a
-		// cluster actor can create these Secrets), so under the default it denies
-		// every exec plugin: a denied Secret becomes a broken cluster, never a
-		// silently-stripped anonymous connection.
-		if gerr := gate.applyCredentialPluginPolicy(restCfg, conn.Name, SourceSecret); gerr != nil {
-			result = append(result, discoveredCluster{
-				Name:   secret.Name,
-				Source: SourceSecret,
-				Err:    &ContextLoadError{Name: secret.Name, Source: SourceSecret, Err: gerr},
-			})
-			continue
-		}
-		result = append(result, discoveredCluster{
-			Name:   conn.Name,
-			Config: restCfg,
-			Source: SourceSecret,
-			Labels: map[string]string{},
-			Spec:   map[string]any{"argo_secret": secret.Name},
-		})
+		result = append(result, discoverArgoSecret(&list.Items[i], gate))
 	}
 	return result, nil
+}
+
+// discoverArgoSecret owns the per-Secret admission pipeline. Once parsing has
+// recovered the logical cluster name, every later failure is attributed to that
+// identity rather than the Kubernetes Secret object name. Warnings run only
+// after RESTConfig construction and the exec-plugin gate have both succeeded,
+// so a broken Secret is never presented as an active insecure connection.
+func discoverArgoSecret(secret *corev1.Secret, gate credentialPluginGate) discoveredCluster {
+	conn, err := parseArgoClusterSecret(secret.Data)
+	if err != nil {
+		return failedArgoSecret(secret.Name, err)
+	}
+	restCfg, err := conn.RESTConfig()
+	if err != nil {
+		return failedArgoSecret(conn.Name, err)
+	}
+	// The Argo-Secret source is the real injection vector (a cluster actor can
+	// create these Secrets), so under the default it denies every exec plugin:
+	// a denied Secret becomes a broken cluster, never a silently-stripped
+	// anonymous connection.
+	if err := gate.applyCredentialPluginPolicy(restCfg, conn.Name, SourceSecret); err != nil {
+		return failedArgoSecret(conn.Name, err)
+	}
+
+	warnInsecureTLS(conn.Name, SourceSecret, restCfg.Insecure)
+	return discoveredCluster{
+		Name:   conn.Name,
+		Config: restCfg,
+		Source: SourceSecret,
+		Labels: map[string]string{},
+		Spec:   map[string]any{"argo_secret": secret.Name},
+	}
+}
+
+func failedArgoSecret(name string, err error) discoveredCluster {
+	return discoveredCluster{
+		Name:   name,
+		Source: SourceSecret,
+		Err:    &ContextLoadError{Name: name, Source: SourceSecret, Err: err},
+	}
 }

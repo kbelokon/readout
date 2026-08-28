@@ -36,9 +36,23 @@ const discoveryTTL = 60 * time.Second
 // a LimitReader at cap+1: a length over the cap means the response exceeded the
 // limit and is rejected rather than buffered whole.
 const (
-	maxTableBytes = 64 << 20 // 64 MiB cap on a single server-side Table response
-	maxLogBytes   = 4 << 20  // 4 MiB cap on a single container log fetch
+	maxTableBytes = 67_108_864 // 64 MiB cap on a single server-side Table response
+	maxLogBytes   = 4_194_304  // 4 MiB cap on a single container log fetch
 )
+
+// readAtMost owns the shared bounded-read contract for finite apiserver
+// responses. Reading one byte beyond limit distinguishes an exact-limit body
+// from an oversized one without buffering the remainder of an untrusted stream.
+func readAtMost(r io.Reader, limit int, description string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", description, err)
+	}
+	if len(data) > limit {
+		return nil, fmt.Errorf("%s exceeds %d byte cap", description, limit)
+	}
+	return data, nil
+}
 
 var ErrResourceTypeNotFound = errors.New("resource type not found")
 
@@ -470,12 +484,9 @@ func (c *Client) Table(ctx context.Context, rt *ResourceType, opts ListOptions) 
 		return Table{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTableBytes+1))
+	body, err := readAtMost(resp.Body, maxTableBytes, "table response")
 	if err != nil {
 		return Table{}, err
-	}
-	if len(body) > maxTableBytes {
-		return Table{}, fmt.Errorf("table response exceeds %d byte cap", maxTableBytes)
 	}
 	if resp.StatusCode >= 400 {
 		return Table{}, tableResponseError(resp.StatusCode, resp.Status, body)
@@ -691,12 +702,9 @@ func (c *Client) Logs(ctx context.Context, opts LogOptions) (logs string, err er
 		return "", err
 	}
 	defer func() { _ = stream.Close() }()
-	data, err := io.ReadAll(io.LimitReader(stream, maxLogBytes+1))
+	data, err := readAtMost(stream, maxLogBytes, "log stream")
 	if err != nil {
 		return "", err
-	}
-	if len(data) > maxLogBytes {
-		return "", fmt.Errorf("log stream exceeds %d byte cap", maxLogBytes)
 	}
 	return string(data), nil
 }
@@ -779,7 +787,7 @@ func sortResourceTypes(types []ResourceType, preferred map[string]string) {
 }
 
 func IsNotFound(err error) bool {
-	return kerrors.IsNotFound(err) || errors.Is(err, ErrResourceTypeNotFound)
+	return ClassifyError(err) == FailureNotFound
 }
 
 // IsForbidden reports whether err is an apiserver 403 (RBAC denial). It mirrors
@@ -788,7 +796,8 @@ func IsNotFound(err error) bool {
 // the "unreachable" state (any other transport/discovery error), without the web
 // package importing k8s.io/apimachinery error helpers directly.
 func IsForbidden(err error) bool {
-	return kerrors.IsForbidden(err) || kerrors.IsUnauthorized(err)
+	kind := ClassifyError(err)
+	return kind == FailureForbidden || kind == FailureUnauthorized
 }
 
 // IsAPIStatusError reports whether err carries a structured apiserver Status
@@ -798,21 +807,19 @@ func IsForbidden(err error) bool {
 // "unreachable" (the cluster could not be reached at all) and shows the real
 // transport error.
 func IsAPIStatusError(err error) bool {
-	var status kerrors.APIStatus
-	return errors.As(err, &status)
+	_, ok := apiStatusCode(err)
+	return ok
 }
 
-// IsServerError reports whether err is an apiserver Status with a 5xx code --
-// the apiserver was reached but failed to serve the request. The web layer
-// folds this into the unreachable whole-list/detail state (the card shows
-// the REAL Status message verbatim); 4xx Statuses (bad selectors, conflicts)
-// keep their existing handling.
-func IsServerError(err error) bool {
+// apiStatusCode extracts the HTTP status carried by a Kubernetes APIStatus.
+// Keeping this errors.As seam in one place prevents the public predicates and
+// ClassifyError from developing subtly different wrapped-error behavior.
+func apiStatusCode(err error) (int32, bool) {
 	var status kerrors.APIStatus
 	if !errors.As(err, &status) {
-		return false
+		return 0, false
 	}
-	return status.Status().Code >= 500
+	return status.Status().Code, true
 }
 
 // FailureKind is the single classification of an upstream failure. It is a
@@ -862,23 +869,28 @@ func ClassifyError(err error) FailureKind {
 		return FailureInternal
 	}
 
-	// Typed apiserver Status responses (the request reached the apiserver).
-	var status kerrors.APIStatus
-	if errors.As(err, &status) {
-		switch code := status.Status().Code; {
-		case code == http.StatusForbidden:
-			return FailureForbidden
-		case code == http.StatusUnauthorized:
-			return FailureUnauthorized
-		case code == http.StatusNotFound:
-			return FailureNotFound
-		case code >= 500:
+	// Typed apiserver Status responses (the request reached the apiserver). Use
+	// the apimachinery predicates for the named errors so reason-only Status
+	// objects retain the same semantics as the public helpers used to provide.
+	if kerrors.IsForbidden(err) {
+		return FailureForbidden
+	}
+	if kerrors.IsUnauthorized(err) {
+		return FailureUnauthorized
+	}
+	if kerrors.IsNotFound(err) {
+		return FailureNotFound
+	}
+	if code, ok := apiStatusCode(err); ok {
+		// 5xx is the bounded HTTP server-error class, not every integer from 500
+		// upward. A malformed or extension Status carrying 600+ remains an
+		// answered API status and therefore folds to the internal bucket below.
+		if code >= http.StatusInternalServerError && code < 600 {
 			return FailureUpstream5xx
-		default:
-			// Any other apiserver status (400, 409, 410, 429, ...) folds to
-			// internal -- the taxonomy carries no dedicated kind for them.
-			return FailureInternal
 		}
+		// Any other apiserver status (400, 409, 410, 429, 600, ...) folds to
+		// internal -- the taxonomy carries no dedicated kind for it.
+		return FailureInternal
 	}
 
 	// The resource-type-not-found sentinel from FindResource is not an apiserver

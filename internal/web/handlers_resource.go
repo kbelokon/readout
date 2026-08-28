@@ -57,6 +57,56 @@ func hasLogTimestamp(line string) bool {
 	return err == nil
 }
 
+// containerLogLines turns one container's newline-delimited response into
+// complete timestamped entries before applying the optional text filter. A
+// Kubernetes log message may contain embedded newlines (for example a stack
+// trace), so filtering physical lines first would either orphan a matching
+// continuation from its timestamp or discard non-matching context belonging to
+// a matching first line. The final response newline is a record delimiter, not
+// an empty log entry, and is removed before grouping.
+func containerLogLines(raw, pod, container, filterText string) []logLine {
+	raw = strings.TrimSuffix(raw, "\n")
+	if raw == "" {
+		return nil
+	}
+
+	var entries []logLine
+	for _, text := range strings.Split(raw, "\n") {
+		if hasLogTimestamp(text) || len(entries) == 0 {
+			entries = append(entries, logLine{Text: text, Pod: pod, Container: container})
+			continue
+		}
+		entries[len(entries)-1].Text += "\n" + text
+	}
+	if filterText == "" {
+		return entries
+	}
+
+	filtered := make([]logLine, 0, len(entries))
+	for _, entry := range entries {
+		if strings.Contains(entry.Text, filterText) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+// sortLogLines gives the merged multi-pod/container stream a deterministic
+// order: timestamp-prefixed text first, then source identity for identical
+// entries. Keeping the source tie-breakers explicit avoids map/discovery order
+// leaking into either the rendered page or the download.
+func sortLogLines(lines []logLine) {
+	sort.Slice(lines, func(i, j int) bool {
+		if lines[i].Text != lines[j].Text {
+			return lines[i].Text < lines[j].Text
+		}
+		if lines[i].Pod != lines[j].Pod {
+			return lines[i].Pod < lines[j].Pod
+		}
+		return lines[i].Container < lines[j].Container
+	})
+}
+
 func (s *Server) resourceList(w http.ResponseWriter, r *http.Request) {
 	// Bulk YAML download branches BEFORE the table fan-out: its name
 	// bounds are validated first, so a rejected request (101+ names) never
@@ -340,6 +390,8 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 	filterText := r.URL.Query().Get("filter")
 	selectedContainer := r.URL.Query().Get("container")
 	var lines []logLine
+	var firstLogErr error
+	logReadSucceeded := false
 	containerSet := map[string]bool{"": true}
 	for pi := range pods {
 		pod := &pods[pi]
@@ -356,38 +408,29 @@ func (s *Server) resourceLogs(w http.ResponseWriter, r *http.Request) {
 			}
 			logs, err := client.Logs(r.Context(), kube.LogOptions{Namespace: first(pod.Namespace(), namespace), Pod: pod.Name(), Container: container, Timestamps: true, TailLines: tail})
 			if err != nil {
+				if firstLogErr == nil {
+					firstLogErr = err
+				}
 				continue
 			}
-			var containerLines []logLine
-			for _, text := range strings.Split(logs, "\n") {
-				if filterText != "" && !strings.Contains(text, filterText) {
-					continue
-				}
-				// Logs are fetched with Timestamps:true, so a fresh entry begins
-				// at every line whose first space-delimited token parses as an
-				// RFC3339 timestamp; a line without a parseable timestamp prefix
-				// is a wrapped continuation of the previous entry (e.g. a stack
-				// trace) and is folded into it. This replaces the old "starts
-				// with 20" year heuristic, which broke outside years 20xx.
-				if hasLogTimestamp(text) || len(containerLines) == 0 {
-					containerLines = append(containerLines, logLine{Text: text, Pod: pod.Name(), Container: container})
-				} else {
-					prev := &containerLines[len(containerLines)-1]
-					prev.Text += "\n" + text
-				}
-			}
+			logReadSucceeded = true
+			containerLines := containerLogLines(logs, pod.Name(), container, filterText)
 			lines = append(lines, containerLines...)
 		}
 	}
-	sort.Slice(lines, func(i, j int) bool {
-		if lines[i].Text != lines[j].Text {
-			return lines[i].Text < lines[j].Text
-		}
-		if lines[i].Pod != lines[j].Pod {
-			return lines[i].Pod < lines[j].Pod
-		}
-		return lines[i].Container < lines[j].Container
-	})
+	// A multi-pod/controller request may return useful partial logs even when one
+	// source disappeared or was denied between object discovery and the read. If
+	// every attempted read failed, however, an empty 200 page would falsely claim
+	// success and hide the real RBAC/transport failure. Clear the remembered error
+	// after any successful read; otherwise surface it through the normal error path.
+	if logReadSucceeded {
+		firstLogErr = nil
+	}
+	if firstLogErr != nil {
+		s.error(w, r, firstLogErr)
+		return
+	}
+	sortLogLines(lines)
 	// Download-logs: a plain GET over the SAME assembled view -- the
 	// container/tail/filter params shape `lines` exactly like the on-screen
 	// stream. Branches before the page render; gated on showContainerLogs so a

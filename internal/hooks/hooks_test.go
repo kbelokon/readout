@@ -88,10 +88,11 @@ func TestPostJSONTimeout(t *testing.T) {
 	}
 }
 
-// TestPostJSONResponseCapUnderLimit pins that a JSON body comfortably under the
-// response cap decodes in full: the cap does not clip a legitimately large hook
-// reply (a single Kubernetes object can approach the etcd object ceiling).
-func TestPostJSONResponseCapUnderLimit(t *testing.T) {
+// TestPostJSONResponseCapAtOrUnderLimit pins that the inclusive boundary and a
+// body comfortably under it both decode in full: the cap does not clip a
+// legitimately large hook reply (a single Kubernetes object can approach the
+// etcd object ceiling).
+func TestPostJSONResponseCapAtOrUnderLimit(t *testing.T) {
 	// 3 MiB blob: the encoded body stays under the responseCap (4 MiB) with room
 	// for the surrounding JSON, so the whole reply must come back intact.
 	big := strings.Repeat("a", 3<<20)
@@ -108,29 +109,49 @@ func TestPostJSONResponseCapUnderLimit(t *testing.T) {
 	if out["blob"] != big {
 		t.Fatalf("under-cap body decoded length = %d, want %d", len(out["blob"]), len(big))
 	}
+
+	prefix := `{"ok":"yes"}`
+	exact := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(prefix + strings.Repeat(" ", responseCap-len(prefix))))
+	}))
+	defer exact.Close()
+	out = nil
+	if err := c.postJSON(context.Background(), exact.URL, map[string]string{}, &out); err != nil {
+		t.Fatalf("exact-cap body err = %v", err)
+	}
+	if out["ok"] != "yes" {
+		t.Fatalf("exact-cap body decoded = %#v", out)
+	}
 }
 
-// TestPostJSONResponseCapTruncates pins that the cap actually engages: a body
-// past responseCap is silently truncated by the LimitReader, so the decode of a
-// now-incomplete JSON document fails with an unmarshal error rather than
-// returning a partially-read object as success.
-func TestPostJSONResponseCapTruncates(t *testing.T) {
-	// 5 MiB blob: the encoded body exceeds responseCap (4 MiB), so the JSON is cut
-	// mid-string and can no longer parse.
-	big := strings.Repeat("a", 5<<20)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"blob": big})
-	}))
-	defer server.Close()
+// TestPostJSONResponseCapRejectsOversized pins that responseCap is an enforced
+// body-size boundary, not an incidental JSON-truncation effect. In particular,
+// a complete JSON value followed by over-cap whitespace remains valid JSON when
+// clipped at the old LimitReader boundary and must still be rejected.
+func TestPostJSONResponseCapRejectsOversized(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "JSON value crosses boundary", body: `{"blob":"` + strings.Repeat("a", 5<<20) + `"}`},
+		{name: "valid JSON before oversized whitespace", body: `{"ok":"yes"}` + strings.Repeat(" ", responseCap)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
 
-	c := NewClient()
-	var out map[string]string
-	err := c.postJSON(context.Background(), server.URL, map[string]string{}, &out)
-	if err == nil {
-		t.Fatal("over-cap body unexpectedly decoded; the response cap did not truncate")
-	}
-	if !strings.Contains(err.Error(), "unexpected end of JSON input") {
-		t.Fatalf("over-cap body err = %v, want an unmarshal/end-of-input error", err)
+			c := NewClient()
+			var out map[string]string
+			err := c.postJSON(context.Background(), server.URL, map[string]string{}, &out)
+			if err == nil {
+				t.Fatal("over-cap body unexpectedly decoded")
+			}
+			if !strings.Contains(err.Error(), "response exceeds") {
+				t.Fatalf("over-cap body err = %v, want explicit size-limit error", err)
+			}
+		})
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"time"
 )
@@ -52,9 +53,11 @@ func validateClusterServerURL(server string) error {
 		return fmt.Errorf("server URL %q has no host", server)
 	}
 
-	// Literal IP host: check it directly, no DNS.
-	if ip := net.ParseIP(host); ip != nil {
-		if reason := rejectedClusterIP(ip); reason != "" {
+	// Literal IP host: check it directly, no DNS. netip accepts IPv6 zones
+	// (for example fe80::1%en0); net.ParseIP does not, and treating a scoped
+	// literal as an unresolvable hostname would fail open below.
+	if addr, parseErr := netip.ParseAddr(host); parseErr == nil {
+		if reason := rejectedClusterIP(net.IP(addr.AsSlice())); reason != "" {
 			return fmt.Errorf("cluster server URL %q targets a %s address", server, reason)
 		}
 		return nil
@@ -84,12 +87,10 @@ func validateClusterServerURL(server string) error {
 // 127.0.0.1 in the kubeconfig -- and neither is private/RFC1918, where real
 // apiservers live. An empty string means the IP is acceptable.
 func rejectedClusterIP(ip net.IP) string {
-	switch {
-	case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast():
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return "link-local/metadata"
-	default:
-		return ""
 	}
+	return ""
 }
 
 // warnInsecureTLS emits a per-cluster startup WARNING naming the cluster whenever

@@ -38,6 +38,26 @@ import (
 	"github.com/kbelokon/readout/internal/kube"
 )
 
+// TestDefaultCountPolicy pins the production timing contract independently of
+// the behavior tests' injected short timings. Each call returns an owned value,
+// so changing one Server's policy cannot affect another Server.
+func TestDefaultCountPolicy(t *testing.T) {
+	first := defaultCountPolicy()
+	second := defaultCountPolicy()
+	if first.ttl != 15*time.Second {
+		t.Fatalf("default count TTL = %v, want 15s", first.ttl)
+	}
+	if first.fetchTimeout != 800*time.Millisecond {
+		t.Fatalf("default count fetch timeout = %v, want 800ms", first.fetchTimeout)
+	}
+
+	first.ttl = time.Second
+	first.fetchTimeout = time.Second
+	if second.ttl != 15*time.Second || second.fetchTimeout != 800*time.Millisecond {
+		t.Fatalf("default count policies share mutable state: first=%+v second=%+v", first, second)
+	}
+}
+
 // TestCountsTableFormula pins the sidebar-count formula on the decoded Table chunk:
 // count = len(rows) + metadata.remainingItemCount, which folds the three
 // server behaviors into one expression.
@@ -138,9 +158,9 @@ func TestSidebarCountsGroupEntriesAndEventsMeta(t *testing.T) {
 }
 
 // TestSidebarCountsCachedForTTL pins the Server-held cache: the first render
-// issues the limit=1 fan-out, a second render inside the 15s TTL issues ZERO
-// new limit=1 fetches, and a render after the TTL expires re-fetches. The
-// clock is the injected s.now, advanced explicitly.
+// issues the limit=1 fan-out, a second render immediately before an injected
+// TTL issues ZERO new limit=1 fetches, and a render exactly at the TTL boundary
+// re-fetches. The clock is the injected s.now, advanced explicitly.
 func TestSidebarCountsCachedForTTL(t *testing.T) {
 	var fetches atomic.Int64
 	fake, err := fakeapi.New(fakeapi.WithListRecorder(func(r *http.Request) {
@@ -155,6 +175,8 @@ func TestSidebarCountsCachedForTTL(t *testing.T) {
 
 	t0 := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	app := newServer(t, configForFixture(fake.URL), t0)
+	testTTL := 2 * time.Minute
+	app.countPolicy.ttl = testTTL
 
 	get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 	first := fetches.Load()
@@ -162,15 +184,16 @@ func TestSidebarCountsCachedForTTL(t *testing.T) {
 		t.Fatal("first render issued no limit=1 count fetches")
 	}
 
+	app.now = fixedClock(t0.Add(testTTL - time.Nanosecond))
 	get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 	if got := fetches.Load(); got != first {
 		t.Fatalf("second render inside the TTL re-hit the fixture: %d limit=1 fetches, want %d", got, first)
 	}
 
-	app.now = fixedClock(t0.Add(countTTL + time.Second))
+	app.now = fixedClock(t0.Add(testTTL))
 	get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 	if got := fetches.Load(); got <= first {
-		t.Fatalf("render after the TTL did not re-fetch: %d limit=1 fetches, want > %d", got, first)
+		t.Fatalf("render at the TTL boundary did not re-fetch: %d limit=1 fetches, want > %d", got, first)
 	}
 }
 
@@ -203,8 +226,8 @@ func TestCountsCallerCancellationIsNotNegativeCached(t *testing.T) {
 		t.Fatalf("a cancelled fetch cannot produce a count, got %q", aborted[0].item.Count)
 	}
 	key := countKey{cluster: "test", apiVersion: "v1", plural: "pods", namespace: "default"}
-	if entry, hit := app.counts.lookup(key, app.clock()); hit {
-		t.Fatalf("the caller's own cancellation was negative-cached as %+v -- one aborted load would blank the sidebar counts for %v", entry, countTTL)
+	if entry, hit := app.counts.lookup(key, app.clock(), app.countPolicy.ttl); hit {
+		t.Fatalf("the caller's own cancellation was negative-cached as %+v -- one aborted load would blank the sidebar counts for %v", entry, app.countPolicy.ttl)
 	}
 
 	// The next render (inside the same TTL window) re-fetches and the count
@@ -218,7 +241,7 @@ func TestCountsCallerCancellationIsNotNegativeCached(t *testing.T) {
 
 // TestCountsPerFetchDeadlineIsNegativeCached pins the complementary law to
 // TestCountsCallerCancellationIsNotNegativeCached: a fetch that fails because
-// the PER-FETCH deadline fired (countFetchTimeout, surfacing as
+// the PER-FETCH deadline fired (surfacing as
 // DeadlineExceeded) while the CALLER's context is still alive DOES get
 // negative-cached -- a dead-slow kind costs one probe per TTL window, not one
 // per render. The backend stalls the limit=1 request until its fetch context is
@@ -240,6 +263,7 @@ func TestCountsPerFetchDeadlineIsNegativeCached(t *testing.T) {
 	}))
 	t.Cleanup(slow.Close)
 	app := newServer(t, configForFixture(slow.URL), time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC))
+	app.countPolicy.fetchTimeout = 100 * time.Millisecond
 	cluster, ok := app.manager.Get("test")
 	if !ok {
 		t.Fatal("fixture cluster missing")
@@ -247,13 +271,13 @@ func TestCountsPerFetchDeadlineIsNegativeCached(t *testing.T) {
 	resource := kube.ResourceType{APIVersion: "v1", Version: "v1", Kind: "Pod", Plural: "pods", Namespaced: true}
 	targets := []countTarget{{item: &navItem{}, resource: resource, namespace: "default"}}
 
-	// The parent context stays alive; only the per-fetch countFetchTimeout fires.
+	// The parent context stays alive; only the per-fetch policy deadline fires.
 	app.attachSidebarCounts(context.Background(), cluster.Client, "test", targets)
 	if targets[0].item.HasCount {
 		t.Fatalf("a deadline-failed fetch cannot produce a count, got %q", targets[0].item.Count)
 	}
 	key := countKey{cluster: "test", apiVersion: "v1", plural: "pods", namespace: "default"}
-	entry, hit := app.counts.lookup(key, app.clock())
+	entry, hit := app.counts.lookup(key, app.clock(), app.countPolicy.ttl)
 	if !hit {
 		t.Fatalf("the per-fetch deadline was NOT cached -- a dead-slow kind would re-probe every render")
 	}
@@ -296,11 +320,12 @@ func TestSidebarCountsSlowFetchDoesNotStallRender(t *testing.T) {
 	}))
 	t.Cleanup(slow.Close)
 	app := newServer(t, configForFixture(slow.URL), time.Now())
+	app.countPolicy.fetchTimeout = 100 * time.Millisecond
 
 	start := time.Now()
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("count fan-out stalled the page render for %v; the %v deadline did not bound it", elapsed, countFetchTimeout)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("count fan-out stalled the page render for %v; the %v deadline did not bound it", elapsed, app.countPolicy.fetchTimeout)
 	}
 	p.wantAbsent(".ro-sidebar .menu-count")
 }

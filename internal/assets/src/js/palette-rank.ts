@@ -1,10 +1,6 @@
-// palette-rank.ts -- the PURE ⌘K palette ranking + grouping. Split
-// out of palette.ts so it has NO runtime imports: Node's native type-stripping
-// (`node --test`) resolves `.js` specifiers literally and cannot follow a
-// runtime `./x.js` import to its `.ts` source, so a node-tested module must
-// stay free of runtime cross-module imports (the collapse-hash.ts precedent).
-// palette.ts (which DOES carry runtime imports for its DOM + bindings) re-uses
-// every export here.
+// palette-rank.ts -- the PURE ⌘K palette ranking + grouping. Split out of
+// palette.ts so the ranking model stays independently unit-testable and free of
+// DOM state. palette.ts reuses every export here.
 //
 // This module owns the palette matching + ordering decisions that are pure data
 // transforms -- the fuzzy SUBSEQUENCE ranker, per-group ranking, the recents
@@ -29,38 +25,50 @@
 // Greedy leftmost matching keeps it linear in the text. PURE (no DOM, no module
 // state) and re-exported as window.roFuzzy by palette.ts -- the e2e suite
 // unit-tests the ranking in isolation through that seam.
+const WORD_SEPARATORS = ' -_./:';
+
+function isAsciiUppercase(character: string): boolean {
+    return character >= 'A' && character <= 'Z';
+}
+
 export function roFuzzyScore(query: string, text: string): number {
-    const source = String(text || '');
-    const q = String(query || '').toLowerCase();
+    const source = text;
+    const q = query.toLowerCase();
     const t = source.toLowerCase();
     if (!q) {
         return 0; // empty query matches everything, rank-neutral
     }
-    let from = 0;
-    let first = -1;
-    let last = -1;
-    for (let i = 0; i < q.length; i++) {
+
+    const first = t.indexOf(q[0]);
+    if (first === -1) {
+        return -1;
+    }
+
+    let from = first + 1;
+    for (let i = 1; i < q.length; i++) {
         const at = t.indexOf(q[i], from);
         if (at === -1) {
             return -1; // not a subsequence
         }
-        if (first === -1) {
-            first = at;
-        }
-        last = at;
         from = at + 1;
     }
-    const gaps = last - first + 1 - q.length;
-    const camelHump =
-        source[first] >= 'A' &&
-        source[first] <= 'Z' &&
-        !(source[first - 1] >= 'A' && source[first - 1] <= 'Z');
-    const wordStart = first === 0 || ' -_./:'.indexOf(t[first - 1]) !== -1 || camelHump;
+
+    // `from` is one past the final matched character, so this is the matched
+    // span minus the query length without a separate, sentinel-initialized
+    // `last` index.
+    const gaps = from - first - q.length;
     let tier = 2;
-    if (gaps === 0 && first === 0) {
-        tier = 0;
-    } else if (gaps === 0 && wordStart) {
-        tier = 1;
+    if (gaps === 0) {
+        if (first === 0) {
+            tier = 0;
+        } else {
+            const separatorBoundary = WORD_SEPARATORS.includes(t[first - 1]);
+            const camelHump =
+                isAsciiUppercase(source[first]) && !isAsciiUppercase(source[first - 1]);
+            if (separatorBoundary || camelHump) {
+                tier = 1;
+            }
+        }
     }
     return tier * 100000 + gaps * 100 + Math.min(first, 99);
 }
@@ -180,7 +188,7 @@ export function buildPaletteGroups(
     recents: RecentEntry[],
     pageObjects: PageObject[],
 ): PaletteGroup[] {
-    const q = (query || '').trim();
+    const q = query.trim();
     const groups: PaletteGroup[] = [];
 
     // First slot: Everywhere while typing (pinned, so ⏎ on a fresh query

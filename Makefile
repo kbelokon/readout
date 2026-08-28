@@ -1,7 +1,8 @@
 # Makefile for the readout module.
 #
-# Quality gates (REQUIRED in CI): `make ci` runs templ-freshness, lint, and the
-# race test suite -- the same three gates the GitHub workflow runs.
+# `make ci` is the local Go fast path: templ freshness, lint, comment hygiene,
+# mutation-harness guards, and race tests. GitHub CI adds vet, vulnerability,
+# frontend, e2e, and chart jobs around it.
 
 # Pinned templ codegen binary; must match the github.com/a-h/templ version in
 # go.mod. `make tools` (re)installs it at the pinned version.
@@ -15,10 +16,11 @@ PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.60.0-noble
 
 .DEFAULT_GOAL := ci
 
-.PHONY: ci tools generate templ-check lint comment-check test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-update assets assets-check
+.PHONY: ci tools generate templ-check lint comment-check test race build vet fmt air help e2e e2e-deps e2e-docker e2e-visual e2e-visual-update assets assets-check frontend-deps frontend-test frontend-coverage frontend-check
+.PHONY: go-mutation go-mutation-full go-mutation-check go-mutation-sanity go-mutation-clean go-mutation-guards
 
-## ci: the REQUIRED gates -- templ freshness, lint, comment hygiene, race tests (matches .github/workflows/ci.yaml)
-ci: templ-check lint comment-check race
+## ci: local Go gates -- templ, lint, comments, mutation harness, race tests
+ci: templ-check lint comment-check go-mutation-guards race
 
 ## tools: install the pinned templ codegen binary (into $(go env GOBIN))
 tools:
@@ -61,23 +63,67 @@ vet:
 fmt:
 	golangci-lint fmt ./...
 
-## assets: rebuild the embedded frontend artifacts from internal/assets/src and typecheck them (npm ci on first run)
+## frontend-deps: reproduce the exact root dependency tree from package-lock.json
+frontend-deps:
+	npm ci --no-audit --no-fund
+
+## assets: rebuild the embedded frontend artifacts from internal/assets/src and typecheck them
 # Frontend build gate, the mirror of templ codegen for the static/ artifacts:
 # esbuild + Lightning CSS regenerate internal/assets/static/readout.{js,css} from
 # the src tree, then tsc typechecks it (since TS 7 the stable compiler is the
 # native one, so the old tsgo preview + tsc cross-check pair collapsed into one
 # gate). Deliberately NOT a `make ci` gate -- `make ci` stays Go-only; the
-# frontend lives in CI's separate `frontend` job. node_modules is installed via
-# `npm ci` only when absent.
-assets:
-	@test -d node_modules || npm ci
-	node scripts/build-assets.mjs
-	npx tsc --noEmit
+# frontend lives in CI's separate `frontend` job.
+assets: frontend-deps
+	npm run build
+	npm run typecheck
 
 ## assets-check: rebuild the artifacts and fail if they drift from what is committed (the freshness gate)
 assets-check: assets
 	@git diff --exit-code -- internal/assets/static \
 		|| { echo 'ERROR: asset output is stale -- run `make assets` and commit the result.'; exit 1; }
+
+## frontend-test: typecheck and run the fast Vitest suite
+frontend-test: frontend-deps
+	npm run typecheck:test
+	npm test
+
+## frontend-coverage: run Vitest with the enforced V8 coverage floor
+frontend-coverage: frontend-deps
+	npm run typecheck:test
+	npm run test:coverage
+
+## frontend-check: lint, typecheck, test with coverage, and verify embedded assets
+frontend-check: frontend-deps
+	npm run check
+	npm run build
+	@git diff --exit-code -- internal/assets/static \
+		|| { echo 'ERROR: asset output is stale -- run `make assets` and commit the result.'; exit 1; }
+
+## go-mutation: resume the bounded Go mutation campaign and print unresolved mutants
+go-mutation: go-mutation-guards
+	python3 tools/mutation/evaluate.py --explain
+
+## go-mutation-full: recompute every configured Go package and publish a fresh full report
+go-mutation-full: go-mutation-guards
+	python3 tools/mutation/evaluate.py --full --explain
+
+## go-mutation-check: require zero lived, uncovered, or timed-out compile-valid mutants
+go-mutation-check: go-mutation-guards
+	python3 tools/mutation/evaluate.py --check-report
+
+## go-mutation-sanity: run the known-killed/lived/build-invalid Gremlins canary
+go-mutation-sanity: go-mutation-guards
+	python3 tools/mutation/evaluate.py --sanity-only --full
+
+## go-mutation-clean: remove only the runner-owned mutation cache, never the global Go cache
+go-mutation-clean:
+	python3 tools/mutation/evaluate.py --clean-cache
+
+## go-mutation-guards: fast tests for runner honesty, scope, staging, reports, and cache isolation
+go-mutation-guards:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tools.mutation.test_infrastructure
+	PYTHONDONTWRITEBYTECODE=1 python3 tools/mutation/evaluate.py --guard
 
 ## e2e: build readout and run the Playwright suite against the fakeapi harness (deliberately NOT part of `make ci`)
 e2e: e2e-deps
@@ -143,7 +189,7 @@ e2e-docker-binaries:
 
 ## e2e-deps: install the e2e suite's npm deps and Chromium (both steps are idempotent)
 e2e-deps:
-	cd tests/e2e && npm install --no-audit --no-fund
+	cd tests/e2e && npm ci --no-audit --no-fund
 	@if [ -n "$${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH:-}" ]; then \
 		test -x "$${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}" || { echo "ERROR: PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is not executable: $${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}"; exit 1; }; \
 		echo "using system Chromium: $${PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}"; \

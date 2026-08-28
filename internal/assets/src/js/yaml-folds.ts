@@ -32,34 +32,69 @@ import type { Binding } from './events.js';
 // spaces give the depth, but a YAML block-sequence item ("- ...") sits at the
 // SAME visual indent as its parent key, so we count a leading "- " (or a bare
 // "-") as one extra level (+2). This makes "- name: x" nest under "containers:"
-// exactly as the object structure does. Exported for node:test (pure, no DOM).
+// exactly as the object structure does. Exported for Vitest (pure, no DOM).
 export function yamlEffectiveIndent(text: string): number {
     const stripped = text.replace(/^\n+/, '');
-    let i = 0;
-    while (i < stripped.length && stripped[i] === ' ') {
-        i++;
-    }
-    const rest = stripped.slice(i);
+    const indent = stripped.length - stripped.replace(/^ +/, '').length;
+    const rest = stripped.slice(indent);
     if (rest === '-' || rest.startsWith('- ') || rest.startsWith('-\t')) {
-        return i + 2;
+        return indent + 2;
     }
-    return i;
+    return indent;
+}
+
+// Plan fold ownership in one forward pass. The active stack contains only
+// openers whose bodies include the current non-blank line, ordered outermost
+// first. Stack pops are amortized O(lines), while emitting owners costs exactly
+// the ownership relationships the DOM pass must materialize.
+export function planYamlFolds(
+    indents: readonly number[],
+    isBlank: readonly boolean[],
+): { bodyCounts: number[]; ownersByLine: number[][] } {
+    const bodyCounts = new Array<number>(indents.length).fill(0);
+    const ownersByLine = Array.from({ length: indents.length }, () => [] as number[]);
+    const active: Array<{ index: number; indent: number }> = [];
+    let previous: { index: number; indent: number } | undefined;
+
+    indents.forEach((indent, index) => {
+        if (isBlank[index]) {
+            return;
+        }
+
+        // Active indents are strictly increasing. Finding the first closed
+        // owner scans only owners retained for this line plus, at most, the
+        // first one removed; splice work across the whole pass is linear.
+        const firstClosed = active.findIndex((owner) => owner.indent >= indent);
+        if (firstClosed !== -1) {
+            active.splice(firstClosed);
+        }
+        if (previous && previous.indent < indent) {
+            active.push(previous);
+        }
+        active.forEach((owner) => {
+            ownersByLine[index].push(owner.index);
+            bodyCounts[owner.index] += 1;
+        });
+
+        previous = { index, indent };
+    });
+
+    return { bodyCounts, ownersByLine };
 }
 
 // The raw YAML text of a Pygments `td.code` cell, with any injected fold
 // controls removed. Folded child lines stay in the DOM (only hidden), so this is
 // the FULL source YAML in any fold state -- the per-section copy stays correct.
 export function yamlCodeText(codeCell: Element): string {
-    if (!codeCell.querySelector('[data-ro-action="toggle-fold"], [data-ro-fold-control]')) {
-        return codeCell.textContent || ''; // no folds injected -> raw text already clean
+    const controlSelector = '[data-ro-action="toggle-fold"], [data-ro-fold-control]';
+    if (!codeCell.querySelector(controlSelector)) {
+        return codeCell.textContent as string;
     }
     const clone = codeCell.cloneNode(true) as Element;
-    clone
-        .querySelectorAll('[data-ro-action="toggle-fold"], [data-ro-fold-control]')
-        .forEach((el) => {
-            el.remove();
-        });
-    return clone.textContent || '';
+    clone.querySelectorAll(controlSelector).forEach((el) => {
+        el.remove();
+    });
+    return clone.textContent as string;
 }
 
 // Toggle one nested block: flip the opener's `is-folded` + aria-expanded and
@@ -77,7 +112,7 @@ function toggleYamlFold(toggle: HTMLElement): void {
     toggle.classList.toggle('is-folded', folded);
     toggle.setAttribute('aria-expanded', folded ? 'false' : 'true');
     pre.querySelectorAll('[data-fold-of]').forEach((line) => {
-        const owners = ((line as HTMLElement).dataset.foldOf || '').split(' ');
+        const owners = ((line as HTMLElement).dataset.foldOf as string).split(' ');
         if (owners.indexOf(id) !== -1) {
             line.classList.toggle('ro-line-folded', folded);
         }
@@ -119,7 +154,7 @@ function injectFoldControls(lineSpan: Element, bodyCount: number): void {
     // Append the note at the very end of the line content, BEFORE the trailing
     // newline text node so the collapsed note renders on the opener's own line.
     const last = lineSpan.lastChild;
-    if (last && last.nodeType === 3 && (last.textContent || '').indexOf('\n') !== -1) {
+    if (last?.nodeType === Node.TEXT_NODE && (last as Text).data.includes('\n')) {
         lineSpan.insertBefore(note, last);
     } else {
         lineSpan.appendChild(note);
@@ -147,45 +182,25 @@ export function buildYamlFolds(): void {
             if (lines.length < 3) {
                 return; // too small to have a meaningful nested block
             }
-            const indents = lines.map((el) => yamlEffectiveIndent(el.textContent || ''));
-            const isBlank = lines.map((el) => (el.textContent || '').trim() === '');
+            const texts = lines.map((line) => line.textContent as string);
+            const indents = texts.map(yamlEffectiveIndent);
+            const isBlank = texts.map((text) => text.trim() === '');
+            const { bodyCounts, ownersByLine } = planYamlFolds(indents, isBlank);
 
-            for (let i = 0; i < lines.length; i++) {
-                if (isBlank[i]) {
-                    continue;
+            lines.forEach((line, index) => {
+                const owners = ownersByLine[index];
+                if (owners.length === 0) {
+                    return;
                 }
-                // next non-blank line
-                let j = i + 1;
-                while (j < lines.length && isBlank[j]) {
-                    j++;
+                const element = line as HTMLElement;
+                const ownerIds = owners.map((owner) => lines[owner].id).join(' ');
+                element.dataset.foldOf = ownerIds;
+            });
+            lines.forEach((line, index) => {
+                if (bodyCounts[index] > 0) {
+                    injectFoldControls(line, bodyCounts[index]);
                 }
-                if (j >= lines.length || indents[j] <= indents[i]) {
-                    continue; // not an opener (no deeper-indented body follows)
-                }
-                // body = contiguous following lines indented deeper than the opener
-                let end = i + 1;
-                let bodyCount = 0;
-                while (end < lines.length) {
-                    if (isBlank[end]) {
-                        end++;
-                        continue;
-                    }
-                    if (indents[end] > indents[i]) {
-                        const cur = lines[end] as HTMLElement;
-                        cur.dataset.foldOf = cur.dataset.foldOf
-                            ? `${cur.dataset.foldOf} ${lines[i].id}`
-                            : lines[i].id;
-                        bodyCount++;
-                        end++;
-                    } else {
-                        break;
-                    }
-                }
-                if (bodyCount === 0) {
-                    continue;
-                }
-                injectFoldControls(lines[i], bodyCount);
-            }
+            });
         } catch (_e) {
             // Anything unexpected -> leave this block plainly highlighted (the
             // accepted graceful fallback). The cell is already marked, so we do

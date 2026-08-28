@@ -1,5 +1,5 @@
-# golang:1.26-alpine, digest-pinned (tag in the ref is informational for Dependabot).
-FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
+# golang:1.26.7-alpine, digest-pinned (tag in the ref is informational for Dependabot).
+FROM golang:1.26.7-alpine@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS build
 WORKDIR /src
 ARG VERSION=dev
 COPY go.mod go.sum ./
@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # distroless static-debian12, tag :nonroot (informational, for Dependabot). The
 # digest is authoritative. The base image's own USER is 0 (root), so we set the
 # non-root user explicitly below regardless.
-FROM gcr.io/distroless/static-debian12@sha256:a9fcaedd4c9b59e12dd65d954f0b5044f19b0647a8a3712e77205df9e7b102cd
+FROM gcr.io/distroless/static-debian12@sha256:d75cdd72874d4790092fcb1b058493ecf6bb5bf2b2b897045b00ff01d91843f2
 COPY --from=build /out/readout /readout
 # 65532:65532 is the numeric UID:GID of distroless' `nonroot` user. It MUST be
 # numeric, not the name `nonroot`: under Kubernetes runAsNonRoot the kubelet

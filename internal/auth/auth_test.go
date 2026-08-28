@@ -3,6 +3,11 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -559,6 +564,157 @@ func TestOAuthCallbackRejectsExternalOriginalURL(t *testing.T) {
 	}
 }
 
+// TestOIDCCallbackRequiresVerifiedIDToken exercises the complete issuer-backed
+// callback boundary. OAuth-only token responses and unverifiable identity data
+// fail before a session is minted; a signed token from the discovered issuer
+// populates the sealed session with the verified claims. Generic OAuth callbacks
+// remain covered separately and do not require an ID token.
+func TestOIDCCallbackRequiresVerifiedIDToken(t *testing.T) {
+	const (
+		clientID = "client-id"
+		keyID    = "test-key"
+	)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var tokenIDToken string
+	var issuer *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                issuer.URL,
+			"authorization_endpoint":                issuer.URL + "/authorize",
+			"token_endpoint":                        issuer.URL + "/token",
+			"jwks_uri":                              issuer.URL + "/keys",
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		response := map[string]any{
+			"access_token": "session-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		}
+		if tokenIDToken != "" {
+			response["id_token"] = tokenIDToken
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	})
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]any{{
+			"kty": "RSA",
+			"kid": keyID,
+			"alg": "RS256",
+			"use": "sig",
+			"n":   base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+			"e":   "AQAB",
+		}}})
+	})
+	issuer = httptest.NewServer(mux)
+	defer issuer.Close()
+
+	signClaims := func(private map[string]any) string {
+		t.Helper()
+		claims := map[string]any{
+			"iss": issuer.URL,
+			"sub": "subject-123",
+			"aud": clientID,
+			"iat": time.Now().Add(-time.Minute).Unix(),
+			"exp": time.Now().Add(time.Hour).Unix(),
+		}
+		for name, value := range private {
+			claims[name] = value
+		}
+		payload, err := json.Marshal(claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"test-key","typ":"JWT"}`))
+		unsigned := header + "." + base64.RawURLEncoding.EncodeToString(payload)
+		digest := sha256.Sum256([]byte(unsigned))
+		signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)
+	}
+
+	badClaimsToken := signClaims(map[string]any{"groups": "not-an-array"})
+	validToken := signClaims(map[string]any{
+		"preferred_username": "alice",
+		"email":              "alice@example.test",
+		"groups":             []string{"developers", "on-call"},
+	})
+	cases := []struct {
+		name       string
+		idToken    string
+		wantStatus int
+		wantUser   string
+	}{
+		{name: "missing ID token", wantStatus: http.StatusUnauthorized},
+		{name: "malformed ID token", idToken: "not-a-jwt", wantStatus: http.StatusUnauthorized},
+		{name: "malformed identity claims", idToken: badClaimsToken, wantStatus: http.StatusUnauthorized},
+		{name: "verified ID token", idToken: validToken, wantStatus: http.StatusFound, wantUser: "alice"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tokenIDToken = tc.idToken
+			a := newAuth(t, &config.Config{
+				OIDCClientID:     clientID,
+				OIDCClientSecret: "client-secret",
+				OIDCIssuerURL:    issuer.URL,
+				OIDCRedirectURL:  "http://example.test/oauth2/callback",
+				SessionSecret:    "test-secret",
+			})
+			state, err := a.sessions.Seal(StateCookieName, oauthState{Nonce: "good", OriginalURL: "/clusters"}, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/oauth2/callback?state=good&code=ok", nil)
+			req.AddCookie(&http.Cookie{Name: StateCookieName, Value: state})
+			rec := httptest.NewRecorder()
+			a.Callback(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+
+			var sessionCookie *http.Cookie
+			for _, cookie := range rec.Result().Cookies() {
+				if cookie.Name == SessionCookieName {
+					sessionCookie = cookie
+					break
+				}
+			}
+			if tc.wantUser == "" {
+				if sessionCookie != nil {
+					t.Fatal("failed OIDC verification minted a session cookie")
+				}
+				return
+			}
+			if sessionCookie == nil {
+				t.Fatal("verified OIDC callback did not mint a session cookie")
+			}
+			sessionReq := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+			sessionReq.AddCookie(sessionCookie)
+			session, ok := a.Session(sessionReq)
+			if !ok {
+				t.Fatal("verified OIDC session cookie did not open")
+			}
+			if session.IDToken != validToken || session.User != tc.wantUser || session.Email != "alice@example.test" || !reflect.DeepEqual(session.Groups, []string{"developers", "on-call"}) {
+				t.Fatalf("verified session claims = %#v", session)
+			}
+			if location := rec.Header().Get("Location"); location != "/clusters" {
+				t.Fatalf("redirect location = %q, want /clusters", location)
+			}
+		})
+	}
+}
+
 func TestOAuthCallbackRejectsBadInputs(t *testing.T) {
 	a := newAuth(t, &config.Config{
 		OIDCClientID:       "client-id",
@@ -676,14 +832,27 @@ func TestOAuthCallbackRejectsDeniedExpiredAndHookErrors(t *testing.T) {
 }
 
 func TestOAuth2ConfigErrors(t *testing.T) {
-	a := newAuth(t, &config.Config{})
-	if _, _, err := a.oauth2Config(context.Background(), httptest.NewRequest(http.MethodGet, "/clusters", nil)); err == nil {
-		t.Fatal("expected missing client id error")
+	cases := []struct {
+		name string
+		cfg  config.Config
+		want string
+	}{
+		{"missing client ID", config.Config{OIDCIssuerURL: "https://issuer.example"}, "clientId or clientIdFile"},
+		{"missing provider endpoints", config.Config{OIDCClientID: "client-id"}, "issuerUrl or both authorizeUrl and tokenUrl"},
+		{"authorize endpoint only", config.Config{OIDCClientID: "client-id", OAuth2AuthorizeURL: "https://issuer.example/authorize"}, "tokenUrl is required"},
+		{"token endpoint only", config.Config{OIDCClientID: "client-id", OAuth2TokenURL: "https://issuer.example/token"}, "authorizeUrl is required"},
 	}
-	a.cfg.OIDCClientID = "client-id"
-	if _, _, err := a.oauth2Config(context.Background(), httptest.NewRequest(http.MethodGet, "/clusters", nil)); err == nil {
-		t.Fatal("expected missing provider endpoints error")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAuth(t, &tc.cfg)
+			_, _, err := a.oauth2Config(context.Background(), httptest.NewRequest(http.MethodGet, "/clusters", nil))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("oauth2Config() error = %v, want %q", err, tc.want)
+			}
+		})
 	}
+
+	a := newAuth(t, &config.Config{OIDCClientID: "client-id"})
 	rec := httptest.NewRecorder()
 	a.startOAuth2(rec, httptest.NewRequest(http.MethodGet, "/clusters", nil), "/clusters")
 	if rec.Code != http.StatusInternalServerError {
@@ -1346,16 +1515,12 @@ func TestLogoutRejectsCrossSite(t *testing.T) {
 }
 
 func TestOIDCDiscoveryBoundedByTimeout(t *testing.T) {
-	prev := oidcDiscoveryTimeout
-	oidcDiscoveryTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { oidcDiscoveryTimeout = prev })
-
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	hits := make(chan struct{}, 8)
 	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits <- struct{}{}
-		// Stall well past oidcDiscoveryTimeout. The handler unblocks only on
+		// Stall well past the injected timeout. The handler unblocks only on
 		// test teardown so a leaked goroutine cannot outlive the test.
 		select {
 		case <-release:
@@ -1365,13 +1530,21 @@ func TestOIDCDiscoveryBoundedByTimeout(t *testing.T) {
 	t.Cleanup(issuer.Close)
 
 	a := newAuth(t, &config.Config{OIDCIssuerURL: issuer.URL})
+	if got := a.oidcDiscoveryTimeout; got != 10*time.Second {
+		t.Fatalf("default discovery timeout = %v, want 10s", got)
+	}
+	sibling := newAuth(t, &config.Config{OIDCIssuerURL: issuer.URL})
+	a.oidcDiscoveryTimeout = 100 * time.Millisecond
+	if got := sibling.oidcDiscoveryTimeout; got != 10*time.Second {
+		t.Fatalf("changing one Authenticator changed sibling timeout to %v", got)
+	}
 
 	start := time.Now()
 	if _, err := a.oidcDiscover(); err == nil {
 		t.Fatal("oidcDiscover returned nil error against a stalled issuer")
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("oidcDiscover hung %v past the %v timeout instead of failing fast", elapsed, oidcDiscoveryTimeout)
+		t.Fatalf("oidcDiscover hung %v past the %v timeout instead of failing fast", elapsed, a.oidcDiscoveryTimeout)
 	}
 
 	// The mutex must be released after the bounded failure: a second call has

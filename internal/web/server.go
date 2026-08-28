@@ -61,8 +61,9 @@ type Server struct {
 
 	// counts is the sidebar per-kind count cache: keyed by the exact list
 	// each sidebar entry points at, TTL-invalidated against the s.now clock.
-	// The zero value is ready; no constructor wiring needed.
-	counts countCache
+	// countPolicy is the immutable timing policy copied into this Server.
+	counts      countCache
+	countPolicy countPolicy
 
 	// listBudget and searchBudget cap the TOTAL fan-out wall time for the
 	// multi-cluster list and search assemblies: the caller wraps the request
@@ -76,6 +77,11 @@ type Server struct {
 	// as the now clock field.
 	listBudget   time.Duration
 	searchBudget time.Duration
+
+	// streamTuning is the immutable timing policy copied into each Live stream.
+	// It is initialized per Server so independently constructed servers share no
+	// mutable timing state; tests may adjust it before serving begins.
+	streamTuning streamTuning
 
 	// streamSlots caps concurrent Live streams: every open `_stream`
 	// handler holds one slot for its whole lifetime; when the channel is full
@@ -125,8 +131,10 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		hooks:              hooksClient,
 		passthroughClients: kube.NewPassthroughClientCache(0, 0),
 		now:                time.Now,
+		countPolicy:        defaultCountPolicy(),
 		listBudget:         listFanoutBudget,
 		searchBudget:       searchFanoutBudget,
+		streamTuning:       defaultStreamTuning(),
 		streamSlots:        make(chan struct{}, streamCapMax),
 		shutdownCh:         ctx.Done(),
 	}
@@ -138,7 +146,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	hooksClient.SetObserver(s.metrics.hookObserver())
 	s.routes()
 	s.warnMissingSessionSecret()
-	s.warnUnauthenticatedExposure()
+	warnUnauthenticatedExposure(&s.cfg, manager.Clusters())
 	s.warnUntrustedHeaderProxy()
 	s.warnSessionTokenDeniesViewers()
 	return s, nil
@@ -213,7 +221,9 @@ func (s *Server) warnMissingSessionSecret() {
 	}
 }
 
-// warnUnauthenticatedExposure warns at startup when auth is disabled. It never
+// warnUnauthenticatedExposure emits the startup warning when auth is disabled.
+// It takes only the resolved config and cluster inventory so this security
+// policy is independent of the live Server/Manager object graph. It never
 // fails: a no-auth binary is allowed to run, but the operator is told loudly
 // what is exposed and on which clusters. The two flavours are (a) the safe
 // default -- bound to loopback, only this host reaches it -- and (b) a network
@@ -221,22 +231,22 @@ func (s *Server) warnMissingSessionSecret() {
 // Both list the loaded cluster/context names and the auth mode so the operator
 // sees the blast radius. This mirrors warnMissingSessionSecret: a loud slog.Warn
 // on the same startup path, no startup gate.
-func (s *Server) warnUnauthenticatedExposure() {
-	if s.cfg.AuthMode != config.AuthModeNone {
+func warnUnauthenticatedExposure(cfg *config.Config, clusters []*kube.Cluster) {
+	if cfg.AuthMode != config.AuthModeNone {
 		return
 	}
-	contexts := make([]string, 0)
-	for _, c := range s.manager.Clusters() {
+	contexts := make([]string, 0, len(clusters))
+	for _, c := range clusters {
 		contexts = append(contexts, c.Name)
 	}
-	addr := config.Address(s.cfg.ListenAddress, s.cfg.Port)
-	if config.IsLoopbackHost(s.cfg.ListenAddress) {
+	addr := config.Address(cfg.ListenAddress, cfg.Port)
+	if config.IsLoopbackHost(cfg.ListenAddress) {
 		slog.Warn("auth is disabled (auth.mode=none); serving on loopback only",
-			"authMode", s.cfg.AuthMode, "addr", addr, "clusters", contexts)
+			"authMode", cfg.AuthMode, "addr", addr, "clusters", contexts)
 		return
 	}
 	slog.Warn("serving unauthenticated cluster data on "+addr,
-		"authMode", s.cfg.AuthMode, "addr", addr, "clusters", contexts)
+		"authMode", cfg.AuthMode, "addr", addr, "clusters", contexts)
 }
 
 // warnSessionTokenDeniesViewers warns at startup when session-token passthrough
@@ -449,7 +459,9 @@ func (s *Server) assetsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) error(w http.ResponseWriter, r *http.Request, err error) {
 	status := http.StatusInternalServerError
-	if kube.IsNotFound(err) {
+	if kube.IsForbidden(err) {
+		status = http.StatusForbidden
+	} else if kube.IsNotFound(err) {
 		status = http.StatusNotFound
 	}
 	var httpErr interface{ StatusCode() int }

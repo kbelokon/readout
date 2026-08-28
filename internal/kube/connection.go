@@ -1,6 +1,9 @@
 package kube
 
 import (
+	"errors"
+	"fmt"
+
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -43,8 +46,10 @@ func (s Source) String() string {
 // or file-with-rotation), client cert/key (file/data), exec credential plugin,
 // OIDC auth-provider, and impersonation. One model, every source, one builder.
 //
-// A nil AuthInfo is valid: it is the static no-auth case where identity is
-// supplied per request (WithBearer) rather than baked into the stored model.
+// Cluster is required: without the server-side half of the kubeconfig triple
+// there is no connection to build. A nil AuthInfo is valid: it is the static
+// no-auth case where identity is supplied per request (WithBearer) rather than
+// baked into the stored model.
 type Connection struct {
 	Name     string
 	Source   Source
@@ -62,19 +67,21 @@ type Connection struct {
 // which leaves the context's auth empty so an authInfo-less connection stays
 // valid).
 func (c *Connection) RESTConfig() (*rest.Config, error) {
-	name := c.Name
-	cluster := c.Cluster
-	if cluster == nil {
-		cluster = &clientcmdapi.Cluster{}
+	if c == nil {
+		return nil, errors.New("cannot build REST config from a nil connection")
+	}
+	if c.Cluster == nil {
+		return nil, fmt.Errorf("connection %q has no cluster config", c.Name)
 	}
 
+	name := c.Name
 	apiCtx := &clientcmdapi.Context{Cluster: name}
 	if c.Context != nil && c.Context.Namespace != "" {
 		apiCtx.Namespace = c.Context.Namespace
 	}
 
 	conf := clientcmdapi.Config{
-		Clusters: map[string]*clientcmdapi.Cluster{name: cluster},
+		Clusters: map[string]*clientcmdapi.Cluster{name: c.Cluster},
 		Contexts: map[string]*clientcmdapi.Context{name: apiCtx},
 	}
 	if c.AuthInfo != nil {

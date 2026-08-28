@@ -1,10 +1,12 @@
 package kube
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -139,12 +141,20 @@ func (m *Manager) Clusters() []*Cluster {
 	return out
 }
 
-// Broken returns the clusters that failed to load on the last reload, sorted by
-// name. The connection set (Clusters) excludes them; this is the surfaced,
-// non-fatal error channel.
+// Broken returns the clusters that failed to load on the last reload. The
+// snapshot is detached from Manager state and sorted by name, source, then error
+// text so equal-name failures remain deterministic across discovery sources.
+// The connection set (Clusters) excludes them; this is the surfaced, non-fatal
+// error channel.
 func (m *Manager) Broken() []BrokenCluster {
-	out := append([]BrokenCluster(nil), m.broken...)
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	out := slices.Clone(m.broken)
+	slices.SortFunc(out, func(a, b BrokenCluster) int {
+		return cmp.Or(
+			cmp.Compare(a.Name, b.Name),
+			cmp.Compare(a.Source, b.Source),
+			cmp.Compare(fmt.Sprint(a.Err), fmt.Sprint(b.Err)),
+		)
+	})
 	return out
 }
 
@@ -279,38 +289,15 @@ func discoverStatic(cfg *appconfig.Config, gate credentialPluginGate) []discover
 			Labels: labels,
 			Spec:   map[string]any{"api_server_url": cc.Server},
 		}
-		// Non-https hosts make clientcmd skip the TLS/auth merge
-		// (IsConfigTransportTLS), silently dropping configured credentials/CA --
-		// the exact "silent anonymous" class the credential guards exist to kill, through a
-		// different door. Surface it as a typed per-context error instead.
-		if err := guardStaticTransport(cc); err != nil {
-			dc.Err = err
-			result = append(result, dc)
-			continue
-		}
-		// Reject a server URL pointing at loopback/link-local/metadata (resolve
-		// and check), so a static cluster cannot aim readout at the cloud metadata
-		// endpoint. Private/RFC1918 apiservers are allowed.
-		if err := validateClusterServerURL(cc.Server); err != nil {
-			dc.Err = err
-			result = append(result, dc)
-			continue
-		}
-		// Insecure TLS is honored, not blocked: warn so it is visible.
-		warnInsecureTLS(cc.Name, SourceStatic, cc.InsecureSkipTLSVerify)
-		restCfg, err := connectionFromClusterConfig(cc).RESTConfig()
+		restCfg, err := configuredClusterRESTConfig(cc, gate)
 		if err != nil {
 			dc.Err = err
 			result = append(result, dc)
 			continue
 		}
-		// Exec-plugin gate (static is an operator-owned source): a denied plugin
-		// becomes a broken cluster, never a silently-stripped anonymous connection.
-		if err := gate.applyCredentialPluginPolicy(restCfg, cc.Name, SourceStatic); err != nil {
-			dc.Err = err
-			result = append(result, dc)
-			continue
-		}
+		// Insecure TLS is honored, not blocked: warn once the connection has passed
+		// every build policy and will actually be retained.
+		warnInsecureTLS(cc.Name, SourceStatic, cc.InsecureSkipTLSVerify)
 		dc.Config = restCfg
 		result = append(result, dc)
 	}
@@ -325,7 +312,7 @@ func discoverStatic(cfg *appconfig.Config, gate credentialPluginGate) []discover
 // failed but does not blank the other sources. Once the host client exists, the
 // live LIST and per-Secret parse errors are handled inside discoverArgoSecrets.
 func discoverArgoCD(ctx context.Context, cfg *appconfig.Config, gate credentialPluginGate) ([]discoveredCluster, error) {
-	hostCfg, err := argoHostRESTConfig(cfg)
+	hostCfg, err := argoHostRESTConfig(cfg, gate)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +328,7 @@ func discoverArgoCD(ctx context.Context, cfg *appconfig.Config, gate credentialP
 // host must match a configured cluster (cfg.Clusters), whose connection is built
 // through the canonical model (connectionFromClusterConfig + RESTConfig) so the
 // host list runs with that cluster's TLS/auth -- no hand-set rest.Config.
-func argoHostRESTConfig(cfg *appconfig.Config) (*rest.Config, error) {
+func argoHostRESTConfig(cfg *appconfig.Config, gate credentialPluginGate) (*rest.Config, error) {
 	host := cfg.ArgoCD.HostCluster
 	if host == "" {
 		inCluster, err := rest.InClusterConfig()
@@ -352,13 +339,7 @@ func argoHostRESTConfig(cfg *appconfig.Config) (*rest.Config, error) {
 	}
 	for i := range cfg.Clusters {
 		if cfg.Clusters[i].Name == host {
-			// Same non-https-drops-credentials guard discoverStatic applies, so the
-			// Argo host-list failure names the real cause instead of failing as an
-			// opaque anonymous "forbidden".
-			if err := guardStaticTransport(&cfg.Clusters[i]); err != nil {
-				return nil, fmt.Errorf("argo host cluster %q: %w", host, err)
-			}
-			restCfg, err := connectionFromClusterConfig(&cfg.Clusters[i]).RESTConfig()
+			restCfg, err := configuredClusterRESTConfig(&cfg.Clusters[i], gate)
 			if err != nil {
 				return nil, fmt.Errorf("argo host cluster %q: %w", host, err)
 			}
@@ -366,6 +347,35 @@ func argoHostRESTConfig(cfg *appconfig.Config) (*rest.Config, error) {
 		}
 	}
 	return nil, fmt.Errorf("argo host cluster %q not found in configured clusters", host)
+}
+
+// configuredClusterRESTConfig is the one build-and-policy seam for an
+// operator-configured ClusterConnection. Both the retained static connection and
+// its optional second use as the Argo CD host must pass the same transport,
+// server-URL, and credential-plugin checks. Keeping those checks here prevents a
+// cluster rejected by discoverStatic from being rebuilt through the Argo path and
+// dialed anyway.
+func configuredClusterRESTConfig(cc *appconfig.ClusterConnection, gate credentialPluginGate) (*rest.Config, error) {
+	// clientcmd silently drops TLS/auth fields on non-HTTPS URLs; fail closed
+	// instead of turning an authenticated configuration into an anonymous client.
+	if err := guardStaticTransport(cc); err != nil {
+		return nil, err
+	}
+	// Link-local addresses include cloud metadata endpoints. Private, loopback,
+	// and cluster-internal apiservers remain supported by this policy.
+	if err := validateClusterServerURL(cc.Server); err != nil {
+		return nil, err
+	}
+	restCfg, err := connectionFromClusterConfig(cc).RESTConfig()
+	if err != nil {
+		return nil, err
+	}
+	// A denied exec plugin makes the connection unusable; it is never stripped
+	// into an anonymous fallback.
+	if err := gate.applyCredentialPluginPolicy(restCfg, cc.Name, SourceStatic); err != nil {
+		return nil, err
+	}
+	return restCfg, nil
 }
 
 // guardStaticTransport rejects a static cluster that carries TLS/auth fields on a
@@ -458,39 +468,45 @@ func discoverKubeconfig(cfg *appconfig.Config, gate credentialPluginGate) ([]dis
 		if len(selected) > 0 && !selected[name] {
 			continue
 		}
-		dc := discoveredCluster{
-			Name:   name,
-			Source: SourceKubeconfig,
-			Labels: map[string]string{},
-			Spec:   map[string]any{"context": name},
-		}
-		clientCfg := clientcmd.NewNonInteractiveClientConfig(*raw, name, &clientcmd.ConfigOverrides{CurrentContext: name}, loadingRules)
-		restCfg, err := clientCfg.ClientConfig()
-		if err != nil {
-			dc.Err = err
-			result = append(result, dc)
-			continue
-		}
-		// Reject a server URL pointing at loopback/link-local/metadata (resolve
-		// and check). The resolved Host is what client-go will dial.
-		if err := validateClusterServerURL(restCfg.Host); err != nil {
-			dc.Err = err
-			result = append(result, dc)
-			continue
-		}
-		// Insecure TLS is honored, not blocked: warn so it is visible.
-		warnInsecureTLS(name, SourceKubeconfig, restCfg.Insecure)
-		// Exec-plugin gate (kubeconfig is an operator-owned source): a denied plugin
-		// becomes a broken cluster, never a silently-stripped anonymous connection.
-		if err := gate.applyCredentialPluginPolicy(restCfg, name, SourceKubeconfig); err != nil {
-			dc.Err = err
-			result = append(result, dc)
-			continue
-		}
-		dc.Config = restCfg
-		result = append(result, dc)
+		result = append(result, loadKubeconfigContext(raw, name, loadingRules, gate))
 	}
 	return result, nil
+}
+
+// loadKubeconfigContext runs one context through the complete build-and-policy
+// pipeline and returns exactly one retained-or-broken discovery result. Keeping
+// failure assembly here prevents the caller's per-context loop from growing a
+// separate append/continue branch for every new policy gate. Operator warnings
+// are emitted only after every blocking gate passes, so they describe a context
+// that will actually be retained rather than one surfaced as broken.
+func loadKubeconfigContext(raw *clientcmdapi.Config, name string, loadingRules *clientcmd.ClientConfigLoadingRules, gate credentialPluginGate) discoveredCluster {
+	dc := discoveredCluster{
+		Name:   name,
+		Source: SourceKubeconfig,
+		Labels: map[string]string{},
+		Spec:   map[string]any{"context": name},
+	}
+	clientCfg := clientcmd.NewNonInteractiveClientConfig(*raw, name, &clientcmd.ConfigOverrides{CurrentContext: name}, loadingRules)
+	restCfg, err := clientCfg.ClientConfig()
+	if err != nil {
+		dc.Err = err
+		return dc
+	}
+	// Link-local addresses include cloud metadata endpoints. Private, loopback,
+	// and cluster-internal apiservers remain supported by this policy.
+	if err := validateClusterServerURL(restCfg.Host); err != nil {
+		dc.Err = err
+		return dc
+	}
+	// A denied exec plugin makes the context unusable; it is never stripped into
+	// an anonymous fallback and must not emit warnings about a retained cluster.
+	if err := gate.applyCredentialPluginPolicy(restCfg, name, SourceKubeconfig); err != nil {
+		dc.Err = err
+		return dc
+	}
+	warnInsecureTLS(name, SourceKubeconfig, restCfg.Insecure)
+	dc.Config = restCfg
+	return dc
 }
 
 // invalidClusterNameChar matches any character not allowed in a sanitized

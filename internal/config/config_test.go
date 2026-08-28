@@ -321,6 +321,69 @@ auth:
 	}
 }
 
+// TestOIDCRequiresCompleteProvider proves active OIDC configuration fails at
+// parse time when login could not possibly work. Generic OAuth2 needs both
+// endpoints, while an issuer-backed configuration ignores optional generic
+// endpoints because discovery is authoritative.
+func TestOIDCRequiresCompleteProvider(t *testing.T) {
+	base := `
+auth:
+  mode: oidc
+  oidc:
+    redirectUrl: https://readout.example/oauth2/callback
+`
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "missing client ID",
+			body: "    issuerUrl: https://issuer.example\n",
+			want: "clientId or clientIdFile",
+		},
+		{
+			name: "missing provider endpoints",
+			body: "    clientId: client\n",
+			want: "issuerUrl or both authorizeUrl and tokenUrl",
+		},
+		{
+			name: "authorize endpoint only",
+			body: "    clientId: client\n    authorizeUrl: https://issuer.example/authorize\n",
+			want: "tokenUrl is required when authorizeUrl is set",
+		},
+		{
+			name: "token endpoint only",
+			body: "    clientId: client\n    tokenUrl: https://issuer.example/token\n",
+			want: "authorizeUrl is required when tokenUrl is set",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]string{"--config", writeConfig(t, base+tc.body)})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Parse() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	validGeneric := base + `    clientId: client
+    authorizeUrl: https://issuer.example/authorize
+    tokenUrl: https://issuer.example/token
+`
+	if _, err := Parse([]string{"--config", writeConfig(t, validGeneric)}); err != nil {
+		t.Fatalf("complete generic OAuth2 provider rejected: %v", err)
+	}
+
+	issuerWins := base + `    clientId: client
+    issuerUrl: https://issuer.example
+    authorizeUrl: https://ignored.example/authorize
+`
+	if _, err := Parse([]string{"--config", writeConfig(t, issuerWins)}); err != nil {
+		t.Fatalf("issuer-backed provider with an ignored generic endpoint rejected: %v", err)
+	}
+}
+
 // TestOIDCPromotionRemoved pins that OIDC is never auto-enabled from endpoint
 // config: a none-mode config carrying OIDC fields (issuer, or the
 // authorize/token pair) is a load error naming the one-line fix, while none-mode

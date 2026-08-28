@@ -1,6 +1,6 @@
 // palette.ts -- the ⌘K jump-to command palette v2 DOM + dispatch.
 // Migrated from the monolith (legacy.js) verbatim in behavior; the PURE ranking
-// + group order lives in palette-rank.ts (node-tested), this file owns the DOM:
+// + group order lives in palette-rank.ts (unit-tested), this file owns the DOM:
 // reading the server feed, building rows, the active-row model, recents
 // persistence, open/close + focus restore, and the dispatcher bindings.
 //
@@ -32,6 +32,7 @@ import {
     type PageObject,
     type PaletteFeed,
     type PaletteGroup,
+    paletteRecentTarget,
     type RecentEntry,
     roFuzzyScore,
 } from './palette-rank.js';
@@ -49,6 +50,27 @@ const PALETTE_ID = 'ro-palette';
 interface PaletteData extends PaletteFeed {
     currentCluster: string | null;
     currentNamespace: string | null;
+}
+
+// JSON primitives, null, and arrays cannot carry any of the named palette
+// fields. Box every parsed value, then validate the fields we actually consume;
+// this avoids a redundant broad "is object" gate before the real schema checks.
+function asPropertyRecord(value: unknown): Record<string, unknown> {
+    return Object(value) as Record<string, unknown>;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+        return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function feedEntryLabel(entry: Record<string, unknown>, kindEntry: boolean): string | undefined {
+    return kindEntry
+        ? (nonEmptyString(entry.kind) ?? nonEmptyString(entry.plural))
+        : (nonEmptyString(entry.name) ?? nonEmptyString(entry.label));
 }
 
 // Parse the #ro-palette-data JSON blob into the grouped feed. Guarded end to
@@ -70,22 +92,30 @@ function readPaletteData(): PaletteData {
     if (!el) {
         return empty;
     }
-    const raw = (el.textContent || '').trim();
-    if (!raw) {
-        return empty;
-    }
     try {
-        const data = JSON.parse(raw);
-        if (!data || typeof data !== 'object') {
-            return empty;
-        }
-        // Normalise: every group is an array even if the blob omitted/nulled it.
-        (['clusters', 'namespaces', 'kinds', 'actions'] as const).forEach((k) => {
-            if (!Array.isArray(data[k])) {
-                data[k] = [];
-            }
-        });
-        return data as PaletteData;
+        const data = asPropertyRecord(JSON.parse(el.textContent as string));
+        // Normalise into a fresh, fully-validated shape: every group is an
+        // array of labelled, navigable records and malformed scope fields
+        // become absent. Dead/unsafe rows never reach the ranker or the DOM.
+        const records = (value: unknown, kindEntries = false): Record<string, unknown>[] =>
+            Array.isArray(value)
+                ? value
+                      .map(asPropertyRecord)
+                      .filter((entry) => feedEntryLabel(entry, kindEntries) !== undefined)
+                      .filter(
+                          (entry) =>
+                              paletteHrefSafe(entry.href) !== '' ||
+                              nonEmptyString(entry.action) !== undefined,
+                      )
+                : [];
+        return {
+            currentCluster: nonEmptyString(data.currentCluster) ?? null,
+            currentNamespace: nonEmptyString(data.currentNamespace) ?? null,
+            clusters: records(data.clusters),
+            namespaces: records(data.namespaces),
+            kinds: records(data.kinds, true),
+            actions: records(data.actions),
+        };
     } catch {
         return empty; // malformed blob -> empty palette, no throw
     }
@@ -95,15 +125,19 @@ function readPaletteData(): PaletteData {
 // (never user-typed), but as defence in depth we still refuse anything that is
 // not a same-origin path / http(s) URL before navigating -- a javascript:,
 // data:, or vbscript: scheme is never navigated.
-function paletteHrefSafe(href: unknown): string {
-    if (!href || typeof href !== 'string') {
+export function paletteHrefSafe(href: unknown, pageHref: string = window.location.href): string {
+    if (typeof href !== 'string') {
         return '';
     }
     const trimmed = href.trim();
-    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
+    try {
+        const page = new URL(pageHref);
+        const parsed = new URL(trimmed, page);
+        const networkProtocol = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+        return networkProtocol && parsed.origin === page.origin ? trimmed : '';
+    } catch {
         return '';
     }
-    return trimmed;
 }
 
 // --- Palette Recents: the last 5 CHOSEN entries, in
@@ -115,48 +149,54 @@ const PALETTE_RECENTS_KEY = 'ro-pref-recents';
 const PALETTE_RECENTS_MAX = 5;
 
 function readPaletteRecents(): RecentEntry[] {
-    let raw: string | null = null;
     try {
-        raw = window.localStorage.getItem(PALETTE_RECENTS_KEY);
-    } catch {
-        return []; // localStorage unavailable (privacy mode) -> no recents
-    }
-    if (!raw) {
-        return [];
-    }
-    try {
-        const list = JSON.parse(raw);
-        if (!Array.isArray(list)) {
+        const raw = window.localStorage.getItem(PALETTE_RECENTS_KEY);
+        if (!raw) {
             return [];
         }
-        // Shape-check every entry: a label plus a SAFE href or a named action.
-        return list
-            .filter(
-                (entry: RecentEntry) =>
-                    entry &&
-                    typeof entry === 'object' &&
-                    typeof entry.label === 'string' &&
-                    entry.label !== '' &&
-                    ((typeof entry.href === 'string' && paletteHrefSafe(entry.href) !== '') ||
-                        (typeof entry.action === 'string' && entry.action !== '')),
-            )
-            .slice(0, PALETTE_RECENTS_MAX);
+        const list: unknown = JSON.parse(raw);
+        // Shape-check, normalise and dedupe every entry. The store is newest
+        // first, so the first occurrence of a destination wins. Apply the cap
+        // after dedupe so corrupt/legacy duplicates do not crowd out valid rows.
+        const recents: RecentEntry[] = [];
+        const seen = new Set<string>();
+        for (const value of list as unknown[]) {
+            const record = asPropertyRecord(value);
+            const label = nonEmptyString(record.label);
+            if (!label) {
+                continue;
+            }
+            const href = paletteHrefSafe(record.href);
+            const action = nonEmptyString(record.action);
+            if (!href && !action) {
+                continue;
+            }
+            const recent: RecentEntry = { label, href: href || undefined, action };
+            const target = paletteRecentTarget(recent);
+            if (seen.has(target)) {
+                continue;
+            }
+            seen.add(target);
+            recents.push(recent);
+            if (recents.length === PALETTE_RECENTS_MAX) {
+                break;
+            }
+        }
+        return recents;
     } catch {
-        return []; // corrupt store -> ignored (next record starts fresh)
+        return []; // corrupt/unavailable store -> ignored (next record starts fresh)
     }
 }
 
-function recordPaletteRecent(label: string, href: string, action: string): void {
+function recordPaletteRecent(
+    label: string | undefined,
+    href: string | undefined,
+    action: string | undefined,
+): void {
     if (!label || (!href && !action)) {
         return; // not a navigable choice -> never recorded
     }
-    const entry: RecentEntry = { label: label };
-    if (href) {
-        entry.href = href;
-    }
-    if (action) {
-        entry.action = action;
-    }
+    const entry: RecentEntry = { label, href, action };
     const kept = dedupeRecents(readPaletteRecents(), entry, PALETTE_RECENTS_MAX);
     try {
         window.localStorage.setItem(PALETTE_RECENTS_KEY, JSON.stringify(kept));
@@ -165,12 +205,10 @@ function recordPaletteRecent(label: string, href: string, action: string): void 
     }
 }
 
-// The flat list of currently-rendered rows ({ el, item }) in visual order, and
+// The flat list of currently-rendered row elements in visual order, and
 // the index of the active one -- the model the arrows + Enter drive.
 interface PaletteRow {
     el: HTMLElement;
-    item: unknown;
-    key: string;
 }
 let paletteRows: PaletteRow[] = [];
 let paletteActive = 0;
@@ -182,53 +220,66 @@ const paletteScope: { cluster: string | null; namespace: string | null } = {
     namespace: null,
 };
 
-// Build one row element for a blob entry in group `key`. Names go in via
-// textContent; the kind `icon` (server-escaped markup) is the ONLY innerHTML.
-function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLElement {
+function createPaletteRow(): HTMLElement {
     const row = document.createElement('div');
     row.className = 'ro-pal-item';
     row.dataset.roAction = 'pick-palette-row';
     row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', 'false');
+    return row;
+}
 
-    if (key === 'kinds' && entry.icon) {
+function appendPaletteLabel(row: HTMLElement, text: string): HTMLSpanElement {
+    const label = document.createElement('span');
+    label.className = 'pal-label';
+    label.textContent = text;
+    row.appendChild(label);
+    return label;
+}
+
+// Build one row element for a blob entry in group `key`. Names go in via
+// textContent; the kind `icon` (server-escaped markup) is the ONLY innerHTML.
+function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLElement {
+    const row = createPaletteRow();
+    const kindRow = key === 'kinds';
+
+    const icon = nonEmptyString(entry.icon);
+    if (kindRow && icon) {
         const holder = document.createElement('template');
-        holder.innerHTML = String(entry.icon); // server-escaped markup -- the only innerHTML
+        holder.innerHTML = icon; // server-escaped markup -- the only innerHTML
         row.appendChild(holder.content);
     }
 
-    const labelText =
-        key === 'kinds'
-            ? String(entry.kind || entry.plural || '')
-            : String(entry.name || entry.label || '');
-    const display =
-        typeof entry.display === 'string' && entry.display !== '' ? entry.display : labelText;
-    const label = document.createElement('span');
-    label.className = 'pal-label';
-    label.textContent = display;
+    // readPaletteData admits only entries with this label invariant.
+    const labelText = feedEntryLabel(entry, kindRow) as string;
+    const display = nonEmptyString(entry.display) ?? labelText;
+    const label = appendPaletteLabel(row, display);
     if (display !== labelText) {
         row.title = labelText; // truncated -> full name in the tooltip
     }
 
-    const isCurrent =
-        (key === 'clusters' && entry.name && entry.name === paletteScope.cluster) ||
-        (key === 'namespaces' && entry.name && entry.name === paletteScope.namespace);
-    if (isCurrent) {
+    const entryName = nonEmptyString(entry.name);
+    const currentScope =
+        key === 'clusters'
+            ? paletteScope.cluster
+            : key === 'namespaces'
+              ? paletteScope.namespace
+              : null;
+    if (entryName && entryName === currentScope) {
         const ctx = document.createElement('span');
         ctx.className = 'pal-ctx';
         ctx.textContent = 'current';
         label.appendChild(ctx);
     }
-    row.appendChild(label);
 
-    if (key === 'kinds') {
+    if (kindRow) {
         const meta = document.createElement('span');
         meta.className = 'pal-meta';
-        meta.textContent = String(entry.group || 'core');
+        meta.textContent = nonEmptyString(entry.group) ?? 'core';
         row.appendChild(meta);
         const scope = document.createElement('span');
-        scope.className = `pal-scope ${entry.namespaced ? 'ns' : 'cluster'}`;
-        scope.textContent = entry.namespaced ? 'namespaced' : 'cluster';
+        const namespaced = entry.namespaced === true;
+        scope.className = `pal-scope ${namespaced ? 'ns' : 'cluster'}`;
+        scope.textContent = namespaced ? 'namespaced' : 'cluster';
         row.appendChild(scope);
     }
 
@@ -236,8 +287,9 @@ function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLEleme
     if (href) {
         row.dataset.href = href;
     }
-    if (entry.action) {
-        row.dataset.action = String(entry.action);
+    const action = nonEmptyString(entry.action);
+    if (action) {
+        row.dataset.action = action;
     }
     row.dataset.label = labelText;
     return row;
@@ -247,53 +299,32 @@ function buildPaletteRow(entry: Record<string, unknown>, key: string): HTMLEleme
 // query exists: `Search all clusters for "q"` -> a plain GET /search?q=. The
 // leading glyph is a CLONE of the palette's own server-rendered search icon.
 function buildEverywhereRow(query: string): HTMLElement {
-    const row = document.createElement('div');
-    row.className = 'ro-pal-item';
-    row.dataset.roAction = 'pick-palette-row';
-    row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', 'false');
+    const row = createPaletteRow();
     const glyph = document.querySelector(`#${PALETTE_ID} .ro-pal-search .ico`);
     if (glyph) {
         row.appendChild(glyph.cloneNode(true));
     }
-    const label = document.createElement('span');
-    label.className = 'pal-label';
-    label.textContent = `Search all clusters for “${query}”`;
-    row.appendChild(label);
+    const labelText = `Search all clusters for “${query}”`;
+    appendPaletteLabel(row, labelText);
     row.dataset.href = `/search?q=${encodeURIComponent(query)}`;
-    row.dataset.label = label.textContent;
+    row.dataset.label = labelText;
     return row;
 }
 
-// buildRecentRow renders one persisted recent: label-led (textContent), with the
-// destination re-vetted through paletteHrefSafe before it lands in the dataset.
-function buildRecentRow(entry: RecentEntry): HTMLElement {
-    const row = document.createElement('div');
-    row.className = 'ro-pal-item';
-    row.dataset.roAction = 'pick-palette-row';
-    row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', 'false');
-    const label = document.createElement('span');
-    label.className = 'pal-label';
-    label.textContent = entry.label;
-    row.appendChild(label);
-    const href = paletteHrefSafe(entry.href);
-    if (href) {
-        row.dataset.href = href;
-    }
-    if (entry.action) {
-        row.dataset.action = entry.action;
-    }
-    row.dataset.label = entry.label;
-    return row;
+const PALETTE_STATUS_TONES = ['ok', 'warn', 'err', 'info', 'mute'] as const;
+
+interface PalettePageObject extends PageObject {
+    href: string;
+    status?: string;
+    tone?: string;
 }
 
 // harvestPageObjects reads the rows of the rendered list table into
 // {name, href, status, tone}. While the Unit-24 virtualizer is engaged the DOM
 // holds only a window of the rows -- harvest from the full row set (the
 // virtualizer module, imported directly) so ⌘K filters every object on the page.
-function harvestPageObjects(): PageObject[] {
-    const out: PageObject[] = [];
+function harvestPageObjects(): PalettePageObject[] {
+    const out: PalettePageObject[] = [];
     const rows: ArrayLike<Element> = virtualizerActive()
         ? virtRows()
         : document.querySelectorAll('#resource-list-content table.ro-table tbody tr');
@@ -302,46 +333,36 @@ function harvestPageObjects(): PageObject[] {
         if (!a) {
             return;
         }
-        const href = a.getAttribute('href');
-        const name = (a.textContent || '').trim();
+        const href = paletteHrefSafe(a.getAttribute('href'));
+        const name = (a.textContent as string).trim();
         if (!href || !name) {
             return;
         }
-        let status = '';
-        let tone = '';
+        const object: PalettePageObject = { name, href };
         const st = tr.querySelector('.cell-status');
         if (st) {
-            status = (st.textContent || '').trim();
-            ['ok', 'warn', 'err', 'info', 'mute'].forEach((t) => {
-                if (!tone && st.classList.contains(t)) {
-                    tone = t;
-                }
-            });
+            object.status = (st.textContent as string).trim();
+            object.tone = PALETTE_STATUS_TONES.find((candidate) =>
+                st.classList.contains(candidate),
+            );
         }
-        out.push({ name: name, href: href, status: status, tone: tone });
+        out.push(object);
     });
     return out;
 }
 
 // buildObjectRow renders one harvested page object: its name (textContent) + a
 // tone-coloured short status. The detail href rides in the dataset.
-function buildObjectRow(o: PageObject): HTMLElement {
-    const row = document.createElement('div');
-    row.className = 'ro-pal-item';
-    row.dataset.roAction = 'pick-palette-row';
-    row.setAttribute('role', 'option');
-    row.setAttribute('aria-selected', 'false');
-    const label = document.createElement('span');
-    label.className = 'pal-label';
-    label.textContent = o.name;
-    row.appendChild(label);
+function buildObjectRow(o: PalettePageObject): HTMLElement {
+    const row = createPaletteRow();
+    appendPaletteLabel(row, o.name);
     if (o.status) {
         const st = document.createElement('span');
-        st.className = `pal-status${o.tone ? ` ${String(o.tone)}` : ''}`;
-        st.textContent = String(o.status);
+        st.className = `pal-status${o.tone ? ` ${o.tone}` : ''}`;
+        st.textContent = o.status;
         row.appendChild(st);
     }
-    row.dataset.href = String(o.href);
+    row.dataset.href = o.href;
     row.dataset.label = o.name;
     return row;
 }
@@ -355,28 +376,26 @@ function renderPalette(query: string): void {
         return;
     }
     const data = readPaletteData();
-    paletteScope.cluster = data.currentCluster || null;
-    paletteScope.namespace = data.currentNamespace || null;
+    paletteScope.cluster = data.currentCluster;
+    paletteScope.namespace = data.currentNamespace;
 
     const scope = document.getElementById('ro-palette-scope');
     if (scope) {
-        const scopeText = paletteScope.namespace || paletteScope.cluster || '';
-        scope.textContent = scopeText;
-        (scope as HTMLElement).hidden = scopeText === '';
+        const scopeText = paletteScope.namespace ?? paletteScope.cluster;
+        scope.textContent = scopeText ?? '';
+        (scope as HTMLElement).hidden = scopeText === null;
     }
 
-    const q = (query || '').trim();
-    list.textContent = '';
+    const q = query;
+    list.replaceChildren();
     paletteRows = [];
 
     const rowFor = (item: unknown, key: string): HTMLElement => {
         switch (key) {
             case 'everywhere':
                 return buildEverywhereRow((item as { query: string }).query);
-            case 'recents':
-                return buildRecentRow(item as RecentEntry);
             case 'objects':
-                return buildObjectRow(item as PageObject);
+                return buildObjectRow(item as PalettePageObject);
             default:
                 return buildPaletteRow(item as Record<string, unknown>, key);
         }
@@ -404,7 +423,7 @@ function renderPalette(query: string): void {
             const idx = paletteRows.length;
             row.addEventListener('mousemove', () => setPaletteActive(idx));
             list.appendChild(row);
-            paletteRows.push({ el: row, item: item, key: group.key });
+            paletteRows.push({ el: row });
         });
     });
 
@@ -431,47 +450,30 @@ function paintPaletteActive(): void {
     }
 }
 
-// Seat the active row at a clamped index (guards empty + out-of-range).
+// Seat the active row selected by one of the currently-rendered row listeners.
 function setPaletteActive(index: number): void {
-    if (paletteRows.length === 0) {
-        return;
-    }
-    let i = index;
-    if (i < 0) {
-        i = 0;
-    }
-    if (i > paletteRows.length - 1) {
-        i = paletteRows.length - 1;
-    }
-    paletteActive = i;
+    paletteActive = index;
     paintPaletteActive();
 }
 
-// Move the active row by delta, wrapping at the ends. Guards empty.
+// Move the active row by delta, wrapping at the ends. With no rows there is no
+// addressable active element, so paintPaletteActive remains a no-op.
 function movePaletteActive(delta: number): void {
-    if (paletteRows.length === 0) {
-        return;
-    }
-    paletteActive = (paletteActive + delta + paletteRows.length) % paletteRows.length;
+    const length = paletteRows.length;
+    paletteActive = (paletteActive + delta + length) % length;
     paintPaletteActive();
 }
 
 // Act on a chosen row: run its named client action and/or navigate to its
 // server-built href, then close. EVERY choice is first recorded into Recents
 // -- click and ⏎ both land here.
-function choosePaletteRow(rowEl: HTMLElement | null): void {
-    if (!rowEl) {
-        return;
-    }
+function choosePaletteRow(rowEl: HTMLElement): void {
     const action = rowEl.dataset.action;
     const href = rowEl.dataset.href;
-    recordPaletteRecent(rowEl.dataset.label || '', href || '', action || '');
+    recordPaletteRecent(rowEl.dataset.label, href, action);
     closePalette();
     if (action === 'theme') {
-        const toggle = document.getElementById('btn-theme-toggle');
-        if (toggle) {
-            (toggle as HTMLElement).click(); // the server POST /preferences toggle
-        }
+        document.getElementById('btn-theme-toggle')?.click(); // the server POST /preferences toggle
         return;
     }
     if (href) {
@@ -493,7 +495,7 @@ let palettePriorFocus: Element | null = null;
 // True only while closePalette is handing focus back to the prior element: when
 // that element is the topbar [data-ro-palette-open] box, the focus restore itself
 // fires focusin, which would re-open the palette the user just closed.
-let paletteRestoringFocus = false;
+let paletteRestoringFocus: true | undefined;
 
 // Open the palette: reveal the overlay (the `open` class), build the grouped
 // rows from the blob, seed + focus the query box, and seat the first row active.
@@ -527,17 +529,21 @@ export function closePalette(): void {
     }
     palette.classList.remove('open');
     palette.setAttribute('aria-hidden', 'true');
-    if (
-        palettePriorFocus &&
-        document.contains(palettePriorFocus) &&
-        !palette.contains(palettePriorFocus) &&
-        typeof (palettePriorFocus as HTMLElement).focus === 'function'
-    ) {
-        paletteRestoringFocus = true;
-        (palettePriorFocus as HTMLElement).focus();
-        paletteRestoringFocus = false;
-    }
+    const prior = palettePriorFocus;
     palettePriorFocus = null;
+    if (!prior || !document.contains(prior) || palette.contains(prior)) {
+        return;
+    }
+    const focus = (prior as Element & { focus?: unknown }).focus;
+    if (typeof focus !== 'function') {
+        return;
+    }
+    paletteRestoringFocus = true;
+    try {
+        focus.call(prior);
+    } finally {
+        paletteRestoringFocus = undefined;
+    }
 }
 
 // --- dispatcher bindings ----------------------------------------------------
@@ -581,21 +587,20 @@ export const paletteBindings: Binding[] = [
         stop: true,
         handler: (event, matched) => {
             event.preventDefault();
-            openPalette((matched as HTMLElement).dataset.query || '');
+            openPalette((matched as HTMLElement).dataset.query);
             return true;
         },
     },
     // A click on the palette backdrop ITSELF (the dimmed area outside the panel)
     // closes it, like Esc. A click inside the panel does not match. The selector
-    // is the backdrop root id; the handler still verifies target.id === PALETTE_ID
-    // so a click that bubbles from a descendant (closest matched the root) does
-    // NOT close it -- the monolith's exact `target.id === PALETTE_ID` test.
+    // is the backdrop root id; the handler still verifies that the original
+    // target is that matched root, so a descendant click does NOT close it.
     {
         event: 'click',
         selector: `#${PALETTE_ID}`,
         stop: true,
-        handler: (event) => {
-            if ((event.target as Element).id === PALETTE_ID) {
+        handler: (event, matched) => {
+            if (event.target === matched) {
                 closePalette();
                 return true;
             }
@@ -693,9 +698,7 @@ export const paletteBindings: Binding[] = [
             }
             openPalette();
             const t = event.target as HTMLElement;
-            if (typeof t.blur === 'function') {
-                t.blur();
-            }
+            t.blur();
         },
     },
 ];

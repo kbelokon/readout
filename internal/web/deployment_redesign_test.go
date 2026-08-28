@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,6 +121,46 @@ func TestDeploymentCells(t *testing.T) {
 	// Mid-rollout (not complete) -> prog ("rolling out").
 	if roll.RolloutState != "prog" || roll.Value != "rolling out" {
 		t.Fatalf("rollout = %q/%q, want prog/'rolling out'", roll.RolloutState, roll.Value)
+	}
+}
+
+// TestDeploymentAvailableCellDoesNotInventHealth proves the generic Available
+// cell stays neutral because a zero value cannot determine Deployment health
+// without spec.replicas. The rich Ready and Rollout cells retain that context:
+// scale-to-zero is complete, while a deployment that wants replicas but has none
+// ready remains visibly zero/rolling.
+func TestDeploymentAvailableCellDoesNotInventHealth(t *testing.T) {
+	cols := []string{"Name", "Ready", "Available", "Rollout"}
+	cases := []struct {
+		name             string
+		desired          int
+		progressing      string
+		wantRolloutState string
+		wantRolloutLabel string
+	}{
+		{name: "scaled-to-zero", desired: 0, progressing: "NewReplicaSetAvailable", wantRolloutState: "done", wantRolloutLabel: "up to date"},
+		{name: "cold", desired: 3, progressing: "ReplicaSetUpdated", wantRolloutState: "prog", wantRolloutLabel: "rolling out"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			obj := deploymentObject(c.name, c.desired, depStatus(c.desired, 0, 0, 0, c.progressing), false)
+			cells := []any{c.name, fmt.Sprintf("0/%d", c.desired), "0", c.wantRolloutLabel}
+
+			available := deploymentsCellView(t, cols, cells, obj, 2)
+			if available.Kind != cellPlain || available.Class != "" {
+				t.Fatalf("Available=0 cell = kind %v class %q, want a neutral plain cell", available.Kind, available.Class)
+			}
+
+			ready := deploymentsCellView(t, cols, cells, obj, 1)
+			if ready.Kind != cellReplicas || ready.Ratio != "zero" {
+				t.Fatalf("Ready cell = kind %v ratio %q, want zero replica signal", ready.Kind, ready.Ratio)
+			}
+
+			rollout := deploymentsCellView(t, cols, cells, obj, 3)
+			if rollout.Kind != cellRollout || rollout.RolloutState != c.wantRolloutState || rollout.Value != c.wantRolloutLabel {
+				t.Fatalf("Rollout cell = kind %v state %q label %q, want %q/%q", rollout.Kind, rollout.RolloutState, rollout.Value, c.wantRolloutState, c.wantRolloutLabel)
+			}
+		})
 	}
 }
 

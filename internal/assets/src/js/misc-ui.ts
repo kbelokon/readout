@@ -16,7 +16,7 @@
 //
 // Branches that early-returned in the monolith become stop:true bindings. The
 // section-collapse hash codec is split into a PURE parser (parseCollapsedNames)
-// pinned by node:test; the DOM application + the write path stay here.
+// pinned by Vitest; the DOM application + the write path stay here.
 
 import { parseCollapsedNames } from './collapse-hash.js';
 import type { Binding } from './events.js';
@@ -24,7 +24,7 @@ import { roPrefsSetNamespace } from './prefs.js';
 import { yamlCodeText } from './yaml-folds.js';
 
 // parseCollapsedNames (the PURE read half of the collapse-hash codec) lives in
-// collapse-hash.ts so it stays node-testable (no runtime imports); imported
+// collapse-hash.ts so it stays independently unit-testable; imported
 // above and applied to the DOM here.
 
 // collapseSectionsFromHash -- on load, collapse every section named in the URL
@@ -125,7 +125,7 @@ export const miscBindings: Binding[] = [
             } else {
                 window.history.replaceState(
                     null,
-                    '',
+                    document.title,
                     window.location.pathname + window.location.search,
                 );
             }
@@ -143,9 +143,10 @@ export const miscBindings: Binding[] = [
         selector: '#namespace-dropdown [data-ro-action="pick-namespace"]',
         stop: true,
         handler: (_event, matched) => {
-            const hrefMatch = /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(
-                (matched as Element).getAttribute('href') || '',
-            );
+            const href = (matched as Element).getAttribute('href');
+            const hrefMatch = href
+                ? /^\/clusters\/([^/]+)\/namespaces\/([^/]+)\//.exec(href)
+                : null;
             if (hrefMatch) {
                 roPrefsSetNamespace(
                     decodeURIComponent(hrefMatch[1]),
@@ -186,7 +187,7 @@ export const miscBindings: Binding[] = [
         handler: (_event, matched) => {
             const filterText = (matched as HTMLInputElement).value.toLowerCase();
             document.querySelectorAll('[data-ro-action="pick-namespace"]').forEach((element) => {
-                const text = ((element as HTMLElement).innerText || '').toLowerCase();
+                const text = (element as HTMLElement).innerText.toLowerCase();
                 if (text.indexOf(filterText) === -1) {
                     element.classList.add('is-hidden');
                 } else {
@@ -206,13 +207,10 @@ export const miscBindings: Binding[] = [
             if ((event as KeyboardEvent).key !== 'Enter') {
                 return true;
             }
-            const elements = document.querySelectorAll('[data-ro-action="pick-namespace"]');
-            for (let i = 0; i < elements.length; i++) {
-                if (!elements[i].classList.contains('is-hidden')) {
-                    (elements[i] as HTMLElement).click();
-                    break;
-                }
-            }
+            const firstVisible = Array.from(
+                document.querySelectorAll('[data-ro-action="pick-namespace"]'),
+            ).find((element) => !element.classList.contains('is-hidden'));
+            (firstVisible as HTMLElement | undefined)?.click();
             return true;
         },
     },

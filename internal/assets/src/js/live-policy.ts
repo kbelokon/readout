@@ -1,12 +1,11 @@
 // live-policy.ts -- the PURE decision core of the refresh + Live
 // cluster, lifted out of the DOM/protocol modules (refresh.ts, live.ts) so the
-// load-bearing protocol decisions are node-testable with no DOM, no fetch, no
+// load-bearing protocol decisions are unit-testable with no DOM, no fetch, no
 // htmx. The DOM modules read state from the page and the wire; THIS module is
 // the math/taxonomy those modules consult once they have the facts.
 //
-// node:test exercises every branch (live-policy.test.ts). Per the node-test
-// contract this module carries ONLY erasable (type-only) imports -- it imports
-// nothing at runtime, so `node --test` strips its types and runs it directly.
+// Vitest exercises every branch (live-policy.test.ts). This module deliberately
+// carries only erasable types and no runtime dependencies.
 //
 // Three decisions live here, each pinned by the refresh + Live protocol:
 //   1. effectivePollSeconds -- the poll cadence the tick chain arms, folding the
@@ -47,14 +46,12 @@ export function effectivePollSeconds(
 // 3 (where it stays) quadruples it, the backoff wait capped at 60s. A
 // non-positive cadence means "no timer" -> 0 (the chain disarms).
 export function refreshDelaySeconds(effectiveSeconds: number, failureStage: number): number {
-    if (effectiveSeconds <= 0) {
-        return 0;
-    }
+    const baseSeconds = Math.max(effectiveSeconds, 0);
     if (failureStage <= 1) {
-        return effectiveSeconds;
+        return baseSeconds;
     }
     const factor = failureStage === 2 ? 2 : 4;
-    return Math.min(effectiveSeconds * factor, 60);
+    return Math.min(baseSeconds * factor, 60);
 }
 
 // nextFailureStage escalates the consecutive-failure counter one notch, clamped

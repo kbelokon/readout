@@ -526,12 +526,10 @@ func searchScore(title string, labels map[string]string, query string) int {
 	return score
 }
 
-// matchLabels extracts a controller's pod selector from spec.selector. The
-// selector is read off varying controller kinds, so this is a PARTIAL typed
-// read: a standard metav1.LabelSelector pulls the matchLabels of
-// Deployment/ReplicaSet/StatefulSet/DaemonSet, and the bare map[string]string
-// form (Service-style spec.selector, no matchLabels wrapper) is read via the
-// apimachinery accessor as a fallback.
+// matchLabels extracts only the equality labels from spec.selector. Keep this
+// small helper for callers/tests that need the map itself; podSelector below is
+// the production lookup seam because workload selectors may also carry
+// matchExpressions.
 func matchLabels(obj map[string]any) map[string]string {
 	raw, ok, _ := unstructured.NestedMap(obj, "spec", "selector")
 	if !ok {
@@ -543,6 +541,33 @@ func matchLabels(obj map[string]any) map[string]string {
 	}
 	labels, _, _ := unstructured.NestedStringMap(obj, "spec", "selector")
 	return labels
+}
+
+// podSelector converts a workload's complete metav1.LabelSelector to the
+// canonical Kubernetes query spelling, preserving set-based matchExpressions.
+// Service selectors use the older bare map[string]string shape, so they retain
+// the deterministic equality-selector fallback. Invalid structured selectors
+// return empty rather than dropping the invalid clause and accidentally
+// broadening the pod lookup.
+func podSelector(obj map[string]any) string {
+	raw, ok, _ := unstructured.NestedMap(obj, "spec", "selector")
+	if !ok {
+		return ""
+	}
+	_, hasMatchLabels := raw["matchLabels"]
+	_, hasMatchExpressions := raw["matchExpressions"]
+	if hasMatchLabels || hasMatchExpressions {
+		var selector metav1.LabelSelector
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, &selector); err != nil {
+			return ""
+		}
+		parsed, err := metav1.LabelSelectorAsSelector(&selector)
+		if err != nil {
+			return ""
+		}
+		return parsed.String()
+	}
+	return selectorString(matchLabels(obj))
 }
 
 func selectorString(labels map[string]string) string {

@@ -17,8 +17,6 @@ import (
 // /metrics and asserts each series family is present with its expected labels.
 // It is the end-to-end proof that the observer wiring reaches the registry.
 func TestDomainMetricsScrape(t *testing.T) {
-	setStreamVar(t, &streamIdleCap, 200*time.Millisecond)
-
 	fake, err := fakeapi.New()
 	if err != nil {
 		t.Fatal(err)
@@ -40,6 +38,7 @@ func TestDomainMetricsScrape(t *testing.T) {
 		TrustedHeaderUser:    "X-Forwarded-User",
 		AuthorizationHookURL: hook.URL,
 	})
+	app.streamTuning.idleCap = 200 * time.Millisecond
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
 

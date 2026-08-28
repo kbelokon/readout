@@ -21,7 +21,7 @@
 // virtualizeOnFilterChange), not the reverse -- no import cycle.
 //
 // The PURE grammar + suggestion ranking + the value-frequency scan live in
-// filters-parse.ts (node-tested); this module is the DOM + dispatch around it:
+// filters-parse.ts (unit-tested); this module is the DOM + dispatch around it:
 // the row-model capture, the autocomplete mount, the chip-commit requests, and
 // the dispatcher bindings (the chip-✕/AC-item/field click branches that headed
 // the monolith's big click listener; the #ro-filter-input input branch; the
@@ -42,10 +42,11 @@ import {
     liveNameMatchKeys,
     type ModelField,
     type ModelRow,
-    normalizeFieldName,
+    normalizeFieldWhitespace,
     rankFieldSuggestions,
     rankValueSuggestions,
     splitFilterDraft,
+    trimFilterWhitespace,
 } from './filters-parse.js';
 import type { RowModelWire } from './types.js';
 import { virtualizeOnFilterChange, virtualizerActive } from './virtualizer.js';
@@ -90,7 +91,7 @@ export function captureRowModel(root: ParentNode): void {
     }
     const fields: ModelField[] = [];
     table.querySelectorAll('thead th').forEach((th) => {
-        const label = (th.textContent || '').trim();
+        const label = normalizeFieldWhitespace(th.textContent || '');
         fields.push({
             label,
             name: fieldSuggestionText(label),
@@ -101,12 +102,12 @@ export function captureRowModel(root: ParentNode): void {
     table.querySelectorAll('tbody tr[data-key]').forEach((tr) => {
         const cells: string[] = [];
         tr.querySelectorAll('td').forEach((td) => {
-            cells.push((td.textContent || '').trim());
+            cells.push(trimFilterWhitespace(td.textContent || ''));
         });
         const nameLink = tr.querySelector('td.cell-name a');
         rows.push({
             key: (tr as HTMLElement).dataset.key as string,
-            name: nameLink ? (nameLink.textContent || '').trim() : cells[0] || '',
+            name: nameLink ? trimFilterWhitespace(nameLink.textContent || '') : cells[0] || '',
             cells,
         });
     });
@@ -179,9 +180,9 @@ export function issueFilterNavigation(href: string): void {
         target: '#resource-list-content',
         swap: 'morph',
     });
-    if (request && typeof request.catch === 'function') {
-        request.catch(() => {}); // failures surface via the stale banner path
-    }
+    // failures surface through the stale-banner lifecycle; attach a rejection
+    // handler when htmx returns its optional request promise.
+    void request?.catch(() => {});
 }
 
 // commitFilterChip materializes the draft as a `?f=` chip. The raw value is
@@ -190,7 +191,7 @@ export function issueFilterNavigation(href: string): void {
 // is appended by STRING CONCATENATION so sibling raw params keep their exact wire
 // encoding (never URLSearchParams over the whole query).
 function commitFilterChip(draft: string): void {
-    const text = draft.trim();
+    const text = trimFilterWhitespace(draft);
     const parsed = splitFilterDraft(text);
     if (!parsed) {
         return; // free text never commits -- it live-matches only
@@ -239,7 +240,9 @@ function showFilterFieldHint(): void {
     const names = filterSuggestionFields(roRowModel.fields)
         .slice(0, 3)
         .map((f) => f.text);
-    el.textContent = `no such field — try ${names.length ? names.join(', ') : 'status, node, age'}…`;
+    // filterSuggestionFields always contributes the virtual `label` field, so
+    // the schema-derived list is never empty and needs no fictional fallback.
+    el.textContent = `no such field — try ${names.join(', ')}…`;
     (el as HTMLElement).hidden = false;
 }
 
@@ -257,7 +260,7 @@ function hideFilterFieldHint(): void {
 // (!= > <) autocomplete the field then leave the value free. Tab/⏎ accepts, esc
 // dismisses. All nodes are built with createElement/textContent.
 let filterACItems: ACItem[] = [];
-let filterACActive = -1;
+let filterACActive = 0;
 
 function filterACOpen(): boolean {
     const ac = document.getElementById('ro-filter-ac') as HTMLElement | null;
@@ -271,7 +274,7 @@ function closeFilterAC(): void {
         ac.textContent = '';
     }
     filterACItems = [];
-    filterACActive = -1;
+    filterACActive = 0;
 }
 
 function openFilterAC(items: ACItem[]): void {
@@ -295,12 +298,12 @@ function openFilterAC(items: ACItem[]): void {
         name.className = 'ac-name';
         name.textContent = item.label; // textContent -> hostile cell values cannot inject
         row.appendChild(name);
-        if (item.hint) {
-            const hint = document.createElement('span');
-            hint.className = 'ac-hint';
-            hint.textContent = item.hint;
-            row.appendChild(hint);
-        }
+        // Every field/value candidate produced by filters-parse carries a
+        // meaningful hint (type or frequency), so render the shape uniformly.
+        const hint = document.createElement('span');
+        hint.className = 'ac-hint';
+        hint.textContent = item.hint;
+        row.appendChild(hint);
         row.addEventListener('mousemove', () => setFilterACActive(idx));
         ac.appendChild(row);
     });
@@ -308,9 +311,6 @@ function openFilterAC(items: ACItem[]): void {
 }
 
 function setFilterACActive(index: number): void {
-    if (filterACItems.length === 0) {
-        return;
-    }
     filterACActive = Math.max(0, Math.min(filterACItems.length - 1, index));
     const ac = document.getElementById('ro-filter-ac');
     if (!ac) {
@@ -324,9 +324,6 @@ function setFilterACActive(index: number): void {
 }
 
 function moveFilterACActive(delta: number): void {
-    if (filterACItems.length === 0) {
-        return;
-    }
     setFilterACActive((filterACActive + delta + filterACItems.length) % filterACItems.length);
 }
 
@@ -338,7 +335,7 @@ export function updateFilterAC(): void {
         return;
     }
     const draft = input.value;
-    if (!draft.trim()) {
+    if (!trimFilterWhitespace(draft)) {
         closeFilterAC();
         return;
     }
@@ -348,21 +345,16 @@ export function updateFilterAC(): void {
         openFilterAC(rankFieldSuggestions(roRowModel.fields, draft));
         return;
     }
-    const isLabel = normalizeFieldName(parsed.field) === 'label';
-    if (parsed.op !== ':' || isLabel || !filterFieldKnown(roRowModel.fields, parsed.field)) {
+    if (parsed.op !== ':' || !filterFieldKnown(roRowModel.fields, parsed.field)) {
         // Operator forms leave the value free; `label` values are not in the row
-        // model (metadata.labels never renders for most kinds); unknown fields
-        // get the ⏎ hint, not suggestions.
+        // model; unknown fields get the ⏎ hint, not suggestions.
         closeFilterAC();
         return;
     }
     // Top 8 distinct values by frequency, computed from the FULL row model.
-    const items = rankValueSuggestions(roRowModel.fields, roRowModel.rows, parsed);
-    if (items.length === 0) {
-        closeFilterAC();
-        return;
-    }
-    openFilterAC(items);
+    // Virtual `label` resolves as a valid filter but has no model-column index;
+    // rankValueSuggestions returns before reading rows in that case.
+    openFilterAC(rankValueSuggestions(roRowModel.fields, roRowModel.rows, parsed));
 }
 
 // acceptFilterAC fills the input with the active suggestion. Accepting a FIELD
@@ -375,7 +367,6 @@ function acceptFilterAC(commitValues: boolean): void {
         return;
     }
     input.value = item.insert;
-    closeFilterAC();
     if (item.kind === 'value' && commitValues) {
         commitFilterChip(input.value);
     } else {
@@ -390,7 +381,7 @@ function handleFilterInputKeydown(event: KeyboardEvent): void {
     const input = event.target as HTMLInputElement;
     if (event.key === 'Enter') {
         event.preventDefault();
-        if (filterACOpen() && filterACActive >= 0) {
+        if (filterACOpen() && filterACItems.length > 0) {
             acceptFilterAC(true);
             return;
         }

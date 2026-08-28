@@ -3,6 +3,7 @@ package kube
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -14,6 +15,38 @@ import (
 // does not need a real certificate. The real handshake-against-an-extracted-CA proof
 // lives in the CA-trust handshake test.
 const fakeCAPEM = "-----BEGIN CERTIFICATE-----\nMIIB-fake-ca-data\n-----END CERTIFICATE-----\n"
+
+// TestRESTConfigRejectsMissingClusterModel pins the required half of the
+// canonical connection model. A nil receiver and a named connection without a
+// Cluster both fail as ordinary, actionable errors; neither is allowed to panic
+// or fabricate an empty kubeconfig object whose eventual client-go error loses
+// the originating connection identity. The valid nil-AuthInfo control remains
+// covered by TestRESTConfig/nil_AuthInfo_is_a_valid_anonymous_connection.
+func TestRESTConfigRejectsMissingClusterModel(t *testing.T) {
+	tests := []struct {
+		name    string
+		conn    *Connection
+		wantErr string
+	}{
+		{name: "nil connection", wantErr: "nil connection"},
+		{name: "named connection without cluster", conn: &Connection{Name: "prod"}, wantErr: `connection "prod" has no cluster config`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := tc.conn.RESTConfig()
+			if err == nil {
+				t.Fatalf("RESTConfig() = %#v, nil error; want %q", cfg, tc.wantErr)
+			}
+			if cfg != nil {
+				t.Fatalf("RESTConfig() returned config %#v with error %v", cfg, err)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("RESTConfig() error = %q, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
 
 // TestRESTConfig proves the canonical claim: a Connection built from the
 // kubeconfig triple yields a rest.Config that carries every TLS/auth field, with
