@@ -310,17 +310,67 @@ describe('engagement', () => {
 
     test('refetches a history snapshot that contains spacers but not the full row set', () => {
         const tbody = renderList(['cached-row']);
+        const content = tbody.closest('#resource-list-content') as HTMLElement;
+        content.dataset.roEtag = 'W/"cached-window"';
+        content.dataset.roEtagPath = '/clusters/prod/pods/_table';
         const cachedSpacer = document.createElement('tr');
         cachedSpacer.className = 'ro-vspacer';
         cachedSpacer.append(document.createElement('td'));
         tbody.replaceChildren(cachedSpacer);
+        dependencies.requestListRefresh.mockImplementationOnce(() => {
+            // The forced full-model rebuild must be unconditional at request
+            // configuration time, not merely clear the pair afterwards.
+            expect(content.dataset.roEtag).toBeUndefined();
+            expect(content.dataset.roEtagPath).toBeUndefined();
+        });
 
+        virtualizeInit();
         virtualizeInit();
 
         expect(dependencies.requestListRefresh).toHaveBeenCalledOnce();
+        expect(content.dataset.roEtag).toBeUndefined();
+        expect(content.dataset.roEtagPath).toBeUndefined();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
         expect(tbody).toContainElement(cachedSpacer);
+    });
+
+    test('allows a replacement cached tbody and resets the one-shot gate after adoption', () => {
+        const first = renderList(['first-cached-row']);
+        const firstContent = first.closest('#resource-list-content') as HTMLElement;
+        const firstSpacer = document.createElement('tr');
+        firstSpacer.className = 'ro-vspacer';
+        firstSpacer.append(document.createElement('td'));
+        first.replaceChildren(firstSpacer);
+
+        virtualizeInit();
+        virtualizeInit();
+        expect(dependencies.requestListRefresh).toHaveBeenCalledOnce();
+
+        const second = renderList(['second-cached-row']);
+        const secondContent = second.closest('#resource-list-content') as HTMLElement;
+        const secondSpacer = document.createElement('tr');
+        secondSpacer.className = 'ro-vspacer';
+        secondSpacer.append(document.createElement('td'));
+        second.replaceChildren(secondSpacer);
+
+        virtualizeInit();
+        virtualizeInit();
+        expect(dependencies.requestListRefresh).toHaveBeenCalledTimes(2);
+
+        const recovered = listFragment(rowKeys(20));
+        virtualizePrepareSwap(recovered);
+        document.body.replaceChildren(recovered.firstElementChild as Element);
+        virtualizeAfterSwap();
+        expect(virtualizerActive()).toBe(true);
+
+        // Re-mounting the exact prior cached pair models a later history restore:
+        // the successful adoption cleared its old one-shot recovery gate.
+        document.body.replaceChildren(secondContent);
+        virtualizeInit();
+
+        expect(dependencies.requestListRefresh).toHaveBeenCalledTimes(3);
+        expect(firstContent).not.toBe(secondContent);
     });
 
     test('refetches a cached spacer mounted on a different tbody from the active one', () => {

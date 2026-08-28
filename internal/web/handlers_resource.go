@@ -161,6 +161,13 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, view.State.SourceErr)
 		return
 	}
+	data := toListData(&view)
+	etag, err := resourceListETag(&data)
+	if err != nil {
+		s.error(w, r, fmt.Errorf("build resource-list validator: %w", err))
+		return
+	}
+	setResourceListValidatorHeaders(w.Header(), etag)
 	// Canonical-URL history push: a USER-initiated sort/filter request gets
 	// the CANONICAL list URL (path minus `/_table`, current query) pushed into
 	// history -- never the partial URL (hx-push-url="true" would push
@@ -179,8 +186,12 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 		r.Header.Get("HX-Preloaded") != "true" {
 		w.Header().Set("HX-Push-Url", resourceListBaseURL(r.URL).String())
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.ResourceTable(toListData(&view)).Render(r.Context(), w)
+	if isConditionalListRefresh(r) && ifNoneMatch(r.Header.Values("If-None-Match"), etag) {
+		w.Header().Del("Content-Length")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	_ = templates.ResourceTable(data).Render(r.Context(), w)
 }
 
 func (s *Server) downloadTSV(w http.ResponseWriter, r *http.Request, table *kube.Table) {

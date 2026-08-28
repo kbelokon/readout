@@ -208,6 +208,107 @@ describe('htmx request lifecycle', () => {
         expect(headers).toStrictEqual({ 'RO-No-Push': 'true' });
     });
 
+    test('owns every RO-No-Push casing without suppressing user history', () => {
+        const content = renderContent();
+        const userSource = document.createElement('a');
+        const containerHeaders: Record<string, string> = {
+            'ro-no-push': 'false',
+            'Ro-No-Push': 'spoof-one',
+            'RO-NO-PUSH': 'spoof-two',
+            'HX-Push-Url': 'false',
+        };
+
+        dispatchHtmx('htmx:configRequest', {
+            elt: content,
+            target: content,
+            headers: containerHeaders,
+        });
+
+        expect(containerHeaders).toStrictEqual({
+            'HX-Push-Url': 'false',
+            'RO-No-Push': 'true',
+        });
+
+        const userHeaders: Record<string, string> = {
+            'ro-no-push': 'true',
+            'RO-No-Push': 'spoof',
+            'HX-Push-Url': 'true',
+        };
+        dispatchHtmx('htmx:configRequest', {
+            elt: userSource,
+            target: content,
+            headers: userHeaders,
+        });
+
+        expect(userHeaders).toStrictEqual({ 'HX-Push-Url': 'true' });
+    });
+
+    test('strips RO-No-Push when the current container explicitly targets elsewhere', () => {
+        const content = renderContent();
+        const headers = { 'rO-nO-pUsH': 'true', 'HX-Push-Url': 'true' };
+
+        dispatchHtmx('htmx:configRequest', {
+            elt: content,
+            target: document.createElement('main'),
+            headers,
+        });
+
+        expect(headers).toStrictEqual({ 'HX-Push-Url': 'true' });
+    });
+
+    test('integrates the exact stored validator only for current-container traffic', () => {
+        window.history.replaceState(null, '', '/clusters/prod/pods');
+        const content = renderContent();
+        content.dataset.roEtag = 'W/"stored"';
+        content.dataset.roEtagPath = '/clusters/prod/pods/_table?sort=Name';
+        const containerHeaders = {
+            'if-none-match': '"spoof"',
+            'ro-no-push': 'false',
+            'RO-NO-PUSH': 'spoof',
+        };
+
+        dispatchHtmx('htmx:configRequest', {
+            elt: content,
+            target: content,
+            path: '/clusters/prod/pods/_table?sort=Name',
+            headers: containerHeaders,
+        });
+
+        expect(containerHeaders).toStrictEqual({
+            'RO-No-Push': 'true',
+            'If-None-Match': 'W/"stored"',
+        });
+
+        const userSource = document.createElement('a');
+        const userHeaders = { 'If-None-Match': '"spoof"' };
+        dispatchHtmx('htmx:configRequest', {
+            elt: userSource,
+            target: content,
+            path: '/clusters/prod/pods/_table?sort=Name',
+            headers: userHeaders,
+        });
+
+        expect(userHeaders).toStrictEqual({});
+    });
+
+    test('a detached same-id source cannot earn refresh or conditional headers', () => {
+        const content = renderContent();
+        content.dataset.roEtag = 'W/"stored"';
+        content.dataset.roEtagPath = '/pods/_table';
+        const detached = document.createElement('div');
+        detached.id = 'resource-list-content';
+        const headers = { 'If-None-Match': '"spoof"' };
+
+        dispatchHtmx('htmx:configRequest', {
+            elt: detached,
+            target: content,
+            path: '/pods/_table',
+            headers,
+        });
+
+        expect(headers).toStrictEqual({});
+    });
+
     test('tracks each request class, lets a user request win, and settles both sets', () => {
         const content = renderContent();
         const userSource = document.createElement('button');

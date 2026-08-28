@@ -146,6 +146,155 @@
     return pathname + (query ? `?${query}` : "");
   }
 
+  // internal/assets/src/js/list-etag.ts
+  var LIST_CONTENT_ID = "resource-list-content";
+  var ETAG_DATA_KEY = "roEtag";
+  var PATH_DATA_KEY = "roEtagPath";
+  function eventDetail(event) {
+    return Object(event.detail);
+  }
+  function currentListContent() {
+    return document.getElementById(LIST_CONTENT_ID);
+  }
+  function validETag(value) {
+    return typeof value === "string" && /^(?:W\/)?"[\x21\x23-\x7e]*"$/.test(value);
+  }
+  function tableRequestKey(value) {
+    if (typeof value !== "string" || value.length === 0) {
+      return null;
+    }
+    try {
+      const url = new URL(value, window.location.href);
+      if (url.origin !== window.location.origin || !url.pathname.endsWith("/_table")) {
+        return null;
+      }
+      return `${url.pathname}${url.search}`;
+    } catch {
+      return null;
+    }
+  }
+  function headerRecord(value) {
+    return Object(value);
+  }
+  function headerValue(headers, wanted) {
+    const lowerWanted = wanted.toLowerCase();
+    for (const [name, value] of Object.entries(headerRecord(headers))) {
+      if (name.toLowerCase() === lowerWanted && typeof value === "string") {
+        return value;
+      }
+    }
+    return null;
+  }
+  function deleteHeader(headers, unwanted) {
+    const record = headerRecord(headers);
+    const lowerUnwanted = unwanted.toLowerCase();
+    for (const name of Object.keys(record)) {
+      if (name.toLowerCase() === lowerUnwanted) {
+        delete record[name];
+      }
+    }
+  }
+  function responseHeader(xhr, name) {
+    const candidate = Object(xhr);
+    if (typeof candidate.getResponseHeader !== "function") {
+      return null;
+    }
+    try {
+      const value = candidate.getResponseHeader.call(xhr, name);
+      return typeof value === "string" ? value : null;
+    } catch {
+      return null;
+    }
+  }
+  function clearContentValidator(content) {
+    delete content.dataset[ETAG_DATA_KEY];
+    delete content.dataset[PATH_DATA_KEY];
+  }
+  function readContentValidator(content) {
+    const etag = content.dataset[ETAG_DATA_KEY];
+    const path = content.dataset[PATH_DATA_KEY];
+    if (!validETag(etag) || tableRequestKey(path) !== path) {
+      clearContentValidator(content);
+      return null;
+    }
+    return { etag, path };
+  }
+  function writeContentValidator(content, validator) {
+    clearContentValidator(content);
+    content.dataset[PATH_DATA_KEY] = validator.path;
+    content.dataset[ETAG_DATA_KEY] = validator.etag;
+  }
+  function configureListValidatorRequest(event) {
+    const detail = eventDetail(event);
+    const content = currentListContent();
+    if (!content) {
+      return;
+    }
+    const sourceIsContent = detail.elt === content;
+    const targetIsContent = detail.target === content;
+    if (!sourceIsContent && !targetIsContent) {
+      return;
+    }
+    const headers = headerRecord(detail.headers);
+    deleteHeader(headers, "If-None-Match");
+    if (!sourceIsContent || detail.target !== void 0 && !targetIsContent || headerValue(headers, "RO-No-Push") !== "true" || headerValue(headers, "HX-Preloaded") === "true") {
+      return;
+    }
+    const validator = readContentValidator(content);
+    const requestKey = tableRequestKey(detail.path);
+    if (!validator || requestKey !== validator.path) {
+      return;
+    }
+    headers["If-None-Match"] = validator.etag;
+  }
+  function rememberListValidator(event) {
+    const detail = eventDetail(event);
+    const content = currentListContent();
+    if (!content || detail.target !== content) {
+      return;
+    }
+    if (detail.roLivePush === true) {
+      clearContentValidator(content);
+      return;
+    }
+    const xhr = Object(detail.xhr);
+    if (xhr.status !== 200) {
+      return;
+    }
+    const pathInfo = Object(detail.pathInfo);
+    const path = tableRequestKey(pathInfo.finalRequestPath);
+    const etag = responseHeader(detail.xhr, "ETag");
+    if (!path || !validETag(etag)) {
+      clearContentValidator(content);
+      return;
+    }
+    writeContentValidator(content, { etag, path });
+  }
+  function clearListValidator() {
+    const content = currentListContent();
+    if (content) {
+      clearContentValidator(content);
+    }
+  }
+  function suppressListNotModified(event) {
+    const detail = eventDetail(event);
+    const content = currentListContent();
+    const xhr = Object(detail.xhr);
+    if (!content || detail.target !== content || xhr.status !== 304) {
+      return false;
+    }
+    detail.shouldSwap = false;
+    detail.isError = true;
+    const validator = readContentValidator(content);
+    const config = Object(detail.requestConfig);
+    const pathInfo = Object(detail.pathInfo);
+    if (config.elt !== content || !validator || headerValue(config.headers, "RO-No-Push") !== "true" || headerValue(config.headers, "If-None-Match") !== validator.etag || tableRequestKey(pathInfo.finalRequestPath) !== validator.path || responseHeader(detail.xhr, "ETag") !== validator.etag) {
+      return false;
+    }
+    detail.isError = false;
+    return true;
+  }
+
   // internal/assets/src/js/live-policy.ts
   function effectivePollSeconds(mode, intervalSeconds, liveFallbackSeconds2) {
     if (intervalSeconds > 0) {
@@ -437,6 +586,7 @@
     if (!content || !htmx2 || typeof htmx2.swap !== "function") {
       return;
     }
+    clearListValidator();
     htmx2.swap(
       content,
       html,
@@ -713,12 +863,21 @@
   }
   function handleRefreshConfigRequest(event) {
     const detail = requestDetail(event);
-    const elt = Object(detail.elt);
-    if (elt.id !== "resource-list-content") {
-      return;
+    const content = document.getElementById("resource-list-content");
+    const sourceIsContent = content !== null && detail.elt === content;
+    const targetIsContent = content !== null && detail.target === content;
+    if (sourceIsContent || targetIsContent) {
+      const headers = Object(detail.headers);
+      for (const name of Object.keys(headers)) {
+        if (name.toLowerCase() === "ro-no-push") {
+          delete headers[name];
+        }
+      }
+      if (sourceIsContent && (detail.target === void 0 || targetIsContent)) {
+        headers["RO-No-Push"] = "true";
+      }
     }
-    const headers = Object(detail.headers);
-    headers["RO-No-Push"] = "true";
+    configureListValidatorRequest(event);
   }
   document.addEventListener("htmx:configRequest", handleRefreshConfigRequest);
   function handleRefreshBeforeRequest(event) {
@@ -1177,6 +1336,7 @@
     pendingRows: null,
     pendingScrollY: null
   };
+  var historyRecoveryPending = null;
   function virtualizerActive() {
     return virtState.active && virtState.tbody?.isConnected === true;
   }
@@ -1283,7 +1443,7 @@
   function virtualizeInit() {
     const content = document.getElementById("resource-list-content");
     const wrap = content?.querySelector(".ro-table-wrap.ro-windowed");
-    if (!wrap) {
+    if (!content || !wrap) {
       virtReset();
       return;
     }
@@ -1297,7 +1457,12 @@
       if (virtState.active && virtState.tbody === tbody) {
         return;
       }
+      if (historyRecoveryPending?.content === content && historyRecoveryPending.tbody === tbody) {
+        return;
+      }
       virtReset();
+      historyRecoveryPending = { content, tbody };
+      clearListValidator();
       requestListRefresh();
       return;
     }
@@ -1306,6 +1471,7 @@
       virtReset();
       return;
     }
+    historyRecoveryPending = null;
     virtReset();
     virtState.table = table;
     virtState.tbody = tbody;
@@ -1344,6 +1510,7 @@
     tbody.replaceChildren(topSpacer, bottomSpacer);
   }
   function virtualizeAfterSwap() {
+    historyRecoveryPending = null;
     const pending = virtState.pendingRows;
     virtState.pendingRows = null;
     if (!pending) {
@@ -3717,6 +3884,7 @@
   document.addEventListener("htmx:beforeRequest", handleSortPreferenceRequest);
   document.addEventListener("htmx:afterSwap", (event) => {
     if (isListRefreshEvent(event)) {
+      rememberListValidator(event);
       noteRefreshRecovery();
       clearListStale();
       reapplyRowState();
@@ -3734,6 +3902,11 @@
   });
   document.addEventListener("htmx:beforeSwap", (event) => {
     const detail = event.detail;
+    if (suppressListNotModified(event)) {
+      noteRefreshRecovery();
+      clearListStale();
+      return;
+    }
     if (detail && detail.target === document.body) {
       const status = detail.xhr?.status;
       if (typeof status === "number" && status >= 400 && status <= 599) {

@@ -588,6 +588,14 @@ test('an ro-terminal frame stops reading and enters banner polling fallback', as
 test('parses split CRLF and multi-data frames, skips malformed payloads, and swaps exactly', async () => {
     const content = renderLivePage();
     const htmx = installHtmx();
+    content.dataset.roEtag = 'W/"last-good"';
+    content.dataset.roEtagPath = '/clusters/prod/pods/_table';
+    htmx.swap.mockImplementationOnce(() => {
+        // Invalidation is synchronous, before a View-Transition-delayed swap
+        // could let a terminal frame engage fallback polling.
+        expect(content.dataset.roEtag).toBeUndefined();
+        expect(content.dataset.roEtagPath).toBeUndefined();
+    });
     installFetch(async () => {
         const payload = JSON.stringify({
             g: liveState.gen,
@@ -785,7 +793,9 @@ describe.each([
 ] as const)('%s discard', (reason) => {
     test('drops the full frame before htmx.swap and increments observability', async () => {
         const response = deferred<Response>();
-        renderLivePage();
+        const content = renderLivePage();
+        content.dataset.roEtag = 'W/"last-good"';
+        content.dataset.roEtagPath = '/clusters/prod/pods/_table';
         const htmx = installHtmx();
         installFetch(() => response.promise);
         window.history.replaceState(null, '', '/clusters/prod/pods');
@@ -811,6 +821,8 @@ describe.each([
         await vi.waitFor(() => expect(window.roLive.discards()).toBe(before + 1));
         expect(htmx.swap).not.toHaveBeenCalled();
         expect(dependencies.pruneSettledListRequests).toHaveBeenCalledTimes(2);
+        expect(content.dataset.roEtag).toBe('W/"last-good"');
+        expect(content.dataset.roEtagPath).toBe('/clusters/prod/pods/_table');
     });
 });
 

@@ -26,6 +26,7 @@
 // orchestrated in legacy.js's htmx:beforeSwap hook, which imports liveState +
 // liveTeardown from this module so the needle literals stay inside that hook.
 
+import { clearListValidator } from './list-etag.js';
 import { classifyStreamClose, shouldDiscardPush } from './live-policy.js';
 import {
     containerListRequestsInFlight,
@@ -323,6 +324,11 @@ function liveMorph(html: string): void {
     if (!content || !htmx || typeof htmx.swap !== 'function') {
         return;
     }
+    // A pushed snapshot has no HTTP validator metadata. Invalidate BEFORE
+    // htmx.swap: global View Transitions may defer afterSwap, while a terminal
+    // frame can engage fallback polling immediately after this accepted frame.
+    // Discarded frames never reach liveMorph and therefore retain the pair.
+    clearListValidator();
     htmx.swap(
         content,
         html,

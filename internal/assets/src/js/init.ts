@@ -28,6 +28,7 @@
 import { colsPopOpen, setColsPopOpen, syncColsPopState } from './columns.js';
 import { closeRowMenu } from './context-menu.js';
 import { applyLiveNameFilter, captureRowModelFromDocument, updateFilterAC } from './filters.js';
+import { rememberListValidator, suppressListNotModified } from './list-etag.js';
 import { liveApply, liveOnListSwap, liveState, liveTeardown } from './live.js';
 import { initLogsFollow } from './logs.js';
 import { collapseSectionsFromHash } from './misc-ui.js';
@@ -135,6 +136,11 @@ document.addEventListener('htmx:beforeRequest', handleSortPreferenceRequest);
 // rows by data-key after EVERY swap (tick or user sort/filter).
 document.addEventListener('htmx:afterSwap', (event) => {
     if (isListRefreshEvent(event)) {
+        // Bind the response validator to the exact `_table` request before any
+        // repair can trigger or observe another refresh. A Live synthetic swap
+        // carries roLivePush and clears the pair idempotently here (live.ts has
+        // already invalidated it synchronously before starting the swap).
+        rememberListValidator(event);
         noteRefreshRecovery();
         clearListStale();
         reapplyRowState();
@@ -188,6 +194,14 @@ document.addEventListener('htmx:afterSwap', (event) => {
 // INSIDE it. The two listeners stay in THIS order; the reset literals stay here.
 document.addEventListener('htmx:beforeSwap', (event) => {
     const detail = (event as CustomEvent).detail;
+    // htmx 2.0 classifies every 3xx as swapping. An exact app-managed 304 has
+    // no body to morph: keep the last-good DOM, recover stale/backoff state,
+    // and return before the ordinary afterSwap repair/Live-reopen pipeline.
+    if (suppressListNotModified(event)) {
+        noteRefreshRecovery();
+        clearListStale();
+        return;
+    }
     if (detail && detail.target === document.body) {
         // HTMX deliberately treats 4xx/5xx responses as non-swapping by
         // default. That is the right policy for an in-place list refresh --

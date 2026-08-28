@@ -38,6 +38,7 @@
 // DIRECTLY (the Unit-12 dismantling of the window.roClusterBridge seam): the
 // virtualizer is a module now, so those callers reach it by name at call time.
 
+import { clearListValidator } from './list-etag.js';
 import { requestListRefresh } from './refresh.js';
 import { reapplyRowState } from './row-selection.js';
 import {
@@ -101,6 +102,15 @@ const virtState: VirtState = {
     pendingRows: null,
     pendingScrollY: null,
 };
+
+// Multiple descendant htmx:load events can run virtualizeInit for the same
+// history-restored viewport slice before its forced rebuild settles. Keep that
+// recovery one-shot for the exact mounted content/tbody pair; an actual list
+// afterSwap (or a fresh complete model) clears it.
+let historyRecoveryPending: {
+    content: HTMLElement;
+    tbody: HTMLTableSectionElement;
+} | null = null;
 
 export function virtualizerActive(): boolean {
     return virtState.active && virtState.tbody?.isConnected === true;
@@ -257,7 +267,7 @@ function virtBindMounts(): boolean {
 export function virtualizeInit(): void {
     const content = document.getElementById('resource-list-content');
     const wrap = content?.querySelector('.ro-table-wrap.ro-windowed');
-    if (!wrap) {
+    if (!content || !wrap) {
         virtReset(); // small list / non-list page: windowing disengaged
         return;
     }
@@ -271,11 +281,18 @@ export function virtualizeInit(): void {
         if (virtState.active && virtState.tbody === tbody) {
             return; // already engaged on this very tbody (idempotent re-init)
         }
+        if (historyRecoveryPending?.content === content && historyRecoveryPending.tbody === tbody) {
+            return; // this exact cached slice already has one rebuild in flight
+        }
         // A WINDOWED snapshot restored from the history cache: only the cached
         // window's rows exist, the full set is gone. Re-fetch the complete
         // fragment through the container's own programmatic path (RO-No-Push);
-        // the adoption pipeline rebuilds the window from it.
+        // the adoption pipeline rebuilds the window from it. The cached DOM is
+        // only a viewport slice, so its otherwise-valid ETag cannot authorize a
+        // bodyless 304: force one full 200 model before conditionals resume.
         virtReset();
+        historyRecoveryPending = { content, tbody };
+        clearListValidator();
         requestListRefresh();
         return;
     }
@@ -287,6 +304,7 @@ export function virtualizeInit(): void {
         virtReset(); // a v1 multi-type page: no identity rows -> no windowing
         return;
     }
+    historyRecoveryPending = null;
     virtReset();
     virtState.table = table;
     virtState.tbody = tbody;
@@ -334,6 +352,9 @@ export function virtualizePrepareSwap(fragment: DocumentFragment): void {
 // AFTER applyLiveNameFilter re-derived visibleKeys from the surviving draft, so
 // the re-window consumes fresh filter state.
 export function virtualizeAfterSwap(): void {
+    // htmx only emits afterSwap after a response actually landed. That success
+    // resolves any one-shot history rebuild gate; HTTP failures never get here.
+    historyRecoveryPending = null;
     const pending = virtState.pendingRows;
     virtState.pendingRows = null;
     if (!pending) {

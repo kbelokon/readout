@@ -20,6 +20,7 @@ const steps = vi.hoisted(() => ({
     liveState: { status: 'idle', streamPath: '' },
     liveTeardown: vi.fn(),
     noteRefreshRecovery: vi.fn(),
+    rememberListValidator: vi.fn(),
     reapplyRowState: vi.fn(),
     roPrefsSetSort: vi.fn(),
     setColsPopOpen: vi.fn(),
@@ -27,6 +28,7 @@ const steps = vi.hoisted(() => ({
     syncColsPopState: vi.fn(),
     syncRefreshUI: vi.fn(),
     syncThemeTogglePostTarget: vi.fn(),
+    suppressListNotModified: vi.fn((_event: Event) => false),
     updateBulkBar: vi.fn(),
     updateFilterAC: vi.fn(),
     virtualizeAfterSwap: vi.fn(),
@@ -43,6 +45,10 @@ vi.mock('./filters.js', () => ({
     applyLiveNameFilter: steps.applyLiveNameFilter,
     captureRowModelFromDocument: steps.captureRowModelFromDocument,
     updateFilterAC: steps.updateFilterAC,
+}));
+vi.mock('./list-etag.js', () => ({
+    rememberListValidator: steps.rememberListValidator,
+    suppressListNotModified: steps.suppressListNotModified,
 }));
 vi.mock('./live.js', () => ({
     liveApply: steps.liveApply,
@@ -122,6 +128,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     steps.colsPopOpen.mockReturnValue(false);
     steps.isListRefreshEvent.mockReturnValue(false);
+    steps.suppressListNotModified.mockReset().mockReturnValue(false);
     steps.liveState.status = 'idle';
     steps.liveState.streamPath = '';
 });
@@ -232,6 +239,74 @@ describe('htmx swap lifecycle', () => {
         expect(steps.liveTeardown).not.toHaveBeenCalled();
     });
 
+    test('an exact list 304 recovers without entering the afterSwap repair or Live pipeline', () => {
+        const content = document.createElement('div');
+        content.id = 'resource-list-content';
+        document.body.appendChild(content);
+        const detail = {
+            elt: content,
+            target: content,
+            xhr: { status: 304 },
+            requestConfig: { elt: content },
+            shouldSwap: true,
+            isError: true,
+        };
+        steps.suppressListNotModified.mockImplementationOnce((event: Event) => {
+            const matched = (event as CustomEvent).detail;
+            matched.shouldSwap = false;
+            matched.isError = false;
+            return true;
+        });
+
+        document.dispatchEvent(new CustomEvent('htmx:beforeSwap', { detail }));
+
+        expect(detail.shouldSwap).toBe(false);
+        expect(detail.isError).toBe(false);
+        expectCalledOnceInOrder(
+            steps.suppressListNotModified,
+            steps.noteRefreshRecovery,
+            steps.clearListStale,
+        );
+        expect(steps.rememberListValidator).not.toHaveBeenCalled();
+        expect(steps.reapplyRowState).not.toHaveBeenCalled();
+        expect(steps.applyLiveNameFilter).not.toHaveBeenCalled();
+        expect(steps.virtualizeAfterSwap).not.toHaveBeenCalled();
+        expect(steps.liveOnListSwap).not.toHaveBeenCalled();
+        expect(steps.liveTeardown).not.toHaveBeenCalled();
+    });
+
+    test('an unmatched current-list 304 stays non-swapping but takes the responseError path', () => {
+        const content = document.createElement('div');
+        content.id = 'resource-list-content';
+        document.body.appendChild(content);
+        const detail = {
+            elt: content,
+            target: content,
+            xhr: { status: 304 },
+            requestConfig: { elt: document.createElement('a') },
+            shouldSwap: true,
+            isError: false,
+        };
+        steps.suppressListNotModified.mockImplementationOnce((event: Event) => {
+            const unmatched = (event as CustomEvent).detail;
+            unmatched.shouldSwap = false;
+            unmatched.isError = true;
+            return false;
+        });
+
+        document.dispatchEvent(new CustomEvent('htmx:beforeSwap', { detail }));
+
+        expect(detail.shouldSwap).toBe(false);
+        expect(detail.isError).toBe(true);
+        expect(steps.suppressListNotModified).toHaveBeenCalledExactlyOnceWith(expect.any(Event));
+        expect(steps.noteRefreshRecovery).not.toHaveBeenCalled();
+        expect(steps.clearListStale).not.toHaveBeenCalled();
+        expect(steps.rememberListValidator).not.toHaveBeenCalled();
+        expect(steps.reapplyRowState).not.toHaveBeenCalled();
+        expect(steps.virtualizeAfterSwap).not.toHaveBeenCalled();
+        expect(steps.liveOnListSwap).not.toHaveBeenCalled();
+    });
+
     test('tears down the old screen only for a body swap and resets live identity', () => {
         const content = document.createElement('div');
         document.body.appendChild(content);
@@ -275,6 +350,7 @@ describe('htmx swap lifecycle', () => {
         document.dispatchEvent(event);
 
         expectCalledOnceInOrder(
+            steps.rememberListValidator,
             steps.noteRefreshRecovery,
             steps.clearListStale,
             steps.reapplyRowState,
@@ -286,6 +362,7 @@ describe('htmx swap lifecycle', () => {
             steps.liveOnListSwap,
         );
         expect(steps.setColsPopOpen).toHaveBeenCalledExactlyOnceWith(true);
+        expect(steps.rememberListValidator).toHaveBeenCalledExactlyOnceWith(event);
         expect(steps.liveOnListSwap).toHaveBeenCalledExactlyOnceWith(event);
     });
 
@@ -296,6 +373,7 @@ describe('htmx swap lifecycle', () => {
 
         expect(steps.isListRefreshEvent).toHaveBeenCalledExactlyOnceWith(event);
         expect(steps.noteRefreshRecovery).not.toHaveBeenCalled();
+        expect(steps.rememberListValidator).not.toHaveBeenCalled();
         expect(steps.clearListStale).not.toHaveBeenCalled();
         expect(steps.reapplyRowState).not.toHaveBeenCalled();
         expect(steps.applyLiveNameFilter).not.toHaveBeenCalled();
@@ -330,6 +408,7 @@ describe('htmx swap lifecycle', () => {
         document.dispatchEvent(event);
 
         expectCalledOnceInOrder(
+            steps.rememberListValidator,
             steps.noteRefreshRecovery,
             steps.clearListStale,
             steps.reapplyRowState,

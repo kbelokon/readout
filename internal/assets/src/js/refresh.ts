@@ -23,6 +23,7 @@
 // htmx:abort surviving in the bundle -- the FORMS are preserved here.
 
 import type { Binding } from './events.js';
+import { configureListValidatorRequest } from './list-etag.js';
 import { liveApply, liveFallbackSeconds } from './live.js';
 import {
     nextFailureStage,
@@ -131,12 +132,26 @@ function isUserListRequest(event: Event): boolean {
 // only genuine user gestures create history entries.
 export function handleRefreshConfigRequest(event: Event): void {
     const detail = requestDetail(event);
-    const elt = Object(detail.elt) as { id?: unknown };
-    if (elt.id !== 'resource-list-content') {
-        return;
+    const content = document.getElementById('resource-list-content');
+    const sourceIsContent = content !== null && detail.elt === content;
+    const targetIsContent = content !== null && detail.target === content;
+    if (sourceIsContent || targetIsContent) {
+        const headers = Object(detail.headers) as Record<string, unknown>;
+        for (const name of Object.keys(headers)) {
+            if (name.toLowerCase() === 'ro-no-push') {
+                delete headers[name];
+            }
+        }
+        if (sourceIsContent && (detail.target === undefined || targetIsContent)) {
+            // This marker is app-owned: exactly one canonical spelling exists
+            // only on a current-container request that swaps itself.
+            headers['RO-No-Push'] = 'true';
+        }
     }
-    const headers = Object(detail.headers) as Record<string, string>;
-    headers['RO-No-Push'] = 'true';
+    // This also strips a spoofed conditional header from user list traffic.
+    // Only the current container + exact stored `_table` URL earns the
+    // app-managed If-None-Match value.
+    configureListValidatorRequest(event);
 }
 
 document.addEventListener('htmx:configRequest', handleRefreshConfigRequest);
