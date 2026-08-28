@@ -12,7 +12,7 @@ TEMPL_VERSION := v0.3.1020
 # tests/e2e/package.json. The `e2e-docker` target verifies the two agree before
 # running, so the pin cannot drift silently. Always linux/amd64 (the local
 # daemon is arm64; Rosetta emulation runs it).
-PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.60.0-noble
+PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.62.1-noble
 
 # Go 1.27's Darwin race linker emits -Wl,-U,..., which Zig 0.16 does not
 # implement. Keep Zig for normal cgo/mutation work and use Apple ld only here.
