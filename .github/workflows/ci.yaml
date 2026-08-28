@@ -59,7 +59,7 @@ jobs:
           cache-dependency-path: go.sum
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: "26.8.1"
           cache: npm
           cache-dependency-path: tests/e2e/package-lock.json
       - name: Install Playwright browser + OS deps (Chromium)
@@ -93,7 +93,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24.19.0"
+          node-version: "26.8.1"
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install deps
