@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.11.4
-appVersion: 0.11.4
+version: 0.11.5
+appVersion: 0.11.5
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,9 +29,9 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.11.4
+      image: ghcr.io/kbelokon/readout:0.11.5
   artifacthub.io/changes: |
-    - kind: security
-      description: "Update golang.org/x/text to v0.40.0, fixing GO-2026-5970 (CVE-2026-56852), an infinite loop on invalid UTF-8 input."
+    - kind: fixed
+      description: "Harden OIDC identity verification, Kubernetes client and discovery handling, bounded upstream responses, streaming, rendering, and frontend interaction state around malformed and boundary inputs."
     - kind: changed
-      description: "Update the default readout image to v0.11.4 with Kubernetes client libraries v0.36.3, Prometheus client_golang v1.24.1, a refreshed distroless base image, and frontend/tooling dependency updates."
+      description: "Update the default readout image to v0.11.5 with Go 1.27.0, Kubernetes client libraries v0.36.4, and refreshed runtime and frontend dependencies."
