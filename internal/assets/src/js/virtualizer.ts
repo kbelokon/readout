@@ -103,7 +103,7 @@ const virtState: VirtState = {
 };
 
 export function virtualizerActive(): boolean {
-    return virtState.active && !!virtState.tbody && virtState.tbody.isConnected;
+    return virtState.active && virtState.tbody?.isConnected === true;
 }
 
 function virtReset(): void {
@@ -156,7 +156,7 @@ function virtMeasureRowHeight(): number {
     const first = rendered[0].getBoundingClientRect();
     const last = rendered[rendered.length - 1].getBoundingClientRect();
     const pitch = (last.bottom - first.top) / rendered.length;
-    return pitch > 0 ? pitch : 0;
+    return Math.max(0, pitch);
 }
 
 // virtFallbackRowHeight is the fixed-row-height formula (--row-py×2 + line-height + the row
@@ -212,7 +212,7 @@ function virtComputeVisible(): void {
     const keys = roRowModel().visibleKeys;
     virtState.visible = keys
         ? virtState.rows.filter((tr) => keys.has(tr.dataset.key as string))
-        : virtState.rows.slice();
+        : virtState.rows;
 }
 
 // virtRenderWindow renders the current slice between the two spacers and re-keys
@@ -244,14 +244,11 @@ function virtRenderWindow(): void {
 function virtBindMounts(): boolean {
     const content = document.getElementById('resource-list-content');
     const wrap = content?.querySelector('.ro-table-wrap.ro-windowed');
-    const table = wrap?.querySelector('table.ro-table');
-    const tbody =
-        table && (table as HTMLTableElement).tBodies.length > 0
-            ? (table as HTMLTableElement).tBodies[0]
-            : null;
-    virtState.table = (table as HTMLTableElement) || null;
-    virtState.tbody = tbody || null;
-    return !!tbody;
+    const table = wrap?.querySelector<HTMLTableElement>('table.ro-table') ?? null;
+    const tbody = table?.tBodies.item(0) ?? null;
+    virtState.table = table;
+    virtState.tbody = tbody;
+    return tbody !== null;
 }
 
 // virtualizeInit is the runInit engagement step. ORDER CONTRACT: it runs AFTER
@@ -264,8 +261,8 @@ export function virtualizeInit(): void {
         virtReset(); // small list / non-list page: windowing disengaged
         return;
     }
-    const table = wrap.querySelector('table.ro-table') as HTMLTableElement | null;
-    const tbody = table && table.tBodies.length > 0 ? table.tBodies[0] : null;
+    const table = wrap.querySelector<HTMLTableElement>('table.ro-table');
+    const tbody = table?.tBodies.item(0) ?? null;
     if (!tbody) {
         virtReset();
         return;
@@ -317,12 +314,7 @@ export function virtualizePrepareSwap(fragment: DocumentFragment): void {
     if (!tbody) {
         return; // below-threshold fragment -> plain morph; afterSwap disengages
     }
-    const rows: HTMLElement[] = [];
-    Array.prototype.forEach.call(tbody.children, (el: HTMLElement) => {
-        if (el.tagName === 'TR' && el.dataset.key) {
-            rows.push(el);
-        }
-    });
+    const rows = Array.from(tbody.querySelectorAll<HTMLElement>(':scope > tr[data-key]'));
     if (rows.length === 0) {
         return;
     }
@@ -348,9 +340,7 @@ export function virtualizeAfterSwap(): void {
         // The fragment fell below the threshold (or was a whole-list state
         // block): the morph landed the complete content in the DOM, so the
         // virtualizer disengages and leaves it alone.
-        if (virtState.active) {
-            virtReset();
-        }
+        virtReset();
         return;
     }
     const prior = virtState.byKey;
@@ -403,11 +393,7 @@ export function virtualizeAfterSwap(): void {
 // window is diffed here against the prior row set by identity. Disabled under
 // prefers-reduced-motion exactly like the idiomorph hooks.
 function virtFlashChangedCells(prior: Map<string, HTMLElement>): void {
-    if (
-        !prior ||
-        prior.size === 0 ||
-        window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    ) {
+    if (prior.size === 0 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         return;
     }
     (virtState.tbody as HTMLTableSectionElement)
@@ -417,17 +403,18 @@ function virtFlashChangedCells(prior: Map<string, HTMLElement>): void {
             if (!old) {
                 return;
             }
-            const oldCells = old.children;
-            const newCells = tr.children;
-            for (let i = 0; i < newCells.length; i++) {
-                const o = oldCells[i];
-                const nd = newCells[i];
-                if (o && nd && nd.tagName === 'TD' && o.textContent !== nd.textContent) {
-                    nd.classList.remove('ro-cell-changed');
-                    void (nd as HTMLElement).offsetWidth; // restart the animation
-                    nd.classList.add('ro-cell-changed');
+            Array.from(tr.children).forEach((newCell, index) => {
+                const oldCell = old.children.item(index);
+                if (
+                    oldCell &&
+                    newCell.tagName === 'TD' &&
+                    oldCell.textContent !== newCell.textContent
+                ) {
+                    newCell.classList.remove('ro-cell-changed');
+                    void (newCell as HTMLElement).offsetWidth; // restart the animation
+                    newCell.classList.add('ro-cell-changed');
                 }
-            }
+            });
         });
 }
 
@@ -453,14 +440,8 @@ export function virtMoveFocus(delta: number): boolean {
     if (list.length === 0) {
         return false;
     }
-    let current = -1;
     const focusKey = roRowState().focusedKey();
-    for (let i = 0; i < list.length; i++) {
-        if (list[i].dataset.key === focusKey) {
-            current = i;
-            break;
-        }
-    }
+    const current = list.findIndex((row) => row.dataset.key === focusKey);
     const next = clampFocusIndex(current, delta, list.length);
     virtualizeScrollToIndex(next);
     roRowState().setFocus(list[next].dataset.key as string);
@@ -535,8 +516,9 @@ window.addEventListener('resize', virtOnScroll);
 // Web-font activation can shift the line-height the row pitch was measured
 // against (engagement at DOMContentLoaded can precede the Geist swap-in);
 // re-measure once the fonts settle.
-if (document.fonts?.ready && typeof document.fonts.ready.then === 'function') {
-    document.fonts.ready.then(() => {
+const fontReady = document.fonts?.ready;
+if (fontReady && typeof fontReady.then === 'function') {
+    void fontReady.then(() => {
         if (!virtualizerActive()) {
             return;
         }

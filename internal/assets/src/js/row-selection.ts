@@ -135,7 +135,7 @@ export function clearRowState(): void {
 // BULK_NAMES_MAX the Download button disables and ONE toast announces the
 // refusal per cap crossing (re-armed once the selection drops back under).
 export const BULK_NAMES_MAX = 100;
-let bulkOverCapToasted = false;
+let bulkOverCapToasted: boolean | undefined;
 
 export function updateBulkBar(): void {
     const bar = document.getElementById('ro-bulkbar');
@@ -144,7 +144,7 @@ export function updateBulkBar(): void {
     }
     const count = rowSelection.size;
     const label = document.getElementById('ro-bulk-count');
-    if (label && count > 0) {
+    if (label) {
         label.textContent = `${count} selected`;
     }
     bar.classList.toggle('is-open', count > 0);
@@ -180,19 +180,18 @@ export function roCopyText(text: string, done: (ok: boolean) => void): void {
     const fallback = (): boolean => {
         const ta = document.createElement('textarea');
         ta.value = text;
-        ta.setAttribute('readonly', '');
+        ta.readOnly = true;
         ta.style.position = 'fixed';
         ta.style.top = '-1000px';
         document.body.appendChild(ta);
-        ta.select();
-        let ok = false;
         try {
-            ok = document.execCommand('copy');
+            ta.select();
+            return document.execCommand('copy');
         } catch {
-            ok = false;
+            return false;
+        } finally {
+            ta.remove();
         }
-        ta.remove();
-        return ok;
     };
     if (navigator.clipboard?.writeText) {
         navigator.clipboard.writeText(text).then(

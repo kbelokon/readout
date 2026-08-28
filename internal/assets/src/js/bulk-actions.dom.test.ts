@@ -52,6 +52,14 @@ beforeEach(() => {
     window.history.replaceState(null, '', '/');
 });
 
+test('declares the exact delegated-event contract', () => {
+    expect(bulkBindings.map(({ event, selector, stop }) => ({ event, selector, stop }))).toEqual([
+        { event: 'click', selector: '#ro-bulk-download', stop: true },
+        { event: 'click', selector: '#ro-bulk-copy', stop: true },
+        { event: 'click', selector: '#ro-bulk-clear', stop: true },
+    ]);
+});
+
 describe('bulk copy', () => {
     test('copies every full name and keeps feedback visible for 1100ms from the latest copy', () => {
         vi.useFakeTimers();
@@ -140,6 +148,35 @@ describe('bulk download', () => {
         );
         download.handler(new MouseEvent('click'), button);
         expect(window.location.hash).toBe('#before');
+    });
+
+    test('allows exactly the 100-name cap', () => {
+        const button = document.getElementById('ro-bulk-download') as HTMLElement;
+        setSelectedEntries(
+            Array.from({ length: 100 }, (_, index) => ({
+                key: `prod/default/item-${index}`,
+                name: `item-${index}`,
+            })),
+        );
+
+        binding('#ro-bulk-download').handler(new MouseEvent('click'), button);
+
+        expect(window.location.hash).toContain('&names=item-0%2Citem-1%2C');
+        expect(window.location.hash).toContain('item-99');
+    });
+
+    test('uses full names when an all-namespaces bar has no cluster identity', () => {
+        const bar = document.getElementById('ro-bulkbar') as HTMLElement;
+        bar.dataset.bulkAllns = 'true';
+        delete bar.dataset.bulkCluster;
+        setSelectedEntries([{ key: '/team-a/api-0', name: 'api full name' }]);
+
+        binding('#ro-bulk-download').handler(
+            new MouseEvent('click'),
+            document.getElementById('ro-bulk-download'),
+        );
+
+        expect(window.location.hash).toBe('#/bulk?format=yaml&names=api%20full%20name');
     });
 
     test('does not navigate when the server did not provide a bulk href', () => {

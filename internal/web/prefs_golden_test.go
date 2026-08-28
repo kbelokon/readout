@@ -16,7 +16,8 @@ package web
 // Fixture classes (see each file's "doc"): simple payload; UTF-8 CRD column
 // names; < > & metachars (the bug); the at-cap boundary; over-cap eviction
 // (ASCII) with documented victims; over-cap eviction (multibyte) pinning the
-// byte-vs-UTF-16-code-unit cap equivalence; and corrupt decode inputs.
+// byte-vs-UTF-16-code-unit cap equivalence; namespace-map ordering/escaping;
+// and corrupt decode inputs.
 
 import (
 	"encoding/json"
@@ -75,6 +76,7 @@ func TestPrefsGoldenEncode(t *testing.T) {
 		"04_at_cap_boundary.json",
 		"05_over_cap_eviction.json",
 		"06_over_cap_multibyte.json",
+		"08_namespace_key_order.json",
 	}
 	for _, name := range encodeFiles {
 		t.Run(name, func(t *testing.T) {

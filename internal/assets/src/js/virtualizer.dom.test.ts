@@ -35,15 +35,18 @@ interface VirtualizerSeam {
 
 interface ListOptions {
     changedValues?: Readonly<Record<string, string>>;
+    columnCount?: number;
     filteredKeys?: ReadonlySet<string>;
+    lineHeight?: string;
     windowed?: boolean;
 }
 
 const ROW_HEIGHT = 20;
-const HEADER_WIDTHS = [120, 180];
 
 let animationFrames: FrameRequestCallback[];
 let focusedKey: string | null;
+let geometryRowHeight: number;
+let headerWidths: number[];
 let reducedMotion: boolean;
 let scrollYValue: number;
 let tbodyDocumentTop: number;
@@ -81,7 +84,10 @@ function buildList(keys: readonly string[], options: ListOptions = {}): HTMLElem
     table.className = 'ro-table';
     const thead = table.createTHead();
     const header = thead.insertRow();
-    header.append(document.createElement('th'), document.createElement('th'));
+    const columnCount = options.columnCount ?? 2;
+    for (let column = 0; column < columnCount; column += 1) {
+        header.append(document.createElement('th'));
+    }
     const tbody = table.createTBody();
 
     keys.forEach((key, index) => {
@@ -94,8 +100,19 @@ function buildList(keys: readonly string[], options: ListOptions = {}): HTMLElem
         }
         const identity = row.insertCell();
         identity.textContent = key;
-        const value = row.insertCell();
-        value.textContent = options.changedValues?.[key] ?? `value-${key}`;
+        if (options.lineHeight) {
+            identity.style.lineHeight = options.lineHeight;
+        }
+        for (let column = 1; column < columnCount; column += 1) {
+            const value = row.insertCell();
+            value.textContent =
+                column === 1
+                    ? (options.changedValues?.[key] ?? `value-${key}`)
+                    : `extra-${column}-${key}`;
+            if (options.lineHeight) {
+                value.style.lineHeight = options.lineHeight;
+            }
+        }
     });
 
     wrap.append(table);
@@ -150,14 +167,18 @@ function installBrowserGeometry(): void {
         const element = this as HTMLElement;
         if (element.tagName === 'TH') {
             const index = Array.from(element.parentElement?.children ?? []).indexOf(element);
-            return rect(0, HEADER_WIDTHS[index] ?? 100, ROW_HEIGHT);
+            return rect(0, headerWidths[index] ?? 100, ROW_HEIGHT);
         }
         if (element.tagName === 'TBODY') {
             return rect(tbodyDocumentTop - scrollYValue, 300, ROW_HEIGHT);
         }
         if (element.matches('tr[data-key]')) {
             const index = Number(element.dataset.testIndex ?? 0);
-            return rect(tbodyDocumentTop - scrollYValue + index * ROW_HEIGHT, 300, ROW_HEIGHT);
+            return rect(
+                tbodyDocumentTop - scrollYValue + index * geometryRowHeight,
+                300,
+                geometryRowHeight,
+            );
         }
         if (element.matches('header.ro-topbar')) {
             return rect(0, 300, 30);
@@ -214,10 +235,13 @@ function installBrowserGeometry(): void {
 beforeEach(() => {
     animationFrames = [];
     focusedKey = null;
+    geometryRowHeight = ROW_HEIGHT;
+    headerWidths = [120, 180];
     reducedMotion = false;
     scrollYValue = 0;
     tbodyDocumentTop = 0;
     viewportHeight = 100;
+    document.documentElement.style.removeProperty('--row-py');
     setFocusMock = vi.fn((key: string) => {
         focusedKey = key;
     });
@@ -266,6 +290,7 @@ describe('engagement', () => {
         expect(spacers).toHaveLength(2);
         expect(spacers[0]).toHaveAttribute('aria-hidden', 'true');
         expect(spacers[0].firstElementChild).toHaveAttribute('colspan', '2');
+        expect((spacers[0].firstElementChild as HTMLElement).style.height).toBe('0px');
         expect(markedTbody.closest('table')).toHaveClass('ro-virtualized');
         expect(markedTbody.closest('table')?.querySelectorAll('th')[0]).toHaveStyle({
             width: '120px',
@@ -297,6 +322,115 @@ describe('engagement', () => {
         expect(virtRows()).toStrictEqual([]);
         expect(tbody).toContainElement(cachedSpacer);
     });
+
+    test('refetches a cached spacer mounted on a different tbody from the active one', () => {
+        renderList(rowKeys(20));
+        virtualizeInit();
+        expect(virtualizerActive()).toBe(true);
+        const cached = renderList(['cached-row']);
+        const cachedSpacer = document.createElement('tr');
+        cachedSpacer.className = 'ro-vspacer';
+        cachedSpacer.append(document.createElement('td'));
+        cached.replaceChildren(cachedSpacer);
+
+        virtualizeInit();
+
+        expect(dependencies.requestListRefresh).toHaveBeenCalledOnce();
+        expect(virtualizerActive()).toBe(false);
+        expect(virtRows()).toStrictEqual([]);
+    });
+
+    test('fully disengages when a live list becomes plain, malformed, or empty', () => {
+        const engage = () => {
+            renderList(['row-0', 'row-1']);
+            virtualizeInit();
+            expect(virtualizerActive()).toBe(true);
+        };
+
+        engage();
+        const plain = renderList(['plain-row'], { windowed: false });
+        virtualizeInit();
+        expect(virtualizerActive()).toBe(false);
+        expect(virtRows()).toStrictEqual([]);
+        expect(virtVisible()).toStrictEqual([]);
+        expect(directRowKeys(plain)).toStrictEqual(['plain-row']);
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 0, total: 0 });
+        expect(virtualizerSeam().scrollToKey('plain-row')).toBe(false);
+
+        engage();
+        document.body.innerHTML = `
+            <div id="resource-list-content">
+                <div class="ro-table-wrap ro-windowed">
+                    <table class="ro-table"><thead><tr><th>Name</th></tr></thead></table>
+                </div>
+            </div>`;
+        virtualizeInit();
+        expect(virtualizerActive()).toBe(false);
+        expect(virtRows()).toStrictEqual([]);
+
+        engage();
+        renderList([]);
+        virtualizeInit();
+        expect(virtualizerActive()).toBe(false);
+        expect(virtRows()).toStrictEqual([]);
+    });
+
+    test('reports a detached mount as inactive and leaves its viewport events inert', () => {
+        const tbody = renderList(rowKeys(40));
+        virtualizeInit();
+        expect(dependencies.reapplyRowState).toHaveBeenCalledOnce();
+
+        tbody.closest('#resource-list-content')?.remove();
+
+        expect(virtualizerActive()).toBe(false);
+        expect(virtualizerSeam().scrollToKey('row-0')).toBe(false);
+        // If the inactive guard regresses, the changed geometry would re-window
+        // the detached tbody and call reapplyRowState a second time.
+        scrollYValue = 400;
+        window.dispatchEvent(new Event('scroll'));
+        expect(animationFrames).toHaveLength(1);
+        flushAnimationFrames();
+        expect(dependencies.reapplyRowState).toHaveBeenCalledOnce();
+    });
+
+    test('uses CSS fallback geometry for a non-positive measured pitch and survives style errors', () => {
+        geometryRowHeight = 0;
+        document.documentElement.style.setProperty('--row-py', '5px');
+        let tbody = renderList(rowKeys(40), { lineHeight: '24px' });
+
+        virtualizeInit();
+
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 15, total: 40 });
+        expect(tbody.querySelector(':scope > tr.ro-vspacer:last-child td')).toHaveStyle({
+            height: '875px',
+        });
+
+        const computedStyle = vi.spyOn(window, 'getComputedStyle').mockImplementation(() => {
+            throw new Error('style engine unavailable');
+        });
+        tbody = renderList(rowKeys(40));
+
+        expect(() => virtualizeInit()).not.toThrow();
+        computedStyle.mockRestore();
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 15, total: 40 });
+        expect(tbody.querySelector(':scope > tr.ro-vspacer:last-child td')).toHaveStyle({
+            height: '925px',
+        });
+    });
+
+    test('a fresh full render clears any abandoned pending adoption', () => {
+        renderList(rowKeys(20));
+        virtualizeInit();
+        virtualizePrepareSwap(listFragment(rowKeys(25)));
+
+        renderList(rowKeys(30));
+        virtualizeInit();
+        setVisibleKeys(new Set(['row-29']));
+        virtualizeOnFilterChange();
+
+        expect(virtVisible().map((row) => row.dataset.key)).toStrictEqual(['row-29']);
+        expect(dependencies.reapplyRowState).toHaveBeenCalledTimes(3);
+    });
 });
 
 describe('swap adoption', () => {
@@ -312,6 +446,9 @@ describe('swap adoption', () => {
         });
 
         const incomingKeys = rowKeys(65);
+        const originalSpacers = Array.from(document.querySelectorAll('tr.ro-vspacer'));
+        headerWidths = [140, 200];
+        geometryRowHeight = 30;
         const fragment = listFragment(incomingKeys, {
             changedValues: { 'row-20': 'new value' },
         });
@@ -345,6 +482,9 @@ describe('swap adoption', () => {
         const liveTable = document.querySelector('table.ro-table');
         expect(liveTable).toHaveClass('ro-virtualized');
         expect(liveTable?.querySelectorAll('th')[1]).toHaveStyle({ width: '180px' });
+        expect(Array.from(document.querySelectorAll('tr.ro-vspacer'))).toStrictEqual(
+            originalSpacers,
+        );
     });
 
     test('does not animate adopted cell changes when reduced motion is requested', () => {
@@ -365,6 +505,129 @@ describe('swap adoption', () => {
         expect(changedCell).toHaveTextContent('after');
         expect(changedCell).not.toHaveClass('ro-cell-changed');
         expect(window.matchMedia).toHaveBeenCalledWith('(prefers-reduced-motion: reduce)');
+    });
+
+    test('cold-adopts a windowed fragment without a redundant correction at the exact fallback pitch', () => {
+        document.documentElement.style.setProperty('--row-py', '0.5px');
+        const fragment = listFragment(rowKeys(40));
+
+        virtualizePrepareSwap(fragment);
+
+        const prepared = fragment.querySelector('tbody') as HTMLTableSectionElement;
+        expect(
+            (prepared.querySelector(':scope > tr.ro-vspacer:first-child td') as HTMLElement).style
+                .height,
+        ).toBe('0px');
+        expect(prepared.querySelector(':scope > tr.ro-vspacer:last-child td')).toHaveStyle({
+            height: '800px',
+        });
+        document.body.replaceChildren(fragment.firstElementChild as Element);
+        virtualizeAfterSwap();
+
+        expect(virtualizerActive()).toBe(true);
+        expect(virtRows()).toHaveLength(40);
+        expect(dependencies.reapplyRowState).toHaveBeenCalledOnce();
+        expect(window.matchMedia).not.toHaveBeenCalled();
+        expect(scrollToMock).not.toHaveBeenCalled();
+    });
+
+    test('cold adoption corrects an approximate fallback pitch exactly once', () => {
+        const fragment = listFragment(rowKeys(40));
+        virtualizePrepareSwap(fragment);
+        document.body.replaceChildren(fragment.firstElementChild as Element);
+
+        virtualizeAfterSwap();
+
+        expect(virtualizerActive()).toBe(true);
+        expect(dependencies.reapplyRowState).toHaveBeenCalledTimes(2);
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 17, total: 40 });
+    });
+
+    test('does not correct a cold pitch at the exact half-pixel tolerance', () => {
+        document.documentElement.style.setProperty('--row-py', '0.5px');
+        const fragment = listFragment(rowKeys(40));
+        virtualizePrepareSwap(fragment);
+        geometryRowHeight = 20.5;
+        document.body.replaceChildren(fragment.firstElementChild as Element);
+
+        virtualizeAfterSwap();
+
+        expect(dependencies.reapplyRowState).toHaveBeenCalledOnce();
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 17, total: 40 });
+    });
+
+    test('remeasures column pins when an adopted table changes its column set', () => {
+        renderList(rowKeys(20));
+        virtualizeInit();
+        const fragment = listFragment(rowKeys(20), { columnCount: 3 });
+        virtualizePrepareSwap(fragment);
+        document.body.replaceChildren(fragment.firstElementChild as Element);
+
+        virtualizeAfterSwap();
+
+        const headers = document.querySelectorAll('table.ro-table th');
+        expect(headers).toHaveLength(3);
+        expect(headers[0]).toHaveStyle({ width: '120px' });
+        expect(headers[1]).toHaveStyle({ width: '180px' });
+        expect(headers[2]).toHaveStyle({ width: '100px' });
+        expect(document.querySelector('table.ro-table')).toHaveClass('ro-virtualized');
+        expect(document.querySelectorAll('tr.ro-vspacer td')[0]).toHaveAttribute('colspan', '3');
+        expect(document.querySelectorAll('tr.ro-vspacer td')[1]).toHaveAttribute('colspan', '3');
+    });
+
+    test('disengages after a below-threshold fragment or failed adoption mount', () => {
+        renderList(rowKeys(20));
+        virtualizeInit();
+        const plain = listFragment(['plain'], { windowed: false });
+        virtualizePrepareSwap(plain);
+        document.body.replaceChildren(plain.firstElementChild as Element);
+        virtualizeAfterSwap();
+        expect(virtualizerActive()).toBe(false);
+        expect(virtRows()).toStrictEqual([]);
+
+        renderList(rowKeys(20));
+        virtualizeInit();
+        const pending = listFragment(rowKeys(20));
+        virtualizePrepareSwap(pending);
+        document.body.innerHTML = '<div id="resource-list-content">state block</div>';
+        virtualizeAfterSwap();
+        expect(virtualizerActive()).toBe(false);
+        expect(virtRows()).toStrictEqual([]);
+    });
+
+    test('leaves a windowed fragment with no keyed rows untouched', () => {
+        const fragment = listFragment([]);
+        const tbody = fragment.querySelector('tbody') as HTMLTableSectionElement;
+        const unkeyed = tbody.insertRow();
+        unkeyed.insertCell().textContent = 'state row';
+
+        virtualizePrepareSwap(fragment);
+
+        expect(tbody.children).toHaveLength(1);
+        expect(tbody).toHaveTextContent('state row');
+        document.body.replaceChildren(fragment.firstElementChild as Element);
+        virtualizeAfterSwap();
+        expect(virtualizerActive()).toBe(false);
+    });
+
+    test('ignores unkeyed incoming rows and does not animate unchanged, added, or non-data cells', () => {
+        renderList(['row-0']);
+        virtualizeInit();
+        const fragment = listFragment(['row-0', 'row-1'], { columnCount: 3 });
+        const incomingBody = fragment.querySelector('tbody') as HTMLTableSectionElement;
+        const unkeyed = incomingBody.insertRow();
+        unkeyed.insertCell().textContent = 'not an identity row';
+        const row0 = incomingBody.querySelector('#id-row-0') as HTMLTableRowElement;
+        const replacementHeader = document.createElement('th');
+        replacementHeader.textContent = 'changed but not a data cell';
+        row0.replaceChild(replacementHeader, row0.children[1]);
+
+        virtualizePrepareSwap(fragment);
+        document.body.replaceChildren(fragment.firstElementChild as Element);
+        virtualizeAfterSwap();
+
+        expect(virtRows().map((row) => row.dataset.key)).toStrictEqual(['row-0', 'row-1']);
+        expect(document.querySelectorAll('.ro-cell-changed')).toHaveLength(0);
     });
 });
 
@@ -412,9 +675,59 @@ describe('full-set filtering and focus', () => {
         expect(virtMoveFocus(1)).toBe(false);
         expect(virtualizerSeam().scrollToKey('row-0')).toBe(false);
     });
+
+    test('starts an unknown focus at the first row and does not scroll a row already in view', () => {
+        renderList(rowKeys(20));
+        virtualizeInit();
+        focusedKey = 'detached-key';
+
+        expect(virtMoveFocus(1)).toBe(true);
+        expect(setFocusMock).toHaveBeenCalledExactlyOnceWith('row-0');
+        expect(scrollByMock).not.toHaveBeenCalled();
+        expect(virtualizerSeam().scrollToKey('row-1')).toBe(true);
+        expect(scrollByMock).not.toHaveBeenCalled();
+    });
+
+    test('keeps filtering inert while an adoption is pending and when disengaged', () => {
+        setVisibleKeys(new Set());
+        virtualizeOnFilterChange();
+        expect(dependencies.reapplyRowState).not.toHaveBeenCalled();
+
+        renderList(rowKeys(20));
+        virtualizeInit();
+        const visibleBefore = virtVisible();
+        const fragment = listFragment(rowKeys(25));
+        virtualizePrepareSwap(fragment);
+        setVisibleKeys(new Set(['row-24']));
+
+        virtualizeOnFilterChange();
+
+        expect(virtVisible()).toBe(visibleBefore);
+        expect(dependencies.reapplyRowState).toHaveBeenCalledOnce();
+    });
 });
 
 describe('viewport events', () => {
+    test('is inert before engagement', () => {
+        window.dispatchEvent(new Event('scroll'));
+
+        expect(animationFrames).toHaveLength(0);
+        expect(dependencies.reapplyRowState).not.toHaveBeenCalled();
+    });
+
+    test('rerenders when only the window start changes', () => {
+        renderList(rowKeys(15));
+        virtualizeInit();
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 15, total: 15 });
+
+        scrollYValue = 400;
+        window.dispatchEvent(new Event('scroll'));
+        flushAnimationFrames();
+
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 8, end: 15, total: 15 });
+        expect(dependencies.reapplyRowState).toHaveBeenCalledTimes(2);
+    });
+
     test('rAF-throttles scrolls, skips unchanged bounds, and reacts to viewport resize', () => {
         const tbody = renderList(rowKeys(80));
         virtualizeInit();

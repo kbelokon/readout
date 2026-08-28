@@ -51,7 +51,10 @@ declare const Idiomorph:
 // Reading an undeclared classic-script global directly throws before optional
 // chaining can help. Resolve it through typeof once so the bundle also loads on
 // pages where the optional vendor script is absent.
-const idiomorph = typeof Idiomorph === 'undefined' ? undefined : Idiomorph;
+const idiomorph =
+    typeof Idiomorph !== 'undefined' && typeof Idiomorph.morph === 'function'
+        ? Idiomorph
+        : undefined;
 
 // ---------------------------------------------------------------------------
 // Auto-refresh CHANGED-CELL flash -- honest + reduced-motion-safe.
@@ -70,28 +73,30 @@ const idiomorph = typeof Idiomorph === 'undefined' ? undefined : Idiomorph;
 // Disabled entirely under prefers-reduced-motion: we never register the callbacks,
 // so those users get a silent in-place morph (the progress bar handles that case
 // too, and refresh-spin is dropped in CSS). beforeNodeMorphed returns undefined
-// (NOT false) so it never cancels a morph; we read text only on element nodes.
+// (NOT false) so it never cancels a morph. Only TD text is read: this callback
+// runs for every morphed node, so walking every ancestor subtree would put avoidable
+// work on each polling/Live refresh.
 if (
     idiomorph?.defaults?.callbacks &&
     !window.matchMedia('(prefers-reduced-motion: reduce)').matches
 ) {
-    const PRIOR = new WeakMap<Element, string | null>();
+    const PRIOR = new WeakMap<Node, string | null>();
     idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode: Node) => {
-        if (oldNode && oldNode.nodeType === 1 && (oldNode as Element).tagName === 'TD') {
-            PRIOR.set(oldNode as Element, oldNode.textContent);
+        if (oldNode.nodeName !== 'TD') {
+            return;
         }
+        PRIOR.set(oldNode, oldNode.textContent);
         // return undefined -> idiomorph proceeds with the morph (false would skip it)
     };
     idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode: Node) => {
-        if (oldNode?.nodeType !== 1 || (oldNode as Element).tagName !== 'TD') {
+        // Only TD nodes enter PRIOR in the before hook, so map membership is the
+        // complete eligibility gate here; repeating the tag check is equivalent.
+        if (!PRIOR.has(oldNode)) {
             return;
         }
         const el = oldNode as HTMLElement;
-        if (!PRIOR.has(el)) {
-            return;
-        }
-        const before = PRIOR.get(el);
-        PRIOR.delete(el);
+        const before = PRIOR.get(oldNode);
+        PRIOR.delete(oldNode);
         if (before !== el.textContent) {
             el.classList.remove('ro-cell-changed');
             // force a reflow so re-adding the class restarts the animation if the
@@ -121,7 +126,7 @@ if (
 // re-sorted fragment MOVES the existing <tr> nodes instead of rewriting them
 // positionally. defaults.callbacks (the cell-flash hooks above) still merge in:
 // an explicit config object without `callbacks` inherits Idiomorph.defaults.
-if (typeof htmx !== 'undefined' && idiomorph) {
+if (typeof htmx !== 'undefined' && typeof htmx.defineExtension === 'function' && idiomorph) {
     htmx.defineExtension('ro-morph', {
         isInlineSwap: (swapStyle: string) => swapStyle === 'morph',
         handleSwap: (swapStyle: string, target: Element, fragment: DocumentFragment) => {
@@ -134,7 +139,7 @@ if (typeof htmx !== 'undefined' && idiomorph) {
             // even when a client-side windowing layer keeps only a
             // window of rows in the live DOM -- the free-text matcher and the
             // value-frequency autocomplete must never read the windowed DOM.
-            if (target && target.id === 'resource-list-content') {
+            if (target.id === 'resource-list-content') {
                 captureRowModel(fragment);
                 // Virtualization, AFTER the model capture: a
                 // >threshold fragment's rows are detached for adoption so

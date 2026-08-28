@@ -60,6 +60,17 @@ beforeEach(() => {
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 600 });
 });
 
+test('declares the exact delegated-event contract', () => {
+    expect(
+        contextMenuBindings.map(({ event, selector, stop }) => ({ event, selector, stop })),
+    ).toEqual([
+        { event: 'contextmenu', selector: undefined, stop: undefined },
+        { event: 'click', selector: '#ro-ctxmenu [data-ro-action]', stop: true },
+        { event: 'click', selector: undefined, stop: undefined },
+        { event: 'keydown', selector: undefined, stop: undefined },
+    ]);
+});
+
 describe('context menu state and row binding', () => {
     test('binds row labels and hrefs, hides unavailable actions, and clamps to the viewport', () => {
         const menu = document.getElementById('ro-ctxmenu') as HTMLElement;
@@ -80,6 +91,9 @@ describe('context menu state and row binding', () => {
             'data-href',
             '#download',
         );
+        expect(menu.querySelector('[data-ro-action="open"]')).not.toHaveAttribute('hidden');
+        expect(menu.querySelector('[data-ro-action="yaml"]')).not.toHaveAttribute('hidden');
+        expect(menu.querySelector('[data-ro-action="download"]')).not.toHaveAttribute('hidden');
         expect(menu.querySelector('[data-ro-action="logs"]')).toHaveAttribute('hidden');
         expect(menu.querySelector('[data-ro-action="logs"]')).not.toHaveAttribute('data-href');
 
@@ -95,6 +109,27 @@ describe('context menu state and row binding', () => {
 
         expect(rowSelection.lastKeySegment).toHaveBeenCalledExactlyOnceWith('prod/default/api-0');
         expect(document.getElementById('ro-ctxmenu')?.dataset.name).toBe('api-0');
+    });
+
+    test('clears every unavailable row action and stale name', () => {
+        const row = document.getElementById('row') as HTMLElement;
+        const menu = document.getElementById('ro-ctxmenu') as HTMLElement;
+        menu.dataset.name = 'stale-name';
+        delete row.dataset.href;
+        delete row.dataset.yaml;
+        delete row.dataset.download;
+        delete row.dataset.name;
+        delete row.dataset.key;
+
+        openRowMenu(row, 20, 20);
+
+        for (const action of ['open', 'yaml', 'logs', 'download']) {
+            const item = menu.querySelector(`[data-ro-action="${action}"]`);
+            expect(item).toHaveAttribute('hidden');
+            expect(item).not.toHaveAttribute('data-href');
+        }
+        expect(menu).not.toHaveAttribute('data-name');
+        expect(rowSelection.lastKeySegment).not.toHaveBeenCalled();
     });
 
     test('closeRowMenu is idempotent and synchronizes class with aria-hidden', () => {
@@ -176,6 +211,21 @@ describe('context menu actions', () => {
         expect(rowSelection.roCopyText).not.toHaveBeenCalled();
     });
 
+    test('copy without a bound name closes safely without touching the clipboard', () => {
+        const menu = document.getElementById('ro-ctxmenu') as HTMLElement;
+        delete menu.dataset.name;
+        menu.classList.add('is-open');
+        const copy = menu.querySelector('[data-ro-action="copy"]') as HTMLElement;
+
+        binding('click', '#ro-ctxmenu [data-ro-action]').handler(
+            targetedMouseEvent('click', copy),
+            copy,
+        );
+
+        expect(menu).not.toHaveClass('is-open');
+        expect(rowSelection.roCopyText).not.toHaveBeenCalled();
+    });
+
     test('the unconditional click and Escape bindings dismiss without stopping sibling work', () => {
         const menu = document.getElementById('ro-ctxmenu') as HTMLElement;
         openRowMenu(document.getElementById('row') as HTMLElement, 20, 20);
@@ -186,6 +236,9 @@ describe('context menu actions', () => {
         expect(menu).not.toHaveClass('is-open');
 
         openRowMenu(document.getElementById('row') as HTMLElement, 20, 20);
+        binding('keydown').handler(new KeyboardEvent('keydown', { key: 'Enter' }), null);
+        expect(menu).toHaveClass('is-open');
+
         binding('keydown').handler(new KeyboardEvent('keydown', { key: 'Escape' }), null);
         expect(menu).not.toHaveClass('is-open');
     });

@@ -5,11 +5,12 @@
 //
 // Run: `npm test`.
 
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import {
     buildPaletteGroups,
     dedupeRecents,
+    feedEntryLabel,
     type PaletteFeed,
     paletteRecentTarget,
     type RecentEntry,
@@ -27,6 +28,7 @@ test('empty query is rank-neutral (matches everything at score 0)', () => {
 });
 
 test('a non-subsequence returns -1', () => {
+    expect(roFuzzyScore('z', 'pods')).toBe(-1);
     expect(roFuzzyScore('sys', 'pods')).toBe(-1);
     expect(roFuzzyScore('xyz', 'Deployments')).toBe(-1);
 });
@@ -42,11 +44,46 @@ test('prefix beats word-start beats scattered (the tier law)', () => {
     expect(wordStart, `wordStart ${wordStart} < scattered ${scattered}`).toBeLessThan(scattered);
 });
 
+test('tier, gap, and first-position weights produce exact comparable scores', () => {
+    expect(roFuzzyScore('abc', 'abc')).toBe(0);
+    expect(roFuzzyScore('abc', 'x abc')).toBe(100002);
+    expect(roFuzzyScore('abc', 'xabc')).toBe(200001);
+    expect(roFuzzyScore('abc', 'aXbYc')).toBe(200200);
+
+    // Very late matches stay inside their tier instead of bleeding into the
+    // gap component: only the first-position contribution is capped at 99.
+    expect(roFuzzyScore('abc', `${'x'.repeat(120)}abc`)).toBe(200099);
+});
+
+test('every documented separator creates a word-start boundary', () => {
+    for (const separator of [' ', '-', '_', '.', '/', ':']) {
+        expect(roFuzzyScore('abc', `x${separator}abc`), `separator ${separator}`).toBe(100002);
+    }
+});
+
 test('a camelCase hump counts as a word-start boundary', () => {
     const camel = roFuzzyScore('vol', 'PersistentVolumes'); // hump at "Volumes"
     const scattered = roFuzzyScore('sys', 'misty-sales');
     expect(camel).toBeGreaterThanOrEqual(0);
     expect(camel, `camelHump ${camel} < scattered ${scattered}`).toBeLessThan(scattered);
+});
+
+test('camel humps use exact ASCII uppercase boundaries', () => {
+    // A and Z pin both inclusive ends of the uppercase range.
+    expect(roFuzzyScore('apple', 'xApple')).toBe(100001);
+    expect(roFuzzyScore('zoo', 'xZoo')).toBe(100001);
+
+    // A lowercase start is not a hump, and an uppercase predecessor means the
+    // match is inside an acronym rather than at a camelCase word start.
+    expect(roFuzzyScore('apple', 'xapple')).toBe(200001);
+    expect(roFuzzyScore('@app', 'x@app')).toBe(200001);
+    expect(roFuzzyScore('beta', 'ABeta')).toBe(200001);
+    expect(roFuzzyScore('beta', 'ZBeta')).toBe(200001);
+});
+
+test('one source character cannot satisfy repeated query characters', () => {
+    expect(roFuzzyScore('aa', 'a')).toBe(-1);
+    expect(roFuzzyScore('aaa', 'aa')).toBe(-1);
 });
 
 test('subsequence works where a substring test would fail; tighter wins', () => {
@@ -78,7 +115,11 @@ test('matching is case-insensitive and respects diacritics as literal chars', ()
 
 test('rankPaletteEntries keeps feed order on an empty query', () => {
     const list = [{ n: 'b' }, { n: 'a' }, { n: 'c' }];
-    expect(rankPaletteEntries(list, '', (e) => e.n)).toStrictEqual(list);
+    const labelOf = vi.fn((entry: { n: string }) => entry.n);
+    const ranked = rankPaletteEntries(list, '', labelOf);
+    expect(ranked).toStrictEqual(list);
+    expect(ranked).not.toBe(list);
+    expect(labelOf).not.toHaveBeenCalled();
 });
 
 test('rankPaletteEntries drops non-matches and orders best-first', () => {
@@ -86,6 +127,27 @@ test('rankPaletteEntries drops non-matches and orders best-first', () => {
     const out = rankPaletteEntries(list, 'sys', (e) => e.n).map((e) => e.n);
     // prefix (system-pods) first, then word-start (kube-system), then scattered.
     expect(out).toStrictEqual(['system-pods', 'kube-system', 'misty-sales']);
+});
+
+test('rankPaletteEntries preserves feed order when non-empty-query scores tie', () => {
+    const list = [
+        { id: 1, n: 'x-alpha' },
+        { id: 2, n: 'y-alpha' },
+        { id: 3, n: 'z-alpha' },
+    ];
+    expect(rankPaletteEntries(list, 'alpha', (entry) => entry.n).map((entry) => entry.id)).toEqual([
+        1, 2, 3,
+    ]);
+});
+
+test('feed labels use their group-specific primary, fallback, and empty shapes', () => {
+    expect(feedEntryLabel({ kind: 'Pod', plural: 'pods' }, 'kinds')).toBe('Pod');
+    expect(feedEntryLabel({ kind: '', plural: 'pods' }, 'kinds')).toBe('pods');
+    expect(feedEntryLabel({}, 'kinds')).toBe('');
+
+    expect(feedEntryLabel({ name: 'prod', label: 'Production' }, 'clusters')).toBe('prod');
+    expect(feedEntryLabel({ name: '', label: 'Toggle theme' }, 'actions')).toBe('Toggle theme');
+    expect(feedEntryLabel({}, 'actions')).toBe('');
 });
 
 // --- recents dedupe ---------------------------------------------------------
@@ -137,6 +199,12 @@ test('empty query: Recents first (when present), then On this page, then feed', 
     const pageObjects = [{ name: 'nginx', href: '/p/nginx' }];
     const groups = buildPaletteGroups('', feed, recents, pageObjects);
     expect(groups.map((g) => g.title)).toStrictEqual(['Recents', 'On this page', 'Resource types']);
+    expect(groups[0]).toStrictEqual({
+        title: 'Recents',
+        key: 'recents',
+        entries: recents,
+    });
+    expect(groups[0].entries).not.toBe(recents);
     // Everywhere is ABSENT on the empty query.
     expect(groups.map((group) => group.title)).not.toContain('Everywhere');
 });
@@ -162,6 +230,13 @@ test('typing: Everywhere is pinned FIRST, then On this page, then ranked feed', 
     expect(groups[0].entries).toStrictEqual([{ query: 'ng' }]);
     // On this page is ranked: nginx matches "ng", my-app does not.
     expect((groups[1].entries as { name: string }[]).map((e) => e.name)).toStrictEqual(['nginx']);
+});
+
+test('typing trims the query before both Everywhere output and ranking', () => {
+    expect(buildPaletteGroups('  ng  ', EMPTY_FEED, [], [{ name: 'nginx' }])).toStrictEqual([
+        { title: 'Everywhere', key: 'everywhere', entries: [{ query: 'ng' }] },
+        { title: 'On this page', key: 'objects', entries: [{ name: 'nginx' }] },
+    ]);
 });
 
 test('empty groups are skipped entirely', () => {

@@ -1,7 +1,9 @@
 # Local development toolchain. Keep this in sync with CI/Makefile pins.
 [tools]
 go = "1.26.7"
-node = "24.15.0"
+node = "24.19.0"
+python = "3.13.15"
+"github:go-gremlins/gremlins" = "0.6.0"
 golangci-lint = "2.11.2"
 make = "4.4.1"
 zig = "0.16.0"
@@ -20,7 +22,7 @@ CC = "zig cc"
 path = ["{{ env.GOBIN }}"]
 
 [tasks.setup]
-description = "Install mise-managed tools plus Go helper binaries used by local gates"
+description = "Install the full pinned development and mutation toolchain"
 run = [
   "mise install",
   "go install github.com/a-h/templ/cmd/templ@v0.3.1020",
@@ -33,6 +35,8 @@ run = [
   "go version",
   "node --version",
   "npm --version",
+  "python3 --version",
+  "python3 tools/mutation/evaluate.py --verify-tool",
   "make --version | head -n 1",
   "zig version",
   "golangci-lint --version",
@@ -41,3 +45,23 @@ run = [
   "helm version --short",
   "kubeconform -v",
 ]
+
+[tasks.mutation-go]
+description = "Run the resumable, resource-bounded Go mutation campaign"
+run = "make go-mutation"
+
+[tasks.mutation-go-full]
+description = "Recompute every Go mutant and publish a fresh full report"
+run = "make go-mutation-full"
+
+[tasks.mutation-go-check]
+description = "Verify the latest fresh full Go mutation report"
+run = "make go-mutation-check"
+
+[tasks.mutation-go-sanity]
+description = "Run the known-killed/lived/build-invalid Gremlins canary"
+run = "make go-mutation-sanity"
+
+[tasks.mutation-go-clean]
+description = "Remove only the runner-owned Go mutation cache"
+run = "make go-mutation-clean"

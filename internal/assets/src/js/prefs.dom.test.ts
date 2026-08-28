@@ -6,6 +6,7 @@ import {
     PREFS_COOKIE,
     PREFS_COOKIE_MAX_AGE,
     type Prefs,
+    REFRESH_KEY,
     readPrefs,
     roPrefsSetHiddenColumns,
     roPrefsSetNamespace,
@@ -23,6 +24,12 @@ function clearPrefsCookie(): void {
 beforeEach(() => {
     clearPrefsCookie();
     document.cookie = 'unrelated=; Path=/; Max-Age=0';
+});
+
+test('the legacy refresh key remains stable for localStorage migration', () => {
+    window.localStorage.setItem(REFRESH_KEY, '30');
+    expect(REFRESH_KEY).toBe('roRefresh');
+    expect(window.localStorage.getItem('roRefresh')).toBe('30');
 });
 
 test('readPrefs returns empty prefs for an absent or corrupt cookie', () => {
@@ -64,6 +71,19 @@ test('writePrefs assigns the persistent cookie attributes for the current protoc
     expect(readPrefs().refresh).toBe('Live');
 });
 
+test('writePrefs omits Secure on an HTTP page', () => {
+    const cookieSetter = vi.spyOn(document, 'cookie', 'set');
+    vi.stubGlobal('window', { location: { protocol: 'http:' } });
+    try {
+        writePrefs({ kinds: [], refresh: 'Live', ns: {} });
+
+        expect(cookieSetter).toHaveBeenCalledOnce();
+        expect(cookieSetter.mock.calls[0][0]).not.toContain('; Secure');
+    } finally {
+        vi.unstubAllGlobals();
+    }
+});
+
 test('roPrefsSetSort preserves other fields and moves the touched kind to the front', () => {
     writePrefs({
         kinds: [
@@ -85,6 +105,29 @@ test('roPrefsSetSort preserves other fields and moves the touched kind to the fr
         ],
         refresh: '10',
         ns: { test: 'kube-system' },
+    });
+});
+
+test('roPrefsSetSort creates a missing kind at the front', () => {
+    writePrefs({
+        kinds: [
+            { k: 'deployments', sort: 'Age' },
+            { k: 'services', hide: ['Cluster IP'] },
+        ],
+        refresh: '10',
+        ns: {},
+    });
+
+    roPrefsSetSort('pods', 'Status:desc');
+
+    expect(readPrefs()).toStrictEqual({
+        kinds: [
+            { k: 'pods', sort: 'Status:desc' },
+            { k: 'deployments', sort: 'Age' },
+            { k: 'services', hide: ['Cluster IP'] },
+        ],
+        refresh: '10',
+        ns: {},
     });
 });
 
@@ -131,6 +174,26 @@ test('roPrefsSetNamespace records a namespace while preserving existing preferen
         refresh: '30',
         ns: { other: 'default', test: '_all' },
     });
+});
+
+test('roPrefsSetNamespace safely persists special own-property cluster names', () => {
+    const entries = [
+        ['__proto__', 'proto-ns'],
+        ['constructor', 'constructor-ns'],
+        ['toString', 'string-ns'],
+    ] as const;
+
+    for (const [cluster, namespace] of entries) {
+        roPrefsSetNamespace(cluster, namespace);
+    }
+
+    const ns = readPrefs().ns;
+    expect(Object.entries(ns)).toStrictEqual(entries);
+    expect(Object.getPrototypeOf(ns)).toBe(Object.prototype);
+    for (const [cluster, namespace] of entries) {
+        expect(Object.hasOwn(ns, cluster), cluster).toBe(true);
+        expect(ns[cluster], cluster).toBe(namespace);
+    }
 });
 
 test('roPrefsSetNamespace ignores an empty cluster or namespace without writing', () => {

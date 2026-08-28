@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import {
     BULK_NAMES_MAX,
@@ -73,8 +73,17 @@ describe('row selection state', () => {
         rowState().setSelected('prod/default/api-0', false);
 
         expect(document.getElementById('row-a')).not.toHaveClass('is-selected');
+        expect(document.getElementById('ro-bulk-count')).toHaveTextContent('0 selected');
         expect(document.getElementById('ro-bulkbar')).not.toHaveClass('is-open');
         expect(document.getElementById('ro-bulkbar')).toHaveAttribute('inert');
+    });
+
+    test('keeps painting the bulk bar when its optional count label is absent', () => {
+        document.getElementById('ro-bulk-count')?.remove();
+
+        expect(() => rowState().setSelected('prod/default/api-0', true)).not.toThrow();
+        expect(document.getElementById('ro-bulkbar')).toHaveClass('is-open');
+        expect(document.getElementById('ro-bulk-download')).not.toBeDisabled();
     });
 
     test('keeps the full captured name after a selected row leaves the DOM', () => {
@@ -116,12 +125,18 @@ describe('row selection state', () => {
 
         binding.handler(eventTarget(plain), row);
         expect(rowState().selectedKeys()).toStrictEqual(['prod/default/api-0']);
+        expect(row).toHaveClass('is-selected');
+        expect(document.getElementById('ro-bulk-count')).toHaveTextContent('1 selected');
+        expect(document.getElementById('ro-bulkbar')).toHaveClass('is-open');
 
         binding.handler(eventTarget(anchor), row);
         expect(rowState().selectedKeys()).toStrictEqual(['prod/default/api-0']);
 
         binding.handler(eventTarget(plain), row);
         expect(rowState().selectedKeys()).toStrictEqual([]);
+        expect(row).not.toHaveClass('is-selected');
+        expect(document.getElementById('ro-bulk-count')).toHaveTextContent('0 selected');
+        expect(document.getElementById('ro-bulkbar')).not.toHaveClass('is-open');
     });
 
     test('enforces the bulk cap and rearms its toast after dropping under it', () => {
@@ -145,6 +160,7 @@ describe('row selection state', () => {
 
         rowState().setSelected('prod/default/item-0', false);
         expect(download).not.toBeDisabled();
+        expect(download).toHaveAttribute('title', '');
         rowState().setSelected('prod/default/new-item', true);
         expect(toast).toHaveBeenCalledTimes(2);
     });
@@ -158,10 +174,36 @@ describe('row selection state', () => {
         expect(rowState().selectedKeys()).toStrictEqual([]);
         expect(rowState().focusedKey()).toBeNull();
         expect(document.getElementById('row-a')).not.toHaveClass('is-selected', 'kfocus');
+        expect(document.getElementById('ro-bulk-count')).toHaveTextContent('0 selected');
+        expect(document.getElementById('ro-bulkbar')).not.toHaveClass('is-open');
+        expect(document.getElementById('ro-bulkbar')).toHaveAttribute('inert');
+    });
+
+    test('exports the delegated row-click contract', () => {
+        expect(rowSelectionBindings).toHaveLength(1);
+        expect(rowSelectionBindings[0].event).toBe('click');
+        expect(rowSelectionBindings[0].selector).toBe('#resource-list-content tr[data-key]');
+        expect(rowSelectionBindings[0].stop).toBeUndefined();
     });
 });
 
 describe('clipboard bridge', () => {
+    beforeEach(() => {
+        document.body.replaceChildren();
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: undefined,
+        });
+        Object.defineProperty(document, 'execCommand', {
+            configurable: true,
+            value: undefined,
+        });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
     test('uses the async clipboard API when available', async () => {
         const writeText = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(navigator, 'clipboard', {
@@ -173,6 +215,70 @@ describe('clipboard bridge', () => {
 
         expect(ok).toBe(true);
         expect(writeText).toHaveBeenCalledWith('api-0');
+    });
+
+    test('uses an off-screen readonly textarea when the async API is unavailable', async () => {
+        const select = vi.spyOn(HTMLTextAreaElement.prototype, 'select');
+        let fallbackTextarea: HTMLTextAreaElement | null = null;
+        let fallbackSnapshot:
+            | {
+                  value: string;
+                  readOnly: boolean;
+                  position: string;
+                  top: string;
+                  attached: boolean;
+              }
+            | undefined;
+        const execCommand = vi.fn(() => {
+            const textarea = document.querySelector('textarea');
+            if (!textarea) {
+                return false;
+            }
+            fallbackTextarea = textarea;
+            fallbackSnapshot = {
+                value: textarea.value,
+                readOnly: textarea.readOnly,
+                position: textarea.style.position,
+                top: textarea.style.top,
+                attached: document.body.contains(textarea),
+            };
+            return false;
+        });
+        Object.defineProperty(document, 'execCommand', {
+            configurable: true,
+            value: execCommand,
+        });
+
+        const ok = await new Promise<boolean>((resolve) => roCopyText('db-0', resolve));
+
+        expect(ok).toBe(false);
+        expect(execCommand).toHaveBeenCalledExactlyOnceWith('copy');
+        expect(select).toHaveBeenCalledOnce();
+        expect(fallbackTextarea).not.toBeNull();
+        expect(fallbackSnapshot).toStrictEqual({
+            value: 'db-0',
+            readOnly: true,
+            position: 'fixed',
+            top: '-1000px',
+            attached: true,
+        });
+        expect(document.querySelector('textarea')).not.toBeInTheDocument();
+    });
+
+    test('reports a throwing fallback as failed and still removes its textarea', async () => {
+        const execCommand = vi.fn(() => {
+            throw new Error('copy blocked');
+        });
+        Object.defineProperty(document, 'execCommand', {
+            configurable: true,
+            value: execCommand,
+        });
+
+        const ok = await new Promise<boolean>((resolve) => roCopyText('db-0', resolve));
+
+        expect(ok).toBe(false);
+        expect(execCommand).toHaveBeenCalledExactlyOnceWith('copy');
+        expect(document.querySelector('textarea')).not.toBeInTheDocument();
     });
 
     test('falls back to execCommand after an async clipboard rejection', async () => {

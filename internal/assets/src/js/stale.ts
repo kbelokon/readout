@@ -67,9 +67,10 @@ export function markListStale(): void {
         content.classList.add(STALE_DIM_CLASS);
     }
     const banner = document.querySelector('.ro-stale-banner') as HTMLElement | null;
-    if (banner) {
-        banner.hidden = false;
+    if (!banner) {
+        return;
     }
+    banner.hidden = false;
     // Live countdown for the banner's "Retrying in Ns" (the data-stale-countdown
     // hook). The immediate paint lands the right number before the ticker's
     // first 1s beat.

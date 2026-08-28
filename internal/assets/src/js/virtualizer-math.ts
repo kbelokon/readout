@@ -44,14 +44,8 @@ export function windowBounds(
     const n = visibleCount;
     const first = Math.floor((0 - tbodyTop) / pitch);
     const last = Math.ceil((innerHeight - tbodyTop) / pitch);
-    let start = Math.max(0, first - buffer);
-    let end = Math.min(n, last + buffer);
-    if (start > n) {
-        start = n;
-    }
-    if (end < start) {
-        end = start;
-    }
+    const start = Math.min(n, Math.max(0, first - buffer));
+    const end = Math.max(start, Math.min(n, last + buffer));
     return { start, end };
 }
 
@@ -110,14 +104,11 @@ export function scrollAdjustToReveal(
     topMin: number,
     innerHeight: number,
 ): number {
-    const rowBottom = rowTop + rowH;
-    if (rowTop < topMin) {
-        return rowTop - topMin;
+    const topOverflow = rowTop - topMin;
+    if (topOverflow < 0) {
+        return topOverflow;
     }
-    if (rowBottom > innerHeight) {
-        return rowBottom - innerHeight;
-    }
-    return 0;
+    return Math.max(0, rowTop + rowH - innerHeight);
 }
 
 // clampFocusIndex steps a focus index by delta and clamps to [0, n-1]; when the

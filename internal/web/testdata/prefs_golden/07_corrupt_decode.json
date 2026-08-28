@@ -1,5 +1,5 @@
 {
-  "doc": "Decode-direction fixtures: malformed cookie values that must yield empty prefs (ok=false), never an error -- the page renders as if no preferences existed. Mirrors readout.js readPrefs leniency.",
+  "doc": "Decode-direction fixtures: malformed cookie values that must yield empty prefs (ok=false), never an error -- the page renders as if no preferences existed. Shared by Go and TypeScript, including RawURLEncoding alphabet/padding parity.",
   "decode_cases": [
     {
       "why": "no version prefix",
@@ -19,6 +19,21 @@
     {
       "why": "invalid base64url",
       "value": "v1.@@@not-base64@@@",
+      "want_ok": false
+    },
+    {
+      "why": "padded base64url is not RawURLEncoding",
+      "value": "v1.e30=",
+      "want_ok": false
+    },
+    {
+      "why": "standard base64 alphabet is not RawURLEncoding",
+      "value": "v1.eyJyZWZyZXNoIjoi4KC+4KC/In0",
+      "want_ok": false
+    },
+    {
+      "why": "UTF-8 BOM before JSON is not accepted",
+      "value": "v1.77u_e30",
       "want_ok": false
     },
     {
