@@ -98,11 +98,6 @@ func defaultStreamTuning() streamTuning {
 }
 
 const (
-	// streamCapMax bounds ordinary deployments. The in-process public demo gets
-	// a larger fixed cap so fakekube's expanded watch budget is reachable.
-	streamCapMax     = 32
-	demoStreamCapMax = 256
-
 	// streamMaxImmediateEOFs consecutive immediate EOFs are a re-watch
 	// failure (terminal reason "watch-failed") — an EOF storm must not
 	// spin re-watch attempts forever.

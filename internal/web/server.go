@@ -83,10 +83,17 @@ type Server struct {
 	// mutable timing state; tests may adjust it before serving begins.
 	streamTuning streamTuning
 
+	// limits is the immutable per-pod Live admission policy resolved from
+	// config. It is copied into this Server so independently constructed
+	// servers share no limit state; tests build a Server whose config carries
+	// small limits rather than mutating a global.
+	limits liveLimits
+
 	// streamSlots caps concurrent Live streams: every open `_stream`
 	// handler holds one slot for its whole lifetime; when the channel is full
 	// the next stream gets 429 BEFORE any SSE headers. The slot releases on
-	// every handler exit path (deferred at acquisition).
+	// every handler exit path (deferred at acquisition). Its capacity is
+	// limits.maxConnections.
 	streamSlots chan struct{}
 
 	// shutdownCh mirrors the New() context's Done channel: when the process
@@ -135,9 +142,10 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		listBudget:         listFanoutBudget,
 		searchBudget:       searchFanoutBudget,
 		streamTuning:       defaultStreamTuning(),
-		streamSlots:        make(chan struct{}, liveStreamCapacity(cfg.Demo)),
+		limits:             liveLimitsFromConfig(cfg),
 		shutdownCh:         ctx.Done(),
 	}
+	s.streamSlots = make(chan struct{}, s.limits.maxConnections)
 	// Wire domain metrics: the kube Manager bakes the per-cluster request
 	// observer into each Client (cluster name closed over), and the shared hooks
 	// client records call duration. Both observer surfaces are Prometheus-free in
@@ -152,11 +160,37 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	return s, nil
 }
 
-func liveStreamCapacity(demo bool) int {
-	if demo {
-		return demoStreamCapMax
+// liveLimits is the resolved per-pod Live admission policy: the three bounds
+// that are checked independently before a Live subscriber is admitted. Demo
+// mode is NOT special-cased — the public demo runs on the same defaults as
+// every other deployment, and an operator who wants a different ceiling sets
+// the `live:` config block.
+type liveLimits struct {
+	maxConnections         int
+	maxSources             int
+	maxCacheAccountedBytes int64
+}
+
+// liveLimitsFromConfig copies the resolved limits off the config. resolve()
+// already rejects non-positive values, so the guards here only cover a Server
+// built directly in a test from a hand-written config.Config, which never runs
+// through that validation: without them a zero limit would reject every stream.
+func liveLimitsFromConfig(cfg *config.Config) liveLimits {
+	limits := liveLimits{
+		maxConnections:         cfg.LiveMaxConnections,
+		maxSources:             cfg.LiveMaxSources,
+		maxCacheAccountedBytes: cfg.LiveMaxCacheAccountedBytes,
 	}
-	return streamCapMax
+	if limits.maxConnections <= 0 {
+		limits.maxConnections = config.DefaultLiveMaxConnections
+	}
+	if limits.maxSources <= 0 {
+		limits.maxSources = config.DefaultLiveMaxSources
+	}
+	if limits.maxCacheAccountedBytes <= 0 {
+		limits.maxCacheAccountedBytes = config.DefaultLiveMaxCacheAccountedBytes
+	}
+	return limits
 }
 
 // warnUntrustedHeaderProxy warns at startup when headers auth mode is on but no

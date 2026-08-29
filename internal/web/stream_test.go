@@ -900,13 +900,25 @@ func TestStreamForbiddenNamespaceStaysPreHandshake(t *testing.T) {
 	}
 }
 
-// TestStreamCapAndRelease pins the concurrency cap: the 33rd concurrent
-// stream gets 429 BEFORE SSE headers, and closing one stream releases its
-// slot so a new 33rd can connect (the deferred-release cleanup contract).
+// TestStreamCapAndRelease pins the connection limit: the stream past
+// live.maxConnections gets 429 BEFORE SSE headers, and closing one stream
+// releases its slot so a replacement can connect (the deferred-release
+// cleanup contract). The limit comes from config, so the test configures a
+// small one instead of opening the 512-stream default.
 func TestStreamCapAndRelease(t *testing.T) {
-	ts, _ := newStreamFixture(t)
-	streams := make([]*http.Response, 0, streamCapMax)
-	for i := 0; i < streamCapMax; i++ {
+	const maxConnections = 4
+	fake := newServerFakeAPI(t)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:               8080,
+		Clusters:           []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:       "dark",
+		LiveMaxConnections: maxConnections,
+	})
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	streams := make([]*http.Response, 0, maxConnections)
+	for i := 0; i < maxConnections; i++ {
 		resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", fmt.Sprintf("normal-%d", i))
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("stream %d status = %d, want 200", i, resp.StatusCode)
@@ -923,7 +935,7 @@ func TestStreamCapAndRelease(t *testing.T) {
 	_ = over.Body.Close()
 	assertStreamPreHandshakeResponse(t, over)
 	if over.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("33rd stream status = %d, want 429", over.StatusCode)
+		t.Fatalf("stream %d status = %d, want 429", maxConnections+1, over.StatusCode)
 	}
 	if ct := over.Header.Get("Content-Type"); strings.Contains(ct, "text/event-stream") {
 		t.Fatalf("cap-exceeded stream got SSE headers (Content-Type %q) — it must 429 before them", ct)
@@ -946,33 +958,44 @@ func TestStreamCapAndRelease(t *testing.T) {
 	}
 }
 
-func TestDemoStreamCapacityAdmitsMoreThanNormalCap(t *testing.T) {
+// TestLiveLimitsResolveFromConfig pins that the three Live limits come from
+// the `live:` config block and nothing else: demo mode gets the same defaults
+// as any other deployment (no special-cased capacity), an omitted block
+// resolves to the package defaults, and the connection limit sizes the stream
+// slot channel.
+func TestLiveLimitsResolveFromConfig(t *testing.T) {
 	fake := newServerFakeAPI(t)
-	app := newTestServerWithConfig(t, &config.Config{
+	demo := newTestServerWithConfig(t, &config.Config{
 		Port:         8080,
 		Demo:         true,
 		Clusters:     []config.ClusterConnection{{Name: "test", Server: fake.URL}},
 		DefaultTheme: "dark",
 	})
-	if got := cap(app.streamSlots); got != demoStreamCapMax || got < 256 {
-		t.Fatalf("demo Live capacity = %d, want %d and at least 256", got, demoStreamCapMax)
+	want := liveLimits{
+		maxConnections:         config.DefaultLiveMaxConnections,
+		maxSources:             config.DefaultLiveMaxSources,
+		maxCacheAccountedBytes: config.DefaultLiveMaxCacheAccountedBytes,
 	}
-	ts := httptest.NewServer(app.Handler())
-	t.Cleanup(ts.Close)
+	if demo.limits != want {
+		t.Fatalf("demo limits = %+v, want the shared defaults %+v", demo.limits, want)
+	}
+	if got := cap(demo.streamSlots); got != want.maxConnections {
+		t.Fatalf("stream slot capacity = %d, want maxConnections %d", got, want.maxConnections)
+	}
 
-	streams := make([]*http.Response, 0, streamCapMax+1)
-	t.Cleanup(func() {
-		for _, resp := range streams {
-			_ = resp.Body.Close()
-		}
+	tuned := newTestServerWithConfig(t, &config.Config{
+		Port:                       8080,
+		Clusters:                   []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:               "dark",
+		LiveMaxConnections:         7,
+		LiveMaxSources:             3,
+		LiveMaxCacheAccountedBytes: 4096,
 	})
-	for i := 0; i <= streamCapMax; i++ {
-		resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", fmt.Sprintf("demo-%d", i))
-		if resp.StatusCode != http.StatusOK {
-			_ = resp.Body.Close()
-			t.Fatalf("demo stream %d status = %d, want 200 beyond the normal %d-stream cap", i+1, resp.StatusCode, streamCapMax)
-		}
-		streams = append(streams, resp)
+	if (tuned.limits != liveLimits{maxConnections: 7, maxSources: 3, maxCacheAccountedBytes: 4096}) {
+		t.Fatalf("configured limits = %+v", tuned.limits)
+	}
+	if got := cap(tuned.streamSlots); got != 7 {
+		t.Fatalf("stream slot capacity = %d, want 7", got)
 	}
 }
 
