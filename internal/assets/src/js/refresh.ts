@@ -6,7 +6,7 @@
 //
 // This module owns the refresh STATE machine: the single pending tick timer
 // (a setTimeout chain, not setInterval -- the backoff wait re-derives every
-// tick), the failure-stage backoff, and the two xhr-Set in-flight gates that
+// tick), the failure-stage backoff, and the one in-flight request tracker that
 // keep ticks from stomping user requests or queueing inside htmx. The pure
 // cadence/backoff math lives in live-policy.ts (unit-tested); this module is
 // the DOM/htmx glue around it. The request-lifecycle listeners
@@ -14,31 +14,22 @@
 //
 // Cross-module seams (call-time, so the bundle's eval order is irrelevant):
 //   - live.ts contributes liveFallbackSeconds() (the 5s degraded cadence) and
-//     reuses scheduleRefreshTick + the in-flight Sets + pruneSettledListRequests;
+//     subscribes to this module's one `_table` request tracker;
 //   - stale.ts reads refreshNextAt() for the banner countdown and owns
 //     updateStaleCountdown (called here whenever the armed time changes).
-// The Go needle contract (internal/web/list_redesign_test.go) pins
-// userListRequestsInFlight / containerListRequestsInFlight / RO-No-Push /
+// The Go needle contract (internal/web/list_redesign_test.go) pins RO-No-Push /
 // 'dataset.liveUrl === 'location'' / '/_table' / 'xhr.readyState === 4 || 0' /
-// htmx:abort surviving in the bundle -- the FORMS are preserved here.
+// htmx:abort surviving in the bundle.
 
 import type { Binding } from './events.js';
 import { configureListValidatorRequest } from './list-etag.js';
-import {
-    liveAfterListRequest,
-    liveApply,
-    liveBeforeListRequest,
-    liveBeforeListSwapDecision,
-    liveFallbackSeconds,
-    liveListRequestSwapFailed,
-    liveMarkListRequestSent,
-} from './live.js';
+import { liveApply, liveFallbackSeconds } from './live.js';
 import {
     nextFailureStage,
     effectivePollSeconds as policyEffectivePollSeconds,
     refreshDelaySeconds as policyRefreshDelaySeconds,
 } from './live-policy.js';
-import { REFRESH_KEY, readPrefs, roPrefsSetRefresh } from './prefs.js';
+import { readPrefs, roPrefsSetRefresh } from './prefs.js';
 import { updateStaleCountdown } from './stale.js';
 
 // htmx is a classic-script global loaded before this bundle; reach it through a
@@ -71,28 +62,25 @@ export function refreshNextAtMs(): number {
     return refreshNextAt;
 }
 
-// userListRequestsInFlight tracks USER-initiated requests targeting
-// #resource-list-content (a sort-header hx-get, etc.) by their XHR objects.
-// While one is unsettled the refresh tick is suppressed. A Set of xhrs,
-// deliberately NOT a counter: htmx dispatches htmx:afterRequest on the ISSUING
-// element, and a boosted body swap that detaches it mid-request swallows the
-// event -- a counter would stick >= 1 forever. The xhrs know when they settled,
-// so the tick gate prunes settled entries by readyState instead.
-export const userListRequestsInFlight = new Set<XMLHttpRequest>();
-
-// containerListRequestsInFlight tracks the requests the container ITSELF issues
-// (the tick, the stale retry, commitColumnVisibility's re-render) the same way.
-// fireRefresh skips while one is unsettled: a second container request would
-// QUEUE inside htmx and replay on the next htmx:abort with its stale URL.
-export const containerListRequestsInFlight = new Set<XMLHttpRequest>();
-
 interface HtmxRequestDetail {
     elt?: unknown;
     headers?: unknown;
-    requestConfig?: unknown;
     target?: unknown;
     xhr?: unknown;
 }
+
+export interface ListRequestActivity {
+    phase: 'start' | 'settle';
+    inFlight: number;
+}
+
+export interface ListRequestTrackerSnapshot {
+    count: number;
+}
+
+let listRequestEpoch = 0;
+const listRequestsInFlight = new Map<XMLHttpRequest, number>();
+const listRequestSubscribers = new Set<(activity: ListRequestActivity) => void>();
 
 function requestDetail(event: Event): HtmxRequestDetail {
     // HTMX normally supplies an object, but lifecycle events are public DOM
@@ -101,38 +89,71 @@ function requestDetail(event: Event): HtmxRequestDetail {
     return Object((event as CustomEvent).detail) as HtmxRequestDetail;
 }
 
-// A settled xhr is DONE (4: the load/error/timeout callbacks ran) or UNSENT
-// (0: aborted). Either way htmx is no longer waiting on it, so the entry is
-// reclaimable even when its htmx:afterRequest was dispatched on a detached
-// element.
-export function pruneSettledListRequests(requests: Set<XMLHttpRequest>): void {
-    requests.forEach((xhr) => {
-        if (xhr.readyState === 4 || xhr.readyState === 0) {
-            requests.delete(xhr);
+export function listRequestTrackerSnapshot(): ListRequestTrackerSnapshot {
+    return { count: listRequestsInFlight.size };
+}
+
+export function subscribeListRequests(
+    subscriber: (activity: ListRequestActivity) => void,
+): () => void {
+    listRequestSubscribers.add(subscriber);
+    return () => listRequestSubscribers.delete(subscriber);
+}
+
+function publishListRequest(phase: ListRequestActivity['phase']): void {
+    const activity: ListRequestActivity = {
+        phase,
+        inFlight: listRequestsInFlight.size,
+    };
+    listRequestSubscribers.forEach((subscriber) => {
+        subscriber(activity);
+    });
+}
+
+function settleListRequest(xhr: XMLHttpRequest, owner?: number): void {
+    const currentOwner = listRequestsInFlight.get(xhr);
+    if (currentOwner === undefined || (owner !== undefined && currentOwner !== owner)) return;
+    listRequestsInFlight.delete(xhr);
+    publishListRequest('settle');
+}
+
+function trackListRequest(xhr: XMLHttpRequest, requestEvent: Event): void {
+    if (listRequestsInFlight.has(xhr)) return;
+    const owner = ++listRequestEpoch;
+    listRequestsInFlight.set(xhr, owner);
+    xhr.addEventListener('loadend', () => settleListRequest(xhr, owner));
+    publishListRequest('start');
+    // beforeRequest is cancelable. htmx opens the XHR before dispatching it, so
+    // a later listener can prevent send while readyState remains OPENED (1),
+    // and native loadend will never fire. Observe the fully-dispatched event in
+    // a microtask so that cancellation by later listeners retires the request.
+    // settleListRequest remains the one authoritative owner check, including
+    // reuse of the same XHR identity across a page reset.
+    queueMicrotask(() => {
+        if (requestEvent.defaultPrevented || xhr.readyState === 0) {
+            settleListRequest(xhr, owner);
         }
     });
 }
 
-function isPreloadRequest(event: Event): boolean {
-    const config = Object(requestDetail(event).requestConfig) as { headers?: unknown };
-    const headers = Object(config.headers) as Record<string, unknown>;
-    return headers['HX-Preloaded'] === 'true';
+// A page/body boundary retires the old screen's requests immediately. Each
+// loadend closure carries the owner token minted when it was tracked, so a late
+// terminal event from the retired page cannot settle a newer use of the same
+// XHR identity.
+export function resetListRequestTracker(): void {
+    listRequestEpoch += 1;
+    if (listRequestsInFlight.size === 0) return;
+    listRequestsInFlight.clear();
+    publishListRequest('settle');
 }
 
-// Re-exported for stale.ts (isListRefreshEvent) so the preload exclusion lives
-// in exactly one place.
-export { isPreloadRequest };
-
-// True for a USER-initiated request that will swap #resource-list-content.
-// The caller has already returned for requests issued by the container itself.
-function isUserListRequest(event: Event): boolean {
-    const detail = requestDetail(event);
-    return (
-        detail.elt instanceof Element &&
-        detail.target instanceof Element &&
-        detail.target.id === 'resource-list-content' &&
-        !isPreloadRequest(event)
-    );
+// A settled xhr is DONE (4: load/error/timeout completed) or UNSENT (0:
+// aborted/cancelled). Reclaiming by XHR identity survives a detached issuer
+// whose htmx:afterRequest never bubbles to document.
+export function pruneSettledListRequests(): void {
+    listRequestsInFlight.forEach((owner, xhr) => {
+        if (xhr.readyState === 4 || xhr.readyState === 0) settleListRequest(xhr, owner);
+    });
 }
 
 // Mark every request the container itself issues (tick / retry / programmatic
@@ -165,65 +186,30 @@ export function handleRefreshConfigRequest(event: Event): void {
 document.addEventListener('htmx:configRequest', handleRefreshConfigRequest);
 
 export function handleRefreshBeforeRequest(event: Event): void {
-    // Live owns the exact current-content XHR before this handler can trigger
-    // htmx:abort on the container. Its native loadend listener survives a
-    // detached issuer and guarantees one resume after all overlapping requests.
-    liveBeforeListRequest(event);
     const detail = requestDetail(event);
-    const elt = Object(detail.elt) as { id?: unknown };
-    if (elt.id === 'resource-list-content') {
-        if (detail.xhr) {
-            containerListRequestsInFlight.add(detail.xhr as XMLHttpRequest);
-        }
-        return; // container-issued (tick/retry/programmatic) -- tracked, never aborts anything
-    }
-    if (!isUserListRequest(event)) {
-        return;
-    }
-    if (detail.xhr) {
-        userListRequestsInFlight.add(detail.xhr as XMLHttpRequest);
-    }
+    const content = document.getElementById('resource-list-content');
+    const xhr = detail.xhr;
+    if (!content || !(xhr instanceof XMLHttpRequest) || detail.target !== content) return;
+    const sourceIsContent = detail.elt === content;
+    if (!sourceIsContent && !(detail.elt instanceof Element)) return;
+    trackListRequest(xhr, event);
+    if (sourceIsContent) return;
     // The user action wins: abort the container's own in-flight request (a tick
     // that started before the click). htmx aborts the request belonging to the
     // element htmx:abort is triggered on -- the user's request lives on its own
     // element and is untouched.
-    const content = document.getElementById('resource-list-content');
     const htmx = getHtmx();
-    if (content && htmx) {
-        htmx.trigger(content, 'htmx:abort');
-    }
+    htmx?.trigger(content, 'htmx:abort');
 }
 
 document.addEventListener('htmx:beforeRequest', handleRefreshBeforeRequest);
-
-export function handleRefreshBeforeSend(event: Event): void {
-    liveMarkListRequestSent(event);
-}
-
-document.addEventListener('htmx:beforeSend', handleRefreshBeforeSend);
-
-export function handleRefreshBeforeSwap(event: Event): void {
-    liveBeforeListSwapDecision(event);
-}
-
-document.addEventListener('htmx:beforeSwap', handleRefreshBeforeSwap);
-
-export function handleRefreshSwapError(event: Event): void {
-    liveListRequestSwapFailed(event);
-}
-
-document.addEventListener('htmx:swapError', handleRefreshSwapError);
 
 // htmx:afterRequest fires on load, error, abort, AND timeout. When it reaches
 // the document the entry is removed here; when it does not (dispatched on a
 // detached element), the readyState pruning in fireRefresh reclaims it instead.
 export function handleRefreshAfterRequest(event: Event): void {
-    liveAfterListRequest(event);
-    const xhr = requestDetail(event).xhr as XMLHttpRequest;
-    // Set.delete is deliberately total for undefined/non-members, so missing
-    // request metadata needs no semantically empty guard branch.
-    userListRequestsInFlight.delete(xhr);
-    containerListRequestsInFlight.delete(xhr);
+    const xhr = requestDetail(event).xhr;
+    if (xhr instanceof XMLHttpRequest) settleListRequest(xhr);
 }
 
 document.addEventListener('htmx:afterRequest', handleRefreshAfterRequest);
@@ -258,7 +244,7 @@ export function refreshMode(): string {
     }
     let legacy: string | null = null;
     try {
-        legacy = window.localStorage.getItem(REFRESH_KEY);
+        legacy = window.localStorage.getItem('roRefresh');
     } catch {
         // localStorage unavailable (e.g. privacy mode): keep the absent value.
     }
@@ -284,8 +270,8 @@ function listTableURL(): string {
 }
 
 // requestListRefresh re-fetches the list fragment through the container's own
-// htmx wiring: the v2 path issues a GET to the location-derived `_table` URL
-// with the container as source; the v1 multi-type path triggers ro:refresh.
+// htmx wiring: location-backed lists issue a GET to the derived `_table` URL;
+// multi-type lists retain their server-rendered ro:refresh wiring.
 export function requestListRefresh(): void {
     const content = document.getElementById('resource-list-content');
     const htmx = getHtmx();
@@ -314,15 +300,10 @@ export function fireRefresh(): void {
     if (document.hidden) {
         return; // paused while the tab is in the background
     }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    if (userListRequestsInFlight.size > 0) {
-        return; // a user-initiated table request is in flight -- never stomp it
-    }
-    if (containerListRequestsInFlight.size > 0) {
-        // The previous container request has not settled. Issuing another would
-        // QUEUE it inside htmx, and a queued tick replays on the next htmx:abort
-        // with its stale URL -- skip this tick; the next one re-checks.
+    pruneSettledListRequests();
+    if (listRequestsInFlight.size > 0) {
+        // Never stomp a user request or queue behind an unsettled container
+        // request. The next tick re-checks the same identity-owned tracker.
         return;
     }
     requestListRefresh();
@@ -473,9 +454,9 @@ document.addEventListener('visibilitychange', handleRefreshVisibilityChange);
 // .ro-stale-retry / .refresh-option classes -- the interval rides data-ro-interval.
 export const refreshBindings: Binding[] = [
     // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
-    // #resource-list-content through the shared refresh path (the v2 loop derives
-    // the `_table` URL from location.href at click time; the v1 multi-type
-    // container triggers its baked ro:refresh). On success the morph swaps fresh
+    // #resource-list-content through the shared refresh path (location-backed
+    // lists derive `_table` from location.href; multi-type containers trigger
+    // their baked ro:refresh). On success the morph swaps fresh
     // rows and the afterSwap handler clears the stale dim + re-hides the banner;
     // on another failure the responseError handler keeps it stale. An in-flight
     // container request (a HUNG tick is exactly the state this button exists for)
@@ -494,7 +475,11 @@ export const refreshBindings: Binding[] = [
             if (content && htmx) {
                 htmx.trigger(content, 'htmx:abort');
             }
-            requestListRefresh();
+            if (refreshMode() === 'Live') {
+                liveApply(true);
+            } else {
+                requestListRefresh();
+            }
             return true;
         },
     },

@@ -1,34 +1,27 @@
-// live.ts -- negotiated Live v1/v2 browser transport and lifecycle.
-//
-// v1 remains a rolling-deploy compatibility lane: the client still sends the
-// legacy query generation and accepts an unversioned response. Negotiated v2
-// carries strict snapshot/delta envelopes, publishes its cursor only after the
-// complete DOM repair transaction, and resynchronizes on any protocol drift.
-
+// live.ts -- Live v2 browser transport and lifecycle.
 import { clearListValidator } from './list-etag.js';
-import { shouldDiscardPush } from './live-policy.js';
 import {
     applyLiveV2Delta,
     decodeLiveV2Envelope,
     type LiveV2Cursor,
-    type LiveV2Envelope,
     type LiveV2SnapshotEnvelope,
 } from './live-protocol.js';
 import { type LiveSSEEvent, LiveSSEParser } from './live-sse.js';
+import { liveStreamBaseForURL, mintLiveGeneration } from './live-url.js';
 import {
-    liveRequestURL,
-    liveScreenForBase,
-    liveStreamBaseForURL,
-    liveStreamBaseFromTableRequest,
-    mintLiveGeneration,
-} from './live-url.js';
-import { refreshMode, scheduleRefreshTick } from './refresh.js';
-import { markListStale } from './stale.js';
+    type ListRequestActivity,
+    listRequestTrackerSnapshot,
+    refreshMode,
+    resetListRequestTracker,
+    scheduleRefreshTick,
+    subscribeListRequests,
+} from './refresh.js';
+import { clearLiveUnavailable, markLiveUnavailable } from './stale.js';
 
 interface LiveSnapshotEventInfo {
     target: Element;
     roLivePush: true;
-    roLiveSnapshotTxn?: object;
+    roLiveSnapshotTxn: object;
 }
 
 interface Htmx {
@@ -39,84 +32,30 @@ interface Htmx {
         swapOptions: { contextElement: Element; eventInfo: LiveSnapshotEventInfo },
     ): void;
 }
-
-function getHtmx(): Htmx | undefined {
-    return (window as unknown as { htmx?: Htmx }).htmx;
-}
-
-export type LiveStatus =
-    | 'idle'
-    | 'connecting'
-    | 'syncing-v1'
-    | 'syncing-v2'
-    | 'open-v1'
-    | 'open-v2'
-    | 'resyncing'
-    | 'suspended'
-    | 'fallback'
-    | 'hidden';
-
-export const liveState: {
-    status: LiveStatus;
-    abort: AbortController | null;
-    gen: string;
-    streamPath: string;
-} = {
-    status: 'idle',
-    abort: null,
-    gen: '',
-    streamPath: '',
-};
-
-type LiveProtocol = 'pending' | 'v1' | 'v2';
-
+export type LiveStatus = 'off' | 'connecting' | 'open' | 'suspended' | 'hidden' | 'fallback';
 interface LiveConnection {
     readonly ctrl: AbortController;
     readonly generation: string;
     readonly base: string;
-    readonly screen: string;
-    readonly protocol: LiveProtocol;
     readonly cursor: Readonly<LiveV2Cursor> | null;
 }
-
-interface LiveCounters {
-    connections: number;
-    resyncs: number;
-    fallbacks: number;
-    v1Snapshots: number;
-    v2Snapshots: number;
-    deltas: number;
-    terminals: number;
-    invalidFrames: number;
-    discards: number;
-    rawBytes: number;
-    payloadBytes: number;
-    snapshotBytes: number;
-    deltaBytes: number;
-    inserted: number;
-    updated: number;
-    deleted: number;
-    projected: number;
-}
-
-export interface LiveDebugStats extends LiveCounters {
-    state: LiveStatus;
-    protocol: LiveProtocol | null;
-    seq: number;
-    inFlightRequests: number;
-    resyncsInWindow: number;
-}
-
-const counters: LiveCounters = {
+const runtime: {
+    status: LiveStatus;
+    connection: LiveConnection | null;
+    // Assigned by openConnection before every non-Off lifecycle state.
+    streamPath?: string;
+} = {
+    status: 'off',
+    connection: null,
+};
+const counters = {
     connections: 0,
     resyncs: 0,
     fallbacks: 0,
-    v1Snapshots: 0,
     v2Snapshots: 0,
     deltas: 0,
     terminals: 0,
     invalidFrames: 0,
-    discards: 0,
     rawBytes: 0,
     payloadBytes: 0,
     snapshotBytes: 0,
@@ -126,57 +65,29 @@ const counters: LiveCounters = {
     deleted: 0,
     projected: 0,
 };
-
-type CounterName = keyof LiveCounters;
+export type LiveDebugStats = Readonly<typeof counters> & {
+    state: LiveStatus;
+    seq: number;
+    inFlightRequests: number;
+    resyncsInWindow: number;
+};
+type CounterName = keyof typeof counters;
 const RESYNC_WINDOW_MS = 30_000;
 const MAX_RESYNCS_PER_WINDOW = 2;
-export const LIVE_FIRST_FRAME_TIMEOUT_MS = 10_000;
+const FALLBACK_RETRY_INITIAL_MS = 60_000;
+const FALLBACK_RETRY_MAX_MS = 300_000;
+export const LIVE_FIRST_FRAME_TIMEOUT_MS = 30_000;
 
-let activeConnection: LiveConnection | null = null;
-let liveFallbackSecs = 0;
 const completedSnapshotTxns = new WeakSet<object>();
+let liveFallbackSecs = 0;
 let resyncTimestamps: number[] = [];
-let resyncScheduled = false;
-let pendingResync = false;
-let resumeAfterRequests = false;
-let resumeAfterHidden = false;
-let resumeBase = '';
-// Retain the historical bundle needle and expose the same value through the
-// debug seam. Expected connection aborts/supersessions never feed this counter;
-// only a parsed frame rejected at its identity gate does.
-let liveDiscards = 0;
-
-interface OwnedRequest {
-    networkSettled: boolean;
-    sent: boolean;
-    swapCompleted: boolean;
-}
-
-const ownedRequests = new Map<XMLHttpRequest, OwnedRequest>();
-
-function ownsRequest(xhr: XMLHttpRequest, entry: OwnedRequest): boolean {
-    return ownedRequests.get(xhr) === entry;
-}
-
-// Deferred request and visibility owners are one state-machine ticket. Clear
-// the ticket atomically so no stale hidden/request/resync branch can revive it.
-function clearResumeIntent(): void {
-    pendingResync = false;
-    resyncScheduled = false;
-    resumeAfterRequests = false;
-    resumeAfterHidden = false;
-    resumeBase = '';
-}
-
-function supportedResumeBase(): string {
-    return liveSupported() ? resumeBase || liveStreamBase() : '';
-}
-
+let resumeIntent: { base: string; waitForChangedBase?: true } | null = null;
+let requestSubscribed = false;
+let fallbackRetryTimerId: number | undefined;
+let fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
 function addCounter(name: CounterName, amount = 1): void {
     counters[name] += amount;
-    liveDiscards = counters.discards;
 }
-
 function pruneResyncWindow(now = Date.now()): void {
     resyncTimestamps = resyncTimestamps.filter((timestamp) => now - timestamp < RESYNC_WINDOW_MS);
 }
@@ -185,10 +96,9 @@ function currentStats(): LiveDebugStats {
     pruneResyncWindow();
     return {
         ...counters,
-        state: liveState.status,
-        protocol: activeConnection?.protocol || null,
-        seq: activeConnection?.cursor?.seq || 0,
-        inFlightRequests: ownedRequests.size,
+        state: runtime.status,
+        seq: runtime.connection?.cursor?.seq || 0,
+        inFlightRequests: listRequestTrackerSnapshot().count,
         resyncsInWindow: resyncTimestamps.length,
     };
 }
@@ -196,7 +106,6 @@ function currentStats(): LiveDebugStats {
 export function liveFallbackSeconds(): number {
     return liveFallbackSecs;
 }
-
 function liveSupported(): boolean {
     const content = document.getElementById('resource-list-content') as HTMLElement | null;
     if (content?.dataset.liveUrl !== 'location') return false;
@@ -209,9 +118,8 @@ function liveSupported(): boolean {
 function liveStreamBase(): string {
     return liveStreamBaseForURL(new URL(window.location.href));
 }
-
 function isActive(connection: LiveConnection): boolean {
-    return activeConnection === connection;
+    return runtime.connection === connection;
 }
 
 function connectionToken(source: LiveConnection): LiveConnection {
@@ -223,57 +131,80 @@ function connectionToken(source: LiveConnection): LiveConnection {
 
 function replaceConnection(
     current: LiveConnection,
-    protocol: LiveProtocol,
     cursor: LiveV2Cursor | Readonly<LiveV2Cursor> | null,
 ): LiveConnection | null {
     if (!isActive(current)) return null;
-    const next = connectionToken({ ...current, protocol, cursor });
-    activeConnection = next;
+    const next = connectionToken({ ...current, cursor });
+    runtime.connection = next;
     return next;
 }
 
 function abortActiveConnection(): void {
-    const connection = activeConnection;
-    activeConnection = null;
-    liveState.abort = null;
+    const connection = runtime.connection;
+    runtime.connection = null;
     connection?.ctrl.abort();
 }
-
-export function liveTeardown(): void {
-    abortActiveConnection();
-    liveFallbackSecs = 0;
+function clearFallbackRetry(): void {
+    window.clearTimeout(fallbackRetryTimerId);
+    fallbackRetryTimerId = undefined;
+}
+function resetFallbackRetry(): void {
+    clearFallbackRetry();
+    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
 }
 
-// Called at body/history ownership boundaries immediately after liveTeardown.
-// Exact connection identity and exact request-map entries own stale continuations.
+function setOff(): void {
+    abortActiveConnection();
+    resetFallbackRetry();
+    resumeIntent = null;
+    liveFallbackSecs = 0;
+    runtime.status = 'off';
+    clearLiveUnavailable();
+}
+
 export function liveResetPage(): void {
-    ownedRequests.clear();
-    clearResumeIntent();
+    setOff();
+    resetListRequestTracker();
     resyncTimestamps = [];
 }
+function scheduleFallbackRetry(): void {
+    fallbackRetryTimerId = window.setTimeout(() => {
+        fallbackRetryTimerId = undefined;
+        if (refreshMode() !== 'Live') return;
+        const base = liveSupported() ? liveStreamBase() : '';
+        fallbackRetryDelayMs = Math.min(fallbackRetryDelayMs * 2, FALLBACK_RETRY_MAX_MS);
+        openConnection(base);
+    }, fallbackRetryDelayMs);
+}
 
-function liveEngageFallback(banner: boolean): void {
+function liveEngageFallback(): void {
     abortActiveConnection();
-    clearResumeIntent();
-    liveState.status = 'fallback';
+    resumeIntent = null;
+    runtime.status = 'fallback';
     liveFallbackSecs = document.getElementById('resource-list-content') ? 5 : 0;
     addCounter('fallbacks');
     scheduleRefreshTick();
-    if (banner) markListStale();
+    scheduleFallbackRetry();
+    markLiveUnavailable();
 }
 
 function openConnection(base: string): void {
     abortActiveConnection();
+    clearFallbackRetry();
     liveFallbackSecs = 0;
-    liveState.streamPath = base;
+    runtime.streamPath = base;
     if (!base) {
-        liveEngageFallback(false);
+        liveEngageFallback();
         return;
     }
-    if (document.hidden) {
-        resumeBase = base;
-        resumeAfterHidden = true;
-        liveState.status = 'hidden';
+    const deferredStatus = document.hidden
+        ? 'hidden'
+        : listRequestTrackerSnapshot().count > 0
+          ? 'suspended'
+          : null;
+    if (deferredStatus) {
+        resumeIntent = { base };
+        runtime.status = deferredStatus;
         scheduleRefreshTick();
         return;
     }
@@ -281,7 +212,7 @@ function openConnection(base: string): void {
     try {
         generation = mintLiveGeneration();
     } catch {
-        liveEngageFallback(false);
+        liveEngageFallback();
         return;
     }
     const ctrl = new AbortController();
@@ -289,14 +220,10 @@ function openConnection(base: string): void {
         ctrl,
         generation,
         base,
-        screen: liveScreenForBase(base),
-        protocol: 'pending',
         cursor: null,
     });
-    activeConnection = connection;
-    liveState.abort = ctrl;
-    liveState.gen = generation;
-    liveState.status = 'connecting';
+    runtime.connection = connection;
+    runtime.status = 'connecting';
     addCounter('connections');
     scheduleRefreshTick();
     void liveConnect(connection);
@@ -310,28 +237,22 @@ function responseHeader(response: Response, name: string): string | null {
     }
 }
 
-function negotiatedProtocol(response: Response, connection: LiveConnection): 'v1' | 'v2' | null {
+function acceptsV2Response(response: Response, connection: LiveConnection): boolean {
     const contentType = responseHeader(response, 'Content-Type');
     if (contentType?.split(';', 1)[0].trim().toLowerCase() !== 'text/event-stream') {
-        return null;
+        return false;
     }
     const version = responseHeader(response, 'RO-Live-Version');
+    if (version !== null && version !== '2') return false;
     const generation = responseHeader(response, 'RO-Live-Generation');
-    if (version === null && generation === null) return 'v1';
-    if (version === '2' && generation === connection.generation) return 'v2';
-    return null;
-}
-
-function firstFrameAccepted(): boolean {
-    return liveState.status === 'open-v1' || liveState.status === 'open-v2';
+    return generation === null || generation === connection.generation;
 }
 
 async function liveConnect(initial: LiveConnection): Promise<void> {
     let firstFrameTimer: number | null = window.setTimeout(() => {
         firstFrameTimer = null;
-        const current = activeConnection;
-        if (current?.ctrl === initial.ctrl) {
-            liveEngageFallback(false);
+        if (runtime.connection?.ctrl === initial.ctrl) {
+            liveEngageFallback();
         }
     }, LIVE_FIRST_FRAME_TIMEOUT_MS);
     const clearFirstFrameTimer = () => {
@@ -353,7 +274,7 @@ async function runLiveConnection(
 ): Promise<void> {
     let response: Response;
     try {
-        response = await fetch(liveRequestURL(initial.base, initial.generation), {
+        response = await fetch(initial.base, {
             signal: initial.ctrl.signal,
             headers: {
                 'RO-Live-Version': '2',
@@ -361,143 +282,49 @@ async function runLiveConnection(
             },
         });
     } catch {
-        if (!isActive(initial)) return;
-        liveEngageFallback(false);
+        if (isActive(initial)) liveEngageFallback();
         return;
     }
     if (!isActive(initial)) return;
     if (response.status !== 200 || !response.body) {
-        liveEngageFallback(false);
+        liveEngageFallback();
         return;
     }
-    const protocol = negotiatedProtocol(response, initial);
-    if (!protocol) {
+    if (!acceptsV2Response(response, initial)) {
         rejectProtocol(initial);
         return;
     }
-    let connection = replaceConnection(initial, protocol, null);
-    if (!connection) return;
-    liveState.status = protocol === 'v2' ? 'syncing-v2' : 'syncing-v1';
-    const parser = new LiveSSEParser();
-    let reader: ReadableStreamDefaultReader<Uint8Array>;
+    const accepted = replaceConnection(initial, null);
+    if (!accepted) return;
+    let connection = accepted;
     try {
-        reader = response.body.getReader();
-    } catch {
-        if (isActive(connection)) liveEngageFallback(true);
-        return;
-    }
-    try {
-        for (;;) {
+        const reader = response.body.getReader();
+        const parser = new LiveSSEParser();
+        const readNext = async (): Promise<LiveConnection | undefined> => {
             const result = await reader.read();
-            if (!isActive(connection)) return;
-            // EOF is already an unconditional transport failure below. The
-            // parser is discarded with this connection, so resetting its
-            // uncommitted tail cannot affect the outcome.
-            if (result.done) break;
-            const value = result.value;
-            addCounter('rawBytes', value.byteLength);
+            if (!isActive(connection) || result.done) return;
+            addCounter('rawBytes', result.value.byteLength);
             let events: LiveSSEEvent[];
             try {
-                events = parser.push(value);
+                events = parser.push(result.value);
             } catch {
-                // LiveSSEParser normalizes every framing/decoder failure to its
-                // stable protocol error before it crosses this boundary.
                 addCounter('invalidFrames');
-                if (connection.protocol === 'v2') rejectProtocol(connection, false);
-                else liveEngageFallback(true);
+                rejectProtocol(connection, false);
                 return;
             }
             for (const event of events) {
                 addCounter('payloadBytes', event.dataBytes);
-                if (connection.protocol === 'v2') {
-                    handleV2Frame(connection, event.name, event.data, event.dataBytes);
-                } else {
-                    handleV1Frame(connection, event.name, event.data, event.dataBytes);
-                }
-                const current = activeConnection;
+                handleV2Frame(connection, event.name, event.data, event.dataBytes);
+                const current = runtime.connection;
                 if (!current || current.ctrl !== connection.ctrl) return;
                 connection = current;
-                if (firstFrameAccepted()) clearFirstFrameTimer();
+                clearFirstFrameTimer();
             }
-        }
+            return connection;
+        };
+        while (await readNext()) {}
     } catch {}
-    if (isActive(connection)) liveEngageFallback(true);
-}
-
-function parseJSONValue(text: string): unknown {
-    let value: unknown;
-    try {
-        value = JSON.parse(text) as unknown;
-    } catch {}
-    return value;
-}
-
-const TERMINAL_REASONS = new Set(['idle', 'auth', 'watch-failed', 'shutdown']);
-
-function handleV1Frame(
-    connection: LiveConnection,
-    name: string | null,
-    text: string,
-    payloadBytes: number,
-): void {
-    if (name !== 'ro-table' && name !== 'ro-terminal') return;
-    const value = parseJSONValue(text);
-    // Parse failures, null, primitives, and arrays cannot carry named wire
-    // fields. Object boxes make the exact reads total; the wire gates below
-    // own the single invalid-frame outcome.
-    const payload = Object(value) as Record<string, unknown>;
-    if (name === 'ro-terminal') {
-        if (
-            payload.g !== connection.generation ||
-            typeof payload.reason !== 'string' ||
-            !TERMINAL_REASONS.has(payload.reason)
-        ) {
-            addCounter('invalidFrames');
-            return;
-        }
-        addCounter('terminals');
-        liveEngageFallback(true);
-        return;
-    }
-    if (typeof payload.g !== 'string' || typeof payload.html !== 'string') {
-        addCounter('invalidFrames');
-        return;
-    }
-    const currentBase = liveStreamBase();
-    const discard = shouldDiscardPush({
-        frameGeneration: payload.g,
-        currentGeneration: connection.generation,
-        liveStreamBase: currentBase,
-        openedStreamBase: connection.base,
-    });
-    if (discard) {
-        addCounter('discards');
-        return;
-    }
-    if (!swapSnapshot(payload.html, connection, null)) {
-        addCounter('invalidFrames');
-        liveEngageFallback(true);
-        return;
-    }
-    addCounter('v1Snapshots');
-    addCounter('snapshotBytes', payloadBytes);
-    liveState.status = 'open-v1';
-}
-
-function validEnvelopeIdentity(envelope: LiveV2Envelope, connection: LiveConnection): boolean {
-    return envelope.g === connection.generation && envelope.screen === connection.screen;
-}
-
-function snapshotCursor(envelope: LiveV2SnapshotEnvelope): LiveV2Cursor {
-    const cursor: LiveV2Cursor = {
-        g: envelope.g,
-        seq: envelope.seq,
-        screen: envelope.screen,
-        rev: envelope.rev,
-        schema: envelope.schema,
-    };
-    if (envelope.rv !== undefined) cursor.rv = envelope.rv;
-    return cursor;
+    if (isActive(connection)) liveEngageFallback();
 }
 
 function handleV2Frame(
@@ -517,7 +344,7 @@ function handleV2Frame(
     }
     const envelope = decoded.value;
     const cursor = connection.cursor;
-    if (!validEnvelopeIdentity(envelope, connection)) {
+    if (envelope.g !== connection.generation) {
         rejectProtocol(connection);
         return;
     }
@@ -529,6 +356,23 @@ function handleV2Frame(
         commitV2Snapshot(connection, envelope, payloadBytes);
         return;
     }
+    if (envelope.kind === 'delta') {
+        const applied = applyLiveV2Delta(envelope, cursor);
+        if (!applied.ok) {
+            rejectProtocol(connection);
+            return;
+        }
+        if (!replaceConnection(connection, applied.cursor)) return;
+        clearListValidator();
+        addCounter('deltas');
+        addCounter('deltaBytes', payloadBytes);
+        addCounter('inserted', applied.summary.inserted);
+        addCounter('updated', applied.summary.updated);
+        addCounter('deleted', applied.summary.deleted);
+        addCounter('projected', applied.summary.projected);
+        runtime.status = 'open';
+        return;
+    }
     if (envelope.seq !== cursor.seq + 1) {
         rejectProtocol(connection);
         return;
@@ -537,35 +381,13 @@ function handleV2Frame(
         commitV2Snapshot(connection, envelope, payloadBytes);
         return;
     }
-    if (envelope.kind === 'terminal') {
-        if (envelope.rev !== cursor.rev || envelope.schema !== cursor.schema) {
-            rejectProtocol(connection);
-            return;
-        }
-        addCounter('terminals');
-        liveEngageFallback(true);
-        return;
-    }
-    const applied = applyLiveV2Delta(decoded.value, cursor);
-    if (!applied.ok) {
+    if (envelope.rev !== cursor.rev || envelope.schema !== cursor.schema) {
         rejectProtocol(connection);
         return;
     }
-    if (!replaceConnection(connection, 'v2', applied.cursor)) {
-        return;
-    }
-    // A direct delta has no response validator and emits no fake HTMX event.
-    // Clear only after the atomic reducer has committed.
-    clearListValidator();
-    addCounter('deltas');
-    addCounter('deltaBytes', payloadBytes);
-    addCounter('inserted', applied.summary.inserted);
-    addCounter('updated', applied.summary.updated);
-    addCounter('deleted', applied.summary.deleted);
-    addCounter('projected', applied.summary.projected);
-    liveState.status = 'open-v2';
+    addCounter('terminals');
+    liveEngageFallback();
 }
-
 function commitV2Snapshot(
     connection: LiveConnection,
     envelope: LiveV2SnapshotEnvelope,
@@ -573,331 +395,143 @@ function commitV2Snapshot(
 ): void {
     const txn = Object.freeze({});
     swapSnapshot(envelope.snapshot.html, connection, txn);
-    const completed = completedSnapshotTxns.has(txn);
-    if (!completed || !isActive(connection)) {
+    if (!completedSnapshotTxns.has(txn) || !isActive(connection)) {
         rejectProtocol(connection);
         return;
     }
-    replaceConnection(connection, 'v2', snapshotCursor(envelope));
+    const cursor: LiveV2Cursor = {
+        g: envelope.g,
+        seq: envelope.seq,
+        rev: envelope.rev,
+        schema: envelope.schema,
+    };
+    if (envelope.rv !== undefined) cursor.rv = envelope.rv;
+    replaceConnection(connection, cursor);
     addCounter('v2Snapshots');
     addCounter('snapshotBytes', payloadBytes);
-    liveState.status = 'open-v2';
+    runtime.status = 'open';
+    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
+    clearLiveUnavailable();
 }
-
-function swapSnapshot(html: string, connection: LiveConnection, txn: object | null): boolean {
+function swapSnapshot(html: string, connection: LiveConnection, txn: object): void {
     const content = document.getElementById('resource-list-content');
-    const htmx = getHtmx();
-    if (!content || !htmx || !isActive(connection)) return false;
+    const htmx = (window as unknown as { htmx?: Htmx }).htmx;
+    if (!content || !htmx || !isActive(connection)) return;
     clearListValidator();
-    const eventInfo: LiveSnapshotEventInfo = { target: content, roLivePush: true };
-    if (txn) eventInfo.roLiveSnapshotTxn = txn;
+    const eventInfo: LiveSnapshotEventInfo = {
+        target: content,
+        roLivePush: true,
+        roLiveSnapshotTxn: txn,
+    };
     try {
         htmx.swap(content, html, { swapStyle: 'morph' }, { contextElement: content, eventInfo });
-        return isActive(connection);
-    } catch {
-        return false;
-    }
+    } catch {}
 }
-
 function rejectProtocol(connection: LiveConnection, countInvalid = true): void {
     if (!isActive(connection)) return;
     if (countInvalid) addCounter('invalidFrames');
     const base = connection.base;
-    abortActiveConnection();
     requestResync(base);
 }
-
 function requestResync(base: string): void {
-    if (document.hidden) {
-        pendingResync = true;
-        resumeBase = base;
-        liveState.status = 'hidden';
-        resumeAfterHidden = true;
-        return;
-    }
-    const now = Date.now();
-    pruneResyncWindow(now);
+    pruneResyncWindow();
     if (resyncTimestamps.length >= MAX_RESYNCS_PER_WINDOW) {
-        liveEngageFallback(true);
+        liveEngageFallback();
         return;
     }
-    resyncTimestamps.push(now);
+    resyncTimestamps.push(Date.now());
     addCounter('resyncs');
-    liveState.status = 'resyncing';
-    resyncScheduled = true;
-    queueMicrotask(() => {
-        if (!resyncScheduled) return;
-        resyncScheduled = false;
-        openConnection(base);
-    });
+    openConnection(base);
 }
 
-function requestDetail(event: Event): Record<string, unknown> {
-    return Object((event as CustomEvent).detail) as Record<string, unknown>;
-}
-
-function requestPathBase(detail: Record<string, unknown>): string | null {
-    try {
-        const pathInfo = Object(detail.pathInfo) as Record<string, unknown>;
-        return (
-            liveStreamBaseFromTableRequest(pathInfo.finalRequestPath) ||
-            liveStreamBaseFromTableRequest(pathInfo.requestPath)
-        );
-    } catch {
-        return null;
-    }
-}
-
-// Called as the very first statement of refresh.ts's beforeRequest listener.
-// Ownership is tied to the exact current content node and native XHR loadend,
-// so a detached issuer cannot strand the stream in a suspended state.
-export function liveBeforeListRequest(event: Event): void {
-    const detail = requestDetail(event);
-    const content = document.getElementById('resource-list-content');
-    const xhr = detail.xhr as XMLHttpRequest | undefined;
-    if (!(content && xhr && detail.target === content) || ownedRequests.has(xhr)) return;
-    const entry: OwnedRequest = {
-        networkSettled: false,
-        sent: false,
-        swapCompleted: false,
-    };
-    ownedRequests.set(xhr, entry);
-    try {
-        xhr.addEventListener('loadend', () => {
-            if (ownsRequest(xhr, entry)) noteRequestNetworkSettled(xhr, entry);
-        });
-    } catch {
-        // htmx:afterRequest remains the ordinary settlement path. Native
-        // XMLHttpRequest always supports addEventListener; this keeps the
-        // public document handler total under synthetic tests/tooling events.
-    }
-    // EventTarget is an external surface under synthetic integrations. It may
-    // synchronously reset the page and reuse this XHR while registering; only
-    // the exact entry that survived registration may schedule or suspend.
-    if (!ownsRequest(xhr, entry)) return;
-    // htmx:beforeRequest is cancelable. beforeSend follows synchronously only
-    // when HTMX will actually send this exact XHR; otherwise no native loadend
-    // exists, so retire the speculative ownership in the next microtask.
-    queueMicrotask(() => {
-        if (ownsRequest(xhr, entry) && !entry.sent) finalizeOwnedRequest(xhr, entry);
-    });
-    const resumable =
-        activeConnection !== null || resyncScheduled || resumeAfterRequests || resumeAfterHidden;
-    // Track even polling/Off traffic: an explicit Live pick during this XHR
-    // must see it and defer opening. Sticky fallback itself still never sets a
-    // resume intent and therefore cannot auto-reopen from ordinary polling.
-    if (!resumable) return;
-    // The resync budget was charged when this ticket was scheduled. Cancel its
-    // queued opener and let the ordinary final-request barrier perform that
-    // already-paid reopen once; leaving the flag set would poison all later
-    // resync attempts.
-    resyncScheduled = false;
-    resumeAfterRequests = true;
-    resumeBase ||= activeConnection?.base || liveState.streamPath;
-    abortActiveConnection();
-    if (document.hidden) {
-        liveState.status = 'hidden';
-        resumeAfterHidden = true;
-    } else {
-        liveState.status = 'suspended';
-    }
-}
-
-export function liveMarkListRequestSent(event: Event): void {
-    const xhr = requestDetail(event).xhr as XMLHttpRequest | undefined;
-    const entry = xhr ? ownedRequests.get(xhr) : undefined;
-    if (xhr && entry && ownsRequest(xhr, entry)) entry.sent = true;
-}
-
-export function liveAfterListRequest(event: Event): void {
-    const detail = requestDetail(event);
-    const xhr = detail.xhr as XMLHttpRequest | undefined;
-    if (!xhr) return;
-    const entry = ownedRequests.get(xhr);
-    if (entry && ownsRequest(xhr, entry)) noteRequestNetworkSettled(xhr, entry);
-}
-
-function requestStatus(xhr: XMLHttpRequest): number {
-    try {
-        return xhr.status;
-    } catch {
-        return 0;
-    }
-}
-
-function noteRequestNetworkSettled(xhr: XMLHttpRequest, entry: OwnedRequest): void {
-    entry.networkSettled = true;
-    // A successful HTMX request is not complete from Live's point of view until
-    // its final afterSwap repair marker lands. Readout disables delayed native
-    // transitions, so HTMX normally supplies that marker before afterRequest.
-    // A beforeSwap cancellation resolves in an earlier queued microtask. Give
-    // that synchronous lifecycle one microtask to finish; if no terminal swap
-    // signal exists, fail closed instead of keeping a timer-owned request.
-    const status = requestStatus(xhr);
-    if (status === 200 && !entry.swapCompleted) {
-        queueMicrotask(() => failOwnedRequestWithoutSwap(xhr, entry));
-        return;
-    }
-    finalizeOwnedRequest(xhr, entry);
-}
-
-function completeOwnedRequestSwap(
-    xhr: XMLHttpRequest,
-    entry: OwnedRequest,
-    successfulBase: string | null,
-): void {
-    if (!ownsRequest(xhr, entry)) return;
-    entry.swapCompleted = true;
-    if (successfulBase) {
-        resumeBase = successfulBase;
-    }
-    if (entry.networkSettled) finalizeOwnedRequest(xhr, entry);
-}
-
-function failOwnedRequestWithoutSwap(xhr: XMLHttpRequest, entry: OwnedRequest): void {
-    if (!ownsRequest(xhr, entry)) return;
-    ownedRequests.delete(xhr);
-    if (!resumeAfterRequests) return;
-    if (refreshMode() !== 'Live') {
-        clearResumeIntent();
-        liveState.status = 'idle';
-        liveState.streamPath = '';
-        return;
-    }
-    // A 200 without afterSwap, an explicit cancellation, or swapError violates
-    // the owned HTMX lifecycle. Sticky polling is the safe fail-closed state;
-    // only an explicit Live repick may leave it.
-    liveEngageFallback(true);
-}
-
-function finalizeOwnedRequest(xhr: XMLHttpRequest, entry: OwnedRequest): void {
-    if (!ownsRequest(xhr, entry)) return;
-    ownedRequests.delete(xhr);
-    if (ownedRequests.size > 0 || !resumeAfterRequests) return;
-    if (document.hidden) {
-        liveState.status = 'hidden';
-        resumeAfterHidden = true;
-        return;
-    }
-    const shouldResync = pendingResync;
-    if (refreshMode() !== 'Live') {
-        clearResumeIntent();
-        liveState.status = 'idle';
-        liveState.streamPath = '';
-        return;
-    }
-    const supportedBase = supportedResumeBase();
-    clearResumeIntent();
-    if (supportedBase && shouldResync) requestResync(supportedBase);
-    else openConnection(supportedBase);
-}
-
-// Registered before init.ts's beforeSwap policy listener. Deferring the check
-// to a microtask observes the final shouldSwap/defaultPrevented decision after
-// every synchronous listener has run, including the app-managed 304 gate.
-export function liveBeforeListSwapDecision(event: Event): void {
-    const detail = requestDetail(event);
-    const xhr = detail.xhr as XMLHttpRequest | undefined;
-    const entry = xhr ? ownedRequests.get(xhr) : undefined;
-    if (!xhr || !entry || !ownsRequest(xhr, entry)) return;
-    queueMicrotask(() => {
-        if ((event as CustomEvent).defaultPrevented || detail.shouldSwap === false) {
-            completeOwnedRequestSwap(xhr, entry, null);
-        }
-    });
-}
-
-// HTMX reports a thrown/failed swap separately from afterSwap. Treat it as a
-// completed (unsuccessful) DOM barrier so a 200 cannot strand Live forever.
-export function liveListRequestSwapFailed(event: Event): void {
-    const detail = requestDetail(event);
-    const xhr = detail.xhr as XMLHttpRequest | undefined;
-    const entry = xhr ? ownedRequests.get(xhr) : undefined;
-    if (xhr && entry && ownsRequest(xhr, entry)) completeOwnedRequestSwap(xhr, entry, null);
-}
-
-// Called at the end of init.ts's fixed afterSwap pipeline. Push events are
-// isolated from request ownership, and only the exact pending snapshot token
-// may complete one. A real request swap records its final byte-preserved table
-// path for the one post-loadend resume.
-export function liveOnListSwap(event: Event): void {
-    const detail = requestDetail(event);
-    const snapshotTxn = detail.roLiveSnapshotTxn;
-    if (detail.roLivePush === true) {
-        // Recording an unrelated object is harmless: commitV2Snapshot checks
-        // only its own opaque token. The WeakSet remains the identity barrier.
-        if (typeof snapshotTxn === 'object' && snapshotTxn !== null) {
-            completedSnapshotTxns.add(snapshotTxn as object);
+function requestActivity(activity: ListRequestActivity): void {
+    if (activity.phase === 'start') {
+        const connection = runtime.connection;
+        if (connection) {
+            // A request path is only an intent until its list swap lands. Pin the
+            // last committed projection so cancellation/failure cannot redirect Live.
+            resumeIntent = { base: connection.base };
+            abortActiveConnection();
+            runtime.status = document.hidden ? 'hidden' : 'suspended';
+        } else if (runtime.status === 'fallback' && !resumeIntent) {
+            // A fallback poll does not itself justify another stream attempt.
+            // Its successful swap may commit a different base below.
+            resumeIntent = { base: runtime.streamPath as string, waitForChangedBase: true };
         }
         return;
     }
-    const xhr = detail.xhr as XMLHttpRequest | undefined;
-    const entry = xhr ? ownedRequests.get(xhr) : undefined;
-    if (!xhr || !entry || !ownsRequest(xhr, entry)) return;
-    const base = requestPathBase(detail);
-    completeOwnedRequestSwap(xhr, entry, base);
-}
-
-export function liveApply(force?: boolean): void {
+    if (!resumeIntent || activity.inFlight !== 0) return;
     if (refreshMode() !== 'Live') {
-        liveTeardown();
-        clearResumeIntent();
-        liveState.status = 'idle';
-        liveState.streamPath = '';
+        setOff();
         return;
     }
-    const base = liveSupported() ? liveStreamBase() : '';
-    if (force) {
-        resyncTimestamps = [];
-        clearResumeIntent();
-    }
-    if (!force && liveState.status === 'fallback') return;
-    if (!force && base === liveState.streamPath && liveState.status !== 'idle') return;
-    if (ownedRequests.size > 0) {
-        liveTeardown();
-        resumeAfterRequests = true;
-        resumeBase = base;
-        liveState.streamPath = base;
-        liveState.status = document.hidden ? 'hidden' : 'suspended';
-        resumeAfterHidden = document.hidden;
+    const { base, waitForChangedBase } = resumeIntent;
+    resumeIntent = null;
+    if (waitForChangedBase) {
+        runtime.status = 'fallback';
         return;
     }
     openConnection(base);
 }
 
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        if (activeConnection || resumeAfterRequests || resyncScheduled) {
-            resumeBase ||= activeConnection?.base || liveState.streamPath;
-            resumeAfterHidden = true;
-            abortActiveConnection();
-            liveState.status = 'hidden';
+// Push snapshots commit through their opaque token. A request-driven list swap
+// is instead the single point where its new URL becomes committed Live identity.
+export function liveOnListSwap(event: Event): void {
+    const detail = Object((event as CustomEvent).detail) as Record<string, unknown>;
+    if (detail.roLivePush !== true) {
+        if (resumeIntent) {
+            const base = liveSupported() ? liveStreamBase() : '';
+            if (!resumeIntent.waitForChangedBase || base !== resumeIntent.base) {
+                resumeIntent = { base };
+            }
+            runtime.streamPath = base;
         }
         return;
     }
-    if (!resumeAfterHidden) return;
+    const snapshotTxn = detail.roLiveSnapshotTxn;
+    if (typeof snapshotTxn === 'object' && snapshotTxn !== null) {
+        completedSnapshotTxns.add(snapshotTxn as object);
+    }
+}
+
+export function liveApply(force?: boolean): void {
+    if (!requestSubscribed) {
+        subscribeListRequests(requestActivity);
+        requestSubscribed = true;
+    }
     if (refreshMode() !== 'Live') {
-        clearResumeIntent();
-        liveState.status = 'idle';
-        liveState.streamPath = '';
+        setOff();
         return;
     }
-    if (ownedRequests.size > 0) {
-        liveState.status = 'suspended';
+    const base = liveSupported() ? liveStreamBase() : '';
+    if (force) {
+        resyncTimestamps = [];
+        resumeIntent = null;
+        resetFallbackRetry();
+    }
+    if (!force && base === runtime.streamPath && runtime.status !== 'off') return;
+    openConnection(base);
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        const connection = runtime.connection;
+        if (connection) resumeIntent = { base: connection.base };
+        const intent = resumeIntent;
+        if (!intent || intent.waitForChangedBase) return;
+        abortActiveConnection();
+        runtime.status = 'hidden';
         return;
     }
-    const shouldResync = pendingResync;
-    const supportedBase = supportedResumeBase();
-    clearResumeIntent();
-    if (supportedBase && shouldResync) requestResync(supportedBase);
-    else openConnection(supportedBase);
+    if (runtime.status === 'hidden' && resumeIntent) {
+        if (refreshMode() !== 'Live') {
+            setOff();
+            return;
+        }
+        const { base } = resumeIntent;
+        resumeIntent = null;
+        openConnection(base);
+    }
 });
 
-window.roLive = {
-    discards() {
-        return liveDiscards;
-    },
-    stats() {
-        return currentStats();
-    },
-};
+window.roLive = { stats: currentStats };

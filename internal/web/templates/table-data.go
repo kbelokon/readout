@@ -246,17 +246,21 @@ type HiddenInput struct {
 // (single-type pages) the <tr> emits data-key + id so idiomorph matches rows
 // by identity (never position) and client row state re-keys across morphs.
 type TableRow struct {
-	StatusClass  string
-	ClusterHref  string
-	Cluster      string
-	NsHref       string
-	Namespace    string
-	Cells        []TableCell
-	CreatedClass string
-	CreatedText  string
-	CreatedTitle string
-	Key          string
-	DomID        string
+	StatusClass string
+	ClusterHref string
+	Cluster     string
+	NsHref      string
+	Namespace   string
+	// ResourceVersion participates in Live row identity but is never rendered.
+	// It lets the projection ignore clock-only volatile display changes while
+	// still observing a real Kubernetes object update.
+	ResourceVersion string
+	Cells           []TableCell
+	CreatedClass    string
+	CreatedText     string
+	CreatedTitle    string
+	Key             string
+	DomID           string
 
 	// Per-row gesture targets, set together with Key on
 	// single-type pages: the full untruncated object name plus the
@@ -279,6 +283,8 @@ type TableCell struct {
 	Class    string
 	ColClass string
 	Href     string
+	// Volatile is projection-only metadata for clock-derived presentation.
+	Volatile bool
 
 	Tone     string // status-dot / cell-status tone (ok/warn/err/info/mute)
 	Ratio    string // ready ratio tone (full/partial/zero)

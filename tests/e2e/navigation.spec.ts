@@ -17,6 +17,7 @@ interface NavigationProbe {
   beforeTransitions: number;
   afterRequests: number;
   afterSwaps: number;
+  bodyAfterSettles: number;
   historyCacheHits: number;
   firstPaint: null | {
     folds: number;
@@ -40,6 +41,7 @@ async function installNavigationProbe(page: Page): Promise<void> {
       beforeTransitions: 0,
       afterRequests: 0,
       afterSwaps: 0,
+      bodyAfterSettles: 0,
       historyCacheHits: 0,
       firstPaint: null,
     };
@@ -53,6 +55,12 @@ async function installNavigationProbe(page: Page): Promise<void> {
     });
     document.addEventListener('htmx:afterSwap', () => {
       probe.afterSwaps += 1;
+    });
+    document.addEventListener('htmx:afterSettle', (event) => {
+      const detail = Object((event as CustomEvent).detail) as { target?: unknown };
+      if (event.target === document.body || detail.target === document.body) {
+        probe.bodyAfterSettles += 1;
+      }
     });
     document.addEventListener('htmx:historyCacheHit', () => {
       probe.historyCacheHits += 1;
@@ -160,6 +168,40 @@ test('body and list navigation remain plain HTMX swaps with native motion disabl
   expectNoMotion(sort.before, await probeSnapshot(page));
 });
 
+test('history restore does not revive a columns popover from pre-settle classes', async ({ page }) => {
+  await installNavigationProbe(page);
+  await page.goto(PODS);
+  await page.locator('#ro-cols-btn').click();
+  await expect(page.locator('#ro-cols-pop')).toHaveClass(/is-open/);
+
+  const navigation = await requestAndSettle(
+    page,
+    (response) =>
+      new URL(response.url()).pathname === SERVICES &&
+      response.request().headers()['hx-request'] === 'true',
+    () => page.locator('.ro-sidebar a', { hasText: 'Services' }).click()
+  );
+  expect(navigation.response.status()).toBe(200);
+  await expect
+    .poll(async () => (await probeSnapshot(page)).bodyAfterSettles, { timeout: 5_000 })
+    .toBe(navigation.before.bodyAfterSettles + 1);
+  const beforeBack = await probeSnapshot(page);
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`${PODS}$`));
+  await expect
+    .poll(async () => (await probeSnapshot(page)).historyCacheHits, { timeout: 5_000 })
+    .toBe(beforeBack.historyCacheHits + 1);
+  await expect
+    .poll(async () => (await probeSnapshot(page)).bodyAfterSettles, { timeout: 5_000 })
+    .toBe(beforeBack.bodyAfterSettles + 1);
+
+  await expect(page.locator('#ro-cols-pop')).not.toHaveClass(/is-open/);
+  await expect(page.locator('#ro-cols-btn')).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('tr.kfocus')).toHaveCount(0);
+  await page.keyboard.press('j');
+  await expect(page.locator('tr.kfocus')).toHaveCount(1);
+});
+
 test('an exact active sidebar click is a no-op while a real query reset still navigates', async ({
   page,
 }) => {
@@ -181,7 +223,7 @@ test('an exact active sidebar click is a no-op while a real query reset still na
   expect(page.url()).toBe(new URL(NAMESPACES, page.url()).href);
   expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
   expect(await main?.evaluate((element) => element.isConnected)).toBe(true);
-  expect(await probeSnapshot(page)).toMatchObject(before);
+  expect(await probeSnapshot(page)).toEqual(before);
 
   await page.goto(`${NAMESPACES}?sort=Name`);
   boostedRequests.length = 0;
@@ -222,7 +264,7 @@ test('repeated Default clicks preserve Containers and YAML is complete before fi
   expect(page.url()).toBe(new URL(POD, page.url()).href);
   expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
   expect(await containers?.evaluate((element) => element.isConnected)).toBe(true);
-  expect(await probeSnapshot(page)).toMatchObject(before);
+  expect(await probeSnapshot(page)).toEqual(before);
 
   await page.evaluate(() => {
     const probe = (window as unknown as { __navigationProbe: NavigationProbe })

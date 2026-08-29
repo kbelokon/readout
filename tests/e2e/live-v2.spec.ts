@@ -15,14 +15,19 @@ import { controlURL } from './playwright.config';
 // through a frame-preserving ReadableStream. Complete SSE frames are therefore
 // observable while the connection remains open; no response.body() call waits
 // for EOF and no second observer steals bytes from the application. The same
-// seam can corrupt one delta after it has been recorded, which exercises the
-// production decoder/resync path without adding a fault API to the server.
+// seam can corrupt one delta after it has been recorded or close the current
+// response body, exercising decoder/resync and transport-EOF recovery without
+// adding a fault API to the server.
 //
 // Every wait in this file has a protocol, network, lifecycle, watch, or DOM
 // cause. There are deliberately no wall-clock sleeps.
 
 const PODS = '/clusters/e2e/namespaces/default/pods';
 const PODS_LIST_PATH = '/api/v1/namespaces/default/pods';
+const ALL_PODS = '/clusters/e2e/namespaces/_all/pods';
+const ALL_PODS_LIST_PATH = '/api/v1/pods';
+const EVENTS = '/clusters/e2e/namespaces/default/events';
+const EVENTS_LIST_PATH = '/api/v1/namespaces/default/events';
 const BIG_PODS = '/clusters/e2e/namespaces/big/pods';
 const BIG_EVENTS = '/clusters/e2e/namespaces/big/events';
 const BIG_PODS_LIST_PATH = '/api/v1/namespaces/big/pods';
@@ -38,7 +43,6 @@ interface StreamRequestRecord {
   url: string;
   location: string;
   projectionRows: number | null;
-  queryGeneration: string;
   version: string | null;
   generation: string | null;
 }
@@ -57,7 +61,6 @@ interface StreamFrameRecord {
   v: number | null;
   g: string | null;
   seq: number | null;
-  screen: string | null;
   rev: string | null;
   schema: string | null;
   deltaBase: string | null;
@@ -89,12 +92,14 @@ interface LiveTransportSnapshot {
   frames: StreamFrameRecord[];
   lifecycle: LifecycleProbe;
   fault: { kind: FaultKind | null; used: number };
+  forcedEOFs: number;
   firstFrameBlocked: boolean;
   historyReloadBlocked: boolean;
   historyReloadRequests: number;
 }
 
 interface LiveTransportProbe extends LiveTransportSnapshot {
+  closeCurrentStream(): Promise<void>;
   holdNextHistoryReload(): void;
   releaseHistoryReload(): void;
   setFault(kind: FaultKind): void;
@@ -103,7 +108,6 @@ interface LiveTransportProbe extends LiveTransportSnapshot {
 
 interface LiveStatsSnapshot {
   state: string;
-  protocol: string | null;
   seq: number;
   connections: number;
   resyncs: number;
@@ -165,6 +169,7 @@ function probeSnapshot(page: Page): Promise<LiveTransportSnapshot> {
       frames: probe.frames,
       lifecycle: probe.lifecycle,
       fault: probe.fault,
+      forcedEOFs: probe.forcedEOFs,
       firstFrameBlocked: probe.firstFrameBlocked,
       historyReloadBlocked: probe.historyReloadBlocked,
       historyReloadRequests: probe.historyReloadRequests,
@@ -183,11 +188,15 @@ function liveStats(page: Page): Promise<LiveStatsSnapshot> {
   );
 }
 
+function selectedKeys(page: Page): Promise<string[]> {
+  return page.evaluate(() => window.roRowState.selectedKeys());
+}
+
 async function installLiveTransportProbe(
   page: Page,
-  options: { forceV1?: boolean; holdFirstFrame?: boolean } = {}
+  options: { holdFirstFrame?: boolean; stripResponseVersion?: boolean } = {}
 ): Promise<void> {
-  await page.addInitScript(({ forceV1, holdFirstFrame }) => {
+  await page.addInitScript(({ holdFirstFrame, stripResponseVersion }) => {
     const encoder = new TextEncoder();
     const nativeFetch = window.fetch.bind(window);
     let eventOrder = 0;
@@ -199,6 +208,7 @@ async function installLiveTransportProbe(
     let shouldHoldNextHistoryReload = false;
     let historyReloadGate: Promise<void> | null = null;
     let releaseHistoryReloadGate: (() => void) | null = null;
+    let currentStreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     const lifecycle: LifecycleProbe = {
       afterRequests: 0,
       afterSwaps: 0,
@@ -212,9 +222,17 @@ async function installLiveTransportProbe(
       frames: [],
       lifecycle,
       fault: { kind: null, used: 0 },
+      forcedEOFs: 0,
       firstFrameBlocked: false,
       historyReloadBlocked: false,
       historyReloadRequests: 0,
+      async closeCurrentStream() {
+        const reader = currentStreamReader;
+        if (!reader) throw new Error('no active stream body to close');
+        currentStreamReader = null;
+        this.forcedEOFs += 1;
+        await reader.cancel('test-induced downstream EOF');
+      },
       holdNextHistoryReload() {
         if (shouldHoldNextHistoryReload || releaseHistoryReloadGate !== null) {
           throw new Error('a history reload is already held');
@@ -450,15 +468,10 @@ async function installLiveTransportProbe(
         event,
         kind:
           envelopeKind ??
-          (event === 'ro-table'
-            ? 'v1-snapshot'
-            : event === 'ro-terminal'
-              ? 'v1-terminal'
-              : 'unknown'),
+          'unknown',
         v: parsed ? ownNumber(parsed, 'v') : null,
         g: parsed ? ownString(parsed, 'g') : null,
         seq: parsed ? ownNumber(parsed, 'seq') : null,
-        screen: parsed ? ownString(parsed, 'screen') : null,
         rev: parsed ? ownString(parsed, 'rev') : null,
         schema: parsed ? ownString(parsed, 'schema') : null,
         deltaBase: delta ? ownString(delta, 'base') : null,
@@ -487,6 +500,7 @@ async function installLiveTransportProbe(
 
     const wrapBody = (source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> => {
       const reader = source.getReader();
+      currentStreamReader = reader;
       const decoder = new TextDecoder();
       let buffered = '';
       let ended = false;
@@ -519,6 +533,7 @@ async function installLiveTransportProbe(
             try {
               const chunk = await reader.read();
               if (chunk.done) {
+                if (currentStreamReader === reader) currentStreamReader = null;
                 buffered += decoder.decode();
                 ended = true;
               } else {
@@ -531,6 +546,7 @@ async function installLiveTransportProbe(
           }
         },
         async cancel(reason) {
+          if (currentStreamReader === reader) currentStreamReader = null;
           try {
             await reader.cancel(reason);
           } catch {
@@ -541,16 +557,10 @@ async function installLiveTransportProbe(
     };
 
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      let request = new Request(input, init);
+      const request = new Request(input, init);
       const url = new URL(request.url);
       if (!url.pathname.endsWith('/_stream')) {
         return nativeFetch(input, init);
-      }
-      if (forceV1) {
-        const headers = new Headers(request.headers);
-        headers.delete('RO-Live-Version');
-        headers.delete('RO-Live-Generation');
-        request = new Request(request, { headers });
       }
       probe.requests.push({
         order: ++eventOrder,
@@ -569,25 +579,29 @@ async function installLiveTransportProbe(
               }
             ).roRowModel.rows.length
           : null,
-        queryGeneration: url.searchParams.get('g') ?? '',
         version: request.headers.get('RO-Live-Version'),
         generation: request.headers.get('RO-Live-Generation'),
       });
 
       const response = await nativeFetch(request);
+      const responseHeaders = new Headers(response.headers);
+      if (stripResponseVersion) {
+        responseHeaders.delete('RO-Live-Version');
+        responseHeaders.delete('RO-Live-Generation');
+      }
       probe.responses.push({
         url: response.url,
         status: response.status,
-        contentType: response.headers.get('Content-Type'),
-        version: response.headers.get('RO-Live-Version'),
-        generation: response.headers.get('RO-Live-Generation'),
+        contentType: responseHeaders.get('Content-Type'),
+        version: responseHeaders.get('RO-Live-Version'),
+        generation: responseHeaders.get('RO-Live-Generation'),
       });
       if (!response.body) return response;
 
       const wrapped = new Response(wrapBody(response.body), {
         status: response.status,
         statusText: response.statusText,
-        headers: response.headers,
+        headers: responseHeaders,
       });
       // A constructed Response has an empty URL. Preserve the native response
       // metadata for clients that inspect it; defining these own properties is
@@ -605,8 +619,8 @@ async function installLiveTransportProbe(
       return wrapped;
     };
   }, {
-    forceV1: options.forceV1 === true,
     holdFirstFrame: options.holdFirstFrame === true,
+    stripResponseVersion: options.stripResponseVersion === true,
   });
 }
 
@@ -614,6 +628,14 @@ async function pickLive(page: Page): Promise<void> {
   await page.locator('#refresh-dropdown').hover();
   await page.locator('.refresh-option[data-ro-interval="Live"]').click();
   await page.mouse.move(200, 400);
+}
+
+async function expectLiveFallbackBanner(page: Page): Promise<void> {
+  const banner = page.locator('.ro-stale-banner');
+  await expect(banner).toBeVisible();
+  await expect(banner.locator('.bn-title')).toHaveText('Live unavailable, polling ·');
+  await expect(banner.locator('[data-stale-countdown]')).toHaveText(/^[0-5]s$/u);
+  await expect(banner.locator('[data-ro-action="retry"]')).toHaveText('Retry');
 }
 
 async function setHidden(page: Page, hidden: boolean): Promise<void> {
@@ -634,8 +656,8 @@ function uniqueGenerations(probe: LiveTransportSnapshot): string[] {
   return [
     ...new Set(
       probe.requests
-        .map((request) => request.generation ?? request.queryGeneration)
-        .filter((generation) => generation !== '')
+        .map((request) => request.generation)
+        .filter((generation): generation is string => generation !== null)
     ),
   ];
 }
@@ -719,6 +741,16 @@ async function setNextDeltaFault(page: Page, kind: FaultKind): Promise<void> {
       }
     ).__liveV2Probe.setFault(fault);
   }, kind);
+}
+
+async function closeCurrentStream(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    await (
+      window as unknown as {
+        __liveV2Probe: LiveTransportProbe;
+      }
+    ).__liveV2Probe.closeCurrentStream();
+  });
 }
 
 interface HeldTableRequest {
@@ -832,7 +864,7 @@ test('negotiates v2 with one unreserved generation and commits an echoed initial
   await page.goto(PODS);
 
   const { generation, snapshot } = await openLiveV2(page);
-  expect(generation).toMatch(/^[A-Za-z0-9._~-]{1,64}$/u);
+  expect(generation).toMatch(/^(?:[A-Fa-f0-9]{32}|[A-Fa-f0-9-]{36})$/u);
 
   const probe = await probeSnapshot(page);
   const request = probe.requests[0];
@@ -840,8 +872,8 @@ test('negotiates v2 with one unreserved generation and commits an echoed initial
   expect(request).toMatchObject({
     version: '2',
     generation,
-    queryGeneration: generation,
   });
+  expect(new URL(request.url).searchParams.has('g')).toBe(false);
   expect(response).toMatchObject({ status: 200, version: '2', generation });
   expect(response.contentType).toMatch(/^text\/event-stream(?:;|$)/u);
   expect(snapshot).toMatchObject({
@@ -851,14 +883,30 @@ test('negotiates v2 with one unreserved generation and commits an echoed initial
     g: generation,
     seq: 1,
   });
-  expect(snapshot.screen).toBe(PODS);
   expect(snapshot.rev).toMatch(/^ro-live-v2-[A-Za-z0-9_-]{43}$/u);
   expect(snapshot.schema).toMatch(/^[A-Za-z0-9_-]{43}$/u);
   expect(snapshot.snapshotHTMLBytes).toBeGreaterThan(0);
   expect(snapshot.payloadBytes).toBeGreaterThan(snapshot.snapshotHTMLBytes ?? 0);
 });
 
-test('a stream fetch held before response headers times out to silent fallback without opening a watch', async ({
+test('an ro-live frame completes v2 negotiation when a proxy strips response headers', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop Live controls');
+  await installLiveTransportProbe(page, { stripResponseVersion: true });
+  await page.goto(PODS);
+
+  const { generation, snapshot } = await openLiveV2(page);
+  expect(snapshot).toMatchObject({ event: 'ro-live', g: generation, kind: 'snapshot', v: 2 });
+  expect((await probeSnapshot(page)).responses[0]).toMatchObject({
+    status: 200,
+    version: null,
+    generation: null,
+  });
+  expect(await liveStats(page)).toMatchObject({ state: 'open', seq: 1 });
+});
+
+test('a stream fetch held before response headers enters visible fallback without opening a watch', async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'desktop Live controls');
@@ -875,7 +923,6 @@ test('a stream fetch held before response headers times out to silent fallback w
   await held.started;
   expect(await liveStats(page)).toMatchObject({
     state: 'connecting',
-    protocol: 'pending',
     connections: 1,
     v2Snapshots: 0,
     fallbacks: 0,
@@ -883,14 +930,13 @@ test('a stream fetch held before response headers times out to silent fallback w
   expect((await probeSnapshot(page)).responses).toHaveLength(0);
   expect(await openWatchCount()).toBe(0);
 
-  await page.clock.fastForward(10_001);
+  await page.clock.fastForward(30_001);
   await expect
     .poll(async () => (await liveStats(page)).state, { timeout: 5_000 })
     .toBe('fallback');
   held.release();
   await failed;
   expect(await liveStats(page)).toMatchObject({
-    protocol: null,
     connections: 1,
     v2Snapshots: 0,
     fallbacks: 1,
@@ -898,11 +944,11 @@ test('a stream fetch held before response headers times out to silent fallback w
   const probe = await probeSnapshot(page);
   expect(probe.responses).toHaveLength(0);
   expect(probe.frames).toHaveLength(0);
-  await expect(page.locator('.ro-stale-banner')).toBeHidden();
+  await expectLiveFallbackBanner(page);
   expect(await openWatchCount()).toBe(0);
 });
 
-test('a negotiated 200 stream that never delivers its first frame falls back silently and releases its watch', async ({
+test('a negotiated 200 stream without a first frame enters visible fallback and releases its watch', async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'desktop Live controls');
@@ -921,8 +967,7 @@ test('a negotiated 200 stream that never delivers its first frame falls back sil
     .toBe(true);
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
   expect(await liveStats(page)).toMatchObject({
-    state: 'syncing-v2',
-    protocol: 'v2',
+    state: 'connecting',
     connections: 1,
     v2Snapshots: 0,
     fallbacks: 0,
@@ -931,17 +976,16 @@ test('a negotiated 200 stream that never delivers its first frame falls back sil
   // Advance the browser-owned first-frame deadline, not wall time. The server
   // and network remain real; the response has already negotiated 200 + SSE and
   // the upstream watch is demonstrably open.
-  await page.clock.fastForward(10_001);
+  await page.clock.fastForward(30_001);
   await expect
     .poll(async () => (await liveStats(page)).state, { timeout: 5_000 })
     .toBe('fallback');
   expect(await liveStats(page)).toMatchObject({
-    protocol: null,
     connections: 1,
     v2Snapshots: 0,
     fallbacks: 1,
   });
-  await expect(page.locator('.ro-stale-banner')).toBeHidden();
+  await expectLiveFallbackBanner(page);
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
 });
 
@@ -1005,7 +1049,7 @@ test('a later canceler of htmx:beforeRequest cannot strand Live suspended', asyn
   await waitForSnapshot(page, generation, before.lifecycle.afterSwaps);
   expect(tableRequests).toEqual([]);
   expect(await liveStats(page)).toMatchObject({
-    state: 'open-v2',
+    state: 'open',
     inFlightRequests: 0,
     connections: statsBefore.connections + 1,
   });
@@ -1020,7 +1064,7 @@ test('an Off-mode table request already in flight makes an explicit Live pick wa
   test.skip(testInfo.project.name !== 'desktop', 'desktop table request lifecycle');
   await installLiveTransportProbe(page);
   await page.goto(PODS);
-  expect(await liveStats(page)).toMatchObject({ state: 'idle', connections: 0 });
+  expect(await liveStats(page)).toMatchObject({ state: 'off', connections: 0 });
 
   const before = await probeSnapshot(page);
   const held = await holdNextTableRequest(page, 'continue');
@@ -1054,7 +1098,7 @@ test('an Off-mode table request already in flight makes an explicit Live pick wa
   await waitForSnapshot(page, generation, before.lifecycle.afterSwaps);
   expect(uniqueGenerations(await probeSnapshot(page))).toEqual([generation]);
   expect(await liveStats(page)).toMatchObject({
-    state: 'open-v2',
+    state: 'open',
     connections: 1,
     inFlightRequests: 0,
   });
@@ -1232,6 +1276,316 @@ test('a mobile delta updates the closed card island without an HTMX swap', async
   expect(after.lifecycle.nativeStarts).toBe(before.lifecycle.nativeStarts);
 });
 
+test('a sorted Live insert carries order and avoids an HTMX swap', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop sorted table surface');
+  await installLiveTransportProbe(page);
+  await page.goto(`${PODS}?sort=Name`);
+  const { generation } = await openLiveV2(page);
+  const before = await probeSnapshot(page);
+
+  const addedKey = 'e2e/default/aaa-live';
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: 'ADDED',
+      object: {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: 'aaa-live',
+          namespace: 'default',
+          creationTimestamp: '2026-06-10T12:00:00Z',
+        },
+        status: { phase: 'Running' },
+      },
+      cells: ['aaa-live', '1/1', 'Running', '0', '1m'],
+    },
+  ]);
+
+  const delta = await waitForFrame(
+    page,
+    (frame) => frame.kind === 'delta' && frame.g === generation && frame.upsertKeys.includes(addedKey)
+  );
+  await expect(page.locator(`tr[data-key="${addedKey}"]`)).toBeVisible();
+  expect(delta.orderLength).toBe(3);
+  expect(
+    await page.locator('#resource-list-content tbody tr[data-key]').evaluateAll((rows) =>
+      rows.map((row) => (row as HTMLElement).dataset.key)
+    )
+  ).toEqual([addedKey, 'e2e/default/my-app', NGINX_KEY]);
+  expect((await probeSnapshot(page)).lifecycle.afterSwaps).toBe(before.lifecycle.afterSwaps);
+});
+
+test('a Live reorder preserves focus on the existing row that actually moves', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop sorted table surface');
+  await installLiveTransportProbe(page);
+  await page.goto(`${PODS}?sort=Status`);
+  const { generation } = await openLiveV2(page);
+  const before = await probeSnapshot(page);
+  const rows = page.locator('#resource-list-content tbody tr[data-key]');
+  await expect(rows).toHaveCount(2);
+  expect(
+    await rows.evaluateAll((items) =>
+      items.map((item) => (item as HTMLElement).dataset.key)
+    )
+  ).toEqual(['e2e/default/my-app', NGINX_KEY]);
+
+  const focused = page.locator(`tr[data-key="${NGINX_KEY}"] a`).first();
+  await focused.focus();
+  await expect(focused).toBeFocused();
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: 'MODIFIED',
+      object: {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: 'nginx',
+          namespace: 'default',
+          creationTimestamp: '2024-03-01T10:00:00Z',
+        },
+        status: { phase: 'Pending' },
+      },
+      cells: ['nginx', '0/1', 'CrashLoopBackOff', '1', '10m'],
+    },
+  ]);
+
+  const delta = await waitForFrame(
+    page,
+    (frame) =>
+      frame.kind === 'delta' &&
+      frame.g === generation &&
+      frame.upsertKeys.includes(NGINX_KEY)
+  );
+  expect(delta.orderLength).toBe(2);
+  await expect(rows).toHaveCount(2);
+  expect(
+    await rows.evaluateAll((items) =>
+      items.map((item) => (item as HTMLElement).dataset.key)
+    )
+  ).toEqual([NGINX_KEY, 'e2e/default/my-app']);
+  await expect(focused).toBeFocused();
+  expect((await probeSnapshot(page)).lifecycle.afterSwaps).toBe(before.lifecycle.afterSwaps);
+});
+
+test('a Live delete clears selection with the deleted row', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop row-selection surface');
+  await installLiveTransportProbe(page);
+  await page.goto(PODS);
+  const { generation } = await openLiveV2(page);
+  await page.locator(`tr[data-key="${NGINX_KEY}"] td`).nth(1).click();
+  expect(await selectedKeys(page)).toEqual([NGINX_KEY]);
+  await expect(page.locator('#ro-bulkbar')).toHaveClass(/is-open/);
+  await expect(page.locator('#ro-bulk-count')).toHaveText('1 selected');
+
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: 'DELETED',
+      object: { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'nginx', namespace: 'default' } },
+    },
+  ]);
+  const delta = await waitForFrame(
+    page,
+    (frame) => frame.kind === 'delta' && frame.g === generation && frame.removeKeys.includes(NGINX_KEY)
+  );
+  expect(delta.orderLength).toBe(1);
+  await expect(page.locator(`tr[data-key="${NGINX_KEY}"]`)).toHaveCount(0);
+  expect(await selectedKeys(page)).toEqual([]);
+  await expect(page.locator('#ro-bulkbar')).not.toHaveClass(/is-open/);
+  await expect(page.locator('#ro-bulk-count')).toHaveText('0 selected');
+});
+
+test('a row projected out by a Live filter keeps its selection identity', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop row-selection surface');
+  await installLiveTransportProbe(page);
+  await page.goto(`${PODS}?f=status%3ARunning`);
+  const { generation } = await openLiveV2(page);
+  const projectedKey = 'e2e/default/my-app';
+  await page.locator(`tr[data-key="${projectedKey}"] td`).nth(1).click();
+  expect(await selectedKeys(page)).toEqual([projectedKey]);
+  await expect(page.locator('#ro-bulkbar')).toHaveClass(/is-open/);
+  await expect(page.locator('#ro-bulk-count')).toHaveText('1 selected');
+
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: 'MODIFIED',
+      object: {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: 'my-app',
+          namespace: 'default',
+          creationTimestamp: '2024-03-02T11:30:00Z',
+        },
+        status: { phase: 'Pending' },
+      },
+      cells: ['my-app', '0/1', 'Pending', '0', '5m'],
+    },
+  ]);
+  await waitForFrame(
+    page,
+    (frame) => frame.kind === 'delta' && frame.g === generation && frame.removeKeys.includes(projectedKey)
+  );
+  await expect(page.locator(`tr[data-key="${projectedKey}"]`)).toHaveCount(0);
+  expect(await selectedKeys(page)).toEqual([projectedKey]);
+  await expect(page.locator('#ro-bulkbar')).toHaveClass(/is-open/);
+  await expect(page.locator('#ro-bulk-count')).toHaveText('1 selected');
+});
+
+test('an Event with an unknown involved kind applies as a Live delta without resync', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop Events table surface');
+  await installLiveTransportProbe(page);
+  await page.goto(EVENTS);
+  const { generation } = await openLiveV2(page);
+  const before = await liveStats(page);
+  const eventKey = 'e2e/default/mystery.0005';
+
+  await scriptEvents([
+    {
+      path: EVENTS_LIST_PATH,
+      type: 'ADDED',
+      object: {
+        apiVersion: 'v1',
+        kind: 'Event',
+        metadata: {
+          name: 'mystery.0005',
+          namespace: 'default',
+          creationTimestamp: '2026-06-10T12:00:00Z',
+        },
+        type: 'Normal',
+        reason: 'Observed',
+        message: 'Observed an object with an unknown kind',
+        count: 1,
+        firstTimestamp: '2026-06-10T12:00:00Z',
+        lastTimestamp: '2026-06-10T12:00:00Z',
+        involvedObject: { kind: 'Widget', name: 'sample', namespace: 'default' },
+      },
+      cells: ['1s', 'Normal', 'Observed', 'widget/sample', 'Observed an unknown kind'],
+    },
+  ]);
+  await waitForFrame(
+    page,
+    (frame) => frame.kind === 'delta' && frame.g === generation && frame.upsertKeys.includes(eventKey)
+  );
+  const row = page.locator(`tr[data-key="${eventKey}"]`);
+  await expect(row).toBeVisible();
+  await expect(row.locator('.kind-tile')).toHaveAttribute('style', /--kh:/u);
+  expect(await liveStats(page)).toMatchObject({
+    resyncs: before.resyncs,
+    fallbacks: before.fallbacks,
+    invalidFrames: before.invalidFrames,
+  });
+  expect(uniqueGenerations(await probeSnapshot(page))).toEqual([generation]);
+});
+
+test('mid-stream EOF reopens once with a fresh generation and one snapshot', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop Live controls');
+  await installLiveTransportProbe(page);
+  await page.goto(PODS);
+  const first = await openLiveV2(page);
+  await page.clock.install();
+  const statsBefore = await liveStats(page);
+  const beforeEOF = await probeSnapshot(page);
+
+  await closeCurrentStream(page);
+  await expect.poll(async () => (await liveStats(page)).state, { timeout: 5_000 }).toBe('fallback');
+  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
+  expect((await probeSnapshot(page)).forcedEOFs).toBe(1);
+
+  // Drive the browser-owned retry horizon in two steps and settle the first
+  // fallback poll between them, so request ownership cannot make the retry
+  // outcome ambiguous.
+  await page.clock.fastForward(59_999);
+  await expect
+    .poll(async () => (await probeSnapshot(page)).lifecycle.afterRequests, { timeout: 5_000 })
+    .toBeGreaterThan(beforeEOF.lifecycle.afterRequests);
+  await expect.poll(async () => (await liveStats(page)).inFlightRequests).toBe(0);
+  await page.clock.fastForward(1);
+
+  await waitForGenerationCount(page, 2);
+  const secondGeneration = uniqueGenerations(await probeSnapshot(page)).at(-1);
+  if (!secondGeneration) throw new Error('EOF did not reopen Live');
+  expect(secondGeneration).not.toBe(first.generation);
+  await waitForFrame(
+    page,
+    (frame) =>
+      frame.event === 'ro-live' &&
+      frame.kind === 'snapshot' &&
+      frame.g === secondGeneration
+  );
+  // v2Snapshots increments only after htmx.swap synchronously emitted the
+  // transaction-marked afterSwap and Live accepted that exact transaction.
+  await expect
+    .poll(async () => (await liveStats(page)).v2Snapshots, { timeout: 5_000 })
+    .toBe(statsBefore.v2Snapshots + 1);
+  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(1);
+  const after = await probeSnapshot(page);
+  const reopened = after.requests.slice(beforeEOF.requests.length);
+  expect(reopened).toHaveLength(1);
+  expect(reopened[0].generation).toBe(secondGeneration);
+  expect(
+    after.frames
+      .slice(beforeEOF.frames.length)
+      .filter((frame) => frame.kind === 'snapshot' && frame.g === secondGeneration)
+  ).toHaveLength(1);
+  expect(uniqueGenerations(after)).toEqual([first.generation, secondGeneration]);
+  expect(await liveStats(page)).toMatchObject({
+    state: 'open',
+    connections: statsBefore.connections + 1,
+    fallbacks: statsBefore.fallbacks + 1,
+    v2Snapshots: statsBefore.v2Snapshots + 1,
+  });
+});
+
+test('all-namespaces Pods opens and applies Live v2', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop Live controls');
+  await installLiveTransportProbe(page);
+  await page.goto(ALL_PODS);
+  const { generation } = await openLiveV2(page);
+  const opened = await probeSnapshot(page);
+  const request = opened.requests.find((candidate) => candidate.generation === generation);
+  if (!request) throw new Error('all-namespaces Live request was not recorded');
+  expect(new URL(request.url).pathname).toBe(`${ALL_PODS}/_stream`);
+  await expect(page.locator(`tr[data-key="${NGINX_KEY}"] td.cell-ns`)).toHaveText('default');
+  const before = await liveStats(page);
+
+  await scriptEvents([
+    {
+      path: ALL_PODS_LIST_PATH,
+      type: 'MODIFIED',
+      object: {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: 'nginx',
+          namespace: 'default',
+          creationTimestamp: '2024-03-01T10:00:00Z',
+        },
+        status: { phase: 'Running' },
+      },
+      cells: ['nginx', '1/1', 'AllNamespacesLive', '0', '10m'],
+    },
+  ]);
+  await waitForFrame(
+    page,
+    (frame) => frame.kind === 'delta' && frame.g === generation && frame.upsertKeys.includes(NGINX_KEY)
+  );
+  await expect(page.locator(`tr[data-key="${NGINX_KEY}"]`)).toContainText('AllNamespacesLive');
+  await expect(page.locator(`tr[data-key="${NGINX_KEY}"] td.cell-ns`)).toHaveText('default');
+  expect((await liveStats(page)).deltas).toBe(before.deltas + 1);
+});
+
 test('held 200, 304, and 500 table requests suspend the stream and each settlement mints exactly one generation', async ({
   page,
 }, testInfo) => {
@@ -1355,7 +1709,8 @@ test('an aborted container refresh plus a concurrent user sort reopens only afte
   });
   expect(reopened).toHaveLength(1);
   expect(new URL(reopened[0].url).searchParams.get('sort')).toBe('Name');
-  const generation = reopened[0].generation ?? reopened[0].queryGeneration;
+  const generation = reopened[0].generation;
+  if (!generation) throw new Error('reopened Live request had no generation header');
   await waitForSnapshot(page, generation, before.lifecycle.afterSwaps);
   expect(uniqueGenerations(after)).toHaveLength(generationsBefore + 1);
   await page.unroute('**/_table*');
@@ -1425,7 +1780,7 @@ for (const fault of ['corrupt', 'gap', 'schema'] as const) {
     expect(statsAfter.connections).toBe(statsBefore.connections + 1);
     expect(statsAfter.fallbacks).toBe(statsBefore.fallbacks);
     expect(statsAfter.resyncsInWindow).toBe(1);
-    expect(statsAfter).toMatchObject({ state: 'open-v2', protocol: 'v2', seq: 1 });
+    expect(statsAfter).toMatchObject({ state: 'open', seq: 1 });
   });
 }
 
@@ -1552,7 +1907,7 @@ test('a transition-free cache-hit Back opens one v2 stream only after the restor
     eventsGeneration,
     beforeEvents.lifecycle.afterSwaps
   );
-  expect(eventsSnapshot).toMatchObject({ screen: BIG_EVENTS, seq: 1 });
+  expect(eventsSnapshot).toMatchObject({ seq: 1 });
   await expect(
     page.getByRole('navigation', { name: 'breadcrumbs' }).getByText('events', {
       exact: true,
@@ -1579,7 +1934,6 @@ test('a transition-free cache-hit Back opens one v2 stream only after the restor
     event: 'ro-live',
     kind: 'snapshot',
     g: restoredGeneration,
-    screen: BIG_PODS,
     seq: 1,
     v: 2,
   });
@@ -1672,7 +2026,6 @@ test('a transition-free cache-hit Back opens one v2 stream only after the restor
     generation: restoredGeneration,
     location: new URL(BIG_PODS, page.url()).href,
     projectionRows: 600,
-    queryGeneration: restoredGeneration,
     version: '2',
   });
   expect(
@@ -1709,7 +2062,7 @@ test('two cache-hit Backs recover each projection without native transition or h
     eventsGeneration,
     beforeEvents.lifecycle.afterSwaps
   );
-  expect(eventsSnapshot).toMatchObject({ screen: BIG_EVENTS, seq: 1 });
+  expect(eventsSnapshot).toMatchObject({ seq: 1 });
 
   const beforeCurrentPods = await probeSnapshot(page);
   const podsResponsePromise = page.waitForResponse(
@@ -1729,7 +2082,7 @@ test('two cache-hit Backs recover each projection without native transition or h
     currentPodsGeneration,
     beforeCurrentPods.lifecycle.afterSwaps
   );
-  expect(currentPodsSnapshot).toMatchObject({ screen: BIG_PODS, seq: 1 });
+  expect(currentPodsSnapshot).toMatchObject({ seq: 1 });
   expect((await probeSnapshot(page)).lifecycle.nativeStarts).toBe(
     beforeCurrentPods.lifecycle.nativeStarts
   );
@@ -1764,7 +2117,7 @@ test('two cache-hit Backs recover each projection without native transition or h
         restoredEventsGeneration,
         beforeBacks.lifecycle.afterSwaps
       )
-    ).toMatchObject({ screen: BIG_EVENTS, seq: 1 });
+    ).toMatchObject({ seq: 1 });
 
     const afterFirstBack = await probeSnapshot(page);
     expect(afterFirstBack.lifecycle.nativeStarts).toBe(beforeBacks.lifecycle.nativeStarts);
@@ -1778,7 +2131,7 @@ test('two cache-hit Backs recover each projection without native transition or h
     if (!finalGeneration) throw new Error('second cache hit did not reopen Pods Live');
     expect(
       await waitForSnapshot(page, finalGeneration, afterFirstBack.lifecycle.afterSwaps)
-    ).toMatchObject({ screen: BIG_PODS, seq: 1 });
+    ).toMatchObject({ seq: 1 });
     await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
 
     const after = await probeSnapshot(page);
@@ -1806,9 +2159,8 @@ test('two cache-hit Backs recover each projection without native transition or h
       `${BIG_PODS}/_stream`,
     ]);
     expect(await liveStats(page)).toMatchObject({
-      protocol: 'v2',
       seq: 1,
-      state: 'open-v2',
+      state: 'open',
     });
   } finally {
     page.off('request', captureListTraffic);
@@ -1985,7 +2337,6 @@ test('a held cache-miss response stays inert when a second Back wins through one
       event: 'ro-live',
       g: finalGeneration,
       kind: 'snapshot',
-      screen: BIG_PODS,
       seq: 1,
       v: 2,
     });
@@ -2058,7 +2409,6 @@ test('a transition-free Back restores the sorted Pods projection without a hard 
       event: 'ro-live',
       g: finalGeneration,
       kind: 'snapshot',
-      screen: `${BIG_PODS}?sort=Name`,
       seq: 1,
       v: 2,
     });
@@ -2087,61 +2437,4 @@ test('a transition-free Back restores the sorted Pods projection without a hard 
   } finally {
     page.off('request', captureListTraffic);
   }
-});
-
-test('absence of negotiation headers stays on the legacy ro-table contract', async ({
-  page,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== 'desktop', 'desktop Live controls');
-  await installLiveTransportProbe(page, { forceV1: true });
-  await page.goto(PODS);
-  const before = await probeSnapshot(page);
-  const requestPromise = page.waitForRequest(isStreamRequest, { timeout: 10_000 });
-  await pickLive(page);
-  const networkRequest = await requestPromise;
-  expect(networkRequest.headers()['ro-live-version']).toBeUndefined();
-  expect(networkRequest.headers()['ro-live-generation']).toBeUndefined();
-
-  const legacy = await waitForFrame(page, (frame) => frame.event === 'ro-table');
-  expect(legacy.kind).toBe('v1-snapshot');
-  expect(legacy.g).toMatch(/^[A-Za-z0-9._~-]{1,64}$/u);
-  await expect
-    .poll(async () => (await probeSnapshot(page)).lifecycle.afterSwaps, { timeout: 5_000 })
-    .toBeGreaterThan(before.lifecycle.afterSwaps);
-  const probe = await probeSnapshot(page);
-  expect(probe.requests[0]).toMatchObject({ version: null, generation: null });
-  expect(probe.requests[0].queryGeneration).toBe(legacy.g);
-  expect(probe.responses[0]).toMatchObject({ status: 200, version: null, generation: null });
-
-  const framesBefore = probe.frames.length;
-  await scriptEvents([
-    {
-      path: PODS_LIST_PATH,
-      type: 'MODIFIED',
-      object: {
-        apiVersion: 'v1',
-        kind: 'Pod',
-        metadata: {
-          name: 'nginx',
-          namespace: 'default',
-          creationTimestamp: '2024-03-01T10:00:00Z',
-        },
-      },
-      cells: ['nginx', '0/1', 'LegacyError', '3', '10m'],
-    },
-  ]);
-  await expect
-    .poll(
-      async () =>
-        (await probeSnapshot(page)).frames.slice(framesBefore).filter((frame) => frame.event === 'ro-table')
-          .length,
-      { timeout: 10_000 }
-    )
-    .toBe(1);
-  await expect(
-    page.locator(`tr[data-key="${NGINX_KEY}"] td:has(span.cell-status)`)
-  ).toContainText('LegacyError');
-  expect((await probeSnapshot(page)).frames.some((frame) => frame.event === 'ro-live')).toBe(
-    false
-  );
 });

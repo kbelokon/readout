@@ -2,95 +2,54 @@ package web
 
 import (
 	"bytes"
-	"maps"
+	"crypto/sha256"
+	"runtime/debug"
 	"testing"
-	"testing/fstest"
 )
 
-func TestResourceListRendererFingerprintEmbeddedSet(t *testing.T) {
-	t.Parallel()
+func TestResourceListRendererFingerprintUsesCleanBuildRevision(t *testing.T) {
+	info := &debug.BuildInfo{Settings: []debug.BuildSetting{
+		{Key: "vcs.revision", Value: "0123456789abcdef"},
+		{Key: "vcs.modified", Value: "false"},
+	}}
+	var firstNonce, secondNonce [sha256.Size]byte
+	firstNonce[0] = 1
+	secondNonce[0] = 2
+	first := resourceListRendererBuildFingerprint(info, firstNonce)
+	second := resourceListRendererBuildFingerprint(info, secondNonce)
+	if first != second {
+		t.Fatalf("clean revision depended on process nonce: %x != %x", first, second)
+	}
+	info.Settings[0].Value = "fedcba9876543210"
+	if changed := resourceListRendererBuildFingerprint(info, firstNonce); changed == first {
+		t.Fatalf("changed VCS revision kept renderer fingerprint %x", first)
+	}
+}
+
+func TestResourceListRendererFingerprintUsesNonceForUnstableBuilds(t *testing.T) {
+	var firstNonce, secondNonce [sha256.Size]byte
+	firstNonce[0] = 1
+	secondNonce[0] = 2
+	for _, info := range []*debug.BuildInfo{
+		nil,
+		{},
+		{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "0123456789abcdef"}, {Key: "vcs.modified", Value: "true"}}},
+	} {
+		first := resourceListRendererBuildFingerprint(info, firstNonce)
+		second := resourceListRendererBuildFingerprint(info, secondNonce)
+		if first == second {
+			t.Fatalf("unstable build did not depend on process nonce: %x", first)
+		}
+	}
+}
+
+func TestResourceListRendererFingerprintIsProcessStable(t *testing.T) {
 	first := resourceListRendererFingerprint()
 	second := resourceListRendererFingerprint()
 	if first != second {
-		t.Fatalf("renderer fingerprint is not deterministic: %x != %x", first, second)
+		t.Fatalf("renderer fingerprint changed inside one process: %x != %x", first, second)
 	}
 	if bytes.Equal(first[:], make([]byte, len(first))) {
-		t.Fatal("embedded renderer fingerprint is zero")
+		t.Fatal("renderer fingerprint is zero")
 	}
-
-	computed, paths, err := fingerprintResourceListRendererSources(resourceListRendererSources)
-	if err != nil {
-		t.Fatalf("fingerprint embedded renderer sources: %v", err)
-	}
-	if computed != first {
-		t.Fatalf("cached fingerprint = %x, direct computation = %x", first, computed)
-	}
-	for _, required := range []string{
-		"templates/table-chrome.templ",
-		"templates/table-chrome_templ.go",
-		"templates/helpers.go",
-	} {
-		if !rendererPathsContain(paths, required) {
-			t.Fatalf("embedded renderer paths omit %q: %v", required, paths)
-		}
-	}
-}
-
-func TestFingerprintResourceListRendererSourcesAutomaticFileSet(t *testing.T) {
-	t.Parallel()
-	sources := fstest.MapFS{
-		"templates/z.go":           {Data: []byte("package templates\n")},
-		"templates/a.templ":        {Data: []byte("package templates\n\ntempl A() {}\n")},
-		"templates/ignored.txt":    {Data: []byte("not renderer source")},
-		"templates/nested/skip.go": {Data: []byte("package nested\n")},
-	}
-
-	base, paths, err := fingerprintResourceListRendererSources(sources)
-	if err != nil {
-		t.Fatalf("fingerprint map sources: %v", err)
-	}
-	wantPaths := []string{"templates/a.templ", "templates/z.go"}
-	if len(paths) != len(wantPaths) {
-		t.Fatalf("paths = %v, want %v", paths, wantPaths)
-	}
-	for i := range wantPaths {
-		if paths[i] != wantPaths[i] {
-			t.Fatalf("paths = %v, want sorted %v", paths, wantPaths)
-		}
-	}
-
-	changed := maps.Clone(sources)
-	changed["templates/a.templ"] = &fstest.MapFile{Data: []byte("package templates\n\ntempl A() { changed }\n")}
-	changedDigest, changedPaths, err := fingerprintResourceListRendererSources(changed)
-	if err != nil {
-		t.Fatalf("fingerprint changed map sources: %v", err)
-	}
-	if changedDigest == base {
-		t.Fatalf("renderer byte change kept fingerprint %x", base)
-	}
-	if len(changedPaths) != len(paths) {
-		t.Fatalf("renderer byte change altered file set: %v -> %v", paths, changedPaths)
-	}
-
-	added := maps.Clone(sources)
-	added["templates/new.go"] = &fstest.MapFile{Data: []byte("package templates\n")}
-	addedDigest, addedPaths, err := fingerprintResourceListRendererSources(added)
-	if err != nil {
-		t.Fatalf("fingerprint added map source: %v", err)
-	}
-	if addedDigest == base {
-		t.Fatalf("automatic matching file addition kept fingerprint %x", base)
-	}
-	if !rendererPathsContain(addedPaths, "templates/new.go") {
-		t.Fatalf("automatic file set omitted new matching source: %v", addedPaths)
-	}
-}
-
-func rendererPathsContain(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

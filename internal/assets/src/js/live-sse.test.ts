@@ -104,33 +104,13 @@ describe('LiveSSEParser', () => {
     });
 
     test.each([
-        [
-            'event-name-too-large',
-            'SSE event name exceeds its byte limit',
-            () => parse(['event:abc\ndata:x\n\n'], { eventNameBytes: 2 }),
-        ],
-        [
-            'too-many-lines',
-            'SSE event has too many nonblank lines',
-            () => parse(['x:1\ny:2\ndata:z\n\n'], { lines: 2 }),
-        ],
-        [
-            'data-too-large',
-            'SSE event data exceeds its byte limit',
-            () => parse(['data:ab\ndata:c\n\n'], { dataBytes: 3 }),
-        ],
-        [
-            'event-too-large',
-            'SSE event framing exceeds its byte limit',
-            () => parse([':1234\nx:5678\n'], { eventBytes: 10 }),
-        ],
-        [
-            'line-too-large',
-            'SSE field line exceeds its byte limit',
-            () => parse(['data:abcd'], { lineBytes: 8 }),
-        ],
-    ] as const)('fails fatally at cap + 1: %s', (code, message, run) => {
-        expect(run).toThrowError(expect.objectContaining({ code, message, name: 'LiveSSEError' }));
+        ['event-name-too-large', () => parse(['event:abc\ndata:x\n\n'], { eventNameBytes: 2 })],
+        ['too-many-lines', () => parse(['x:1\ny:2\ndata:z\n\n'], { lines: 2 })],
+        ['data-too-large', () => parse(['data:ab\ndata:c\n\n'], { dataBytes: 3 })],
+        ['event-too-large', () => parse([':1234\nx:5678\n'], { eventBytes: 10 })],
+        ['line-too-large', () => parse(['data:abcd'], { lineBytes: 8 })],
+    ] as const)('fails fatally at cap + 1: %s', (code, run) => {
+        expect(run).toThrowError(expect.objectContaining({ code }));
     });
 
     test('bounds an endless unterminated line before EOF', () => {
@@ -147,8 +127,6 @@ describe('LiveSSEParser', () => {
         expect(() => parser.push(Uint8Array.of(0x0a))).toThrowError(
             expect.objectContaining({
                 code: 'invalid-utf8',
-                message: 'SSE field line is not valid UTF-8',
-                name: 'LiveSSEError',
             }),
         );
         expect(() => parser.push(encoder.encode('data:ok\n\n'))).toThrow(LiveSSEError);

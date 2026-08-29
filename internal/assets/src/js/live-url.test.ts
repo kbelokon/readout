@@ -4,12 +4,9 @@ import { describe, expect, test, vi } from 'vitest';
 
 import {
     isClientLiveGeneration,
-    liveRequestURL,
-    liveScreenForBase,
     liveStreamBaseForURL,
     liveStreamBaseFromTableRequest,
     mintLiveGeneration,
-    stripLiveGenerationQuery,
 } from './live-url.js';
 
 describe('Live generation', () => {
@@ -88,35 +85,15 @@ describe('Live generation', () => {
 });
 
 describe('Live raw URL identity', () => {
-    test('removes every decoded g key without re-encoding survivors', () => {
-        expect(
-            stripLiveGenerationQuery(
-                'g=one&f=status:Running,Pending&%67=two&bare&x=%ZZ&%ZZ=bad&&G=kept&g&g+=kept',
-            ),
-        ).toBe('f=status:Running,Pending&bare&x=%ZZ&%ZZ=bad&&G=kept&g+=kept');
-        expect(stripLiveGenerationQuery('')).toBe('');
-    });
-
-    test('derives one legacy query generation and the matching screen', () => {
+    test('derives the stream path without adding or removing query generation fields', () => {
         const base = liveStreamBaseForURL(
             new URL('https://readout.test/clusters/prod/pods///?g=old&f=a,b&%67=older'),
         );
-        expect(base).toBe('/clusters/prod/pods/_stream?f=a,b');
-        expect(liveScreenForBase(base)).toBe('/clusters/prod/pods?f=a,b');
-        expect(liveRequestURL(base, '00112233445566778899aabbccddeeff')).toBe(
-            '/clusters/prod/pods/_stream?f=a,b&g=00112233445566778899aabbccddeeff',
-        );
-        expect(liveRequestURL('/pods/_stream', '00112233445566778899aabbccddeeff')).toBe(
-            '/pods/_stream?g=00112233445566778899aabbccddeeff',
-        );
-        expect(() => liveRequestURL('/pods/_stream', 'bad')).toThrowError(
-            'invalid Live generation',
-        );
+        expect(base).toBe('/clusters/prod/pods/_stream?g=old&f=a,b&%67=older');
+        expect(liveStreamBaseForURL(new URL('https://readout.test/pods'))).toBe('/pods/_stream');
     });
 
-    test('distinguishes an absent query delimiter from one at byte zero', () => {
-        expect(liveScreenForBase('/plain/path')).toBe('/plain/path');
-        expect(liveScreenForBase('?sort=Name')).toBe('?sort=Name');
+    test('requires a real same-origin _table path', () => {
         expect(liveStreamBaseFromTableRequest('/pods/_table')).toBe('/pods/_stream');
         expect(liveStreamBaseFromTableRequest('?/pods/_table')).toBeNull();
     });
@@ -127,12 +104,9 @@ describe('Live raw URL identity', () => {
             liveStreamBaseFromTableRequest(
                 `${window.location.origin}/clusters/prod/pods/_table?sort=Name&%67=x#ignored`,
             ),
-        ).toBe('/clusters/prod/pods/_stream?sort=Name');
-        expect(liveScreenForBase('/clusters/prod/pods/_stream?sort=Name')).toBe(
-            '/clusters/prod/pods?sort=Name',
-        );
+        ).toBe('/clusters/prod/pods/_stream?sort=Name&%67=x');
         expect(liveStreamBaseFromTableRequest('./pods/_table?x=%ZZ&g=old#ignored')).toBe(
-            '/pods/_stream?x=%ZZ',
+            '/pods/_stream?x=%ZZ&g=old',
         );
     });
 

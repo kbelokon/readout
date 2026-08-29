@@ -21,7 +21,7 @@ import { delimiter, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildSync } from 'esbuild';
-import { checkMutationReport } from './check-mutation-report.mjs';
+import { checkMutationReport, isMutationReportCheckerMain } from './check-mutation-report.mjs';
 import { frontendJavaScriptBuildOptions } from './frontend-build-config.mjs';
 import { parseMutationCliArguments } from './mutation-cli.mjs';
 import { resolveSafeHostExecutable } from './mutation-host.mjs';
@@ -107,6 +107,11 @@ function makeFixture(t) {
     repoRoot,
     'internal/web/testdata/prefs_golden/01_simple.json',
     '{"payload":{}}\n',
+  );
+  writeFixtureFile(
+    repoRoot,
+    'internal/web/testdata/live_render_contract.json',
+    '{"version":1,"rows":[],"regions":[]}\n',
   );
   return repoRoot;
 }
@@ -327,6 +332,18 @@ test('canonical launcher has no campaign wall-clock deadline', () => {
   assert.match(launcher, /deadline=none/u);
 });
 
+test('mutation checker recognizes a symlinked main-module path', (t) => {
+  const checkerPath = fileURLToPath(new URL('./check-mutation-report.mjs', import.meta.url));
+  const tempRoot = mkdtempSync(join(tmpdir(), 'readout-mutation-checker-main-'));
+  const checkerLink = join(tempRoot, 'checker.mjs');
+  t.after(() => rmSync(tempRoot, { force: true, recursive: true }));
+  symlinkSync(checkerPath, checkerLink);
+
+  assert.equal(isMutationReportCheckerMain(checkerPath), true);
+  assert.equal(isMutationReportCheckerMain(checkerLink), true);
+  assert.equal(isMutationReportCheckerMain(join(tempRoot, 'missing.mjs')), false);
+});
+
 test('attested checker rejects unresolved outcomes without deleting evidence', (t) => {
   const assertEvidenceRemains = (fixtureRoot) => {
     assert.doesNotThrow(() => verifyFullRunAttestation(fixtureRoot));
@@ -361,9 +378,7 @@ test('attested checker rejects unresolved outcomes without deleting evidence', (
   assert.doesNotThrow(() => checkMutationReport(passingRoot, (line) => output.push(line)));
   assert.ok(
     output.includes(
-      'Directly killed: 1/2 all generated mutants ' +
-        '(50.00%; CompileError reported separately; any accepted Timeout is ' +
-        'undetermined/non-direct)',
+      'Directly killed: 1/2 all generated mutants ' + '(50.00%; CompileError reported separately)',
     ),
     output.join('\n'),
   );
@@ -371,66 +386,16 @@ test('attested checker rejects unresolved outcomes without deleting evidence', (
   assert.doesNotThrow(() => verifyFullRunAttestation(passingRoot));
 });
 
-test('attested checker accepts only one exact, rare Stryker hit-limit timeout', (t) => {
+test('attested checker rejects every Timeout outcome', (t) => {
   const repoRoot = makeFixture(t);
   attestCheckerFixture(repoRoot, [
-    ...Array.from({ length: 499 }, () => 'Killed'),
-    { status: 'Timeout', statusReason: 'Hit limit reached (11201/11200)' },
-  ]);
-  const output = [];
-
-  assert.doesNotThrow(() => checkMutationReport(repoRoot, (line) => output.push(line)));
-  assert.ok(output.includes('  Timeout      1'), output.join('\n'));
-  assert.ok(
-    output.includes(
-      'Accepted undetermined/non-direct Timeout: ' +
-        'internal/assets/src/js/runtime.ts#mutation-500 ' +
-        '(Hit limit reached (11201/11200))',
-    ),
-    output.join('\n'),
-  );
-});
-
-test('attested checker rejects every non-hit-limit timeout reason', (t) => {
-  for (const timeout of [
-    { status: 'Timeout' },
-    { status: 'Timeout', statusReason: 'Test timed out' },
-    { status: 'Timeout', statusReason: 'Hit limit reached (11200/11200)' },
-  ]) {
-    const repoRoot = makeFixture(t);
-    attestCheckerFixture(repoRoot, [...Array.from({ length: 499 }, () => 'Killed'), timeout]);
-
-    assert.throws(
-      () => checkMutationReport(repoRoot, () => {}),
-      /is not an exact Stryker hit-limit outcome/u,
-    );
-  }
-});
-
-test('attested checker rejects multiple hit-limit timeouts even below the ratio cap', (t) => {
-  const repoRoot = makeFixture(t);
-  attestCheckerFixture(repoRoot, [
-    ...Array.from({ length: 998 }, () => 'Killed'),
-    { status: 'Timeout', statusReason: 'Hit limit reached (11201/11200)' },
-    { status: 'Timeout', statusReason: 'Hit limit reached (14901/14900)' },
-  ]);
-
-  assert.throws(
-    () => checkMutationReport(repoRoot, () => {}),
-    /unresolved mutation statuses: Timeout=2 \(at most 1 exact hit-limit timeout is accepted\)/u,
-  );
-});
-
-test('attested checker rejects one hit-limit timeout above the full-report ratio cap', (t) => {
-  const repoRoot = makeFixture(t);
-  attestCheckerFixture(repoRoot, [
-    ...Array.from({ length: 498 }, () => 'Killed'),
+    'Killed',
     { status: 'Timeout', statusReason: 'Hit limit reached (11201/11200)' },
   ]);
 
   assert.throws(
     () => checkMutationReport(repoRoot, () => {}),
-    /Timeout=1 is 0\.2004% of all mutants, above the 0\.2000% cap/u,
+    /unresolved mutation statuses: Timeout=1/u,
   );
 });
 
@@ -471,6 +436,10 @@ test('mutation stage is an exact input snapshot isolated from working-tree ABA',
   writeFixtureFile(repoRoot, testPath, originalTest);
   assert.deepEqual(snapshotMutationInputs(repoRoot), expectedInputs);
   assert.deepEqual(readFileSync(join(stageRoot, testPath)), originalTest);
+  assert.deepEqual(
+    readFileSync(join(stageRoot, 'internal/web/testdata/live_render_contract.json')),
+    readFileSync(join(repoRoot, 'internal/web/testdata/live_render_contract.json')),
+  );
   assert.deepEqual(snapshotMutationInputs(stageRoot), expectedInputs);
 
   removeMutationInputStage(repoRoot);
@@ -749,6 +718,20 @@ test('checker provenance rejects changed external Vitest test data', (t) => {
   assert.throws(
     () => verifyFullRunAttestation(repoRoot),
     /attested mutation inputs changed.*prefs_golden\/01_simple\.json/u,
+  );
+});
+
+test('checker provenance rejects a changed Live render contract', (t) => {
+  const repoRoot = makeFixture(t);
+  attestFixture(repoRoot);
+  writeFixtureFile(
+    repoRoot,
+    'internal/web/testdata/live_render_contract.json',
+    '{"version":1,"rows":[{"changed":true}],"regions":[]}\n',
+  );
+  assert.throws(
+    () => verifyFullRunAttestation(repoRoot),
+    /attested mutation inputs changed.*live_render_contract\.json/u,
   );
 });
 

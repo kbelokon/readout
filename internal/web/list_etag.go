@@ -25,7 +25,7 @@ func resourceListETag(data *templates.ListData) (string, error) {
 }
 
 func resourceListETagWithRendererFingerprint(data *templates.ListData, renderer [sha256.Size]byte) (string, error) {
-	semantic := *data
+	semantic := resourceStateListData(data)
 	semantic.DurationSeconds = 0
 	semantic.ShowStaleBanner = false
 
@@ -49,17 +49,7 @@ func setResourceListValidatorHeaders(header http.Header, etag string) {
 	header.Set("Content-Type", "text/html; charset=utf-8")
 	header.Set("Cache-Control", "private, no-store")
 	header.Set("ETag", etag)
-	for _, token := range [...]string{
-		"Accept-Encoding",
-		"Cache-Control",
-		"Cookie",
-		"Authorization",
-		"HX-Request",
-		"RO-No-Push",
-		"HX-Preloaded",
-	} {
-		addVary(header, token)
-	}
+	addVary(header, "Accept-Encoding")
 }
 
 // isConditionalListRefresh is the server-side belt around the app-managed

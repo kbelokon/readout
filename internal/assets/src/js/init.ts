@@ -13,19 +13,14 @@
 //   - the htmx:beforeRequest sort-write hook: writes the sort pref ONLY for
 //     a direct sort-header gesture, after every configRequest listener has run
 //     (so the RO-No-Push programmatic marker is final);
-//   - the htmx:afterSwap post-swap PIPELINE: a FIXED order of repairs across
-//     four modules (recovery/stale -> row state -> filter -> columns -> window ->
-//     live), interleaving migrated + resident surfaces;
-//   - the htmx:beforeSwap body-swap teardown: the screen-change clear + the Live
-//     wrong-page-gate reset (the reset LITERALS must live in this hook -- the Go
-//     needle slices the hook out between its registration and the historyRestore
-//     listener below, so the two stay in THIS order);
+//   - one post-list-update pipeline for both HTMX swaps and Live deltas;
+//   - the htmx:beforeSwap body-swap teardown: selection clear plus the Live
+//     wrong-page ownership reset;
 //   - the history-cache swap intent: retires old Live ownership before HTMX
 //     replaces the cached body and binds completion, cancellation, and failure
 //     to the currently owned body attempt;
-//   - setupStickyNamespace (the _all-view second sticky column) + runInit (the
-//     idempotent step chain) on DOMContentLoaded / the successful body
-//     htmx:afterSwap / afterSettle / resize.
+//   - setupStickyNamespace plus runInit on DOMContentLoaded and body settlement;
+//     afterSwap runs only the jitter-sensitive YAML fold build.
 //
 // Cross-module surfaces are imported by name (the bundle inlines them); vendor
 // globals (htmx) are reached through a typeof guard, never imported.
@@ -34,16 +29,22 @@ import { colsPopOpen, setColsPopOpen, syncColsPopState } from './columns.js';
 import { closeRowMenu } from './context-menu.js';
 import { applyLiveNameFilter, captureRowModelFromDocument, updateFilterAC } from './filters.js';
 import { rememberListValidator, suppressListNotModified } from './list-etag.js';
-import { liveApply, liveOnListSwap, liveResetPage, liveState, liveTeardown } from './live.js';
+import { liveApply, liveOnListSwap, liveResetPage } from './live.js';
+import { LIST_DELTA_APPLIED_EVENT, type ListDeltaAppliedDetail } from './live-protocol.js';
 import { initLogsFollow } from './logs.js';
 import { collapseSectionsFromHash } from './misc-ui.js';
 import { roPrefsSetSort } from './prefs.js';
 import { applyRefresh, noteRefreshRecovery, pauseRefresh, syncRefreshUI } from './refresh.js';
-import { clearRowState, reapplyRowState, updateBulkBar } from './row-selection.js';
+import {
+    applyLiveRowDeletions,
+    clearRowState,
+    reapplyRowState,
+    updateBulkBar,
+} from './row-selection.js';
 import { clearListStale, isListRefreshEvent } from './stale.js';
 import { syncThemeTogglePostTarget } from './theme.js';
 import { showToast } from './toasts.js';
-import { virtualizeAfterSwap, virtualizeInit } from './virtualizer.js';
+import { virtualizeAfterDelta, virtualizeAfterSwap, virtualizeInit } from './virtualizer.js';
 import { buildYamlFolds, highlightYamlLine } from './yaml-folds.js';
 // skeleton.ts attaches its OWN document listeners at module load (the
 // loading-skeleton clone on htmx:beforeRequest + the failed-region clear) and
@@ -147,10 +148,10 @@ document.addEventListener('htmx:configRequest', suppressRedundantActiveNavigatio
 // that earns the canonical HX-Push-Url. Hooked on htmx:beforeRequest (which
 // fires AFTER every configRequest listener, so the RO-No-Push programmatic
 // marker is final): ticks/retries are issued BY the container (and marked
-// RO-No-Push -- treated as do-not-write), preload warm-ups carry HX-Preloaded,
-// filter-chip commits are sourced from the editor input -- none of them match a
-// thead ancestor. A URL that merely ARRIVES with ?sort= (deep link, history
-// restore) never passes here at all: only the direct interaction writes the pref.
+// RO-No-Push -- treated as do-not-write); filter-chip commits are sourced from
+// the editor input. Neither matches a thead ancestor. A URL that merely ARRIVES
+// with ?sort= (deep link, history restore) never passes here at all: only the
+// direct interaction writes the pref.
 export function handleSortPreferenceRequest(event: Event): void {
     // htmx owns this event shape, but document-level listeners are public: tests,
     // extensions, and browser tooling can dispatch a partial CustomEvent. Box
@@ -169,8 +170,8 @@ export function handleSortPreferenceRequest(event: Event): void {
     if (target.id !== 'resource-list-content') {
         return;
     }
-    if (cfg.headers['RO-No-Push'] || cfg.headers['HX-Preloaded'] === 'true') {
-        return; // programmatic / warm-up traffic never writes prefs
+    if (cfg.headers['RO-No-Push']) {
+        return; // programmatic traffic never writes prefs
     }
     const elt = Object(detail.elt) as { closest(selector: string): Element | null };
     let sortHeader: Element | null = null;
@@ -207,23 +208,54 @@ export function handleSortPreferenceRequest(event: Event): void {
 document.addEventListener('htmx:beforeRequest', handleSortPreferenceRequest);
 
 // ---------------------------------------------------------------------------
-// Post-swap PIPELINE: htmx:afterSwap (the FIXED order of repairs).
+// One post-list-update pipeline for both HTMX swaps and direct Live deltas.
 // ---------------------------------------------------------------------------
-// A successful refresh swap on #resource-list-content lands fresh rows -> clear
-// any prior stale dim + hide the banner. htmx:afterSwap fires only on a 2xx that
-// actually swapped, so a recovered refresh self-heals the stale state. The same
-// moment re-applies the identity-keyed row state (selection / j-k focus): the
-// morph syncs server HTML over client classes, so they must be re-keyed onto the
-// rows by data-key after EVERY swap (tick or user sort/filter).
+
+type ListUpdate = { kind: 'swap'; event: Event } | ListDeltaAppliedDetail;
+
+function refreshFilterAutocomplete(): void {
+    const input = document.getElementById('ro-filter-input') as HTMLInputElement | null;
+    if (input && document.activeElement === input && input.value) updateFilterAC();
+}
+
+function restoreColumnsPopover(): void {
+    if (colsPopOpen()) setColsPopOpen(true);
+}
+
+// Every successful list representation reaches this exact repair order. Transport
+// ownership stays at the edges: a swap records its validator and completes its
+// XHR in the caller's finally block; a delta first applies true deletions to the
+// identity-keyed selection store. Each repair is isolated so one optional UI
+// failure cannot strand Live or skip the remaining model repairs.
+export function afterListUpdate(update: ListUpdate): void {
+    if (update.kind === 'swap') {
+        runInitStep(() => rememberListValidator(update.event));
+    } else {
+        runInitStep(() => applyLiveRowDeletions(update.deletedKeys));
+    }
+    [
+        noteRefreshRecovery,
+        clearListStale,
+        reapplyRowState,
+        applyLiveNameFilter,
+        refreshFilterAutocomplete,
+        restoreColumnsPopover,
+    ].forEach(runInitStep);
+    if (update.kind === 'swap') runInitStep(virtualizeAfterSwap);
+    else runInitStep(() => virtualizeAfterDelta(update.previousByKey, update.focusKey));
+    runInitStep(setupStickyNamespace);
+}
+
+document.addEventListener(LIST_DELTA_APPLIED_EVENT, (event) => {
+    const detail = (event as CustomEvent<ListDeltaAppliedDetail>).detail;
+    afterListUpdate(detail);
+});
+
 document.addEventListener('htmx:afterSwap', (event) => {
     const bodySwapped = event.target === document.body;
     // History cache restores swap the history element directly (there is no
     // htmx:beforeSwap). This is the first proof that the cached body, rather
-    // than the old screen, is now installed. Complete the ownership gate before
-    // the one body runInit below can initialize Live against the restored
-    // projection. A failed or overlapping body attempt is already in
-    // `bodyReloading` and deliberately ignores anonymous late afterSwap events
-    // until full reload.
+    // than the old screen, is now installed.
     if (bodySwapTicket && bodySwapped) {
         if (bodySwapTicket.phase === 'swap') {
             completeBodySwap();
@@ -232,52 +264,20 @@ document.addEventListener('htmx:afterSwap', (event) => {
         }
     }
     if (isListRefreshEvent(event)) {
-        // Bind the response validator to the exact `_table` request before any
-        // repair can trigger or observe another refresh. A Live synthetic swap
-        // carries roLivePush and clears the pair idempotently here (live.ts has
-        // already invalidated it synchronously before starting the swap).
-        rememberListValidator(event);
-        noteRefreshRecovery();
-        clearListStale();
-        reapplyRowState();
-        // The morph synced server HTML over the client-added filter classes and
-        // emptied the JS-owned autocomplete mount; re-apply the live name match
-        // from the surviving draft (ignoreActiveValue kept it) and re-open the
-        // dropdown when the user is mid-draft. The row model itself was already
-        // re-captured from the fragment in the ro-morph handleSwap.
-        applyLiveNameFilter();
-        const filterInput = document.getElementById('ro-filter-input') as HTMLInputElement | null;
-        if (filterInput && document.activeElement === filterInput && filterInput.value) {
-            updateFilterAC();
+        // Even if an optional repair fails, the exact request/snapshot marker
+        // must complete; otherwise a healthy 200 is misclassified as fallback.
+        try {
+            afterListUpdate({ kind: 'swap', event });
+        } finally {
+            liveOnListSwap(event);
         }
-        // The columns popover re-rendered closed (server truth carries no
-        // `.is-open`); re-open it when it was open before the swap so a column
-        // toggle / tick never snaps it shut mid-interaction. colsPopOpen()
-        // is the columns.ts module flag read (the seam is retired).
-        if (colsPopOpen()) {
-            setColsPopOpen(true);
-        }
-        // Re-window -- EVERY swap source lands here: tick, sort/
-        // filter swap, retry, AND the Live push (htmx.swap dispatches this
-        // same event with target=container + the roLivePush marker, so pushes
-        // ride the identical post-swap pipeline). LAST among the repairs, so
-        // the adoption render consumes the visibleKeys applyLiveNameFilter
-        // just re-derived; it ends in its own reapplyRowState over the slice.
-        virtualizeAfterSwap();
-        // Live: a REQUEST swap of the container while a stream
-        // rides is a param change (`f`/sort via URL, columns via cookie) --
-        // tear the stream down and reopen it against the new query under a
-        // fresh generation. Pushes themselves (roLivePush) never reopen.
-        liveOnListSwap(event);
     }
-    if (bodySwapped) {
-        // HTMX defers htmx:load until its settle tasks and emits it once per
-        // inserted top-level element. Running the whole-document initializer
-        // there exposed one raw frame and repeated every repair several times.
-        // afterSwap is synchronous with the successful body replacement: the
-        // fresh DOM is complete, the body ownership gate above is settled, and
-        // this one pass finishes before the browser's next paint.
-        runInit();
+    if (bodySwapped && !bodyReloading) {
+        // HTMX applies old settle attributes/classes after afterSwap. Build the
+        // jitter-sensitive YAML fold structure now, but defer all state reads
+        // and Live initialization until this exact body reaches afterSettle.
+        bodyInitPending = document.body;
+        runInitStep(buildYamlFolds);
     }
 });
 
@@ -293,10 +293,6 @@ document.addEventListener('htmx:afterSwap', (event) => {
 // from a stale list would leak it across the body swap (repainting a banner the
 // fresh body renders hidden).
 //
-// NEEDLE CONTRACT: the Go test (list_redesign_test.go) slices THIS hook out
-// between its registration line and the htmx:historyRestore listener below, then
-// asserts the body-swap gate + clearRowState + the three Live-reset literals are
-// INSIDE it. The two listeners stay in THIS order; the reset literals stay here.
 document.addEventListener('htmx:beforeSwap', (event) => {
     const detail = (event as CustomEvent).detail;
     // htmx 2.0 classifies every 3xx as swapping. An exact app-managed 304 has
@@ -331,19 +327,10 @@ document.addEventListener('htmx:beforeSwap', (event) => {
         closeRowMenu();
         clearRowState();
         clearListStale();
-        // The riding Live stream belongs to the OLD page. The post-swap runInit
-        // would reconcile it only AFTER the body swap -- a push delivered
-        // inside that gap would pass the generation check (nothing reset it
-        // yet) and morph the old
-        // resource's table into the new page's container. Tear it down NOW;
-        // the new page's init opens its own stream from the clean idle state
-        // (a fresh page init is a fresh attempt, so a sticky fallback resets
-        // here exactly like it does on a full-page navigation).
-        liveTeardown(); // also zeroes the private liveFallbackSecs (live.ts)
+        // Retire the old page before HTMX exposes the new mount; no push may
+        // cross that ownership boundary. The settled page opens from clean Off.
         pauseRefresh();
-        liveResetPage(); // invalidates old request loadend/stream continuations
-        liveState.status = 'idle';
-        liveState.streamPath = '';
+        liveResetPage(); // aborts Live and invalidates old continuations
         // Later beforeSwap listeners may cancel this response. Observe their
         // final decision in a microtask, but do not assume an accepted swap is
         // synchronous: HTMX permits an explicit swap delay. afterSwap or
@@ -371,6 +358,7 @@ interface BodySwapTicket {
 
 let bodySwapTicket: BodySwapTicket | null = null;
 let bodyReloading: true | undefined;
+let bodyInitPending: HTMLElement | null = null;
 
 function clearBodySwap(): void {
     bodySwapTicket = null;
@@ -382,11 +370,9 @@ function completeBodySwap(): void {
 }
 
 function retireCurrentScreenForBodySwap(): void {
-    liveTeardown();
+    clearListStale();
     pauseRefresh();
     liveResetPage();
-    liveState.status = 'idle';
-    liveState.streamPath = '';
 }
 
 function reloadCurrentHistoryEntry(): void {
@@ -485,7 +471,7 @@ document.addEventListener('htmx:swapError', (event) => {
 
 document.addEventListener('htmx:historyRestore', () => {
     // Marker only. Row/model/bulk repair and Live initialization belong to the
-    // restored body's preceding htmx:afterSwap runInit pass, never to this
+    // restored body's preceding htmx:afterSettle runInit pass, never to this
     // ambiguously ordered event. Keep the resident listener as an explicit
     // lifecycle boundary.
 });
@@ -495,6 +481,7 @@ window.addEventListener('pageshow', () => {
     // equivalent reset boundary for a browser-restored document and gives DOM
     // tests a faithful way to model that new page lifecycle.
     completeBodySwap();
+    bodyInitPending = null;
 });
 
 // ---------------------------------------------------------------------------
@@ -533,18 +520,17 @@ function runInitStep(step: () => void): void {
     }
 }
 
-// Run all init-time steps. Called on DOMContentLoaded and synchronously from the
-// successful body htmx:afterSwap above, because an hx-boost body replacement
-// does not refire DOMContentLoaded. Each step remains idempotent for defensive
-// direct callers and partial-failure recovery.
-function runInit(): void {
+// Run all init-time steps. Called on DOMContentLoaded and after the exact body
+// replacement settles, because an hx-boost body replacement does not refire
+// DOMContentLoaded. Each step remains idempotent for defensive direct callers
+// and partial-failure recovery.
+function runInit(yamlFoldsBuilt = false): void {
     // An unowned completion must not reopen Live on an untrusted body. The
-    // accepted body afterSwap clears its ownership gate immediately before
-    // calling this function; failed and overlapping attempts stay inert.
+    // accepted body afterSwap clears its ownership gate before settlement;
+    // failed and overlapping attempts stay inert.
     if (bodySwapTicket || bodyReloading) return;
-    [
+    const steps = [
         syncRefreshUI,
-        buildYamlFolds,
         collapseSectionsFromHash,
         highlightYamlLine,
         initLogsFollow,
@@ -582,11 +568,24 @@ function runInit(): void {
         // state: a riding stream disarms it, a fallback selects 5s.
         liveApply,
         applyRefresh,
-    ].forEach(runInitStep);
+    ];
+    if (!yamlFoldsBuilt) steps.splice(1, 0, buildYamlFolds);
+    steps.forEach(runInitStep);
 }
 
-document.addEventListener('DOMContentLoaded', runInit);
-// The list table morphs in place on ro:refresh; re-measure after the swap settles
-// and on resize (auto-layout column widths shift with the viewport).
-document.addEventListener('htmx:afterSettle', setupStickyNamespace);
+document.addEventListener('DOMContentLoaded', () => runInit());
+document.addEventListener('htmx:afterSettle', (event) => {
+    const pending = bodyInitPending;
+    const detail = Object((event as CustomEvent).detail) as { target?: unknown };
+    if (pending && event.target !== pending && detail.target !== pending) {
+        return;
+    }
+    if (!pending) {
+        if (!isListRefreshEvent(event)) setupStickyNamespace();
+        return;
+    }
+    bodyInitPending = null;
+    runInit(true);
+});
+// Auto-layout column widths also shift with the viewport.
 window.addEventListener('resize', setupStickyNamespace);

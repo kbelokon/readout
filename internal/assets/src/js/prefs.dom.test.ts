@@ -3,10 +3,7 @@
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import {
-    PREFS_COOKIE,
-    PREFS_COOKIE_MAX_AGE,
     type Prefs,
-    REFRESH_KEY,
     readPrefs,
     roPrefsSetHiddenColumns,
     roPrefsSetNamespace,
@@ -18,7 +15,7 @@ import {
 const emptyPrefs: Prefs = { kinds: [], refresh: '', ns: {} };
 
 function clearPrefsCookie(): void {
-    document.cookie = `${PREFS_COOKIE}=; Path=/; Max-Age=0`;
+    document.cookie = 'ro_prefs=; Path=/; Max-Age=0';
 }
 
 beforeEach(() => {
@@ -26,16 +23,10 @@ beforeEach(() => {
     document.cookie = 'unrelated=; Path=/; Max-Age=0';
 });
 
-test('the legacy refresh key remains stable for localStorage migration', () => {
-    window.localStorage.setItem(REFRESH_KEY, '30');
-    expect(REFRESH_KEY).toBe('roRefresh');
-    expect(window.localStorage.getItem('roRefresh')).toBe('30');
-});
-
 test('readPrefs returns empty prefs for an absent or corrupt cookie', () => {
     expect(readPrefs()).toStrictEqual(emptyPrefs);
 
-    document.cookie = `${PREFS_COOKIE}=v1.%%%; Path=/`;
+    document.cookie = 'ro_prefs=v1.%%%; Path=/';
     expect(readPrefs()).toStrictEqual(emptyPrefs);
 });
 
@@ -60,9 +51,9 @@ test('writePrefs assigns the persistent cookie attributes for the current protoc
 
     expect(cookieSetter).toHaveBeenCalledOnce();
     const assigned = cookieSetter.mock.calls[0][0];
-    expect(assigned).toContain(`${PREFS_COOKIE}=v1.`);
+    expect(assigned).toContain('ro_prefs=v1.');
     expect(assigned).toContain('; Path=/; SameSite=Lax;');
-    expect(assigned).toContain(`Max-Age=${PREFS_COOKIE_MAX_AGE}`);
+    expect(assigned).toContain('Max-Age=31536000');
     if (window.location.protocol === 'https:') {
         expect(assigned).toContain('; Secure');
     } else {

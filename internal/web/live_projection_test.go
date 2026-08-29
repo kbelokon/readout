@@ -73,6 +73,42 @@ func TestLiveProjectionSemanticNoopEmitsNothingAndRendersNothing(t *testing.T) {
 	}
 }
 
+func TestLiveProjectionVolatileEventAgeTracksResourceState(t *testing.T) {
+	before := liveProjectionFixture(2)
+	for i := range before.Tables[0].Rows {
+		before.Tables[0].Rows[i].ResourceVersion = fmt.Sprintf("10%d", i)
+		before.Tables[0].Rows[i].Cells = append(before.Tables[0].Rows[i].Cells,
+			templates.TableCell{Kind: templates.CellEvAge, Value: "4m", Class: "age-new", ColClass: "cell-age", EvAgeRest: "(first 1h ago)", Volatile: true})
+	}
+	clockTick := cloneLiveProjectionFixture(&before)
+	clockTick.Tables[0].Rows[1].Cells[2].Value = "5m"
+	clockTick.Tables[0].Rows[1].Cells[2].Class = "age-mid"
+	clockTick.Tables[0].Rows[1].Cells[2].EvAgeRest = "(first 1h 1m ago)"
+
+	committed := mustProjectLiveList(t, &before)
+	ticked := mustProjectLiveList(t, &clockTick)
+	probe := newLiveProjectionRenderProbe()
+	noop, err := diffLiveList(context.Background(), committed, ticked, &clockTick, nil, probe.renderers())
+	if err != nil {
+		t.Fatalf("diff clock-only Event refresh: %v", err)
+	}
+	if noop.Delta != nil || noop.RequireSnapshot || committed.revision != ticked.revision {
+		t.Fatalf("clock-only Event refresh changed projection: %+v", noop)
+	}
+	probe.wantNoRenders(t)
+
+	modified := cloneLiveProjectionFixture(&clockTick)
+	modified.Tables[0].Rows[1].ResourceVersion = "102"
+	candidate := mustProjectLiveList(t, &modified)
+	delta, err := diffLiveList(context.Background(), committed, candidate, &modified, nil, probe.renderers())
+	if err != nil {
+		t.Fatalf("diff modified Event resource: %v", err)
+	}
+	if delta.Delta == nil || len(delta.Delta.Upserts) != 1 || delta.Delta.Upserts[0].Key != modified.Tables[0].Rows[1].Key {
+		t.Fatalf("modified Event delta = %+v, want exactly the changed resource", delta.Delta)
+	}
+}
+
 func TestLiveProjectionSemanticDeltaRepairsBothDisplayedDurations(t *testing.T) {
 	before := liveProjectionFixture(2)
 	after := cloneLiveProjectionFixture(&before)

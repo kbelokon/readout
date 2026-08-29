@@ -267,7 +267,6 @@ describe('configRequest conditional header gate', () => {
     test.each([
         ['no RO-No-Push marker', {}],
         ['wrong RO-No-Push value', { 'RO-No-Push': 'false' }],
-        ['preload warm-up', { 'RO-No-Push': 'true', 'HX-Preloaded': 'true' }],
     ])('does not attach for $0', (_name, initialHeaders) => {
         const content = renderContent();
         remember(content);

@@ -218,7 +218,7 @@ func projectLiveList(data *templates.ListData) (liveProjectionState, error) {
 	identitiesValid := true
 	for i := range table.Rows {
 		row := &table.Rows[i]
-		digest, hashErr := liveProjectionDigest("row", row)
+		digest, hashErr := liveProjectionRowDigest(row)
 		if hashErr != nil {
 			return liveProjectionState{}, fmt.Errorf("project Live row %q: %w", row.Key, hashErr)
 		}
@@ -425,7 +425,18 @@ func liveProjectionSchema(data *templates.ListData) ([sha256.Size]byte, error) {
 		semantic.Tables[i].PhaseRows = 0
 		semantic.Tables[i].Rows = nil
 	}
-	return liveProjectionDigest("schema", &semantic)
+	semanticDigest, err := liveProjectionDigest("schema", &semantic)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	// Renderer identity belongs to the schema boundary: a new binary must force
+	// one authoritative snapshot, but it must not be repeated in every row hash.
+	digest := sha256.New()
+	liveProjectionWriteString(digest, "schema-renderer")
+	liveProjectionWriteBytes(digest, semanticDigest[:])
+	renderer := resourceListRendererFingerprint()
+	liveProjectionWriteBytes(digest, renderer[:])
+	return [sha256.Size]byte(digest.Sum(nil)), nil
 }
 
 func liveProjectionPhaseFor(data *templates.ListData, table *templates.TableData) (liveProjectionPhase, error) {
@@ -502,7 +513,7 @@ func liveProjectionUnsupportedDigest(data *templates.ListData) ([sha256.Size]byt
 		liveProjectionWriteBytes(digest, phase[:])
 		liveProjectionWriteInt(digest, len(table.Rows))
 		for rowIndex := range table.Rows {
-			row, rowErr := liveProjectionDigest("row", &table.Rows[rowIndex])
+			row, rowErr := liveProjectionRowDigest(&table.Rows[rowIndex])
 			if rowErr != nil {
 				return [sha256.Size]byte{}, fmt.Errorf("table %d row %d: %w", tableIndex, rowIndex, rowErr)
 			}
@@ -539,8 +550,15 @@ func liveProjectionDigest(domain string, value any) ([sha256.Size]byte, error) {
 	_, _ = hash.Write([]byte(liveProjectionHashDomain))
 	_, _ = hash.Write([]byte(domain))
 	_, _ = hash.Write([]byte{0})
-	renderer := resourceListRendererFingerprint()
-	_, _ = hash.Write(renderer[:])
 	_, _ = hash.Write(payload)
 	return [sha256.Size]byte(hash.Sum(nil)), nil
+}
+
+// liveProjectionRowDigest excludes presentation that changes merely because
+// the server clock advanced. ResourceVersion remains in the row, so a real
+// Kubernetes update still changes the digest even if its only visible change
+// is a volatile Event age.
+func liveProjectionRowDigest(row *templates.TableRow) ([sha256.Size]byte, error) {
+	semantic := resourceStateTableRow(row)
+	return liveProjectionDigest("row", &semantic)
 }

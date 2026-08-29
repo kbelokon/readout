@@ -582,13 +582,13 @@ func TestStatesStaleHandlerInReadoutJS(t *testing.T) {
 	if !gatedResponseError.MatchString(js) {
 		t.Fatalf("htmx:responseError handler is not gated on isListRefreshEvent (would mark every htmx error stale)")
 	}
-	// The reveal/clear is not dropped: marking stale reveals the banner and a
-	// recovered refresh re-hides it (banner.hidden flips both ways).
-	if !strings.Contains(js, "banner.hidden = false") {
-		t.Fatalf("stale handler must reveal the banner (banner.hidden = false)")
+	// The reveal/clear is not dropped: the two independent warning owners jointly
+	// control visibility, and a fully recovered banner also retires its ticker.
+	if !strings.Contains(js, "banner.hidden = !(listStale || liveUnavailable)") {
+		t.Fatalf("stale handler must derive banner visibility from both warning owners")
 	}
-	if !strings.Contains(js, "banner.hidden = true") {
-		t.Fatalf("recovered refresh must re-hide the banner (banner.hidden = true)")
+	if !strings.Contains(js, "if (banner.hidden) stopStaleCountdown()") {
+		t.Fatalf("recovered refresh must stop the stale countdown")
 	}
 }
 

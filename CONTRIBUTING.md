@@ -39,13 +39,7 @@ mise exec -- npm run test:mutation:full
 ```
 
 The full run includes static/load-time code and must finish with no surviving,
-uncovered, runtime-error, ignored, or pending mutants. A `Timeout` is normally
-unresolved. The checker makes one narrow allowance for a full report: at most one
-timeout, no more than 0.2% of all mutants, whose reason is exactly Stryker's own
-`Hit limit reached (hits/limit)` outcome with hits above the limit. It reports
-that exception as undetermined/non-direct, never as a behavioral kill. A missing
-or different reason, a second timeout, or a ratio above the cap fails the gate.
-This allowance does not impose a campaign wall-clock deadline. Stryker's own
+uncovered, timed-out, runtime-error, ignored, or pending mutants. Stryker's own
 breaking threshold is zero so it can finish and publish the evidence needed to
 investigate a failing audit;
 the attested `test:mutation:check` step is the sole strict unresolved-mutant gate.

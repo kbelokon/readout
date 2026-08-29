@@ -1,249 +1,137 @@
 // @vitest-environment jsdom
 
-import { afterEach, expect, test, vi } from 'vitest';
-
-const dependencies = vi.hoisted(() => ({
-    reapplyRowState: vi.fn(),
-    requestListRefresh: vi.fn(),
-}));
-
-vi.mock('./refresh.js', () => ({
-    requestListRefresh: dependencies.requestListRefresh,
-}));
-
-vi.mock('./row-selection.js', () => ({
-    reapplyRowState: dependencies.reapplyRowState,
-}));
-
-import { applyLiveNameFilter, captureRowModelFromDocument } from './filters.js';
-import { listProjectionRowModel, prepareListProjectionSwap } from './list-projection.js';
+import { beforeEach, expect, test } from 'vitest';
 import {
-    virtRows,
-    virtualizeAfterSwap,
-    virtualizeInit,
-    virtualizePrepareSwap,
-    virtVisible,
-} from './virtualizer.js';
+    adoptListProjection,
+    commitListProjectionSwap,
+    ensureListProjection,
+    listProjectionOrder,
+    listProjectionRevision,
+    listProjectionRowByKey,
+    listProjectionRowModel,
+    listProjectionRows,
+    listProjectionSwapPending,
+    prepareListProjectionSwap,
+    resetListProjection,
+} from './list-projection.js';
 
 interface RowFixture {
     key: string;
     name: string;
 }
 
-interface ListFixtureOptions {
-    cards?: boolean;
-    draft?: string;
-    windowed?: boolean;
-}
-
-function buildList(rows: readonly RowFixture[], options: ListFixtureOptions = {}): HTMLElement {
+function buildList(rows: readonly RowFixture[], windowed = false): HTMLElement {
     const content = document.createElement('div');
     content.id = 'resource-list-content';
-    const filter = document.createElement('input');
-    filter.id = 'ro-filter-input';
-    filter.value = options.draft || '';
-    const wrap = document.createElement('div');
-    wrap.className = `ro-table-wrap${options.windowed ? ' ro-windowed' : ''}`;
-    const table = document.createElement('table');
-    table.className = 'ro-table';
-    table.innerHTML = `
-        <thead><tr><th data-hint="string">Name</th><th data-hint="enum">Status</th></tr></thead>
-        <tbody></tbody>`;
-    const tbody = table.tBodies.item(0) as HTMLTableSectionElement;
-    const cards = document.createElement('div');
-    cards.className = 'ro-cardlist';
-    rows.forEach((fixture, index) => {
-        const row = tbody.insertRow();
-        row.dataset.key = fixture.key;
-        row.dataset.testIndex = String(index);
-        row.innerHTML = `<td class="cell-name"><a>${fixture.name}</a></td><td>Ready</td>`;
-        if (options.cards) {
-            const card = document.createElement('article');
-            card.className = 'ro-pcard';
-            card.dataset.key = fixture.key;
-            card.textContent = `${fixture.name} card`;
-            cards.append(card);
-        }
-    });
-    wrap.append(table);
-    content.append(filter, wrap);
-    if (options.cards) {
-        content.append(cards);
-    }
+    content.innerHTML = `
+        <div class="ro-table-wrap${windowed ? ' ro-windowed' : ''}">
+            <table class="ro-table">
+                <thead><tr><th data-hint="string">Name</th><th data-hint="enum">Status</th></tr></thead>
+                <tbody>${rows
+                    .map(
+                        ({ key, name }) =>
+                            `<tr data-key="${key}"><td class="cell-name"><a>${name}</a></td><td>Ready</td></tr>`,
+                    )
+                    .join('')}</tbody>
+            </table>
+        </div>`;
     return content;
 }
 
-function runListInit(): void {
-    captureRowModelFromDocument();
-    applyLiveNameFilter();
-    virtualizeInit();
+function fragmentFrom(content: HTMLElement): DocumentFragment {
+    const fragment = document.createDocumentFragment();
+    fragment.append(...Array.from(content.childNodes));
+    return fragment;
 }
 
-function moveChildren(from: ParentNode, to: ParentNode): void {
-    while (from.firstChild) {
-        to.appendChild(from.firstChild);
-    }
-}
-
-afterEach(() => {
+beforeEach(() => {
     document.body.replaceChildren();
-    virtualizeInit();
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
+    resetListProjection();
 });
 
-test('keeps filter state page-local and captures each actual projection exactly once', () => {
-    vi.stubGlobal(
-        'matchMedia',
-        vi.fn(() => ({
-            matches: false,
-            addEventListener: vi.fn(),
-            addListener: vi.fn(),
-            dispatchEvent: vi.fn(),
-            media: '',
-            onchange: null,
-            removeEventListener: vi.fn(),
-            removeListener: vi.fn(),
-        })),
-    );
-    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 120 });
-    Object.defineProperty(window, 'scrollY', { configurable: true, value: 0 });
-    Object.defineProperty(window, 'scrollTo', { configurable: true, value: vi.fn() });
-    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
-        this: Element,
-    ) {
-        const index = Number((this as HTMLElement).dataset.testIndex || 0);
-        const top = this.matches('tr[data-key]') ? index * 20 : 0;
-        return {
-            bottom: top + 20,
-            height: 20,
-            left: 0,
-            right: 100,
-            top,
-            width: 100,
-            x: 0,
-            y: top,
-            toJSON: () => ({}),
-        } as DOMRect;
-    });
-    const classToggle = vi.spyOn(DOMTokenList.prototype, 'toggle');
-    const filterToggleCount = () =>
-        classToggle.mock.calls.filter(([token]) => token === 'ro-row-filtered').length;
+test('prepares one incoming model and commits the connected small-list projection', () => {
+    const content = buildList([
+        { key: 'pods/a', name: 'Alpha' },
+        { key: 'pods/b', name: 'Beta' },
+    ]);
+    document.body.append(content);
+    adoptListProjection(content);
+    const initialRevision = listProjectionRevision();
+    const oldA = listProjectionRowByKey('pods/a');
 
-    const capturedRoots: ParentNode[] = [];
-    const elementQuerySelector = Element.prototype.querySelector;
-    vi.spyOn(Element.prototype, 'querySelector').mockImplementation(function (
-        this: Element,
-        selector: string,
-    ) {
-        if (selector === 'table.ro-table' && this.id === 'resource-list-content') {
-            capturedRoots.push(this);
-        }
-        return elementQuerySelector.call(this, selector);
-    });
-    const fragmentQuerySelector = DocumentFragment.prototype.querySelector;
-    vi.spyOn(DocumentFragment.prototype, 'querySelector').mockImplementation(function (
-        this: DocumentFragment,
-        selector: string,
-    ) {
-        if (selector === 'table.ro-table') {
-            capturedRoots.push(this);
-        }
-        return fragmentQuerySelector.call(this, selector);
-    });
+    const incoming = fragmentFrom(
+        buildList([
+            { key: 'pods/b', name: 'Beta next' },
+            { key: 'pods/c', name: 'Gamma' },
+        ]),
+    );
+    const prepared = prepareListProjectionSwap(incoming);
 
-    // Initial small page: capture -> filter -> virtualize visits one content
-    // root, and cards follow the same draft visibility as rows.
-    const initial = buildList(
-        [
-            { key: 'pods/alpha', name: 'Alpha' },
-            { key: 'pods/beta', name: 'Beta' },
-        ],
-        { cards: true, draft: 'alpha' },
-    );
-    document.body.append(initial);
-    runListInit();
-    for (let repeatInit = 0; repeatInit < 6; repeatInit += 1) {
-        runListInit();
-    }
-    expect(capturedRoots).toStrictEqual([initial]);
-    expect(filterToggleCount()).toBe(4);
-    expect(initial.querySelector('[data-key="pods/alpha"].ro-pcard')).not.toHaveClass(
-        'ro-row-filtered',
-    );
-    expect(initial.querySelector('[data-key="pods/beta"].ro-pcard')).toHaveClass('ro-row-filtered');
+    expect(prepared).toMatchObject({ windowed: false });
+    expect(prepared.rows.map((row) => row.dataset.key)).toStrictEqual(['pods/b', 'pods/c']);
+    expect(listProjectionSwapPending()).toBe(true);
+    expect(listProjectionRevision()).toBe(initialRevision + 1);
+    expect(listProjectionRowModel().rows.map((row) => row.name)).toStrictEqual([
+        'Beta next',
+        'Gamma',
+    ]);
+    expect(prepareListProjectionSwap(incoming).rows).toStrictEqual(prepared.rows);
+    expect(listProjectionRevision()).toBe(initialRevision + 1);
 
-    // A small morph has two real projections: the complete incoming fragment
-    // and the connected DOM Idiomorph may retain. Each is captured once; the
-    // a defensive later init repeat is identity-idempotent.
-    const smallIncoming = buildList(
-        [
-            { key: 'pods/beta', name: 'Beta' },
-            { key: 'pods/gamma', name: 'Gamma' },
-        ],
-        { cards: true, draft: 'beta' },
-    );
-    const fragment = document.createDocumentFragment();
-    moveChildren(smallIncoming, fragment);
-    prepareListProjectionSwap(fragment);
-    virtualizePrepareSwap(fragment);
-    initial.replaceChildren();
-    moveChildren(fragment, initial);
-    applyLiveNameFilter();
-    virtualizeAfterSwap();
-    for (let descendantLoad = 0; descendantLoad < 6; descendantLoad += 1) {
-        runListInit();
-    }
-    expect(capturedRoots).toStrictEqual([initial, fragment, initial]);
-    expect(filterToggleCount()).toBe(8);
-    expect(initial.querySelector('[data-key="pods/beta"].ro-pcard')).not.toHaveClass(
-        'ro-row-filtered',
-    );
-    expect(initial.querySelector('[data-key="pods/gamma"].ro-pcard')).toHaveClass(
-        'ro-row-filtered',
-    );
+    content.replaceChildren(...Array.from(incoming.childNodes));
+    const connectedBeta = content.querySelector('[data-key="pods/b"] .cell-name a');
+    if (connectedBeta) connectedBeta.textContent = 'Beta connected';
+    const previous = commitListProjectionSwap();
 
-    // Cross-page navigation gets a new content identity. The old page's
-    // visibleKeys are cleared, then the active draft is re-derived BEFORE the
-    // new full set is windowed.
-    const windowed = buildList(
-        [
-            { key: 'jobs/one', name: 'One' },
-            { key: 'jobs/target', name: 'Target' },
-            { key: 'jobs/three', name: 'Three' },
-        ],
-        { draft: 'target', windowed: true },
-    );
-    document.body.replaceChildren(windowed);
-    runListInit();
-    for (let descendantLoad = 0; descendantLoad < 6; descendantLoad += 1) {
-        runListInit();
-    }
-    expect(capturedRoots).toStrictEqual([initial, fragment, initial, windowed]);
-    expect(filterToggleCount()).toBe(11);
-    expect(Array.from(listProjectionRowModel().visibleKeys || [])).toStrictEqual(['jobs/target']);
-    expect(virtRows()).toHaveLength(3);
-    expect(virtVisible().map((row) => row.dataset.key)).toStrictEqual(['jobs/target']);
+    expect(previous?.get('pods/a')).toBe(oldA);
+    expect(listProjectionSwapPending()).toBe(false);
+    expect(listProjectionOrder()).toStrictEqual(['pods/b', 'pods/c']);
+    expect(listProjectionRowByKey('pods/b')?.isConnected).toBe(true);
+    expect(listProjectionRowModel().rows.map((row) => row.name)).toStrictEqual([
+        'Beta connected',
+        'Gamma',
+    ]);
+    expect(ensureListProjection(content)).toBe(false);
+    expect(listProjectionRevision()).toBe(initialRevision + 1);
+});
 
-    // A cached window is a new, incomplete projection. It is rejected exactly
-    // once, clears the previous page's keys, and repeated init only maintains
-    // the one-shot recovery request.
-    const cached = buildList([{ key: 'cached/partial', name: 'Partial' }], {
-        windowed: true,
-    });
-    const cachedBody = cached.querySelector('tbody') as HTMLTableSectionElement;
+test('commits a windowed incoming snapshot as the complete detached row model', () => {
+    const content = buildList([{ key: 'pods/a', name: 'Alpha' }], true);
+    document.body.append(content);
+    adoptListProjection(content);
+
+    const incoming = fragmentFrom(
+        buildList(
+            [
+                { key: 'pods/b', name: 'Beta' },
+                { key: 'pods/c', name: 'Gamma' },
+            ],
+            true,
+        ),
+    );
+    const prepared = prepareListProjectionSwap(incoming);
+    const incomingRows = [...prepared.rows];
+
+    expect(prepared.windowed).toBe(true);
+    expect(commitListProjectionSwap()).not.toBeNull();
+    expect(listProjectionRows()).toStrictEqual(incomingRows);
+    expect(listProjectionOrder()).toStrictEqual(['pods/b', 'pods/c']);
+    expect(listProjectionRowModel().rows.map((row) => row.key)).toStrictEqual(['pods/b', 'pods/c']);
+    expect(ensureListProjection(content)).toBe(false);
+});
+
+test('does not treat a history-restored viewport slice as a complete projection', () => {
+    const content = buildList([{ key: 'pods/partial', name: 'Partial' }], true);
+    const tbody = content.querySelector('tbody') as HTMLTableSectionElement;
     const spacer = document.createElement('tr');
     spacer.className = 'ro-vspacer';
     spacer.append(document.createElement('td'));
-    cachedBody.prepend(spacer);
-    document.body.replaceChildren(cached);
-    for (let descendantLoad = 0; descendantLoad < 6; descendantLoad += 1) {
-        runListInit();
-    }
+    tbody.prepend(spacer);
+    document.body.append(content);
 
-    expect(capturedRoots).toStrictEqual([initial, fragment, initial, windowed, cached]);
-    expect(filterToggleCount()).toBe(12);
+    adoptListProjection(content);
+
+    expect(listProjectionRows()).toStrictEqual([]);
+    expect(listProjectionOrder()).toStrictEqual([]);
     expect(listProjectionRowModel().rows).toStrictEqual([]);
-    expect(listProjectionRowModel().visibleKeys).toBeNull();
-    expect(dependencies.requestListRefresh).toHaveBeenCalledOnce();
 });

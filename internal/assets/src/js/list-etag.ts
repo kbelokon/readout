@@ -153,8 +153,7 @@ export function configureListValidatorRequest(event: Event): void {
     if (
         !sourceIsContent ||
         (detail.target !== undefined && !targetIsContent) ||
-        headerValue(headers, 'RO-No-Push') !== 'true' ||
-        headerValue(headers, 'HX-Preloaded') === 'true'
+        headerValue(headers, 'RO-No-Push') !== 'true'
     ) {
         return;
     }

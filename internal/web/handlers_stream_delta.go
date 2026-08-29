@@ -21,7 +21,6 @@ const (
 	streamMaxFragmentBytes               = 128 << 10
 	streamMaxDeltaOperations             = 20_000
 	streamMaxDeltaKeyBytes               = 2 << 10
-	streamMaxScreenBytes                 = 8 << 10
 	streamMaxResourceVersionBytes        = 256
 	streamMaxDeletedKeys                 = 20_000
 	streamMaxSafeSequence         uint64 = 1<<53 - 1
@@ -94,22 +93,6 @@ func (st *streamSession) liveRenderers() streamLiveRenderers {
 	return renderers
 }
 
-// pushLegacy intentionally remains a full render with no v2 projection work.
-// Absence of the negotiation header therefore stays on the pinned v1 path.
-func (st *streamSession) pushLegacy(ctx context.Context) error {
-	data := st.currentListData()
-	var buf bytes.Buffer
-	if err := templates.ResourceTable(data).Render(ctx, &buf); err != nil {
-		return err
-	}
-	if err := st.writeEvent("ro-table", streamTablePayload{G: st.gen, HTML: buf.String()}); err != nil {
-		return err
-	}
-	st.dirty = false
-	st.lastPush = time.Now()
-	return nil
-}
-
 func (st *streamSession) pushLiveV2(ctx context.Context) error {
 	prepared, err := st.prepareLiveV2(ctx, time.Now())
 	if err != nil {
@@ -122,7 +105,7 @@ func (st *streamSession) pushLiveV2(ctx context.Context) error {
 // committed only after the complete SSE frame has been written and flushed.
 func (st *streamSession) pushPreparedLiveV2(prepared *livePreparedPush) error {
 	if prepared.kind == livePreparedNoop {
-		st.commitLivePush(prepared, time.Time{})
+		st.commitLivePush(prepared, time.Now())
 		return nil
 	}
 	if err := st.writeEncodedEvent("ro-live", prepared.payload); err != nil {
@@ -181,7 +164,6 @@ func (st *streamSession) prepareLiveV2Data(ctx context.Context, data *templates.
 		Kind:   "delta",
 		G:      st.gen,
 		Seq:    next,
-		Screen: st.screen,
 		Rev:    result.Projection.revision,
 		RV:     liveWireResourceVersion(st.lastRV),
 		Schema: liveProjectionSchemaToken(&result.Projection),
@@ -226,7 +208,6 @@ func (st *streamSession) prepareLiveSnapshot(
 		Kind:   "snapshot",
 		G:      st.gen,
 		Seq:    next,
-		Screen: st.screen,
 		Rev:    candidate.revision,
 		RV:     liveWireResourceVersion(st.lastRV),
 		Schema: liveProjectionSchemaToken(candidate),
@@ -250,12 +231,11 @@ func (st *streamSession) commitLivePush(prepared *livePreparedPush, now time.Tim
 	st.dirty = false
 	st.deletedKeys = nil
 	st.forceSnapshot = false
+	st.lastPush = now
 	if prepared.kind == livePreparedNoop {
 		return
 	}
 	st.seq++
-	st.rev = prepared.projection.revision
-	st.lastPush = now
 	if prepared.kind == livePreparedSnapshot {
 		st.lastSnapshotAt = now
 		st.lastSnapshotBytes = len(prepared.payload)
@@ -354,10 +334,6 @@ func liveWireHTML(html string) bool {
 	return html != "" && len(html) <= streamMaxFragmentBytes && utf8.ValidString(html)
 }
 
-func validLiveScreen(screen string) bool {
-	return screen != "" && len(screen) <= streamMaxScreenBytes && utf8.ValidString(screen) && !liveHasControls(screen)
-}
-
 func liveWireResourceVersion(rv string) string {
 	if rv == "" || len(rv) > streamMaxResourceVersionBytes || !utf8.ValidString(rv) || liveHasControls(rv) {
 		return ""
@@ -378,7 +354,7 @@ func liveHasControls(value string) bool {
 // that merely leave the current filter projection. The set is bounded; once it
 // cannot classify safely, the next v2 push is forced to a full snapshot.
 func (st *streamSession) noteWatchMutation(ev *kube.WatchEvent) {
-	if st.protocol != 2 || ev == nil || (ev.Type != kube.WatchDeleted && ev.Type != kube.WatchAdded) {
+	if ev == nil || (ev.Type != kube.WatchDeleted && ev.Type != kube.WatchAdded) {
 		return
 	}
 	// Kubernetes watch predicate semantics map old-match/new-no-match to a
@@ -434,7 +410,6 @@ func (st *streamSession) terminalLiveV2(reason string) {
 		Kind:   "terminal",
 		G:      st.gen,
 		Seq:    next,
-		Screen: st.screen,
 		Reason: reason,
 	}
 	if st.projection.initialized {

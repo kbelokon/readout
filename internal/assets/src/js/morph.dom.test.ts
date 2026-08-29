@@ -3,11 +3,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const dependencies = vi.hoisted(() => ({
+    cancelListProjectionSwap: vi.fn(),
     prepareListProjectionSwap: vi.fn(),
     virtualizePrepareSwap: vi.fn(),
 }));
 
 vi.mock('./list-projection.js', () => ({
+    cancelListProjectionSwap: dependencies.cancelListProjectionSwap,
     prepareListProjectionSwap: dependencies.prepareListProjectionSwap,
 }));
 
@@ -213,6 +215,30 @@ describe('ro-morph vendor guards and extension', () => {
             morphStyle: 'innerHTML',
             ignoreActiveValue: true,
         });
+        expect(dependencies.cancelListProjectionSwap).not.toHaveBeenCalled();
+    });
+
+    test('cancels the matching list preparation when Idiomorph throws synchronously', async () => {
+        const failure = new Error('synchronous morph failure');
+        const vendor = installVendors();
+        vendor.morph.mockImplementationOnce(() => {
+            throw failure;
+        });
+        await importMorph();
+        const target = document.createElement('div');
+        target.id = 'resource-list-content';
+        const fragment = document.createDocumentFragment();
+        fragment.append(document.createElement('table'));
+
+        expect(() => vendor.extension().handleSwap('morph', target, fragment)).toThrow(failure);
+
+        expect(dependencies.cancelListProjectionSwap).toHaveBeenCalledExactlyOnceWith(fragment);
+        expect(dependencies.virtualizePrepareSwap.mock.invocationCallOrder[0]).toBeLessThan(
+            vendor.morph.mock.invocationCallOrder[0] as number,
+        );
+        expect(vendor.morph.mock.invocationCallOrder[0]).toBeLessThan(
+            dependencies.cancelListProjectionSwap.mock.invocationCallOrder[0] as number,
+        );
     });
 });
 

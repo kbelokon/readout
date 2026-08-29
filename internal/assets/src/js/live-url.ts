@@ -32,48 +32,13 @@ export function mintLiveGeneration(cryptoSource: Crypto = window.crypto): string
     return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function decodedQueryKey(raw: string): string | null {
-    try {
-        return decodeURIComponent(raw.replaceAll('+', ' '));
-    } catch {
-        return null;
-    }
-}
-
-// Remove every decoded `g` key while retaining every surviving pair byte for
-// byte (including malformed escapes, bare keys, duplicates, and empty pairs).
-export function stripLiveGenerationQuery(rawQuery: string): string {
-    return rawQuery
-        .split('&')
-        .filter((pair) => decodedQueryKey(pair.split('=', 1)[0]) !== 'g')
-        .join('&');
-}
-
 function withRawQuery(pathname: string, rawQuery: string): string {
     return rawQuery === '' ? pathname : `${pathname}?${rawQuery}`;
 }
 
-function splitRawQuery(path: string): [pathname: string, rawQuery: string] {
-    const queryStart = path.indexOf('?');
-    return queryStart === -1 ? [path, ''] : [path.slice(0, queryStart), path.slice(queryStart + 1)];
-}
-
 export function liveStreamBaseForURL(url: URL): string {
     const pathname = `${url.pathname.replace(/\/+$/, '')}/_stream`;
-    return withRawQuery(pathname, stripLiveGenerationQuery(url.search.slice(1)));
-}
-
-export function liveScreenForBase(base: string): string {
-    const [pathname, query] = splitRawQuery(base);
-    const screenPath = pathname.endsWith('/_stream')
-        ? pathname.slice(0, -'/_stream'.length)
-        : pathname;
-    return withRawQuery(screenPath, query);
-}
-
-export function liveRequestURL(base: string, generation: string): string {
-    if (!isClientLiveGeneration(generation)) throw new Error('invalid Live generation');
-    return `${base}${base.includes('?') ? '&' : '?'}g=${generation}`;
+    return withRawQuery(pathname, url.search.slice(1));
 }
 
 export function liveStreamBaseFromTableRequest(requestPath: unknown): string | null {
@@ -83,7 +48,7 @@ export function liveStreamBaseFromTableRequest(requestPath: unknown): string | n
         if (url.origin !== window.location.origin || !url.pathname.endsWith('/_table')) return null;
         return withRawQuery(
             `${url.pathname.slice(0, -'/_table'.length)}/_stream`,
-            stripLiveGenerationQuery(url.search.slice(1)),
+            url.search.slice(1),
         );
     } catch {
         return null;

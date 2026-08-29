@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 )
 
@@ -85,6 +86,65 @@ func waitDiscoverySignal(t *testing.T, ch <-chan struct{}, description string) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for %s", description)
 	}
+}
+
+func TestAwaitDiscoveryCutsContextlessCredentialWork(t *testing.T) {
+	t.Run("already canceled does not launch", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		called := false
+		_, err := awaitDiscovery(ctx, func() ([]*metav1.APIResourceList, error) {
+			called = true
+			return nil, nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("awaitDiscovery error = %v, want context.Canceled", err)
+		}
+		if called {
+			t.Fatal("already-canceled discovery launched context-less work")
+		}
+	})
+
+	t.Run("active call returns when canceled", func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		workerDone := make(chan struct{})
+		t.Cleanup(func() {
+			select {
+			case <-release:
+			default:
+				close(release)
+			}
+			waitDiscoverySignal(t, workerDone, "released discovery worker")
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		result := make(chan error, 1)
+		go func() {
+			_, err := awaitDiscovery(ctx, func() ([]*metav1.APIResourceList, error) {
+				close(started)
+				<-release
+				close(workerDone)
+				return nil, nil
+			})
+			result <- err
+		}()
+
+		waitDiscoverySignal(t, started, "context-less discovery worker")
+		start := time.Now()
+		cancel()
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("awaitDiscovery error = %v, want context.Canceled", err)
+			}
+			if elapsed := time.Since(start); elapsed > time.Second {
+				t.Fatalf("context-less discovery held canceled caller for %s", elapsed)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("context-less discovery held canceled caller")
+		}
+	})
 }
 
 // TestResourceTypesDiscoveryTimeout proves the ctx deadline cuts a discovery

@@ -544,7 +544,7 @@ func evObjCellView(kind, name string) cellView {
 // token carries the age-bucket colour; any remainder ("(first 41h ago)")
 // renders as the faint 11px second layer.
 func evAgeCellView(value string) cellView {
-	cv := cellView{Kind: cellEvAge}
+	cv := cellView{Kind: cellEvAge, Volatile: true}
 	first, rest, _ := strings.Cut(strings.TrimSpace(value), " ")
 	cv.Value = first
 	cv.EvAgeRest = strings.TrimSpace(rest)

@@ -113,31 +113,6 @@ export interface PrefsWire {
 }
 
 // ---------------------------------------------------------------------------
-// Live SSE frames -- internal/web/handlers_stream.go
-// (streamTablePayload / streamTerminalPayload).
-// ---------------------------------------------------------------------------
-// The `GET …/{plural}/_stream` endpoint pushes `event: ro-table` and
-// `event: ro-terminal` frames, each a single `data:` line of JSON. live.ts
-// parses them defensively (the fields arrive as `unknown` until checked); these
-// document the pinned `g`/`html` and `g`/`reason` tags.
-
-// ro-table: the client-minted generation echoed back (`g`) + the rendered
-// `_table` partial HTML on one line (`html`).
-export interface StreamTablePayloadWire {
-    g: string;
-    html: string;
-}
-
-// ro-terminal: the echoed generation (`g`) + the close reason -- one of
-// "idle" | "auth" | "watch-failed" | "shutdown". The client drops to polling
-// without reconnecting.
-export type StreamTerminalReason = 'idle' | 'auth' | 'watch-failed' | 'shutdown';
-export interface StreamTerminalPayloadWire {
-    g: string;
-    reason: StreamTerminalReason;
-}
-
-// ---------------------------------------------------------------------------
 // Row model + filter autocomplete -- CLIENT-side, see filters-parse.ts.
 // ---------------------------------------------------------------------------
 // The row model is captured from the FULL server fragment (never the windowed
@@ -182,10 +157,8 @@ declare global {
             renderedBounds(): { start: number; end: number; total: number };
             scrollToKey(key: string): boolean;
         };
-        // live.ts: discard observability plus a copied, saturating diagnostics
-        // snapshot (never a mutable reference to the transport state).
+        // live.ts: copied diagnostics snapshot, never mutable transport state.
         roLive: {
-            discards(): number;
             stats(): import('./live.js').LiveDebugStats;
         };
         // toasts.ts (bridged through init.ts): the detached-result notifier.

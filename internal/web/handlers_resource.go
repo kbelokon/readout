@@ -177,13 +177,11 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 	// 5s refresh interval into one junk entry per tick. Ticks and every other
 	// programmatic re-fetch mark themselves with RO-No-Push (readout.js sets it
 	// on requests issued by #resource-list-content itself; column toggles and
-	// later programmatic surfaces ride the same header), preload warm-ups carry
-	// HX-Preloaded, non-htmx requests have no HX-Request, and the loop is
-	// single-type-only -- none of those push.
+	// later programmatic surfaces ride the same header), non-htmx requests have
+	// no HX-Request, and the loop is single-type-only -- none of those push.
 	if isSingleListType(r.PathValue("plural")) &&
 		r.Header.Get("HX-Request") == "true" &&
-		r.Header.Get("RO-No-Push") == "" &&
-		r.Header.Get("HX-Preloaded") != "true" {
+		r.Header.Get("RO-No-Push") == "" {
 		w.Header().Set("HX-Push-Url", resourceListBaseURL(r.URL).String())
 	}
 	if isConditionalListRefresh(r) && ifNoneMatch(r.Header.Values("If-None-Match"), etag) {

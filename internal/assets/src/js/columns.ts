@@ -137,12 +137,6 @@ function popFormMergedHref(form: HTMLFormElement): string {
 
 // --- dispatcher bindings ----------------------------------------------------
 export const columnsBindings: Binding[] = [
-    // Column-visibility popover: the ⊞ title-row button toggles the popover
-    // open/closed. Open state is derived from the DOM (a boosted body swap
-    // renders it closed). NOT stop:true -- C4's own [data-ro-cols-toggle] guard
-    // (the outside-click binding below) keeps the double-fire single, not a stop
-    // signal (listener-inventory C1/C4: both see the same click, no propagation
-    // stop between them).
     {
         event: 'click',
         selector: '[data-ro-cols-toggle]',
@@ -152,11 +146,6 @@ export const columnsBindings: Binding[] = [
             setColsPopOpen(!!pop && !pop.classList.contains('is-open'));
         },
     },
-    // A column checkbox row: flip the checkbox optimistically, then commit the
-    // COMPLETE hidden set (as the user now sees it) to the ro_prefs cookie and
-    // re-render through the container's own programmatic path -- cookie-state,
-    // not URL-state: RO-No-Push, zero history entries. The identity row
-    // is a disabled <button>, so its clicks never fire.
     {
         event: 'click',
         selector: '[data-ro-action="toggle-column"]',
@@ -172,12 +161,6 @@ export const columnsBindings: Binding[] = [
         },
         stop: true,
     },
-    // C4: a click outside the popover (and not on its ⊞ opener) closes it -- the
-    // same dismissal contract the autocomplete dropdown uses. The
-    // [data-ro-cols-toggle] escape: when the ⊞ toggle is clicked WHILE open, the
-    // toggle binding above already set colsPopOpen=false (closed), and this
-    // guard makes this binding a no-op so it does NOT re-toggle (no double-fire /
-    // no reopen). No selector (it keys off the flag + the closest() escapes).
     {
         event: 'click',
         handler: (event) => {
@@ -191,11 +174,6 @@ export const columnsBindings: Binding[] = [
             setColsPopOpen(false);
         },
     },
-    // form.ro-pop-form (the popover's labelcols/selector form): intercept and
-    // MERGE into the live query, riding the v2 loop exactly like a chip commit
-    // (issueFilterNavigation falls back to a plain navigation when the loop is
-    // unavailable). The native submit would rebuild the query from the round-trip
-    // hidden inputs alone and wipe every `?f=` chip.
     {
         event: 'submit',
         selector: 'form.ro-pop-form',

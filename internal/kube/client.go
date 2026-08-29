@@ -307,6 +307,33 @@ type contextResponseBody struct {
 	once   sync.Once
 }
 
+type discoveryResult struct {
+	lists []*metav1.APIResourceList
+	err   error
+}
+
+// awaitDiscovery gives the context-less client-go discovery call an outer
+// cancellation boundary. The transport above cancels real HTTP work and owns
+// response bodies, but an exec credential plugin can block before RoundTrip and
+// does not accept the request context. A buffered handoff lets that worker exit
+// later without retaining the caller when the context wins first.
+func awaitDiscovery(ctx context.Context, discover func() ([]*metav1.APIResourceList, error)) ([]*metav1.APIResourceList, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("kube discovery: %w", err)
+	}
+	resultCh := make(chan discoveryResult, 1)
+	go func() {
+		lists, err := discover()
+		resultCh <- discoveryResult{lists: lists, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("kube discovery: %w", ctx.Err())
+	case result := <-resultCh:
+		return result.lists, result.err
+	}
+}
+
 func (body *contextResponseBody) Close() error {
 	err := body.ReadCloser.Close()
 	body.once.Do(func() {
@@ -335,7 +362,10 @@ func (c *Client) discoverResources(ctx context.Context) ([]*metav1.APIResourceLi
 	if err != nil {
 		return nil, err
 	}
-	_, lists, err := disco.ServerGroupsAndResources()
+	lists, err := awaitDiscovery(ctx, func() ([]*metav1.APIResourceList, error) {
+		_, lists, discoverErr := disco.ServerGroupsAndResources()
+		return lists, discoverErr
+	})
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, fmt.Errorf("kube discovery: %w", ctxErr)
 	}

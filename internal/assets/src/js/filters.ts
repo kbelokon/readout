@@ -94,28 +94,11 @@ interface AppliedLiveFilter {
 
 let appliedLiveFilter: AppliedLiveFilter | null = null;
 
-// Opaque memo checkpoint used by the synchronous Live v2 transaction. A
-// failed reconcile may already have memoized the candidate revision; restoring
-// this token prevents the next retry from falsely treating that abandoned
-// candidate as applied.
-export interface LiveNameFilterCheckpoint {
-    readonly applied: AppliedLiveFilter | null;
-}
-
-export function takeLiveNameFilterCheckpoint(): LiveNameFilterCheckpoint {
-    return { applied: appliedLiveFilter };
-}
-
-export function restoreLiveNameFilterCheckpoint(checkpoint: LiveNameFilterCheckpoint): void {
-    appliedLiveFilter = checkpoint.applied;
-}
-
 // applyLiveNameFilter narrows the rows to the names containing the draft text,
 // entirely client-side. The MATCH (liveNameMatchKeys, filters-parse.ts) runs on
 // the full row model; only the application toggles classes on whatever rows are
 // rendered. A draft containing an operator is a chip in progress -- no live
-// narrowing. Exported for legacy.js's htmx:afterSwap pipeline (re-derive from the
-// surviving draft after a morph).
+// narrowing. The shared post-list-update pipeline re-derives it after changes.
 export function applyLiveNameFilter(): void {
     const content = document.getElementById('resource-list-content');
     if (!content) {
@@ -319,7 +302,7 @@ function moveFilterACActive(delta: number): void {
 }
 
 // updateFilterAC re-derives the dropdown from the current draft. Exported for
-// legacy.js's htmx:afterSwap pipeline (re-open mid-draft after a morph).
+// the shared post-list-update pipeline (re-open mid-draft after a change).
 export function updateFilterAC(): void {
     const input = document.getElementById('ro-filter-input') as HTMLInputElement | null;
     if (!input) {

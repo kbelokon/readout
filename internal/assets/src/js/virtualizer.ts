@@ -16,9 +16,8 @@
 // module is the DOM + state machine around it: measuring, building spacers,
 // re-rendering the slice, and the morph-adoption pipeline.
 //
-// Morphs (ALL swap sources -- refresh tick, sort/filter swap, Live push): a
-// >threshold fragment's rows NEVER ride the morph. The ro-morph handleSwap (in
-// legacy.js) hands them to virtualizePrepareSwap, which detaches them for
+// HTMX morphs (refresh, sort and filter): a >threshold fragment's rows NEVER
+// ride the morph. morph.ts hands them to virtualizePrepareSwap, which detaches them for
 // adoption and leaves height-preserving spacers in the fragment. After the morph
 // lands, virtualizeAfterSwap adopts the new full row set and re-renders the
 // window -- selection/focus re-key by identity exactly like every other swap,
@@ -89,14 +88,6 @@ interface HistoryRecoveryPending {
     tbody: HTMLTableSectionElement;
 }
 
-// Opaque rollback token for the synchronous Live v2 projection transaction.
-// It intentionally snapshots geometry/state only; list-projection owns the
-// canonical rows and the transaction's DOM journal owns tbody child order.
-export interface VirtualizerCheckpoint {
-    readonly state: VirtState;
-    readonly historyRecovery: HistoryRecoveryPending | null;
-}
-
 const virtState: VirtState = {
     active: false,
     visible: [],
@@ -119,21 +110,6 @@ let historyRecoveryPending: HistoryRecoveryPending | null = null;
 
 export function virtualizerActive(): boolean {
     return virtState.active && virtState.tbody?.isConnected === true;
-}
-
-export function takeVirtualizerCheckpoint(): VirtualizerCheckpoint {
-    return {
-        // Filter reconciliation replaces `visible`; it never mutates this
-        // array or the width pins in place. Retaining the references makes the
-        // common one-row Live transaction O(1) before its intentional rewindow.
-        state: { ...virtState },
-        historyRecovery: historyRecoveryPending,
-    };
-}
-
-export function restoreVirtualizerCheckpoint(checkpoint: VirtualizerCheckpoint): void {
-    Object.assign(virtState, checkpoint.state);
-    historyRecoveryPending = checkpoint.historyRecovery;
 }
 
 function virtReset(): void {
@@ -326,11 +302,13 @@ export function virtualizeInit(): void {
     ensureListProjection(content);
     const rows = listProjectionRows();
     if (rows.length === 0) {
-        virtReset(); // a v1 multi-type page: no identity rows -> no windowing
+        virtReset(); // no identity rows -> no windowing
         return;
     }
     historyRecoveryPending = null;
-    virtReset();
+    // Every engagement field below is replaced from the fresh full render. The
+    // only state owned by an abandoned prepare is its captured scroll offset.
+    virtState.pendingScrollY = null;
     virtState.table = table;
     virtState.tbody = tbody;
     virtState.topSpacer = virtMakeSpacer();
@@ -473,6 +451,17 @@ export function virtualizeOnFilterChange(): void {
     virtRenderWindow();
 }
 
+// The shared post-update pipeline has already re-rendered the current window.
+// Diff only upserted pre-morph rows; no second re-window is needed.
+export function virtualizeAfterDelta(
+    previousByKey: ReadonlyMap<string, HTMLElement>,
+    focusKey: string | null = null,
+): void {
+    if (!virtualizerActive()) return;
+    if (focusKey) virtualizeRevealKey(focusKey);
+    virtFlashChangedCells(previousByKey);
+}
+
 // virtMoveFocus is the j/k walker while windowed: it steps through the FULL
 // visible row list (the DOM only holds the window), scrolls the window to the
 // target row, and hands the key to the identity focus store. Imported by
@@ -500,10 +489,23 @@ function virtualizeScrollToIndex(index: number): void {
     const topbar = document.querySelector('header.ro-topbar');
     const topMin = topbar ? topbar.getBoundingClientRect().bottom : 0;
     const delta = scrollAdjustToReveal(rowTop, virtState.rowH, topMin, window.innerHeight);
-    if (delta !== 0) {
-        window.scrollBy(0, delta);
-    }
+    if (delta === 0) return;
+    window.scrollBy(0, delta);
     virtRenderWindow();
+}
+
+// A Live reorder may move the row containing the real active descendant outside
+// the current slice. Render that canonical key before list-projection restores it.
+export function virtualizeRevealKey(key: string): boolean {
+    if (!virtualizerActive()) return false;
+    const index = virtState.visible.findIndex((row) => row.dataset.key === key);
+    if (index === -1) return false;
+    const row = virtState.visible[index] as HTMLElement;
+    // A buffered row can be connected while still sitting beyond the actual
+    // viewport. The geometry helper is the authority for both scrolling and the
+    // synchronous re-window needed before focus restoration.
+    virtualizeScrollToIndex(index);
+    return row.isConnected;
 }
 
 // virtRows / virtVisible / virtRowByKey -- the full-set readers keyboard.ts /

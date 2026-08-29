@@ -120,6 +120,7 @@ test('boosted chrome navigation issues one dynamic request across mousedown and 
   page,
 }) => {
   await page.goto(PODS);
+  await page.clock.install();
 
   const serviceRequests: string[] = [];
   page.on('request', (request) => {
@@ -131,7 +132,7 @@ test('boosted chrome navigation issues one dynamic request across mousedown and 
   const services = page.locator(`a[href="${SERVICES}"]`).first();
   await services.hover();
   await page.mouse.down();
-  await page.waitForTimeout(350);
+  await page.clock.runFor(350);
   expect(serviceRequests).toHaveLength(0);
 
   const response = page.waitForResponse((candidate) => {

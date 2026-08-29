@@ -31,7 +31,6 @@ type testLiveEnvelope struct {
 	Kind     string               `json:"kind"`
 	G        string               `json:"g"`
 	Seq      uint64               `json:"seq"`
-	Screen   string               `json:"screen"`
 	Rev      string               `json:"rev"`
 	RV       string               `json:"rv"`
 	Schema   string               `json:"schema"`
@@ -45,9 +44,7 @@ func newLiveV2TestSession(renderers streamLiveRenderers) *streamSession {
 	tuning.checkpointInterval = 0
 	tuning.checkpointDeltas = 0
 	return &streamSession{
-		protocol:  2,
 		gen:       "generation",
-		screen:    "/clusters/test/namespaces/default/pods?sort=Name",
 		lastRV:    "101",
 		tuning:    tuning,
 		dirty:     true,
@@ -220,8 +217,8 @@ func TestStreamLiveV2InitialSnapshotCarriesSchemaAndNoReason(t *testing.T) {
 	}
 
 	st.commitLivePush(&prepared, now)
-	if st.seq != 1 || st.rev != envelope.Rev || st.projection.revision != envelope.Rev || st.lastSnapshotBytes != len(prepared.payload) || st.lastSnapshotAt != now {
-		t.Fatalf("snapshot commit state is inconsistent: seq=%d rev=%q bytes=%d at=%s", st.seq, st.rev, st.lastSnapshotBytes, st.lastSnapshotAt)
+	if st.seq != 1 || st.projection.revision != envelope.Rev || st.lastSnapshotBytes != len(prepared.payload) || st.lastSnapshotAt != now {
+		t.Fatalf("snapshot commit state is inconsistent: seq=%d rev=%q bytes=%d at=%s", st.seq, st.projection.revision, st.lastSnapshotBytes, st.lastSnapshotAt)
 	}
 }
 
@@ -301,8 +298,8 @@ func TestStreamLiveV2SmallListDeltaIncludesCompleteCard(t *testing.T) {
 		t.Fatalf("row/card renders = %d/%d, want 1/1", probe.rowCalls, probe.cardCalls)
 	}
 	st.commitLivePush(&prepared, now.Add(time.Second))
-	if st.seq != 2 || st.deltasSinceSnapshot != 1 || st.rev != envelope.Rev || st.dirty {
-		t.Fatalf("delta commit state seq=%d deltas=%d rev=%q dirty=%t", st.seq, st.deltasSinceSnapshot, st.rev, st.dirty)
+	if st.seq != 2 || st.deltasSinceSnapshot != 1 || st.projection.revision != envelope.Rev || st.dirty {
+		t.Fatalf("delta commit state seq=%d deltas=%d rev=%q dirty=%t", st.seq, st.deltasSinceSnapshot, st.projection.revision, st.dirty)
 	}
 }
 
@@ -333,8 +330,7 @@ func TestStreamLiveV2SemanticNoopDoesNotAdvanceAndNextDeltaUsesCommittedBase(t *
 	now := time.Unix(1_800_000_300, 0)
 	initial := prepareInitialLiveSnapshot(t, st, &before, now)
 	st.commitLivePush(&initial, now)
-	base := st.rev
-	lastPush := st.lastPush
+	base := st.projection.revision
 	st.dirty = true
 	st.deletedKeys = map[string]struct{}{"cluster/default/already-filtered": {}}
 
@@ -348,9 +344,10 @@ func TestStreamLiveV2SemanticNoopDoesNotAdvanceAndNextDeltaUsesCommittedBase(t *
 	if noop.kind != livePreparedNoop || len(noop.payload) != 0 {
 		t.Fatalf("duration/stale prepared = %d bytes=%d, want no-op", noop.kind, len(noop.payload))
 	}
-	st.commitLivePush(&noop, now.Add(time.Hour))
-	if st.seq != 1 || st.rev != base || st.lastPush != lastPush || st.dirty || st.deletedKeys != nil {
-		t.Fatalf("no-op advanced wire state: seq=%d rev=%q lastPush=%s dirty=%t deletes=%v", st.seq, st.rev, st.lastPush, st.dirty, st.deletedKeys)
+	noopAt := now.Add(time.Hour)
+	st.commitLivePush(&noop, noopAt)
+	if st.seq != 1 || st.projection.revision != base || st.lastPush != noopAt || st.dirty || st.deletedKeys != nil {
+		t.Fatalf("no-op commit state: seq=%d rev=%q lastPush=%s dirty=%t deletes=%v", st.seq, st.projection.revision, st.lastPush, st.dirty, st.deletedKeys)
 	}
 	probe.wantNoRenders(t)
 
@@ -934,8 +931,10 @@ func TestStreamMetricsRefreshTimeoutAllowsNextPollRecovery(t *testing.T) {
 			return false
 		}
 	}, func(tuning *streamTuning) {
-		tuning.metricsPoll = 20 * time.Millisecond
-		tuning.metricsRequestTimeout = 120 * time.Millisecond
+		// Keep the recovery poll well after the timed-out attempt's empty-state
+		// push so the stale-clear behavior is independently observable.
+		tuning.metricsPoll = 300 * time.Millisecond
+		tuning.metricsRequestTimeout = 80 * time.Millisecond
 		tuning.heartbeat = 0
 		tuning.maxLifetime = 5 * time.Second
 		tuning.idleCap = 5 * time.Second
@@ -949,19 +948,22 @@ func TestStreamMetricsRefreshTimeoutAllowsNextPollRecovery(t *testing.T) {
 	req.Header.Set(streamGenerationHeader, "metrics-timeout-recovery")
 	stream := openStreamRequest(t, req)
 	initial := decodeFrame(t, stream.requireEvent(t, "ro-live", 5*time.Second))
-	if initial.Kind != "snapshot" || initial.Snapshot == nil {
+	if initial.Kind != "snapshot" || initial.Snapshot == nil || !strings.Contains(initial.Snapshot.HTML, "250m") {
 		t.Fatalf("initial metrics frame = %+v, want snapshot", initial)
 	}
 
 	postStreamScript(t, fake.URL, `{"events":[{"path":"/apis/metrics.k8s.io/v1beta1/namespaces/default/pods","type":"MODIFIED","object":{"kind":"PodMetrics","apiVersion":"metrics.k8s.io/v1beta1","metadata":{"name":"nginx","namespace":"default"},"containers":[{"name":"nginx","usage":{"cpu":"900m","memory":"128Mi"}}]}}]}`)
 	requireSignal(t, refreshStarted, "stalled metrics refresh")
-	// Several ticker edges pass while attempt two is still inside its request
-	// budget. None may open a concurrent poll.
-	time.Sleep(50 * time.Millisecond)
+	// The next ticker edge is later than this attempt's request budget, so no
+	// concurrent poll can mask the timeout transition.
+	requireSignal(t, refreshCanceled, "stalled metrics refresh timeout")
 	if got := metricsCalls.Load(); got != 2 {
 		t.Fatalf("metrics calls during one in-flight refresh = %d, want 2", got)
 	}
-	requireSignal(t, refreshCanceled, "stalled metrics refresh timeout")
+	cleared := decodeFrame(t, stream.requireEvent(t, "ro-live", 3*time.Second))
+	if cleared.Kind != "delta" || cleared.Delta == nil || strings.Contains(cleared.HTML, "250m") || strings.Contains(cleared.HTML, "900m") {
+		t.Fatalf("metrics timeout frame = %+v, want a stale-value clearing delta", cleared)
+	}
 	requireSignal(t, recoveryStarted, "next metrics poll after timeout")
 
 	frame := decodeFrame(t, stream.requireEvent(t, "ro-live", 3*time.Second))
@@ -1020,7 +1022,7 @@ func TestStreamHandshakeDiscoveryTimeoutReturns502AndReleasesCap(t *testing.T) {
 		tuning.handshakeTimeout = 50 * time.Millisecond
 	})
 	startedAt := time.Now()
-	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=discovery-timeout")
+	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "discovery-timeout")
 	defer func() { _ = resp.Body.Close() }()
 	if elapsed := time.Since(startedAt); elapsed > time.Second {
 		t.Fatalf("discovery timeout held stream cap for %s", elapsed)
@@ -1050,7 +1052,7 @@ func TestStreamHandshakeInitialListTimeoutReturns502AndReleasesCap(t *testing.T)
 		tuning.handshakeTimeout = 50 * time.Millisecond
 	})
 	startedAt := time.Now()
-	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=list-timeout")
+	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "list-timeout")
 	defer func() { _ = resp.Body.Close() }()
 	if elapsed := time.Since(startedAt); elapsed > time.Second {
 		t.Fatalf("initial LIST timeout held stream cap for %s", elapsed)
@@ -1211,8 +1213,8 @@ func TestStreamLiveV2WriteAndFlushAreTransactional(t *testing.T) {
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("write error = %v, want %v", err, tc.wantErr)
 			}
-			if st.seq != 0 || st.projection.initialized || st.rev != "" || !st.dirty || len(st.deletedKeys) != 1 || st.lastSnapshotBytes != 0 || !st.lastSnapshotAt.IsZero() {
-				t.Fatalf("failed frame committed state: seq=%d init=%t rev=%q dirty=%t deletes=%d bytes=%d at=%s", st.seq, st.projection.initialized, st.rev, st.dirty, len(st.deletedKeys), st.lastSnapshotBytes, st.lastSnapshotAt)
+			if st.seq != 0 || st.projection.initialized || !st.dirty || len(st.deletedKeys) != 1 || st.lastSnapshotBytes != 0 || !st.lastSnapshotAt.IsZero() {
+				t.Fatalf("failed frame committed state: seq=%d init=%t dirty=%t deletes=%d bytes=%d at=%s", st.seq, st.projection.initialized, st.dirty, len(st.deletedKeys), st.lastSnapshotBytes, st.lastSnapshotAt)
 			}
 		})
 	}
@@ -1256,8 +1258,8 @@ func TestStreamLiveV2WriteAndFlushAreTransactional(t *testing.T) {
 	if err := deltaSession.pushPreparedLiveV2(&deltaPrepared); !errors.Is(err, flushBoom) {
 		t.Fatalf("delta flush error = %v, want %v", err, flushBoom)
 	}
-	if deltaSession.seq != 1 || deltaSession.projection.revision != baseRevision || deltaSession.rev != baseRevision || deltaSession.deltasSinceSnapshot != 0 || deltaSession.lastPush != baseLastPush || !deltaSession.dirty || len(deltaSession.deletedKeys) != 1 {
-		t.Fatalf("failed delta committed state: seq=%d projection=%q rev=%q deltas=%d lastPush=%s dirty=%t deletes=%d", deltaSession.seq, deltaSession.projection.revision, deltaSession.rev, deltaSession.deltasSinceSnapshot, deltaSession.lastPush, deltaSession.dirty, len(deltaSession.deletedKeys))
+	if deltaSession.seq != 1 || deltaSession.projection.revision != baseRevision || deltaSession.deltasSinceSnapshot != 0 || deltaSession.lastPush != baseLastPush || !deltaSession.dirty || len(deltaSession.deletedKeys) != 1 {
+		t.Fatalf("failed delta committed state: seq=%d projection=%q deltas=%d lastPush=%s dirty=%t deletes=%d", deltaSession.seq, deltaSession.projection.revision, deltaSession.deltasSinceSnapshot, deltaSession.lastPush, deltaSession.dirty, len(deltaSession.deletedKeys))
 	}
 }
 
@@ -1315,9 +1317,6 @@ func TestStreamLiveV2TerminalUsesCommittedSchemaAndSanitizesRV(t *testing.T) {
 }
 
 func TestStreamLiveV2ClientCaps(t *testing.T) {
-	if !validLiveScreen(strings.Repeat("s", streamMaxScreenBytes)) || validLiveScreen(strings.Repeat("s", streamMaxScreenBytes+1)) || validLiveScreen("bad\u007f") {
-		t.Fatal("screen boundary/control validation mismatch")
-	}
 	if got := liveWireResourceVersion(strings.Repeat("r", streamMaxResourceVersionBytes)); got == "" {
 		t.Fatal("exact resourceVersion boundary was omitted")
 	}
@@ -1387,94 +1386,6 @@ func TestStreamLiveV2SequenceStopsAtJavaScriptSafeInteger(t *testing.T) {
 	}
 	if st.seq != streamMaxSafeSequence || st.projection.initialized || !st.dirty || len(st.deletedKeys) != 1 {
 		t.Fatalf("sequence exhaustion committed state seq=%d init=%t dirty=%t deletes=%d", st.seq, st.projection.initialized, st.dirty, len(st.deletedKeys))
-	}
-}
-
-func TestStreamLiveV2OversizedScreenIs414BeforeHandshake(t *testing.T) {
-	ts, _ := newStreamFixture(t)
-	path := "/clusters/test/namespaces/default/pods/_stream?f=" + strings.Repeat("x", streamMaxScreenBytes)
-	req, err := http.NewRequest(http.MethodGet, ts.URL+path, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set(streamVersionHeader, "2")
-	req.Header.Set(streamGenerationHeader, "screen")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	assertStreamPreHandshakeResponse(t, resp)
-	if resp.StatusCode != http.StatusRequestURITooLong {
-		t.Fatalf("oversized screen status = %d, want 414", resp.StatusCode)
-	}
-}
-
-func TestStreamV1BypassesAllV2Renderers(t *testing.T) {
-	fake, err := fakeapi.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(fake.Close)
-	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
-	cluster, ok := app.manager.Get("test")
-	if !ok {
-		t.Fatal("test cluster missing")
-	}
-	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/_stream?g=legacy", nil)
-	req.SetPathValue("cluster", "test")
-	req.SetPathValue("namespace", "default")
-	req.SetPathValue("plural", "pods")
-	client := app.kubeClient(req, cluster)
-	rt, err := client.FindResource(req.Context(), "pods", true, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	table, err := client.Table(req.Context(), &rt, kube.ListOptions{Namespace: "default"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := &liveFaultWriter{writeN: -1}
-	panicRenderer := func() { panic("v1 entered v2 renderer") }
-	st := &streamSession{
-		srv:       app,
-		w:         w,
-		rc:        http.NewResponseController(w),
-		renderReq: streamRenderRequest(req),
-		client:    client,
-		rt:        rt,
-		cluster:   "test",
-		listNS:    "default",
-		protocol:  1,
-		gen:       "legacy",
-		snapshot:  table,
-		tuning:    defaultStreamTuning(),
-		renderers: streamLiveRenderers{
-			full: func(context.Context, *templates.ListData) (string, error) {
-				panicRenderer()
-				return "", nil
-			},
-			projection: liveProjectionRenderers{
-				row: func(context.Context, *templates.ListData, *templates.TableData, *templates.TableRow) (string, error) {
-					panicRenderer()
-					return "", nil
-				},
-				card: func(context.Context, *templates.ListData, *templates.TableData, *templates.TableRow) (string, error) {
-					panicRenderer()
-					return "", nil
-				},
-				region: func(context.Context, liveProjectionRegion, *templates.ListData, *templates.TableData) (string, error) {
-					panicRenderer()
-					return "", nil
-				},
-			},
-		},
-	}
-	if err := st.push(req.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if st.projection.initialized || st.seq != 0 || !strings.Contains(w.buffer.String(), "event: ro-table") || strings.Contains(w.buffer.String(), "event: ro-live") {
-		t.Fatalf("legacy push touched v2 state/wire: seq=%d init=%t wire=%.120s", st.seq, st.projection.initialized, w.buffer.String())
 	}
 }
 

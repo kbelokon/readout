@@ -1,66 +1,73 @@
 package web
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
-	"embed"
 	"encoding/binary"
-	"fmt"
-	"io/fs"
-	"sort"
+	"hash"
+	"runtime/debug"
 	"sync"
 )
 
-// resourceListRendererSources deliberately embeds the templ sources, generated
-// renderers, and Go helpers as validator metadata. The roughly 760 KiB payload is
-// a bounded binary-size tradeoff: a template-only change must invalidate an ETag
-// automatically, including in local "dev" builds that have no unique version.
-//
-//go:embed templates/*.templ templates/*.go
-var resourceListRendererSources embed.FS
+const resourceListRendererBuildDomain = "readout.resource-list.renderer-build\x00"
 
 var cachedResourceListRendererFingerprint = sync.OnceValue(func() [sha256.Size]byte {
-	digest, _, err := fingerprintResourceListRendererSources(resourceListRendererSources)
-	if err != nil {
-		panic("fingerprint embedded resource-list renderers: " + err.Error())
+	info, _ := debug.ReadBuildInfo()
+	var nonce [sha256.Size]byte
+	if !cleanVCSRevision(info) {
+		if _, err := rand.Read(nonce[:]); err != nil {
+			panic("mint resource-list renderer nonce: " + err.Error())
+		}
 	}
-	return digest
+	return resourceListRendererBuildFingerprint(info, nonce)
 })
 
 func resourceListRendererFingerprint() [sha256.Size]byte {
 	return cachedResourceListRendererFingerprint()
 }
 
-// fingerprintResourceListRendererSources hashes the sorted path and bytes of
-// every top-level templates/*.templ and templates/*.go source. Length-prefixing
-// both parts keeps concatenation unambiguous. Returning the paths gives focused
-// tests an exact file-set seam without exposing it in production behavior.
-func fingerprintResourceListRendererSources(sourceFS fs.FS) ([sha256.Size]byte, []string, error) {
-	var paths []string
-	for _, pattern := range [...]string{"templates/*.templ", "templates/*.go"} {
-		matches, err := fs.Glob(sourceFS, pattern)
-		if err != nil {
-			return [sha256.Size]byte{}, nil, fmt.Errorf("glob %s: %w", pattern, err)
-		}
-		paths = append(paths, matches...)
+// resourceListRendererBuildFingerprint uses the linker-recorded VCS revision
+// for reproducible clean builds. Development and dirty builds intentionally get
+// a process nonce: their source tree has no stable build identity, while ETags
+// and Live revisions only need to agree inside this process.
+func resourceListRendererBuildFingerprint(info *debug.BuildInfo, nonce [sha256.Size]byte) [sha256.Size]byte {
+	digest := sha256.New()
+	_, _ = digest.Write([]byte(resourceListRendererBuildDomain))
+	if revision, clean := vcsRevision(info); clean {
+		writeFingerprintPart(digest, []byte("revision"))
+		writeFingerprintPart(digest, []byte(revision))
+	} else {
+		writeFingerprintPart(digest, []byte("process"))
+		writeFingerprintPart(digest, nonce[:])
 	}
-	sort.Strings(paths)
-	if len(paths) == 0 {
-		return [sha256.Size]byte{}, nil, fmt.Errorf("no resource-list renderer sources found")
-	}
+	return [sha256.Size]byte(digest.Sum(nil))
+}
 
-	hash := sha256.New()
-	var size [8]byte
-	for _, path := range paths {
-		data, err := fs.ReadFile(sourceFS, path)
-		if err != nil {
-			return [sha256.Size]byte{}, nil, fmt.Errorf("read %s: %w", path, err)
-		}
-		binary.BigEndian.PutUint64(size[:], uint64(len(path)))
-		_, _ = hash.Write(size[:])
-		_, _ = hash.Write([]byte(path))
-		binary.BigEndian.PutUint64(size[:], uint64(len(data)))
-		_, _ = hash.Write(size[:])
-		_, _ = hash.Write(data)
+func cleanVCSRevision(info *debug.BuildInfo) bool {
+	_, clean := vcsRevision(info)
+	return clean
+}
+
+func vcsRevision(info *debug.BuildInfo) (string, bool) {
+	if info == nil {
+		return "", false
 	}
-	return [sha256.Size]byte(hash.Sum(nil)), paths, nil
+	var revision string
+	modified := false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	return revision, revision != "" && !modified
+}
+
+func writeFingerprintPart(digest hash.Hash, value []byte) {
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+	_, _ = digest.Write(size[:])
+	_, _ = digest.Write(value)
 }

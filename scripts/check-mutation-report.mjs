@@ -1,8 +1,6 @@
-// Fail the mutation quality gate on any unresolved or incomplete mutant. One
-// exact Stryker hit-limit timeout may be retained as narrowly bounded evidence,
-// but remains explicitly undetermined rather than a behavioral kill.
+// Fail the mutation quality gate on any unresolved or incomplete mutant.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -31,9 +29,6 @@ const statusOrder = [
   'Pending',
 ];
 const directlyResolvedStatuses = new Set(['Killed', 'CompileError']);
-const maximumAcceptedTimeouts = 1;
-const maximumAcceptedTimeoutRatio = 0.002;
-const strykerHitLimitReasonPattern = /^Hit limit reached \(([1-9]\d*)\/([1-9]\d*)\)$/u;
 const schemaVersionPattern = /^[12](?:\.(?:0|[1-9]\d*)){0,2}$/u;
 
 function isObject(value) {
@@ -246,38 +241,6 @@ function summarize(files) {
   };
 }
 
-function acceptedTimeoutOutcome(files, mutantCount) {
-  const timeouts = files.flatMap(([fileName, file]) =>
-    file.mutants
-      .filter((mutant) => mutant.status === 'Timeout')
-      .map((mutant) => ({ fileName, mutant })),
-  );
-  if (timeouts.length === 0) return null;
-  assert(
-    timeouts.length <= maximumAcceptedTimeouts,
-    `unresolved mutation statuses: Timeout=${timeouts.length} ` +
-      `(at most ${maximumAcceptedTimeouts} exact hit-limit timeout is accepted)`,
-  );
-
-  const timeout = timeouts[0];
-  const reason = timeout.mutant.statusReason;
-  const reasonMatch = typeof reason === 'string' ? strykerHitLimitReasonPattern.exec(reason) : null;
-  assert(
-    reasonMatch !== null && BigInt(reasonMatch[1]) > BigInt(reasonMatch[2]),
-    `Timeout mutant ${timeout.fileName}#${timeout.mutant.id} is not an exact ` +
-      'Stryker hit-limit outcome',
-  );
-
-  const ratio = timeouts.length / mutantCount;
-  assert(
-    ratio <= maximumAcceptedTimeoutRatio,
-    `unresolved mutation statuses: Timeout=${timeouts.length} is ` +
-      `${(ratio * 100).toFixed(4)}% of all mutants, above the ` +
-      `${(maximumAcceptedTimeoutRatio * 100).toFixed(4)}% cap`,
-  );
-  return timeout;
-}
-
 function printSummary({ fileCounts, totalCounts }, schemaVersion, mutantCount, log) {
   log(
     `Mutation report schema ${schemaVersion}: ${fileCounts.length} files, ${mutantCount} mutants`,
@@ -285,7 +248,7 @@ function printSummary({ fileCounts, totalCounts }, schemaVersion, mutantCount, l
   log(
     `Directly killed: ${totalCounts.Killed}/${mutantCount} all generated mutants ` +
       `(${((totalCounts.Killed / mutantCount) * 100).toFixed(2)}%; ` +
-      'CompileError reported separately; any accepted Timeout is undetermined/non-direct)',
+      'CompileError reported separately)',
   );
   log('Statuses:');
   for (const status of statusOrder) {
@@ -308,22 +271,13 @@ export function checkMutationReport(reportRoot = repoRoot, log = console.log) {
     reportRoot,
   );
   const summary = summarize(files);
-  const acceptedTimeout = acceptedTimeoutOutcome(files, mutantCount);
   for (const { fileName, counts } of summary.fileCounts) {
     assert(counts.Killed > 0, `${fileName} has no behaviorally killed mutant`);
   }
   printSummary(summary, schemaVersion, mutantCount, log);
 
-  const allowedStatuses = new Set(directlyResolvedStatuses);
-  if (acceptedTimeout) {
-    allowedStatuses.add('Timeout');
-    log(
-      `Accepted undetermined/non-direct Timeout: ${acceptedTimeout.fileName}#` +
-        `${acceptedTimeout.mutant.id} (${acceptedTimeout.mutant.statusReason})`,
-    );
-  }
   const failures = statusOrder.filter(
-    (status) => !allowedStatuses.has(status) && summary.totalCounts[status] > 0,
+    (status) => !directlyResolvedStatuses.has(status) && summary.totalCounts[status] > 0,
   );
   if (failures.length > 0) {
     const details = failures.map((status) => `${status}=${summary.totalCounts[status]}`).join(', ');
@@ -336,7 +290,16 @@ export function checkMutationReport(reportRoot = repoRoot, log = console.log) {
   return summary;
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+export function isMutationReportCheckerMain(entryPath = process.argv[1]) {
+  if (!entryPath) return false;
+  try {
+    return realpathSync(entryPath) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMutationReportCheckerMain()) {
   try {
     checkMutationReport();
   } catch (error) {

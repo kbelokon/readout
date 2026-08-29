@@ -772,8 +772,8 @@ func TestListPartialFragmentCarriesCanonicalHrefs(t *testing.T) {
 // TestListPartialPushURLContract pins the table-loop history-push matrix on the
 // `_table` handler: ONLY a user-initiated htmx request gets HX-Push-Url, and
 // the pushed URL is the CANONICAL list path + the live query -- never the
-// partial URL. Ticks/programmatic re-fetches (RO-No-Push), preload warm-ups
-// (HX-Preloaded), non-htmx requests, and multi-type pages get no push:
+// partial URL. Ticks/programmatic re-fetches (RO-No-Push), non-htmx requests,
+// and multi-type pages get no push:
 // htmx pushes one history entry per header occurrence with no same-URL dedupe,
 // so any of those pushing would spray junk history entries.
 func TestListPartialPushURLContract(t *testing.T) {
@@ -807,12 +807,6 @@ func TestListPartialPushURLContract(t *testing.T) {
 		t.Fatalf("tick push = %q, want none (a 5s interval would spray history)", got)
 	}
 
-	// Preload warm-up: never a user gesture -> no push.
-	rec = tableGET(partial, map[string]string{"HX-Request": "true", "HX-Preloaded": "true"})
-	if got := rec.Header().Get("HX-Push-Url"); got != "" {
-		t.Fatalf("preload push = %q, want none", got)
-	}
-
 	// A non-htmx GET (curl, crawler): no push header.
 	rec = tableGET(partial, nil)
 	if got := rec.Header().Get("HX-Push-Url"); got != "" {
@@ -841,8 +835,8 @@ func TestListLoopReadoutJSContract(t *testing.T) {
 		"dataset.liveUrl === 'location'",  // the v2 container marker readout.js keys on
 		"'/_table'",                       // the tick derives the partial URL from location
 		"RO-No-Push",                      // programmatic requests opt out of history push
-		"userListRequestsInFlight",        // tick suppression while a user request runs
-		"containerListRequestsInFlight",   // no second container request while one runs (no htmx queue)
+		"listRequestsInFlight",            // one tracker owns both user and container requests
+		"listRequestTrackerSnapshot",      // Live and polling read the same request ownership
 		// In-flight tracking is xhr-Set based, NOT a counter: htmx dispatches
 		// htmx:afterRequest on the issuing element, so a boosted swap that
 		// detaches that element mid-request swallows the event (no document
@@ -877,31 +871,19 @@ func TestListLoopReadoutJSContract(t *testing.T) {
 	get(t, app, "/clusters/test/namespaces/default/pods,services", http.StatusOK).wantBodyExcludes("morph:{")
 }
 
-// TestLiveWrongPageGateReadoutJSContract pins the two layers that keep a
+// TestLiveWrongPageGateReadoutJSContract pins the early reset that keeps a
 // boosted list→list navigation from morphing the OLD resource's table into
-// the NEW page's container (waves E+F review). The beforeSwap teardown retires
+// the NEW page's container (waves E+F review). The beforeSwap reset retires
 // the old stream before HTMX replaces the body; the accepted body's afterSwap
-// then initializes its own stream synchronously before paint. Keep both layers
-// pinned needle-style here: besides guarding the current synchronous path, they
-// fail closed if a future extension delays body completion (no headless JS
-// runner in this suite; the roLive.discards seam is exercised end to end by
-// live.spec.ts).
+// then initializes its own stream synchronously before paint. Runtime causality
+// is covered in DOM/e2e tests; this bundle check pins only the public seam and
+// the structural body-swap reset.
 func TestLiveWrongPageGateReadoutJSContract(t *testing.T) {
 	js := readoutJS(t)
-	// Layer 1: the morph-time page-identity gate in liveHandleFrame — a frame
-	// whose stream identity no longer matches the live location is discarded,
-	// and every discard branch feeds the observability counter + seam.
-	for _, needle := range []string{
-		"const currentBase = liveStreamBase()", // capture one morph-time identity
-		"if (discard)",                         // reject either failed identity check
-		"liveDiscards",                         // the discard counter
-		"window.roLive",                        // the e2e observability seam
-	} {
-		if !strings.Contains(js, needle) {
-			t.Fatalf("readout.js live wrong-page protection missing %q", needle)
-		}
+	if !strings.Contains(js, "window.roLive") {
+		t.Fatal("readout.js lost the public Live observability seam")
 	}
-	// Layer 2 (structural): the body-swap hook tears the stream down at
+	// Structurally, the body-swap hook tears the stream down at
 	// htmx:beforeSwap, closing the gap before it opens. Pin the teardown
 	// INSIDE the body-target hook, not merely somewhere in the file: slice
 	// the hook out between its listener registration and the next
@@ -916,11 +898,10 @@ func TestLiveWrongPageGateReadoutJSContract(t *testing.T) {
 	}
 	hook := js[start : start+length]
 	for _, needle := range []string{
-		"target === document.body",  // the hook is body-swap-gated
-		"clearRowState",             // the pre-existing screen-change clear rides along
-		"liveTeardown()",            // the stream aborts at swap time
-		"liveState.status = 'idle'", // ...and the state machine resets
-		"liveState.streamPath = ''", // ...so liveApply reopens for the NEW page
+		"target === document.body", // the hook is body-swap-gated
+		"clearRowState",            // selection cannot cross screens
+		"clearListStale",           // stale state cannot cross screens
+		"liveResetPage()",          // aborts and invalidates the old page's Live work
 	} {
 		if !strings.Contains(hook, needle) {
 			t.Fatalf("htmx:beforeSwap body hook missing %q — the wrong-page gap is open structurally", needle)

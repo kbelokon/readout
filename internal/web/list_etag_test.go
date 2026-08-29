@@ -1,6 +1,7 @@
 package web
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -80,6 +81,40 @@ func TestResourceListETagSemanticNormalization(t *testing.T) {
 	}
 	if changedRenderer == base {
 		t.Fatalf("renderer fingerprint change kept ETag %q", base)
+	}
+}
+
+func TestResourceListETagIgnoresClockOnlyEventAge(t *testing.T) {
+	data := liveProjectionFixture(1)
+	row := &data.Tables[0].Rows[0]
+	row.ResourceVersion = "101"
+	row.Cells = append(row.Cells, templates.TableCell{
+		Kind: templates.CellEvAge, Value: "4m", Class: "age-new", ColClass: "cell-age", EvAgeRest: "(first 1h ago)", Volatile: true,
+	})
+	base, err := resourceListETag(&data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clockTick := cloneLiveProjectionFixture(&data)
+	clockTick.Tables[0].Rows[0].Cells[2].Value = "5m"
+	clockTick.Tables[0].Rows[0].Cells[2].Class = "age-mid"
+	clockTick.Tables[0].Rows[0].Cells[2].EvAgeRest = "(first 1h 1m ago)"
+	ticked, err := resourceListETag(&clockTick)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ticked != base {
+		t.Fatalf("clock-only Event age changed ETag: %q != %q", ticked, base)
+	}
+
+	clockTick.Tables[0].Rows[0].ResourceVersion = "102"
+	modified, err := resourceListETag(&clockTick)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modified == base {
+		t.Fatalf("modified Event resource kept ETag %q", base)
 	}
 }
 
@@ -223,14 +258,30 @@ func TestResourceListPartialETagEncodingAndHead(t *testing.T) {
 	})
 	assertNotModifiedListResponse(t, gzip304, etag)
 
-	head := serveListETagRequest(app, http.MethodHead, path, nil)
-	if head.Code != http.StatusOK {
-		t.Fatalf("HEAD status = %d, want 200", head.Code)
+	// net/http owns HEAD body suppression. Exercise that protocol seam through
+	// a real server rather than expecting ResponseRecorder to emulate it.
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+	headReq, err := http.NewRequest(http.MethodHead, ts.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if head.Body.Len() != 0 {
-		t.Fatalf("HEAD body = %d bytes, want empty", head.Body.Len())
+	head, err := (&http.Client{Transport: &http.Transport{DisableCompression: true}}).Do(headReq)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := head.Header().Get("ETag"); got != etag {
+	defer func() { _ = head.Body.Close() }()
+	headBody, err := io.ReadAll(head.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want 200", head.StatusCode)
+	}
+	if len(headBody) != 0 {
+		t.Fatalf("HEAD body = %d bytes, want empty", len(headBody))
+	}
+	if got := head.Header.Get("ETag"); got != etag {
 		t.Fatalf("HEAD ETag = %q, GET = %q", got, etag)
 	}
 
@@ -290,18 +341,8 @@ func assertResourceListValidatorHeaders(t *testing.T, rec *httptest.ResponseReco
 	if got := rec.Header().Get("ETag"); got != etag {
 		t.Fatalf("ETag = %q, want %q", got, etag)
 	}
-	for _, token := range []string{
-		"Accept-Encoding",
-		"Cache-Control",
-		"Cookie",
-		"Authorization",
-		"HX-Request",
-		"RO-No-Push",
-		"HX-Preloaded",
-	} {
-		if !headerHasToken(rec.Header().Values("Vary"), token) {
-			t.Fatalf("Vary = %q, want token %q", rec.Header().Values("Vary"), token)
-		}
+	if values := rec.Header().Values("Vary"); len(values) != 1 || !headerHasToken(values, "Accept-Encoding") {
+		t.Fatalf("Vary = %q, want only Accept-Encoding", values)
 	}
 }
 

@@ -285,20 +285,21 @@ func toTableData(t *tableView) templates.TableData {
 	for i := range t.Rows {
 		row := &t.Rows[i]
 		tr := templates.TableRow{
-			StatusClass:  row.StatusClass,
-			ClusterHref:  row.ClusterHref,
-			Cluster:      row.Cluster,
-			NsHref:       row.NsHref,
-			Namespace:    row.Namespace,
-			CreatedClass: row.CreatedClass,
-			CreatedText:  row.CreatedText,
-			Key:          row.Key,
-			DomID:        rowDomID(row.Key),
-			Name:         row.Name,
-			OpenHref:     row.OpenHref,
-			YAMLHref:     row.YAMLHref,
-			LogsHref:     row.LogsHref,
-			DownloadHref: row.DownloadHref,
+			StatusClass:     row.StatusClass,
+			ClusterHref:     row.ClusterHref,
+			Cluster:         row.Cluster,
+			NsHref:          row.NsHref,
+			Namespace:       row.Namespace,
+			ResourceVersion: row.ResourceVersion,
+			CreatedClass:    row.CreatedClass,
+			CreatedText:     row.CreatedText,
+			Key:             row.Key,
+			DomID:           rowDomID(row.Key),
+			Name:            row.Name,
+			OpenHref:        row.OpenHref,
+			YAMLHref:        row.YAMLHref,
+			LogsHref:        row.LogsHref,
+			DownloadHref:    row.DownloadHref,
 		}
 		if row.CreatedText != "" {
 			tr.CreatedTitle = "created " + row.CreatedText
@@ -311,6 +312,7 @@ func toTableData(t *tableView) templates.TableData {
 				Class:        cell.Class,
 				ColClass:     cell.ColClass,
 				Href:         cell.Href,
+				Volatile:     cell.Volatile,
 				Tone:         cell.Tone,
 				Ratio:        cell.Ratio,
 				Pulse:        cell.Pulse,

@@ -3,8 +3,7 @@ package web
 // handlers_stream.go is the server half of Live mode: the read-only
 // `GET …/{plural}/_stream` SSE endpoint. It keeps one UNFILTERED per-cluster
 // Table snapshot in memory, feeds it from a Table watch (kube.WatchTable), and
-// projects render-time list state from it. Legacy clients receive complete
-// `_table` re-renders in `event: ro-table`; negotiated v2 clients receive JSON
+// projects render-time list state from it. Clients receive JSON
 // snapshot/delta/terminal envelopes in `event: ro-live`. `f`/`sort`/columns
 // apply at render time, never to the kube snapshot,
 // so an object that starts (or stops) matching the active filter appears (or
@@ -14,7 +13,7 @@ package web
 // re-watch from the last seen resourceVersion with capped backoff (an EOF
 // storm terminates instead of spinning); 410 relists silently and pushes the
 // fresh table; auth expiry, the idle cap, a re-watch failure, and server
-// shutdown all emit `event: ro-terminal` with a reason before closing. New
+// shutdown all emit a terminal `event: ro-live` envelope before closing. New
 // streams beyond the cap get 429 BEFORE any SSE headers; watch-less kinds get
 // 204 (the client falls back to polling). Cleanup is part of the contract:
 // the watch reader goroutine and every timer are bound to the request
@@ -29,7 +28,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -100,12 +98,13 @@ func defaultStreamTuning() streamTuning {
 }
 
 const (
-	// streamCapMax bounds concurrent Live streams; the next stream beyond it
-	// gets 429 before SSE headers. Hardcoded by design — no config knob.
-	streamCapMax = 32
+	// streamCapMax bounds ordinary deployments. The in-process public demo gets
+	// a larger fixed cap so fakekube's expanded watch budget is reachable.
+	streamCapMax     = 32
+	demoStreamCapMax = 256
 
 	// streamMaxImmediateEOFs consecutive immediate EOFs are a re-watch
-	// failure (`ro-terminal` reason "watch-failed") — an EOF storm must not
+	// failure (terminal reason "watch-failed") — an EOF storm must not
 	// spin re-watch attempts forever.
 	streamMaxImmediateEOFs = 5
 
@@ -127,32 +126,15 @@ const (
 	// close the stream and fall back to the ordinary bounded polling path.
 	streamMaxEventBytes = 16 << 20
 
-	// A generation is reflected in every stream frame. Bound both the legacy
-	// query form and the v2 header form before the SSE handshake.
+	// A generation is reflected in every stream frame. Bound the v2 header
+	// before the SSE handshake.
 	streamMaxGenerationBytes = 64
 
 	streamVersionHeader    = "RO-Live-Version"
 	streamGenerationHeader = "RO-Live-Generation"
 )
 
-// streamTablePayload is the pinned `event: ro-table` data frame: the
-// client-minted generation echoed verbatim plus the rendered `_table`
-// partial. JSON encoding keeps the html on one line (control characters are
-// escaped), so a single SSE `data:` line carries the whole frame.
-type streamTablePayload struct {
-	G    string `json:"g"`
-	HTML string `json:"html"`
-}
-
-// streamTerminalPayload is the pinned `event: ro-terminal` frame: the echoed
-// generation plus the close reason — "idle", "auth", "watch-failed" or
-// "shutdown". The client closes without reconnecting and drops to polling.
-type streamTerminalPayload struct {
-	G      string `json:"g"`
-	Reason string `json:"reason"`
-}
-
-// streamLiveEnvelope is the negotiated v2 snapshot/delta/terminal envelope.
+// streamLiveEnvelope is the v2 snapshot/delta/terminal envelope.
 // Schema fingerprints the rendered contract independently from the semantic
 // revision; Delta is a closed patch over the last committed projection.
 type streamLiveEnvelope struct {
@@ -160,7 +142,6 @@ type streamLiveEnvelope struct {
 	Kind     string               `json:"kind"`
 	G        string               `json:"g"`
 	Seq      uint64               `json:"seq"`
-	Screen   string               `json:"screen"`
 	Rev      string               `json:"rev,omitempty"`
 	RV       string               `json:"rv,omitempty"`
 	Schema   string               `json:"schema,omitempty"`
@@ -174,37 +155,27 @@ type streamLiveSnapshot struct {
 }
 
 type liveStreamNegotiation struct {
-	version int
-	gen     string
+	gen string
 }
 
-// negotiateLiveStream keeps absence on the legacy v1 event/payload/query-g
-// contract. (The hardened JSON encoder intentionally changes HTML escaping,
-// not the decoded v1 shape.) Header v2 keeps its bounded unreserved-ASCII
-// generation as the sole authority and ignores legacy query g. Duplicate or
-// comma-folded negotiation headers are rejected before the SSE handshake.
+// negotiateLiveStream requires the v2 header contract. Duplicate,
+// comma-folded, or absent negotiation headers are rejected before the SSE
+// handshake; there is no legacy query-string generation fallback.
 func negotiateLiveStream(r *http.Request) (liveStreamNegotiation, int) {
 	versionValues, versionPresent := rawHeaderValues(r.Header, streamVersionHeader)
-	generationValues, _ := rawHeaderValues(r.Header, streamGenerationHeader)
-	if versionPresent {
-		if len(versionValues) != 1 || len(generationValues) != 1 || strings.Contains(versionValues[0], ",") || strings.Contains(generationValues[0], ",") {
-			return liveStreamNegotiation{}, http.StatusBadRequest
-		}
-		version := versionValues[0]
-		if version != "2" {
-			return liveStreamNegotiation{}, http.StatusNotAcceptable
-		}
-		gen := generationValues[0]
-		if !validLiveGeneration(gen) {
-			return liveStreamNegotiation{}, http.StatusBadRequest
-		}
-		return liveStreamNegotiation{version: 2, gen: gen}, 0
-	}
-	gen := r.URL.Query().Get("g")
-	if len(gen) > streamMaxGenerationBytes {
+	generationValues, generationPresent := rawHeaderValues(r.Header, streamGenerationHeader)
+	if !versionPresent || !generationPresent || len(versionValues) != 1 || len(generationValues) != 1 ||
+		strings.Contains(versionValues[0], ",") || strings.Contains(generationValues[0], ",") {
 		return liveStreamNegotiation{}, http.StatusBadRequest
 	}
-	return liveStreamNegotiation{version: 1, gen: gen}, 0
+	if versionValues[0] != "2" {
+		return liveStreamNegotiation{}, http.StatusNotAcceptable
+	}
+	gen := generationValues[0]
+	if !validLiveGeneration(gen) {
+		return liveStreamNegotiation{}, http.StatusBadRequest
+	}
+	return liveStreamNegotiation{gen: gen}, 0
 }
 
 // rawHeaderValues returns every physical value for a case-insensitive header
@@ -431,7 +402,7 @@ func watchReader(ctx context.Context, w streamTableWatch, out chan<- watchResult
 // stream 429s without ever connecting); discovery then classifies watch-less
 // kinds (204). Only after the initial list succeeds do the SSE headers go
 // out — every failure before that point is a plain HTTP status, every
-// failure after it is an in-stream `ro-terminal`.
+// failure after it is an in-stream terminal `ro-live` envelope.
 func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 	// Negotiation and every pre-handshake failure are explicitly non-cacheable.
 	// Vary is set before any scope/auth/cap/discovery branch; Content-Type stays
@@ -460,16 +431,11 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		if status == http.StatusNotAcceptable {
 			http.Error(w, "unsupported live stream version", status)
 		} else {
-			http.Error(w, "invalid live stream generation", status)
+			http.Error(w, "invalid live stream negotiation", status)
 		}
 		return
 	}
 	renderReq := streamRenderRequest(r)
-	screen := renderReq.URL.RequestURI()
-	if negotiation.version == 2 && !validLiveScreen(screen) {
-		http.Error(w, "live stream screen identity is too large or invalid", http.StatusRequestURITooLong)
-		return
-	}
 	cluster, ok := s.manager.Get(clusterName)
 	if !ok {
 		http.Error(w, "cluster not found", http.StatusNotFound)
@@ -526,9 +492,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		cluster:        clusterName,
 		listNS:         listNS,
 		selector:       r.URL.Query().Get("selector"),
-		protocol:       negotiation.version,
 		gen:            negotiation.gen,
-		screen:         screen,
 		wantMetrics:    r.URL.Query().Get("join") == "metrics" && (plural == "pods" || plural == "nodes"),
 		lifetime:       lifetime,
 		lifetimeReason: lifetimeReason,
@@ -567,11 +531,8 @@ type streamSession struct {
 	cluster   string
 	listNS    string
 	selector  string
-	protocol  int
 	gen       string
-	screen    string
 	seq       uint64
-	rev       string
 
 	// snapshot is the per-cluster UNFILTERED Table for the stream's scope
 	// (namespace + label selector — apiserver-level params). The readout-side
@@ -595,7 +556,7 @@ type streamSession struct {
 	lastPush    time.Time
 	eventWindow streamEventWindow
 
-	// Negotiated v2 commits only after an encoded frame has been written and
+	// Live v2 commits only after an encoded frame has been written and
 	// flushed. These fields therefore describe the exact client-visible base,
 	// never merely the latest locally-rendered candidate.
 	projection          liveProjectionState
@@ -656,10 +617,8 @@ func (st *streamSession) run(ctx, handshakeCtx context.Context) {
 	h := st.w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("X-Accel-Buffering", "no")
-	if st.protocol == 2 {
-		h.Set(streamVersionHeader, "2")
-		h.Set(streamGenerationHeader, st.gen)
-	}
+	h.Set(streamVersionHeader, "2")
+	h.Set(streamGenerationHeader, st.gen)
 	st.w.WriteHeader(http.StatusOK)
 	if err := st.push(ctx); err != nil {
 		return
@@ -719,7 +678,7 @@ func (st *streamSession) loop(ctx context.Context) {
 		checkpointTimer *time.Timer
 		checkpointCh    <-chan time.Time
 	)
-	if st.protocol == 2 && st.tuning.checkpointInterval > 0 {
+	if st.tuning.checkpointInterval > 0 {
 		checkpointTimer = time.NewTimer(st.tuning.checkpointInterval)
 		defer checkpointTimer.Stop()
 		checkpointCh = checkpointTimer.C
@@ -912,9 +871,7 @@ func (st *streamSession) loop(ctx context.Context) {
 			st.snapshot = relisted.table
 			st.lastRV = relisted.table.ResourceVersion
 			st.dirty = true
-			if st.protocol == 2 {
-				st.forceSnapshot = true
-			}
+			st.forceSnapshot = true
 			backoff = streamBackoff{tuning: st.tuning}
 			immediateEOFs = 0
 			st.schedulePush(pushTimer)
@@ -968,8 +925,13 @@ func (st *streamSession) loop(ctx context.Context) {
 		case <-metricsDone:
 			// The owner clears the lane on deadline even though metricsAsync drops
 			// its canceled result. The next ticker edge can therefore recover with
-			// a fresh request; the old per-attempt channel can never feed it.
+			// a fresh request; the old per-attempt channel can never feed it. A
+			// timed-out metrics source is not valid indefinitely: clear the stale
+			// overlay and publish the same empty usage state as an upstream failure.
 			cancelMetrics()
+			st.metrics = map[string][2]float64{}
+			st.dirty = true
+			st.schedulePush(pushTimer)
 		case <-heartbeatCh:
 			if err := st.writeHeartbeat(); err != nil {
 				return
@@ -1024,24 +986,16 @@ func (st *streamSession) schedulePush(timer *time.Timer) {
 	timer.Reset(target.Sub(now))
 }
 
-// push keeps the pinned legacy full-fragment path wholly separate from the
-// negotiated v2 projection/delta transaction.
+// push runs the v2 projection/delta transaction.
 func (st *streamSession) push(ctx context.Context) error {
-	if st.protocol == 2 {
-		return st.pushLiveV2(ctx)
-	}
-	return st.pushLegacy(ctx)
+	return st.pushLiveV2(ctx)
 }
 
-// terminal writes the named legacy ro-terminal or negotiated v2 ro-live frame.
+// terminal writes a v2 ro-live terminal frame.
 // Write errors are ignored — the stream is closing either way.
 func (st *streamSession) terminal(reason string) {
 	st.srv.observeStreamTerminal(reason)
-	if st.protocol == 2 {
-		st.terminalLiveV2(reason)
-		return
-	}
-	_ = st.writeEvent("ro-terminal", streamTerminalPayload{G: st.gen, Reason: reason})
+	st.terminalLiveV2(reason)
 }
 
 var (
@@ -1210,39 +1164,17 @@ func cloneTableForRender(t *kube.Table) kube.Table {
 }
 
 // streamRenderRequest derives the render-path request: the canonical LIST
-// page URL (path minus `/_stream`) without the stream-only `g` param, so
+// page URL (path minus `/_stream`), so
 // every href buildListView resolves matches what a `_table` partial bakes —
-// byte-identical fragments morph cleanly client-side. The shallow request
-// copy keeps the context and the mux path values (the same pattern
-// buildListView's canonicalization uses); `g` is stripped RAW because an `f`
-// chip's OR-comma is raw on the wire and a url.Values round-trip would re-encode
-// it (see filter.go).
+// byte-identical fragments morph cleanly client-side. The shallow request copy
+// keeps the context and mux path values used by buildListView's canonicalizer.
 func streamRenderRequest(r *http.Request) *http.Request {
 	clone := *r
 	u := *r.URL
 	u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), "/_stream")
-	u.RawQuery = stripRawQueryParam(u.RawQuery, "g")
-	if u.RawQuery == "" {
-		u.ForceQuery = false
-	}
+	// RawPath still describes the old /_stream path, so it cannot remain a
+	// valid alternate encoding after Path changes.
+	u.RawPath = ""
 	clone.URL = &u
 	return &clone
-}
-
-// stripRawQueryParam removes every `key=` pair from a RAW query string
-// without decoding or re-encoding the surviving pairs.
-func stripRawQueryParam(rawQuery, key string) string {
-	if rawQuery == "" {
-		return ""
-	}
-	pairs := strings.Split(rawQuery, "&")
-	kept := pairs[:0]
-	for _, pair := range pairs {
-		k, _, _ := strings.Cut(pair, "=")
-		decoded, err := url.QueryUnescape(k)
-		if err != nil || decoded != key {
-			kept = append(kept, pair)
-		}
-	}
-	return strings.Join(kept, "&")
 }

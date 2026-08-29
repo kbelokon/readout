@@ -35,9 +35,8 @@ export type LiveSSEErrorCode =
 export class LiveSSEError extends Error {
     readonly code: LiveSSEErrorCode;
 
-    constructor(code: LiveSSEErrorCode, message: string) {
-        super(message);
-        this.name = 'LiveSSEError';
+    constructor(code: LiveSSEErrorCode) {
+        super(code);
         this.code = code;
     }
 }
@@ -62,7 +61,7 @@ function decodeLine(bytes: Uint8Array): string {
     try {
         return fatalUTF8.decode(bytes);
     } catch {
-        throw new LiveSSEError('invalid-utf8', 'SSE field line is not valid UTF-8');
+        throw new LiveSSEError('invalid-utf8');
     }
 }
 
@@ -89,40 +88,39 @@ export class LiveSSEParser {
             this.#consume(chunk, events);
             return events;
         } catch (error) {
-            this.#fatal =
-                error instanceof LiveSSEError
-                    ? error
-                    : new LiveSSEError('invalid-utf8', 'SSE framing failed');
+            this.#fatal = error instanceof LiveSSEError ? error : new LiveSSEError('invalid-utf8');
             throw this.#fatal;
         }
     }
 
     #consume(chunk: Uint8Array, events: LiveSSEEvent[]): void {
         let start = 0;
-        let index = 0;
-        while (index !== chunk.byteLength) {
-            const byteIndex = index;
-            const byte = chunk[byteIndex] as number;
-            index += 1;
+        // An out-of-range Uint8Array read is the loop sentinel. Keep advancing
+        // the index and loading its byte together in the loop header.
+        for (
+            let index = 0, byte = chunk[index];
+            byte !== undefined;
+            index += 1, byte = chunk[index]
+        ) {
             if (this.#pendingDelimiter === 'cr') {
                 this.#pendingDelimiter = 'none';
                 if (byte === 0x0a) {
-                    start = index;
+                    start = index + 1;
                     continue;
                 }
             }
             if (byte !== 0x0a && byte !== 0x0d) continue;
-            this.#appendLinePart(chunk.subarray(start, byteIndex));
+            this.#appendLinePart(chunk.subarray(start, index));
             this.#completeLine(events);
             this.#pendingDelimiter = byte === 0x0d ? 'cr' : 'none';
-            start = index;
+            start = index + 1;
         }
         this.#appendLinePart(chunk.subarray(start));
     }
 
     #appendLinePart(part: Uint8Array): void {
         if (part.byteLength > this.#limits.lineBytes - this.#lineBytes) {
-            throw new LiveSSEError('line-too-large', 'SSE field line exceeds its byte limit');
+            throw new LiveSSEError('line-too-large');
         }
         const required = this.#lineBytes + part.byteLength;
         this.#lineBuffer = ensureBoundedByteBufferCapacity(
@@ -150,12 +148,12 @@ export class LiveSSEParser {
             return;
         }
         if (bytes.byteLength > this.#limits.eventBytes - this.#eventBytes) {
-            throw new LiveSSEError('event-too-large', 'SSE event framing exceeds its byte limit');
+            throw new LiveSSEError('event-too-large');
         }
         this.#eventBytes += bytes.byteLength;
         this.#lines += 1;
         if (this.#lines > this.#limits.lines) {
-            throw new LiveSSEError('too-many-lines', 'SSE event has too many nonblank lines');
+            throw new LiveSSEError('too-many-lines');
         }
         // Decode the field and value exactly once each. A comment naturally has
         // an empty field and follows the same validated extension-field path.
@@ -167,10 +165,7 @@ export class LiveSSEParser {
         const valueBytes = bytes.subarray(valueStart);
         if (field === 'event') {
             if (valueBytes.byteLength > this.#limits.eventNameBytes) {
-                throw new LiveSSEError(
-                    'event-name-too-large',
-                    'SSE event name exceeds its byte limit',
-                );
+                throw new LiveSSEError('event-name-too-large');
             }
             this.#eventName = decodeLine(valueBytes);
             return;
@@ -182,7 +177,7 @@ export class LiveSSEParser {
         const joinedBytes =
             this.#dataBytes + valueBytes.byteLength + (this.#dataLines.length ? 1 : 0);
         if (joinedBytes > this.#limits.dataBytes) {
-            throw new LiveSSEError('data-too-large', 'SSE event data exceeds its byte limit');
+            throw new LiveSSEError('data-too-large');
         }
         this.#dataLines.push(decodeLine(valueBytes));
         this.#dataBytes = joinedBytes;

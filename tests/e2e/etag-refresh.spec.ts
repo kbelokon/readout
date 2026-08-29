@@ -93,17 +93,7 @@ function expectConditionalMetadata(response: Response, etag: string): void {
     .split(',')
     .map((token) => token.trim().toLowerCase())
     .filter(Boolean);
-  for (const token of [
-    'accept-encoding',
-    'cache-control',
-    'cookie',
-    'authorization',
-    'hx-request',
-    'ro-no-push',
-    'hx-preloaded',
-  ]) {
-    expect(vary).toContain(token);
-  }
+  expect(vary).toEqual(['accept-encoding']);
 }
 
 async function installLifecycleProbe(page: Page): Promise<void> {

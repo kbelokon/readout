@@ -46,31 +46,15 @@ export interface ACItem {
     kind: 'field' | 'value';
 }
 
-// Go strings.Fields splits on unicode.IsSpace, whose stable White_Space set is
-// NOT JavaScript's `\s`/trim set: Go includes U+0085 (NEXT LINE) and excludes
-// U+FEFF (BOM). Spell out that small BMP-only set so neither a JavaScript regex
-// engine nor a Unicode table update can move the client/server boundary.
-const GO_FIELD_WHITESPACE = new Set([
-    0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020, 0x0085, 0x00a0, 0x1680, 0x2000, 0x2001, 0x2002,
-    0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f,
-    0x3000,
-]);
-
-function isGoFieldWhitespace(character: string): boolean {
-    return GO_FIELD_WHITESPACE.has(character.charCodeAt(0));
-}
+// Unicode White_Space matches Go unicode.IsSpace for the code points accepted
+// by strings.Fields: notably it includes U+0085 and excludes U+FEFF.
+const GO_FIELD_WHITESPACE_TRIM = /^\p{White_Space}+|\p{White_Space}+$/gu;
+const GO_FIELD_WHITESPACE_RUN = /\p{White_Space}+/gu;
 
 // trimFilterWhitespace mirrors strings.TrimSpace for fields and values parsed
 // from a draft. In particular, it trims U+0085 and preserves U+FEFF.
 export function trimFilterWhitespace(s: string): string {
-    const characters = Array.from(s || '');
-    const first = characters.findIndex((character) => !isGoFieldWhitespace(character));
-    const last = characters.reduceRight(
-        (found, character, index) =>
-            found === -1 && !isGoFieldWhitespace(character) ? index : found,
-        -1,
-    );
-    return characters.slice(first, last + 1).join('');
+    return (s || '').replace(GO_FIELD_WHITESPACE_TRIM, '');
 }
 
 // normalizeFieldWhitespace collapses the same whitespace runs as
@@ -78,18 +62,7 @@ export function trimFilterWhitespace(s: string): string {
 // Header capture uses it instead of String.trim(), which would wrongly discard
 // a leading/trailing U+FEFF that the Go resolver treats as field-name data.
 export function normalizeFieldWhitespace(s: string): string {
-    const normalized: string[] = [];
-    let pendingSpace = false;
-    for (const character of s || '') {
-        if (isGoFieldWhitespace(character)) {
-            pendingSpace = normalized.length > 0;
-            continue;
-        }
-        if (pendingSpace) normalized.push(' ');
-        normalized.push(character);
-        pendingSpace = false;
-    }
-    return normalized.join('');
+    return trimFilterWhitespace(s).replace(GO_FIELD_WHITESPACE_RUN, ' ');
 }
 
 // normalizeFieldName mirrors the server's resolveFilterColumn: lowercase, dashes

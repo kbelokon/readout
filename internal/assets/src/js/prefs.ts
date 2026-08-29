@@ -40,15 +40,8 @@ export interface Prefs {
     ns: Record<string, string>;
 }
 
-export const PREFS_COOKIE = 'ro_prefs';
-export const PREFS_VERSION_PREFIX = 'v1.';
 export const PREFS_MAX_ENCODED = 3072;
-export const PREFS_COOKIE_MAX_AGE = 31536000; // one year, in seconds
-
-// REFRESH_KEY is the LEGACY v1 localStorage home of the interval choice. It is
-// no longer written; refreshMode() reads it ONCE as a migration fallback into
-// the ro_prefs cookie.
-export const REFRESH_KEY = 'roRefresh';
+const PREFS_COOKIE_MAX_AGE = 31536000; // one year, in seconds
 
 // b64urlEncodeUTF8 / b64urlDecodeUTF8: base64url (URL-safe alphabet, no
 // padding) over the UTF-8 bytes of a string -- TextEncoder/TextDecoder keep
@@ -162,10 +155,11 @@ function canonicalNamespaceJSON(ns: Record<string, string>): string {
 // clean cookie and the two readers converge again (self-heal).
 export function decodePrefsValue(value?: string): { prefs: Prefs; ok: boolean } {
     const empty: Prefs = { kinds: [], refresh: '', ns: {} };
-    if (!value?.startsWith(PREFS_VERSION_PREFIX)) {
+    const prefix = 'v1.';
+    if (!value?.startsWith(prefix)) {
         return { prefs: empty, ok: false };
     }
-    const payload = value.slice(PREFS_VERSION_PREFIX.length);
+    const payload = value.slice(prefix.length);
     try {
         const decoded: unknown = JSON.parse(b64urlDecodeUTF8(payload));
         if (!isRecord(decoded)) {
@@ -240,7 +234,8 @@ function encodePrefsCandidate(
     if (Object.keys(ns).length > 0) {
         fields.push(`"ns":${canonicalNamespaceJSON(ns)}`);
     }
-    return PREFS_VERSION_PREFIX + b64urlEncodeUTF8(`{${fields.join(',')}}`);
+    const payload = b64urlEncodeUTF8(`{${fields.join(',')}}`);
+    return `v1.${payload}`;
 }
 
 export function encodePrefsValue(prefs: Partial<Prefs>): string {
@@ -271,7 +266,7 @@ export function encodePrefsValue(prefs: Partial<Prefs>): string {
 // --- thin document.cookie wrappers (DOM) ----------------------------------
 
 function prefsCookieValue(): string | undefined {
-    const prefix = `${PREFS_COOKIE}=`;
+    const prefix = 'ro_prefs=';
     return document.cookie
         .split('; ')
         .find((part) => part.startsWith(prefix))
@@ -288,8 +283,7 @@ export function readPrefs(): Prefs {
 export function writePrefs(prefs: Prefs): void {
     try {
         let cookie =
-            PREFS_COOKIE +
-            '=' +
+            'ro_prefs=' +
             encodePrefsValue(prefs) +
             '; Path=/; SameSite=Lax; Max-Age=' +
             PREFS_COOKIE_MAX_AGE;

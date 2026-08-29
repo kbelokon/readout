@@ -1,17 +1,6 @@
-// list-projection.ts -- the canonical client-side projection of a resource list.
-//
-// A list has two DOM representations (table rows and mobile cards) plus the
-// plain-data row model used by filtering/autocomplete.  They must always be
-// captured from the SAME complete server snapshot.  In particular, a windowed
-// table keeps most of its rows detached, so neither the live tbody nor the card
-// mount can be treated as the complete dataset after virtualization engages.
-//
-// This module is the single owner of that complete snapshot.  The virtualizer
-// consumes its rows and identity index, but owns only viewport geometry and the
-// rendered slice.  filters.ts consumes the stable row-model facade.  During a
-// morph, the incoming snapshot is prepared before any rows are detached and is
-// committed after the live DOM lands: windowed lists retain the prepared,
-// off-DOM nodes; small lists re-adopt the connected nodes Idiomorph retained.
+// Canonical resource-list projection: table rows, mobile cards and the filter
+// row model always come from one complete snapshot. The virtualizer owns only
+// viewport geometry; this module retains the complete keyed dataset.
 
 import {
     fieldSuggestionText,
@@ -24,7 +13,6 @@ import type {
     LiveV2DeltaRegion,
     LiveV2DeltaRemove,
     LiveV2DeltaUpsert,
-    LiveV2Error,
     LiveV2RegionName,
 } from './live-protocol.js';
 import type { RowModelWire } from './types.js';
@@ -44,6 +32,7 @@ interface PreparedProjection {
     root: ParentNode;
     snapshot: ProjectionSnapshot;
     previousByKey: Map<string, HTMLElement>;
+    previousRevision: number;
 }
 
 export interface ListProjectionDeltaPlan {
@@ -62,18 +51,15 @@ export interface ListProjectionDeltaSummary {
     readonly regions: readonly LiveV2RegionName[];
 }
 
-interface ListProjectionDeltaOptions {
-    readonly morph?: (current: HTMLElement, incoming: HTMLElement) => unknown;
-    readonly reconcile: () => void;
-    readonly restoreExternalState: () => void;
-}
-
 export type ListProjectionDeltaResult =
     | {
           ok: true;
+          focusKey: string | null;
+          previousByKey: ReadonlyMap<string, HTMLElement>;
           summary: ListProjectionDeltaSummary;
+          restoreFocus: () => void;
       }
-    | { ok: false; error: LiveV2Error };
+    | { ok: false };
 
 export interface PreparedListProjection {
     readonly rows: readonly HTMLElement[];
@@ -135,7 +121,7 @@ function captureModelRows(rows: readonly HTMLElement[]): ModelRow[] {
     return rows.map(captureModelRow);
 }
 
-function captureCards(root: ParentNode, order: readonly string[]): Map<string, HTMLElement> {
+function captureCards(root: ParentNode): Map<string, HTMLElement> {
     const cards = Array.from(root.querySelectorAll<HTMLElement>('.ro-cardlist > .ro-pcard'));
     const cardsByKey = new Map<string, HTMLElement>();
     cards.forEach((card) => {
@@ -144,13 +130,6 @@ function captureCards(root: ParentNode, order: readonly string[]): Map<string, H
             cardsByKey.set(key, card);
         }
     });
-    // Older snapshots did not carry data-key on cards.  Their server order is
-    // the table order, so a complete 1:1 card list can still be indexed safely.
-    if (cardsByKey.size === 0 && cards.length === order.length) {
-        cards.forEach((card, index) => {
-            cardsByKey.set(order[index] as string, card);
-        });
-    }
     return cardsByKey;
 }
 
@@ -173,7 +152,7 @@ function snapshotFrom(root: ParentNode): ProjectionSnapshot {
         byKey,
         indexByKey: new Map(order.map((key, index) => [key, index])),
         order,
-        cardsByKey: captureCards(root, order),
+        cardsByKey: captureCards(root),
         fields: captureFields(table),
         modelRows: captureModelRows(rows),
         windowed: table.closest('.ro-table-wrap.ro-windowed') !== null,
@@ -196,12 +175,7 @@ export function adoptListProjection(root: ParentNode): void {
     rowModel.visibleKeys = null;
 }
 
-// Adopt only when `root` is a genuinely new live projection. runInit and the
-// virtualizer both visit the same persistent content node; the second visit must
-// not traverse/model-capture it again or clear the draft visibility just
-// re-derived between those steps. A prepared morph targets that same persistent
-// root and is left untouched until afterSwap; a genuinely new root supersedes
-// an abandoned pending snapshot (for example, cross-page navigation).
+// Repeated init on the same mount must not erase freshly derived visibility.
 export function ensureListProjection(root: ParentNode): boolean {
     if (projectionRoot === root) {
         return false;
@@ -210,16 +184,16 @@ export function ensureListProjection(root: ParentNode): boolean {
     return true;
 }
 
-// Prepare an incoming list fragment exactly once.  morph.ts and the
-// virtualizer both call this boundary deliberately; the root identity makes the
-// second call idempotent after the virtualizer has replaced rows with spacers.
+// morph.ts and the virtualizer may both prepare the same fragment.
 export function prepareListProjectionSwap(root: ParentNode): PreparedListProjection {
     if (prepared?.root !== root) {
         const snapshot = snapshotFrom(root);
+        const previousRevision = projectionRevision;
         projectionRevision += 1;
         prepared = {
             root,
             snapshot,
+            previousRevision,
             // Snapshot maps are created once and never mutated or exposed. Keep
             // the immutable prior index by reference for the windowed cell diff.
             previousByKey: projection.byKey,
@@ -235,10 +209,19 @@ export function prepareListProjectionSwap(root: ParentNode): PreparedListProject
     };
 }
 
-// Commit the prepared fragment after Idiomorph lands it.  Windowed rows were
-// intentionally detached and remain authoritative.  Small lists re-capture the
-// connected DOM so consumers never retain the throwaway fragment nodes when
-// Idiomorph preserved existing identities.
+// A synchronous morph failure leaves the connected DOM untouched, so retire
+// only the matching prepared snapshot and republish the still-authoritative
+// projection. The root identity prevents an older failing attempt from
+// cancelling a reentrant replacement.
+export function cancelListProjectionSwap(root: ParentNode): void {
+    const incoming = prepared;
+    if (!incoming || incoming.root !== root) return;
+    prepared = null;
+    projectionRevision = incoming.previousRevision;
+    publishModel(projection);
+}
+
+// Windowed rows remain detached; small lists re-adopt Idiomorph's connected DOM.
 export function commitListProjectionSwap(): ReadonlyMap<string, HTMLElement> | null {
     if (!prepared) {
         return null;
@@ -273,9 +256,8 @@ export function listProjectionSwapPending(): boolean {
     return prepared !== null;
 }
 
-// Monotonic model identity for cheap derived-view memoization. Preparing a new
-// server snapshot advances it; committing that same snapshot to connected DOM
-// does not. Future delta application can advance this at its atomic commit.
+// Monotonic identity across completed model changes. A synchronous prepared
+// swap cancellation restores its prior value before control returns to HTMX.
 export function listProjectionRevision(): number {
     return projectionRevision;
 }
@@ -315,10 +297,6 @@ export function listProjectionVisibleRows(): HTMLElement[] {
         : projection.rows;
 }
 
-// ---------------------------------------------------------------------------
-// Live v2 delta transaction (internal cross-module surface).
-// ---------------------------------------------------------------------------
-
 declare const Idiomorph:
     | {
           morph(
@@ -329,1025 +307,269 @@ declare const Idiomorph:
       }
     | undefined;
 
-type ProjectionMode = 'cards' | 'windowed';
+interface ParsedRegion {
+    current: HTMLElement;
+    incoming: HTMLElement;
+}
 
-const LIVE_FRAGMENT_BYTES = 128 * 1024;
-const LIVE_DELTA_BYTES = 256 * 1024;
-const LIVE_FRAGMENT_NODES = 4096;
-const LIVE_FRAGMENT_DEPTH = 64;
-const LIVE_FRAGMENT_ATTRIBUTES = 8192;
-const liveTextEncoder = new TextEncoder();
+interface FocusBookmark {
+    active: HTMLElement;
+    cellIndex: number;
+    focusableIndex: number;
+    key: string;
+}
 
-interface ParsedDelta {
-    candidate: ProjectionSnapshot;
-    fastPath: boolean;
-    modelUpdates: Map<number, ModelRow>;
-    parsedRows: Map<string, HTMLElement>;
-    parsedCards: Map<string, HTMLElement>;
-    parsedRegions: Map<LiveV2RegionName, { current: HTMLElement; incoming: HTMLElement }>;
-    summary: ListProjectionDeltaSummary;
-    tbody: HTMLTableSectionElement;
+interface ListMounts {
     cardMount: HTMLElement | null;
+    content: HTMLElement;
+    tbody: HTMLTableSectionElement;
 }
 
-interface ParentJournalEntry {
-    parent: ParentNode;
-    children: Node[];
-}
-
-interface ElementJournalEntry {
-    state: DOMNodeState;
-}
-
-interface PlacementJournalEntry {
-    node: Node;
-    parent: ParentNode | null;
-    parentWasConnected: boolean;
-    nextSibling: Node | null;
-}
-
-interface DOMNodeState {
-    node: Node;
-    nodeValue: string | null;
-    attributes: { name: string; value: string }[] | null;
-    children: DOMNodeState[];
-}
-
-interface AttributeJournalEntry {
-    element: HTMLElement;
-    name: string;
-    value: string | null;
-}
-
-interface DeltaDOMJournal {
-    parents: ParentJournalEntry[];
-    placements: PlacementJournalEntry[];
-    elements: ElementJournalEntry[];
-    attributes: AttributeJournalEntry[];
-}
-
-function projectionError(code: LiveV2Error['code'], message: string, fatal = false): LiveV2Error {
-    return { code, message, fatal };
-}
+const focusableSelector = 'a[href], button, input, select, textarea, [tabindex]';
 
 function oneElementRoot(parent: ParentNode): HTMLElement | null {
     let root: HTMLElement | null = null;
     for (const node of parent.childNodes) {
-        if (node.nodeType === Node.TEXT_NODE && !node.textContent?.trim()) {
-            continue;
-        }
-        if (node.nodeType !== Node.ELEMENT_NODE || root) {
-            return null;
-        }
-        root = node as HTMLElement;
+        if (node instanceof Text && !node.data.trim()) continue;
+        if (root || !(node instanceof HTMLElement)) return null;
+        root = node;
     }
     return root;
 }
 
-// Byte-for-byte JS port of web.rowDomID. This is a defensive client-side
-// identity check, not an expansion of the wire schema: the ASCII bytes unsafe
-// in Idiomorph's quoted id selector are escaped while non-ASCII runes remain.
-function liveRowDOMID(key: string): string {
-    let result = 'row-';
-    for (const character of key) {
-        const code = character.codePointAt(0) as number;
-        if (
-            code <= 0x20 ||
-            character === '"' ||
-            character === '\\' ||
-            character === '%' ||
-            code === 0x7f
-        ) {
-            result += `%${code.toString(16).toUpperCase().padStart(2, '0')}`;
-        } else {
-            result += character;
-        }
-    }
-    return result;
+function parseRowFragment(html: string, key: string): HTMLElement | null {
+    const tbody = document.createElement('tbody');
+    tbody.innerHTML = html;
+    const row = oneElementRoot(tbody);
+    return row?.dataset.key === key ? row : null;
 }
 
-function fragmentIntroducesIdentity(root: HTMLElement): boolean {
-    return root.querySelector('[id], [data-ro-live-region]') !== null;
+function parseCardFragment(html: string, key: string): HTMLElement | null {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const card = oneElementRoot(template.content);
+    return card?.dataset.key === key ? card : null;
 }
 
-function fragmentIsCSPClean(root: HTMLElement): boolean {
-    const forbiddenElements = 'script, style, link, iframe, object, embed, base, meta[http-equiv]';
-    let nodes = 0;
-    let attributes = 0;
-    const pending: { node: Node; depth: number }[] = [{ node: root, depth: 1 }];
-    for (let cursor = 0; cursor < pending.length; cursor += 1) {
-        const current = pending[cursor] as { node: Node; depth: number };
-        nodes += 1;
-        if (nodes > LIVE_FRAGMENT_NODES || current.depth > LIVE_FRAGMENT_DEPTH) {
-            return false;
-        }
-        if (!(current.node instanceof Element)) continue;
-        attributes += current.node.attributes.length;
-        if (attributes > LIVE_FRAGMENT_ATTRIBUTES || current.node.matches(forbiddenElements)) {
-            return false;
-        }
-        for (const attribute of Array.from(current.node.attributes)) {
-            const name = attribute.name.toLowerCase();
-            if (name === 'style') {
-                if (
-                    current.node.tagName !== 'I' ||
-                    current.node.parentElement?.classList.contains('cap-bar') !== true ||
-                    !/^width\s*:\s*(?:100|[0-9]{1,2})%\s*;?$/u.test(attribute.value)
-                ) {
-                    return false;
-                }
-                continue;
-            }
-            if (name === 'srcdoc' || name.startsWith('on')) {
-                return false;
-            }
-            if (!['href', 'src', 'xlink:href', 'action', 'formaction'].includes(name)) {
-                continue;
-            }
-            let normalizedURL = '';
-            for (const character of attribute.value) {
-                const code = character.codePointAt(0) as number;
-                if (code > 0x20 && !(code >= 0x7f && code <= 0x9f)) {
-                    normalizedURL += character;
-                }
-            }
-            if (/^(?:(?:javascript|vbscript):|data:text\/html)/iu.test(normalizedURL)) {
-                return false;
-            }
-        }
-        for (const child of Array.from(current.node.childNodes)) {
-            pending.push({ node: child, depth: current.depth + 1 });
-        }
-    }
-    return true;
+function parseRegionFragment(content: HTMLElement, update: LiveV2DeltaRegion): ParsedRegion | null {
+    const selector = `[data-ro-live-region="${update.region}"]`;
+    const current = content.querySelector<HTMLElement>(selector);
+    const template = document.createElement('template');
+    template.innerHTML = update.html;
+    const incoming = oneElementRoot(template.content);
+    if (!current || !incoming || incoming.dataset.roLiveRegion !== update.region) return null;
+    return { current, incoming };
 }
 
-function parseRowFragment(html: string, key: string): HTMLElement | LiveV2Error {
-    try {
-        const tbody = document.createElement('tbody');
-        tbody.innerHTML = html;
-        const row = oneElementRoot(tbody);
-        if (
-            row?.tagName !== 'TR' ||
-            row.dataset.key !== key ||
-            row.id !== liveRowDOMID(key) ||
-            row.hasAttribute('data-ro-live-region') ||
-            row.classList.contains('ro-vspacer') ||
-            fragmentIntroducesIdentity(row) ||
-            !fragmentIsCSPClean(row)
-        ) {
-            return projectionError(
-                'fragment-invalid',
-                `row fragment for ${key} is not one canonical keyed tr`,
-            );
-        }
-        return row;
-    } catch {
-        return projectionError('fragment-invalid', `row fragment for ${key} cannot be parsed`);
-    }
-}
-
-function parseCardFragment(html: string, key: string): HTMLElement | LiveV2Error {
-    try {
-        const template = document.createElement('template');
-        template.innerHTML = html;
-        const card = oneElementRoot(template.content);
-        if (
-            card?.tagName !== 'DIV' ||
-            !card.matches('.ro-pcard[data-key]') ||
-            card.dataset.key !== key ||
-            card.hasAttribute('id') ||
-            card.hasAttribute('data-ro-live-region') ||
-            fragmentIntroducesIdentity(card) ||
-            !fragmentIsCSPClean(card)
-        ) {
-            return projectionError(
-                'fragment-invalid',
-                `card fragment for ${key} is not one canonical keyed card`,
-            );
-        }
-        return card;
-    } catch {
-        return projectionError('fragment-invalid', `card fragment for ${key} cannot be parsed`);
-    }
-}
-
-function parseRegionFragment(
-    update: LiveV2DeltaRegion,
-): { current: HTMLElement; incoming: HTMLElement } | LiveV2Error {
-    try {
-        const mounts = document.querySelectorAll<HTMLElement>(
-            `[data-ro-live-region="${update.region}"]`,
-        );
-        if (mounts.length !== 1) {
-            return projectionError(
-                'projection-mismatch',
-                `region ${update.region} does not have exactly one fixed mount`,
-            );
-        }
-        const template = document.createElement('template');
-        template.innerHTML = update.html;
-        const incoming = oneElementRoot(template.content);
-        const current = mounts.item(0) as HTMLElement;
-        const expectedTag = update.region === 'phase' ? 'DIV' : 'SPAN';
-        const expectedClass =
-            update.region === 'count'
-                ? 'ro-count'
-                : update.region === 'phase'
-                  ? 'ro-phase-strip'
-                  : 'ro-foundline';
-        if (
-            !incoming ||
-            incoming.tagName !== expectedTag ||
-            !incoming.classList.contains(expectedClass) ||
-            incoming.dataset.roLiveRegion !== update.region ||
-            incoming.hasAttribute('id') ||
-            current.tagName !== expectedTag ||
-            !current.classList.contains(expectedClass) ||
-            incoming.querySelector('[id], [data-ro-live-region]') !== null ||
-            !fragmentIsCSPClean(incoming)
-        ) {
-            return projectionError(
-                'fragment-invalid',
-                `region ${update.region} is not one canonical fixed-region root`,
-            );
-        }
-        return { current, incoming };
-    } catch {
-        return projectionError('fragment-invalid', `region ${update.region} cannot be parsed`);
-    }
+function currentListMounts(): ListMounts | null {
+    const content = document.getElementById('resource-list-content');
+    if (!content || projectionRoot !== content || prepared) return null;
+    const table = content.querySelector<HTMLTableElement>('table.ro-table');
+    const tbody = table?.tBodies.item(0) || null;
+    if (!tbody) return null;
+    return {
+        cardMount: content.querySelector<HTMLElement>('.ro-cardlist'),
+        content,
+        tbody,
+    };
 }
 
 function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
     return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function validateDeltaHTMLBounds(plan: ListProjectionDeltaPlan): LiveV2Error | null {
-    let aggregate = 0;
-    const fragments = [
-        ...plan.upsert.flatMap((operation) =>
-            operation.card === undefined ? [operation.row] : [operation.row, operation.card],
-        ),
-        ...plan.regions.map((operation) => operation.html),
-    ];
-    for (const html of fragments) {
-        // UTF-16 length is a cheap lower bound on UTF-8 bytes. Reject obvious
-        // oversize input before allocating the encoded copy.
-        if (html.length > LIVE_FRAGMENT_BYTES) {
-            return projectionError('limit-exceeded', 'Live delta fragment exceeds its limit');
-        }
-        const bytes = liveTextEncoder.encode(html).byteLength;
-        if (bytes > LIVE_FRAGMENT_BYTES) {
-            return projectionError('limit-exceeded', 'Live delta fragment exceeds its limit');
-        }
-        aggregate += bytes;
-        if (aggregate > LIVE_DELTA_BYTES) {
-            return projectionError(
-                'limit-exceeded',
-                'Live delta fragments exceed their aggregate limit',
-            );
-        }
-    }
-    return null;
-}
-
-function currentProjectionMode(): ProjectionMode | LiveV2Error {
-    if (projection.rows.length === 0) {
-        return projectionError('projection-mismatch', 'empty projections require a snapshot');
-    }
-    if (projection.windowed) {
-        return projection.cardsByKey.size === 0
-            ? 'windowed'
-            : projectionError('projection-mismatch', 'windowed projection unexpectedly has cards');
-    }
-    if (projection.cardsByKey.size === projection.rows.length) {
-        return 'cards';
-    }
-    return projectionError('projection-mismatch', 'projection mode is not delta-capable');
-}
-
-function validateCurrentProjection(
-    content: HTMLElement,
-    fastPath: boolean,
-):
-    | { mode: ProjectionMode; tbody: HTMLTableSectionElement; cardMount: HTMLElement | null }
-    | LiveV2Error {
-    if (prepared || projectionRoot !== content || !content.isConnected) {
-        return projectionError('projection-mismatch', 'canonical projection is not stably mounted');
-    }
-    const mode = currentProjectionMode();
-    if (typeof mode !== 'string') return mode;
-    const tables = content.querySelectorAll<HTMLTableElement>('table.ro-table');
-    const tbody = tables.length === 1 ? tables[0].tBodies.item(0) : null;
-    if (!tbody) {
-        return projectionError('projection-mismatch', 'projection table mount is ambiguous');
-    }
-    if (!fastPath) {
-        const orderSet = new Set(projection.order);
-        if (
-            orderSet.size !== projection.order.length ||
-            projection.rows.length !== projection.order.length ||
-            projection.modelRows.length !== projection.order.length ||
-            projection.order.some((key, index) => {
-                const row = projection.rows[index];
-                const model = projection.modelRows[index];
-                return (
-                    !row ||
-                    !model ||
-                    row.dataset.key !== key ||
-                    row.id !== liveRowDOMID(key) ||
-                    model.key !== key
-                );
-            })
-        ) {
-            return projectionError(
-                'projection-mismatch',
-                'canonical projection invariants are broken',
-            );
-        }
-    }
-    let cardMount: HTMLElement | null = null;
-    if (mode === 'cards') {
-        const mounts = content.querySelectorAll<HTMLElement>('.ro-cardlist');
-        if (mounts.length !== 1) {
-            return projectionError('projection-mismatch', 'card mount is ambiguous');
-        }
-        cardMount = mounts[0] as HTMLElement;
-        if (
-            !fastPath &&
-            projection.order.some((key) => {
-                const card = projection.cardsByKey.get(key);
-                return !card || card.dataset.key !== key || card.parentElement !== cardMount;
-            })
-        ) {
-            return projectionError(
-                'projection-mismatch',
-                'canonical keyed-card invariants are broken',
-            );
-        }
-        if (!fastPath && projection.rows.some((row) => row.parentElement !== tbody)) {
-            return projectionError('projection-mismatch', 'small-list rows are not fully mounted');
-        }
-    } else if (
-        !fastPath &&
-        projection.rows.some((row) => row.isConnected && row.parentElement !== tbody)
-    ) {
-        return projectionError('projection-mismatch', 'windowed rows are mounted outside tbody');
-    }
-    return { mode, tbody, cardMount };
-}
-
-function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error {
-    const boundsError = validateDeltaHTMLBounds(plan);
-    if (boundsError) return boundsError;
-    const fastPath =
-        plan.remove.length === 0 &&
-        plan.order === undefined &&
-        plan.upsert.every((operation) => projection.byKey.has(operation.key));
-    const content = document.getElementById('resource-list-content');
-    if (!content) {
-        return projectionError('projection-mismatch', 'resource list content is missing');
-    }
-    const current = validateCurrentProjection(content, fastPath);
-    if ('code' in current) return current;
-
-    const removed = new Set<string>();
-    let deleted = 0;
-    let projected = 0;
-    for (const operation of plan.remove) {
-        if (removed.has(operation.key)) {
-            return projectionError(
-                'projection-mismatch',
-                `remove key ${operation.key} is duplicate`,
-            );
-        }
-        if (!projection.byKey.has(operation.key)) {
-            return projectionError('projection-mismatch', `remove key ${operation.key} is absent`);
-        }
-        removed.add(operation.key);
-        if (operation.cause === 'delete') deleted += 1;
-        else projected += 1;
-    }
-
-    const parsedRows = new Map<string, HTMLElement>();
-    const parsedCards = new Map<string, HTMLElement>();
-    let inserted = 0;
-    let updated = 0;
-    for (const operation of plan.upsert) {
-        if (parsedRows.has(operation.key) || removed.has(operation.key)) {
-            return projectionError(
-                'projection-mismatch',
-                `upsert key ${operation.key} is duplicate or also removed`,
-            );
-        }
-        const row = parseRowFragment(operation.row, operation.key);
-        if (!('dataset' in row)) return row;
-        const existingRow = projection.byKey.get(operation.key);
-        if (existingRow && existingRow.id !== row.id) {
-            return projectionError(
-                'fragment-invalid',
-                `row fragment for ${operation.key} changed its canonical id`,
-            );
-        }
-        if (existingRow) {
-            const index = projection.indexByKey.get(operation.key);
-            const model = index === undefined ? undefined : projection.modelRows[index];
-            if (
-                index === undefined ||
-                projection.rows[index] !== existingRow ||
-                !model ||
-                model.key !== operation.key ||
-                (existingRow.isConnected && existingRow.parentElement !== current.tbody)
-            ) {
-                return projectionError(
-                    'projection-mismatch',
-                    `row ${operation.key} is not at its canonical index`,
-                );
-            }
-        }
-        const globalMatches = document.querySelectorAll<HTMLElement>(`[id="${row.id}"]`);
-        if (
-            (existingRow?.isConnected && globalMatches.length !== 1) ||
-            (existingRow && !existingRow.isConnected && globalMatches.length !== 0) ||
-            (!existingRow && globalMatches.length !== 0)
-        ) {
-            return projectionError(
-                'fragment-invalid',
-                `row fragment for ${operation.key} collides with a document id`,
-            );
-        }
-        parsedRows.set(operation.key, row);
-        if (current.mode === 'cards') {
-            if (operation.card === undefined) {
-                return projectionError(
-                    'fragment-invalid',
-                    `card-mode upsert ${operation.key} is missing its card`,
-                );
-            }
-            const card = parseCardFragment(operation.card, operation.key);
-            if (!('dataset' in card)) return card;
-            const existingCard = projection.cardsByKey.get(operation.key);
-            if (
-                existingRow &&
-                (!existingCard ||
-                    existingCard.dataset.key !== operation.key ||
-                    existingCard.parentElement !== current.cardMount)
-            ) {
-                return projectionError(
-                    'projection-mismatch',
-                    `card ${operation.key} is not canonically mounted`,
-                );
-            }
-            parsedCards.set(operation.key, card);
-        } else if (operation.card !== undefined) {
-            return projectionError(
-                'fragment-invalid',
-                `windowed upsert ${operation.key} unexpectedly carries a card`,
-            );
-        }
-        if (projection.byKey.has(operation.key)) updated += 1;
-        else inserted += 1;
-    }
-
-    const parsedRegions = new Map<
-        LiveV2RegionName,
-        { current: HTMLElement; incoming: HTMLElement }
-    >();
-    for (const update of plan.regions) {
-        if (parsedRegions.has(update.region)) {
-            return projectionError('projection-mismatch', `region ${update.region} is duplicate`);
-        }
-        const parsed = parseRegionFragment(update);
-        if ('code' in parsed) return parsed;
-        parsedRegions.set(update.region, parsed);
-    }
-
-    if (fastPath) {
-        const modelUpdates = new Map<number, ModelRow>();
-        for (const [key, incoming] of parsedRows) {
-            modelUpdates.set(projection.indexByKey.get(key) as number, captureModelRow(incoming));
-        }
-        return {
-            candidate: { ...projection },
-            fastPath,
-            modelUpdates,
-            parsedRows,
-            parsedCards,
-            parsedRegions,
-            summary: {
-                inserted: 0,
-                updated,
-                deleted: 0,
-                projected: 0,
-                reordered: false,
-                regions: [...parsedRegions.keys()],
-            },
-            tbody: current.tbody,
-            cardMount: current.cardMount,
-        };
-    }
-
-    const finalKeys = new Set(projection.order.filter((key) => !removed.has(key)));
-    for (const key of parsedRows.keys()) finalKeys.add(key);
-    if (finalKeys.size === 0) {
-        return projectionError(
-            'projection-mismatch',
-            'empty projection boundary requires snapshot',
-        );
-    }
-    // Reaching the structural branch without an order means either a removal
-    // or an insertion made `fastPath` false, so topology necessarily changed.
-    if (plan.order === undefined) {
-        return projectionError(
-            'projection-mismatch',
-            'topology-changing delta requires full order',
-        );
-    }
-    const finalOrder = [...plan.order];
-    if (
-        finalOrder.length !== finalKeys.size ||
-        new Set(finalOrder).size !== finalOrder.length ||
-        finalOrder.some((key) => !finalKeys.has(key))
-    ) {
-        return projectionError('projection-mismatch', 'delta order is not the exact final key set');
-    }
-    // Once the exact final key set is established, a topology change cannot
-    // equal the previous order, so this comparison covers only a redundant
-    // reorder without carrying a separately derived topology flag.
-    if (arraysEqual(plan.order, projection.order)) {
-        return projectionError('projection-mismatch', 'redundant unchanged order is not allowed');
-    }
-
-    const candidateByKey = new Map(projection.byKey);
-    const candidateCards = new Map(projection.cardsByKey);
-    for (const key of removed) {
-        candidateByKey.delete(key);
-        candidateCards.delete(key);
-    }
-    for (const [key, incoming] of parsedRows) {
-        const old = projection.byKey.get(key);
-        candidateByKey.set(key, old?.isConnected ? old : incoming);
-    }
-    for (const [key, incoming] of parsedCards) {
-        const old = projection.cardsByKey.get(key);
-        candidateCards.set(key, old?.isConnected ? old : incoming);
-    }
-    const rows = finalOrder.map((key) => candidateByKey.get(key) as HTMLElement);
-    const modelByKey = new Map(projection.modelRows.map((model) => [model.key, model]));
-    for (const [key, incoming] of parsedRows) modelByKey.set(key, captureModelRow(incoming));
-    const modelRows = finalOrder.map((key) => modelByKey.get(key) as ModelRow);
-
-    for (const key of finalOrder) {
-        // Audit the node that will actually own this key after commit. For an
-        // updated connected row that is the existing identity-preserved root,
-        // not the detached incoming parse tree.
-        const row = candidateByKey.get(key) as HTMLElement;
-        // Structural/reorder preflight is intentionally O(final rows): unlike
-        // the existing-upsert fast path, it must audit every final identity so
-        // an external duplicate on an untouched row cannot poison Idiomorph's
-        // document-wide id matching.
-        const globalMatches = document.querySelectorAll<HTMLElement>(`[id="${row.id}"]`);
-        if (
-            (row.isConnected && globalMatches.length !== 1) ||
-            (!row.isConnected && globalMatches.length !== 0)
-        ) {
-            return projectionError(
-                'fragment-invalid',
-                `final row ${key} collides with a document id`,
-            );
-        }
-    }
-    return {
-        candidate: {
-            rows,
-            byKey: candidateByKey,
-            indexByKey: new Map(finalOrder.map((key, index) => [key, index])),
-            order: finalOrder,
-            cardsByKey: candidateCards,
-            fields: projection.fields.map((field) => ({ ...field })),
-            modelRows,
-            windowed: projection.windowed,
-        },
-        fastPath,
-        modelUpdates: new Map(),
-        parsedRows,
-        parsedCards,
-        parsedRegions,
-        summary: {
-            inserted,
-            updated,
-            deleted,
-            projected,
-            reordered: !arraysEqual(finalOrder, projection.order),
-            regions: [...parsedRegions.keys()],
-        },
-        tbody: current.tbody,
-        cardMount: current.cardMount,
-    };
-}
-
-function addParentJournal(
-    entries: Map<ParentNode, ParentJournalEntry>,
-    parent: ParentNode | null,
-): void {
-    if (parent) {
-        entries.set(parent, { parent, children: Array.from(parent.childNodes) });
-    }
-}
-
-function addElementJournal(entries: ElementJournalEntry[], element: HTMLElement): void {
-    entries.push({ state: captureDOMNode(element) });
-}
-
-function addPlacementJournal(entries: PlacementJournalEntry[], node: Node): void {
-    entries.push({
-        node,
-        parent: node.parentNode,
-        parentWasConnected: node.parentNode?.isConnected === true,
-        nextSibling: node.nextSibling,
+function morphElement(current: HTMLElement, incoming: HTMLElement): HTMLElement {
+    // Availability is a transaction precondition; applyListProjectionDelta owns
+    // the single fail-closed catch for both a missing implementation and a morph failure.
+    const implementation = Idiomorph as Required<NonNullable<typeof Idiomorph>>;
+    const outcome = implementation.morph(current, incoming, {
+        morphStyle: 'outerHTML',
+        ignoreActiveValue: true,
     });
+    if (Array.isArray(outcome)) {
+        const landed = outcome.find((node) => node instanceof HTMLElement);
+        if (landed instanceof HTMLElement) return landed;
+    }
+    return current;
 }
 
-function captureDOMNode(node: Node): DOMNodeState {
-    return {
-        node,
-        nodeValue: node.nodeValue,
-        attributes:
-            node instanceof Element
-                ? Array.from(node.attributes, (attribute) => ({
-                      name: attribute.name,
-                      value: attribute.value,
-                  }))
-                : null,
-        children: Array.from(node.childNodes, captureDOMNode),
-    };
-}
-
-function addAttributeJournal(
-    entries: AttributeJournalEntry[],
-    element: HTMLElement,
-    name: string,
-): void {
-    entries.push({ element, name, value: element.getAttribute(name) });
-}
-
-function createDOMJournal(parsed: ParsedDelta): DeltaDOMJournal {
-    const parents = new Map<ParentNode, ParentJournalEntry>();
-    const placements: PlacementJournalEntry[] = [];
-    const elements: ElementJournalEntry[] = [];
-    const attributes: AttributeJournalEntry[] = [];
-    // Structural deltas replace the full canonical order. A fast small-list
-    // upsert morphs roots in place, so targeted parent/nextSibling checkpoints
-    // below avoid copying every tbody/card child merely to update one row.
-    if (!parsed.fastPath || projection.windowed) {
-        addParentJournal(parents, parsed.tbody);
-    }
-    parsed.tbody.querySelectorAll<HTMLElement>(':scope > tr.ro-vspacer').forEach((spacer) => {
-        addElementJournal(elements, spacer);
-    });
-    if (parsed.cardMount && !parsed.fastPath) {
-        addParentJournal(parents, parsed.cardMount);
-    }
-
-    for (const key of parsed.parsedRows.keys()) {
-        const current = projection.byKey.get(key);
-        if (current) {
-            if (parsed.fastPath) {
-                addPlacementJournal(placements, current);
-            }
-            addElementJournal(elements, current);
-        }
-    }
-    for (const key of parsed.parsedCards.keys()) {
-        const current = projection.cardsByKey.get(key);
-        // Every existing card was just validated against the connected fixed
-        // card mount. Inserted cards have no current identity to journal.
-        if (current) {
-            if (parsed.fastPath) {
-                addPlacementJournal(placements, current);
-            }
-            addElementJournal(elements, current);
-        }
-    }
-    for (const { current } of parsed.parsedRegions.values()) {
-        addParentJournal(parents, current.parentNode);
-        addElementJournal(elements, current);
-    }
-    if (!parsed.fastPath) {
-        for (const element of [...projection.rows, ...projection.cardsByKey.values()]) {
-            addAttributeJournal(attributes, element, 'class');
-        }
-    }
-    document.querySelectorAll<HTMLElement>('.ro-table-wrap').forEach((wrap) => {
-        addAttributeJournal(attributes, wrap, 'aria-activedescendant');
-    });
-    const status = document.getElementById('ro-live-status');
-    if (status) {
-        addParentJournal(parents, status.parentNode);
-        addElementJournal(elements, status);
-    }
-    const bulk = document.getElementById('ro-bulkbar');
-    if (bulk) {
-        addParentJournal(parents, bulk.parentNode);
-        addElementJournal(elements, bulk);
-    }
-    return { parents: [...parents.values()], placements, elements, attributes };
-}
-
-function restoreDOMNode(state: DOMNodeState): void {
-    const { node } = state;
-    if (node instanceof Element && state.attributes) {
-        for (const attribute of Array.from(node.attributes)) node.removeAttribute(attribute.name);
-        for (const attribute of state.attributes) {
-            node.setAttribute(attribute.name, attribute.value);
-        }
-    } else {
-        node.nodeValue = state.nodeValue;
-    }
-    if (node instanceof Element) {
-        node.replaceChildren(...state.children.map((child) => child.node));
-    }
-    for (const child of state.children) restoreDOMNode(child);
-}
-
-function verifyDOMNode(state: DOMNodeState): boolean {
-    const { node } = state;
-    if (!(node instanceof Element)) return node.nodeValue === state.nodeValue;
-    const attributes = state.attributes as { name: string; value: string }[];
-    if (node.attributes.length !== attributes.length) return false;
-    for (const attribute of attributes) {
-        if (node.getAttribute(attribute.name) !== attribute.value) return false;
-    }
-    const children = Array.from(node.childNodes);
-    if (children.length !== state.children.length) return false;
-    for (let index = 0; index < children.length; index += 1) {
-        const childState = state.children[index] as DOMNodeState;
-        if (children[index] !== childState.node || !verifyDOMNode(childState)) return false;
-    }
-    return true;
-}
-
-function restorePlacementJournal(entries: readonly PlacementJournalEntry[]): void {
-    const byNode = new Map(entries.map((entry) => [entry.node, entry]));
-    const restored = new Set<Node>();
-    const restore = (entry: PlacementJournalEntry): void => {
-        if (restored.has(entry.node)) return;
-        if (!entry.parent) {
-            entry.node.parentNode?.removeChild(entry.node);
+function placeElementsInOrder(parent: HTMLElement, elements: readonly HTMLElement[]): void {
+    let cursor = parent.firstElementChild;
+    for (const element of elements) {
+        if (element === cursor) {
+            cursor = cursor.nextElementSibling;
         } else {
-            if (entry.parentWasConnected && !entry.parent.isConnected) {
-                throw new Error();
-            }
-            if (entry.nextSibling) {
-                const dependency = byNode.get(entry.nextSibling);
-                if (dependency) restore(dependency);
-            }
-            entry.parent.insertBefore(entry.node, entry.nextSibling);
+            parent.insertBefore(element, cursor);
         }
-        // The dependency graph comes from real nextSibling chains, so it is
-        // acyclic. A predecessor restored before this node changes only its
-        // previousSibling; this placement never needs to be applied again.
-        restored.add(entry.node);
-    };
-    for (const entry of entries) restore(entry);
-    if (
-        entries.some(
-            ({ node, parent, nextSibling }) =>
-                node.parentNode !== parent || node.nextSibling !== nextSibling,
-        )
-    ) {
-        throw new Error();
     }
 }
 
-function restoreDOMJournal(journal: DeltaDOMJournal): void {
-    if (
-        journal.parents.some(
-            ({ parent }) => parent instanceof Element && parent.isConnected === false,
-        )
-    ) {
-        throw new Error();
-    }
-    for (const { parent, children } of journal.parents) parent.replaceChildren(...children);
-    restorePlacementJournal(journal.placements);
-    for (const { state } of journal.elements) restoreDOMNode(state);
-    for (const { element, name, value } of journal.attributes) {
-        if (value === null) element.removeAttribute(name);
-        else element.setAttribute(name, value);
-    }
-    for (const { parent, children } of journal.parents) {
-        const restored = Array.from(parent.childNodes);
-        if (
-            restored.length !== children.length ||
-            restored.some((child, index) => child !== children[index])
-        ) {
-            throw new Error();
-        }
-    }
-    if (journal.elements.some(({ state }) => !verifyDOMNode(state))) {
-        throw new Error();
-    }
-}
-
-function resolveMorph(
-    override: ListProjectionDeltaOptions['morph'],
-): ((current: HTMLElement, incoming: HTMLElement) => void) | null {
-    if (override) return override;
-    if (typeof Idiomorph === 'undefined' || typeof Idiomorph.morph !== 'function') return null;
-    return (current, incoming) => {
-        Idiomorph.morph(current, incoming, {
-            morphStyle: 'outerHTML',
-            ignoreActiveValue: true,
-        });
+function captureFocusBookmark(): FocusBookmark | null {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement)) return null;
+    const row = active.closest<HTMLTableRowElement>('tr[data-key]');
+    const key = row?.dataset.key;
+    const cell = active.closest<HTMLTableCellElement>('td, th');
+    if (!row || !key || !cell || cell.parentElement !== row) return null;
+    const focusables = cellFocusTargets(cell);
+    const focusableIndex = focusables.indexOf(active);
+    if (focusableIndex === -1) return null;
+    return {
+        active,
+        cellIndex: Array.from(row.cells).indexOf(cell),
+        focusableIndex,
+        key,
     };
 }
 
-function canonicalMorphClone(element: HTMLElement): HTMLElement {
-    const clone = element.cloneNode(true) as HTMLElement;
-    for (const current of [clone, ...Array.from(clone.querySelectorAll<HTMLElement>('*'))]) {
-        current.classList.remove('is-selected', 'kfocus', 'ro-row-filtered', 'ro-cell-changed');
-        if (current.getAttribute('class') === '') current.removeAttribute('class');
-    }
-    return clone;
+function cellFocusTargets(cell: HTMLElement): HTMLElement[] {
+    return [cell, ...cell.querySelectorAll<HTMLElement>(focusableSelector)];
 }
 
-function morphLandedCanonical(current: HTMLElement, incoming: HTMLElement): boolean {
-    return canonicalMorphClone(current).isEqualNode(canonicalMorphClone(incoming));
-}
-
-function runScopedMorph(
-    morph: (current: HTMLElement, incoming: HTMLElement) => unknown,
-    current: HTMLElement,
-    incoming: HTMLElement,
-): void {
-    const parent = current.parentNode;
-    const next = current.nextSibling;
-    const connected = current.isConnected;
-    const outcome = morph(current, incoming);
-    if (!connected) {
-        if (parent) {
-            // If the original sibling also moved, insertBefore fails closed;
-            // the transaction journal then restores the whole dependency set.
-            parent.insertBefore(current, next);
-        } else {
-            current.remove();
-        }
-    }
-    if (
-        current.isConnected !== connected ||
-        current.parentNode !== parent ||
-        current.nextSibling !== next ||
-        outcome === false ||
-        !morphLandedCanonical(current, incoming)
-    ) {
-        throw new Error();
-    }
+function focusRestorer(bookmark: FocusBookmark | null): () => void {
+    return () => {
+        if (!bookmark) return;
+        const row = projection.byKey.get(bookmark.key) as HTMLTableRowElement | undefined;
+        if (!row?.isConnected) return;
+        const cell = row.cells.item(bookmark.cellIndex);
+        if (!(cell instanceof HTMLElement)) return;
+        const focusables = cellFocusTargets(cell);
+        focusables[bookmark.focusableIndex]?.focus({ preventScroll: true });
+    };
 }
 
 function updateLiveStatus(summary: ListProjectionDeltaSummary): void {
     const status = document.getElementById('ro-live-status');
     if (!status) return;
     const changed = summary.inserted + summary.updated + summary.deleted + summary.projected;
-    const regionCount = summary.regions.length;
     const parts: string[] = [];
     if (changed > 0) parts.push(`${changed} row${changed === 1 ? '' : 's'}`);
     if (summary.reordered) parts.push('order changed');
-    if (regionCount > 0) {
-        parts.push(`${regionCount} region${regionCount === 1 ? '' : 's'}`);
+    if (summary.regions.length > 0) {
+        parts.push(`${summary.regions.length} region${summary.regions.length === 1 ? '' : 's'}`);
     }
     status.textContent = `Live update: ${parts.join(', ')}`;
 }
 
-// @internal The transport-facing public boundary is applyLiveV2Delta in
-// live-protocol.ts.  Keeping the callback inside this function makes projection
-// publication + all derived-view reconciliation one synchronous transaction.
-export function applyListProjectionDeltaTransaction(
-    plan: ListProjectionDeltaPlan,
-    options: ListProjectionDeltaOptions,
-): ListProjectionDeltaResult {
-    let parsed: ParsedDelta | LiveV2Error;
-    try {
-        parsed = prepareDelta(plan);
-    } catch {
-        return {
-            ok: false,
-            error: projectionError('projection-mismatch', 'Live delta preflight failed'),
-        };
-    }
-    if ('code' in parsed) return { ok: false, error: parsed };
+// Apply one already-decoded server delta. The browser validates only the wire
+// schema/cursor plus the one invariant needed to mount an upsert: each row/card
+// fragment is one root carrying the operation key. Server templates remain the
+// sole authority for tags, classes, ids, styles and nested markup.
+export function applyListProjectionDelta(plan: ListProjectionDeltaPlan): ListProjectionDeltaResult {
+    const mounts = currentListMounts();
+    if (!mounts) return { ok: false };
 
-    const morphNeeded =
-        [...parsed.parsedRows.keys()].some(
-            (key) => parsed.candidate.byKey.get(key) === projection.byKey.get(key),
-        ) || parsed.parsedRegions.size > 0;
-    const morph = resolveMorph(options.morph);
-    if (morphNeeded && !morph) {
-        return {
-            ok: false,
-            error: projectionError('morph-failed', 'Idiomorph is unavailable'),
-        };
+    const parsedRows = new Map<string, HTMLElement>();
+    const parsedCards = new Map<string, HTMLElement>();
+    const parsedRegions: ParsedRegion[] = [];
+    for (const operation of plan.upsert) {
+        const row = parseRowFragment(operation.row, operation.key);
+        if (!row) return { ok: false };
+        parsedRows.set(operation.key, row);
+        if (operation.card !== undefined) {
+            const card = parseCardFragment(operation.card, operation.key);
+            if (!card || !mounts.cardMount) return { ok: false };
+            parsedCards.set(operation.key, card);
+        }
+    }
+    for (const operation of plan.regions) {
+        const region = parseRegionFragment(mounts.content, operation);
+        if (!region) return { ok: false };
+        parsedRegions.push(region);
     }
 
-    const oldProjection = projection;
-    const oldPrepared = prepared;
-    const oldRoot = projectionRoot;
-    const oldRevision = projectionRevision;
-    const oldFields = rowModel.fields;
-    const oldModelRows = rowModel.rows;
-    const oldVisibleKeys = rowModel.visibleKeys;
-    const modelPatchJournal: { index: number; model: ModelRow }[] = [];
-    let journal: DeltaDOMJournal;
-    try {
-        journal = createDOMJournal(parsed);
-    } catch {
-        return {
-            ok: false,
-            error: projectionError('projection-mismatch', 'Live delta journal could not be built'),
-        };
+    const removedKeys = new Set(plan.remove.map((operation) => operation.key));
+    const nextByKey = new Map(projection.byKey);
+    const nextCards = new Map(projection.cardsByKey);
+    for (const key of removedKeys) {
+        nextByKey.delete(key);
     }
-    let mutationPhase: 'morph' | 'reconcile' = 'morph';
-    try {
-        for (const [key, incoming] of parsed.parsedRows) {
-            const current = oldProjection.byKey.get(key);
-            if (current && parsed.candidate.byKey.get(key) === current) {
-                runScopedMorph(morph as NonNullable<typeof morph>, current, incoming);
-            }
-        }
-        for (const [key, incoming] of parsed.parsedCards) {
-            const current = oldProjection.cardsByKey.get(key);
-            // An existing card is always connected and identity-preserved by
-            // prepareDelta; inserted cards have no current node to morph.
-            if (current) {
-                runScopedMorph(morph as NonNullable<typeof morph>, current, incoming);
-            }
-        }
-        for (const { current, incoming } of parsed.parsedRegions.values()) {
-            runScopedMorph(morph as NonNullable<typeof morph>, current, incoming);
-        }
+    for (const [key, incoming] of parsedRows) {
+        nextByKey.set(key, projection.byKey.get(key) || incoming);
+    }
+    for (const [key, incoming] of parsedCards) {
+        nextCards.set(key, projection.cardsByKey.get(key) || incoming);
+    }
 
-        if (!oldProjection.windowed && !parsed.fastPath) {
-            parsed.tbody.replaceChildren(...parsed.candidate.rows);
-            (parsed.cardMount as HTMLElement).replaceChildren(
-                ...parsed.candidate.order.map(
-                    (key) => parsed.candidate.cardsByKey.get(key) as HTMLElement,
-                ),
+    const implicitOrder = projection.order.filter((key) => !removedKeys.has(key));
+    for (const key of parsedRows.keys()) {
+        if (!projection.byKey.has(key)) implicitOrder.push(key);
+    }
+    const nextOrder = plan.order ? [...plan.order] : implicitOrder;
+    if (nextOrder.length !== nextByKey.size || nextOrder.some((key) => !nextByKey.has(key))) {
+        return { ok: false };
+    }
+    const nextRowSet = new Set(nextOrder);
+
+    const focus = captureFocusBookmark();
+    const restoreFocus = focusRestorer(focus);
+    const previousByKey = new Map<string, HTMLElement>();
+    for (const { key } of plan.upsert) {
+        const current = projection.byKey.get(key);
+        if (current) previousByKey.set(key, current.cloneNode(true) as HTMLElement);
+    }
+    const summary: ListProjectionDeltaSummary = {
+        inserted: plan.upsert.filter((operation) => !projection.byKey.has(operation.key)).length,
+        updated: plan.upsert.filter((operation) => projection.byKey.has(operation.key)).length,
+        deleted: plan.remove.filter((operation) => operation.cause === 'delete').length,
+        projected: plan.remove.filter((operation) => operation.cause === 'project').length,
+        reordered: !arraysEqual(nextOrder, projection.order),
+        regions: plan.regions.map((operation) => operation.region),
+    };
+
+    try {
+        for (const operation of plan.remove) {
+            projection.byKey.get(operation.key)?.remove();
+            projection.cardsByKey.get(operation.key)?.remove();
+        }
+        for (const [key, incoming] of parsedRows) {
+            const current = projection.byKey.get(key);
+            if (current) nextByKey.set(key, morphElement(current, incoming));
+        }
+        for (const [key, incoming] of parsedCards) {
+            const current = projection.cardsByKey.get(key);
+            if (current) nextCards.set(key, morphElement(current, incoming));
+        }
+        for (const region of parsedRegions) morphElement(region.current, region.incoming);
+
+        const nextRows = nextOrder.map((key) => nextByKey.get(key) as HTMLElement);
+        const nextCardEntries = nextOrder.flatMap((key) => {
+            const card = nextCards.get(key);
+            return card ? [[key, card] as const] : [];
+        });
+
+        if (!projection.windowed) placeElementsInOrder(mounts.tbody, nextRows);
+        if (mounts.cardMount) {
+            placeElementsInOrder(
+                mounts.cardMount,
+                nextCardEntries.map(([, card]) => card),
             );
         }
-        for (const [index, model] of parsed.modelUpdates) {
-            modelPatchJournal.push({ index, model: parsed.candidate.modelRows[index] as ModelRow });
-            parsed.candidate.modelRows[index] = model;
-        }
-        projection = parsed.candidate;
-        projectionRoot = document.getElementById('resource-list-content');
-        prepared = null;
-        projectionRevision = oldRevision + 1;
-        publishModel(projection);
 
-        mutationPhase = 'reconcile';
-        options.reconcile();
-        updateLiveStatus(parsed.summary);
-        return {
-            ok: true,
-            summary: parsed.summary,
+        const byKey = new Map(nextOrder.map((key, index) => [key, nextRows[index] as HTMLElement]));
+        projection = {
+            rows: nextRows,
+            byKey,
+            indexByKey: new Map(nextOrder.map((key, index) => [key, index])),
+            order: nextOrder,
+            cardsByKey: new Map(nextCardEntries),
+            fields: projection.fields,
+            modelRows: captureModelRows(nextRows),
+            windowed: projection.windowed,
         };
+        projectionRoot = mounts.content;
+        prepared = null;
+        projectionRevision += 1;
+        publishModel(projection);
+        if (rowModel.visibleKeys) {
+            rowModel.visibleKeys = new Set(
+                Array.from(rowModel.visibleKeys).filter((key) => nextRowSet.has(key)),
+            );
+        }
+        updateLiveStatus(summary);
+        return { ok: true, focusKey: focus?.key || null, previousByKey, summary, restoreFocus };
     } catch {
-        let rollbackFailed = false;
-        try {
-            restoreDOMJournal(journal);
-        } catch {
-            rollbackFailed = true;
-        }
-        projection = oldProjection;
-        for (const patch of modelPatchJournal) oldProjection.modelRows[patch.index] = patch.model;
-        prepared = oldPrepared;
-        projectionRoot = oldRoot;
-        projectionRevision = oldRevision;
-        rowModel.fields = oldFields;
-        rowModel.rows = oldModelRows;
-        rowModel.visibleKeys = oldVisibleKeys;
-        try {
-            options.restoreExternalState();
-        } catch {
-            rollbackFailed = true;
-        }
-        if (rollbackFailed) {
-            return {
-                ok: false,
-                error: projectionError(
-                    'rollback-failed',
-                    'Live delta rollback could not restore the original mounts',
-                    true,
-                ),
-            };
-        }
-        return {
-            ok: false,
-            error: projectionError(
-                mutationPhase === 'morph' ? 'morph-failed' : 'reconcile-failed',
-                mutationPhase === 'morph'
-                    ? 'Live delta DOM morph failed and was rolled back'
-                    : 'Live delta reconcile failed and was rolled back',
-            ),
-        };
+        restoreFocus();
+        return { ok: false };
     }
 }

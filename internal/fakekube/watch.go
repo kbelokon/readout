@@ -146,11 +146,11 @@ const (
 
 	// Every queued frame is a connection-owned exact-capacity byte slice. The
 	// per-connection and global ceilings therefore bound actual retained frame
-	// memory (not pointer references to replay-owned emissions). With 32
-	// connections, the fixed 1024-slot rings add only 256 KiB of pointers; queued
+	// memory (not pointer references to replay-owned emissions). With 256
+	// connections, the fixed 1024-slot rings add only 2 MiB of pointers; queued
 	// frame buffers are capped globally at 16 MiB. Combined with pending,
 	// history, and replay, all watch-owned variable buffers stay below 48 MiB.
-	watchConnectionLimit      = 32
+	watchConnectionLimit      = 256
 	watchConnQueueCountLimit  = 1024
 	watchConnQueueByteLimit   = 2 << 20
 	watchGlobalQueueByteLimit = 16 << 20
