@@ -14,7 +14,7 @@ import {
     type LiveV2Envelope,
     type LiveV2SnapshotEnvelope,
 } from './live-protocol.js';
-import { LiveSSEError, type LiveSSEEvent, LiveSSEParser } from './live-sse.js';
+import { type LiveSSEEvent, LiveSSEParser } from './live-sse.js';
 import {
     liveRequestURL,
     liveScreenForBase,
@@ -75,7 +75,6 @@ interface LiveConnection {
     readonly generation: string;
     readonly base: string;
     readonly screen: string;
-    readonly pageEpoch: number;
     readonly protocol: LiveProtocol;
     readonly cursor: Readonly<LiveV2Cursor> | null;
 }
@@ -129,15 +128,12 @@ const counters: LiveCounters = {
 };
 
 type CounterName = keyof LiveCounters;
-const MAX_COUNTER = Number.MAX_SAFE_INTEGER;
 const RESYNC_WINDOW_MS = 30_000;
 const MAX_RESYNCS_PER_WINDOW = 2;
 export const LIVE_FIRST_FRAME_TIMEOUT_MS = 10_000;
 
 let activeConnection: LiveConnection | null = null;
 let liveFallbackSecs = 0;
-let pageEpoch = 0;
-let pendingSnapshotTxn: object | null = null;
 const completedSnapshotTxns = new WeakSet<object>();
 let resyncTimestamps: number[] = [];
 let resyncScheduled = false;
@@ -145,14 +141,12 @@ let pendingResync = false;
 let resumeAfterRequests = false;
 let resumeAfterHidden = false;
 let resumeBase = '';
-// Retain the historical bundle needle and expose the same saturating value
-// through the debug seam. Expected connection aborts/supersessions never feed
-// this counter; only a parsed frame rejected at its identity gate does.
+// Retain the historical bundle needle and expose the same value through the
+// debug seam. Expected connection aborts/supersessions never feed this counter;
+// only a parsed frame rejected at its identity gate does.
 let liveDiscards = 0;
 
 interface OwnedRequest {
-    readonly epoch: number;
-    readonly xhr: XMLHttpRequest;
     networkSettled: boolean;
     sent: boolean;
     swapCompleted: boolean;
@@ -160,10 +154,27 @@ interface OwnedRequest {
 
 const ownedRequests = new Map<XMLHttpRequest, OwnedRequest>();
 
+function ownsRequest(xhr: XMLHttpRequest, entry: OwnedRequest): boolean {
+    return ownedRequests.get(xhr) === entry;
+}
+
+// Deferred request and visibility owners are one state-machine ticket. Clear
+// the ticket atomically so no stale hidden/request/resync branch can revive it.
+function clearResumeIntent(): void {
+    pendingResync = false;
+    resyncScheduled = false;
+    resumeAfterRequests = false;
+    resumeAfterHidden = false;
+    resumeBase = '';
+}
+
+function supportedResumeBase(): string {
+    return liveSupported() ? resumeBase || liveStreamBase() : '';
+}
+
 function addCounter(name: CounterName, amount = 1): void {
-    if (!Number.isFinite(amount) || amount <= 0) return;
-    counters[name] = Math.min(MAX_COUNTER, counters[name] + Math.floor(amount));
-    if (name === 'discards') liveDiscards = counters.discards;
+    counters[name] += amount;
+    liveDiscards = counters.discards;
 }
 
 function pruneResyncWindow(now = Date.now()): void {
@@ -195,27 +206,17 @@ function liveSupported(): boolean {
     return !!option && !option.disabled;
 }
 
-// The exact literal comparison `liveStreamBase() !== liveState.streamPath` is
-// retained in the v1 morph gate below for the server-side bundle contract.
 function liveStreamBase(): string {
     return liveStreamBaseForURL(new URL(window.location.href));
 }
 
 function isActive(connection: LiveConnection): boolean {
-    return (
-        activeConnection === connection &&
-        liveState.abort === connection.ctrl &&
-        connection.pageEpoch === pageEpoch
-    );
+    return activeConnection === connection;
 }
 
-function connectionToken(
-    source: Omit<LiveConnection, 'protocol' | 'cursor'> &
-        Partial<Pick<LiveConnection, 'protocol' | 'cursor'>>,
-): LiveConnection {
+function connectionToken(source: LiveConnection): LiveConnection {
     return Object.freeze({
         ...source,
-        protocol: source.protocol || 'pending',
         cursor: source.cursor ? Object.freeze({ ...source.cursor }) : null,
     });
 }
@@ -235,8 +236,7 @@ function abortActiveConnection(): void {
     const connection = activeConnection;
     activeConnection = null;
     liveState.abort = null;
-    pendingSnapshotTxn = null;
-    if (connection && !connection.ctrl.signal.aborted) connection.ctrl.abort();
+    connection?.ctrl.abort();
 }
 
 export function liveTeardown(): void {
@@ -244,26 +244,17 @@ export function liveTeardown(): void {
     liveFallbackSecs = 0;
 }
 
-// Called at body/history ownership boundaries. The existing body hook keeps
-// the pinned liveTeardown + state reset literals alongside this epoch bump.
+// Called at body/history ownership boundaries immediately after liveTeardown.
+// Exact connection identity and exact request-map entries own stale continuations.
 export function liveResetPage(): void {
-    pageEpoch += 1;
     ownedRequests.clear();
-    pendingSnapshotTxn = null;
-    resumeAfterRequests = false;
-    resumeAfterHidden = false;
-    resumeBase = '';
-    pendingResync = false;
-    resyncScheduled = false;
+    clearResumeIntent();
     resyncTimestamps = [];
 }
 
 function liveEngageFallback(banner: boolean): void {
     abortActiveConnection();
-    pendingResync = false;
-    resyncScheduled = false;
-    resumeAfterRequests = false;
-    resumeAfterHidden = false;
+    clearResumeIntent();
     liveState.status = 'fallback';
     liveFallbackSecs = document.getElementById('resource-list-content') ? 5 : 0;
     addCounter('fallbacks');
@@ -299,7 +290,6 @@ function openConnection(base: string): void {
         generation,
         base,
         screen: liveScreenForBase(base),
-        pageEpoch,
         protocol: 'pending',
         cursor: null,
     });
@@ -340,12 +330,7 @@ async function liveConnect(initial: LiveConnection): Promise<void> {
     let firstFrameTimer: number | null = window.setTimeout(() => {
         firstFrameTimer = null;
         const current = activeConnection;
-        if (
-            current?.ctrl === initial.ctrl &&
-            (liveState.status === 'connecting' ||
-                liveState.status === 'syncing-v1' ||
-                liveState.status === 'syncing-v2')
-        ) {
+        if (current?.ctrl === initial.ctrl) {
             liveEngageFallback(false);
         }
     }, LIVE_FIRST_FRAME_TIMEOUT_MS);
@@ -405,53 +390,46 @@ async function runLiveConnection(
         for (;;) {
             const result = await reader.read();
             if (!isActive(connection)) return;
-            if (result.done) {
-                parser.finish();
-                break;
-            }
+            // EOF is already an unconditional transport failure below. The
+            // parser is discarded with this connection, so resetting its
+            // uncommitted tail cannot affect the outcome.
+            if (result.done) break;
             const value = result.value;
             addCounter('rawBytes', value.byteLength);
             let events: LiveSSEEvent[];
             try {
                 events = parser.push(value);
-            } catch (error) {
-                if (error instanceof LiveSSEError) addCounter('invalidFrames');
+            } catch {
+                // LiveSSEParser normalizes every framing/decoder failure to its
+                // stable protocol error before it crosses this boundary.
+                addCounter('invalidFrames');
                 if (connection.protocol === 'v2') rejectProtocol(connection, false);
                 else liveEngageFallback(true);
                 return;
             }
             for (const event of events) {
-                if (!isActive(connection)) {
-                    addCounter('discards');
-                    return;
-                }
                 addCounter('payloadBytes', event.dataBytes);
                 if (connection.protocol === 'v2') {
-                    if (!handleV2Frame(connection, event.name, event.data, event.dataBytes)) return;
-                } else if (!handleV1Frame(connection, event.name, event.data, event.dataBytes)) {
-                    return;
+                    handleV2Frame(connection, event.name, event.data, event.dataBytes);
+                } else {
+                    handleV1Frame(connection, event.name, event.data, event.dataBytes);
                 }
-                if (firstFrameAccepted()) clearFirstFrameTimer();
                 const current = activeConnection;
                 if (!current || current.ctrl !== connection.ctrl) return;
                 connection = current;
+                if (firstFrameAccepted()) clearFirstFrameTimer();
             }
         }
-    } catch {
-        if (!isActive(connection)) return;
-    }
+    } catch {}
     if (isActive(connection)) liveEngageFallback(true);
 }
 
-function parseJSONRecord(text: string): Record<string, unknown> | null {
+function parseJSONValue(text: string): unknown {
+    let value: unknown;
     try {
-        const value: unknown = JSON.parse(text);
-        return typeof value === 'object' && value !== null && !Array.isArray(value)
-            ? (value as Record<string, unknown>)
-            : null;
-    } catch {
-        return null;
-    }
+        value = JSON.parse(text) as unknown;
+    } catch {}
+    return value;
 }
 
 const TERMINAL_REASONS = new Set(['idle', 'auth', 'watch-failed', 'shutdown']);
@@ -461,50 +439,49 @@ function handleV1Frame(
     name: string | null,
     text: string,
     payloadBytes: number,
-): boolean {
-    if (name !== 'ro-table' && name !== 'ro-terminal') return true;
-    const payload = parseJSONRecord(text);
-    if (!payload) {
-        addCounter('invalidFrames');
-        return true;
-    }
+): void {
+    if (name !== 'ro-table' && name !== 'ro-terminal') return;
+    const value = parseJSONValue(text);
+    // Parse failures, null, primitives, and arrays cannot carry named wire
+    // fields. Object boxes make the exact reads total; the wire gates below
+    // own the single invalid-frame outcome.
+    const payload = Object(value) as Record<string, unknown>;
     if (name === 'ro-terminal') {
-        if (payload.g !== connection.generation || !TERMINAL_REASONS.has(String(payload.reason))) {
+        if (
+            payload.g !== connection.generation ||
+            typeof payload.reason !== 'string' ||
+            !TERMINAL_REASONS.has(payload.reason)
+        ) {
             addCounter('invalidFrames');
-            return true;
+            return;
         }
         addCounter('terminals');
         liveEngageFallback(true);
-        return false;
+        return;
     }
     if (typeof payload.g !== 'string' || typeof payload.html !== 'string') {
         addCounter('invalidFrames');
-        return true;
+        return;
     }
-    const reason = shouldDiscardPush({
+    const currentBase = liveStreamBase();
+    const discard = shouldDiscardPush({
         frameGeneration: payload.g,
         currentGeneration: connection.generation,
-        liveStreamBase: liveState.streamPath,
-        openedStreamBase: liveState.streamPath,
-        requestInFlight: ownedRequests.size > 0,
+        liveStreamBase: currentBase,
+        openedStreamBase: connection.base,
     });
-    if (
-        reason === 'stale-generation' ||
-        liveStreamBase() !== liveState.streamPath ||
-        reason === 'request-in-flight'
-    ) {
+    if (discard) {
         addCounter('discards');
-        return true;
+        return;
     }
     if (!swapSnapshot(payload.html, connection, null)) {
         addCounter('invalidFrames');
         liveEngageFallback(true);
-        return false;
+        return;
     }
     addCounter('v1Snapshots');
     addCounter('snapshotBytes', payloadBytes);
     liveState.status = 'open-v1';
-    return true;
 }
 
 function validEnvelopeIdentity(envelope: LiveV2Envelope, connection: LiveConnection): boolean {
@@ -528,52 +505,54 @@ function handleV2Frame(
     name: string | null,
     text: string,
     payloadBytes: number,
-): boolean {
+): void {
     if (name !== 'ro-live') {
         rejectProtocol(connection);
-        return false;
+        return;
     }
     const decoded = decodeLiveV2Envelope(text);
     if (!decoded.ok) {
         rejectProtocol(connection);
-        return false;
+        return;
     }
     const envelope = decoded.value;
     const cursor = connection.cursor;
     if (!validEnvelopeIdentity(envelope, connection)) {
         rejectProtocol(connection);
-        return false;
+        return;
     }
     if (!cursor) {
         if (envelope.kind !== 'snapshot' || envelope.seq !== 1) {
             rejectProtocol(connection);
-            return false;
+            return;
         }
-        return commitV2Snapshot(connection, envelope, payloadBytes);
+        commitV2Snapshot(connection, envelope, payloadBytes);
+        return;
     }
     if (envelope.seq !== cursor.seq + 1) {
         rejectProtocol(connection);
-        return false;
+        return;
     }
     if (envelope.kind === 'snapshot') {
-        return commitV2Snapshot(connection, envelope, payloadBytes);
+        commitV2Snapshot(connection, envelope, payloadBytes);
+        return;
     }
     if (envelope.kind === 'terminal') {
         if (envelope.rev !== cursor.rev || envelope.schema !== cursor.schema) {
             rejectProtocol(connection);
-            return false;
+            return;
         }
         addCounter('terminals');
         liveEngageFallback(true);
-        return false;
+        return;
     }
     const applied = applyLiveV2Delta(decoded.value, cursor);
     if (!applied.ok) {
         rejectProtocol(connection);
-        return false;
+        return;
     }
     if (!replaceConnection(connection, 'v2', applied.cursor)) {
-        return false;
+        return;
     }
     // A direct delta has no response validator and emits no fake HTMX event.
     // Clear only after the atomic reducer has committed.
@@ -585,45 +564,30 @@ function handleV2Frame(
     addCounter('deleted', applied.summary.deleted);
     addCounter('projected', applied.summary.projected);
     liveState.status = 'open-v2';
-    return true;
 }
 
 function commitV2Snapshot(
     connection: LiveConnection,
     envelope: LiveV2SnapshotEnvelope,
     payloadBytes: number,
-): boolean {
-    const txn = Object.freeze({
-        generation: connection.generation,
-        pageEpoch: connection.pageEpoch,
-        sequence: envelope.seq,
-    });
-    pendingSnapshotTxn = txn;
-    if (!swapSnapshot(envelope.snapshot.html, connection, txn)) {
-        pendingSnapshotTxn = null;
-        rejectProtocol(connection);
-        return false;
-    }
+): void {
+    const txn = Object.freeze({});
+    swapSnapshot(envelope.snapshot.html, connection, txn);
     const completed = completedSnapshotTxns.has(txn);
-    pendingSnapshotTxn = null;
     if (!completed || !isActive(connection)) {
         rejectProtocol(connection);
-        return false;
+        return;
     }
-    const next = replaceConnection(connection, 'v2', snapshotCursor(envelope));
-    if (!next) {
-        return false;
-    }
+    replaceConnection(connection, 'v2', snapshotCursor(envelope));
     addCounter('v2Snapshots');
     addCounter('snapshotBytes', payloadBytes);
     liveState.status = 'open-v2';
-    return true;
 }
 
 function swapSnapshot(html: string, connection: LiveConnection, txn: object | null): boolean {
     const content = document.getElementById('resource-list-content');
     const htmx = getHtmx();
-    if (!content || !htmx || typeof htmx.swap !== 'function' || !isActive(connection)) return false;
+    if (!content || !htmx || !isActive(connection)) return false;
     clearListValidator();
     const eventInfo: LiveSnapshotEventInfo = { target: content, roLivePush: true };
     if (txn) eventInfo.roLiveSnapshotTxn = txn;
@@ -644,17 +608,11 @@ function rejectProtocol(connection: LiveConnection, countInvalid = true): void {
 }
 
 function requestResync(base: string): void {
-    if (resyncScheduled) return;
-    if (document.hidden || ownedRequests.size > 0) {
+    if (document.hidden) {
         pendingResync = true;
         resumeBase = base;
-        if (document.hidden) {
-            liveState.status = 'hidden';
-            resumeAfterHidden = true;
-        } else {
-            liveState.status = 'suspended';
-            resumeAfterRequests = true;
-        }
+        liveState.status = 'hidden';
+        resumeAfterHidden = true;
         return;
     }
     const now = Date.now();
@@ -667,9 +625,8 @@ function requestResync(base: string): void {
     addCounter('resyncs');
     liveState.status = 'resyncing';
     resyncScheduled = true;
-    const epoch = pageEpoch;
     queueMicrotask(() => {
-        if (!resyncScheduled || liveState.status !== 'resyncing' || pageEpoch !== epoch) return;
+        if (!resyncScheduled) return;
         resyncScheduled = false;
         openConnection(base);
     });
@@ -680,11 +637,15 @@ function requestDetail(event: Event): Record<string, unknown> {
 }
 
 function requestPathBase(detail: Record<string, unknown>): string | null {
-    const pathInfo = Object(detail.pathInfo) as Record<string, unknown>;
-    return (
-        liveStreamBaseFromTableRequest(pathInfo.finalRequestPath) ||
-        liveStreamBaseFromTableRequest(pathInfo.requestPath)
-    );
+    try {
+        const pathInfo = Object(detail.pathInfo) as Record<string, unknown>;
+        return (
+            liveStreamBaseFromTableRequest(pathInfo.finalRequestPath) ||
+            liveStreamBaseFromTableRequest(pathInfo.requestPath)
+        );
+    } catch {
+        return null;
+    }
 }
 
 // Called as the very first statement of refresh.ts's beforeRequest listener.
@@ -694,45 +655,43 @@ export function liveBeforeListRequest(event: Event): void {
     const detail = requestDetail(event);
     const content = document.getElementById('resource-list-content');
     const xhr = detail.xhr as XMLHttpRequest | undefined;
-    if (!content || detail.target !== content || !xhr || ownedRequests.has(xhr)) return;
-    const scheduledResync = resyncScheduled || liveState.status === 'resyncing';
-    const resumable =
-        activeConnection !== null ||
-        scheduledResync ||
-        resumeAfterRequests ||
-        (liveState.status === 'hidden' && resumeAfterHidden);
+    if (!(content && xhr && detail.target === content) || ownedRequests.has(xhr)) return;
     const entry: OwnedRequest = {
-        epoch: pageEpoch,
-        xhr,
         networkSettled: false,
         sent: false,
         swapCompleted: false,
     };
     ownedRequests.set(xhr, entry);
     try {
-        xhr.addEventListener('loadend', () => noteRequestNetworkSettled(xhr, entry), {
-            once: true,
+        xhr.addEventListener('loadend', () => {
+            if (ownsRequest(xhr, entry)) noteRequestNetworkSettled(xhr, entry);
         });
     } catch {
         // htmx:afterRequest remains the ordinary settlement path. Native
         // XMLHttpRequest always supports addEventListener; this keeps the
         // public document handler total under synthetic tests/tooling events.
     }
+    // EventTarget is an external surface under synthetic integrations. It may
+    // synchronously reset the page and reuse this XHR while registering; only
+    // the exact entry that survived registration may schedule or suspend.
+    if (!ownsRequest(xhr, entry)) return;
     // htmx:beforeRequest is cancelable. beforeSend follows synchronously only
     // when HTMX will actually send this exact XHR; otherwise no native loadend
     // exists, so retire the speculative ownership in the next microtask.
     queueMicrotask(() => {
-        if (!entry.sent) finalizeOwnedRequest(xhr, entry);
+        if (ownsRequest(xhr, entry) && !entry.sent) finalizeOwnedRequest(xhr, entry);
     });
+    const resumable =
+        activeConnection !== null || resyncScheduled || resumeAfterRequests || resumeAfterHidden;
     // Track even polling/Off traffic: an explicit Live pick during this XHR
     // must see it and defer opening. Sticky fallback itself still never sets a
     // resume intent and therefore cannot auto-reopen from ordinary polling.
-    if (!resumable || liveState.status === 'fallback') return;
+    if (!resumable) return;
     // The resync budget was charged when this ticket was scheduled. Cancel its
     // queued opener and let the ordinary final-request barrier perform that
     // already-paid reopen once; leaving the flag set would poison all later
     // resync attempts.
-    if (scheduledResync) resyncScheduled = false;
+    resyncScheduled = false;
     resumeAfterRequests = true;
     resumeBase ||= activeConnection?.base || liveState.streamPath;
     abortActiveConnection();
@@ -747,7 +706,7 @@ export function liveBeforeListRequest(event: Event): void {
 export function liveMarkListRequestSent(event: Event): void {
     const xhr = requestDetail(event).xhr as XMLHttpRequest | undefined;
     const entry = xhr ? ownedRequests.get(xhr) : undefined;
-    if (entry && entry.epoch === pageEpoch) entry.sent = true;
+    if (xhr && entry && ownsRequest(xhr, entry)) entry.sent = true;
 }
 
 export function liveAfterListRequest(event: Event): void {
@@ -755,7 +714,7 @@ export function liveAfterListRequest(event: Event): void {
     const xhr = detail.xhr as XMLHttpRequest | undefined;
     if (!xhr) return;
     const entry = ownedRequests.get(xhr);
-    if (entry) noteRequestNetworkSettled(xhr, entry);
+    if (entry && ownsRequest(xhr, entry)) noteRequestNetworkSettled(xhr, entry);
 }
 
 function requestStatus(xhr: XMLHttpRequest): number {
@@ -767,7 +726,6 @@ function requestStatus(xhr: XMLHttpRequest): number {
 }
 
 function noteRequestNetworkSettled(xhr: XMLHttpRequest, entry: OwnedRequest): void {
-    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
     entry.networkSettled = true;
     // A successful HTMX request is not complete from Live's point of view until
     // its final afterSwap repair marker lands. Readout disables delayed native
@@ -775,7 +733,8 @@ function noteRequestNetworkSettled(xhr: XMLHttpRequest, entry: OwnedRequest): vo
     // A beforeSwap cancellation resolves in an earlier queued microtask. Give
     // that synchronous lifecycle one microtask to finish; if no terminal swap
     // signal exists, fail closed instead of keeping a timer-owned request.
-    if (requestStatus(xhr) === 200 && !entry.swapCompleted) {
+    const status = requestStatus(xhr);
+    if (status === 200 && !entry.swapCompleted) {
         queueMicrotask(() => failOwnedRequestWithoutSwap(xhr, entry));
         return;
     }
@@ -787,7 +746,7 @@ function completeOwnedRequestSwap(
     entry: OwnedRequest,
     successfulBase: string | null,
 ): void {
-    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    if (!ownsRequest(xhr, entry)) return;
     entry.swapCompleted = true;
     if (successfulBase) {
         resumeBase = successfulBase;
@@ -796,20 +755,11 @@ function completeOwnedRequestSwap(
 }
 
 function failOwnedRequestWithoutSwap(xhr: XMLHttpRequest, entry: OwnedRequest): void {
-    if (
-        entry.epoch !== pageEpoch ||
-        ownedRequests.get(xhr) !== entry ||
-        entry.swapCompleted ||
-        !entry.networkSettled
-    ) {
-        return;
-    }
+    if (!ownsRequest(xhr, entry)) return;
     ownedRequests.delete(xhr);
     if (!resumeAfterRequests) return;
     if (refreshMode() !== 'Live') {
-        resumeAfterRequests = false;
-        resumeAfterHidden = false;
-        pendingResync = false;
+        clearResumeIntent();
         liveState.status = 'idle';
         liveState.streamPath = '';
         return;
@@ -821,7 +771,7 @@ function failOwnedRequestWithoutSwap(xhr: XMLHttpRequest, entry: OwnedRequest): 
 }
 
 function finalizeOwnedRequest(xhr: XMLHttpRequest, entry: OwnedRequest): void {
-    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    if (!ownsRequest(xhr, entry)) return;
     ownedRequests.delete(xhr);
     if (ownedRequests.size > 0 || !resumeAfterRequests) return;
     if (document.hidden) {
@@ -829,18 +779,17 @@ function finalizeOwnedRequest(xhr: XMLHttpRequest, entry: OwnedRequest): void {
         resumeAfterHidden = true;
         return;
     }
-    const base = resumeBase || (liveSupported() ? liveStreamBase() : '');
-    resumeAfterRequests = false;
-    resumeAfterHidden = false;
     const shouldResync = pendingResync;
-    pendingResync = false;
     if (refreshMode() !== 'Live') {
+        clearResumeIntent();
         liveState.status = 'idle';
         liveState.streamPath = '';
         return;
     }
-    if (shouldResync) requestResync(base);
-    else openConnection(liveSupported() ? base : '');
+    const supportedBase = supportedResumeBase();
+    clearResumeIntent();
+    if (supportedBase && shouldResync) requestResync(supportedBase);
+    else openConnection(supportedBase);
 }
 
 // Registered before init.ts's beforeSwap policy listener. Deferring the check
@@ -850,7 +799,7 @@ export function liveBeforeListSwapDecision(event: Event): void {
     const detail = requestDetail(event);
     const xhr = detail.xhr as XMLHttpRequest | undefined;
     const entry = xhr ? ownedRequests.get(xhr) : undefined;
-    if (!xhr || !entry || entry.epoch !== pageEpoch) return;
+    if (!xhr || !entry || !ownsRequest(xhr, entry)) return;
     queueMicrotask(() => {
         if ((event as CustomEvent).defaultPrevented || detail.shouldSwap === false) {
             completeOwnedRequestSwap(xhr, entry, null);
@@ -864,30 +813,35 @@ export function liveListRequestSwapFailed(event: Event): void {
     const detail = requestDetail(event);
     const xhr = detail.xhr as XMLHttpRequest | undefined;
     const entry = xhr ? ownedRequests.get(xhr) : undefined;
-    if (xhr && entry) completeOwnedRequestSwap(xhr, entry, null);
+    if (xhr && entry && ownsRequest(xhr, entry)) completeOwnedRequestSwap(xhr, entry, null);
 }
 
-// Called at the end of init.ts's fixed afterSwap pipeline. A Live snapshot
-// marks only its exact transaction complete; a real request swap records its
-// final byte-preserved table path for the one post-loadend resume.
+// Called at the end of init.ts's fixed afterSwap pipeline. Push events are
+// isolated from request ownership, and only the exact pending snapshot token
+// may complete one. A real request swap records its final byte-preserved table
+// path for the one post-loadend resume.
 export function liveOnListSwap(event: Event): void {
     const detail = requestDetail(event);
     const snapshotTxn = detail.roLiveSnapshotTxn;
-    if (snapshotTxn && snapshotTxn === pendingSnapshotTxn) {
-        completedSnapshotTxns.add(snapshotTxn as object);
+    if (detail.roLivePush === true) {
+        // Recording an unrelated object is harmless: commitV2Snapshot checks
+        // only its own opaque token. The WeakSet remains the identity barrier.
+        if (typeof snapshotTxn === 'object' && snapshotTxn !== null) {
+            completedSnapshotTxns.add(snapshotTxn as object);
+        }
         return;
     }
-    if (detail.roLivePush) return;
     const xhr = detail.xhr as XMLHttpRequest | undefined;
     const entry = xhr ? ownedRequests.get(xhr) : undefined;
-    if (!entry || entry.epoch !== pageEpoch) return;
+    if (!xhr || !entry || !ownsRequest(xhr, entry)) return;
     const base = requestPathBase(detail);
-    completeOwnedRequestSwap(xhr as XMLHttpRequest, entry, base);
+    completeOwnedRequestSwap(xhr, entry, base);
 }
 
 export function liveApply(force?: boolean): void {
     if (refreshMode() !== 'Live') {
         liveTeardown();
+        clearResumeIntent();
         liveState.status = 'idle';
         liveState.streamPath = '';
         return;
@@ -895,8 +849,7 @@ export function liveApply(force?: boolean): void {
     const base = liveSupported() ? liveStreamBase() : '';
     if (force) {
         resyncTimestamps = [];
-        pendingResync = false;
-        resyncScheduled = false;
+        clearResumeIntent();
     }
     if (!force && liveState.status === 'fallback') return;
     if (!force && base === liveState.streamPath && liveState.status !== 'idle') return;
@@ -914,32 +867,30 @@ export function liveApply(force?: boolean): void {
 
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-        if (
-            activeConnection ||
-            liveState.status === 'suspended' ||
-            liveState.status === 'resyncing'
-        ) {
+        if (activeConnection || resumeAfterRequests || resyncScheduled) {
             resumeBase ||= activeConnection?.base || liveState.streamPath;
             resumeAfterHidden = true;
             abortActiveConnection();
-            resyncScheduled = false;
             liveState.status = 'hidden';
         }
         return;
     }
-    if (liveState.status !== 'hidden' || !resumeAfterHidden || refreshMode() !== 'Live') return;
+    if (!resumeAfterHidden) return;
+    if (refreshMode() !== 'Live') {
+        clearResumeIntent();
+        liveState.status = 'idle';
+        liveState.streamPath = '';
+        return;
+    }
     if (ownedRequests.size > 0) {
         liveState.status = 'suspended';
         return;
     }
-    resumeAfterHidden = false;
-    const base = resumeBase || (liveSupported() ? liveStreamBase() : '');
-    if (pendingResync) {
-        pendingResync = false;
-        requestResync(base);
-    } else {
-        openConnection(liveSupported() ? base : '');
-    }
+    const shouldResync = pendingResync;
+    const supportedBase = supportedResumeBase();
+    clearResumeIntent();
+    if (supportedBase && shouldResync) requestResync(supportedBase);
+    else openConnection(supportedBase);
 });
 
 window.roLive = {

@@ -154,6 +154,7 @@ function captureTimeouts() {
 }
 
 beforeEach(() => {
+    document.body.replaceChildren();
     dependencies.liveAfterListRequest.mockReset();
     dependencies.liveApply.mockReset();
     dependencies.liveBeforeListSwapDecision.mockReset();
@@ -234,6 +235,14 @@ describe('htmx request lifecycle', () => {
         const headers: Record<string, string> = {};
         dispatchHtmx('htmx:configRequest', { elt: content, headers });
         expect(headers).toStrictEqual({ 'RO-No-Push': 'true' });
+    });
+
+    test('does not invent container ownership when the current container is absent', () => {
+        const headers: Record<string, string> = { 'RO-No-Push': 'external' };
+
+        dispatchHtmx('htmx:configRequest', { elt: null, target: null, headers });
+
+        expect(headers).toStrictEqual({ 'RO-No-Push': 'external' });
     });
 
     test('owns every RO-No-Push casing without suppressing user history', () => {
@@ -391,6 +400,15 @@ describe('htmx request lifecycle', () => {
         handleRefreshBeforeSend(event);
 
         expect(dependencies.liveMarkListRequestSent).toHaveBeenCalledExactlyOnceWith(event);
+    });
+
+    test('forwards the exact terminal request event to Live before local cleanup', () => {
+        const request = xhrAt(4);
+        const event = new CustomEvent('htmx:afterRequest', { detail: { xhr: request } });
+
+        handleRefreshAfterRequest(event);
+
+        expect(dependencies.liveAfterListRequest).toHaveBeenCalledExactlyOnceWith(event);
     });
 
     test('forwards the final swap decision and swap failure barriers to Live', () => {

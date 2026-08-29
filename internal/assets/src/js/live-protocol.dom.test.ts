@@ -183,6 +183,37 @@ beforeEach(() => {
 });
 
 describe('atomic small-list delta application', () => {
+    test('does not snapshot the cross-filter selection map for a delta without deletes', () => {
+        mount(['dev/a'], { cards: true });
+        window.roRowState.setSelected('dev/selected-outside-projection', true);
+        const originalEntries = Map.prototype.entries;
+        let selectionSnapshots = 0;
+        const entriesSpy = vi.spyOn(Map.prototype, 'entries').mockImplementation(function (
+            this: Map<unknown, unknown>,
+        ) {
+            if (this.has('dev/selected-outside-projection')) selectionSnapshots += 1;
+            return originalEntries.call(this);
+        });
+
+        const result = applyLiveV2Delta(
+            envelope({
+                upsert: [
+                    {
+                        key: 'dev/a',
+                        row: rowHTML('dev/a', 'Changed'),
+                        card: cardHTML('dev/a', 'Changed'),
+                    },
+                ],
+            }),
+            cursor(),
+            { morph: morphInPlace },
+        );
+        entriesSpy.mockRestore();
+
+        expect(result.ok).toBe(true);
+        expect(selectionSnapshots).toBe(0);
+    });
+
     test('updates by identity, changes topology/order/cards/regions, and reconciles state once', () => {
         const content = mount(['dev/a', 'dev/b', 'dev/c'], { cards: true, draft: 'next' });
         const oldA = listProjectionRowByKey('dev/a') as HTMLElement;
@@ -712,6 +743,68 @@ describe('delete versus projection row state', () => {
 });
 
 describe('fail-closed validation and rollback', () => {
+    test.each([
+        [
+            'generation',
+            envelope(countRegionDelta(), { g: 'other' }),
+            'generation-mismatch',
+            'delta generation does not match the cursor',
+        ],
+        [
+            'screen',
+            envelope(countRegionDelta(), { screen: '/other' }),
+            'screen-mismatch',
+            'delta screen does not match the cursor',
+        ],
+        [
+            'sequence',
+            envelope(countRegionDelta(), { seq: 3 }),
+            'sequence-gap',
+            'delta sequence is not the cursor successor',
+        ],
+        [
+            'base revision',
+            envelope({ ...countRegionDelta(), base: 'other' }),
+            'base-mismatch',
+            'delta base does not match the cursor revision',
+        ],
+        [
+            'schema',
+            envelope(countRegionDelta(), { schema: 'other' }),
+            'schema-mismatch',
+            'delta schema does not match the cursor schema',
+        ],
+    ] as const)('returns the exact %s cursor diagnostic', (_name, frame, code, message) => {
+        expect(applyLiveV2Delta(frame, cursor())).toStrictEqual({
+            ok: false,
+            error: { code, message, fatal: false },
+        });
+    });
+
+    test.each([
+        {
+            name: 'inherits the previous resource version',
+            previous: '10',
+            expected: '10',
+            hasResourceVersion: true,
+        },
+        {
+            name: 'keeps resource version absent',
+            previous: undefined,
+            expected: undefined,
+            hasResourceVersion: false,
+        },
+    ])('$name when a delta omits rv', ({ previous, expected, hasResourceVersion }) => {
+        mount(['dev/a'], { cards: true });
+        const frame = envelope(countRegionDelta(), { rv: undefined });
+        const result = applyLiveV2Delta(frame, cursor({ rv: previous }), { morph: morphInPlace });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.cursor.rv).toBe(expected);
+        expect(Object.hasOwn(result.cursor, 'rv')).toBe(hasResourceVersion);
+    });
+
     test.each([
         {
             name: 'generation mismatch',

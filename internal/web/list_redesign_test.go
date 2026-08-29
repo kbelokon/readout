@@ -892,9 +892,10 @@ func TestLiveWrongPageGateReadoutJSContract(t *testing.T) {
 	// whose stream identity no longer matches the live location is discarded,
 	// and every discard branch feeds the observability counter + seam.
 	for _, needle := range []string{
-		"liveStreamBase() !== liveState.streamPath", // the wrong-page gate
-		"liveDiscards",  // the discard counter
-		"window.roLive", // the e2e observability seam
+		"const currentBase = liveStreamBase()", // capture one morph-time identity
+		"if (discard)",                         // reject either failed identity check
+		"liveDiscards",                         // the discard counter
+		"window.roLive",                        // the e2e observability seam
 	} {
 		if !strings.Contains(js, needle) {
 			t.Fatalf("readout.js live wrong-page protection missing %q", needle)

@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import {
+    applyLiveRowDeletions,
     BULK_NAMES_MAX,
     clearRowState,
     lastKeySegment,
@@ -177,6 +178,32 @@ describe('row selection state', () => {
         expect(document.getElementById('ro-bulk-count')).toHaveTextContent('0 selected');
         expect(document.getElementById('ro-bulkbar')).not.toHaveClass('is-open');
         expect(document.getElementById('ro-bulkbar')).toHaveAttribute('inert');
+    });
+
+    test('live deletions repaint only when they remove stored selection or focus', () => {
+        rowState().setSelected('prod/default/api-0', true);
+        rowState().setFocus('prod/default/db-0');
+        const toggleAttribute = vi.spyOn(Element.prototype, 'toggleAttribute');
+        toggleAttribute.mockClear();
+
+        applyLiveRowDeletions(new Set(['prod/default/unknown']));
+
+        expect(toggleAttribute).not.toHaveBeenCalled();
+        expect(rowState().selectedKeys()).toStrictEqual(['prod/default/api-0']);
+        expect(rowState().focusedKey()).toBe('prod/default/db-0');
+
+        applyLiveRowDeletions(new Set(['prod/default/api-0']));
+
+        expect(toggleAttribute).toHaveBeenCalled();
+        expect(rowState().selectedKeys()).toStrictEqual([]);
+        expect(rowState().focusedKey()).toBe('prod/default/db-0');
+
+        toggleAttribute.mockClear();
+        applyLiveRowDeletions(new Set(['prod/default/db-0']));
+
+        expect(toggleAttribute).toHaveBeenCalled();
+        expect(rowState().focusedKey()).toBeNull();
+        expect(document.getElementById('ro-bulk-count')).toHaveTextContent('0 selected');
     });
 
     test('exports the delegated row-click contract', () => {

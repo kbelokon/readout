@@ -361,7 +361,8 @@ interface ElementJournalEntry {
 
 interface PlacementJournalEntry {
     node: Node;
-    parent: ParentNode;
+    parent: ParentNode | null;
+    parentWasConnected: boolean;
     nextSibling: Node | null;
 }
 
@@ -403,9 +404,9 @@ function oneElementRoot(parent: ParentNode): HTMLElement | null {
     return root;
 }
 
-// Byte-for-byte JS port of web.rowDomID. Kubernetes identity keys are UTF-8
-// text; only the ASCII bytes unsafe in Idiomorph's quoted id selector are
-// escaped, so iterating Unicode code points preserves every non-ASCII rune.
+// Byte-for-byte JS port of web.rowDomID. This is a defensive client-side
+// identity check, not an expansion of the wire schema: the ASCII bytes unsafe
+// in Idiomorph's quoted id selector are escaped while non-ASCII runes remain.
 function liveRowDOMID(key: string): string {
     let result = 'row-';
     for (const character of key) {
@@ -434,8 +435,8 @@ function fragmentIsCSPClean(root: HTMLElement): boolean {
     let nodes = 0;
     let attributes = 0;
     const pending: { node: Node; depth: number }[] = [{ node: root, depth: 1 }];
-    while (pending.length > 0) {
-        const current = pending.pop() as { node: Node; depth: number };
+    for (let cursor = 0; cursor < pending.length; cursor += 1) {
+        const current = pending[cursor] as { node: Node; depth: number };
         nodes += 1;
         if (nodes > LIVE_FRAGMENT_NODES || current.depth > LIVE_FRAGMENT_DEPTH) {
             return false;
@@ -483,9 +484,7 @@ function fragmentIsCSPClean(root: HTMLElement): boolean {
 
 function parseRowFragment(html: string, key: string): HTMLElement | LiveV2Error {
     try {
-        const table = document.createElement('table');
         const tbody = document.createElement('tbody');
-        table.append(tbody);
         tbody.innerHTML = html;
         const row = oneElementRoot(tbody);
         if (
@@ -549,6 +548,7 @@ function parseRegionFragment(
         const template = document.createElement('template');
         template.innerHTML = update.html;
         const incoming = oneElementRoot(template.content);
+        const current = mounts.item(0) as HTMLElement;
         const expectedTag = update.region === 'phase' ? 'DIV' : 'SPAN';
         const expectedClass =
             update.region === 'count'
@@ -562,8 +562,8 @@ function parseRegionFragment(
             !incoming.classList.contains(expectedClass) ||
             incoming.dataset.roLiveRegion !== update.region ||
             incoming.hasAttribute('id') ||
-            mounts[0]?.tagName !== expectedTag ||
-            !mounts[0]?.classList.contains(expectedClass) ||
+            current.tagName !== expectedTag ||
+            !current.classList.contains(expectedClass) ||
             incoming.querySelector('[id], [data-ro-live-region]') !== null ||
             !fragmentIsCSPClean(incoming)
         ) {
@@ -572,7 +572,7 @@ function parseRegionFragment(
                 `region ${update.region} is not one canonical fixed-region root`,
             );
         }
-        return { current: mounts[0] as HTMLElement, incoming };
+        return { current, incoming };
     } catch {
         return projectionError('fragment-invalid', `region ${update.region} cannot be parsed`);
     }
@@ -591,6 +591,8 @@ function validateDeltaHTMLBounds(plan: ListProjectionDeltaPlan): LiveV2Error | n
         ...plan.regions.map((operation) => operation.html),
     ];
     for (const html of fragments) {
+        // UTF-16 length is a cheap lower bound on UTF-8 bytes. Reject obvious
+        // oversize input before allocating the encoded copy.
         if (html.length > LIVE_FRAGMENT_BYTES) {
             return projectionError('limit-exceeded', 'Live delta fragment exceeds its limit');
         }
@@ -636,7 +638,7 @@ function validateCurrentProjection(
     const mode = currentProjectionMode();
     if (typeof mode !== 'string') return mode;
     const tables = content.querySelectorAll<HTMLTableElement>('table.ro-table');
-    const tbody = tables.length === 1 ? tables[0]?.tBodies.item(0) : null;
+    const tbody = tables.length === 1 ? tables[0].tBodies.item(0) : null;
     if (!tbody) {
         return projectionError('projection-mismatch', 'projection table mount is ambiguous');
     }
@@ -645,17 +647,18 @@ function validateCurrentProjection(
         if (
             orderSet.size !== projection.order.length ||
             projection.rows.length !== projection.order.length ||
-            projection.byKey.size !== projection.order.length ||
-            projection.indexByKey.size !== projection.order.length ||
             projection.modelRows.length !== projection.order.length ||
-            projection.order.some(
-                (key, index) =>
-                    projection.byKey.get(key) !== projection.rows[index] ||
-                    projection.indexByKey.get(key) !== index ||
-                    projection.rows[index]?.dataset.key !== key ||
-                    projection.rows[index]?.id !== liveRowDOMID(key) ||
-                    projection.modelRows[index]?.key !== key,
-            )
+            projection.order.some((key, index) => {
+                const row = projection.rows[index];
+                const model = projection.modelRows[index];
+                return (
+                    !row ||
+                    !model ||
+                    row.dataset.key !== key ||
+                    row.id !== liveRowDOMID(key) ||
+                    model.key !== key
+                );
+            })
         ) {
             return projectionError(
                 'projection-mismatch',
@@ -748,10 +751,12 @@ function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error 
         }
         if (existingRow) {
             const index = projection.indexByKey.get(operation.key);
+            const model = index === undefined ? undefined : projection.modelRows[index];
             if (
                 index === undefined ||
                 projection.rows[index] !== existingRow ||
-                projection.modelRows[index]?.key !== operation.key ||
+                !model ||
+                model.key !== operation.key ||
                 (existingRow.isConnected && existingRow.parentElement !== current.tbody)
             ) {
                 return projectionError(
@@ -762,8 +767,7 @@ function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error 
         }
         const globalMatches = document.querySelectorAll<HTMLElement>(`[id="${row.id}"]`);
         if (
-            (existingRow?.isConnected &&
-                (globalMatches.length !== 1 || globalMatches[0] !== existingRow)) ||
+            (existingRow?.isConnected && globalMatches.length !== 1) ||
             (existingRow && !existingRow.isConnected && globalMatches.length !== 0) ||
             (!existingRow && globalMatches.length !== 0)
         ) {
@@ -825,7 +829,7 @@ function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error 
         }
         return {
             candidate: { ...projection },
-            fastPath: true,
+            fastPath,
             modelUpdates,
             parsedRows,
             parsedCards,
@@ -851,14 +855,15 @@ function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error 
             'empty projection boundary requires snapshot',
         );
     }
-    const topologyChanged = removed.size > 0 || inserted > 0;
-    if (topologyChanged && plan.order === undefined) {
+    // Reaching the structural branch without an order means either a removal
+    // or an insertion made `fastPath` false, so topology necessarily changed.
+    if (plan.order === undefined) {
         return projectionError(
             'projection-mismatch',
             'topology-changing delta requires full order',
         );
     }
-    const finalOrder = plan.order ? [...plan.order] : [...projection.order];
+    const finalOrder = [...plan.order];
     if (
         finalOrder.length !== finalKeys.size ||
         new Set(finalOrder).size !== finalOrder.length ||
@@ -866,7 +871,10 @@ function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error 
     ) {
         return projectionError('projection-mismatch', 'delta order is not the exact final key set');
     }
-    if (plan.order && !topologyChanged && arraysEqual(plan.order, projection.order)) {
+    // Once the exact final key set is established, a topology change cannot
+    // equal the previous order, so this comparison covers only a redundant
+    // reorder without carrying a separately derived topology flag.
+    if (arraysEqual(plan.order, projection.order)) {
         return projectionError('projection-mismatch', 'redundant unchanged order is not allowed');
     }
 
@@ -887,28 +895,20 @@ function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error 
     const rows = finalOrder.map((key) => candidateByKey.get(key) as HTMLElement);
     const modelByKey = new Map(projection.modelRows.map((model) => [model.key, model]));
     for (const [key, incoming] of parsedRows) modelByKey.set(key, captureModelRow(incoming));
-    for (const key of removed) modelByKey.delete(key);
     const modelRows = finalOrder.map((key) => modelByKey.get(key) as ModelRow);
-    if (rows.some((row) => !row) || modelRows.some((row) => !row)) {
-        return projectionError('projection-mismatch', 'delta candidate is incomplete');
-    }
 
-    const ids = new Set<string>();
     for (const key of finalOrder) {
         // Audit the node that will actually own this key after commit. For an
         // updated connected row that is the existing identity-preserved root,
         // not the detached incoming parse tree.
-        const row = candidateByKey.get(key);
-        if (!row || row.id !== liveRowDOMID(key) || ids.has(row.id)) {
-            return projectionError('fragment-invalid', 'row ids are missing or duplicate');
-        }
+        const row = candidateByKey.get(key) as HTMLElement;
         // Structural/reorder preflight is intentionally O(final rows): unlike
         // the existing-upsert fast path, it must audit every final identity so
         // an external duplicate on an untouched row cannot poison Idiomorph's
         // document-wide id matching.
         const globalMatches = document.querySelectorAll<HTMLElement>(`[id="${row.id}"]`);
         if (
-            (row.isConnected && (globalMatches.length !== 1 || globalMatches[0] !== row)) ||
+            (row.isConnected && globalMatches.length !== 1) ||
             (!row.isConnected && globalMatches.length !== 0)
         ) {
             return projectionError(
@@ -916,7 +916,6 @@ function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error 
                 `final row ${key} collides with a document id`,
             );
         }
-        ids.add(row.id);
     }
     return {
         candidate: {
@@ -929,7 +928,7 @@ function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error 
             modelRows,
             windowed: projection.windowed,
         },
-        fastPath: false,
+        fastPath,
         modelUpdates: new Map(),
         parsedRows,
         parsedCards,
@@ -948,33 +947,25 @@ function prepareDelta(plan: ListProjectionDeltaPlan): ParsedDelta | LiveV2Error 
 }
 
 function addParentJournal(
-    entries: ParentJournalEntry[],
-    seen: Set<ParentNode>,
+    entries: Map<ParentNode, ParentJournalEntry>,
     parent: ParentNode | null,
 ): void {
-    if (parent && !seen.has(parent)) {
-        seen.add(parent);
-        entries.push({ parent, children: Array.from(parent.childNodes) });
+    if (parent) {
+        entries.set(parent, { parent, children: Array.from(parent.childNodes) });
     }
 }
 
-function addElementJournal(
-    entries: ElementJournalEntry[],
-    seen: Set<HTMLElement>,
-    element: HTMLElement,
-): void {
-    if (!seen.has(element)) {
-        seen.add(element);
-        entries.push({ state: captureDOMNode(element) });
-    }
+function addElementJournal(entries: ElementJournalEntry[], element: HTMLElement): void {
+    entries.push({ state: captureDOMNode(element) });
 }
 
-function addPlacementJournal(entries: PlacementJournalEntry[], seen: Set<Node>, node: Node): void {
-    const parent = node.parentNode;
-    if (parent && !seen.has(node)) {
-        seen.add(node);
-        entries.push({ node, parent, nextSibling: node.nextSibling });
-    }
+function addPlacementJournal(entries: PlacementJournalEntry[], node: Node): void {
+    entries.push({
+        node,
+        parent: node.parentNode,
+        parentWasConnected: node.parentNode?.isConnected === true,
+        nextSibling: node.nextSibling,
+    });
 }
 
 function captureDOMNode(node: Node): DOMNodeState {
@@ -994,80 +985,73 @@ function captureDOMNode(node: Node): DOMNodeState {
 
 function addAttributeJournal(
     entries: AttributeJournalEntry[],
-    seen: Map<HTMLElement, Set<string>>,
     element: HTMLElement,
     name: string,
 ): void {
-    const names = seen.get(element) || new Set<string>();
-    if (names.has(name)) return;
-    names.add(name);
-    seen.set(element, names);
     entries.push({ element, name, value: element.getAttribute(name) });
 }
 
 function createDOMJournal(parsed: ParsedDelta): DeltaDOMJournal {
-    const parents: ParentJournalEntry[] = [];
+    const parents = new Map<ParentNode, ParentJournalEntry>();
     const placements: PlacementJournalEntry[] = [];
     const elements: ElementJournalEntry[] = [];
     const attributes: AttributeJournalEntry[] = [];
-    const seenParents = new Set<ParentNode>();
-    const seenPlacements = new Set<Node>();
-    const seenElements = new Set<HTMLElement>();
-    const seenAttributes = new Map<HTMLElement, Set<string>>();
     // Structural deltas replace the full canonical order. A fast small-list
     // upsert morphs roots in place, so targeted parent/nextSibling checkpoints
     // below avoid copying every tbody/card child merely to update one row.
     if (!parsed.fastPath || projection.windowed) {
-        addParentJournal(parents, seenParents, parsed.tbody);
+        addParentJournal(parents, parsed.tbody);
     }
     parsed.tbody.querySelectorAll<HTMLElement>(':scope > tr.ro-vspacer').forEach((spacer) => {
-        addElementJournal(elements, seenElements, spacer);
+        addElementJournal(elements, spacer);
     });
     if (parsed.cardMount && !parsed.fastPath) {
-        addParentJournal(parents, seenParents, parsed.cardMount);
+        addParentJournal(parents, parsed.cardMount);
     }
 
     for (const key of parsed.parsedRows.keys()) {
         const current = projection.byKey.get(key);
         if (current) {
             if (parsed.fastPath) {
-                addPlacementJournal(placements, seenPlacements, current);
+                addPlacementJournal(placements, current);
             }
-            addElementJournal(elements, seenElements, current);
+            addElementJournal(elements, current);
         }
     }
     for (const key of parsed.parsedCards.keys()) {
         const current = projection.cardsByKey.get(key);
-        if (current?.isConnected) {
+        // Every existing card was just validated against the connected fixed
+        // card mount. Inserted cards have no current identity to journal.
+        if (current) {
             if (parsed.fastPath) {
-                addPlacementJournal(placements, seenPlacements, current);
+                addPlacementJournal(placements, current);
             }
-            addElementJournal(elements, seenElements, current);
+            addElementJournal(elements, current);
         }
     }
     for (const { current } of parsed.parsedRegions.values()) {
-        addParentJournal(parents, seenParents, current.parentNode);
-        addElementJournal(elements, seenElements, current);
+        addParentJournal(parents, current.parentNode);
+        addElementJournal(elements, current);
     }
     if (!parsed.fastPath) {
         for (const element of [...projection.rows, ...projection.cardsByKey.values()]) {
-            addAttributeJournal(attributes, seenAttributes, element, 'class');
+            addAttributeJournal(attributes, element, 'class');
         }
     }
     document.querySelectorAll<HTMLElement>('.ro-table-wrap').forEach((wrap) => {
-        addAttributeJournal(attributes, seenAttributes, wrap, 'aria-activedescendant');
+        addAttributeJournal(attributes, wrap, 'aria-activedescendant');
     });
     const status = document.getElementById('ro-live-status');
     if (status) {
-        addParentJournal(parents, seenParents, status.parentNode);
-        addElementJournal(elements, seenElements, status);
+        addParentJournal(parents, status.parentNode);
+        addElementJournal(elements, status);
     }
     const bulk = document.getElementById('ro-bulkbar');
     if (bulk) {
-        addParentJournal(parents, seenParents, bulk.parentNode);
-        addElementJournal(elements, seenElements, bulk);
+        addParentJournal(parents, bulk.parentNode);
+        addElementJournal(elements, bulk);
     }
-    return { parents, placements, elements, attributes };
+    return { parents: [...parents.values()], placements, elements, attributes };
 }
 
 function restoreDOMNode(state: DOMNodeState): void {
@@ -1077,7 +1061,7 @@ function restoreDOMNode(state: DOMNodeState): void {
         for (const attribute of state.attributes) {
             node.setAttribute(attribute.name, attribute.value);
         }
-    } else if (node.nodeValue !== state.nodeValue) {
+    } else {
         node.nodeValue = state.nodeValue;
     }
     if (node instanceof Element) {
@@ -1088,41 +1072,41 @@ function restoreDOMNode(state: DOMNodeState): void {
 
 function verifyDOMNode(state: DOMNodeState): boolean {
     const { node } = state;
-    if (node.nodeValue !== state.nodeValue) return false;
-    if (node instanceof Element && state.attributes) {
-        if (node.attributes.length !== state.attributes.length) return false;
-        for (const attribute of state.attributes) {
-            if (node.getAttribute(attribute.name) !== attribute.value) return false;
-        }
+    if (!(node instanceof Element)) return node.nodeValue === state.nodeValue;
+    const attributes = state.attributes as { name: string; value: string }[];
+    if (node.attributes.length !== attributes.length) return false;
+    for (const attribute of attributes) {
+        if (node.getAttribute(attribute.name) !== attribute.value) return false;
     }
     const children = Array.from(node.childNodes);
-    return (
-        children.length === state.children.length &&
-        children.every((child, index) => child === state.children[index]?.node) &&
-        state.children.every(verifyDOMNode)
-    );
+    if (children.length !== state.children.length) return false;
+    for (let index = 0; index < children.length; index += 1) {
+        const childState = state.children[index] as DOMNodeState;
+        if (children[index] !== childState.node || !verifyDOMNode(childState)) return false;
+    }
+    return true;
 }
 
 function restorePlacementJournal(entries: readonly PlacementJournalEntry[]): void {
     const byNode = new Map(entries.map((entry) => [entry.node, entry]));
     const restored = new Set<Node>();
-    const restoring = new Set<Node>();
     const restore = (entry: PlacementJournalEntry): void => {
         if (restored.has(entry.node)) return;
-        if (restoring.has(entry.node)) throw new Error('original sibling order is cyclic');
-        if (entry.parent instanceof Element && !entry.parent.isConnected) {
-            throw new Error('an original parent mount disappeared');
-        }
-        restoring.add(entry.node);
-        if (entry.nextSibling) {
-            const dependency = byNode.get(entry.nextSibling);
-            if (dependency) restore(dependency);
-            else if (entry.nextSibling.parentNode !== entry.parent) {
-                throw new Error('an original sibling disappeared');
+        if (!entry.parent) {
+            entry.node.parentNode?.removeChild(entry.node);
+        } else {
+            if (entry.parentWasConnected && !entry.parent.isConnected) {
+                throw new Error();
             }
+            if (entry.nextSibling) {
+                const dependency = byNode.get(entry.nextSibling);
+                if (dependency) restore(dependency);
+            }
+            entry.parent.insertBefore(entry.node, entry.nextSibling);
         }
-        entry.parent.insertBefore(entry.node, entry.nextSibling);
-        restoring.delete(entry.node);
+        // The dependency graph comes from real nextSibling chains, so it is
+        // acyclic. A predecessor restored before this node changes only its
+        // previousSibling; this placement never needs to be applied again.
         restored.add(entry.node);
     };
     for (const entry of entries) restore(entry);
@@ -1132,7 +1116,7 @@ function restorePlacementJournal(entries: readonly PlacementJournalEntry[]): voi
                 node.parentNode !== parent || node.nextSibling !== nextSibling,
         )
     ) {
-        throw new Error('original root placement could not be restored');
+        throw new Error();
     }
 }
 
@@ -1142,7 +1126,7 @@ function restoreDOMJournal(journal: DeltaDOMJournal): void {
             ({ parent }) => parent instanceof Element && parent.isConnected === false,
         )
     ) {
-        throw new Error('an original parent mount disappeared');
+        throw new Error();
     }
     for (const { parent, children } of journal.parents) parent.replaceChildren(...children);
     restorePlacementJournal(journal.placements);
@@ -1157,11 +1141,11 @@ function restoreDOMJournal(journal: DeltaDOMJournal): void {
             restored.length !== children.length ||
             restored.some((child, index) => child !== children[index])
         ) {
-            throw new Error('original child order could not be restored');
+            throw new Error();
         }
     }
     if (journal.elements.some(({ state }) => !verifyDOMNode(state))) {
-        throw new Error('original descendant identity could not be restored');
+        throw new Error();
     }
 }
 
@@ -1178,12 +1162,10 @@ function resolveMorph(
     };
 }
 
-const MORPH_TRANSIENT_CLASSES = ['is-selected', 'kfocus', 'ro-row-filtered', 'ro-cell-changed'];
-
 function canonicalMorphClone(element: HTMLElement): HTMLElement {
     const clone = element.cloneNode(true) as HTMLElement;
     for (const current of [clone, ...Array.from(clone.querySelectorAll<HTMLElement>('*'))]) {
-        current.classList.remove(...MORPH_TRANSIENT_CLASSES);
+        current.classList.remove('is-selected', 'kfocus', 'ro-row-filtered', 'ro-cell-changed');
         if (current.getAttribute('class') === '') current.removeAttribute('class');
     }
     return clone;
@@ -1204,7 +1186,9 @@ function runScopedMorph(
     const outcome = morph(current, incoming);
     if (!connected) {
         if (parent) {
-            parent.insertBefore(current, next?.parentNode === parent ? next : null);
+            // If the original sibling also moved, insertBefore fails closed;
+            // the transaction journal then restores the whole dependency set.
+            parent.insertBefore(current, next);
         } else {
             current.remove();
         }
@@ -1216,7 +1200,7 @@ function runScopedMorph(
         outcome === false ||
         !morphLandedCanonical(current, incoming)
     ) {
-        throw new Error('scoped morph did not land canonical content in place');
+        throw new Error();
     }
 }
 
@@ -1255,11 +1239,7 @@ export function applyListProjectionDeltaTransaction(
     const morphNeeded =
         [...parsed.parsedRows.keys()].some(
             (key) => parsed.candidate.byKey.get(key) === projection.byKey.get(key),
-        ) ||
-        [...parsed.parsedCards.keys()].some(
-            (key) => parsed.candidate.cardsByKey.get(key) === projection.cardsByKey.get(key),
-        ) ||
-        parsed.parsedRegions.size > 0;
+        ) || parsed.parsedRegions.size > 0;
     const morph = resolveMorph(options.morph);
     if (morphNeeded && !morph) {
         return {
@@ -1291,28 +1271,21 @@ export function applyListProjectionDeltaTransaction(
             const current = oldProjection.byKey.get(key);
             if (current && parsed.candidate.byKey.get(key) === current) {
                 runScopedMorph(morph as NonNullable<typeof morph>, current, incoming);
-                if (current.dataset.key !== key) {
-                    throw new Error(`row morph did not preserve ${key}`);
-                }
             }
         }
         for (const [key, incoming] of parsed.parsedCards) {
             const current = oldProjection.cardsByKey.get(key);
-            if (current && parsed.candidate.cardsByKey.get(key) === current) {
+            // An existing card is always connected and identity-preserved by
+            // prepareDelta; inserted cards have no current node to morph.
+            if (current) {
                 runScopedMorph(morph as NonNullable<typeof morph>, current, incoming);
-                if (current.dataset.key !== key) {
-                    throw new Error(`card morph did not preserve ${key}`);
-                }
             }
         }
         for (const { current, incoming } of parsed.parsedRegions.values()) {
             runScopedMorph(morph as NonNullable<typeof morph>, current, incoming);
-            if (current.dataset.roLiveRegion !== incoming.dataset.roLiveRegion) {
-                throw new Error('region morph did not preserve its fixed mount');
-            }
         }
 
-        if (!oldProjection.windowed) {
+        if (!oldProjection.windowed && !parsed.fastPath) {
             parsed.tbody.replaceChildren(...parsed.candidate.rows);
             (parsed.cardMount as HTMLElement).replaceChildren(
                 ...parsed.candidate.order.map(

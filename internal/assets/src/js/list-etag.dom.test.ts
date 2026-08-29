@@ -93,6 +93,17 @@ describe('successful representation storage', () => {
         expect(content.dataset.roEtagPath).toBe(TABLE_PATH);
     });
 
+    test('rejects an empty final path even when the current page itself ends in _table', () => {
+        const content = renderContent();
+        remember(content);
+        window.history.replaceState(null, '', TABLE_PATH);
+
+        remember(content, { path: '' });
+
+        expect(content.dataset.roEtag).toBeUndefined();
+        expect(content.dataset.roEtagPath).toBeUndefined();
+    });
+
     test.each([
         ['missing ETag', null, TABLE_PATH],
         ['malformed ETag', 'W/ "space-before-tag"', TABLE_PATH],
@@ -157,6 +168,25 @@ describe('configRequest conditional header gate', () => {
                 target: content,
                 headers,
                 path: `https://readout.test${TABLE_PATH}#ignored`,
+            }),
+        );
+
+        expect(headers).toStrictEqual({
+            'RO-No-Push': 'true',
+            'If-None-Match': ETAG,
+        });
+    });
+
+    test('accepts the real htmx shape when an exact container request omits target', () => {
+        const content = renderContent();
+        remember(content);
+        const headers = { 'RO-No-Push': 'true' };
+
+        configureListValidatorRequest(
+            htmxEvent('htmx:configRequest', {
+                elt: content,
+                headers,
+                path: TABLE_PATH,
             }),
         );
 

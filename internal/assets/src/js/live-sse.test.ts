@@ -9,11 +9,46 @@ function parse(parts: Array<string | Uint8Array>, limits = {}) {
     const events = parts.flatMap((part) =>
         parser.push(typeof part === 'string' ? encoder.encode(part) : part),
     );
-    parser.finish();
     return events;
 }
 
 describe('LiveSSEParser', () => {
+    test('pins the exact production framing allowances without parsing large payloads', () => {
+        expect(LIVE_SSE_LIMITS.eventBytes).toBe(LIVE_SSE_LIMITS.dataBytes + 1024);
+        expect(LIVE_SSE_LIMITS.lineBytes).toBe(LIVE_SSE_LIMITS.dataBytes + 1024);
+    });
+
+    test('publishes the intended production ceilings', () => {
+        expect(LIVE_SSE_LIMITS).toStrictEqual({
+            dataBytes: 16_777_216,
+            eventBytes: 16_778_240,
+            eventNameBytes: 64,
+            lines: 32,
+            lineBytes: 16_778_240,
+        });
+    });
+
+    test('preserves a retained line across one small asymmetric growth step', () => {
+        const parser = new LiveSSEParser({
+            dataBytes: 2_124,
+            eventBytes: 2_133,
+            lineBytes: 2_124,
+        });
+        const retained = `data:${'x'.repeat(1_019)}`;
+        const appended = 'y'.repeat(1_100);
+        const copiedData = `${'x'.repeat(1_019)}${appended}`;
+        const data = `${copiedData}\nzzzz`;
+
+        expect(encoder.encode(retained).byteLength).toBe(1_024);
+        expect(parser.push(encoder.encode(retained))).toStrictEqual([]);
+        expect(parser.push(encoder.encode(appended))).toStrictEqual([]);
+        expect(encoder.encode(`${retained}${appended}`).byteLength).toBe(2_124);
+
+        expect(parser.push(encoder.encode('\ndata:zzzz\n\n'))).toStrictEqual([
+            { name: null, data, dataBytes: 2_124 },
+        ]);
+    });
+
     test('parses every byte boundary including a split UTF-8 code point', () => {
         const bytes = encoder.encode(': heartbeat\r\nevent: ro-live\rdata: {"emoji":"🫠"}\r\r');
         const parser = new LiveSSEParser();
@@ -51,6 +86,11 @@ describe('LiveSSEParser', () => {
         ]);
     });
 
+    test('does not dispatch field-only events and accepts a data field without a colon', () => {
+        expect(parse(['event:x\nretry:1\n\n'])).toStrictEqual([]);
+        expect(parse(['data\n\n'])).toStrictEqual([{ name: null, data: '', dataBytes: 0 }]);
+    });
+
     test('accepts each exact cap', () => {
         const parser = new LiveSSEParser({
             dataBytes: 3,
@@ -64,13 +104,33 @@ describe('LiveSSEParser', () => {
     });
 
     test.each([
-        ['event-name-too-large', () => parse(['event:abc\ndata:x\n\n'], { eventNameBytes: 2 })],
-        ['too-many-lines', () => parse(['x:1\ny:2\ndata:z\n\n'], { lines: 2 })],
-        ['data-too-large', () => parse(['data:ab\ndata:c\n\n'], { dataBytes: 3 })],
-        ['event-too-large', () => parse([':1234\nx:5678\n'], { eventBytes: 10 })],
-        ['line-too-large', () => parse(['data:abcd'], { lineBytes: 8 })],
-    ] as const)('fails fatally at cap + 1: %s', (code, run) => {
-        expect(run).toThrowError(expect.objectContaining({ code }));
+        [
+            'event-name-too-large',
+            'SSE event name exceeds its byte limit',
+            () => parse(['event:abc\ndata:x\n\n'], { eventNameBytes: 2 }),
+        ],
+        [
+            'too-many-lines',
+            'SSE event has too many nonblank lines',
+            () => parse(['x:1\ny:2\ndata:z\n\n'], { lines: 2 }),
+        ],
+        [
+            'data-too-large',
+            'SSE event data exceeds its byte limit',
+            () => parse(['data:ab\ndata:c\n\n'], { dataBytes: 3 }),
+        ],
+        [
+            'event-too-large',
+            'SSE event framing exceeds its byte limit',
+            () => parse([':1234\nx:5678\n'], { eventBytes: 10 }),
+        ],
+        [
+            'line-too-large',
+            'SSE field line exceeds its byte limit',
+            () => parse(['data:abcd'], { lineBytes: 8 }),
+        ],
+    ] as const)('fails fatally at cap + 1: %s', (code, message, run) => {
+        expect(run).toThrowError(expect.objectContaining({ code, message, name: 'LiveSSEError' }));
     });
 
     test('bounds an endless unterminated line before EOF', () => {
@@ -85,7 +145,11 @@ describe('LiveSSEParser', () => {
         const parser = new LiveSSEParser();
         expect(parser.push(Uint8Array.of(0x64, 0x61, 0x74, 0x61, 0x3a, 0xc3))).toStrictEqual([]);
         expect(() => parser.push(Uint8Array.of(0x0a))).toThrowError(
-            expect.objectContaining({ code: 'invalid-utf8' }),
+            expect.objectContaining({
+                code: 'invalid-utf8',
+                message: 'SSE field line is not valid UTF-8',
+                name: 'LiveSSEError',
+            }),
         );
         expect(() => parser.push(encoder.encode('data:ok\n\n'))).toThrow(LiveSSEError);
     });
@@ -109,6 +173,28 @@ describe('LiveSSEParser', () => {
         ]);
     });
 
+    test('accepts an exact geometric line cap and rejects the next byte', () => {
+        const line = `data:${'x'.repeat(1_095)}`;
+        const retained = encoder.encode(line.slice(0, 1_024));
+        const remainder = encoder.encode(line.slice(1_024));
+        expect(retained.byteLength).toBe(1_024);
+        expect(remainder.byteLength).toBe(76);
+
+        const exact = new LiveSSEParser({ lineBytes: 1_100 });
+        expect(exact.push(retained)).toStrictEqual([]);
+        expect(exact.push(remainder)).toStrictEqual([]);
+        expect(exact.push(encoder.encode('\n\n'))).toStrictEqual([
+            { name: null, data: 'x'.repeat(1_095), dataBytes: 1_095 },
+        ]);
+
+        const over = new LiveSSEParser({ lineBytes: 1_100 });
+        over.push(retained);
+        over.push(remainder);
+        expect(() => over.push(encoder.encode('x'))).toThrowError(
+            expect.objectContaining({ code: 'line-too-large' }),
+        );
+    });
+
     test.each([':1234\n:5678\n:90\n', 'x:1234\ny:5678\nz:9\n'])(
         'bounds aggregate ignored/comment framing before decode amplification',
         (wire) => {
@@ -117,6 +203,12 @@ describe('LiveSSEParser', () => {
             );
         },
     );
+
+    test('accepts the aggregate event-byte boundary exactly', () => {
+        expect(parse(['event:x\ndata:abc\n\n'], { eventBytes: 15 })).toStrictEqual([
+            { name: 'x', data: 'abc', dataBytes: 3 },
+        ]);
+    });
 
     test.each([
         {
@@ -141,19 +233,6 @@ describe('LiveSSEParser', () => {
         expect(() => parse([exact])).not.toThrow();
         expect(() => parse([plusOne])).toThrowError(
             expect.objectContaining({ code: 'too-many-lines' }),
-        );
-    });
-
-    test('production aggregate cap is 16 MiB and boundary logic rejects +1', () => {
-        expect(LIVE_SSE_LIMITS.dataBytes).toBe(16 * 1024 * 1024);
-
-        const dataBytes = 64;
-        expect(
-            parse([`event: ro-live\ndata:${'x'.repeat(dataBytes)}\n\n`], { dataBytes })[0]
-                .dataBytes,
-        ).toBe(dataBytes);
-        expect(() => parse([`data:${'x'.repeat(dataBytes + 1)}\n\n`], { dataBytes })).toThrowError(
-            expect.objectContaining({ code: 'data-too-large' }),
         );
     });
 });

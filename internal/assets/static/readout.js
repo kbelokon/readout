@@ -6,13 +6,58 @@
   }
 
   // internal/assets/src/js/filters-parse.ts
-  var goFieldWhitespaceRun = /\p{White_Space}+/gu;
-  var goFieldWhitespaceEdges = /^\p{White_Space}+|\p{White_Space}+$/gu;
+  var GO_FIELD_WHITESPACE = /* @__PURE__ */ new Set([
+    9,
+    10,
+    11,
+    12,
+    13,
+    32,
+    133,
+    160,
+    5760,
+    8192,
+    8193,
+    8194,
+    8195,
+    8196,
+    8197,
+    8198,
+    8199,
+    8200,
+    8201,
+    8202,
+    8232,
+    8233,
+    8239,
+    8287,
+    12288
+  ]);
+  function isGoFieldWhitespace(character) {
+    return GO_FIELD_WHITESPACE.has(character.charCodeAt(0));
+  }
   function trimFilterWhitespace(s) {
-    return (s || "").replace(goFieldWhitespaceEdges, "");
+    const characters = Array.from(s || "");
+    const first = characters.findIndex((character) => !isGoFieldWhitespace(character));
+    const last = characters.reduceRight(
+      (found, character, index) => found === -1 && !isGoFieldWhitespace(character) ? index : found,
+      -1
+    );
+    return characters.slice(first, last + 1).join("");
   }
   function normalizeFieldWhitespace(s) {
-    return trimFilterWhitespace((s || "").replace(goFieldWhitespaceRun, " "));
+    const normalized = [];
+    let pendingSpace = false;
+    for (const character of s || "") {
+      if (isGoFieldWhitespace(character)) {
+        pendingSpace = normalized.length > 0;
+        continue;
+      }
+      if (pendingSpace) normalized.push(" ");
+      normalized.push(character);
+      pendingSpace = false;
+    }
+    return normalized.join("");
   }
   function normalizeFieldName(s) {
     return normalizeFieldWhitespace((s || "").toLowerCase().replace(/-/g, " "));
@@ -361,8 +406,8 @@
     let nodes = 0;
     let attributes = 0;
     const pending = [{ node: root, depth: 1 }];
-    while (pending.length > 0) {
-      const current = pending.pop();
+    for (let cursor = 0; cursor < pending.length; cursor += 1) {
+      const current = pending[cursor];
       nodes += 1;
       if (nodes > LIVE_FRAGMENT_NODES || current.depth > LIVE_FRAGMENT_DEPTH) {
         return false;
@@ -405,9 +450,7 @@
   }
   function parseRowFragment(html, key) {
     try {
-      const table = document.createElement("table");
       const tbody = document.createElement("tbody");
-      table.append(tbody);
       tbody.innerHTML = html;
       const row = oneElementRoot(tbody);
       if (row?.tagName !== "TR" || row.dataset.key !== key || row.id !== liveRowDOMID(key) || row.hasAttribute("data-ro-live-region") || row.classList.contains("ro-vspacer") || fragmentIntroducesIdentity(row) || !fragmentIsCSPClean(row)) {
@@ -451,15 +494,16 @@
       const template = document.createElement("template");
       template.innerHTML = update.html;
       const incoming = oneElementRoot(template.content);
+      const current = mounts.item(0);
       const expectedTag = update.region === "phase" ? "DIV" : "SPAN";
       const expectedClass = update.region === "count" ? "ro-count" : update.region === "phase" ? "ro-phase-strip" : "ro-foundline";
-      if (!incoming || incoming.tagName !== expectedTag || !incoming.classList.contains(expectedClass) || incoming.dataset.roLiveRegion !== update.region || incoming.hasAttribute("id") || mounts[0]?.tagName !== expectedTag || !mounts[0]?.classList.contains(expectedClass) || incoming.querySelector("[id], [data-ro-live-region]") !== null || !fragmentIsCSPClean(incoming)) {
+      if (!incoming || incoming.tagName !== expectedTag || !incoming.classList.contains(expectedClass) || incoming.dataset.roLiveRegion !== update.region || incoming.hasAttribute("id") || current.tagName !== expectedTag || !current.classList.contains(expectedClass) || incoming.querySelector("[id], [data-ro-live-region]") !== null || !fragmentIsCSPClean(incoming)) {
         return projectionError(
           "fragment-invalid",
           `region ${update.region} is not one canonical fixed-region root`
         );
       }
-      return { current: mounts[0], incoming };
+      return { current, incoming };
     } catch {
       return projectionError("fragment-invalid", `region ${update.region} cannot be parsed`);
     }
@@ -512,15 +556,17 @@
     const mode = currentProjectionMode();
     if (typeof mode !== "string") return mode;
     const tables = content.querySelectorAll("table.ro-table");
-    const tbody = tables.length === 1 ? tables[0]?.tBodies.item(0) : null;
+    const tbody = tables.length === 1 ? tables[0].tBodies.item(0) : null;
     if (!tbody) {
       return projectionError("projection-mismatch", "projection table mount is ambiguous");
     }
     if (!fastPath) {
       const orderSet = new Set(projection.order);
-      if (orderSet.size !== projection.order.length || projection.rows.length !== projection.order.length || projection.byKey.size !== projection.order.length || projection.indexByKey.size !== projection.order.length || projection.modelRows.length !== projection.order.length || projection.order.some(
-        (key, index) => projection.byKey.get(key) !== projection.rows[index] || projection.indexByKey.get(key) !== index || projection.rows[index]?.dataset.key !== key || projection.rows[index]?.id !== liveRowDOMID(key) || projection.modelRows[index]?.key !== key
-      )) {
+      if (orderSet.size !== projection.order.length || projection.rows.length !== projection.order.length || projection.modelRows.length !== projection.order.length || projection.order.some((key, index) => {
+        const row = projection.rows[index];
+        const model = projection.modelRows[index];
+        return !row || !model || row.dataset.key !== key || row.id !== liveRowDOMID(key) || model.key !== key;
+      })) {
         return projectionError(
           "projection-mismatch",
           "canonical projection invariants are broken"
@@ -600,7 +646,8 @@
       }
       if (existingRow) {
         const index = projection.indexByKey.get(operation.key);
-        if (index === void 0 || projection.rows[index] !== existingRow || projection.modelRows[index]?.key !== operation.key || existingRow.isConnected && existingRow.parentElement !== current.tbody) {
+        const model = index === void 0 ? void 0 : projection.modelRows[index];
+        if (index === void 0 || projection.rows[index] !== existingRow || !model || model.key !== operation.key || existingRow.isConnected && existingRow.parentElement !== current.tbody) {
           return projectionError(
             "projection-mismatch",
             `row ${operation.key} is not at its canonical index`
@@ -608,7 +655,7 @@
         }
       }
       const globalMatches = document.querySelectorAll(`[id="${row.id}"]`);
-      if (existingRow?.isConnected && (globalMatches.length !== 1 || globalMatches[0] !== existingRow) || existingRow && !existingRow.isConnected && globalMatches.length !== 0 || !existingRow && globalMatches.length !== 0) {
+      if (existingRow?.isConnected && globalMatches.length !== 1 || existingRow && !existingRow.isConnected && globalMatches.length !== 0 || !existingRow && globalMatches.length !== 0) {
         return projectionError(
           "fragment-invalid",
           `row fragment for ${operation.key} collides with a document id`
@@ -657,7 +704,7 @@
       }
       return {
         candidate: { ...projection },
-        fastPath: true,
+        fastPath,
         modelUpdates,
         parsedRows,
         parsedCards,
@@ -682,18 +729,17 @@
         "empty projection boundary requires snapshot"
       );
     }
-    const topologyChanged = removed.size > 0 || inserted > 0;
-    if (topologyChanged && plan.order === void 0) {
+    if (plan.order === void 0) {
       return projectionError(
         "projection-mismatch",
         "topology-changing delta requires full order"
       );
     }
-    const finalOrder = plan.order ? [...plan.order] : [...projection.order];
+    const finalOrder = [...plan.order];
     if (finalOrder.length !== finalKeys.size || new Set(finalOrder).size !== finalOrder.length || finalOrder.some((key) => !finalKeys.has(key))) {
       return projectionError("projection-mismatch", "delta order is not the exact final key set");
     }
-    if (plan.order && !topologyChanged && arraysEqual(plan.order, projection.order)) {
+    if (arraysEqual(plan.order, projection.order)) {
       return projectionError("projection-mismatch", "redundant unchanged order is not allowed");
     }
     const candidateByKey = new Map(projection.byKey);
@@ -713,25 +759,16 @@
     const rows = finalOrder.map((key) => candidateByKey.get(key));
     const modelByKey = new Map(projection.modelRows.map((model) => [model.key, model]));
     for (const [key, incoming] of parsedRows) modelByKey.set(key, captureModelRow(incoming));
-    for (const key of removed) modelByKey.delete(key);
     const modelRows = finalOrder.map((key) => modelByKey.get(key));
-    if (rows.some((row) => !row) || modelRows.some((row) => !row)) {
-      return projectionError("projection-mismatch", "delta candidate is incomplete");
-    }
-    const ids = /* @__PURE__ */ new Set();
     for (const key of finalOrder) {
       const row = candidateByKey.get(key);
-      if (!row || row.id !== liveRowDOMID(key) || ids.has(row.id)) {
-        return projectionError("fragment-invalid", "row ids are missing or duplicate");
-      }
       const globalMatches = document.querySelectorAll(`[id="${row.id}"]`);
-      if (row.isConnected && (globalMatches.length !== 1 || globalMatches[0] !== row) || !row.isConnected && globalMatches.length !== 0) {
+      if (row.isConnected && globalMatches.length !== 1 || !row.isConnected && globalMatches.length !== 0) {
         return projectionError(
           "fragment-invalid",
           `final row ${key} collides with a document id`
         );
       }
-      ids.add(row.id);
     }
     return {
       candidate: {
@@ -744,7 +781,7 @@
         modelRows,
         windowed: projection.windowed
       },
-      fastPath: false,
+      fastPath,
       modelUpdates: /* @__PURE__ */ new Map(),
       parsedRows,
       parsedCards,
@@ -761,24 +798,21 @@
       cardMount: current.cardMount
     };
   }
-  function addParentJournal(entries, seen, parent) {
-    if (parent && !seen.has(parent)) {
-      seen.add(parent);
-      entries.push({ parent, children: Array.from(parent.childNodes) });
+  function addParentJournal(entries, parent) {
+    if (parent) {
+      entries.set(parent, { parent, children: Array.from(parent.childNodes) });
     }
   }
-  function addElementJournal(entries, seen, element) {
-    if (!seen.has(element)) {
-      seen.add(element);
-      entries.push({ state: captureDOMNode(element) });
-    }
+  function addElementJournal(entries, element) {
+    entries.push({ state: captureDOMNode(element) });
   }
-  function addPlacementJournal(entries, seen, node) {
-    const parent = node.parentNode;
-    if (parent && !seen.has(node)) {
-      seen.add(node);
-      entries.push({ node, parent, nextSibling: node.nextSibling });
-    }
+  function addPlacementJournal(entries, node) {
+    entries.push({
+      node,
+      parent: node.parentNode,
+      parentWasConnected: node.parentNode?.isConnected === true,
+      nextSibling: node.nextSibling
+    });
   }
   function captureDOMNode(node) {
     return {
@@ -791,72 +825,64 @@
       children: Array.from(node.childNodes, captureDOMNode)
     };
   }
-  function addAttributeJournal(entries, seen, element, name) {
-    const names = seen.get(element) || /* @__PURE__ */ new Set();
-    if (names.has(name)) return;
-    names.add(name);
-    seen.set(element, names);
+  function addAttributeJournal(entries, element, name) {
     entries.push({ element, name, value: element.getAttribute(name) });
   }
   function createDOMJournal(parsed) {
-    const parents = [];
+    const parents = /* @__PURE__ */ new Map();
     const placements = [];
     const elements = [];
     const attributes = [];
-    const seenParents = /* @__PURE__ */ new Set();
-    const seenPlacements = /* @__PURE__ */ new Set();
-    const seenElements = /* @__PURE__ */ new Set();
-    const seenAttributes = /* @__PURE__ */ new Map();
     if (!parsed.fastPath || projection.windowed) {
-      addParentJournal(parents, seenParents, parsed.tbody);
+      addParentJournal(parents, parsed.tbody);
     }
     parsed.tbody.querySelectorAll(":scope > tr.ro-vspacer").forEach((spacer) => {
-      addElementJournal(elements, seenElements, spacer);
+      addElementJournal(elements, spacer);
     });
     if (parsed.cardMount && !parsed.fastPath) {
-      addParentJournal(parents, seenParents, parsed.cardMount);
+      addParentJournal(parents, parsed.cardMount);
     }
     for (const key of parsed.parsedRows.keys()) {
       const current = projection.byKey.get(key);
       if (current) {
         if (parsed.fastPath) {
-          addPlacementJournal(placements, seenPlacements, current);
+          addPlacementJournal(placements, current);
         }
-        addElementJournal(elements, seenElements, current);
+        addElementJournal(elements, current);
       }
     }
     for (const key of parsed.parsedCards.keys()) {
       const current = projection.cardsByKey.get(key);
-      if (current?.isConnected) {
+      if (current) {
         if (parsed.fastPath) {
-          addPlacementJournal(placements, seenPlacements, current);
+          addPlacementJournal(placements, current);
         }
-        addElementJournal(elements, seenElements, current);
+        addElementJournal(elements, current);
       }
     }
     for (const { current } of parsed.parsedRegions.values()) {
-      addParentJournal(parents, seenParents, current.parentNode);
-      addElementJournal(elements, seenElements, current);
+      addParentJournal(parents, current.parentNode);
+      addElementJournal(elements, current);
     }
     if (!parsed.fastPath) {
       for (const element of [...projection.rows, ...projection.cardsByKey.values()]) {
-        addAttributeJournal(attributes, seenAttributes, element, "class");
+        addAttributeJournal(attributes, element, "class");
       }
     }
     document.querySelectorAll(".ro-table-wrap").forEach((wrap) => {
-      addAttributeJournal(attributes, seenAttributes, wrap, "aria-activedescendant");
+      addAttributeJournal(attributes, wrap, "aria-activedescendant");
     });
     const status = document.getElementById("ro-live-status");
     if (status) {
-      addParentJournal(parents, seenParents, status.parentNode);
-      addElementJournal(elements, seenElements, status);
+      addParentJournal(parents, status.parentNode);
+      addElementJournal(elements, status);
     }
     const bulk = document.getElementById("ro-bulkbar");
     if (bulk) {
-      addParentJournal(parents, seenParents, bulk.parentNode);
-      addElementJournal(elements, seenElements, bulk);
+      addParentJournal(parents, bulk.parentNode);
+      addElementJournal(elements, bulk);
     }
-    return { parents, placements, elements, attributes };
+    return { parents: [...parents.values()], placements, elements, attributes };
   }
   function restoreDOMNode(state) {
     const { node } = state;
@@ -865,7 +891,7 @@
       for (const attribute of state.attributes) {
         node.setAttribute(attribute.name, attribute.value);
       }
-    } else if (node.nodeValue !== state.nodeValue) {
+    } else {
       node.nodeValue = state.nodeValue;
     }
     if (node instanceof Element) {
@@ -875,50 +901,51 @@
   }
   function verifyDOMNode(state) {
     const { node } = state;
-    if (node.nodeValue !== state.nodeValue) return false;
-    if (node instanceof Element && state.attributes) {
-      if (node.attributes.length !== state.attributes.length) return false;
-      for (const attribute of state.attributes) {
-        if (node.getAttribute(attribute.name) !== attribute.value) return false;
-      }
+    if (!(node instanceof Element)) return node.nodeValue === state.nodeValue;
+    const attributes = state.attributes;
+    if (node.attributes.length !== attributes.length) return false;
+    for (const attribute of attributes) {
+      if (node.getAttribute(attribute.name) !== attribute.value) return false;
     }
     const children = Array.from(node.childNodes);
-    return children.length === state.children.length && children.every((child, index) => child === state.children[index]?.node) && state.children.every(verifyDOMNode);
+    if (children.length !== state.children.length) return false;
+    for (let index = 0; index < children.length; index += 1) {
+      const childState = state.children[index];
+      if (children[index] !== childState.node || !verifyDOMNode(childState)) return false;
+    }
+    return true;
   }
   function restorePlacementJournal(entries) {
     const byNode = new Map(entries.map((entry) => [entry.node, entry]));
     const restored = /* @__PURE__ */ new Set();
-    const restoring = /* @__PURE__ */ new Set();
     const restore = (entry) => {
       if (restored.has(entry.node)) return;
-      if (restoring.has(entry.node)) throw new Error("original sibling order is cyclic");
-      if (entry.parent instanceof Element && !entry.parent.isConnected) {
-        throw new Error("an original parent mount disappeared");
-      }
-      restoring.add(entry.node);
-      if (entry.nextSibling) {
-        const dependency = byNode.get(entry.nextSibling);
-        if (dependency) restore(dependency);
-        else if (entry.nextSibling.parentNode !== entry.parent) {
-          throw new Error("an original sibling disappeared");
+      if (!entry.parent) {
+        entry.node.parentNode?.removeChild(entry.node);
+      } else {
+        if (entry.parentWasConnected && !entry.parent.isConnected) {
+          throw new Error();
         }
+        if (entry.nextSibling) {
+          const dependency = byNode.get(entry.nextSibling);
+          if (dependency) restore(dependency);
+        }
+        entry.parent.insertBefore(entry.node, entry.nextSibling);
       }
-      entry.parent.insertBefore(entry.node, entry.nextSibling);
-      restoring.delete(entry.node);
       restored.add(entry.node);
     };
     for (const entry of entries) restore(entry);
     if (entries.some(
       ({ node, parent, nextSibling }) => node.parentNode !== parent || node.nextSibling !== nextSibling
     )) {
-      throw new Error("original root placement could not be restored");
+      throw new Error();
     }
   }
   function restoreDOMJournal(journal) {
     if (journal.parents.some(
       ({ parent }) => parent instanceof Element && parent.isConnected === false
     )) {
-      throw new Error("an original parent mount disappeared");
+      throw new Error();
     }
     for (const { parent, children } of journal.parents) parent.replaceChildren(...children);
     restorePlacementJournal(journal.placements);
@@ -930,11 +957,11 @@
     for (const { parent, children } of journal.parents) {
       const restored = Array.from(parent.childNodes);
       if (restored.length !== children.length || restored.some((child, index) => child !== children[index])) {
-        throw new Error("original child order could not be restored");
+        throw new Error();
       }
     }
     if (journal.elements.some(({ state }) => !verifyDOMNode(state))) {
-      throw new Error("original descendant identity could not be restored");
+      throw new Error();
     }
   }
   function resolveMorph(override) {
@@ -947,11 +974,10 @@
       });
     };
   }
-  var MORPH_TRANSIENT_CLASSES = ["is-selected", "kfocus", "ro-row-filtered", "ro-cell-changed"];
   function canonicalMorphClone(element) {
     const clone = element.cloneNode(true);
     for (const current of [clone, ...Array.from(clone.querySelectorAll("*"))]) {
-      current.classList.remove(...MORPH_TRANSIENT_CLASSES);
+      current.classList.remove("is-selected", "kfocus", "ro-row-filtered", "ro-cell-changed");
       if (current.getAttribute("class") === "") current.removeAttribute("class");
     }
     return clone;
@@ -966,13 +992,13 @@
     const outcome = morph(current, incoming);
     if (!connected) {
       if (parent) {
-        parent.insertBefore(current, next?.parentNode === parent ? next : null);
+        parent.insertBefore(current, next);
       } else {
         current.remove();
       }
     }
     if (current.isConnected !== connected || current.parentNode !== parent || current.nextSibling !== next || outcome === false || !morphLandedCanonical(current, incoming)) {
-      throw new Error("scoped morph did not land canonical content in place");
+      throw new Error();
     }
   }
   function updateLiveStatus(summary) {
@@ -1001,8 +1027,6 @@
     if ("code" in parsed) return { ok: false, error: parsed };
     const morphNeeded = [...parsed.parsedRows.keys()].some(
       (key) => parsed.candidate.byKey.get(key) === projection.byKey.get(key)
-    ) || [...parsed.parsedCards.keys()].some(
-      (key) => parsed.candidate.cardsByKey.get(key) === projection.cardsByKey.get(key)
     ) || parsed.parsedRegions.size > 0;
     const morph = resolveMorph(options.morph);
     if (morphNeeded && !morph) {
@@ -1034,27 +1058,18 @@
         const current = oldProjection.byKey.get(key);
         if (current && parsed.candidate.byKey.get(key) === current) {
           runScopedMorph(morph, current, incoming);
-          if (current.dataset.key !== key) {
-            throw new Error(`row morph did not preserve ${key}`);
-          }
         }
       }
       for (const [key, incoming] of parsed.parsedCards) {
         const current = oldProjection.cardsByKey.get(key);
-        if (current && parsed.candidate.cardsByKey.get(key) === current) {
+        if (current) {
           runScopedMorph(morph, current, incoming);
-          if (current.dataset.key !== key) {
-            throw new Error(`card morph did not preserve ${key}`);
-          }
         }
       }
       for (const { current, incoming } of parsed.parsedRegions.values()) {
         runScopedMorph(morph, current, incoming);
-        if (current.dataset.roLiveRegion !== incoming.dataset.roLiveRegion) {
-          throw new Error("region morph did not preserve its fixed mount");
-        }
       }
-      if (!oldProjection.windowed) {
+      if (!oldProjection.windowed && !parsed.fastPath) {
         parsed.tbody.replaceChildren(...parsed.candidate.rows);
         parsed.cardMount.replaceChildren(
           ...parsed.candidate.order.map(
@@ -1192,7 +1207,6 @@
     return { etag, path };
   }
   function writeContentValidator(content, validator) {
-    clearContentValidator(content);
     content.dataset[PATH_DATA_KEY] = validator.path;
     content.dataset[ETAG_DATA_KEY] = validator.etag;
   }
@@ -1290,16 +1304,7 @@
     return Math.min(stage + 1, 3);
   }
   function shouldDiscardPush(facts) {
-    if (facts.frameGeneration !== facts.currentGeneration) {
-      return "stale-generation";
-    }
-    if (facts.liveStreamBase !== facts.openedStreamBase) {
-      return "wrong-page";
-    }
-    if (facts.requestInFlight) {
-      return "request-in-flight";
-    }
-    return "none";
+    return facts.frameGeneration !== facts.currentGeneration || facts.liveStreamBase !== facts.openedStreamBase;
   }
 
   // internal/assets/src/js/filters.ts
@@ -1832,7 +1837,7 @@
     screenLength: 8 * 1024
   });
   var BASE_FIELDS = /* @__PURE__ */ new Set(["v", "kind", "g", "seq", "screen", "rev", "rv", "schema"]);
-  var GENERATION = /^[A-Za-z0-9._~-]+$/u;
+  var ROOT_PATH = "$";
   var textEncoder = new TextEncoder();
   var decodedEnvelopeTokens = /* @__PURE__ */ new WeakSet();
   function wireError(code, message, fatal = false) {
@@ -1842,7 +1847,7 @@
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
   function freezeWireValue(value) {
-    if ((typeof value !== "object" || value === null) && !Array.isArray(value)) return;
+    if (Object(value) !== value) return;
     for (const child of Object.values(value)) freezeWireValue(child);
     Object.freeze(value);
   }
@@ -1861,109 +1866,85 @@
     }
     return false;
   }
-  function hasDuplicateJSONMembers(source) {
-    let offset = 0;
-    const whitespace = /\s/u;
-    const skipWhitespace = () => {
-      while (whitespace.test(source[offset] || "")) offset += 1;
-    };
-    const parseString = () => {
-      const start = offset;
-      if (source[offset] !== '"') throw new Error("expected string");
-      offset += 1;
-      while (offset < source.length) {
-        const character = source[offset];
-        if (character === "\\") {
-          offset += 2;
-          continue;
-        }
-        offset += 1;
-        if (character === '"') {
-          return JSON.parse(source.slice(start, offset));
-        }
+  function isGeneration(value) {
+    for (const character of value) {
+      const code = character.charCodeAt(0);
+      if (code >= 48 && code <= 57 || code >= 65 && code <= 90 || code >= 97 && code <= 122 || character === "." || character === "_" || character === "~" || character === "-") {
+        continue;
       }
-      throw new Error("unterminated string");
-    };
-    const parseValue = () => {
-      skipWhitespace();
-      if (source[offset] === "{") return parseObject();
-      if (source[offset] === "[") return parseArray();
-      if (source[offset] === '"') {
-        parseString();
-        return false;
-      }
-      const start = offset;
-      while (offset < source.length && !/[\s,\]}]/u.test(source[offset])) {
-        offset += 1;
-      }
-      if (offset === start) throw new Error("expected value");
-      return false;
-    };
-    const parseArray = () => {
-      offset += 1;
-      skipWhitespace();
-      if (source[offset] === "]") {
-        offset += 1;
-        return false;
-      }
-      while (offset < source.length) {
-        if (parseValue()) return true;
-        skipWhitespace();
-        if (source[offset] === "]") {
-          offset += 1;
-          return false;
-        }
-        if (source[offset] !== ",") throw new Error("expected array separator");
-        offset += 1;
-      }
-      throw new Error("unterminated array");
-    };
-    const parseObject = () => {
-      offset += 1;
-      skipWhitespace();
-      if (source[offset] === "}") {
-        offset += 1;
-        return false;
-      }
-      const keys = /* @__PURE__ */ new Set();
-      while (offset < source.length) {
-        skipWhitespace();
-        const key = parseString();
-        if (keys.has(key)) return true;
-        keys.add(key);
-        skipWhitespace();
-        if (source[offset] !== ":") throw new Error("expected object separator");
-        offset += 1;
-        if (parseValue()) return true;
-        skipWhitespace();
-        if (source[offset] === "}") {
-          offset += 1;
-          return false;
-        }
-        if (source[offset] !== ",") throw new Error("expected object member separator");
-        offset += 1;
-      }
-      throw new Error("unterminated object");
-    };
-    try {
-      skipWhitespace();
-      return parseValue();
-    } catch {
       return false;
     }
+    return true;
+  }
+  function hasDuplicateJSONMembers(source) {
+    const contexts = [];
+    let stringState = null;
+    for (let offset = 0; offset < source.length; offset += 1) {
+      const characterCode = source.charCodeAt(offset);
+      if (stringState) {
+        if (stringState.kind === "value") {
+          if (stringState.mode === "escape") stringState.mode = "content";
+          else if (characterCode === 92) stringState.mode = "escape";
+          else if (characterCode === 34) stringState = null;
+          continue;
+        }
+        if (stringState.mode === "escape") {
+          stringState.mode = "content";
+          continue;
+        }
+        if (characterCode === 92) {
+          stringState.mode = "escape";
+          continue;
+        }
+        if (characterCode !== 34) continue;
+        const { keyContext, rawStart } = stringState;
+        stringState = null;
+        const key = JSON.parse(source.slice(rawStart, offset + 1));
+        if (keyContext.keys.has(key)) return true;
+        keyContext.keys.add(key);
+        keyContext.expectsKey = false;
+        continue;
+      }
+      const context = contexts.at(-1);
+      if (characterCode === 34) {
+        stringState = context?.kind === "object" && context.expectsKey ? {
+          kind: "key",
+          mode: "content",
+          keyContext: context,
+          rawStart: offset
+        } : { kind: "value", mode: "content" };
+        continue;
+      }
+      if (characterCode === 123) {
+        contexts.push({ kind: "object", expectsKey: true, keys: /* @__PURE__ */ new Set() });
+        continue;
+      }
+      if (characterCode === 91) {
+        contexts.push({ kind: "array" });
+        continue;
+      }
+      if (characterCode === 125 || characterCode === 93) {
+        contexts.pop();
+        continue;
+      }
+      if (characterCode === 44) {
+        if (context?.kind === "object") context.expectsKey = true;
+      }
+    }
+    return false;
   }
   function rejectUnknownFields(record, allowed, path) {
     const unknown = Object.keys(record).find((key) => !allowed.has(key));
     return unknown ? wireError("unexpected-field", `${path}.${unknown} is not allowed`) : null;
   }
-  function boundedString(value, path, max, options = {}) {
-    if (typeof value !== "string" || !options.allowEmpty && value.length === 0) {
+  function boundedString(value, path, max) {
+    if (typeof value !== "string" || value.length === 0) {
       return wireError("invalid-field", `${path} must be a non-empty string`);
     }
     if (value.length > max || textEncoder.encode(value).byteLength > max) {
       return wireError("limit-exceeded", `${path} exceeds ${max} bytes`);
     }
-    if (hasControlCharacters(value) || options.pattern && !options.pattern.test(value)) {
+    if (hasControlCharacters(value)) {
       return wireError("invalid-field", `${path} contains forbidden characters`);
     }
     return value;
@@ -1984,10 +1965,11 @@
     if (!Number.isSafeInteger(record.seq) || record.seq < 1) {
       return wireError("invalid-field", "seq must be a positive safe integer");
     }
-    const g = boundedString(record.g, "g", LIVE_V2_LIMITS.generationLength, {
-      pattern: GENERATION
-    });
+    const g = boundedString(record.g, "g", LIVE_V2_LIMITS.generationLength);
     if (typeof g !== "string") return g;
+    if (!isGeneration(g)) {
+      return wireError("invalid-field", "g contains forbidden characters");
+    }
     const screen = boundedString(record.screen, "screen", LIVE_V2_LIMITS.screenLength);
     if (typeof screen !== "string") return screen;
     if (own(record, "rev")) {
@@ -2006,7 +1988,7 @@
   }
   function decodeSnapshot(record) {
     const allowed = /* @__PURE__ */ new Set([...BASE_FIELDS, "snapshot"]);
-    const unknown = rejectUnknownFields(record, allowed, "$");
+    const unknown = rejectUnknownFields(record, allowed, ROOT_PATH);
     if (unknown) return { ok: false, error: unknown };
     if (!own(record, "rev") || !own(record, "schema")) {
       return {
@@ -2152,7 +2134,7 @@
   }
   function decodeDelta(record) {
     const allowed = /* @__PURE__ */ new Set([...BASE_FIELDS, "delta"]);
-    const unknown = rejectUnknownFields(record, allowed, "$");
+    const unknown = rejectUnknownFields(record, allowed, ROOT_PATH);
     if (unknown) return { ok: false, error: unknown };
     if (!own(record, "rev") || !own(record, "schema") || !isRecord(record.delta)) {
       return {
@@ -2180,22 +2162,16 @@
     if (base === rev) {
       return { ok: false, error: wireError("no-op", "delta base and revision must differ") };
     }
-    let operationCount = 0;
     const result = { base, rev };
     if (own(delta, "remove")) {
       const remove = decodeRemove(delta.remove);
       if (!Array.isArray(remove)) return { ok: false, error: remove };
       result.remove = remove;
-      operationCount += remove.length;
     }
     if (own(delta, "upsert")) {
       const upsert = decodeUpsert(delta.upsert);
       if (!Array.isArray(upsert)) return { ok: false, error: upsert };
       result.upsert = upsert;
-      operationCount += upsert.length;
-    }
-    if (operationCount > LIVE_V2_LIMITS.operations) {
-      return { ok: false, error: wireError("limit-exceeded", "too many delta operations") };
     }
     const removeKeys = new Set(result.remove?.map((item) => item.key));
     const overlap = result.upsert?.find((item) => removeKeys.has(item.key));
@@ -2215,21 +2191,6 @@
       if (!Array.isArray(regions)) return { ok: false, error: regions };
       result.regions = regions;
     }
-    let aggregateHTMLBytes = 0;
-    for (const html of [
-      ...(result.upsert || []).flatMap(
-        (operation) => operation.card === void 0 ? [operation.row] : [operation.row, operation.card]
-      ),
-      ...(result.regions || []).map((operation) => operation.html)
-    ]) {
-      aggregateHTMLBytes += textEncoder.encode(html).byteLength;
-      if (aggregateHTMLBytes > LIVE_V2_LIMITS.deltaBytes) {
-        return {
-          ok: false,
-          error: wireError("limit-exceeded", "delta HTML exceeds its aggregate limit")
-        };
-      }
-    }
     if ((result.remove?.length || 0) === 0 && (result.upsert?.length || 0) === 0 && (result.order?.length || 0) === 0 && (result.regions?.length || 0) === 0) {
       return { ok: false, error: wireError("no-op", "delta has no semantic operations") };
     }
@@ -2243,7 +2204,7 @@
   }
   function decodeTerminal(record) {
     const allowed = /* @__PURE__ */ new Set([...BASE_FIELDS, "reason"]);
-    const unknown = rejectUnknownFields(record, allowed, "$");
+    const unknown = rejectUnknownFields(record, allowed, ROOT_PATH);
     if (unknown) return { ok: false, error: unknown };
     if (record.reason !== "idle" && record.reason !== "auth" && record.reason !== "watch-failed" && record.reason !== "shutdown") {
       return { ok: false, error: wireError("invalid-field", "terminal reason is unknown") };
@@ -2258,13 +2219,13 @@
       if (typeof frame !== "string" || frame.length > LIVE_V2_LIMITS.frameBytes) {
         return { ok: false, error: wireError("limit-exceeded", "Live v2 frame is too large") };
       }
+      const parsed = JSON.parse(frame);
       if (hasDuplicateJSONMembers(frame)) {
         return {
           ok: false,
           error: wireError("duplicate", "JSON object member names must be unique")
         };
       }
-      const parsed = JSON.parse(frame);
       if (!isRecord(parsed)) {
         return { ok: false, error: wireError("invalid-frame", "frame root must be an object") };
       }
@@ -2342,7 +2303,7 @@
       morph: hooks.morph,
       reconcile: () => {
         hooks.beforeReconcile?.();
-        if (deletedKeys.size > 0) applyLiveRowDeletions(deletedKeys);
+        applyLiveRowDeletions(deletedKeys);
         applyLiveNameFilter();
         if (!virtualizerActive()) reapplyRowState();
         hooks.afterReconcile?.();
@@ -2366,7 +2327,7 @@
             failed = true;
           }
         }
-        if (failed) throw new Error("external Live state rollback failed");
+        if (failed) throw new Error();
       }
     });
     if (!result.ok) return result;
@@ -2386,18 +2347,33 @@
     };
   }
 
+  // internal/assets/src/js/bounded-byte-buffer.ts
+  function ensureBoundedByteBufferCapacity(buffer, retainedBytes, appendedBytes, hardLimit) {
+    const required = retainedBytes + appendedBytes;
+    if (required <= buffer.byteLength) return buffer;
+    const capacity = Math.min(
+      hardLimit,
+      buffer.byteLength + Math.max(buffer.byteLength, appendedBytes)
+    );
+    const grown = new Uint8Array(capacity);
+    grown.set(buffer.subarray(0, retainedBytes));
+    return grown;
+  }
+
   // internal/assets/src/js/live-sse.ts
+  var LIVE_SSE_DATA_CEILING_BYTES = 16777216;
+  var LIVE_SSE_FRAMED_CEILING_BYTES = 16778240;
   var LIVE_SSE_LIMITS = Object.freeze({
-    dataBytes: 16 * 1024 * 1024,
+    dataBytes: LIVE_SSE_DATA_CEILING_BYTES,
     // All nonblank field/comment bytes in one uncommitted event. This prevents
     // ignored extension/comment lines from multiplying bounded data work.
-    eventBytes: 16 * 1024 * 1024 + 1024,
+    eventBytes: LIVE_SSE_FRAMED_CEILING_BYTES,
     eventNameBytes: 64,
     lines: 32,
     // A legal max-size one-line payload still carries `data:` plus optional
     // whitespace. Keep a small, fixed framing allowance separate from the
     // exact aggregate data ceiling.
-    lineBytes: 16 * 1024 * 1024 + 1024
+    lineBytes: LIVE_SSE_FRAMED_CEILING_BYTES
   });
   var LiveSSEError = class extends Error {
     code;
@@ -2417,9 +2393,9 @@
   }
   var LiveSSEParser = class {
     #limits;
-    #lineBuffer = new Uint8Array(1024);
+    #lineBuffer = new Uint8Array();
     #lineBytes = 0;
-    #swallowLF = false;
+    #pendingDelimiter = "none";
     #eventName = null;
     #eventBytes = 0;
     #dataLines = [];
@@ -2440,48 +2416,41 @@
         throw this.#fatal;
       }
     }
-    // EOF deliberately drops an unterminated line/event.  The caller decides
-    // whether an EOF is a transport failure; the parser never invents a final
-    // event without the protocol's blank-line commit marker.
-    finish() {
-      if (this.#fatal) throw this.#fatal;
-      this.#lineBytes = 0;
-      this.#resetEvent();
-    }
     #consume(chunk, events) {
       let start = 0;
-      for (let index = 0; index < chunk.byteLength; index += 1) {
-        const byte = chunk[index];
-        if (this.#swallowLF) {
-          this.#swallowLF = false;
+      let index = 0;
+      while (index !== chunk.byteLength) {
+        const byteIndex = index;
+        const byte = chunk[byteIndex];
+        index += 1;
+        if (this.#pendingDelimiter === "cr") {
+          this.#pendingDelimiter = "none";
           if (byte === 10) {
-            start = index + 1;
+            start = index;
             continue;
           }
         }
         if (byte !== 10 && byte !== 13) continue;
-        this.#appendLinePart(chunk.subarray(start, index));
+        this.#appendLinePart(chunk.subarray(start, byteIndex));
         this.#completeLine(events);
-        this.#swallowLF = byte === 13;
-        start = index + 1;
+        this.#pendingDelimiter = byte === 13 ? "cr" : "none";
+        start = index;
       }
       this.#appendLinePart(chunk.subarray(start));
     }
     #appendLinePart(part) {
-      if (part.byteLength === 0) return;
       if (part.byteLength > this.#limits.lineBytes - this.#lineBytes) {
         throw new LiveSSEError("line-too-large", "SSE field line exceeds its byte limit");
       }
       const required = this.#lineBytes + part.byteLength;
-      if (required > this.#lineBuffer.byteLength) {
-        let capacity = this.#lineBuffer.byteLength;
-        while (capacity < required) capacity = Math.min(this.#limits.lineBytes, capacity * 2);
-        const grown = new Uint8Array(capacity);
-        grown.set(this.#lineBuffer.subarray(0, this.#lineBytes));
-        this.#lineBuffer = grown;
-      }
+      this.#lineBuffer = ensureBoundedByteBufferCapacity(
+        this.#lineBuffer,
+        this.#lineBytes,
+        part.byteLength,
+        this.#limits.lineBytes
+      );
       this.#lineBuffer.set(part, this.#lineBytes);
-      this.#lineBytes += part.byteLength;
+      this.#lineBytes = required;
     }
     #completeLine(events) {
       const bytes = this.#lineBuffer.subarray(0, this.#lineBytes);
@@ -2505,15 +2474,11 @@
       if (this.#lines > this.#limits.lines) {
         throw new LiveSSEError("too-many-lines", "SSE event has too many nonblank lines");
       }
-      if (bytes[0] === 58) {
-        decodeLine(bytes);
-        return;
-      }
-      let colon = bytes.indexOf(58);
-      if (colon < 0) colon = bytes.byteLength;
-      let valueStart = Math.min(colon + 1, bytes.byteLength);
-      if (colon < bytes.byteLength && bytes[valueStart] === 32) valueStart += 1;
-      const field = decodeLine(bytes.subarray(0, colon));
+      const colon = bytes.indexOf(58);
+      const fieldEnd = colon === -1 ? bytes.byteLength : colon;
+      let valueStart = colon === -1 ? bytes.byteLength : colon + 1;
+      if (bytes[valueStart] === 32) valueStart += 1;
+      const field = decodeLine(bytes.subarray(0, fieldEnd));
       const valueBytes = bytes.subarray(valueStart);
       if (field === "event") {
         if (valueBytes.byteLength > this.#limits.eventNameBytes) {
@@ -2546,9 +2511,18 @@
   };
 
   // internal/assets/src/js/live-url.ts
-  var CLIENT_GENERATION = /^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/iu;
+  var CLIENT_GENERATION_HEX_LENGTH = 32;
+  var CLIENT_GENERATION_UUID_LENGTH = 36;
+  var CLIENT_GENERATION_UUID_DASHES = /* @__PURE__ */ new Set([8, 13, 18, 23]);
+  var ASCII_HEX_DIGITS = "0123456789abcdefABCDEF";
   function isClientLiveGeneration(value) {
-    return typeof value === "string" && value.length <= 64 && CLIENT_GENERATION.test(value);
+    if (typeof value !== "string" || value.length !== CLIENT_GENERATION_HEX_LENGTH && value.length !== CLIENT_GENERATION_UUID_LENGTH) {
+      return false;
+    }
+    const uuid = value.length === CLIENT_GENERATION_UUID_LENGTH;
+    return Array.from(value).every(
+      (character, index) => uuid && CLIENT_GENERATION_UUID_DASHES.has(index) ? character === "-" : ASCII_HEX_DIGITS.includes(character)
+    );
   }
   function mintLiveGeneration(cryptoSource = window.crypto) {
     try {
@@ -2557,9 +2531,7 @@
     } catch {
     }
     const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
-    const generation = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    if (!isClientLiveGeneration(generation)) throw new Error("invalid Live generation");
-    return generation;
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   }
   function decodedQueryKey(raw) {
     try {
@@ -2569,20 +2541,21 @@
     }
   }
   function stripLiveGenerationQuery(rawQuery) {
-    if (rawQuery === "") return "";
     return rawQuery.split("&").filter((pair) => decodedQueryKey(pair.split("=", 1)[0]) !== "g").join("&");
   }
   function withRawQuery(pathname, rawQuery) {
     return rawQuery === "" ? pathname : `${pathname}?${rawQuery}`;
+  }
+  function splitRawQuery(path) {
+    const queryStart = path.indexOf("?");
+    return queryStart === -1 ? [path, ""] : [path.slice(0, queryStart), path.slice(queryStart + 1)];
   }
   function liveStreamBaseForURL(url) {
     const pathname = `${url.pathname.replace(/\/+$/, "")}/_stream`;
     return withRawQuery(pathname, stripLiveGenerationQuery(url.search.slice(1)));
   }
   function liveScreenForBase(base) {
-    const queryStart = base.indexOf("?");
-    const pathname = queryStart < 0 ? base : base.slice(0, queryStart);
-    const query = queryStart < 0 ? "" : base.slice(queryStart + 1);
+    const [pathname, query] = splitRawQuery(base);
     const screenPath = pathname.endsWith("/_stream") ? pathname.slice(0, -"/_stream".length) : pathname;
     return withRawQuery(screenPath, query);
   }
@@ -2592,14 +2565,16 @@
   }
   function liveStreamBaseFromTableRequest(requestPath) {
     if (typeof requestPath !== "string") return null;
-    const queryStart = requestPath.indexOf("?");
-    const pathname = queryStart < 0 ? requestPath : requestPath.slice(0, queryStart);
-    if (!pathname.endsWith("/_table")) return null;
-    const rawQuery = queryStart < 0 ? "" : requestPath.slice(queryStart + 1);
-    return withRawQuery(
-      `${pathname.slice(0, -"/_table".length)}/_stream`,
-      stripLiveGenerationQuery(rawQuery)
-    );
+    try {
+      const url = new URL(requestPath, window.location.href);
+      if (url.origin !== window.location.origin || !url.pathname.endsWith("/_table")) return null;
+      return withRawQuery(
+        `${url.pathname.slice(0, -"/_table".length)}/_stream`,
+        stripLiveGenerationQuery(url.search.slice(1))
+      );
+    } catch {
+      return null;
+    }
   }
 
   // internal/assets/src/js/stale.ts
@@ -2701,14 +2676,11 @@
     deleted: 0,
     projected: 0
   };
-  var MAX_COUNTER = Number.MAX_SAFE_INTEGER;
   var RESYNC_WINDOW_MS = 3e4;
   var MAX_RESYNCS_PER_WINDOW = 2;
   var LIVE_FIRST_FRAME_TIMEOUT_MS = 1e4;
   var activeConnection = null;
   var liveFallbackSecs = 0;
-  var pageEpoch = 0;
-  var pendingSnapshotTxn = null;
   var completedSnapshotTxns = /* @__PURE__ */ new WeakSet();
   var resyncTimestamps = [];
   var resyncScheduled = false;
@@ -2718,10 +2690,22 @@
   var resumeBase = "";
   var liveDiscards = 0;
   var ownedRequests = /* @__PURE__ */ new Map();
+  function ownsRequest(xhr, entry) {
+    return ownedRequests.get(xhr) === entry;
+  }
+  function clearResumeIntent() {
+    pendingResync = false;
+    resyncScheduled = false;
+    resumeAfterRequests = false;
+    resumeAfterHidden = false;
+    resumeBase = "";
+  }
+  function supportedResumeBase() {
+    return liveSupported() ? resumeBase || liveStreamBase() : "";
+  }
   function addCounter(name, amount = 1) {
-    if (!Number.isFinite(amount) || amount <= 0) return;
-    counters[name] = Math.min(MAX_COUNTER, counters[name] + Math.floor(amount));
-    if (name === "discards") liveDiscards = counters.discards;
+    counters[name] += amount;
+    liveDiscards = counters.discards;
   }
   function pruneResyncWindow(now = Date.now()) {
     resyncTimestamps = resyncTimestamps.filter((timestamp) => now - timestamp < RESYNC_WINDOW_MS);
@@ -2752,12 +2736,11 @@
     return liveStreamBaseForURL(new URL(window.location.href));
   }
   function isActive(connection) {
-    return activeConnection === connection && liveState.abort === connection.ctrl && connection.pageEpoch === pageEpoch;
+    return activeConnection === connection;
   }
   function connectionToken(source) {
     return Object.freeze({
       ...source,
-      protocol: source.protocol || "pending",
       cursor: source.cursor ? Object.freeze({ ...source.cursor }) : null
     });
   }
@@ -2771,30 +2754,20 @@
     const connection = activeConnection;
     activeConnection = null;
     liveState.abort = null;
-    pendingSnapshotTxn = null;
-    if (connection && !connection.ctrl.signal.aborted) connection.ctrl.abort();
+    connection?.ctrl.abort();
   }
   function liveTeardown() {
     abortActiveConnection();
     liveFallbackSecs = 0;
   }
   function liveResetPage() {
-    pageEpoch += 1;
     ownedRequests.clear();
-    pendingSnapshotTxn = null;
-    resumeAfterRequests = false;
-    resumeAfterHidden = false;
-    resumeBase = "";
-    pendingResync = false;
-    resyncScheduled = false;
+    clearResumeIntent();
     resyncTimestamps = [];
   }
   function liveEngageFallback(banner) {
     abortActiveConnection();
-    pendingResync = false;
-    resyncScheduled = false;
-    resumeAfterRequests = false;
-    resumeAfterHidden = false;
+    clearResumeIntent();
     liveState.status = "fallback";
     liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
     addCounter("fallbacks");
@@ -2829,7 +2802,6 @@
       generation,
       base,
       screen: liveScreenForBase(base),
-      pageEpoch,
       protocol: "pending",
       cursor: null
     });
@@ -2866,7 +2838,7 @@
     let firstFrameTimer = window.setTimeout(() => {
       firstFrameTimer = null;
       const current = activeConnection;
-      if (current?.ctrl === initial.ctrl && (liveState.status === "connecting" || liveState.status === "syncing-v1" || liveState.status === "syncing-v2")) {
+      if (current?.ctrl === initial.ctrl) {
         liveEngageFallback(false);
       }
     }, LIVE_FIRST_FRAME_TIMEOUT_MS);
@@ -2922,92 +2894,80 @@
       for (; ; ) {
         const result = await reader.read();
         if (!isActive(connection)) return;
-        if (result.done) {
-          parser.finish();
-          break;
-        }
+        if (result.done) break;
         const value = result.value;
         addCounter("rawBytes", value.byteLength);
         let events;
         try {
           events = parser.push(value);
-        } catch (error) {
-          if (error instanceof LiveSSEError) addCounter("invalidFrames");
+        } catch {
+          addCounter("invalidFrames");
           if (connection.protocol === "v2") rejectProtocol(connection, false);
           else liveEngageFallback(true);
           return;
         }
         for (const event of events) {
-          if (!isActive(connection)) {
-            addCounter("discards");
-            return;
-          }
           addCounter("payloadBytes", event.dataBytes);
           if (connection.protocol === "v2") {
-            if (!handleV2Frame(connection, event.name, event.data, event.dataBytes)) return;
-          } else if (!handleV1Frame(connection, event.name, event.data, event.dataBytes)) {
-            return;
+            handleV2Frame(connection, event.name, event.data, event.dataBytes);
+          } else {
+            handleV1Frame(connection, event.name, event.data, event.dataBytes);
           }
-          if (firstFrameAccepted()) clearFirstFrameTimer();
           const current = activeConnection;
           if (!current || current.ctrl !== connection.ctrl) return;
           connection = current;
+          if (firstFrameAccepted()) clearFirstFrameTimer();
         }
       }
     } catch {
-      if (!isActive(connection)) return;
     }
     if (isActive(connection)) liveEngageFallback(true);
   }
-  function parseJSONRecord(text) {
+  function parseJSONValue(text) {
+    let value;
     try {
-      const value = JSON.parse(text);
-      return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+      value = JSON.parse(text);
     } catch {
-      return null;
     }
+    return value;
   }
   var TERMINAL_REASONS = /* @__PURE__ */ new Set(["idle", "auth", "watch-failed", "shutdown"]);
   function handleV1Frame(connection, name, text, payloadBytes) {
-    if (name !== "ro-table" && name !== "ro-terminal") return true;
-    const payload = parseJSONRecord(text);
-    if (!payload) {
-      addCounter("invalidFrames");
-      return true;
-    }
+    if (name !== "ro-table" && name !== "ro-terminal") return;
+    const value = parseJSONValue(text);
+    const payload = Object(value);
     if (name === "ro-terminal") {
-      if (payload.g !== connection.generation || !TERMINAL_REASONS.has(String(payload.reason))) {
+      if (payload.g !== connection.generation || typeof payload.reason !== "string" || !TERMINAL_REASONS.has(payload.reason)) {
         addCounter("invalidFrames");
-        return true;
+        return;
       }
       addCounter("terminals");
       liveEngageFallback(true);
-      return false;
+      return;
     }
     if (typeof payload.g !== "string" || typeof payload.html !== "string") {
       addCounter("invalidFrames");
-      return true;
+      return;
     }
-    const reason = shouldDiscardPush({
+    const currentBase = liveStreamBase();
+    const discard = shouldDiscardPush({
       frameGeneration: payload.g,
       currentGeneration: connection.generation,
-      liveStreamBase: liveState.streamPath,
-      openedStreamBase: liveState.streamPath,
-      requestInFlight: ownedRequests.size > 0
+      liveStreamBase: currentBase,
+      openedStreamBase: connection.base
     });
-    if (reason === "stale-generation" || liveStreamBase() !== liveState.streamPath || reason === "request-in-flight") {
+    if (discard) {
       addCounter("discards");
-      return true;
+      return;
     }
     if (!swapSnapshot(payload.html, connection, null)) {
       addCounter("invalidFrames");
       liveEngageFallback(true);
-      return false;
+      return;
     }
     addCounter("v1Snapshots");
     addCounter("snapshotBytes", payloadBytes);
     liveState.status = "open-v1";
-    return true;
   }
   function validEnvelopeIdentity(envelope, connection) {
     return envelope.g === connection.generation && envelope.screen === connection.screen;
@@ -3026,49 +2986,51 @@
   function handleV2Frame(connection, name, text, payloadBytes) {
     if (name !== "ro-live") {
       rejectProtocol(connection);
-      return false;
+      return;
     }
     const decoded = decodeLiveV2Envelope(text);
     if (!decoded.ok) {
       rejectProtocol(connection);
-      return false;
+      return;
     }
     const envelope = decoded.value;
     const cursor = connection.cursor;
     if (!validEnvelopeIdentity(envelope, connection)) {
       rejectProtocol(connection);
-      return false;
+      return;
     }
     if (!cursor) {
       if (envelope.kind !== "snapshot" || envelope.seq !== 1) {
         rejectProtocol(connection);
-        return false;
+        return;
       }
-      return commitV2Snapshot(connection, envelope, payloadBytes);
+      commitV2Snapshot(connection, envelope, payloadBytes);
+      return;
     }
     if (envelope.seq !== cursor.seq + 1) {
       rejectProtocol(connection);
-      return false;
+      return;
     }
     if (envelope.kind === "snapshot") {
-      return commitV2Snapshot(connection, envelope, payloadBytes);
+      commitV2Snapshot(connection, envelope, payloadBytes);
+      return;
     }
     if (envelope.kind === "terminal") {
       if (envelope.rev !== cursor.rev || envelope.schema !== cursor.schema) {
         rejectProtocol(connection);
-        return false;
+        return;
       }
       addCounter("terminals");
       liveEngageFallback(true);
-      return false;
+      return;
     }
     const applied = applyLiveV2Delta(decoded.value, cursor);
     if (!applied.ok) {
       rejectProtocol(connection);
-      return false;
+      return;
     }
     if (!replaceConnection(connection, "v2", applied.cursor)) {
-      return false;
+      return;
     }
     clearListValidator();
     addCounter("deltas");
@@ -3078,39 +3040,24 @@
     addCounter("deleted", applied.summary.deleted);
     addCounter("projected", applied.summary.projected);
     liveState.status = "open-v2";
-    return true;
   }
   function commitV2Snapshot(connection, envelope, payloadBytes) {
-    const txn = Object.freeze({
-      generation: connection.generation,
-      pageEpoch: connection.pageEpoch,
-      sequence: envelope.seq
-    });
-    pendingSnapshotTxn = txn;
-    if (!swapSnapshot(envelope.snapshot.html, connection, txn)) {
-      pendingSnapshotTxn = null;
-      rejectProtocol(connection);
-      return false;
-    }
+    const txn = Object.freeze({});
+    swapSnapshot(envelope.snapshot.html, connection, txn);
     const completed = completedSnapshotTxns.has(txn);
-    pendingSnapshotTxn = null;
     if (!completed || !isActive(connection)) {
       rejectProtocol(connection);
-      return false;
+      return;
     }
-    const next = replaceConnection(connection, "v2", snapshotCursor(envelope));
-    if (!next) {
-      return false;
-    }
+    replaceConnection(connection, "v2", snapshotCursor(envelope));
     addCounter("v2Snapshots");
     addCounter("snapshotBytes", payloadBytes);
     liveState.status = "open-v2";
-    return true;
   }
   function swapSnapshot(html, connection, txn) {
     const content = document.getElementById("resource-list-content");
     const htmx2 = getHtmx2();
-    if (!content || !htmx2 || typeof htmx2.swap !== "function" || !isActive(connection)) return false;
+    if (!content || !htmx2 || !isActive(connection)) return false;
     clearListValidator();
     const eventInfo = { target: content, roLivePush: true };
     if (txn) eventInfo.roLiveSnapshotTxn = txn;
@@ -3129,17 +3076,11 @@
     requestResync(base);
   }
   function requestResync(base) {
-    if (resyncScheduled) return;
-    if (document.hidden || ownedRequests.size > 0) {
+    if (document.hidden) {
       pendingResync = true;
       resumeBase = base;
-      if (document.hidden) {
-        liveState.status = "hidden";
-        resumeAfterHidden = true;
-      } else {
-        liveState.status = "suspended";
-        resumeAfterRequests = true;
-      }
+      liveState.status = "hidden";
+      resumeAfterHidden = true;
       return;
     }
     const now = Date.now();
@@ -3152,9 +3093,8 @@
     addCounter("resyncs");
     liveState.status = "resyncing";
     resyncScheduled = true;
-    const epoch = pageEpoch;
     queueMicrotask(() => {
-      if (!resyncScheduled || liveState.status !== "resyncing" || pageEpoch !== epoch) return;
+      if (!resyncScheduled) return;
       resyncScheduled = false;
       openConnection(base);
     });
@@ -3163,35 +3103,37 @@
     return Object(event.detail);
   }
   function requestPathBase(detail) {
-    const pathInfo = Object(detail.pathInfo);
-    return liveStreamBaseFromTableRequest(pathInfo.finalRequestPath) || liveStreamBaseFromTableRequest(pathInfo.requestPath);
+    try {
+      const pathInfo = Object(detail.pathInfo);
+      return liveStreamBaseFromTableRequest(pathInfo.finalRequestPath) || liveStreamBaseFromTableRequest(pathInfo.requestPath);
+    } catch {
+      return null;
+    }
   }
   function liveBeforeListRequest(event) {
     const detail = requestDetail(event);
     const content = document.getElementById("resource-list-content");
     const xhr = detail.xhr;
-    if (!content || detail.target !== content || !xhr || ownedRequests.has(xhr)) return;
-    const scheduledResync = resyncScheduled || liveState.status === "resyncing";
-    const resumable = activeConnection !== null || scheduledResync || resumeAfterRequests || liveState.status === "hidden" && resumeAfterHidden;
+    if (!(content && xhr && detail.target === content) || ownedRequests.has(xhr)) return;
     const entry = {
-      epoch: pageEpoch,
-      xhr,
       networkSettled: false,
       sent: false,
       swapCompleted: false
     };
     ownedRequests.set(xhr, entry);
     try {
-      xhr.addEventListener("loadend", () => noteRequestNetworkSettled(xhr, entry), {
-        once: true
+      xhr.addEventListener("loadend", () => {
+        if (ownsRequest(xhr, entry)) noteRequestNetworkSettled(xhr, entry);
       });
     } catch {
     }
+    if (!ownsRequest(xhr, entry)) return;
     queueMicrotask(() => {
-      if (!entry.sent) finalizeOwnedRequest(xhr, entry);
+      if (ownsRequest(xhr, entry) && !entry.sent) finalizeOwnedRequest(xhr, entry);
     });
-    if (!resumable || liveState.status === "fallback") return;
-    if (scheduledResync) resyncScheduled = false;
+    const resumable = activeConnection !== null || resyncScheduled || resumeAfterRequests || resumeAfterHidden;
+    if (!resumable) return;
+    resyncScheduled = false;
     resumeAfterRequests = true;
     resumeBase ||= activeConnection?.base || liveState.streamPath;
     abortActiveConnection();
@@ -3205,14 +3147,14 @@
   function liveMarkListRequestSent(event) {
     const xhr = requestDetail(event).xhr;
     const entry = xhr ? ownedRequests.get(xhr) : void 0;
-    if (entry && entry.epoch === pageEpoch) entry.sent = true;
+    if (xhr && entry && ownsRequest(xhr, entry)) entry.sent = true;
   }
   function liveAfterListRequest(event) {
     const detail = requestDetail(event);
     const xhr = detail.xhr;
     if (!xhr) return;
     const entry = ownedRequests.get(xhr);
-    if (entry) noteRequestNetworkSettled(xhr, entry);
+    if (entry && ownsRequest(xhr, entry)) noteRequestNetworkSettled(xhr, entry);
   }
   function requestStatus(xhr) {
     try {
@@ -3222,16 +3164,16 @@
     }
   }
   function noteRequestNetworkSettled(xhr, entry) {
-    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
     entry.networkSettled = true;
-    if (requestStatus(xhr) === 200 && !entry.swapCompleted) {
+    const status = requestStatus(xhr);
+    if (status === 200 && !entry.swapCompleted) {
       queueMicrotask(() => failOwnedRequestWithoutSwap(xhr, entry));
       return;
     }
     finalizeOwnedRequest(xhr, entry);
   }
   function completeOwnedRequestSwap(xhr, entry, successfulBase) {
-    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    if (!ownsRequest(xhr, entry)) return;
     entry.swapCompleted = true;
     if (successfulBase) {
       resumeBase = successfulBase;
@@ -3239,15 +3181,11 @@
     if (entry.networkSettled) finalizeOwnedRequest(xhr, entry);
   }
   function failOwnedRequestWithoutSwap(xhr, entry) {
-    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry || entry.swapCompleted || !entry.networkSettled) {
-      return;
-    }
+    if (!ownsRequest(xhr, entry)) return;
     ownedRequests.delete(xhr);
     if (!resumeAfterRequests) return;
     if (refreshMode() !== "Live") {
-      resumeAfterRequests = false;
-      resumeAfterHidden = false;
-      pendingResync = false;
+      clearResumeIntent();
       liveState.status = "idle";
       liveState.streamPath = "";
       return;
@@ -3255,7 +3193,7 @@
     liveEngageFallback(true);
   }
   function finalizeOwnedRequest(xhr, entry) {
-    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    if (!ownsRequest(xhr, entry)) return;
     ownedRequests.delete(xhr);
     if (ownedRequests.size > 0 || !resumeAfterRequests) return;
     if (document.hidden) {
@@ -3263,24 +3201,23 @@
       resumeAfterHidden = true;
       return;
     }
-    const base = resumeBase || (liveSupported() ? liveStreamBase() : "");
-    resumeAfterRequests = false;
-    resumeAfterHidden = false;
     const shouldResync = pendingResync;
-    pendingResync = false;
     if (refreshMode() !== "Live") {
+      clearResumeIntent();
       liveState.status = "idle";
       liveState.streamPath = "";
       return;
     }
-    if (shouldResync) requestResync(base);
-    else openConnection(liveSupported() ? base : "");
+    const supportedBase = supportedResumeBase();
+    clearResumeIntent();
+    if (supportedBase && shouldResync) requestResync(supportedBase);
+    else openConnection(supportedBase);
   }
   function liveBeforeListSwapDecision(event) {
     const detail = requestDetail(event);
     const xhr = detail.xhr;
     const entry = xhr ? ownedRequests.get(xhr) : void 0;
-    if (!xhr || !entry || entry.epoch !== pageEpoch) return;
+    if (!xhr || !entry || !ownsRequest(xhr, entry)) return;
     queueMicrotask(() => {
       if (event.defaultPrevented || detail.shouldSwap === false) {
         completeOwnedRequestSwap(xhr, entry, null);
@@ -3291,25 +3228,27 @@
     const detail = requestDetail(event);
     const xhr = detail.xhr;
     const entry = xhr ? ownedRequests.get(xhr) : void 0;
-    if (xhr && entry) completeOwnedRequestSwap(xhr, entry, null);
+    if (xhr && entry && ownsRequest(xhr, entry)) completeOwnedRequestSwap(xhr, entry, null);
   }
   function liveOnListSwap(event) {
     const detail = requestDetail(event);
     const snapshotTxn = detail.roLiveSnapshotTxn;
-    if (snapshotTxn && snapshotTxn === pendingSnapshotTxn) {
-      completedSnapshotTxns.add(snapshotTxn);
+    if (detail.roLivePush === true) {
+      if (typeof snapshotTxn === "object" && snapshotTxn !== null) {
+        completedSnapshotTxns.add(snapshotTxn);
+      }
       return;
     }
-    if (detail.roLivePush) return;
     const xhr = detail.xhr;
     const entry = xhr ? ownedRequests.get(xhr) : void 0;
-    if (!entry || entry.epoch !== pageEpoch) return;
+    if (!xhr || !entry || !ownsRequest(xhr, entry)) return;
     const base = requestPathBase(detail);
     completeOwnedRequestSwap(xhr, entry, base);
   }
   function liveApply(force) {
     if (refreshMode() !== "Live") {
       liveTeardown();
+      clearResumeIntent();
       liveState.status = "idle";
       liveState.streamPath = "";
       return;
@@ -3317,8 +3256,7 @@
     const base = liveSupported() ? liveStreamBase() : "";
     if (force) {
       resyncTimestamps = [];
-      pendingResync = false;
-      resyncScheduled = false;
+      clearResumeIntent();
     }
     if (!force && liveState.status === "fallback") return;
     if (!force && base === liveState.streamPath && liveState.status !== "idle") return;
@@ -3335,28 +3273,30 @@
   }
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
-      if (activeConnection || liveState.status === "suspended" || liveState.status === "resyncing") {
+      if (activeConnection || resumeAfterRequests || resyncScheduled) {
         resumeBase ||= activeConnection?.base || liveState.streamPath;
         resumeAfterHidden = true;
         abortActiveConnection();
-        resyncScheduled = false;
         liveState.status = "hidden";
       }
       return;
     }
-    if (liveState.status !== "hidden" || !resumeAfterHidden || refreshMode() !== "Live") return;
+    if (!resumeAfterHidden) return;
+    if (refreshMode() !== "Live") {
+      clearResumeIntent();
+      liveState.status = "idle";
+      liveState.streamPath = "";
+      return;
+    }
     if (ownedRequests.size > 0) {
       liveState.status = "suspended";
       return;
     }
-    resumeAfterHidden = false;
-    const base = resumeBase || (liveSupported() ? liveStreamBase() : "");
-    if (pendingResync) {
-      pendingResync = false;
-      requestResync(base);
-    } else {
-      openConnection(liveSupported() ? base : "");
-    }
+    const shouldResync = pendingResync;
+    const supportedBase = supportedResumeBase();
+    clearResumeIntent();
+    if (supportedBase && shouldResync) requestResync(supportedBase);
+    else openConnection(supportedBase);
   });
   window.roLive = {
     discards() {
@@ -6139,8 +6079,8 @@
   document.addEventListener("htmx:beforeRequest", handleSortPreferenceRequest);
   document.addEventListener("htmx:afterSwap", (event) => {
     const bodySwapped = event.target === document.body;
-    if (bodySwapPending && bodySwapped) {
-      if (bodySwapTicket?.phase === "swap") {
+    if (bodySwapTicket && bodySwapped) {
+      if (bodySwapTicket.phase === "swap") {
         completeBodySwap();
       } else {
         reloadCurrentHistoryEntry();
@@ -6174,7 +6114,7 @@
       return;
     }
     if (detail && detail.target === document.body) {
-      if (bodySwapPending || bodyReloading) {
+      if (bodySwapTicket || bodyReloading) {
         event.preventDefault();
         reloadCurrentHistoryEntry();
         return;
@@ -6193,22 +6133,19 @@
       liveState.status = "idle";
       liveState.streamPath = "";
       queueMicrotask(() => {
-        if (event.defaultPrevented || detail.shouldSwap === false) {
-          reloadFailedBodySwap(ticket);
-        }
+        if (!event.defaultPrevented && detail.shouldSwap !== false) return;
+        reloadFailedBodySwap(ticket);
       });
     }
   });
-  var bodySwapPending = false;
   var bodySwapTicket = null;
-  var bodyReloading = false;
+  var bodyReloading;
   function clearBodySwap() {
-    bodySwapPending = false;
     bodySwapTicket = null;
   }
   function completeBodySwap() {
     clearBodySwap();
-    bodyReloading = false;
+    bodyReloading = void 0;
   }
   function retireCurrentScreenForBodySwap() {
     liveTeardown();
@@ -6219,23 +6156,22 @@
   }
   function reloadCurrentHistoryEntry() {
     if (bodyReloading) return;
-    if (!bodySwapPending) retireCurrentScreenForBodySwap();
+    if (!bodySwapTicket) retireCurrentScreenForBodySwap();
     clearBodySwap();
     bodyReloading = true;
     window.history.go(0);
   }
   function reloadFailedBodySwap(ticket) {
-    if (!bodySwapPending || !ticket || bodySwapTicket !== ticket) return;
+    if (!ticket || bodySwapTicket !== ticket) return;
     reloadCurrentHistoryEntry();
   }
   function claimBodySwap(kind, phase, xhr) {
     const ticket = { kind, phase, xhr };
-    bodySwapPending = true;
     bodySwapTicket = ticket;
     return ticket;
   }
   function beginHistoryBodySwap(event) {
-    if (bodySwapPending || bodyReloading) {
+    if (bodySwapTicket || bodyReloading) {
       event.preventDefault();
       reloadCurrentHistoryEntry();
       return;
@@ -6251,18 +6187,13 @@
     if (miss) {
       if (!xhr) {
         event.preventDefault();
-        reloadFailedBodySwap(ticket);
         return;
       }
-      xhr.addEventListener(
-        "loadend",
-        () => {
-          if (bodySwapTicket === ticket && ticket.phase === "request") {
-            reloadFailedBodySwap(ticket);
-          }
-        },
-        { once: true }
-      );
+      xhr.addEventListener("loadend", () => {
+        if (ticket.phase === "request") {
+          reloadFailedBodySwap(ticket);
+        }
+      });
     }
   }
   document.addEventListener("htmx:historyCacheHit", beginHistoryBodySwap);
@@ -6270,22 +6201,14 @@
   document.addEventListener("htmx:historyCacheMissLoad", (event) => {
     const detail = Object(event.detail);
     const ticket = bodySwapTicket;
-    if (bodyReloading || !bodySwapPending || !ticket || ticket.kind !== "miss" || ticket.phase !== "request" || detail.xhr !== ticket.xhr) {
+    if (ticket?.kind !== "miss" || ticket.phase !== "request" || detail.xhr !== ticket.xhr) {
       event.preventDefault();
       reloadCurrentHistoryEntry();
       return;
     }
     ticket.phase = "swap";
   });
-  document.addEventListener("htmx:historyCacheMissLoadError", (event) => {
-    const detail = Object(event.detail);
-    const ticket = bodySwapTicket;
-    if (bodyReloading || !bodySwapPending || !ticket || ticket.kind !== "miss" || detail.xhr !== ticket.xhr) {
-      reloadCurrentHistoryEntry();
-      return;
-    }
-    reloadFailedBodySwap(ticket);
-  });
+  document.addEventListener("htmx:historyCacheMissLoadError", reloadCurrentHistoryEntry);
   document.addEventListener("htmx:swapError", (event) => {
     const detail = Object(event.detail);
     if (event.target === document.body || detail.target === document.body) {
@@ -6320,7 +6243,7 @@
     }
   }
   function runInit() {
-    if (bodySwapPending || bodyReloading) return;
+    if (bodySwapTicket || bodyReloading) return;
     [
       syncRefreshUI,
       buildYamlFolds,

@@ -224,8 +224,8 @@ document.addEventListener('htmx:afterSwap', (event) => {
     // projection. A failed or overlapping body attempt is already in
     // `bodyReloading` and deliberately ignores anonymous late afterSwap events
     // until full reload.
-    if (bodySwapPending && bodySwapped) {
-        if (bodySwapTicket?.phase === 'swap') {
+    if (bodySwapTicket && bodySwapped) {
+        if (bodySwapTicket.phase === 'swap') {
             completeBodySwap();
         } else {
             reloadCurrentHistoryEntry();
@@ -308,7 +308,7 @@ document.addEventListener('htmx:beforeSwap', (event) => {
         return;
     }
     if (detail && detail.target === document.body) {
-        if (bodySwapPending || bodyReloading) {
+        if (bodySwapTicket || bodyReloading) {
             // afterSwap carries no request identity. A second body response
             // cannot safely complete the ownership held by the first attempt,
             // so cancel it and keep the document inert until one canonical
@@ -344,10 +344,13 @@ document.addEventListener('htmx:beforeSwap', (event) => {
         liveResetPage(); // invalidates old request loadend/stream continuations
         liveState.status = 'idle';
         liveState.streamPath = '';
+        // Later beforeSwap listeners may cancel this response. Observe their
+        // final decision in a microtask, but do not assume an accepted swap is
+        // synchronous: HTMX permits an explicit swap delay. afterSwap or
+        // swapError remains the event-driven owner of every accepted response.
         queueMicrotask(() => {
-            if (event.defaultPrevented || detail.shouldSwap === false) {
-                reloadFailedBodySwap(ticket);
-            }
+            if (!event.defaultPrevented && detail.shouldSwap !== false) return;
+            reloadFailedBodySwap(ticket);
         });
     }
 });
@@ -366,18 +369,16 @@ interface BodySwapTicket {
     xhr: EventTarget | null;
 }
 
-let bodySwapPending = false;
 let bodySwapTicket: BodySwapTicket | null = null;
-let bodyReloading = false;
+let bodyReloading: true | undefined;
 
 function clearBodySwap(): void {
-    bodySwapPending = false;
     bodySwapTicket = null;
 }
 
 function completeBodySwap(): void {
     clearBodySwap();
-    bodyReloading = false;
+    bodyReloading = undefined;
 }
 
 function retireCurrentScreenForBodySwap(): void {
@@ -390,14 +391,14 @@ function retireCurrentScreenForBodySwap(): void {
 
 function reloadCurrentHistoryEntry(): void {
     if (bodyReloading) return;
-    if (!bodySwapPending) retireCurrentScreenForBodySwap();
+    if (!bodySwapTicket) retireCurrentScreenForBodySwap();
     clearBodySwap();
     bodyReloading = true;
     window.history.go(0);
 }
 
 function reloadFailedBodySwap(ticket: BodySwapTicket | null): void {
-    if (!bodySwapPending || !ticket || bodySwapTicket !== ticket) return;
+    if (!ticket || bodySwapTicket !== ticket) return;
     // Popstate already published the destination URL. If its cached body was
     // cancelled or failed, old DOM + new URL has no coherent Live/polling
     // owner. Clear the ticket before reloading so a late duplicate error or
@@ -411,13 +412,12 @@ function claimBodySwap(
     xhr: EventTarget | null,
 ): BodySwapTicket {
     const ticket: BodySwapTicket = { kind, phase, xhr };
-    bodySwapPending = true;
     bodySwapTicket = ticket;
     return ticket;
 }
 
 function beginHistoryBodySwap(event: Event): void {
-    if (bodySwapPending || bodyReloading) {
+    if (bodySwapTicket || bodyReloading) {
         // A cache miss can still be in flight when another history intent
         // arrives. HTMX gives the eventual body afterSwap no request identity,
         // so accepting both would let either body reopen Live under the other's
@@ -442,7 +442,6 @@ function beginHistoryBodySwap(event: Event): void {
     if (miss) {
         if (!xhr) {
             event.preventDefault();
-            reloadFailedBodySwap(ticket);
             return;
         }
         // Vendored HTMX installs only XHR.onload for history misses. Network
@@ -450,15 +449,11 @@ function beginHistoryBodySwap(event: Event): void {
         // total terminal seam. A successful onload first advances this exact
         // ticket through historyCacheMissLoad, so only request-phase loadend is
         // a failure.
-        xhr.addEventListener(
-            'loadend',
-            () => {
-                if (bodySwapTicket === ticket && ticket.phase === 'request') {
-                    reloadFailedBodySwap(ticket);
-                }
-            },
-            { once: true },
-        );
+        xhr.addEventListener('loadend', () => {
+            if (ticket.phase === 'request') {
+                reloadFailedBodySwap(ticket);
+            }
+        });
     }
 }
 
@@ -468,14 +463,7 @@ document.addEventListener('htmx:historyCacheMiss', beginHistoryBodySwap);
 document.addEventListener('htmx:historyCacheMissLoad', (event) => {
     const detail = Object((event as CustomEvent).detail) as { xhr?: unknown };
     const ticket = bodySwapTicket;
-    if (
-        bodyReloading ||
-        !bodySwapPending ||
-        !ticket ||
-        ticket.kind !== 'miss' ||
-        ticket.phase !== 'request' ||
-        detail.xhr !== ticket.xhr
-    ) {
+    if (ticket?.kind !== 'miss' || ticket.phase !== 'request' || detail.xhr !== ticket.xhr) {
         // HTMX ignores the MissLoad dispatch result and still calls swap. The
         // reload gate remains the actual safety boundary for this known-stale,
         // unavoidable response.
@@ -486,21 +474,7 @@ document.addEventListener('htmx:historyCacheMissLoad', (event) => {
     ticket.phase = 'swap';
 });
 
-document.addEventListener('htmx:historyCacheMissLoadError', (event) => {
-    const detail = Object((event as CustomEvent).detail) as { xhr?: unknown };
-    const ticket = bodySwapTicket;
-    if (
-        bodyReloading ||
-        !bodySwapPending ||
-        !ticket ||
-        ticket.kind !== 'miss' ||
-        detail.xhr !== ticket.xhr
-    ) {
-        reloadCurrentHistoryEntry();
-        return;
-    }
-    reloadFailedBodySwap(ticket);
-});
+document.addEventListener('htmx:historyCacheMissLoadError', reloadCurrentHistoryEntry);
 
 document.addEventListener('htmx:swapError', (event) => {
     const detail = Object((event as CustomEvent).detail) as { target?: unknown };
@@ -567,7 +541,7 @@ function runInit(): void {
     // An unowned completion must not reopen Live on an untrusted body. The
     // accepted body afterSwap clears its ownership gate immediately before
     // calling this function; failed and overlapping attempts stay inert.
-    if (bodySwapPending || bodyReloading) return;
+    if (bodySwapTicket || bodyReloading) return;
     [
         syncRefreshUI,
         buildYamlFolds,

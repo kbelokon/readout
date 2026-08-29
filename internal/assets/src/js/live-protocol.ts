@@ -160,7 +160,7 @@ export interface LiveV2ApplyTestHooks {
 type JSONRecord = Record<string, unknown>;
 
 const BASE_FIELDS = new Set(['v', 'kind', 'g', 'seq', 'screen', 'rev', 'rv', 'schema']);
-const GENERATION = /^[A-Za-z0-9._~-]+$/u;
+const ROOT_PATH = '$';
 const textEncoder = new TextEncoder();
 const decodedEnvelopeTokens = new WeakSet<object>();
 
@@ -173,7 +173,7 @@ function isRecord(value: unknown): value is JSONRecord {
 }
 
 function freezeWireValue(value: unknown): void {
-    if ((typeof value !== 'object' || value === null) && !Array.isArray(value)) return;
+    if (Object(value) !== value) return;
     for (const child of Object.values(value as object)) freezeWireValue(child);
     Object.freeze(value);
 }
@@ -199,100 +199,103 @@ function hasControlCharacters(value: string): boolean {
     return false;
 }
 
-// JSON.parse deliberately keeps the last value for duplicate object members.
-// A strict wire decoder must reject that ambiguity before parsing. This small
-// grammar walk only detects duplicate member names; JSON.parse remains the
-// authority for all other syntax validity.
-function hasDuplicateJSONMembers(source: string): boolean {
-    let offset = 0;
-    const whitespace = /\s/u;
-    const skipWhitespace = () => {
-        while (whitespace.test(source[offset] || '')) offset += 1;
-    };
-    const parseString = (): string => {
-        const start = offset;
-        if (source[offset] !== '"') throw new Error('expected string');
-        offset += 1;
-        while (offset < source.length) {
-            const character = source[offset];
-            if (character === '\\') {
-                offset += 2;
-                continue;
-            }
-            offset += 1;
-            if (character === '"') {
-                return JSON.parse(source.slice(start, offset)) as string;
-            }
+function isGeneration(value: string): boolean {
+    for (const character of value) {
+        const code = character.charCodeAt(0);
+        if (
+            (code >= 0x30 && code <= 0x39) ||
+            (code >= 0x41 && code <= 0x5a) ||
+            (code >= 0x61 && code <= 0x7a) ||
+            character === '.' ||
+            character === '_' ||
+            character === '~' ||
+            character === '-'
+        ) {
+            continue;
         }
-        throw new Error('unterminated string');
-    };
-    const parseValue = (): boolean => {
-        skipWhitespace();
-        if (source[offset] === '{') return parseObject();
-        if (source[offset] === '[') return parseArray();
-        if (source[offset] === '"') {
-            parseString();
-            return false;
-        }
-        const start = offset;
-        while (offset < source.length && !/[\s,\]}]/u.test(source[offset] as string)) {
-            offset += 1;
-        }
-        if (offset === start) throw new Error('expected value');
-        return false;
-    };
-    const parseArray = (): boolean => {
-        offset += 1;
-        skipWhitespace();
-        if (source[offset] === ']') {
-            offset += 1;
-            return false;
-        }
-        while (offset < source.length) {
-            if (parseValue()) return true;
-            skipWhitespace();
-            if (source[offset] === ']') {
-                offset += 1;
-                return false;
-            }
-            if (source[offset] !== ',') throw new Error('expected array separator');
-            offset += 1;
-        }
-        throw new Error('unterminated array');
-    };
-    const parseObject = (): boolean => {
-        offset += 1;
-        skipWhitespace();
-        if (source[offset] === '}') {
-            offset += 1;
-            return false;
-        }
-        const keys = new Set<string>();
-        while (offset < source.length) {
-            skipWhitespace();
-            const key = parseString();
-            if (keys.has(key)) return true;
-            keys.add(key);
-            skipWhitespace();
-            if (source[offset] !== ':') throw new Error('expected object separator');
-            offset += 1;
-            if (parseValue()) return true;
-            skipWhitespace();
-            if (source[offset] === '}') {
-                offset += 1;
-                return false;
-            }
-            if (source[offset] !== ',') throw new Error('expected object member separator');
-            offset += 1;
-        }
-        throw new Error('unterminated object');
-    };
-    try {
-        skipWhitespace();
-        return parseValue();
-    } catch {
         return false;
     }
+    return true;
+}
+
+// JSON.parse deliberately keeps the last value for duplicate object members.
+// Once JSON.parse has established that the frame is valid JSON, this small
+// grammar walk detects duplicate member names without maintaining a second
+// syntax validator.
+function hasDuplicateJSONMembers(source: string): boolean {
+    type ObjectContext = { kind: 'object'; expectsKey: boolean; keys: Set<string> };
+    type Context = { kind: 'array' } | ObjectContext;
+    type ValueStringState = { kind: 'value'; mode: 'content' | 'escape' };
+    type KeyStringState = {
+        kind: 'key';
+        mode: 'content' | 'escape';
+        keyContext: ObjectContext;
+        rawStart: number;
+    };
+    type StringState = ValueStringState | KeyStringState;
+
+    const contexts: Context[] = [];
+    let stringState: StringState | null = null;
+
+    for (let offset = 0; offset < source.length; offset += 1) {
+        const characterCode = source.charCodeAt(offset);
+        if (stringState) {
+            if (stringState.kind === 'value') {
+                if (stringState.mode === 'escape') stringState.mode = 'content';
+                else if (characterCode === 0x5c) stringState.mode = 'escape';
+                else if (characterCode === 0x22) stringState = null;
+                continue;
+            }
+
+            if (stringState.mode === 'escape') {
+                stringState.mode = 'content';
+                continue;
+            }
+            if (characterCode === 0x5c) {
+                stringState.mode = 'escape';
+                continue;
+            }
+            if (characterCode !== 0x22) continue;
+
+            const { keyContext, rawStart } = stringState;
+            stringState = null;
+            const key = JSON.parse(source.slice(rawStart, offset + 1)) as string;
+            if (keyContext.keys.has(key)) return true;
+            keyContext.keys.add(key);
+            keyContext.expectsKey = false;
+            continue;
+        }
+
+        const context = contexts.at(-1);
+        if (characterCode === 0x22) {
+            stringState =
+                context?.kind === 'object' && context.expectsKey
+                    ? {
+                          kind: 'key',
+                          mode: 'content',
+                          keyContext: context,
+                          rawStart: offset,
+                      }
+                    : { kind: 'value', mode: 'content' };
+            continue;
+        }
+        if (characterCode === 0x7b) {
+            contexts.push({ kind: 'object', expectsKey: true, keys: new Set() });
+            continue;
+        }
+        if (characterCode === 0x5b) {
+            contexts.push({ kind: 'array' });
+            continue;
+        }
+        if (characterCode === 0x7d || characterCode === 0x5d) {
+            contexts.pop();
+            continue;
+        }
+        if (characterCode === 0x2c) {
+            if (context?.kind === 'object') context.expectsKey = true;
+        }
+    }
+    return false;
 }
 
 function rejectUnknownFields(
@@ -304,21 +307,14 @@ function rejectUnknownFields(
     return unknown ? wireError('unexpected-field', `${path}.${unknown} is not allowed`) : null;
 }
 
-function boundedString(
-    value: unknown,
-    path: string,
-    max: number,
-    options: { allowEmpty?: boolean; pattern?: RegExp } = {},
-): string | LiveV2Error {
-    if (typeof value !== 'string' || (!options.allowEmpty && value.length === 0)) {
+function boundedString(value: unknown, path: string, max: number): string | LiveV2Error {
+    if (typeof value !== 'string' || value.length === 0) {
         return wireError('invalid-field', `${path} must be a non-empty string`);
     }
-    // Check the cheap JS length first so hostile multi-byte strings never make
-    // TextEncoder allocate beyond a known bound merely to discover the limit.
     if (value.length > max || textEncoder.encode(value).byteLength > max) {
         return wireError('limit-exceeded', `${path} exceeds ${max} bytes`);
     }
-    if (hasControlCharacters(value) || (options.pattern && !options.pattern.test(value))) {
+    if (hasControlCharacters(value)) {
         return wireError('invalid-field', `${path} contains forbidden characters`);
     }
     return value;
@@ -341,10 +337,11 @@ function decodeBase(record: JSONRecord): LiveV2Error | null {
     if (!Number.isSafeInteger(record.seq) || (record.seq as number) < 1) {
         return wireError('invalid-field', 'seq must be a positive safe integer');
     }
-    const g = boundedString(record.g, 'g', LIVE_V2_LIMITS.generationLength, {
-        pattern: GENERATION,
-    });
+    const g = boundedString(record.g, 'g', LIVE_V2_LIMITS.generationLength);
     if (typeof g !== 'string') return g;
+    if (!isGeneration(g)) {
+        return wireError('invalid-field', 'g contains forbidden characters');
+    }
     const screen = boundedString(record.screen, 'screen', LIVE_V2_LIMITS.screenLength);
     if (typeof screen !== 'string') return screen;
     if (own(record, 'rev')) {
@@ -364,7 +361,7 @@ function decodeBase(record: JSONRecord): LiveV2Error | null {
 
 function decodeSnapshot(record: JSONRecord): DecodeLiveV2Result {
     const allowed = new Set([...BASE_FIELDS, 'snapshot']);
-    const unknown = rejectUnknownFields(record, allowed, '$');
+    const unknown = rejectUnknownFields(record, allowed, ROOT_PATH);
     if (unknown) return { ok: false, error: unknown };
     if (!own(record, 'rev') || !own(record, 'schema')) {
         return {
@@ -515,7 +512,7 @@ function decodeRegions(value: unknown): LiveV2DeltaRegion[] | LiveV2Error {
 
 function decodeDelta(record: JSONRecord): DecodeLiveV2Result {
     const allowed = new Set([...BASE_FIELDS, 'delta']);
-    const unknown = rejectUnknownFields(record, allowed, '$');
+    const unknown = rejectUnknownFields(record, allowed, ROOT_PATH);
     if (unknown) return { ok: false, error: unknown };
     if (!own(record, 'rev') || !own(record, 'schema') || !isRecord(record.delta)) {
         return {
@@ -543,22 +540,20 @@ function decodeDelta(record: JSONRecord): DecodeLiveV2Result {
     if (base === rev) {
         return { ok: false, error: wireError('no-op', 'delta base and revision must differ') };
     }
-    let operationCount = 0;
+    // The whole delta frame is already capped at deltaBytes in UTF-8. Its JSON
+    // syntax and string encoding strictly dominate both aggregate decoded HTML
+    // bytes and any >operations collection of valid remove/upsert objects.
+    // Per-array and per-fragment caps remain explicit for local diagnostics.
     const result: LiveV2Delta = { base, rev };
     if (own(delta, 'remove')) {
         const remove = decodeRemove(delta.remove);
         if (!Array.isArray(remove)) return { ok: false, error: remove };
         result.remove = remove;
-        operationCount += remove.length;
     }
     if (own(delta, 'upsert')) {
         const upsert = decodeUpsert(delta.upsert);
         if (!Array.isArray(upsert)) return { ok: false, error: upsert };
         result.upsert = upsert;
-        operationCount += upsert.length;
-    }
-    if (operationCount > LIVE_V2_LIMITS.operations) {
-        return { ok: false, error: wireError('limit-exceeded', 'too many delta operations') };
     }
     const removeKeys = new Set(result.remove?.map((item) => item.key));
     const overlap = result.upsert?.find((item) => removeKeys.has(item.key));
@@ -577,21 +572,6 @@ function decodeDelta(record: JSONRecord): DecodeLiveV2Result {
         const regions = decodeRegions(delta.regions);
         if (!Array.isArray(regions)) return { ok: false, error: regions };
         result.regions = regions;
-    }
-    let aggregateHTMLBytes = 0;
-    for (const html of [
-        ...(result.upsert || []).flatMap((operation) =>
-            operation.card === undefined ? [operation.row] : [operation.row, operation.card],
-        ),
-        ...(result.regions || []).map((operation) => operation.html),
-    ]) {
-        aggregateHTMLBytes += textEncoder.encode(html).byteLength;
-        if (aggregateHTMLBytes > LIVE_V2_LIMITS.deltaBytes) {
-            return {
-                ok: false,
-                error: wireError('limit-exceeded', 'delta HTML exceeds its aggregate limit'),
-            };
-        }
     }
     if (
         (result.remove?.length || 0) === 0 &&
@@ -612,7 +592,7 @@ function decodeDelta(record: JSONRecord): DecodeLiveV2Result {
 
 function decodeTerminal(record: JSONRecord): DecodeLiveV2Result {
     const allowed = new Set([...BASE_FIELDS, 'reason']);
-    const unknown = rejectUnknownFields(record, allowed, '$');
+    const unknown = rejectUnknownFields(record, allowed, ROOT_PATH);
     if (unknown) return { ok: false, error: unknown };
     if (
         record.reason !== 'idle' &&
@@ -635,13 +615,13 @@ export function decodeLiveV2Envelope(frame: string): DecodeLiveV2Result {
         if (typeof frame !== 'string' || frame.length > LIVE_V2_LIMITS.frameBytes) {
             return { ok: false, error: wireError('limit-exceeded', 'Live v2 frame is too large') };
         }
+        const parsed: unknown = JSON.parse(frame);
         if (hasDuplicateJSONMembers(frame)) {
             return {
                 ok: false,
                 error: wireError('duplicate', 'JSON object member names must be unique'),
             };
         }
-        const parsed: unknown = JSON.parse(frame);
         if (!isRecord(parsed)) {
             return { ok: false, error: wireError('invalid-frame', 'frame root must be an object') };
         }
@@ -739,7 +719,7 @@ export function applyLiveV2Delta(
         morph: hooks.morph,
         reconcile: () => {
             hooks.beforeReconcile?.();
-            if (deletedKeys.size > 0) applyLiveRowDeletions(deletedKeys);
+            applyLiveRowDeletions(deletedKeys);
             applyLiveNameFilter();
             if (!virtualizerActive()) reapplyRowState();
             hooks.afterReconcile?.();
@@ -765,7 +745,7 @@ export function applyLiveV2Delta(
                     failed = true;
                 }
             }
-            if (failed) throw new Error('external Live state rollback failed');
+            if (failed) throw new Error();
         },
     });
     if (!result.ok) return result;

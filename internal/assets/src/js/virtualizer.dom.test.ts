@@ -15,7 +15,10 @@ vi.mock('./row-selection.js', () => ({
     reapplyRowState: dependencies.reapplyRowState,
 }));
 
+import { listProjectionOrder } from './list-projection.js';
 import {
+    restoreVirtualizerCheckpoint,
+    takeVirtualizerCheckpoint,
     virtMoveFocus,
     virtRowByKey,
     virtRows,
@@ -329,6 +332,12 @@ describe('engagement', () => {
         expect(content.dataset.roEtagPath).toBeUndefined();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(listProjectionOrder()).toStrictEqual([]);
+        expect(takeVirtualizerCheckpoint().state).toMatchObject({
+            active: false,
+            table: null,
+            tbody: null,
+        });
         expect(tbody).toContainElement(cachedSpacer);
     });
 
@@ -385,6 +394,32 @@ describe('engagement', () => {
         expect(dependencies.requestListRefresh).toHaveBeenCalledOnce();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(listProjectionOrder()).toStrictEqual([]);
+        expect(takeVirtualizerCheckpoint().state.active).toBe(false);
+    });
+
+    test('does not mistake a replacement tbody in the same content for the pending recovery', () => {
+        const first = renderList(['cached-row']);
+        const content = first.closest('#resource-list-content') as HTMLElement;
+        const firstSpacer = document.createElement('tr');
+        firstSpacer.className = 'ro-vspacer';
+        firstSpacer.append(document.createElement('td'));
+        first.replaceChildren(firstSpacer);
+        virtualizeInit();
+
+        const replacement = buildList(['replacement-row']).querySelector(
+            'tbody',
+        ) as HTMLTableSectionElement;
+        const replacementSpacer = document.createElement('tr');
+        replacementSpacer.className = 'ro-vspacer';
+        replacementSpacer.append(document.createElement('td'));
+        replacement.replaceChildren(replacementSpacer);
+        first.replaceWith(replacement);
+        expect(replacement.closest('#resource-list-content')).toBe(content);
+
+        virtualizeInit();
+
+        expect(dependencies.requestListRefresh).toHaveBeenCalledTimes(2);
     });
 
     test('fully disengages when a live list becomes plain, malformed, or empty', () => {
@@ -401,8 +436,14 @@ describe('engagement', () => {
         expect(virtRows()).toStrictEqual([]);
         expect(virtVisible()).toStrictEqual([]);
         expect(directRowKeys(plain)).toStrictEqual(['plain-row']);
+        expect(listProjectionOrder()).toStrictEqual(['plain-row']);
         expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 0, total: 0 });
         expect(virtualizerSeam().scrollToKey('plain-row')).toBe(false);
+        expect(takeVirtualizerCheckpoint().state).toMatchObject({
+            active: false,
+            table: null,
+            tbody: null,
+        });
 
         engage();
         document.body.innerHTML = `
@@ -414,12 +455,59 @@ describe('engagement', () => {
         virtualizeInit();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(listProjectionOrder()).toStrictEqual([]);
+        expect(takeVirtualizerCheckpoint().state).toMatchObject({
+            active: false,
+            table: null,
+            tbody: null,
+        });
 
         engage();
         renderList([]);
         virtualizeInit();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(takeVirtualizerCheckpoint().state).toMatchObject({
+            active: false,
+            table: null,
+            tbody: null,
+        });
+    });
+
+    test('restores exact viewport geometry and the one-shot history recovery owner', () => {
+        renderList(rowKeys(40));
+        virtualizeInit();
+        const geometry = takeVirtualizerCheckpoint();
+        setVisibleKeys(new Set(['row-30']));
+        virtualizeOnFilterChange();
+        expect(virtualizerSeam().renderedBounds().total).toBe(1);
+
+        restoreVirtualizerCheckpoint(geometry);
+
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 17, total: 40 });
+
+        const first = renderList(['first-cached']);
+        const firstContent = first.closest('#resource-list-content') as HTMLElement;
+        const firstSpacer = document.createElement('tr');
+        firstSpacer.className = 'ro-vspacer';
+        firstSpacer.append(document.createElement('td'));
+        first.replaceChildren(firstSpacer);
+        virtualizeInit();
+        const firstRecovery = takeVirtualizerCheckpoint();
+
+        const second = renderList(['second-cached']);
+        const secondSpacer = document.createElement('tr');
+        secondSpacer.className = 'ro-vspacer';
+        secondSpacer.append(document.createElement('td'));
+        second.replaceChildren(secondSpacer);
+        virtualizeInit();
+        expect(dependencies.requestListRefresh).toHaveBeenCalledTimes(2);
+
+        restoreVirtualizerCheckpoint(firstRecovery);
+        document.body.replaceChildren(firstContent);
+        virtualizeInit();
+
+        expect(dependencies.requestListRefresh).toHaveBeenCalledTimes(2);
     });
 
     test('reports a detached mount as inactive and leaves its viewport events inert', () => {
@@ -472,6 +560,7 @@ describe('engagement', () => {
 
         renderList(rowKeys(30));
         virtualizeInit();
+        expect(takeVirtualizerCheckpoint().state.pendingScrollY).toBeNull();
         setVisibleKeys(new Set(['row-29']));
         virtualizeOnFilterChange();
 
@@ -631,6 +720,11 @@ describe('swap adoption', () => {
         virtualizeAfterSwap();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(takeVirtualizerCheckpoint().state).toMatchObject({
+            active: false,
+            table: null,
+            tbody: null,
+        });
 
         renderList(rowKeys(20));
         virtualizeInit();
@@ -640,6 +734,12 @@ describe('swap adoption', () => {
         virtualizeAfterSwap();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(listProjectionOrder()).toStrictEqual([]);
+        expect(takeVirtualizerCheckpoint().state).toMatchObject({
+            active: false,
+            table: null,
+            tbody: null,
+        });
     });
 
     test('leaves a windowed fragment with no keyed rows untouched', () => {

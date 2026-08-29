@@ -6,17 +6,22 @@
 // parser retains byte slices until a complete line, decodes that line with a
 // fatal UTF-8 decoder, and dispatches only events terminated by a blank line.
 
+import { ensureBoundedByteBufferCapacity } from './bounded-byte-buffer.js';
+
+const LIVE_SSE_DATA_CEILING_BYTES = 16_777_216;
+const LIVE_SSE_FRAMED_CEILING_BYTES = 16_778_240;
+
 export const LIVE_SSE_LIMITS = Object.freeze({
-    dataBytes: 16 * 1024 * 1024,
+    dataBytes: LIVE_SSE_DATA_CEILING_BYTES,
     // All nonblank field/comment bytes in one uncommitted event. This prevents
     // ignored extension/comment lines from multiplying bounded data work.
-    eventBytes: 16 * 1024 * 1024 + 1024,
+    eventBytes: LIVE_SSE_FRAMED_CEILING_BYTES,
     eventNameBytes: 64,
     lines: 32,
     // A legal max-size one-line payload still carries `data:` plus optional
     // whitespace. Keep a small, fixed framing allowance separate from the
     // exact aggregate data ceiling.
-    lineBytes: 16 * 1024 * 1024 + 1024,
+    lineBytes: LIVE_SSE_FRAMED_CEILING_BYTES,
 });
 
 export type LiveSSEErrorCode =
@@ -63,9 +68,9 @@ function decodeLine(bytes: Uint8Array): string {
 
 export class LiveSSEParser {
     readonly #limits: SSELimits;
-    #lineBuffer = new Uint8Array(1024);
+    #lineBuffer = new Uint8Array();
     #lineBytes = 0;
-    #swallowLF = false;
+    #pendingDelimiter: 'none' | 'cr' = 'none';
     #eventName: string | null = null;
     #eventBytes = 0;
     #dataLines: string[] = [];
@@ -92,50 +97,42 @@ export class LiveSSEParser {
         }
     }
 
-    // EOF deliberately drops an unterminated line/event.  The caller decides
-    // whether an EOF is a transport failure; the parser never invents a final
-    // event without the protocol's blank-line commit marker.
-    finish(): void {
-        if (this.#fatal) throw this.#fatal;
-        this.#lineBytes = 0;
-        this.#resetEvent();
-    }
-
     #consume(chunk: Uint8Array, events: LiveSSEEvent[]): void {
         let start = 0;
-        for (let index = 0; index < chunk.byteLength; index += 1) {
-            const byte = chunk[index];
-            if (this.#swallowLF) {
-                this.#swallowLF = false;
+        let index = 0;
+        while (index !== chunk.byteLength) {
+            const byteIndex = index;
+            const byte = chunk[byteIndex] as number;
+            index += 1;
+            if (this.#pendingDelimiter === 'cr') {
+                this.#pendingDelimiter = 'none';
                 if (byte === 0x0a) {
-                    start = index + 1;
+                    start = index;
                     continue;
                 }
             }
             if (byte !== 0x0a && byte !== 0x0d) continue;
-            this.#appendLinePart(chunk.subarray(start, index));
+            this.#appendLinePart(chunk.subarray(start, byteIndex));
             this.#completeLine(events);
-            this.#swallowLF = byte === 0x0d;
-            start = index + 1;
+            this.#pendingDelimiter = byte === 0x0d ? 'cr' : 'none';
+            start = index;
         }
         this.#appendLinePart(chunk.subarray(start));
     }
 
     #appendLinePart(part: Uint8Array): void {
-        if (part.byteLength === 0) return;
         if (part.byteLength > this.#limits.lineBytes - this.#lineBytes) {
             throw new LiveSSEError('line-too-large', 'SSE field line exceeds its byte limit');
         }
         const required = this.#lineBytes + part.byteLength;
-        if (required > this.#lineBuffer.byteLength) {
-            let capacity = this.#lineBuffer.byteLength;
-            while (capacity < required) capacity = Math.min(this.#limits.lineBytes, capacity * 2);
-            const grown = new Uint8Array(capacity);
-            grown.set(this.#lineBuffer.subarray(0, this.#lineBytes));
-            this.#lineBuffer = grown;
-        }
+        this.#lineBuffer = ensureBoundedByteBufferCapacity(
+            this.#lineBuffer,
+            this.#lineBytes,
+            part.byteLength,
+            this.#limits.lineBytes,
+        );
         this.#lineBuffer.set(part, this.#lineBytes);
-        this.#lineBytes += part.byteLength;
+        this.#lineBytes = required;
     }
 
     #completeLine(events: LiveSSEEvent[]): void {
@@ -160,18 +157,13 @@ export class LiveSSEParser {
         if (this.#lines > this.#limits.lines) {
             throw new LiveSSEError('too-many-lines', 'SSE event has too many nonblank lines');
         }
-        // A comment has no field/value split, so validate it once as a whole.
-        // Other lines decode the field and value exactly once each below: this
-        // validates every byte without allocating a second 16 MiB data string.
-        if (bytes[0] === 0x3a) {
-            decodeLine(bytes);
-            return;
-        }
-        let colon = bytes.indexOf(0x3a);
-        if (colon < 0) colon = bytes.byteLength;
-        let valueStart = Math.min(colon + 1, bytes.byteLength);
-        if (colon < bytes.byteLength && bytes[valueStart] === 0x20) valueStart += 1;
-        const field = decodeLine(bytes.subarray(0, colon));
+        // Decode the field and value exactly once each. A comment naturally has
+        // an empty field and follows the same validated extension-field path.
+        const colon = bytes.indexOf(0x3a);
+        const fieldEnd = colon === -1 ? bytes.byteLength : colon;
+        let valueStart = colon === -1 ? bytes.byteLength : colon + 1;
+        if (bytes[valueStart] === 0x20) valueStart += 1;
+        const field = decodeLine(bytes.subarray(0, fieldEnd));
         const valueBytes = bytes.subarray(valueStart);
         if (field === 'event') {
             if (valueBytes.byteLength > this.#limits.eventNameBytes) {

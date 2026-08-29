@@ -1,21 +1,17 @@
 // live-policy.test.ts -- Vitest for the PURE refresh + Live decision core
-// (live-policy.ts). The cadence math, the failure backoff, the Live stream-close
-// taxonomy, and the morph-time discard gate are the load-bearing protocol
-// decisions the e2e suite (live.spec.ts, refresh.spec.ts) exercises through the
-// DOM; pinning every branch here (no DOM, no fetch) catches a regression at the
-// unit boundary before it reaches a frame.
+// (live-policy.ts). The cadence math, failure backoff, and morph-time discard
+// gate are the load-bearing decisions exercised through the DOM by the e2e
+// suite; pinning them here catches a regression before it reaches a frame.
 //
 // Run: `npm test`.
 
 import { expect, test } from 'vitest';
 
 import {
-    classifyStreamClose,
     effectivePollSeconds,
     nextFailureStage,
     type PushDiscardFacts,
     refreshDelaySeconds,
-    type StreamCloseFacts,
     shouldDiscardPush,
 } from './live-policy.js';
 
@@ -76,75 +72,6 @@ test('nextFailureStage escalates 0->1->2->3 and clamps at 3', () => {
     expect(nextFailureStage(3)).toBe(3); // terminal stage stays
 });
 
-// --- classifyStreamClose (close-reason taxonomy, discriminated union) -------
-
-function close(cause: StreamCloseFacts['cause'], superseded = false): StreamCloseFacts {
-    return { superseded, cause };
-}
-
-test('a superseded close is ignored regardless of cause', () => {
-    for (const cause of [
-        'connect-error',
-        'bad-status',
-        'read-error',
-        'eof',
-        'terminal-frame',
-    ] as const) {
-        expect(classifyStreamClose(close(cause, true))).toStrictEqual({ kind: 'ignore' });
-    }
-});
-
-test('connect-time failures degrade to SILENT polling (no banner, not terminal)', () => {
-    expect(classifyStreamClose(close('connect-error'))).toStrictEqual({
-        kind: 'fallback',
-        banner: false,
-        terminal: false,
-    });
-    // 204 watch-less / 429 stream cap / anything unexpected all surface here.
-    expect(classifyStreamClose(close('bad-status'))).toStrictEqual({
-        kind: 'fallback',
-        banner: false,
-        terminal: false,
-    });
-});
-
-test('a mid-stream read drop degrades WITH the banner, not terminal', () => {
-    expect(classifyStreamClose(close('read-error'))).toStrictEqual({
-        kind: 'fallback',
-        banner: true,
-        terminal: false,
-    });
-});
-
-test('a terminal-less EOF degrades WITH the banner, not terminal', () => {
-    expect(classifyStreamClose(close('eof'))).toStrictEqual({
-        kind: 'fallback',
-        banner: true,
-        terminal: false,
-    });
-});
-
-test('an explicit ro-terminal frame degrades WITH the banner AND is terminal', () => {
-    expect(classifyStreamClose(close('terminal-frame'))).toStrictEqual({
-        kind: 'fallback',
-        banner: true,
-        terminal: true,
-    });
-});
-
-test('the close verdict is always a fallback or an ignore (the union is total)', () => {
-    for (const cause of [
-        'connect-error',
-        'bad-status',
-        'read-error',
-        'eof',
-        'terminal-frame',
-    ] as const) {
-        const verdict = classifyStreamClose(close(cause));
-        expect(verdict.kind).toBe('fallback');
-    }
-});
-
 // --- shouldDiscardPush (morph-time gate) ------------------------------------
 
 function push(over: Partial<PushDiscardFacts> = {}): PushDiscardFacts {
@@ -153,31 +80,26 @@ function push(over: Partial<PushDiscardFacts> = {}): PushDiscardFacts {
         currentGeneration: 'g1',
         liveStreamBase: '/clusters/c/pods/_stream',
         openedStreamBase: '/clusters/c/pods/_stream',
-        requestInFlight: false,
         ...over,
     };
 }
 
-test('a fresh, same-page, idle-request frame morphs (no discard)', () => {
-    expect(shouldDiscardPush(push())).toBe('none');
+test('a fresh same-page frame morphs without a discard', () => {
+    expect(shouldDiscardPush(push())).toBe(false);
 });
 
-test('a stale generation is discarded FIRST (before page / in-flight)', () => {
-    // Even with a wrong page AND a request in flight, the generation gate wins:
-    // ordering is part of the contract (the cheapest, most decisive check).
+test('a stale generation is discarded', () => {
     expect(
         shouldDiscardPush(
             push({
                 frameGeneration: 'g0',
                 currentGeneration: 'g1',
-                liveStreamBase: '/other/_stream',
-                requestInFlight: true,
             }),
         ),
-    ).toBe('stale-generation');
+    ).toBe(true);
 });
 
-test('a current-generation frame against a changed page is wrong-page', () => {
+test('a current-generation frame against a changed page is discarded', () => {
     expect(
         shouldDiscardPush(
             push({
@@ -185,20 +107,5 @@ test('a current-generation frame against a changed page is wrong-page', () => {
                 openedStreamBase: '/clusters/c/pods/_stream',
             }),
         ),
-    ).toBe('wrong-page');
-});
-
-test('a fresh, same-page frame while a _table request is in flight is discarded', () => {
-    expect(shouldDiscardPush(push({ requestInFlight: true }))).toBe('request-in-flight');
-});
-
-test('wrong-page is checked before in-flight', () => {
-    expect(
-        shouldDiscardPush(
-            push({
-                liveStreamBase: '/other/_stream',
-                requestInFlight: true,
-            }),
-        ),
-    ).toBe('wrong-page');
+    ).toBe(true);
 });

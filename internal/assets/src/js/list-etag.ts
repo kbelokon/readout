@@ -120,7 +120,6 @@ function readContentValidator(content: HTMLElement): ListValidator | null {
 }
 
 function writeContentValidator(content: HTMLElement, validator: ListValidator): void {
-    clearContentValidator(content);
     content.dataset[PATH_DATA_KEY] = validator.path;
     content.dataset[ETAG_DATA_KEY] = validator.etag;
 }
