@@ -672,3 +672,101 @@ func TestTableURLPreservesAPIServerBasePath(t *testing.T) {
 		t.Fatalf("path = %q", got)
 	}
 }
+
+// TestClientIdentityKeySeparatesCredentials pins the sharing decision every
+// per-viewer pool keys on: the same credential against the same connection is
+// one key, anything else is a different key, and the token never appears in it.
+func TestClientIdentityKeySeparatesCredentials(t *testing.T) {
+	base, err := NewClient(&rest.Config{Host: "https://one.example"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second connection to the same host is a different credential: identity
+	// is per client, not per host.
+	sibling, err := NewClient(&rest.Config{Host: "https://one.example"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated := base.IdentityKey(); repeated != base.IdentityKey() {
+		t.Fatalf("IdentityKey must be stable across calls, got %q then %q", repeated, base.IdentityKey())
+	}
+	if base.IdentityKey() == sibling.IdentityKey() {
+		t.Fatal("two base clients on the same host should not share an identity")
+	}
+
+	viewer, err := base.WithBearer("viewer-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefixed, err := base.WithBearer("Bearer viewer-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := base.WithBearer("other-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossCluster, err := sibling.WithBearer("viewer-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if viewer.IdentityKey() != prefixed.IdentityKey() {
+		t.Fatal("the Bearer prefix is normalization, not a different credential")
+	}
+	if viewer.IdentityKey() == other.IdentityKey() {
+		t.Fatal("different viewer tokens must not share an identity")
+	}
+	if viewer.IdentityKey() == base.IdentityKey() {
+		t.Fatal("a passthrough clone must not share the base client's identity")
+	}
+	if viewer.IdentityKey() == crossCluster.IdentityKey() {
+		t.Fatal("the same token against a different cluster must not share an identity")
+	}
+	if !strings.HasPrefix(viewer.IdentityKey(), base.IdentityKey()+":") {
+		t.Fatalf("derived identity %q should extend the base identity", viewer.IdentityKey())
+	}
+	if strings.Contains(viewer.IdentityKey(), "viewer-token") {
+		t.Fatalf("identity leaks the raw token: %q", viewer.IdentityKey())
+	}
+	if denied := base.Denied().IdentityKey(); denied == base.IdentityKey() {
+		t.Fatal("a denied clone refuses every request and must not share the base identity")
+	}
+}
+
+// TestClientIdentityKeyForStructLiteralClients: clients assembled without
+// NewClient (tests, internal clones) still get a unique key on first use rather
+// than all colliding on the empty string.
+func TestClientIdentityKeyForStructLiteralClients(t *testing.T) {
+	first, second := &Client{}, &Client{}
+	if first.IdentityKey() == "" {
+		t.Fatal("identity must never be empty")
+	}
+	if repeated := first.IdentityKey(); repeated != first.IdentityKey() {
+		t.Fatalf("lazily assigned identity must be stable, got %q then %q", repeated, first.IdentityKey())
+	}
+	if first.IdentityKey() == second.IdentityKey() {
+		t.Fatal("two struct-literal clients must not share an identity")
+	}
+}
+
+// TestSetClusterIdentityNamesTheCredential: the Manager names a base client's
+// credential after the cluster it belongs to before publishing it, and every
+// passthrough clone derives from that named key.
+func TestSetClusterIdentityNamesTheCredential(t *testing.T) {
+	client, err := NewClient(&rest.Config{Host: "https://one.example"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.setClusterIdentity("prod")
+	if !strings.Contains(client.IdentityKey(), "prod") {
+		t.Fatalf("identity %q should carry the cluster name", client.IdentityKey())
+	}
+	viewer, err := client.WithBearer("viewer-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(viewer.IdentityKey(), client.IdentityKey()+":") {
+		t.Fatalf("derived identity %q should extend the named base identity", viewer.IdentityKey())
+	}
+}

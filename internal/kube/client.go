@@ -2,6 +2,8 @@ package kube
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -101,7 +104,11 @@ type Client struct {
 	// serving the request as anonymous (a silent identity downgrade) is refused.
 	denied error
 
-	mu              sync.Mutex
+	mu sync.Mutex
+	// identity is the process-local key of the CREDENTIAL this client makes
+	// requests with -- see IdentityKey for the contract. It is guarded by mu
+	// because a client built as a struct literal fills it in on first use.
+	identity        string
 	discoveredAt    time.Time
 	namespacedTypes []ResourceType
 	clusterTypes    []ResourceType
@@ -156,7 +163,72 @@ func NewClient(cfg *rest.Config, preferred map[string]string, includeSecrets boo
 		core:           core,
 		includeSecrets: includeSecrets,
 		preferred:      pref,
+		identity:       newClientIdentity("", cfg.Host),
 	}, nil
+}
+
+// clientIdentitySeq numbers base clients. Two connections to the SAME apiserver
+// host are not the same credential -- a reloaded cluster, or two Managers in one
+// process -- so the sequence, not the host, is what makes a base identity
+// unique; the cluster name and host ride along only to keep the value readable
+// while debugging.
+var clientIdentitySeq atomic.Uint64
+
+func newClientIdentity(cluster, host string) string {
+	return fmt.Sprintf("%d|%s|%s", clientIdentitySeq.Add(1), cluster, host)
+}
+
+// IdentityKey returns the process-local key of the credential this client makes
+// requests with. It is the sharing decision for everything that pools upstream
+// work per viewer (the passthrough client cache, the shared list/watch sources):
+// two clients share a key only when the apiserver would evaluate their requests
+// as the same identity against the same connection. Base clients get a unique
+// opaque key when they are built; WithBearer clones derive theirs from the base
+// key plus a digest of the exact token, so one viewer token against one cluster
+// always yields the same key -- including after the passthrough cache evicts the
+// client and rebuilds it.
+//
+// The key is a map key, never a log line, a metric label, or a rendered value:
+// for a passthrough client it commits to the viewer's bearer token.
+func (c *Client) IdentityKey() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.identity == "" {
+		// Clients assembled as struct literals rather than through NewClient
+		// still need a unique key; filling it in on first use keeps that
+		// guarantee without a second constructor.
+		c.identity = newClientIdentity("", c.host())
+	}
+	return c.identity
+}
+
+// setClusterIdentity names the cluster a base client belongs to. The Manager
+// calls it on a freshly built client before the Cluster is published, so the
+// identity is settled before anything can read it and nothing rewrites it after.
+func (c *Client) setClusterIdentity(cluster string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.identity = newClientIdentity(cluster, c.host())
+}
+
+// host reads the connection host. config is written once at construction and
+// never reassigned (clones copy it), so this needs no lock.
+func (c *Client) host() string {
+	if c.config == nil {
+		return ""
+	}
+	return c.config.Host
+}
+
+// bearerIdentity derives the identity of the passthrough client for base+token.
+// WithBearer stamps the result on the clone it builds and PassthroughClientCache
+// keys its entries on it, so both consumers decide "same viewer credential"
+// through this ONE derivation and cannot drift apart. The token enters only as a
+// SHA-256 digest: the identity is not reversible to the token and is never
+// logged or exported.
+func bearerIdentity(base *Client, token string) string {
+	digest := sha256.Sum256([]byte(strings.TrimPrefix(token, "Bearer ")))
+	return base.IdentityKey() + ":" + hex.EncodeToString(digest[:])
 }
 
 // SetObserver installs the per-request metrics callback. The web layer calls it
@@ -209,6 +281,10 @@ func (c *Client) WithBearer(token string) (*Client, error) {
 	// observer closes over the cluster name, so copying the field keeps
 	// passthrough requests attributed to the right cluster.
 	client.observe = c.observe
+	// Replace the fresh per-client identity NewClient assigned with the derived
+	// one: a rebuilt clone for the same viewer token must key the same as the
+	// one it replaces, or every cache eviction would fork the work pooled on it.
+	client.identity = bearerIdentity(c, token)
 	return client, nil
 }
 
@@ -238,6 +314,10 @@ func (c *Client) IsAnonymous() bool {
 // since the request methods short-circuit) and takes a fresh mutex, so it copies
 // no lock value.
 func (c *Client) Denied() *Client {
+	// Read the base identity before taking the lock: IdentityKey takes it too.
+	// A denied clone refuses every request, so it is NOT interchangeable with
+	// the client it was cloned from and gets its own identity.
+	identity := c.IdentityKey() + "|denied"
 	c.mu.Lock()
 	preferred := make(map[string]string, len(c.preferred))
 	for k, v := range c.preferred {
@@ -253,6 +333,7 @@ func (c *Client) Denied() *Client {
 		includeSecrets: c.includeSecrets,
 		denied:         errAnonymousDenied,
 		preferred:      preferred,
+		identity:       identity,
 		// A denied clone is still observed: its short-circuit Forbidden counts as
 		// a request with a forbidden result under the same cluster.
 		observe: c.observe,

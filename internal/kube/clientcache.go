@@ -2,8 +2,6 @@ package kube
 
 import (
 	"container/list"
-	"crypto/sha256"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -18,13 +16,10 @@ const (
 
 type PassthroughClientBuilder func(base *Client, token string) (*Client, error)
 
-type passthroughClientCacheKey struct {
-	base      *Client
-	tokenHash [32]byte
-}
-
 type passthroughClientCacheEntry struct {
-	key       passthroughClientCacheKey
+	// identity is the cache key: the derived credential identity of the client
+	// this entry holds, never the raw token.
+	identity  string
 	client    *Client
 	expiresAt time.Time
 	element   *list.Element
@@ -35,7 +30,7 @@ type PassthroughClientCache struct {
 	ttl     time.Duration
 	max     int
 	now     func() time.Time
-	entries map[passthroughClientCacheKey]*passthroughClientCacheEntry
+	entries map[string]*passthroughClientCacheEntry
 	lru     *list.List
 	builds  singleflight.Group
 }
@@ -51,7 +46,7 @@ func NewPassthroughClientCache(ttl time.Duration, max int) *PassthroughClientCac
 		ttl:     ttl,
 		max:     max,
 		now:     time.Now,
-		entries: map[passthroughClientCacheKey]*passthroughClientCacheEntry{},
+		entries: map[string]*passthroughClientCacheEntry{},
 		lru:     list.New(),
 	}
 }
@@ -66,14 +61,15 @@ func (c *PassthroughClientCache) Get(base *Client, token string, build Passthrou
 		return build(base, token)
 	}
 	token = strings.TrimPrefix(token, "Bearer ")
-	key := passthroughClientCacheKey{base: base, tokenHash: sha256.Sum256([]byte(token))}
-	// A burst of requests from one viewer must not construct a separate
-	// discovery/client stack for every cache miss. The base pointer is part of
-	// the identity because the same bearer token can legitimately be used
-	// against multiple clusters; only the token's digest enters the flight key.
-	flightKey := fmt.Sprintf("%p:%x", base, key.tokenHash)
-	value, err, _ := c.builds.Do(flightKey, func() (any, error) {
-		return c.getOrBuild(key, token, build)
+	// Entries are keyed by exactly the identity WithBearer stamps on the client
+	// it builds, through the one shared derivation: the base client is part of
+	// it because the same bearer token can legitimately address several
+	// clusters, and the token itself enters only as a digest. That single key
+	// also serializes the flight, so a burst of requests from one viewer does
+	// not construct a separate discovery/client stack per cache miss.
+	identity := bearerIdentity(base, token)
+	value, err, _ := c.builds.Do(identity, func() (any, error) {
+		return c.getOrBuild(identity, base, token, build)
 	})
 	if err != nil {
 		return nil, err
@@ -81,11 +77,11 @@ func (c *PassthroughClientCache) Get(base *Client, token string, build Passthrou
 	return value.(*Client), nil
 }
 
-func (c *PassthroughClientCache) getOrBuild(key passthroughClientCacheKey, token string, build PassthroughClientBuilder) (*Client, error) {
+func (c *PassthroughClientCache) getOrBuild(identity string, base *Client, token string, build PassthroughClientBuilder) (*Client, error) {
 	now := c.nowTime()
 
 	c.mu.Lock()
-	if entry := c.entries[key]; entry != nil {
+	if entry := c.entries[identity]; entry != nil {
 		if now.Before(entry.expiresAt) {
 			c.lru.MoveToFront(entry.element)
 			client := entry.client
@@ -96,7 +92,7 @@ func (c *PassthroughClientCache) getOrBuild(key passthroughClientCacheKey, token
 	}
 	c.mu.Unlock()
 
-	client, err := build(key.base, token)
+	client, err := build(base, token)
 	if err != nil {
 		return nil, err
 	}
@@ -104,9 +100,9 @@ func (c *PassthroughClientCache) getOrBuild(key passthroughClientCacheKey, token
 	c.mu.Lock()
 	// Construction can involve client-go setup, so TTL starts when the client is
 	// ready rather than at the beginning of that potentially slow operation.
-	entry := &passthroughClientCacheEntry{key: key, client: client, expiresAt: c.nowTime().Add(c.ttl)}
+	entry := &passthroughClientCacheEntry{identity: identity, client: client, expiresAt: c.nowTime().Add(c.ttl)}
 	entry.element = c.lru.PushFront(entry)
-	c.entries[key] = entry
+	c.entries[identity] = entry
 	// The cache was within its bound before this one insertion, so at most one
 	// entry needs eviction. LRU nodes carry the entry itself, keeping the list
 	// and map on a single invariant instead of recovering an entry through a
@@ -126,7 +122,7 @@ func (c *PassthroughClientCache) nowTime() time.Time {
 }
 
 func (c *PassthroughClientCache) removeLocked(entry *passthroughClientCacheEntry) {
-	delete(c.entries, entry.key)
+	delete(c.entries, entry.identity)
 	if entry.element != nil {
 		c.lru.Remove(entry.element)
 	}
