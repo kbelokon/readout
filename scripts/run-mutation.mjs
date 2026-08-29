@@ -1,5 +1,6 @@
 // Resource-monitored Stryker launcher. Stryker owns its worker pool; this wrapper
-// samples its process group and stops a run after a configured limit is observed.
+// samples its process group and stops a run only after a resource or process-safety
+// limit is observed. A full campaign deliberately has no wall-clock deadline.
 
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -80,7 +81,6 @@ const maximumGeneratedBytes = readLimit('MUTATION_MAX_GENERATED_GIB', 2, 'maximu
 const maximumRssKiB = (readLimit('MUTATION_MAX_RSS_GIB', 8, 'maximum') * GIB) / 1024;
 const pollMilliseconds = readLimit('MUTATION_MONITOR_SECONDS', 15, 'maximum') * 1000;
 const heartbeatMilliseconds = readLimit('MUTATION_HEARTBEAT_MINUTES', 5, 'maximum') * 60_000;
-const maximumRunMilliseconds = readLimit('MUTATION_MAX_MINUTES', 60, 'maximum') * 60_000;
 
 function readLimit(name, fallback, direction) {
   const raw = process.env[name];
@@ -399,7 +399,7 @@ console.log(
     `${gibibytes(startingFreeBytes)} GiB free; ` +
     `limits generated=${gibibytes(maximumGeneratedBytes)} GiB, ` +
     `rss=${gibibytes(maximumRssKiB * 1024)} GiB, ` +
-    `runtime=${Math.round(maximumRunMilliseconds / 60_000)}m; log=${logPath}`,
+    `deadline=none; log=${logPath}`,
 );
 
 const child = spawn(
@@ -547,10 +547,6 @@ function heartbeat() {
 
 const monitor = setInterval(inspectResources, pollMilliseconds);
 const heartbeatTimer = setInterval(heartbeat, heartbeatMilliseconds);
-const wallClockTimer = setTimeout(
-  () => stopProcessGroup(`runtime reached ${Math.round(maximumRunMilliseconds / 60_000)} minutes`),
-  maximumRunMilliseconds,
-);
 
 function finalizeWhenProcessGroupStops() {
   if (finalized || finalizing || childResult === undefined || !childClosed) return;
@@ -559,7 +555,6 @@ function finalizeWhenProcessGroupStops() {
   clearInterval(monitor);
   clearInterval(heartbeatTimer);
   clearInterval(groupWatcher);
-  clearTimeout(wallClockTimer);
   if (killTimer) clearTimeout(killTimer);
 
   const complete = () => {

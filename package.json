@@ -21,7 +21,7 @@
     "test:mutation:dry": "npm run test:mutation:guards && node scripts/run-mutation.mjs --mode=dry --concurrency=1",
     "test:mutation:full": "npm run test:mutation:guards && npm run test:mutation:run && npm run test:mutation:check",
     "test:mutation:guards": "node --test scripts/mutation-infrastructure.test.mjs",
-    "test:mutation:run": "node scripts/run-mutation.mjs --mode=full",
+    "test:mutation:run": "node scripts/run-mutation.mjs --mode=full --concurrency=4",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",

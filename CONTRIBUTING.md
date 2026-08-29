@@ -39,13 +39,17 @@ mise exec -- npm run test:mutation:full
 ```
 
 The full run includes static/load-time code and must finish with no surviving,
-uncovered, timed-out, runtime-error, ignored, or pending mutants. Reports stay
-local under `reports/mutation/`. This is intentionally a local test-strength
-audit, not part of the ordinary CI gate: a complete run takes roughly 16 minutes
-on the reference development machine.
+uncovered, timed-out, runtime-error, ignored, or pending mutants. Stryker's own
+breaking threshold is zero so it can finish and publish the evidence needed to
+investigate a failing audit; the attested `test:mutation:check` step is the sole
+strict unresolved-mutant gate. Reports stay local under `reports/mutation/`.
+This is intentionally a local test-strength audit, not part of the ordinary CI
+gate: a complete run takes roughly 16 minutes on the reference development
+machine.
 
-The launcher accepts only an explicit dry/full mode plus concurrency 1 or 2; it
-does not forward arbitrary Stryker CLI options. Under the mutation lock it
+The launcher accepts only an explicit dry/full mode plus concurrency 1 through
+4; it does not forward arbitrary Stryker CLI options. The canonical full audit
+uses four workers, while the dry probe uses one. Under the mutation lock it
 copies the exact SHA-256 input snapshot into `/.mutation-stage/`, links only
 that stage's `node_modules` to the installed dependency tree, verifies that the
 mutation candidates equal the shipped esbuild runtime graph, and runs Stryker
@@ -53,9 +57,13 @@ with the stage as its working directory. This keeps transient edits to the
 working tree from entering Stryker's own sandbox. A full attempt invalidates the
 previous JSON/HTML report first; Stryker writes its candidates inside the stage,
 and the launcher publishes each report by atomic rename only after a successful
-run, final input checks, complete process-group exit, and stage cleanup.
+Stryker execution, final input checks, complete process-group exit, and stage
+cleanup. Stryker's zero breaking threshold makes that execution result
+independent of the stricter post-check. The post-check then applies the quality
+gate, so an attested report with unresolved mutants remains available locally
+for the next hardening pass.
 
-The success attestation records SHA-256 digests for both reports and the exact
+The full-run attestation records SHA-256 digests for both reports and the exact
 staged input-set digest, plus a run window used to verify both files' freshness,
 production TypeScript, every Vitest test and setup file, shared runtime test
 data (including the prefs golden JSON corpus), `.mise.toml`, the Stryker,
@@ -78,16 +86,16 @@ generated-data, and aggregate process-group RSS limits are userspace samples
 (every 15 seconds by default), not kernel quotas: usage can exceed a threshold
 between samples and while the group is terminating. Generated-data accounting
 includes the complete stage and the published-report directory, including the
-initial staged input copy. The runtime limit is a launcher timer, and RSS means
+initial staged input copy. A full campaign has no wall-clock deadline; RSS means
 the resident memory reported for processes still in the guarded POSIX process
-group. Use the `MUTATION_*` environment variables only to make the defaults
-stricter on a smaller machine. A persisted child PGID lets the next launcher
-verify, stop, and wait for an orphaned group before it removes the deterministic
-stage and legacy temp directory. Recovery uses an atomic fixed hard-link claim,
-so concurrent launchers cannot delete a newly published owner; an abandoned
-claim or unverifiable stale lock is retained for manual inspection. If launcher
-IPC disappears, the detached child terminates its whole process group so no
-Stryker worker can continue without the resource monitor.
+group. Use the resource-related `MUTATION_*` environment variables only to make
+the defaults stricter on a smaller machine. A persisted child PGID lets the next
+launcher verify, stop, and wait for an orphaned group before it removes the
+deterministic stage and legacy temp directory. Recovery uses an atomic fixed
+hard-link claim, so concurrent launchers cannot delete a newly published owner;
+an abandoned claim or unverifiable stale lock is retained for manual
+inspection. If launcher IPC disappears, the detached child terminates its whole
+process group so no Stryker worker can continue without the resource monitor.
 
 Go mutation testing is also a deliberate local audit, not a full CI job. After
 `mise run setup`, the next campaign starts with one command:

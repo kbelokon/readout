@@ -13,9 +13,6 @@ import {
 } from './mutation-integrity.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const stagedCheckerHook = pathToFileURL(
-  join(repoRoot, '.mutation-stage', 'scripts', 'stryker-typescript-hook.mjs'),
-).href;
 const requiredMutatePatterns = [
   'internal/assets/src/js/**/*.ts',
   '!internal/assets/src/js/**/*.test.ts',
@@ -54,7 +51,7 @@ function assertThreshold(value, path) {
   assert(Number.isInteger(value) && value >= 0 && value <= 100, `${path} must be 0..100`);
 }
 
-function parseReport(raw) {
+function parseReport(raw, reportRoot) {
   let report;
   try {
     report = JSON.parse(raw);
@@ -74,8 +71,8 @@ function parseReport(raw) {
   assert(
     report.thresholds.high === 100 &&
       report.thresholds.low === 100 &&
-      report.thresholds.break === 100,
-    'mutation thresholds must all be 100',
+      report.thresholds.break === 0,
+    'mutation thresholds must keep high/low at 100 and break at 0',
   );
   assert(isObject(report.config), 'config must be an object');
   assert(report.config.dryRunOnly === false, 'final mutation report must not be a dry run');
@@ -123,7 +120,9 @@ function parseReport(raw) {
     Array.isArray(report.config.checkerNodeArgs) &&
       report.config.checkerNodeArgs.length === 2 &&
       report.config.checkerNodeArgs[0] === '--import' &&
-      report.config.checkerNodeArgs[1] === stagedCheckerHook,
+      report.config.checkerNodeArgs[1] ===
+        pathToFileURL(join(reportRoot, '.mutation-stage', 'scripts', 'stryker-typescript-hook.mjs'))
+          .href,
     'final mutation report must use the attested TypeScript compatibility hook',
   );
   assert(report.config.inPlace === false, 'inPlace must be false');
@@ -157,11 +156,11 @@ function parseReport(raw) {
 
   const files = Object.entries(report.files);
   assert(files.length > 0, 'files must not be empty');
-  const expectedFiles = assertMutationScopeMatchesRuntimeGraph(repoRoot);
+  const expectedFiles = assertMutationScopeMatchesRuntimeGraph(reportRoot);
   const typesFileName = 'internal/assets/src/js/types.ts';
-  assertTypeOnlyModuleSource(typesFileName, readFileSync(join(repoRoot, typesFileName), 'utf8'));
+  assertTypeOnlyModuleSource(typesFileName, readFileSync(join(reportRoot, typesFileName), 'utf8'));
   for (const fileName of expectedFiles) {
-    const source = readFileSync(join(repoRoot, fileName), 'utf8');
+    const source = readFileSync(join(reportRoot, fileName), 'utf8');
     assert(
       !/\bStryker\s+(?:disable|restore)\b/iu.test(source),
       `${fileName} contains a Stryker suppression comment`,
@@ -169,7 +168,7 @@ function parseReport(raw) {
   }
   const actualFiles = files.map(([fileName]) => fileName).sort();
   for (const fileName of zeroMutantFiles) {
-    assertImportOnlyModuleSource(fileName, readFileSync(join(repoRoot, fileName), 'utf8'));
+    assertImportOnlyModuleSource(fileName, readFileSync(join(reportRoot, fileName), 'utf8'));
   }
   const missingFiles = expectedFiles.filter(
     (fileName) => !actualFiles.includes(fileName) && !zeroMutantFiles.has(fileName),
@@ -189,7 +188,7 @@ function parseReport(raw) {
     assert(typeof file.language === 'string', `${fileName}.language must be a string`);
     assert(typeof file.source === 'string', `${fileName}.source must be a string`);
     assert(
-      file.source === readFileSync(join(repoRoot, fileName), 'utf8'),
+      file.source === readFileSync(join(reportRoot, fileName), 'utf8'),
       `${fileName}.source does not match the current working tree`,
     );
     assert(Array.isArray(file.mutants), `${fileName}.mutants must be an array`);
@@ -244,34 +243,35 @@ function summarize(files) {
   };
 }
 
-function printSummary({ fileCounts, totalCounts }, schemaVersion, mutantCount) {
-  console.log(
+function printSummary({ fileCounts, totalCounts }, schemaVersion, mutantCount, log) {
+  log(
     `Mutation report schema ${schemaVersion}: ${fileCounts.length} files, ${mutantCount} mutants`,
   );
-  console.log('Statuses:');
+  log('Statuses:');
   for (const status of statusOrder) {
-    console.log(`  ${status.padEnd(12)} ${totalCounts[status]}`);
+    log(`  ${status.padEnd(12)} ${totalCounts[status]}`);
   }
-  console.log('Files:');
+  log('Files:');
   for (const { fileName, counts, total } of fileCounts) {
     const statuses = statusOrder
       .filter((status) => counts[status] > 0)
       .map((status) => `${status}=${counts[status]}`)
       .join(' ');
-    console.log(`  ${fileName}: total=${total} ${statuses}`);
+    log(`  ${fileName}: total=${total} ${statuses}`);
   }
 }
 
-try {
-  const verifiedRun = verifyFullRunAttestation(repoRoot);
+export function checkMutationReport(reportRoot = repoRoot, log = console.log) {
+  const verifiedRun = verifyFullRunAttestation(reportRoot);
   const { files, mutantCount, schemaVersion } = parseReport(
     verifiedRun.reportBytes.toString('utf8'),
+    reportRoot,
   );
   const summary = summarize(files);
   for (const { fileName, counts } of summary.fileCounts) {
     assert(counts.Killed > 0, `${fileName} has no behaviorally killed mutant`);
   }
-  printSummary(summary, schemaVersion, mutantCount);
+  printSummary(summary, schemaVersion, mutantCount, log);
 
   const failures = statusOrder.filter(
     (status) => !allowedStatuses.has(status) && summary.totalCounts[status] > 0,
@@ -282,9 +282,16 @@ try {
   }
   // Re-read the proof and inputs after the structural/source checks so a file
   // changed concurrently with this checker cannot leave a passing stale result.
-  verifyFullRunAttestation(repoRoot);
-  console.log('Mutation report check passed.');
-} catch (error) {
-  console.error(`Mutation report check failed: ${error.message}`);
-  process.exitCode = 1;
+  verifyFullRunAttestation(reportRoot);
+  log('Mutation report check passed.');
+  return summary;
+}
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  try {
+    checkMutationReport();
+  } catch (error) {
+    console.error(`Mutation report check failed: ${error.message}`);
+    process.exitCode = 1;
+  }
 }

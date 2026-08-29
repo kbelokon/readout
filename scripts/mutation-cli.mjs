@@ -1,4 +1,5 @@
-const defaultMaximumConcurrency = 2;
+const defaultFullConcurrency = 4;
+const defaultMaximumConcurrency = 4;
 
 function optionValue(args, index, optionName) {
   const argument = args[index];
@@ -77,7 +78,7 @@ export function parseMutationCliArguments(
   }
 
   const parsedConcurrency =
-    concurrency === undefined ? (mode === 'dry' ? 1 : 2) : Number(concurrency);
+    concurrency === undefined ? (mode === 'dry' ? 1 : defaultFullConcurrency) : Number(concurrency);
   if (
     !Number.isInteger(parsedConcurrency) ||
     parsedConcurrency < 1 ||
