@@ -49,6 +49,11 @@ func TestMobileCardsRenderAlongsideTableWithSameData(t *testing.T) {
 	if got := p.count(".ro-cardlist .ro-pcard"); got != len(tableNames) {
 		t.Fatalf(".ro-pcard count = %d, want one per table row (%d)", got, len(tableNames))
 	}
+	tableKeys := p.attrs("table.ro-table tbody tr[data-key]", "data-key")
+	cardKeys := p.attrs(".ro-cardlist .ro-pcard[data-key]", "data-key")
+	if strings.Join(cardKeys, "|") != strings.Join(tableKeys, "|") {
+		t.Fatalf("card identities = %v, want the SAME ordered data-key set as table rows %v", cardKeys, tableKeys)
+	}
 
 	// The nginx card carries the SAME rich row data the table row does: the full name
 	// linking to the object, the ok (steady, non-pulsing) status pill, the .ready.full

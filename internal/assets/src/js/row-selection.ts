@@ -137,6 +137,40 @@ export function clearRowState(): void {
 export const BULK_NAMES_MAX = 100;
 let bulkOverCapToasted: boolean | undefined;
 
+export interface RowStateCheckpoint {
+    readonly selected: readonly (readonly [string, { name: string }])[];
+    readonly focus: string | null;
+    readonly bulkOverCapToasted: boolean | undefined;
+}
+
+export function takeRowStateCheckpoint(): RowStateCheckpoint {
+    return {
+        selected: Array.from(rowSelection.entries()),
+        focus: rowFocusKey,
+        bulkOverCapToasted,
+    };
+}
+
+// A real deletion invalidates bulk/focus identity. A projection removal (the
+// object merely stopped matching the server filter) deliberately does not call
+// this and keeps the existing cross-filter selection contract.
+export function applyLiveRowDeletions(keys: ReadonlySet<string>): void {
+    let changed = false;
+    for (const key of keys) changed = rowSelection.delete(key) || changed;
+    if (rowFocusKey !== null && keys.has(rowFocusKey)) {
+        rowFocusKey = null;
+        changed = true;
+    }
+    if (changed) updateBulkBar();
+}
+
+export function restoreRowStateCheckpoint(checkpoint: RowStateCheckpoint): void {
+    rowSelection.clear();
+    for (const [key, entry] of checkpoint.selected) rowSelection.set(key, entry);
+    rowFocusKey = checkpoint.focus;
+    bulkOverCapToasted = checkpoint.bulkOverCapToasted;
+}
+
 export function updateBulkBar(): void {
     const bar = document.getElementById('ro-bulkbar');
     if (!bar) {

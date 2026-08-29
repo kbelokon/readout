@@ -226,10 +226,9 @@ async function requestAndSettle(
   await expect
     .poll(async () => (await lifecycleCounts(page)).afterRequests, { timeout: 5_000 })
     .toBe(before.afterRequests + 1);
-  // With the global View Transition enabled, HTMX can emit afterRequest while
-  // the transition callback is still holding the actual swap. A 200 list
-  // response is not settled until its one morph has reached afterSwap; without
-  // this barrier the next request can race the previous response's DOM/ETag.
+  // A 200 list response is not settled until its one morph has reached
+  // afterSwap; without this barrier the next request can race the previous
+  // response's DOM/ETag repair.
   if (response.status() === 200) {
     await expect
       .poll(async () => (await lifecycleCounts(page)).afterSwaps, { timeout: 5_000 })

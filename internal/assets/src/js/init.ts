@@ -7,6 +7,9 @@
 // single auditable place -- exactly the role legacy.js played for them.
 //
 // What lives here and WHY it is orchestration, not a leaf:
+//   - the htmx:configRequest current-navigation gate: an unmodified click on
+//     the already-active link at the exact current URL is a true no-op (no XHR,
+//     body teardown or history entry);
 //   - the htmx:beforeRequest sort-write hook: writes the sort pref ONLY for
 //     a direct sort-header gesture, after every configRequest listener has run
 //     (so the RO-No-Push programmatic marker is final);
@@ -17,10 +20,12 @@
 //     wrong-page-gate reset (the reset LITERALS must live in this hook -- the Go
 //     needle slices the hook out between its registration and the historyRestore
 //     listener below, so the two stay in THIS order);
-//   - the htmx:historyRestore repaint: scrubs a cached body's stale row state;
+//   - the history-cache swap intent: retires old Live ownership before HTMX
+//     replaces the cached body and binds completion, cancellation, and failure
+//     to the currently owned body attempt;
 //   - setupStickyNamespace (the _all-view second sticky column) + runInit (the
-//     idempotent step chain) on DOMContentLoaded / htmx:load / afterSettle /
-//     resize.
+//     idempotent step chain) on DOMContentLoaded / the successful body
+//     htmx:afterSwap / afterSettle / resize.
 //
 // Cross-module surfaces are imported by name (the bundle inlines them); vendor
 // globals (htmx) are reached through a typeof guard, never imported.
@@ -29,11 +34,11 @@ import { colsPopOpen, setColsPopOpen, syncColsPopState } from './columns.js';
 import { closeRowMenu } from './context-menu.js';
 import { applyLiveNameFilter, captureRowModelFromDocument, updateFilterAC } from './filters.js';
 import { rememberListValidator, suppressListNotModified } from './list-etag.js';
-import { liveApply, liveOnListSwap, liveState, liveTeardown } from './live.js';
+import { liveApply, liveOnListSwap, liveResetPage, liveState, liveTeardown } from './live.js';
 import { initLogsFollow } from './logs.js';
 import { collapseSectionsFromHash } from './misc-ui.js';
 import { roPrefsSetSort } from './prefs.js';
-import { applyRefresh, noteRefreshRecovery, syncRefreshUI } from './refresh.js';
+import { applyRefresh, noteRefreshRecovery, pauseRefresh, syncRefreshUI } from './refresh.js';
 import { clearRowState, reapplyRowState, updateBulkBar } from './row-selection.js';
 import { clearListStale, isListRefreshEvent } from './stale.js';
 import { syncThemeTogglePostTarget } from './theme.js';
@@ -57,6 +62,82 @@ import './skeleton.js';
 // rest of the orchestration. The seam signature is the typed Window.roToast
 // (types.ts global), so this is compiler-checked, not an `as unknown` cast.
 window.roToast = showToast;
+
+// ---------------------------------------------------------------------------
+// Exact current-navigation no-op: htmx:configRequest.
+// ---------------------------------------------------------------------------
+// Body-level hx-boost otherwise turns a click on the already-active sidebar /
+// tab link into a fresh GET, full body replacement, and duplicate history
+// entry. This avoids the unnecessary request, teardown, and state repair.
+//
+// Cancel at configRequest, before HTMX opens/sends the XHR or shows an
+// indicator. The gate is deliberately narrow:
+//   - only a real, unmodified primary click on an active navigation anchor;
+//   - only a boosted GET targeting body;
+//   - both the anchor href and HTMX's final configured path must resolve to the
+//     exact current URL, including query; any fragment link is left alone.
+// Therefore an active-path link still works when it intentionally clears
+// ?sort / filters, Retry links still reload, modified clicks keep browser tab
+// semantics, and list refresh / Live traffic cannot match this branch.
+export function suppressRedundantActiveNavigation(event: Event): void {
+    const detail = Object((event as CustomEvent).detail) as {
+        boosted?: unknown;
+        elt?: unknown;
+        path?: unknown;
+        target?: unknown;
+        triggeringEvent?: unknown;
+        verb?: unknown;
+    };
+    const source = detail.elt;
+    const trigger = detail.triggeringEvent;
+    if (
+        detail.boosted !== true ||
+        detail.target !== document.body ||
+        detail.verb !== 'get' ||
+        !(source instanceof HTMLAnchorElement) ||
+        !(trigger instanceof MouseEvent) ||
+        trigger.type !== 'click' ||
+        trigger.button !== 0 ||
+        trigger.altKey ||
+        trigger.ctrlKey ||
+        trigger.metaKey ||
+        trigger.shiftKey
+    ) {
+        return;
+    }
+    if (
+        !source.classList.contains('is-active') &&
+        !source.parentElement?.classList.contains('is-active')
+    ) {
+        return;
+    }
+    const rawHref = source.getAttribute('href');
+    if (!rawHref || rawHref.includes('#') || typeof detail.path !== 'string') {
+        return;
+    }
+    try {
+        const current = new URL(window.location.href);
+        const resolvesToCurrentLocation = (candidate: string): boolean => {
+            const resolved = new URL(candidate, current);
+            return (
+                resolved.origin === current.origin &&
+                resolved.pathname === current.pathname &&
+                resolved.search === current.search &&
+                resolved.hash === current.hash
+            );
+        };
+        // URL.href preserves an otherwise meaningless trailing `?`. Resource
+        // detail tabs intentionally use href="?" for Default, so compare the
+        // parsed location components: `/pod` and `/pod?` are the same screen,
+        // while a non-empty query still makes Default a useful reset action.
+        if (resolvesToCurrentLocation(rawHref) && resolvesToCurrentLocation(detail.path)) {
+            event.preventDefault();
+        }
+    } catch {
+        // Malformed public event/link input is not proof of a redundant nav.
+    }
+}
+document.addEventListener('htmx:configRequest', suppressRedundantActiveNavigation);
 
 // ---------------------------------------------------------------------------
 // Sort-click pref write: htmx:beforeRequest.
@@ -135,6 +216,21 @@ document.addEventListener('htmx:beforeRequest', handleSortPreferenceRequest);
 // morph syncs server HTML over client classes, so they must be re-keyed onto the
 // rows by data-key after EVERY swap (tick or user sort/filter).
 document.addEventListener('htmx:afterSwap', (event) => {
+    const bodySwapped = event.target === document.body;
+    // History cache restores swap the history element directly (there is no
+    // htmx:beforeSwap). This is the first proof that the cached body, rather
+    // than the old screen, is now installed. Complete the ownership gate before
+    // the one body runInit below can initialize Live against the restored
+    // projection. A failed or overlapping body attempt is already in
+    // `bodyReloading` and deliberately ignores anonymous late afterSwap events
+    // until full reload.
+    if (bodySwapPending && bodySwapped) {
+        if (bodySwapTicket?.phase === 'swap') {
+            completeBodySwap();
+        } else {
+            reloadCurrentHistoryEntry();
+        }
+    }
     if (isListRefreshEvent(event)) {
         // Bind the response validator to the exact `_table` request before any
         // repair can trigger or observe another refresh. A Live synthetic swap
@@ -174,6 +270,15 @@ document.addEventListener('htmx:afterSwap', (event) => {
         // fresh generation. Pushes themselves (roLivePush) never reopen.
         liveOnListSwap(event);
     }
+    if (bodySwapped) {
+        // HTMX defers htmx:load until its settle tasks and emits it once per
+        // inserted top-level element. Running the whole-document initializer
+        // there exposed one raw frame and repeated every repair several times.
+        // afterSwap is synchronous with the successful body replacement: the
+        // fresh DOM is complete, the body ownership gate above is settled, and
+        // this one pass finishes before the browser's next paint.
+        runInit();
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -203,6 +308,15 @@ document.addEventListener('htmx:beforeSwap', (event) => {
         return;
     }
     if (detail && detail.target === document.body) {
+        if (bodySwapPending || bodyReloading) {
+            // afterSwap carries no request identity. A second body response
+            // cannot safely complete the ownership held by the first attempt,
+            // so cancel it and keep the document inert until one canonical
+            // full reload wins.
+            event.preventDefault();
+            reloadCurrentHistoryEntry();
+            return;
+        }
         // HTMX deliberately treats 4xx/5xx responses as non-swapping by
         // default. That is the right policy for an in-place list refresh --
         // the last-good table must stay visible -- but it leaves a failed
@@ -213,30 +327,200 @@ document.addEventListener('htmx:beforeSwap', (event) => {
         if (typeof status === 'number' && status >= 400 && status <= 599) {
             detail.shouldSwap = true;
         }
+        const ticket = claimBodySwap('normal', 'swap', null);
         closeRowMenu();
         clearRowState();
         clearListStale();
-        // The riding Live stream belongs to the OLD page. liveApply (on the
-        // htmx:load re-init) would reconcile it anyway, but only AFTER the
-        // body swap -- a push delivered inside that gap would pass the
-        // generation check (nothing reset it yet) and morph the old
+        // The riding Live stream belongs to the OLD page. The post-swap runInit
+        // would reconcile it only AFTER the body swap -- a push delivered
+        // inside that gap would pass the generation check (nothing reset it
+        // yet) and morph the old
         // resource's table into the new page's container. Tear it down NOW;
         // the new page's init opens its own stream from the clean idle state
         // (a fresh page init is a fresh attempt, so a sticky fallback resets
         // here exactly like it does on a full-page navigation).
         liveTeardown(); // also zeroes the private liveFallbackSecs (live.ts)
+        pauseRefresh();
+        liveResetPage(); // invalidates old request loadend/stream continuations
         liveState.status = 'idle';
         liveState.streamPath = '';
+        queueMicrotask(() => {
+            if (event.defaultPrevented || detail.shouldSwap === false) {
+                reloadFailedBodySwap(ticket);
+            }
+        });
     }
 });
 
-// A history restore (back/forward) re-paints a CACHED body whose rows may carry
-// stale is-selected classes and an is-open bulk-bar snapshot from before the
-// navigate-away clear; re-painting from the (cleared) store scrubs both.
-// Idempotent with the htmx:load init pass.
+// HTMX's history cache path does not emit beforeSwap. Claim body ownership on
+// the cache hit/miss events instead, before either the cached body is installed
+// or the cache-miss request can complete. The ticket is event-driven: afterSwap
+// completes an accepted body, the cache-miss XHR/domain events report request
+// failure, and a microtask observes cancellation by later listeners.
+type BodySwapKind = 'normal' | 'hit' | 'miss';
+type BodySwapPhase = 'request' | 'swap';
+
+interface BodySwapTicket {
+    kind: BodySwapKind;
+    phase: BodySwapPhase;
+    xhr: EventTarget | null;
+}
+
+let bodySwapPending = false;
+let bodySwapTicket: BodySwapTicket | null = null;
+let bodyReloading = false;
+
+function clearBodySwap(): void {
+    bodySwapPending = false;
+    bodySwapTicket = null;
+}
+
+function completeBodySwap(): void {
+    clearBodySwap();
+    bodyReloading = false;
+}
+
+function retireCurrentScreenForBodySwap(): void {
+    liveTeardown();
+    pauseRefresh();
+    liveResetPage();
+    liveState.status = 'idle';
+    liveState.streamPath = '';
+}
+
+function reloadCurrentHistoryEntry(): void {
+    if (bodyReloading) return;
+    if (!bodySwapPending) retireCurrentScreenForBodySwap();
+    clearBodySwap();
+    bodyReloading = true;
+    window.history.go(0);
+}
+
+function reloadFailedBodySwap(ticket: BodySwapTicket | null): void {
+    if (!bodySwapPending || !ticket || bodySwapTicket !== ticket) return;
+    // Popstate already published the destination URL. If its cached body was
+    // cancelled or failed, old DOM + new URL has no coherent Live/polling
+    // owner. Clear the ticket before reloading so a late duplicate error or
+    // cancellation microtask cannot request another navigation.
+    reloadCurrentHistoryEntry();
+}
+
+function claimBodySwap(
+    kind: BodySwapKind,
+    phase: BodySwapPhase,
+    xhr: EventTarget | null,
+): BodySwapTicket {
+    const ticket: BodySwapTicket = { kind, phase, xhr };
+    bodySwapPending = true;
+    bodySwapTicket = ticket;
+    return ticket;
+}
+
+function beginHistoryBodySwap(event: Event): void {
+    if (bodySwapPending || bodyReloading) {
+        // A cache miss can still be in flight when another history intent
+        // arrives. HTMX gives the eventual body afterSwap no request identity,
+        // so accepting both would let either body reopen Live under the other's
+        // URL. Serialize fail-closed: both early events gate their work inside
+        // HTMX, so prevent the second cached swap or request from starting.
+        event.preventDefault();
+        reloadCurrentHistoryEntry();
+        return;
+    }
+    const miss = event.type === 'htmx:historyCacheMiss';
+    const detail = Object((event as CustomEvent).detail) as { xhr?: unknown };
+    const xhr = miss && detail.xhr instanceof EventTarget ? detail.xhr : null;
+    const ticket = claimBodySwap(miss ? 'miss' : 'hit', miss ? 'request' : 'swap', xhr);
+    retireCurrentScreenForBodySwap();
+    // Both historyCacheHit and the early historyCacheMiss event are cancelable
+    // and their dispatch result gates the cached swap / XHR send respectively.
+    // This listener runs before integrations may veto either, so observe the
+    // final result in a ticketed microtask.
+    queueMicrotask(() => {
+        if (event.defaultPrevented) reloadFailedBodySwap(ticket);
+    });
+    if (miss) {
+        if (!xhr) {
+            event.preventDefault();
+            reloadFailedBodySwap(ticket);
+            return;
+        }
+        // Vendored HTMX installs only XHR.onload for history misses. Network
+        // errors and aborts therefore have no HTMX domain event; loadend is the
+        // total terminal seam. A successful onload first advances this exact
+        // ticket through historyCacheMissLoad, so only request-phase loadend is
+        // a failure.
+        xhr.addEventListener(
+            'loadend',
+            () => {
+                if (bodySwapTicket === ticket && ticket.phase === 'request') {
+                    reloadFailedBodySwap(ticket);
+                }
+            },
+            { once: true },
+        );
+    }
+}
+
+document.addEventListener('htmx:historyCacheHit', beginHistoryBodySwap);
+document.addEventListener('htmx:historyCacheMiss', beginHistoryBodySwap);
+
+document.addEventListener('htmx:historyCacheMissLoad', (event) => {
+    const detail = Object((event as CustomEvent).detail) as { xhr?: unknown };
+    const ticket = bodySwapTicket;
+    if (
+        bodyReloading ||
+        !bodySwapPending ||
+        !ticket ||
+        ticket.kind !== 'miss' ||
+        ticket.phase !== 'request' ||
+        detail.xhr !== ticket.xhr
+    ) {
+        // HTMX ignores the MissLoad dispatch result and still calls swap. The
+        // reload gate remains the actual safety boundary for this known-stale,
+        // unavoidable response.
+        event.preventDefault();
+        reloadCurrentHistoryEntry();
+        return;
+    }
+    ticket.phase = 'swap';
+});
+
+document.addEventListener('htmx:historyCacheMissLoadError', (event) => {
+    const detail = Object((event as CustomEvent).detail) as { xhr?: unknown };
+    const ticket = bodySwapTicket;
+    if (
+        bodyReloading ||
+        !bodySwapPending ||
+        !ticket ||
+        ticket.kind !== 'miss' ||
+        detail.xhr !== ticket.xhr
+    ) {
+        reloadCurrentHistoryEntry();
+        return;
+    }
+    reloadFailedBodySwap(ticket);
+});
+
+document.addEventListener('htmx:swapError', (event) => {
+    const detail = Object((event as CustomEvent).detail) as { target?: unknown };
+    if (event.target === document.body || detail.target === document.body) {
+        reloadFailedBodySwap(bodySwapTicket);
+    }
+});
+
 document.addEventListener('htmx:historyRestore', () => {
-    reapplyRowState();
-    updateBulkBar();
+    // Marker only. Row/model/bulk repair and Live initialization belong to the
+    // restored body's preceding htmx:afterSwap runInit pass, never to this
+    // ambiguously ordered event. Keep the resident listener as an explicit
+    // lifecycle boundary.
+});
+
+window.addEventListener('pageshow', () => {
+    // A real document navigation replaces this module. `pageshow` is the
+    // equivalent reset boundary for a browser-restored document and gives DOM
+    // tests a faithful way to model that new page lifecycle.
+    completeBodySwap();
 });
 
 // ---------------------------------------------------------------------------
@@ -275,17 +559,17 @@ function runInitStep(step: () => void): void {
     }
 }
 
-// Run all init-time steps. Called on DOMContentLoaded and on htmx:load so the
-// steps re-apply after an hx-boost body swap (which does not refire
-// DOMContentLoaded). Each step is idempotent.
+// Run all init-time steps. Called on DOMContentLoaded and synchronously from the
+// successful body htmx:afterSwap above, because an hx-boost body replacement
+// does not refire DOMContentLoaded. Each step remains idempotent for defensive
+// direct callers and partial-failure recovery.
 function runInit(): void {
+    // An unowned completion must not reopen Live on an untrusted body. The
+    // accepted body afterSwap clears its ownership gate immediately before
+    // calling this function; failed and overlapping attempts stay inert.
+    if (bodySwapPending || bodyReloading) return;
     [
         syncRefreshUI,
-        // Live stream reconciliation, BEFORE applyRefresh so
-        // the poll chain arms against fresh live state: a riding stream
-        // disarms it (effective 0), a fallback sets the 5s cadence.
-        liveApply,
-        applyRefresh,
         buildYamlFolds,
         collapseSectionsFromHash,
         highlightYamlLine,
@@ -315,15 +599,19 @@ function runInit(): void {
         // same store right after.
         reapplyRowState,
         updateBulkBar,
+        // Live opens only after every synchronous body/model repair. In
+        // particular, virtualizeInit may detect a history-restored viewport
+        // slice and synchronously issue the mandatory full `_table` rebuild;
+        // its beforeRequest ownership must exist before liveApply decides
+        // whether to open or suspend. Keep liveApply immediately BEFORE
+        // applyRefresh so the poll chain still arms against the resulting Live
+        // state: a riding stream disarms it, a fallback selects 5s.
+        liveApply,
+        applyRefresh,
     ].forEach(runInitStep);
 }
 
 document.addEventListener('DOMContentLoaded', runInit);
-// hx-boost swaps <body> via AJAX rather than a full navigation, so
-// DOMContentLoaded will not fire on those transitions; htmx:load re-runs init.
-// HTMX events bubble, so we listen on `document` (this script runs in <head>
-// before <body> exists, so document.body would be null at this point anyway).
-document.addEventListener('htmx:load', runInit);
 // The list table morphs in place on ro:refresh; re-measure after the swap settles
 // and on resize (auto-layout column widths shift with the viewport).
 document.addEventListener('htmx:afterSettle', setupStickyNamespace);

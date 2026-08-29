@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -289,6 +290,172 @@ func TestWatchScriptSnapshotDuringDelayedApply(t *testing.T) {
 				t.Fatal("delayed event never reported applied in the snapshot")
 			}
 		}
+	}
+}
+
+// TestWatchHistoryIsBounded pins the long-running demo contract: applied
+// control history and reconnect replay stay fixed-size, aliases of one list
+// state share an expiry floor, and a reconnect older than that floor gets a
+// connect-time Kubernetes 410 instead of an incomplete replay.
+func TestWatchHistoryIsBounded(t *testing.T) {
+	srv := newServer(t)
+	_, seed := get(t, srv.URL+podsPath, tableAccept)
+	seedRV, _ := seed["metadata"].(map[string]any)["resourceVersion"].(string)
+	if seedRV == "" {
+		t.Fatal("seed table has no resourceVersion")
+	}
+
+	const applied = 1100
+	for i := range applied {
+		err := srv.Apply(fakeapi.ScriptEvent{
+			Path:  podsPath,
+			Type:  "MODIFIED",
+			Cells: []any{"nginx", "1/1", "Running", strconv.Itoa(i), "10m"},
+			Object: map[string]any{
+				"apiVersion": "v1",
+				"kind":       "Pod",
+				"metadata":   map[string]any{"name": "nginx", "namespace": "default"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Apply event %d: %v", i, err)
+		}
+	}
+
+	code, snap := get(t, srv.URL+"/__control/watch-script", "")
+	if code != http.StatusOK {
+		t.Fatalf("watch snapshot status = %d", code)
+	}
+	if got := int(snap["retainedHistory"].(float64)); got != 1024 {
+		t.Fatalf("retained history = %d, want 1024", got)
+	}
+	if got := int(snap["retainedReplay"].(float64)); got != 1024 {
+		t.Fatalf("retained replay = %d, want 1024", got)
+	}
+	if got := int(snap["droppedHistory"].(float64)); got != applied-1024 {
+		t.Fatalf("dropped history = %d, want %d", got, applied-1024)
+	}
+	if got := int(snap["droppedReplay"].(float64)); got != applied-1024 {
+		t.Fatalf("dropped replay = %d, want %d", got, applied-1024)
+	}
+	if got := len(snap["events"].([]any)); got != 1024 {
+		t.Fatalf("snapshot events = %d, want retained window 1024", got)
+	}
+	if snap["pendingEvents"] != float64(0) || snap["pendingTimers"] != float64(0) {
+		t.Fatalf("synchronous events left pending state: %v", snap)
+	}
+	floors, _ := snap["replayFloors"].(map[string]any)
+	floor := floors[podsPath]
+	if floor == nil || floors["/api/v1/pods"] != floor {
+		t.Fatalf("shared pod routes do not expose one replay floor: %v", floors)
+	}
+
+	res, err := http.Get(srv.URL + "/api/v1/pods?watch=true&resourceVersion=" + seedRV)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusGone {
+		_ = res.Body.Close()
+		t.Fatalf("expired alias watch status = %d, want 410", res.StatusCode)
+	}
+	var status map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&status); err != nil {
+		_ = res.Body.Close()
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if status["reason"] != "Expired" || status["code"] != float64(http.StatusGone) {
+		t.Fatalf("expired watch body = %v, want Kubernetes Expired Status", status)
+	}
+
+	// Exactly at the floor is still replayable: only events strictly above the
+	// requested RV are required, and all of them remain in the ring.
+	floorRV, _ := floor.(string)
+	res, err = http.Get(srv.URL + "/api/v1/pods?watch=true&resourceVersion=" + floorRV)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("watch at replay floor status = %d, want 200", res.StatusCode)
+	}
+}
+
+// TestWatchPendingTimersAreRemoved proves fired delayed events do not leave
+// timer objects or pending queue entries behind. The snapshot polling also
+// exercises the lock/copy path concurrently with timer callbacks under -race.
+func TestWatchPendingTimersAreRemoved(t *testing.T) {
+	srv := newServer(t)
+	const events = 128
+	for i := range events {
+		if err := srv.Apply(fakeapi.ScriptEvent{
+			Path:    podsPath,
+			Type:    "MODIFIED",
+			DelayMs: 5 + i%5,
+			Cells:   []any{"nginx", "1/1", "Running", strconv.Itoa(i), "10m"},
+			Object: map[string]any{
+				"apiVersion": "v1",
+				"kind":       "Pod",
+				"metadata":   map[string]any{"name": "nginx", "namespace": "default"},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, snap := get(t, srv.URL+"/__control/watch-script", "")
+		if snap["pendingEvents"] == float64(0) && snap["pendingTimers"] == float64(0) {
+			if snap["retainedHistory"] != float64(events) || snap["retainedReplay"] != float64(events) {
+				t.Fatalf("applied delayed history/replay = %v", snap)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("delayed timers were not removed: %v", snap)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestWatchPendingAdmissionIsAtomic pins both denial bounds on the public
+// control surface: an oversized delayed batch queues nothing, and an oversized
+// request body is rejected before decoding can retain arbitrary input.
+func TestWatchPendingAdmissionIsAtomic(t *testing.T) {
+	srv := newServer(t)
+	const pendingLimit = 1024
+	events := make([]fakeapi.ScriptEvent, pendingLimit+1)
+	for i := range events {
+		events[i] = fakeapi.ScriptEvent{
+			Path:    podsPath,
+			Type:    "MODIFIED",
+			DelayMs: 60_000,
+			Cells:   []any{"nginx", "1/1", "Running", strconv.Itoa(i), "10m"},
+			Object: map[string]any{
+				"apiVersion": "v1",
+				"kind":       "Pod",
+				"metadata":   map[string]any{"name": "nginx", "namespace": "default"},
+			},
+		}
+	}
+	body, err := json.Marshal(map[string]any{"events": events})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, response := postScript(t, srv, string(body))
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("oversized pending batch status = %d body=%v, want 429", code, response)
+	}
+	_, snap := get(t, srv.URL+"/__control/watch-script", "")
+	if snap["pendingEvents"] != float64(0) || snap["pendingTimers"] != float64(0) || len(snap["events"].([]any)) != 0 {
+		t.Fatalf("rejected batch partially queued state: %v", snap)
+	}
+
+	oversizedBody := `{"events":[]}` + strings.Repeat(" ", (4<<20)+1)
+	code, response = postScript(t, srv, oversizedBody)
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized script body status = %d body=%v, want 413", code, response)
 	}
 }
 

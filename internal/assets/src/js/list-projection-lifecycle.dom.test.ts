@@ -163,7 +163,7 @@ test('keeps filter state page-local and captures each actual projection exactly 
     );
     document.body.append(initial);
     runListInit();
-    for (let descendantLoad = 0; descendantLoad < 6; descendantLoad += 1) {
+    for (let repeatInit = 0; repeatInit < 6; repeatInit += 1) {
         runListInit();
     }
     expect(capturedRoots).toStrictEqual([initial]);
@@ -175,7 +175,7 @@ test('keeps filter state page-local and captures each actual projection exactly 
 
     // A small morph has two real projections: the complete incoming fragment
     // and the connected DOM Idiomorph may retain. Each is captured once; the
-    // later htmx:load-style init is identity-idempotent.
+    // a defensive later init repeat is identity-idempotent.
     const smallIncoming = buildList(
         [
             { key: 'pods/beta', name: 'Beta' },

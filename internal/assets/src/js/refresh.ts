@@ -24,7 +24,15 @@
 
 import type { Binding } from './events.js';
 import { configureListValidatorRequest } from './list-etag.js';
-import { liveApply, liveFallbackSeconds } from './live.js';
+import {
+    liveAfterListRequest,
+    liveApply,
+    liveBeforeListRequest,
+    liveBeforeListSwapDecision,
+    liveFallbackSeconds,
+    liveListRequestSwapFailed,
+    liveMarkListRequestSent,
+} from './live.js';
 import {
     nextFailureStage,
     effectivePollSeconds as policyEffectivePollSeconds,
@@ -157,6 +165,10 @@ export function handleRefreshConfigRequest(event: Event): void {
 document.addEventListener('htmx:configRequest', handleRefreshConfigRequest);
 
 export function handleRefreshBeforeRequest(event: Event): void {
+    // Live owns the exact current-content XHR before this handler can trigger
+    // htmx:abort on the container. Its native loadend listener survives a
+    // detached issuer and guarantees one resume after all overlapping requests.
+    liveBeforeListRequest(event);
     const detail = requestDetail(event);
     const elt = Object(detail.elt) as { id?: unknown };
     if (elt.id === 'resource-list-content') {
@@ -184,10 +196,29 @@ export function handleRefreshBeforeRequest(event: Event): void {
 
 document.addEventListener('htmx:beforeRequest', handleRefreshBeforeRequest);
 
+export function handleRefreshBeforeSend(event: Event): void {
+    liveMarkListRequestSent(event);
+}
+
+document.addEventListener('htmx:beforeSend', handleRefreshBeforeSend);
+
+export function handleRefreshBeforeSwap(event: Event): void {
+    liveBeforeListSwapDecision(event);
+}
+
+document.addEventListener('htmx:beforeSwap', handleRefreshBeforeSwap);
+
+export function handleRefreshSwapError(event: Event): void {
+    liveListRequestSwapFailed(event);
+}
+
+document.addEventListener('htmx:swapError', handleRefreshSwapError);
+
 // htmx:afterRequest fires on load, error, abort, AND timeout. When it reaches
 // the document the entry is removed here; when it does not (dispatched on a
 // detached element), the readyState pruning in fireRefresh reclaims it instead.
 export function handleRefreshAfterRequest(event: Event): void {
+    liveAfterListRequest(event);
     const xhr = requestDetail(event).xhr as XMLHttpRequest;
     // Set.delete is deliberately total for undefined/non-members, so missing
     // request metadata needs no semantically empty guard branch.
@@ -338,6 +369,19 @@ export function scheduleRefreshTick(): void {
         scheduleRefreshTick();
         fireRefresh();
     }, delayMs);
+    updateStaleCountdown();
+}
+
+// A history popstate publishes its destination URL before HTMX installs the
+// cached body. Pause the old screen's chain across that ownership gap; the
+// restored body's runInit/applyRefresh re-arms it after a successful swap. A
+// failed/cancelled swap deliberately leaves it paused until the hard reload.
+export function pauseRefresh(): void {
+    if (refreshTimerId !== null) {
+        window.clearTimeout(refreshTimerId);
+        refreshTimerId = null;
+    }
+    refreshNextAt = 0;
     updateStaleCountdown();
 }
 

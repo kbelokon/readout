@@ -83,11 +83,10 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantAttr(".tb-group .tb-btn.ro-search-mobile", "aria-label", "Search Kubernetes objects")
 }
 
-// TestPreloadRuntimeAbsent pins the removal of speculative navigation warm-ups.
-// Readout pages are private/dynamic and do not currently emit a cache contract
-// that lets the preload extension reuse its response, so a warm-up is a second
-// request rather than a faster navigation.
-func TestPreloadRuntimeAbsent(t *testing.T) {
+// TestRuntimeVendorOrderAndPreloadAbsent pins the exact runtime script set and
+// order. Readout pages remain private/dynamic, so the removed preload extension
+// must not return: its warm-up would be a second request.
+func TestRuntimeVendorOrderAndPreloadAbsent(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
 

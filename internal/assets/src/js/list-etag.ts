@@ -128,7 +128,10 @@ function writeContentValidator(content: HTMLElement, validator: ListValidator): 
 // configureListValidatorRequest runs during htmx:configRequest, after
 // refresh.ts has marked a current-container request RO-No-Push. It strips every
 // case spelling of a caller-supplied If-None-Match from list traffic, then adds
-// the app-owned value only for the exact persistent-container + URL pair.
+// the app-owned value only for the exact persistent-container + URL pair. A
+// deliberately emptied current container cannot represent the stored entity:
+// clear both validator halves before its refresh so a 304 cannot preserve the
+// blank/skeleton region.
 // User sort/filter requests target the container but are sourced elsewhere, so
 // they remain unconditional.
 export function configureListValidatorRequest(event: Event): void {
@@ -154,6 +157,10 @@ export function configureListValidatorRequest(event: Event): void {
         headerValue(headers, 'RO-No-Push') !== 'true' ||
         headerValue(headers, 'HX-Preloaded') === 'true'
     ) {
+        return;
+    }
+    if (content.childElementCount === 0) {
+        clearContentValidator(content);
         return;
     }
     const validator = readContentValidator(content);

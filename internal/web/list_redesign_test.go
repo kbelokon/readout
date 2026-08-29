@@ -879,14 +879,13 @@ func TestListLoopReadoutJSContract(t *testing.T) {
 
 // TestLiveWrongPageGateReadoutJSContract pins the two layers that keep a
 // boosted list→list navigation from morphing the OLD resource's table into
-// the NEW page's container (waves E+F review). htmx pushes the new URL and
-// swaps the body BEFORE htmx:load's liveApply reconciles the stream, so a
-// push delivered inside that gap passes the generation check (nothing minted
-// a new one yet) and the in-flight gates (the boosted body request has
-// settled). The gap is ~one settle delay (~20ms) — too narrow for an e2e
-// script to aim a held push into deterministically — so the layers are
-// pinned needle-style here (no headless JS runner in this suite; the
-// roLive.discards seam is exercised end to end by live.spec.ts).
+// the NEW page's container (waves E+F review). The beforeSwap teardown retires
+// the old stream before HTMX replaces the body; the accepted body's afterSwap
+// then initializes its own stream synchronously before paint. Keep both layers
+// pinned needle-style here: besides guarding the current synchronous path, they
+// fail closed if a future extension delays body completion (no headless JS
+// runner in this suite; the roLive.discards seam is exercised end to end by
+// live.spec.ts).
 func TestLiveWrongPageGateReadoutJSContract(t *testing.T) {
 	js := readoutJS(t)
 	// Layer 1: the morph-time page-identity gate in liveHandleFrame — a frame

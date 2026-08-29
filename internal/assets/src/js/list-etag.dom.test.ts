@@ -16,6 +16,7 @@ const TABLE_PATH = '/clusters/prod/namespaces/default/pods/_table?sort=Name&f=st
 function renderContent(): HTMLElement {
     const content = document.createElement('div');
     content.id = 'resource-list-content';
+    content.append(document.createElement('table'));
     document.body.appendChild(content);
     return content;
 }
@@ -163,6 +164,29 @@ describe('configRequest conditional header gate', () => {
             'RO-No-Push': 'true',
             'If-None-Match': ETAG,
         });
+    });
+
+    test('an exact refresh from an emptied current container clears the stored pair and stays unconditional', () => {
+        const content = renderContent();
+        remember(content);
+        expect(content.childElementCount).toBe(1);
+        expect(content.dataset.roEtag).toBe(ETAG);
+        expect(content.dataset.roEtagPath).toBe(TABLE_PATH);
+        content.replaceChildren();
+        const headers = { 'RO-No-Push': 'true', 'If-None-Match': '"spoof"' };
+
+        configureListValidatorRequest(
+            htmxEvent('htmx:configRequest', {
+                elt: content,
+                target: content,
+                headers,
+                path: TABLE_PATH,
+            }),
+        );
+
+        expect(headers).toStrictEqual({ 'RO-No-Push': 'true' });
+        expect(content.dataset.roEtag).toBeUndefined();
+        expect(content.dataset.roEtagPath).toBeUndefined();
     });
 
     test.each([

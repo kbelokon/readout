@@ -205,8 +205,24 @@ test('the loading skeleton never covers a populated table and fires into a blank
   hold = false;
   const settled = page.waitForResponse((r) => r.url().includes('/_table'));
   release();
-  await settled;
+  const populatedResponse = await settled;
   await awaitSwapDone();
+  expect(populatedResponse.status()).toBe(200);
+  const populatedETag = populatedResponse.headers().etag;
+  if (!populatedETag) throw new Error('populated refresh response did not carry an ETag');
+  const populatedURL = new URL(populatedResponse.url());
+  expect(
+    await page.evaluate(() => {
+      const content = document.getElementById('resource-list-content');
+      return {
+        etag: content?.dataset.roEtag ?? null,
+        path: content?.dataset.roEtagPath ?? null,
+      };
+    })
+  ).toEqual({
+    etag: populatedETag,
+    path: `${populatedURL.pathname}${populatedURL.search}`,
+  });
   await expect(rows).toHaveText(['nginx', 'my-app']);
   await expect(skel).toHaveCount(0);
 
@@ -221,11 +237,23 @@ test('the loading skeleton never covers a populated table and fires into a blank
   });
   hold = true;
   inFlight = page.waitForRequest((r) => r.url().includes('/_table'));
+  const positiveResponse = page.waitForResponse((r) => r.url().includes('/_table'));
   await triggerRefresh();
-  await inFlight;
+  const positiveRequest = await inFlight;
+  expect(positiveRequest.headers()['if-none-match']).toBeUndefined();
+  expect(
+    await page.evaluate(() => {
+      const dataset = document.getElementById('resource-list-content')?.dataset;
+      return {
+        etag: dataset ? Object.hasOwn(dataset, 'roEtag') : false,
+        path: dataset ? Object.hasOwn(dataset, 'roEtagPath') : false,
+      };
+    })
+  ).toEqual({ etag: false, path: false });
   await expect(skel.first()).toBeVisible();
   hold = false;
   release();
+  expect((await positiveResponse).status()).toBe(200);
   await expect(rows).toHaveText(['nginx', 'my-app']);
   await expect(skel).toHaveCount(0);
 });

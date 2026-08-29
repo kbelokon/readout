@@ -73,9 +73,9 @@ export function captureRowModel(root: ParentNode): void {
 
 // captureRowModelFromDocument: the first paint is the full server-rendered list,
 // so the live DOM IS the complete model here. Must run before the windowing init
-// step (windowing) prunes rows -- and must NEVER re-capture once the virtualizer is
-// engaged: runInit re-runs on htmx:load, and by then the DOM is a window, not the
-// dataset. A runInit step (exported for legacy.js's runInit chain).
+// step (windowing) prunes rows -- and must NEVER re-capture once the virtualizer
+// is engaged, because the DOM is then a window, not the dataset. The guard keeps
+// this exported runInit step safe under any defensive repeat call.
 export function captureRowModelFromDocument(): void {
     const content = document.getElementById('resource-list-content');
     if (content && !virtualizerActive()) {
@@ -86,11 +86,29 @@ export function captureRowModelFromDocument(): void {
 // ---- live free-text name match (NO request) --------------------------------
 const FILTER_HIDE_CLASS = 'ro-row-filtered';
 
-let appliedLiveFilter: {
+interface AppliedLiveFilter {
     content: HTMLElement;
     draft: string;
     revision: number;
-} | null = null;
+}
+
+let appliedLiveFilter: AppliedLiveFilter | null = null;
+
+// Opaque memo checkpoint used by the synchronous Live v2 transaction. A
+// failed reconcile may already have memoized the candidate revision; restoring
+// this token prevents the next retry from falsely treating that abandoned
+// candidate as applied.
+export interface LiveNameFilterCheckpoint {
+    readonly applied: AppliedLiveFilter | null;
+}
+
+export function takeLiveNameFilterCheckpoint(): LiveNameFilterCheckpoint {
+    return { applied: appliedLiveFilter };
+}
+
+export function restoreLiveNameFilterCheckpoint(checkpoint: LiveNameFilterCheckpoint): void {
+    appliedLiveFilter = checkpoint.applied;
+}
 
 // applyLiveNameFilter narrows the rows to the names containing the draft text,
 // entirely client-side. The MATCH (liveNameMatchKeys, filters-parse.ts) runs on

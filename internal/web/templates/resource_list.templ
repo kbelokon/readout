@@ -66,9 +66,10 @@ templ ResourceList(d ListPageData) {
 			@staleBanner()
 		}
 		if d.SingleType {
-			<div id="resource-list-content" data-live-url="location" hx-target="this" hx-ext="ro-morph" hx-swap="morph" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress" aria-live="polite">
+			<div id="resource-list-content" data-live-url="location" hx-target="this" hx-ext="ro-morph" hx-swap="morph" hx-disinherit="hx-target hx-swap" hx-indicator="#ro-progress">
 				@ResourceTable(d.List)
 			</div>
+			<div id="ro-live-status" class="ro-live-status" role="status" aria-live="polite" aria-atomic="true"></div>
 			@listSkeleton(d.List)
 			@rowCtxMenuC()
 			@bulkBarC(d.Bulk)

@@ -2,7 +2,7 @@
 (() => {
   // internal/assets/src/js/htmx-config.ts
   if (typeof htmx !== "undefined") {
-    htmx.config.globalViewTransitions = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    htmx.config.globalViewTransitions = false;
   }
 
   // internal/assets/src/js/filters-parse.ts
@@ -146,6 +146,978 @@
     return pathname + (query ? `?${query}` : "");
   }
 
+  // internal/assets/src/js/list-projection.ts
+  var rowModel = {
+    fields: [],
+    rows: [],
+    visibleKeys: null
+  };
+  function emptySnapshot() {
+    return {
+      rows: [],
+      byKey: /* @__PURE__ */ new Map(),
+      indexByKey: /* @__PURE__ */ new Map(),
+      order: [],
+      cardsByKey: /* @__PURE__ */ new Map(),
+      fields: [],
+      modelRows: [],
+      windowed: false
+    };
+  }
+  var projection = emptySnapshot();
+  var prepared = null;
+  var projectionRoot = null;
+  var projectionRevision = 0;
+  window.roRowModel = rowModel;
+  function captureFields(table) {
+    return Array.from(table.querySelectorAll("thead th")).map((th) => {
+      const label = normalizeFieldWhitespace(th.textContent || "");
+      return {
+        label,
+        name: fieldSuggestionText(label),
+        hint: th.dataset.hint || ""
+      };
+    });
+  }
+  function captureModelRow(tr) {
+    const cells = Array.from(tr.querySelectorAll("td")).map(
+      (td) => trimFilterWhitespace(td.textContent || "")
+    );
+    const nameLink = tr.querySelector("td.cell-name a");
+    return {
+      key: tr.dataset.key,
+      name: nameLink ? trimFilterWhitespace(nameLink.textContent || "") : cells[0] || "",
+      cells
+    };
+  }
+  function captureModelRows(rows) {
+    return rows.map(captureModelRow);
+  }
+  function captureCards(root, order) {
+    const cards = Array.from(root.querySelectorAll(".ro-cardlist > .ro-pcard"));
+    const cardsByKey = /* @__PURE__ */ new Map();
+    cards.forEach((card) => {
+      const key = card.dataset.key;
+      if (key) {
+        cardsByKey.set(key, card);
+      }
+    });
+    if (cardsByKey.size === 0 && cards.length === order.length) {
+      cards.forEach((card, index) => {
+        cardsByKey.set(order[index], card);
+      });
+    }
+    return cardsByKey;
+  }
+  function snapshotFrom(root) {
+    const table = root.querySelector("table.ro-table");
+    if (!table) {
+      return emptySnapshot();
+    }
+    const tbody = table.tBodies.item(0);
+    if (!tbody || tbody.querySelector(":scope > tr.ro-vspacer")) {
+      return emptySnapshot();
+    }
+    const rows = Array.from(tbody.querySelectorAll(":scope > tr[data-key]"));
+    const byKey = new Map(rows.map((row) => [row.dataset.key, row]));
+    const order = rows.map((row) => row.dataset.key);
+    return {
+      rows,
+      byKey,
+      indexByKey: new Map(order.map((key, index) => [key, index])),
+      order,
+      cardsByKey: captureCards(root, order),
+      fields: captureFields(table),
+      modelRows: captureModelRows(rows),
+      windowed: table.closest(".ro-table-wrap.ro-windowed") !== null
+    };
+  }
+  function publishModel(snapshot) {
+    rowModel.fields = snapshot.fields;
+    rowModel.rows = snapshot.modelRows;
+  }
+  function adoptListProjection(root) {
+    projection = snapshotFrom(root);
+    projectionRoot = root;
+    prepared = null;
+    projectionRevision += 1;
+    publishModel(projection);
+    rowModel.visibleKeys = null;
+  }
+  function ensureListProjection(root) {
+    if (projectionRoot === root) {
+      return false;
+    }
+    adoptListProjection(root);
+    return true;
+  }
+  function prepareListProjectionSwap(root) {
+    if (prepared?.root !== root) {
+      const snapshot = snapshotFrom(root);
+      projectionRevision += 1;
+      prepared = {
+        root,
+        snapshot,
+        // Snapshot maps are created once and never mutated or exposed. Keep
+        // the immutable prior index by reference for the windowed cell diff.
+        previousByKey: projection.byKey
+      };
+      publishModel(snapshot);
+    }
+    return {
+      rows: prepared.snapshot.rows,
+      windowed: prepared.snapshot.windowed
+    };
+  }
+  function commitListProjectionSwap() {
+    if (!prepared) {
+      return null;
+    }
+    const incoming = prepared;
+    prepared = null;
+    const content = document.getElementById("resource-list-content");
+    if (incoming.snapshot.windowed) {
+      projection = incoming.snapshot;
+      projectionRoot = content || incoming.root;
+    } else {
+      projection = content ? snapshotFrom(content) : emptySnapshot();
+      projectionRoot = content;
+      publishModel(projection);
+    }
+    return incoming.previousByKey;
+  }
+  function resetListProjection() {
+    projection = emptySnapshot();
+    projectionRoot = null;
+    prepared = null;
+    projectionRevision += 1;
+    publishModel(projection);
+    rowModel.visibleKeys = null;
+  }
+  function listProjectionSwapPending() {
+    return prepared !== null;
+  }
+  function listProjectionRevision() {
+    return projectionRevision;
+  }
+  function listProjectionWindowed() {
+    return projection.windowed;
+  }
+  function listProjectionRows() {
+    return projection.rows;
+  }
+  function listProjectionRowByKey(key) {
+    return projection.byKey.get(key) || null;
+  }
+  function listProjectionRowModel() {
+    return rowModel;
+  }
+  function setListProjectionVisibleKeys(keys) {
+    rowModel.visibleKeys = keys;
+  }
+  function listProjectionVisibleRows() {
+    const keys = rowModel.visibleKeys;
+    return keys ? projection.rows.filter((row) => keys.has(row.dataset.key)) : projection.rows;
+  }
+  var LIVE_FRAGMENT_BYTES = 128 * 1024;
+  var LIVE_DELTA_BYTES = 256 * 1024;
+  var LIVE_FRAGMENT_NODES = 4096;
+  var LIVE_FRAGMENT_DEPTH = 64;
+  var LIVE_FRAGMENT_ATTRIBUTES = 8192;
+  var liveTextEncoder = new TextEncoder();
+  function projectionError(code, message, fatal = false) {
+    return { code, message, fatal };
+  }
+  function oneElementRoot(parent) {
+    let root = null;
+    for (const node of parent.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE && !node.textContent?.trim()) {
+        continue;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE || root) {
+        return null;
+      }
+      root = node;
+    }
+    return root;
+  }
+  function liveRowDOMID(key) {
+    let result = "row-";
+    for (const character of key) {
+      const code = character.codePointAt(0);
+      if (code <= 32 || character === '"' || character === "\\" || character === "%" || code === 127) {
+        result += `%${code.toString(16).toUpperCase().padStart(2, "0")}`;
+      } else {
+        result += character;
+      }
+    }
+    return result;
+  }
+  function fragmentIntroducesIdentity(root) {
+    return root.querySelector("[id], [data-ro-live-region]") !== null;
+  }
+  function fragmentIsCSPClean(root) {
+    const forbiddenElements = "script, style, link, iframe, object, embed, base, meta[http-equiv]";
+    let nodes = 0;
+    let attributes = 0;
+    const pending = [{ node: root, depth: 1 }];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      nodes += 1;
+      if (nodes > LIVE_FRAGMENT_NODES || current.depth > LIVE_FRAGMENT_DEPTH) {
+        return false;
+      }
+      if (!(current.node instanceof Element)) continue;
+      attributes += current.node.attributes.length;
+      if (attributes > LIVE_FRAGMENT_ATTRIBUTES || current.node.matches(forbiddenElements)) {
+        return false;
+      }
+      for (const attribute of Array.from(current.node.attributes)) {
+        const name = attribute.name.toLowerCase();
+        if (name === "style") {
+          if (current.node.tagName !== "I" || current.node.parentElement?.classList.contains("cap-bar") !== true || !/^width\s*:\s*(?:100|[0-9]{1,2})%\s*;?$/u.test(attribute.value)) {
+            return false;
+          }
+          continue;
+        }
+        if (name === "srcdoc" || name.startsWith("on")) {
+          return false;
+        }
+        if (!["href", "src", "xlink:href", "action", "formaction"].includes(name)) {
+          continue;
+        }
+        let normalizedURL = "";
+        for (const character of attribute.value) {
+          const code = character.codePointAt(0);
+          if (code > 32 && !(code >= 127 && code <= 159)) {
+            normalizedURL += character;
+          }
+        }
+        if (/^(?:(?:javascript|vbscript):|data:text\/html)/iu.test(normalizedURL)) {
+          return false;
+        }
+      }
+      for (const child of Array.from(current.node.childNodes)) {
+        pending.push({ node: child, depth: current.depth + 1 });
+      }
+    }
+    return true;
+  }
+  function parseRowFragment(html, key) {
+    try {
+      const table = document.createElement("table");
+      const tbody = document.createElement("tbody");
+      table.append(tbody);
+      tbody.innerHTML = html;
+      const row = oneElementRoot(tbody);
+      if (row?.tagName !== "TR" || row.dataset.key !== key || row.id !== liveRowDOMID(key) || row.hasAttribute("data-ro-live-region") || row.classList.contains("ro-vspacer") || fragmentIntroducesIdentity(row) || !fragmentIsCSPClean(row)) {
+        return projectionError(
+          "fragment-invalid",
+          `row fragment for ${key} is not one canonical keyed tr`
+        );
+      }
+      return row;
+    } catch {
+      return projectionError("fragment-invalid", `row fragment for ${key} cannot be parsed`);
+    }
+  }
+  function parseCardFragment(html, key) {
+    try {
+      const template = document.createElement("template");
+      template.innerHTML = html;
+      const card = oneElementRoot(template.content);
+      if (card?.tagName !== "DIV" || !card.matches(".ro-pcard[data-key]") || card.dataset.key !== key || card.hasAttribute("id") || card.hasAttribute("data-ro-live-region") || fragmentIntroducesIdentity(card) || !fragmentIsCSPClean(card)) {
+        return projectionError(
+          "fragment-invalid",
+          `card fragment for ${key} is not one canonical keyed card`
+        );
+      }
+      return card;
+    } catch {
+      return projectionError("fragment-invalid", `card fragment for ${key} cannot be parsed`);
+    }
+  }
+  function parseRegionFragment(update) {
+    try {
+      const mounts = document.querySelectorAll(
+        `[data-ro-live-region="${update.region}"]`
+      );
+      if (mounts.length !== 1) {
+        return projectionError(
+          "projection-mismatch",
+          `region ${update.region} does not have exactly one fixed mount`
+        );
+      }
+      const template = document.createElement("template");
+      template.innerHTML = update.html;
+      const incoming = oneElementRoot(template.content);
+      const expectedTag = update.region === "phase" ? "DIV" : "SPAN";
+      const expectedClass = update.region === "count" ? "ro-count" : update.region === "phase" ? "ro-phase-strip" : "ro-foundline";
+      if (!incoming || incoming.tagName !== expectedTag || !incoming.classList.contains(expectedClass) || incoming.dataset.roLiveRegion !== update.region || incoming.hasAttribute("id") || mounts[0]?.tagName !== expectedTag || !mounts[0]?.classList.contains(expectedClass) || incoming.querySelector("[id], [data-ro-live-region]") !== null || !fragmentIsCSPClean(incoming)) {
+        return projectionError(
+          "fragment-invalid",
+          `region ${update.region} is not one canonical fixed-region root`
+        );
+      }
+      return { current: mounts[0], incoming };
+    } catch {
+      return projectionError("fragment-invalid", `region ${update.region} cannot be parsed`);
+    }
+  }
+  function arraysEqual(left, right) {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+  function validateDeltaHTMLBounds(plan) {
+    let aggregate = 0;
+    const fragments = [
+      ...plan.upsert.flatMap(
+        (operation) => operation.card === void 0 ? [operation.row] : [operation.row, operation.card]
+      ),
+      ...plan.regions.map((operation) => operation.html)
+    ];
+    for (const html of fragments) {
+      if (html.length > LIVE_FRAGMENT_BYTES) {
+        return projectionError("limit-exceeded", "Live delta fragment exceeds its limit");
+      }
+      const bytes = liveTextEncoder.encode(html).byteLength;
+      if (bytes > LIVE_FRAGMENT_BYTES) {
+        return projectionError("limit-exceeded", "Live delta fragment exceeds its limit");
+      }
+      aggregate += bytes;
+      if (aggregate > LIVE_DELTA_BYTES) {
+        return projectionError(
+          "limit-exceeded",
+          "Live delta fragments exceed their aggregate limit"
+        );
+      }
+    }
+    return null;
+  }
+  function currentProjectionMode() {
+    if (projection.rows.length === 0) {
+      return projectionError("projection-mismatch", "empty projections require a snapshot");
+    }
+    if (projection.windowed) {
+      return projection.cardsByKey.size === 0 ? "windowed" : projectionError("projection-mismatch", "windowed projection unexpectedly has cards");
+    }
+    if (projection.cardsByKey.size === projection.rows.length) {
+      return "cards";
+    }
+    return projectionError("projection-mismatch", "projection mode is not delta-capable");
+  }
+  function validateCurrentProjection(content, fastPath) {
+    if (prepared || projectionRoot !== content || !content.isConnected) {
+      return projectionError("projection-mismatch", "canonical projection is not stably mounted");
+    }
+    const mode = currentProjectionMode();
+    if (typeof mode !== "string") return mode;
+    const tables = content.querySelectorAll("table.ro-table");
+    const tbody = tables.length === 1 ? tables[0]?.tBodies.item(0) : null;
+    if (!tbody) {
+      return projectionError("projection-mismatch", "projection table mount is ambiguous");
+    }
+    if (!fastPath) {
+      const orderSet = new Set(projection.order);
+      if (orderSet.size !== projection.order.length || projection.rows.length !== projection.order.length || projection.byKey.size !== projection.order.length || projection.indexByKey.size !== projection.order.length || projection.modelRows.length !== projection.order.length || projection.order.some(
+        (key, index) => projection.byKey.get(key) !== projection.rows[index] || projection.indexByKey.get(key) !== index || projection.rows[index]?.dataset.key !== key || projection.rows[index]?.id !== liveRowDOMID(key) || projection.modelRows[index]?.key !== key
+      )) {
+        return projectionError(
+          "projection-mismatch",
+          "canonical projection invariants are broken"
+        );
+      }
+    }
+    let cardMount = null;
+    if (mode === "cards") {
+      const mounts = content.querySelectorAll(".ro-cardlist");
+      if (mounts.length !== 1) {
+        return projectionError("projection-mismatch", "card mount is ambiguous");
+      }
+      cardMount = mounts[0];
+      if (!fastPath && projection.order.some((key) => {
+        const card = projection.cardsByKey.get(key);
+        return !card || card.dataset.key !== key || card.parentElement !== cardMount;
+      })) {
+        return projectionError(
+          "projection-mismatch",
+          "canonical keyed-card invariants are broken"
+        );
+      }
+      if (!fastPath && projection.rows.some((row) => row.parentElement !== tbody)) {
+        return projectionError("projection-mismatch", "small-list rows are not fully mounted");
+      }
+    } else if (!fastPath && projection.rows.some((row) => row.isConnected && row.parentElement !== tbody)) {
+      return projectionError("projection-mismatch", "windowed rows are mounted outside tbody");
+    }
+    return { mode, tbody, cardMount };
+  }
+  function prepareDelta(plan) {
+    const boundsError = validateDeltaHTMLBounds(plan);
+    if (boundsError) return boundsError;
+    const fastPath = plan.remove.length === 0 && plan.order === void 0 && plan.upsert.every((operation) => projection.byKey.has(operation.key));
+    const content = document.getElementById("resource-list-content");
+    if (!content) {
+      return projectionError("projection-mismatch", "resource list content is missing");
+    }
+    const current = validateCurrentProjection(content, fastPath);
+    if ("code" in current) return current;
+    const removed = /* @__PURE__ */ new Set();
+    let deleted = 0;
+    let projected = 0;
+    for (const operation of plan.remove) {
+      if (removed.has(operation.key)) {
+        return projectionError(
+          "projection-mismatch",
+          `remove key ${operation.key} is duplicate`
+        );
+      }
+      if (!projection.byKey.has(operation.key)) {
+        return projectionError("projection-mismatch", `remove key ${operation.key} is absent`);
+      }
+      removed.add(operation.key);
+      if (operation.cause === "delete") deleted += 1;
+      else projected += 1;
+    }
+    const parsedRows = /* @__PURE__ */ new Map();
+    const parsedCards = /* @__PURE__ */ new Map();
+    let inserted = 0;
+    let updated = 0;
+    for (const operation of plan.upsert) {
+      if (parsedRows.has(operation.key) || removed.has(operation.key)) {
+        return projectionError(
+          "projection-mismatch",
+          `upsert key ${operation.key} is duplicate or also removed`
+        );
+      }
+      const row = parseRowFragment(operation.row, operation.key);
+      if (!("dataset" in row)) return row;
+      const existingRow = projection.byKey.get(operation.key);
+      if (existingRow && existingRow.id !== row.id) {
+        return projectionError(
+          "fragment-invalid",
+          `row fragment for ${operation.key} changed its canonical id`
+        );
+      }
+      if (existingRow) {
+        const index = projection.indexByKey.get(operation.key);
+        if (index === void 0 || projection.rows[index] !== existingRow || projection.modelRows[index]?.key !== operation.key || existingRow.isConnected && existingRow.parentElement !== current.tbody) {
+          return projectionError(
+            "projection-mismatch",
+            `row ${operation.key} is not at its canonical index`
+          );
+        }
+      }
+      const globalMatches = document.querySelectorAll(`[id="${row.id}"]`);
+      if (existingRow?.isConnected && (globalMatches.length !== 1 || globalMatches[0] !== existingRow) || existingRow && !existingRow.isConnected && globalMatches.length !== 0 || !existingRow && globalMatches.length !== 0) {
+        return projectionError(
+          "fragment-invalid",
+          `row fragment for ${operation.key} collides with a document id`
+        );
+      }
+      parsedRows.set(operation.key, row);
+      if (current.mode === "cards") {
+        if (operation.card === void 0) {
+          return projectionError(
+            "fragment-invalid",
+            `card-mode upsert ${operation.key} is missing its card`
+          );
+        }
+        const card = parseCardFragment(operation.card, operation.key);
+        if (!("dataset" in card)) return card;
+        const existingCard = projection.cardsByKey.get(operation.key);
+        if (existingRow && (!existingCard || existingCard.dataset.key !== operation.key || existingCard.parentElement !== current.cardMount)) {
+          return projectionError(
+            "projection-mismatch",
+            `card ${operation.key} is not canonically mounted`
+          );
+        }
+        parsedCards.set(operation.key, card);
+      } else if (operation.card !== void 0) {
+        return projectionError(
+          "fragment-invalid",
+          `windowed upsert ${operation.key} unexpectedly carries a card`
+        );
+      }
+      if (projection.byKey.has(operation.key)) updated += 1;
+      else inserted += 1;
+    }
+    const parsedRegions = /* @__PURE__ */ new Map();
+    for (const update of plan.regions) {
+      if (parsedRegions.has(update.region)) {
+        return projectionError("projection-mismatch", `region ${update.region} is duplicate`);
+      }
+      const parsed = parseRegionFragment(update);
+      if ("code" in parsed) return parsed;
+      parsedRegions.set(update.region, parsed);
+    }
+    if (fastPath) {
+      const modelUpdates = /* @__PURE__ */ new Map();
+      for (const [key, incoming] of parsedRows) {
+        modelUpdates.set(projection.indexByKey.get(key), captureModelRow(incoming));
+      }
+      return {
+        candidate: { ...projection },
+        fastPath: true,
+        modelUpdates,
+        parsedRows,
+        parsedCards,
+        parsedRegions,
+        summary: {
+          inserted: 0,
+          updated,
+          deleted: 0,
+          projected: 0,
+          reordered: false,
+          regions: [...parsedRegions.keys()]
+        },
+        tbody: current.tbody,
+        cardMount: current.cardMount
+      };
+    }
+    const finalKeys = new Set(projection.order.filter((key) => !removed.has(key)));
+    for (const key of parsedRows.keys()) finalKeys.add(key);
+    if (finalKeys.size === 0) {
+      return projectionError(
+        "projection-mismatch",
+        "empty projection boundary requires snapshot"
+      );
+    }
+    const topologyChanged = removed.size > 0 || inserted > 0;
+    if (topologyChanged && plan.order === void 0) {
+      return projectionError(
+        "projection-mismatch",
+        "topology-changing delta requires full order"
+      );
+    }
+    const finalOrder = plan.order ? [...plan.order] : [...projection.order];
+    if (finalOrder.length !== finalKeys.size || new Set(finalOrder).size !== finalOrder.length || finalOrder.some((key) => !finalKeys.has(key))) {
+      return projectionError("projection-mismatch", "delta order is not the exact final key set");
+    }
+    if (plan.order && !topologyChanged && arraysEqual(plan.order, projection.order)) {
+      return projectionError("projection-mismatch", "redundant unchanged order is not allowed");
+    }
+    const candidateByKey = new Map(projection.byKey);
+    const candidateCards = new Map(projection.cardsByKey);
+    for (const key of removed) {
+      candidateByKey.delete(key);
+      candidateCards.delete(key);
+    }
+    for (const [key, incoming] of parsedRows) {
+      const old = projection.byKey.get(key);
+      candidateByKey.set(key, old?.isConnected ? old : incoming);
+    }
+    for (const [key, incoming] of parsedCards) {
+      const old = projection.cardsByKey.get(key);
+      candidateCards.set(key, old?.isConnected ? old : incoming);
+    }
+    const rows = finalOrder.map((key) => candidateByKey.get(key));
+    const modelByKey = new Map(projection.modelRows.map((model) => [model.key, model]));
+    for (const [key, incoming] of parsedRows) modelByKey.set(key, captureModelRow(incoming));
+    for (const key of removed) modelByKey.delete(key);
+    const modelRows = finalOrder.map((key) => modelByKey.get(key));
+    if (rows.some((row) => !row) || modelRows.some((row) => !row)) {
+      return projectionError("projection-mismatch", "delta candidate is incomplete");
+    }
+    const ids = /* @__PURE__ */ new Set();
+    for (const key of finalOrder) {
+      const row = candidateByKey.get(key);
+      if (!row || row.id !== liveRowDOMID(key) || ids.has(row.id)) {
+        return projectionError("fragment-invalid", "row ids are missing or duplicate");
+      }
+      const globalMatches = document.querySelectorAll(`[id="${row.id}"]`);
+      if (row.isConnected && (globalMatches.length !== 1 || globalMatches[0] !== row) || !row.isConnected && globalMatches.length !== 0) {
+        return projectionError(
+          "fragment-invalid",
+          `final row ${key} collides with a document id`
+        );
+      }
+      ids.add(row.id);
+    }
+    return {
+      candidate: {
+        rows,
+        byKey: candidateByKey,
+        indexByKey: new Map(finalOrder.map((key, index) => [key, index])),
+        order: finalOrder,
+        cardsByKey: candidateCards,
+        fields: projection.fields.map((field) => ({ ...field })),
+        modelRows,
+        windowed: projection.windowed
+      },
+      fastPath: false,
+      modelUpdates: /* @__PURE__ */ new Map(),
+      parsedRows,
+      parsedCards,
+      parsedRegions,
+      summary: {
+        inserted,
+        updated,
+        deleted,
+        projected,
+        reordered: !arraysEqual(finalOrder, projection.order),
+        regions: [...parsedRegions.keys()]
+      },
+      tbody: current.tbody,
+      cardMount: current.cardMount
+    };
+  }
+  function addParentJournal(entries, seen, parent) {
+    if (parent && !seen.has(parent)) {
+      seen.add(parent);
+      entries.push({ parent, children: Array.from(parent.childNodes) });
+    }
+  }
+  function addElementJournal(entries, seen, element) {
+    if (!seen.has(element)) {
+      seen.add(element);
+      entries.push({ state: captureDOMNode(element) });
+    }
+  }
+  function addPlacementJournal(entries, seen, node) {
+    const parent = node.parentNode;
+    if (parent && !seen.has(node)) {
+      seen.add(node);
+      entries.push({ node, parent, nextSibling: node.nextSibling });
+    }
+  }
+  function captureDOMNode(node) {
+    return {
+      node,
+      nodeValue: node.nodeValue,
+      attributes: node instanceof Element ? Array.from(node.attributes, (attribute) => ({
+        name: attribute.name,
+        value: attribute.value
+      })) : null,
+      children: Array.from(node.childNodes, captureDOMNode)
+    };
+  }
+  function addAttributeJournal(entries, seen, element, name) {
+    const names = seen.get(element) || /* @__PURE__ */ new Set();
+    if (names.has(name)) return;
+    names.add(name);
+    seen.set(element, names);
+    entries.push({ element, name, value: element.getAttribute(name) });
+  }
+  function createDOMJournal(parsed) {
+    const parents = [];
+    const placements = [];
+    const elements = [];
+    const attributes = [];
+    const seenParents = /* @__PURE__ */ new Set();
+    const seenPlacements = /* @__PURE__ */ new Set();
+    const seenElements = /* @__PURE__ */ new Set();
+    const seenAttributes = /* @__PURE__ */ new Map();
+    if (!parsed.fastPath || projection.windowed) {
+      addParentJournal(parents, seenParents, parsed.tbody);
+    }
+    parsed.tbody.querySelectorAll(":scope > tr.ro-vspacer").forEach((spacer) => {
+      addElementJournal(elements, seenElements, spacer);
+    });
+    if (parsed.cardMount && !parsed.fastPath) {
+      addParentJournal(parents, seenParents, parsed.cardMount);
+    }
+    for (const key of parsed.parsedRows.keys()) {
+      const current = projection.byKey.get(key);
+      if (current) {
+        if (parsed.fastPath) {
+          addPlacementJournal(placements, seenPlacements, current);
+        }
+        addElementJournal(elements, seenElements, current);
+      }
+    }
+    for (const key of parsed.parsedCards.keys()) {
+      const current = projection.cardsByKey.get(key);
+      if (current?.isConnected) {
+        if (parsed.fastPath) {
+          addPlacementJournal(placements, seenPlacements, current);
+        }
+        addElementJournal(elements, seenElements, current);
+      }
+    }
+    for (const { current } of parsed.parsedRegions.values()) {
+      addParentJournal(parents, seenParents, current.parentNode);
+      addElementJournal(elements, seenElements, current);
+    }
+    if (!parsed.fastPath) {
+      for (const element of [...projection.rows, ...projection.cardsByKey.values()]) {
+        addAttributeJournal(attributes, seenAttributes, element, "class");
+      }
+    }
+    document.querySelectorAll(".ro-table-wrap").forEach((wrap) => {
+      addAttributeJournal(attributes, seenAttributes, wrap, "aria-activedescendant");
+    });
+    const status = document.getElementById("ro-live-status");
+    if (status) {
+      addParentJournal(parents, seenParents, status.parentNode);
+      addElementJournal(elements, seenElements, status);
+    }
+    const bulk = document.getElementById("ro-bulkbar");
+    if (bulk) {
+      addParentJournal(parents, seenParents, bulk.parentNode);
+      addElementJournal(elements, seenElements, bulk);
+    }
+    return { parents, placements, elements, attributes };
+  }
+  function restoreDOMNode(state) {
+    const { node } = state;
+    if (node instanceof Element && state.attributes) {
+      for (const attribute of Array.from(node.attributes)) node.removeAttribute(attribute.name);
+      for (const attribute of state.attributes) {
+        node.setAttribute(attribute.name, attribute.value);
+      }
+    } else if (node.nodeValue !== state.nodeValue) {
+      node.nodeValue = state.nodeValue;
+    }
+    if (node instanceof Element) {
+      node.replaceChildren(...state.children.map((child) => child.node));
+    }
+    for (const child of state.children) restoreDOMNode(child);
+  }
+  function verifyDOMNode(state) {
+    const { node } = state;
+    if (node.nodeValue !== state.nodeValue) return false;
+    if (node instanceof Element && state.attributes) {
+      if (node.attributes.length !== state.attributes.length) return false;
+      for (const attribute of state.attributes) {
+        if (node.getAttribute(attribute.name) !== attribute.value) return false;
+      }
+    }
+    const children = Array.from(node.childNodes);
+    return children.length === state.children.length && children.every((child, index) => child === state.children[index]?.node) && state.children.every(verifyDOMNode);
+  }
+  function restorePlacementJournal(entries) {
+    const byNode = new Map(entries.map((entry) => [entry.node, entry]));
+    const restored = /* @__PURE__ */ new Set();
+    const restoring = /* @__PURE__ */ new Set();
+    const restore = (entry) => {
+      if (restored.has(entry.node)) return;
+      if (restoring.has(entry.node)) throw new Error("original sibling order is cyclic");
+      if (entry.parent instanceof Element && !entry.parent.isConnected) {
+        throw new Error("an original parent mount disappeared");
+      }
+      restoring.add(entry.node);
+      if (entry.nextSibling) {
+        const dependency = byNode.get(entry.nextSibling);
+        if (dependency) restore(dependency);
+        else if (entry.nextSibling.parentNode !== entry.parent) {
+          throw new Error("an original sibling disappeared");
+        }
+      }
+      entry.parent.insertBefore(entry.node, entry.nextSibling);
+      restoring.delete(entry.node);
+      restored.add(entry.node);
+    };
+    for (const entry of entries) restore(entry);
+    if (entries.some(
+      ({ node, parent, nextSibling }) => node.parentNode !== parent || node.nextSibling !== nextSibling
+    )) {
+      throw new Error("original root placement could not be restored");
+    }
+  }
+  function restoreDOMJournal(journal) {
+    if (journal.parents.some(
+      ({ parent }) => parent instanceof Element && parent.isConnected === false
+    )) {
+      throw new Error("an original parent mount disappeared");
+    }
+    for (const { parent, children } of journal.parents) parent.replaceChildren(...children);
+    restorePlacementJournal(journal.placements);
+    for (const { state } of journal.elements) restoreDOMNode(state);
+    for (const { element, name, value } of journal.attributes) {
+      if (value === null) element.removeAttribute(name);
+      else element.setAttribute(name, value);
+    }
+    for (const { parent, children } of journal.parents) {
+      const restored = Array.from(parent.childNodes);
+      if (restored.length !== children.length || restored.some((child, index) => child !== children[index])) {
+        throw new Error("original child order could not be restored");
+      }
+    }
+    if (journal.elements.some(({ state }) => !verifyDOMNode(state))) {
+      throw new Error("original descendant identity could not be restored");
+    }
+  }
+  function resolveMorph(override) {
+    if (override) return override;
+    if (typeof Idiomorph === "undefined" || typeof Idiomorph.morph !== "function") return null;
+    return (current, incoming) => {
+      Idiomorph.morph(current, incoming, {
+        morphStyle: "outerHTML",
+        ignoreActiveValue: true
+      });
+    };
+  }
+  var MORPH_TRANSIENT_CLASSES = ["is-selected", "kfocus", "ro-row-filtered", "ro-cell-changed"];
+  function canonicalMorphClone(element) {
+    const clone = element.cloneNode(true);
+    for (const current of [clone, ...Array.from(clone.querySelectorAll("*"))]) {
+      current.classList.remove(...MORPH_TRANSIENT_CLASSES);
+      if (current.getAttribute("class") === "") current.removeAttribute("class");
+    }
+    return clone;
+  }
+  function morphLandedCanonical(current, incoming) {
+    return canonicalMorphClone(current).isEqualNode(canonicalMorphClone(incoming));
+  }
+  function runScopedMorph(morph, current, incoming) {
+    const parent = current.parentNode;
+    const next = current.nextSibling;
+    const connected = current.isConnected;
+    const outcome = morph(current, incoming);
+    if (!connected) {
+      if (parent) {
+        parent.insertBefore(current, next?.parentNode === parent ? next : null);
+      } else {
+        current.remove();
+      }
+    }
+    if (current.isConnected !== connected || current.parentNode !== parent || current.nextSibling !== next || outcome === false || !morphLandedCanonical(current, incoming)) {
+      throw new Error("scoped morph did not land canonical content in place");
+    }
+  }
+  function updateLiveStatus(summary) {
+    const status = document.getElementById("ro-live-status");
+    if (!status) return;
+    const changed = summary.inserted + summary.updated + summary.deleted + summary.projected;
+    const regionCount = summary.regions.length;
+    const parts = [];
+    if (changed > 0) parts.push(`${changed} row${changed === 1 ? "" : "s"}`);
+    if (summary.reordered) parts.push("order changed");
+    if (regionCount > 0) {
+      parts.push(`${regionCount} region${regionCount === 1 ? "" : "s"}`);
+    }
+    status.textContent = `Live update: ${parts.join(", ")}`;
+  }
+  function applyListProjectionDeltaTransaction(plan, options) {
+    let parsed;
+    try {
+      parsed = prepareDelta(plan);
+    } catch {
+      return {
+        ok: false,
+        error: projectionError("projection-mismatch", "Live delta preflight failed")
+      };
+    }
+    if ("code" in parsed) return { ok: false, error: parsed };
+    const morphNeeded = [...parsed.parsedRows.keys()].some(
+      (key) => parsed.candidate.byKey.get(key) === projection.byKey.get(key)
+    ) || [...parsed.parsedCards.keys()].some(
+      (key) => parsed.candidate.cardsByKey.get(key) === projection.cardsByKey.get(key)
+    ) || parsed.parsedRegions.size > 0;
+    const morph = resolveMorph(options.morph);
+    if (morphNeeded && !morph) {
+      return {
+        ok: false,
+        error: projectionError("morph-failed", "Idiomorph is unavailable")
+      };
+    }
+    const oldProjection = projection;
+    const oldPrepared = prepared;
+    const oldRoot = projectionRoot;
+    const oldRevision = projectionRevision;
+    const oldFields = rowModel.fields;
+    const oldModelRows = rowModel.rows;
+    const oldVisibleKeys = rowModel.visibleKeys;
+    const modelPatchJournal = [];
+    let journal;
+    try {
+      journal = createDOMJournal(parsed);
+    } catch {
+      return {
+        ok: false,
+        error: projectionError("projection-mismatch", "Live delta journal could not be built")
+      };
+    }
+    let mutationPhase = "morph";
+    try {
+      for (const [key, incoming] of parsed.parsedRows) {
+        const current = oldProjection.byKey.get(key);
+        if (current && parsed.candidate.byKey.get(key) === current) {
+          runScopedMorph(morph, current, incoming);
+          if (current.dataset.key !== key) {
+            throw new Error(`row morph did not preserve ${key}`);
+          }
+        }
+      }
+      for (const [key, incoming] of parsed.parsedCards) {
+        const current = oldProjection.cardsByKey.get(key);
+        if (current && parsed.candidate.cardsByKey.get(key) === current) {
+          runScopedMorph(morph, current, incoming);
+          if (current.dataset.key !== key) {
+            throw new Error(`card morph did not preserve ${key}`);
+          }
+        }
+      }
+      for (const { current, incoming } of parsed.parsedRegions.values()) {
+        runScopedMorph(morph, current, incoming);
+        if (current.dataset.roLiveRegion !== incoming.dataset.roLiveRegion) {
+          throw new Error("region morph did not preserve its fixed mount");
+        }
+      }
+      if (!oldProjection.windowed) {
+        parsed.tbody.replaceChildren(...parsed.candidate.rows);
+        parsed.cardMount.replaceChildren(
+          ...parsed.candidate.order.map(
+            (key) => parsed.candidate.cardsByKey.get(key)
+          )
+        );
+      }
+      for (const [index, model] of parsed.modelUpdates) {
+        modelPatchJournal.push({ index, model: parsed.candidate.modelRows[index] });
+        parsed.candidate.modelRows[index] = model;
+      }
+      projection = parsed.candidate;
+      projectionRoot = document.getElementById("resource-list-content");
+      prepared = null;
+      projectionRevision = oldRevision + 1;
+      publishModel(projection);
+      mutationPhase = "reconcile";
+      options.reconcile();
+      updateLiveStatus(parsed.summary);
+      return {
+        ok: true,
+        summary: parsed.summary
+      };
+    } catch {
+      let rollbackFailed = false;
+      try {
+        restoreDOMJournal(journal);
+      } catch {
+        rollbackFailed = true;
+      }
+      projection = oldProjection;
+      for (const patch of modelPatchJournal) oldProjection.modelRows[patch.index] = patch.model;
+      prepared = oldPrepared;
+      projectionRoot = oldRoot;
+      projectionRevision = oldRevision;
+      rowModel.fields = oldFields;
+      rowModel.rows = oldModelRows;
+      rowModel.visibleKeys = oldVisibleKeys;
+      try {
+        options.restoreExternalState();
+      } catch {
+        rollbackFailed = true;
+      }
+      if (rollbackFailed) {
+        return {
+          ok: false,
+          error: projectionError(
+            "rollback-failed",
+            "Live delta rollback could not restore the original mounts",
+            true
+          )
+        };
+      }
+      return {
+        ok: false,
+        error: projectionError(
+          mutationPhase === "morph" ? "morph-failed" : "reconcile-failed",
+          mutationPhase === "morph" ? "Live delta DOM morph failed and was rolled back" : "Live delta reconcile failed and was rolled back"
+        )
+      };
+    }
+  }
+
   // internal/assets/src/js/list-etag.ts
   var LIST_CONTENT_ID = "resource-list-content";
   var ETAG_DATA_KEY = "roEtag";
@@ -240,6 +1212,10 @@
     if (!sourceIsContent || detail.target !== void 0 && !targetIsContent || headerValue(headers, "RO-No-Push") !== "true" || headerValue(headers, "HX-Preloaded") === "true") {
       return;
     }
+    if (content.childElementCount === 0) {
+      clearContentValidator(content);
+      return;
+    }
     const validator = readContentValidator(content);
     const requestKey = tableRequestKey(detail.path);
     if (!validator || requestKey !== validator.path) {
@@ -313,21 +1289,6 @@
   function nextFailureStage(stage) {
     return Math.min(stage + 1, 3);
   }
-  function classifyStreamClose(facts) {
-    if (facts.superseded) {
-      return { kind: "ignore" };
-    }
-    switch (facts.cause) {
-      case "connect-error":
-      case "bad-status":
-        return { kind: "fallback", banner: false, terminal: false };
-      case "read-error":
-      case "eof":
-        return { kind: "fallback", banner: true, terminal: false };
-      case "terminal-frame":
-        return { kind: "fallback", banner: true, terminal: true };
-    }
-  }
   function shouldDiscardPush(facts) {
     if (facts.frameGeneration !== facts.currentGeneration) {
       return "stale-generation";
@@ -341,1388 +1302,25 @@
     return "none";
   }
 
-  // internal/assets/src/js/stale.ts
-  var STALE_DIM_CLASS = "ro-stale";
-  var staleCountdownId = null;
-  function updateStaleCountdown() {
-    const span = document.querySelector(".ro-stale-banner [data-stale-countdown]");
-    if (!span) {
-      return;
-    }
-    const nextAt = refreshNextAtMs();
-    if (!nextAt) {
-      span.textContent = "…";
-      return;
-    }
-    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
-    span.textContent = `${remaining}s`;
-  }
-  function isListRefreshEvent(event) {
-    const detail = event.detail;
-    if (!detail || isPreloadRequest(event)) {
-      return false;
-    }
-    const elt = detail.elt;
-    if (elt && elt.id === "resource-list-content") {
-      return true;
-    }
-    const target = detail.target;
-    return !!target && target.id === "resource-list-content";
-  }
-  function markListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.add(STALE_DIM_CLASS);
-    }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (!banner) {
-      return;
-    }
-    banner.hidden = false;
-    if (staleCountdownId === null) {
-      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
-    }
-    updateStaleCountdown();
-  }
-  function clearListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.remove(STALE_DIM_CLASS);
-    }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (banner) {
-      banner.hidden = true;
-    }
-    if (staleCountdownId !== null) {
-      window.clearInterval(staleCountdownId);
-      staleCountdownId = null;
-    }
-  }
-  document.addEventListener("htmx:responseError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
-    }
-  });
-  document.addEventListener("htmx:sendError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
-    }
-  });
-
-  // internal/assets/src/js/live.ts
+  // internal/assets/src/js/filters.ts
   function getHtmx() {
     return window.htmx;
   }
-  var liveState = {
-    status: "idle",
-    // 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden'
-    abort: null,
-    // AbortController of the current stream fetch
-    gen: "",
-    // the minted generation every frame must echo (string compare)
-    streamPath: ""
-    // the stream URL sans ?g= -- the page/params identity
-  };
-  var liveDiscards = 0;
-  var liveFallbackSecs = 0;
-  function liveFallbackSeconds() {
-    return liveFallbackSecs;
-  }
-  function liveSupported() {
-    const content = document.getElementById("resource-list-content");
-    if (content?.dataset.liveUrl !== "location") {
-      return false;
-    }
-    const option = document.querySelector(
-      '[data-ro-action="set-refresh"][data-ro-interval="Live"]'
-    );
-    return !!option && !option.disabled;
-  }
-  function liveStreamBase() {
-    const u = new URL(window.location.href);
-    return `${u.pathname.replace(/\/+$/, "")}/_stream${u.search}`;
-  }
-  function liveTeardown() {
-    const ctrl = liveState.abort;
-    liveState.abort = null;
-    liveFallbackSecs = 0;
-    if (ctrl) {
-      ctrl.abort();
-    }
-  }
-  function liveEngageFallback(banner) {
-    liveTeardown();
-    liveState.status = "fallback";
-    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
-    scheduleRefreshTick();
-    if (banner) {
-      markListStale();
-    }
-  }
-  function liveOpen(base) {
-    liveTeardown();
-    liveState.streamPath = base;
-    if (!base) {
-      liveEngageFallback(false);
-      return;
-    }
-    liveState.status = "connecting";
-    liveState.gen = window.crypto.getRandomValues(new Uint32Array(4)).toString();
-    const ctrl = new AbortController();
-    liveState.abort = ctrl;
-    const separator = base.includes("?") ? "&" : "?";
-    const url = `${base}${separator}g=${liveState.gen}`;
-    scheduleRefreshTick();
-    void liveConnect(url, ctrl);
-  }
-  async function liveConnect(url, ctrl) {
-    let res;
-    try {
-      res = await fetch(url, { signal: ctrl.signal });
-    } catch {
-      applyClose({ superseded: liveState.abort !== ctrl, cause: "connect-error" });
-      return;
-    }
-    if (liveState.abort !== ctrl) {
-      return;
-    }
-    if (res.status !== 200 || !res.body) {
-      applyClose({ superseded: false, cause: "bad-status" });
-      return;
-    }
-    liveState.status = "open";
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffered = "";
-    let eventName = null;
-    let dataLines = [];
-    const readAndHandleChunk = async () => {
-      const chunk = await reader.read();
-      if (liveState.abort !== ctrl) {
-        return;
-      }
-      const value = chunk.value;
-      buffered += decoder.decode(value.subarray(), { stream: true });
-      const completeLines = buffered.split("\n");
-      buffered = completeLines.pop();
-      for (const rawLine of completeLines) {
-        const line = rawLine === "\r" ? "" : rawLine;
-        if (line.length === 0) {
-          liveHandleFrame(eventName, dataLines.join("\n"));
-          eventName = null;
-          dataLines = [];
-          if (liveState.abort !== ctrl) {
-            return;
-          }
-        } else if (line.startsWith("event:")) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5));
-        }
-      }
-      return value;
-    };
-    try {
-      while (await readAndHandleChunk()) {
-      }
-    } catch {
-    }
-    if (liveState.abort !== ctrl) {
-      return;
-    }
-    liveEngageFallback(true);
-  }
-  function applyClose(facts) {
-    const action = classifyStreamClose(facts);
-    if (action.kind === "ignore") {
-      return;
-    }
-    liveEngageFallback(action.banner);
-  }
-  function liveHandleFrame(name, text) {
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return;
-    }
-    const payload = parsed;
-    if (name === "ro-terminal") {
-      applyClose({ superseded: false, cause: "terminal-frame" });
-      return;
-    }
-    if (name !== "ro-table") {
-      return;
-    }
-    if (typeof payload.g !== "string" || typeof payload.html !== "string") {
-      return;
-    }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    const reason = shouldDiscardPush({
-      frameGeneration: payload.g,
-      currentGeneration: liveState.gen,
-      // The Go bundle contract pins the literal page comparison below. Feed
-      // equal page identities here so the policy supplies the first and third
-      // ordered gates (generation, then request); the literal supplies the
-      // page gate between them without evaluating it twice.
-      liveStreamBase: liveState.streamPath,
-      openedStreamBase: liveState.streamPath,
-      requestInFlight: userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0
-    });
-    if (reason === "stale-generation" || liveStreamBase() !== liveState.streamPath || reason === "request-in-flight") {
-      liveDiscards += 1;
-      return;
-    }
-    liveMorph(payload.html);
-  }
-  function liveMorph(html) {
-    const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx();
-    if (!content || !htmx2 || typeof htmx2.swap !== "function") {
-      return;
-    }
-    clearListValidator();
-    htmx2.swap(
-      content,
-      html,
-      { swapStyle: "morph" },
-      {
-        contextElement: content,
-        eventInfo: { target: content, roLivePush: true }
-      }
-    );
-  }
-  function liveOnListSwap(event) {
-    const detail = event.detail;
-    if (detail?.roLivePush) {
-      return;
-    }
-    if (liveState.status !== "open" && liveState.status !== "connecting") {
-      return;
-    }
-    let base = liveStreamBase();
-    const requestPath = detail?.pathInfo?.finalRequestPath || detail?.pathInfo?.requestPath;
-    if (typeof requestPath === "string") {
-      const queryStart = requestPath.indexOf("?");
-      const pathname = queryStart === -1 ? requestPath : requestPath.slice(0, queryStart);
-      if (pathname.endsWith("/_table")) {
-        const query = queryStart === -1 ? "" : requestPath.slice(queryStart);
-        base = `${pathname.slice(0, -"/_table".length)}/_stream${query}`;
-      }
-    }
-    liveOpen(base);
-  }
-  function liveApply(force) {
-    if (refreshMode() !== "Live") {
-      liveTeardown();
-      liveState.status = "idle";
-      liveState.streamPath = "";
-      return;
-    }
-    const base = liveSupported() ? liveStreamBase() : "";
-    if (!force && base === liveState.streamPath && liveState.status !== "idle") {
-      return;
-    }
-    liveOpen(base);
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      if (liveState.status === "open" || liveState.status === "connecting") {
-        liveTeardown();
-        liveState.status = "hidden";
-      }
-      return;
-    }
-    if (liveState.status === "hidden" && refreshMode() === "Live") {
-      liveOpen(liveSupported() ? liveStreamBase() : "");
-    }
-  });
-  window.roLive = {
-    discards() {
-      return liveDiscards;
-    }
-  };
-
-  // internal/assets/src/js/prefs.ts
-  var PREFS_COOKIE = "ro_prefs";
-  var PREFS_VERSION_PREFIX = "v1.";
-  var PREFS_MAX_ENCODED = 3072;
-  var PREFS_COOKIE_MAX_AGE = 31536e3;
-  var REFRESH_KEY = "roRefresh";
-  function b64urlEncodeUTF8(text) {
-    const bytes = new TextEncoder().encode(text);
-    const bin = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
-    return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-  }
-  function b64urlDecodeUTF8(encoded) {
-    const compact = encoded.replaceAll("\r", "").replaceAll("\n", "");
-    if (!/^[A-Za-z0-9_-]*$/.test(compact)) {
-      throw new TypeError();
-    }
-    const b64 = compact.replaceAll("-", "+").replaceAll("_", "/");
-    const bin = atob(b64);
-    const bytes = Uint8Array.from(bin, (char) => char.charCodeAt(0));
-    return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
-  }
-  function isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-  function setOwnNamespace(ns, cluster, namespace) {
-    Object.defineProperty(ns, cluster, {
-      value: namespace,
-      enumerable: true,
-      configurable: true,
-      writable: true
-    });
-  }
-  function compareUTF8(left, right) {
-    const mismatch = left.subarray(0, right.length).findIndex((byte, index) => byte !== right[index]);
-    if (mismatch !== -1) {
-      return left[mismatch] - right[mismatch];
-    }
-    return left.length - right.length;
-  }
-  function stringifyPrefsJSON(value) {
-    const encoded = JSON.stringify(value);
-    return encoded.replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
-  }
-  function canonicalNamespaceJSON(ns) {
-    const encoder = new TextEncoder();
-    const entries = Object.entries(ns).map(([cluster, namespace]) => ({
-      cluster,
-      namespace,
-      encodedCluster: encoder.encode(cluster)
-    }));
-    entries.sort((left, right) => compareUTF8(left.encodedCluster, right.encodedCluster));
-    return `{${entries.map(
-      ({ cluster, namespace }) => `${stringifyPrefsJSON(cluster)}:${stringifyPrefsJSON(namespace)}`
-    ).join(",")}}`;
-  }
-  function decodePrefsValue(value) {
-    const empty = { kinds: [], refresh: "", ns: {} };
-    if (!value?.startsWith(PREFS_VERSION_PREFIX)) {
-      return { prefs: empty, ok: false };
-    }
-    const payload = value.slice(PREFS_VERSION_PREFIX.length);
-    try {
-      const decoded = JSON.parse(b64urlDecodeUTF8(payload));
-      if (!isRecord(decoded)) {
-        return { prefs: empty, ok: false };
-      }
-      const kinds = [];
-      if (Array.isArray(decoded.kinds)) {
-        decoded.kinds.forEach((raw) => {
-          if (!isRecord(raw)) {
-            return;
-          }
-          const e = raw;
-          if (typeof e.k !== "string") {
-            return;
-          }
-          const entry = { k: e.k };
-          if (typeof e.sort === "string") {
-            entry.sort = e.sort;
-          }
-          if (Array.isArray(e.hide) && e.hide.every((name) => typeof name === "string")) {
-            entry.hide = e.hide;
-          }
-          kinds.push(entry);
-        });
-      }
-      const ns = {};
-      if (isRecord(decoded.ns)) {
-        Object.entries(decoded.ns).forEach(([cluster, namespace]) => {
-          if (typeof namespace === "string") {
-            setOwnNamespace(ns, cluster, namespace);
-          }
-        });
-      }
-      return {
-        prefs: {
-          kinds,
-          refresh: typeof decoded.refresh === "string" ? decoded.refresh : "",
-          ns
-        },
-        ok: true
-      };
-    } catch (_e) {
-      return { prefs: empty, ok: false };
-    }
-  }
-  function encodePrefsCandidate(kinds, refresh, ns) {
-    const fields = [];
-    if (kinds.length > 0) {
-      fields.push(`"kinds":${stringifyPrefsJSON(kinds)}`);
-    }
-    if (refresh) {
-      fields.push(`"refresh":${stringifyPrefsJSON(refresh)}`);
-    }
-    if (Object.keys(ns).length > 0) {
-      fields.push(`"ns":${canonicalNamespaceJSON(ns)}`);
-    }
-    return PREFS_VERSION_PREFIX + b64urlEncodeUTF8(`{${fields.join(",")}}`);
-  }
-  function encodePrefsValue(prefs) {
-    const kinds = prefs.kinds ?? [];
-    const refresh = prefs.refresh ?? "";
-    const ns = prefs.ns ?? {};
-    const evictionBoundary = PREFS_MAX_ENCODED + 1;
-    let value = encodePrefsCandidate(kinds, refresh, ns);
-    if (value.length < evictionBoundary) {
-      return value;
-    }
-    Array.from({ length: kinds.length }).some((_, evicted) => {
-      const kept = kinds.length - evicted - 1;
-      value = encodePrefsCandidate(kinds.slice(0, kept), refresh, ns);
-      return value.length < evictionBoundary;
-    });
-    return value;
-  }
-  function prefsCookieValue() {
-    const prefix = `${PREFS_COOKIE}=`;
-    return document.cookie.split("; ").find((part) => part.startsWith(prefix))?.slice(prefix.length);
-  }
-  function readPrefs() {
-    return decodePrefsValue(prefsCookieValue()).prefs;
-  }
-  function writePrefs(prefs) {
-    try {
-      let cookie = PREFS_COOKIE + "=" + encodePrefsValue(prefs) + "; Path=/; SameSite=Lax; Max-Age=" + PREFS_COOKIE_MAX_AGE;
-      if (window.location.protocol === "https:") {
-        cookie += "; Secure";
-      }
-      document.cookie = cookie;
-    } catch (_e) {
-    }
-  }
-  function prefsTouchKind(prefs, plural) {
-    const index = prefs.kinds.findIndex((entry2) => entry2.k === plural);
-    const entry = index < 0 ? { k: plural } : prefs.kinds.splice(index, 1)[0];
-    prefs.kinds.unshift(entry);
-    return entry;
-  }
-  function roPrefsSetSort(plural, sort) {
-    const prefs = readPrefs();
-    prefsTouchKind(prefs, plural).sort = sort;
-    writePrefs(prefs);
-  }
-  function roPrefsSetHiddenColumns(plural, names) {
-    const prefs = readPrefs();
-    prefsTouchKind(prefs, plural).hide = names;
-    writePrefs(prefs);
-  }
-  function roPrefsSetRefresh(mode) {
-    const prefs = readPrefs();
-    prefs.refresh = mode;
-    writePrefs(prefs);
-  }
-  function roPrefsSetNamespace(cluster, namespace) {
-    if (!cluster || !namespace) {
-      return;
-    }
-    const prefs = readPrefs();
-    setOwnNamespace(prefs.ns, cluster, namespace);
-    writePrefs(prefs);
-  }
-
-  // internal/assets/src/js/refresh.ts
-  function getHtmx2() {
-    return window.htmx;
-  }
-  var refreshTimerId = null;
-  var refreshNextAt = 0;
-  var refreshFailureStage = 0;
-  function refreshNextAtMs() {
-    return refreshNextAt;
-  }
-  var userListRequestsInFlight = /* @__PURE__ */ new Set();
-  var containerListRequestsInFlight = /* @__PURE__ */ new Set();
-  function requestDetail(event) {
-    return Object(event.detail);
-  }
-  function pruneSettledListRequests(requests) {
-    requests.forEach((xhr) => {
-      if (xhr.readyState === 4 || xhr.readyState === 0) {
-        requests.delete(xhr);
-      }
-    });
-  }
-  function isPreloadRequest(event) {
-    const config = Object(requestDetail(event).requestConfig);
-    const headers = Object(config.headers);
-    return headers["HX-Preloaded"] === "true";
-  }
-  function isUserListRequest(event) {
-    const detail = requestDetail(event);
-    return detail.elt instanceof Element && detail.target instanceof Element && detail.target.id === "resource-list-content" && !isPreloadRequest(event);
-  }
-  function handleRefreshConfigRequest(event) {
-    const detail = requestDetail(event);
-    const content = document.getElementById("resource-list-content");
-    const sourceIsContent = content !== null && detail.elt === content;
-    const targetIsContent = content !== null && detail.target === content;
-    if (sourceIsContent || targetIsContent) {
-      const headers = Object(detail.headers);
-      for (const name of Object.keys(headers)) {
-        if (name.toLowerCase() === "ro-no-push") {
-          delete headers[name];
-        }
-      }
-      if (sourceIsContent && (detail.target === void 0 || targetIsContent)) {
-        headers["RO-No-Push"] = "true";
-      }
-    }
-    configureListValidatorRequest(event);
-  }
-  document.addEventListener("htmx:configRequest", handleRefreshConfigRequest);
-  function handleRefreshBeforeRequest(event) {
-    const detail = requestDetail(event);
-    const elt = Object(detail.elt);
-    if (elt.id === "resource-list-content") {
-      if (detail.xhr) {
-        containerListRequestsInFlight.add(detail.xhr);
-      }
-      return;
-    }
-    if (!isUserListRequest(event)) {
-      return;
-    }
-    if (detail.xhr) {
-      userListRequestsInFlight.add(detail.xhr);
-    }
-    const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx2();
-    if (content && htmx2) {
-      htmx2.trigger(content, "htmx:abort");
-    }
-  }
-  document.addEventListener("htmx:beforeRequest", handleRefreshBeforeRequest);
-  function handleRefreshAfterRequest(event) {
-    const xhr = requestDetail(event).xhr;
-    userListRequestsInFlight.delete(xhr);
-    containerListRequestsInFlight.delete(xhr);
-  }
-  document.addEventListener("htmx:afterRequest", handleRefreshAfterRequest);
-  function parseRefreshSeconds(mode) {
-    if (typeof mode !== "string") {
-      return 0;
-    }
-    const unsigned = mode.startsWith("+") ? mode.slice(1) : mode;
-    const seconds = Array.from(unsigned).reduce((value, char) => {
-      const digit = char.charCodeAt(0) - 48;
-      return digit >= 0 && digit <= 9 ? value * 10 + digit : Number.NaN;
-    }, 0);
-    return Number.isSafeInteger(seconds) ? seconds : 0;
-  }
-  function refreshMode() {
-    const stored = readPrefs().refresh;
-    if (stored) {
-      return stored;
-    }
-    let legacy = null;
-    try {
-      legacy = window.localStorage.getItem(REFRESH_KEY);
-    } catch {
-    }
-    if (!legacy) {
-      return "";
-    }
-    const secs = parseRefreshSeconds(legacy);
-    const mode = secs > 0 ? String(secs) : "Off";
-    roPrefsSetRefresh(mode);
-    return mode;
-  }
-  function listTableURL() {
-    const u = new URL(window.location.href);
-    return `${u.pathname.replace(/\/+$/, "")}/_table${u.search}`;
-  }
-  function requestListRefresh() {
-    const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx2();
-    if (!content || !htmx2) {
-      return;
-    }
-    if (content.dataset.liveUrl === "location") {
-      const request = htmx2.ajax("GET", listTableURL(), { source: content });
-      if (request && typeof request.catch === "function") {
-        request.catch(() => {
-        });
-      }
-    } else {
-      htmx2.trigger(content, "ro:refresh");
-    }
-  }
-  window.requestListRefresh = requestListRefresh;
-  function fireRefresh() {
-    if (document.hidden) {
-      return;
-    }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    if (userListRequestsInFlight.size > 0) {
-      return;
-    }
-    if (containerListRequestsInFlight.size > 0) {
-      return;
-    }
-    requestListRefresh();
-  }
-  function effectivePollSeconds2() {
-    const mode = refreshMode();
-    return effectivePollSeconds(mode, parseRefreshSeconds(mode), liveFallbackSeconds());
-  }
-  function refreshDelaySeconds2() {
-    return refreshDelaySeconds(effectivePollSeconds2(), refreshFailureStage);
-  }
-  function scheduleRefreshTick() {
-    if (refreshTimerId !== null) {
-      window.clearTimeout(refreshTimerId);
-      refreshTimerId = null;
-    }
-    const delay = refreshDelaySeconds2();
-    if (delay <= 0) {
-      refreshNextAt = 0;
-      updateStaleCountdown();
-      return;
-    }
-    const delayMs = delay * 1e3;
-    refreshNextAt = Date.now() + delayMs;
-    refreshTimerId = window.setTimeout(() => {
-      refreshTimerId = null;
-      scheduleRefreshTick();
-      fireRefresh();
-    }, delayMs);
-    updateStaleCountdown();
-  }
-  function applyRefresh() {
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-  }
-  function syncRefreshUI() {
-    const mode = refreshMode();
-    const live = mode === "Live";
-    const secs = parseRefreshSeconds(mode);
-    const label = document.getElementById("refresh-label");
-    if (label) {
-      if (live) {
-        label.textContent = "Live";
-      } else if (secs > 0) {
-        label.textContent = `${secs}s`;
-      } else {
-        label.textContent = "Off";
-      }
-    }
-    document.querySelectorAll('[data-ro-action="set-refresh"]').forEach((opt) => {
-      const value = opt.dataset.roInterval;
-      opt.classList.toggle(
-        "is-active",
-        value !== void 0 && (live ? value === "Live" : value !== "Live" && parseRefreshSeconds(value) === secs)
-      );
-    });
-    const dropdown = document.getElementById("refresh-dropdown");
-    if (dropdown) {
-      dropdown.classList.toggle("refresh-on", live || secs > 0);
-    }
-  }
-  function noteRefreshFailure() {
-    refreshFailureStage = nextFailureStage(refreshFailureStage);
-    scheduleRefreshTick();
-  }
-  function noteRefreshRecovery() {
-    if (refreshFailureStage === 0) {
-      return;
-    }
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-    const toast = window.roToast;
-    if (typeof toast === "function") {
-      toast("Refresh resumed");
-    }
-  }
-  function handleRefreshVisibilityChange() {
-    if (!document.hidden && effectivePollSeconds2() > 0) {
-      fireRefresh();
-    }
-  }
-  document.addEventListener("visibilitychange", handleRefreshVisibilityChange);
-  var refreshBindings = [
-    // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
-    // #resource-list-content through the shared refresh path (the v2 loop derives
-    // the `_table` URL from location.href at click time; the v1 multi-type
-    // container triggers its baked ro:refresh). On success the morph swaps fresh
-    // rows and the afterSwap handler clears the stale dim + re-hides the banner;
-    // on another failure the responseError handler keeps it stale. An in-flight
-    // container request (a HUNG tick is exactly the state this button exists for)
-    // is aborted first -- issuing a second container request would make htmx
-    // QUEUE it, and a queued request replays on the next htmx:abort with its stale
-    // queue-time URL (no queue may ever form). Pure DOM, GET-only -- the
-    // read-only floor is untouched.
-    {
-      event: "click",
-      selector: '[data-ro-action="retry"]',
-      stop: true,
-      handler: (event) => {
-        event.preventDefault();
-        const content = document.getElementById("resource-list-content");
-        const htmx2 = getHtmx2();
-        if (content && htmx2) {
-          htmx2.trigger(content, "htmx:abort");
-        }
-        requestListRefresh();
-        return true;
-      }
-    },
-    // Auto-refresh interval option (navbar #refresh-dropdown): persist the chosen
-    // mode in the ro_prefs cookie, re-arm the poll, and reflect it in the
-    // control. The Live option persists the literal 'Live' and rides
-    // the same path: liveApply opens/tears down the stream, applyRefresh then arms
-    // the poll chain per the EFFECTIVE seconds (0 while a stream is riding). A
-    // disabled Live option (multi-type/multi-cluster page) never fires (the
-    // browser suppresses clicks on disabled buttons). The dropdown opens through
-    // CSS hover/focus, so there is no open/close handler here -- only the
-    // selection. Kept its early-return (stop:true).
-    {
-      event: "click",
-      selector: '[data-ro-action="set-refresh"]',
-      stop: true,
-      handler: (event, matched) => {
-        const option = matched;
-        if (option.dataset.roInterval === "Live") {
-          roPrefsSetRefresh("Live");
-        } else {
-          const interval = parseRefreshSeconds(option.dataset.roInterval);
-          roPrefsSetRefresh(interval > 0 ? String(interval) : "Off");
-        }
-        liveApply(true);
-        syncRefreshUI();
-        applyRefresh();
-        option.blur();
-        event.preventDefault();
-        return true;
-      }
-    }
-  ];
-
-  // internal/assets/src/js/row-selection.ts
-  var rowSelection = /* @__PURE__ */ new Map();
-  var rowFocusKey = null;
-  function reapplyRowState() {
-    const content = document.getElementById("resource-list-content");
-    if (!content) {
-      return;
-    }
-    let focusedRow = null;
-    content.querySelectorAll("tr[data-key]").forEach((tr) => {
-      const row = tr;
-      row.classList.toggle("is-selected", rowSelection.has(row.dataset.key));
-      const focused = row.dataset.key === rowFocusKey;
-      row.classList.toggle("kfocus", focused);
-      if (focused) {
-        focusedRow = row;
-      }
-    });
-    content.querySelectorAll(".ro-table-wrap").forEach((wrap) => {
-      const fr = focusedRow;
-      if (fr?.id && wrap.contains(fr)) {
-        wrap.setAttribute("aria-activedescendant", fr.id);
-      } else {
-        wrap.removeAttribute("aria-activedescendant");
-      }
-    });
-  }
-  function lastKeySegment(key) {
-    const parts = (key || "").split("/");
-    return parts[parts.length - 1] || "";
-  }
-  function rowSelectionEntry(key) {
-    const content = document.getElementById("resource-list-content");
-    let entry = null;
-    if (content) {
-      content.querySelectorAll("tr[data-key]").forEach((tr) => {
-        const row = tr;
-        if (row.dataset.key === key) {
-          entry = { name: row.dataset.name || lastKeySegment(key) };
-        }
-      });
-    }
-    return entry || { name: lastKeySegment(key) };
-  }
-  function setRowSelected(key, on) {
-    if (on) {
-      rowSelection.set(key, rowSelectionEntry(key));
-    } else {
-      rowSelection.delete(key);
-    }
-    reapplyRowState();
-    updateBulkBar();
-  }
-  function clearRowState() {
-    rowSelection.clear();
-    rowFocusKey = null;
-    reapplyRowState();
-    updateBulkBar();
-  }
-  window.roRowState = {
-    setSelected: setRowSelected,
-    setFocus(key) {
-      rowFocusKey = key || null;
-      reapplyRowState();
-    },
-    // focusedKey is the j/k focus seam the windowed walker (virtualizeMoveFocus,
-    // still in legacy.js) reads across the module boundary -- the focused row can
-    // be detached off-window, so the store (not the DOM kfocus class) is the
-    // truth there. Also a debug sim the console can poll.
-    focusedKey() {
-      return rowFocusKey;
-    },
-    clear: clearRowState,
-    selectedKeys() {
-      return Array.from(rowSelection.keys());
-    },
-    // selectedEntries feeds the bulk actions: Copy names reads .name, and the
-    // bulk Download-YAML builds its names list from .key/.name.
-    selectedEntries() {
-      return Array.from(rowSelection, ([key, entry]) => ({ key, name: entry.name }));
-    }
-  };
-  var BULK_NAMES_MAX = 100;
-  var bulkOverCapToasted;
-  function updateBulkBar() {
-    const bar = document.getElementById("ro-bulkbar");
-    if (!bar) {
-      return;
-    }
-    const count = rowSelection.size;
-    const label = document.getElementById("ro-bulk-count");
-    if (label) {
-      label.textContent = `${count} selected`;
-    }
-    bar.classList.toggle("is-open", count > 0);
-    bar.toggleAttribute("inert", count === 0);
-    const download = document.getElementById("ro-bulk-download");
-    if (download && bar.dataset.bulkHref) {
-      const over = count > BULK_NAMES_MAX;
-      download.disabled = over;
-      download.title = over ? `Over the ${BULK_NAMES_MAX}-object bulk download cap` : "";
-      if (over && !bulkOverCapToasted) {
-        roToast(`Download refused: ${count} selected (max ${BULK_NAMES_MAX})`);
-      }
-      bulkOverCapToasted = over;
-    }
-  }
-  function roToast(message) {
-    const fn = window.roToast;
-    if (typeof fn === "function") {
-      fn(message);
-    }
-  }
-  function roCopyText(text, done) {
-    const fallback = () => {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.readOnly = true;
-      ta.style.position = "fixed";
-      ta.style.top = "-1000px";
-      document.body.appendChild(ta);
-      try {
-        ta.select();
-        return document.execCommand("copy");
-      } catch {
-        return false;
-      } finally {
-        ta.remove();
-      }
-    };
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(
-        () => done(true),
-        () => done(fallback())
-      );
-      return;
-    }
-    done(fallback());
-  }
-  function toggleRowSelection(tr) {
-    const key = tr.dataset.key;
-    if (!key) {
-      return;
-    }
-    if (rowSelection.has(key)) {
-      rowSelection.delete(key);
-    } else {
-      rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key) });
-    }
-    reapplyRowState();
-    updateBulkBar();
-  }
-  var rowSelectionBindings = [
-    {
-      event: "click",
-      selector: "#resource-list-content tr[data-key]",
-      handler: (event, matched) => {
-        const target = event.target;
-        if (target?.closest("a, button, input, select, textarea, label")) {
-          return;
-        }
-        toggleRowSelection(matched);
-      }
-    }
-  ];
-
-  // internal/assets/src/js/virtualizer-math.ts
-  var VIRT_BUFFER_ROWS = 12;
-  function windowBounds(tbodyTop, innerHeight, rowH, visibleCount, buffer = VIRT_BUFFER_ROWS) {
-    const pitch = rowH || 1;
-    const n = visibleCount;
-    const first = Math.floor((0 - tbodyTop) / pitch);
-    const last = Math.ceil((innerHeight - tbodyTop) / pitch);
-    const start = Math.min(n, Math.max(0, first - buffer));
-    const end = Math.max(start, Math.min(n, last + buffer));
-    return { start, end };
-  }
-  function spacerHeights(start, end, visibleCount, rowH) {
-    return {
-      top: start * rowH,
-      bottom: Math.max(0, visibleCount - end) * rowH
-    };
-  }
-  function prepareSwapSpacers(priorStart, incomingRowCount, rowH) {
-    const start = Math.min(priorStart, incomingRowCount);
-    return {
-      top: start * rowH,
-      bottom: Math.max(0, incomingRowCount - start) * rowH
-    };
-  }
-  function rowOffsetTop(tbodyTop, index, rowH) {
-    return tbodyTop + index * rowH;
-  }
-  function scrollAdjustToReveal(rowTop, rowH, topMin, innerHeight) {
-    const topOverflow = rowTop - topMin;
-    if (topOverflow < 0) {
-      return topOverflow;
-    }
-    return Math.max(0, rowTop + rowH - innerHeight);
-  }
-  function clampFocusIndex(current, delta, visibleCount) {
-    return Math.max(0, Math.min(visibleCount - 1, current + delta));
-  }
-
-  // internal/assets/src/js/virtualizer.ts
-  var FILTER_HIDE_CLASS = "ro-row-filtered";
-  function roRowModel() {
-    return window.roRowModel;
-  }
-  function roRowState() {
-    return window.roRowState;
-  }
-  var virtState = {
-    active: false,
-    rows: [],
-    byKey: /* @__PURE__ */ new Map(),
-    visible: [],
-    rowH: 0,
-    start: 0,
-    end: 0,
-    table: null,
-    tbody: null,
-    topSpacer: null,
-    bottomSpacer: null,
-    pinnedWidths: [],
-    pendingRows: null,
-    pendingScrollY: null
-  };
-  var historyRecoveryPending = null;
-  function virtualizerActive() {
-    return virtState.active && virtState.tbody?.isConnected === true;
-  }
-  function virtReset() {
-    virtState.active = false;
-    virtState.rows = [];
-    virtState.byKey = /* @__PURE__ */ new Map();
-    virtState.visible = [];
-    virtState.rowH = 0;
-    virtState.start = 0;
-    virtState.end = 0;
-    virtState.table = null;
-    virtState.tbody = null;
-    virtState.topSpacer = null;
-    virtState.bottomSpacer = null;
-    virtState.pinnedWidths = [];
-    virtState.pendingRows = null;
-    virtState.pendingScrollY = null;
-  }
-  function virtMakeSpacer() {
-    const tr = document.createElement("tr");
-    tr.className = "ro-vspacer";
-    tr.setAttribute("aria-hidden", "true");
-    tr.appendChild(document.createElement("td"));
-    return tr;
-  }
-  function virtSetSpacerColspan() {
-    const cols = virtState.table.querySelectorAll("thead th").length || 1;
-    virtState.topSpacer.firstElementChild.colSpan = cols;
-    virtState.bottomSpacer.firstElementChild.colSpan = cols;
-  }
-  function virtMeasureRowHeight() {
-    const rendered = virtState.tbody.querySelectorAll(
-      ":scope > tr[data-key]"
-    );
-    if (rendered.length === 0) {
-      return 0;
-    }
-    const first = rendered[0].getBoundingClientRect();
-    const last = rendered[rendered.length - 1].getBoundingClientRect();
-    const pitch = (last.bottom - first.top) / rendered.length;
-    return Math.max(0, pitch);
-  }
-  function virtFallbackRowHeight() {
-    let py = 9;
-    let lh = 18;
-    try {
-      const cs = window.getComputedStyle(document.documentElement);
-      py = parseFloat(cs.getPropertyValue("--row-py")) || py;
-      const cell = virtState.tbody?.querySelector("td");
-      if (cell) {
-        lh = parseFloat(window.getComputedStyle(cell).lineHeight) || lh;
-      }
-    } catch {
-    }
-    return py * 2 + lh + 1;
-  }
-  function virtApplyPins() {
-    const ths = virtState.table.querySelectorAll("thead th");
-    if (virtState.pinnedWidths.length !== ths.length) {
-      return false;
-    }
-    ths.forEach((th, i) => {
-      th.style.width = `${virtState.pinnedWidths[i]}px`;
-    });
-    virtState.table.classList.add("ro-virtualized");
-    return true;
-  }
-  function virtPinColumns() {
-    const ths = Array.from(virtState.table.querySelectorAll("thead th"));
-    virtState.pinnedWidths = ths.map((th) => th.getBoundingClientRect().width);
-    virtApplyPins();
-  }
-  function virtComputeVisible() {
-    const keys = roRowModel().visibleKeys;
-    virtState.visible = keys ? virtState.rows.filter((tr) => keys.has(tr.dataset.key)) : virtState.rows;
-  }
-  function virtRenderWindow() {
-    const s = virtState;
-    const tbody = s.tbody;
-    const rect = tbody.getBoundingClientRect();
-    const bounds = windowBounds(rect.top, window.innerHeight, s.rowH, s.visible.length);
-    s.start = bounds.start;
-    s.end = bounds.end;
-    const heights = spacerHeights(s.start, s.end, s.visible.length, s.rowH);
-    s.topSpacer.firstElementChild.style.height = `${heights.top}px`;
-    s.bottomSpacer.firstElementChild.style.height = `${heights.bottom}px`;
-    const slice = s.visible.slice(s.start, s.end);
-    slice.forEach((tr) => {
-      tr.classList.remove(FILTER_HIDE_CLASS);
-    });
-    tbody.replaceChildren(s.topSpacer, ...slice, s.bottomSpacer);
-    reapplyRowState();
-  }
-  function virtBindMounts() {
-    const content = document.getElementById("resource-list-content");
-    const wrap = content?.querySelector(".ro-table-wrap.ro-windowed");
-    const table = wrap?.querySelector("table.ro-table") ?? null;
-    const tbody = table?.tBodies.item(0) ?? null;
-    virtState.table = table;
-    virtState.tbody = tbody;
-    return tbody !== null;
-  }
-  function virtualizeInit() {
-    const content = document.getElementById("resource-list-content");
-    const wrap = content?.querySelector(".ro-table-wrap.ro-windowed");
-    if (!content || !wrap) {
-      virtReset();
-      return;
-    }
-    const table = wrap.querySelector("table.ro-table");
-    const tbody = table?.tBodies.item(0) ?? null;
-    if (!tbody) {
-      virtReset();
-      return;
-    }
-    if (tbody.querySelector(":scope > tr.ro-vspacer")) {
-      if (virtState.active && virtState.tbody === tbody) {
-        return;
-      }
-      if (historyRecoveryPending?.content === content && historyRecoveryPending.tbody === tbody) {
-        return;
-      }
-      virtReset();
-      historyRecoveryPending = { content, tbody };
-      clearListValidator();
-      requestListRefresh();
-      return;
-    }
-    const rows = Array.from(tbody.querySelectorAll(":scope > tr[data-key]"));
-    if (rows.length === 0) {
-      virtReset();
-      return;
-    }
-    historyRecoveryPending = null;
-    virtReset();
-    virtState.table = table;
-    virtState.tbody = tbody;
-    virtState.rows = rows;
-    virtState.byKey = new Map(rows.map((tr) => [tr.dataset.key, tr]));
-    virtState.topSpacer = virtMakeSpacer();
-    virtState.bottomSpacer = virtMakeSpacer();
-    virtSetSpacerColspan();
-    virtState.rowH = virtMeasureRowHeight() || virtFallbackRowHeight();
-    virtPinColumns();
-    virtState.active = true;
-    virtComputeVisible();
-    virtRenderWindow();
-  }
-  function virtualizePrepareSwap(fragment) {
-    virtState.pendingRows = null;
-    virtState.pendingScrollY = null;
-    const wrap = fragment.querySelector(".ro-table-wrap.ro-windowed");
-    const tbody = wrap ? wrap.querySelector("table.ro-table tbody") : null;
-    if (!tbody) {
-      return;
-    }
-    const rows = Array.from(tbody.querySelectorAll(":scope > tr[data-key]"));
-    if (rows.length === 0) {
-      return;
-    }
-    virtState.pendingRows = rows;
-    virtState.pendingScrollY = window.scrollY;
-    const rowH = virtState.rowH || virtFallbackRowHeight();
-    const priorStart = virtState.active ? virtState.start : 0;
-    const heights = prepareSwapSpacers(priorStart, rows.length, rowH);
-    const topSpacer = virtMakeSpacer();
-    const bottomSpacer = virtMakeSpacer();
-    topSpacer.firstElementChild.style.height = `${heights.top}px`;
-    bottomSpacer.firstElementChild.style.height = `${heights.bottom}px`;
-    tbody.replaceChildren(topSpacer, bottomSpacer);
-  }
-  function virtualizeAfterSwap() {
-    historyRecoveryPending = null;
-    const pending = virtState.pendingRows;
-    virtState.pendingRows = null;
-    if (!pending) {
-      virtReset();
-      return;
-    }
-    const prior = virtState.byKey;
-    const wasActive = virtState.active;
-    if (!virtBindMounts()) {
-      virtReset();
-      return;
-    }
-    virtState.rows = pending;
-    virtState.byKey = new Map(pending.map((tr) => [tr.dataset.key, tr]));
-    if (!virtState.topSpacer) {
-      virtState.topSpacer = virtMakeSpacer();
-      virtState.bottomSpacer = virtMakeSpacer();
-    }
-    virtSetSpacerColspan();
-    virtState.active = true;
-    if (!virtState.rowH) {
-      virtState.rowH = virtFallbackRowHeight();
-    }
-    virtComputeVisible();
-    virtRenderWindow();
-    if (!wasActive) {
-      const measured = virtMeasureRowHeight();
-      if (measured && Math.abs(measured - virtState.rowH) > 0.5) {
-        virtState.rowH = measured;
-        virtRenderWindow();
-      }
-    }
-    if (!virtApplyPins()) {
-      virtPinColumns();
-    }
-    if (virtState.pendingScrollY !== null && window.scrollY !== virtState.pendingScrollY) {
-      window.scrollTo(0, virtState.pendingScrollY);
-      virtRenderWindow();
-    }
-    virtState.pendingScrollY = null;
-    virtFlashChangedCells(prior);
-  }
-  function virtFlashChangedCells(prior) {
-    if (prior.size === 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      return;
-    }
-    virtState.tbody.querySelectorAll(":scope > tr[data-key]").forEach((tr) => {
-      const old = prior.get(tr.dataset.key);
-      if (!old) {
-        return;
-      }
-      Array.from(tr.children).forEach((newCell, index) => {
-        const oldCell = old.children.item(index);
-        if (oldCell && newCell.tagName === "TD" && oldCell.textContent !== newCell.textContent) {
-          newCell.classList.remove("ro-cell-changed");
-          void newCell.offsetWidth;
-          newCell.classList.add("ro-cell-changed");
-        }
-      });
-    });
-  }
-  function virtualizeOnFilterChange() {
-    if (!virtualizerActive() || virtState.pendingRows) {
-      return;
-    }
-    virtComputeVisible();
-    virtRenderWindow();
-  }
-  function virtMoveFocus(delta) {
-    const list = virtState.visible;
-    if (list.length === 0) {
-      return false;
-    }
-    const focusKey = roRowState().focusedKey();
-    const current = list.findIndex((row) => row.dataset.key === focusKey);
-    const next = clampFocusIndex(current, delta, list.length);
-    virtualizeScrollToIndex(next);
-    roRowState().setFocus(list[next].dataset.key);
-    return true;
-  }
-  function virtualizeScrollToIndex(index) {
-    const rect = virtState.tbody.getBoundingClientRect();
-    const rowTop = rowOffsetTop(rect.top, index, virtState.rowH);
-    const topbar = document.querySelector("header.ro-topbar");
-    const topMin = topbar ? topbar.getBoundingClientRect().bottom : 0;
-    const delta = scrollAdjustToReveal(rowTop, virtState.rowH, topMin, window.innerHeight);
-    if (delta !== 0) {
-      window.scrollBy(0, delta);
-    }
-    virtRenderWindow();
-  }
-  function virtRows() {
-    return virtState.rows;
-  }
-  function virtVisible() {
-    return virtState.visible;
-  }
-  function virtRowByKey(key) {
-    return virtState.byKey.get(key) || null;
-  }
-  var virtScrollScheduled = false;
-  function virtOnScroll() {
-    if (!virtualizerActive()) {
-      return;
-    }
-    const rect = virtState.tbody.getBoundingClientRect();
-    const bounds = windowBounds(
-      rect.top,
-      window.innerHeight,
-      virtState.rowH,
-      virtState.visible.length
-    );
-    if (bounds.start !== virtState.start || bounds.end !== virtState.end) {
-      virtRenderWindow();
-    }
-  }
-  window.addEventListener(
-    "scroll",
-    () => {
-      if (!virtState.active || virtScrollScheduled) {
-        return;
-      }
-      virtScrollScheduled = true;
-      window.requestAnimationFrame(() => {
-        virtScrollScheduled = false;
-        virtOnScroll();
-      });
-    },
-    { passive: true }
-  );
-  window.addEventListener("resize", virtOnScroll);
-  var fontReady = document.fonts?.ready;
-  if (fontReady && typeof fontReady.then === "function") {
-    void fontReady.then(() => {
-      if (!virtualizerActive()) {
-        return;
-      }
-      const measured = virtMeasureRowHeight();
-      if (measured && Math.abs(measured - virtState.rowH) > 0.5) {
-        virtState.rowH = measured;
-        virtRenderWindow();
-      }
-    });
-  }
-  window.roVirtual = {
-    active: virtualizerActive,
-    renderedBounds() {
-      return { start: virtState.start, end: virtState.end, total: virtState.visible.length };
-    },
-    scrollToKey(key) {
-      if (!virtualizerActive()) {
-        return false;
-      }
-      const tr = virtState.byKey.get(key);
-      const index = tr ? virtState.visible.indexOf(tr) : -1;
-      if (index === -1) {
-        return false;
-      }
-      virtualizeScrollToIndex(index);
-      return true;
-    }
-  };
-
-  // internal/assets/src/js/filters.ts
-  function getHtmx3() {
-    return window.htmx;
-  }
-  var roRowModel2 = {
-    fields: [],
-    rows: [],
-    visibleKeys: null
-  };
-  window.roRowModel = roRowModel2;
-  function captureRowModel(root) {
-    const table = root.querySelector("table.ro-table");
-    if (!table) {
-      roRowModel2.fields = [];
-      roRowModel2.rows = [];
-      return;
-    }
-    const fields = [];
-    table.querySelectorAll("thead th").forEach((th) => {
-      const label = normalizeFieldWhitespace(th.textContent || "");
-      fields.push({
-        label,
-        name: fieldSuggestionText(label),
-        hint: th.dataset.hint || ""
-      });
-    });
-    const rows = [];
-    table.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
-      const cells = [];
-      tr.querySelectorAll("td").forEach((td) => {
-        cells.push(trimFilterWhitespace(td.textContent || ""));
-      });
-      const nameLink = tr.querySelector("td.cell-name a");
-      rows.push({
-        key: tr.dataset.key,
-        name: nameLink ? trimFilterWhitespace(nameLink.textContent || "") : cells[0] || "",
-        cells
-      });
-    });
-    roRowModel2.fields = fields;
-    roRowModel2.rows = rows;
-  }
+  var roRowModel = listProjectionRowModel();
   function captureRowModelFromDocument() {
     const content = document.getElementById("resource-list-content");
-    if (content && document.getElementById("ro-filter-input") && !virtualizerActive()) {
-      captureRowModel(content);
+    if (content && !virtualizerActive()) {
+      ensureListProjection(content);
     }
   }
-  var FILTER_HIDE_CLASS2 = "ro-row-filtered";
+  var FILTER_HIDE_CLASS = "ro-row-filtered";
+  var appliedLiveFilter = null;
+  function takeLiveNameFilterCheckpoint() {
+    return { applied: appliedLiveFilter };
+  }
+  function restoreLiveNameFilterCheckpoint(checkpoint) {
+    appliedLiveFilter = checkpoint.applied;
+  }
   function applyLiveNameFilter() {
     const content = document.getElementById("resource-list-content");
     if (!content) {
@@ -1730,20 +1328,25 @@
     }
     const input = document.getElementById("ro-filter-input");
     const draft = input ? input.value : "";
-    const visible = liveNameMatchKeys(roRowModel2.rows, draft);
-    roRowModel2.visibleKeys = visible;
-    content.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
-      tr.classList.toggle(
-        FILTER_HIDE_CLASS2,
-        !!visible && !visible.has(tr.dataset.key)
+    const revision = listProjectionRevision();
+    if (appliedLiveFilter?.content === content && appliedLiveFilter.draft === draft && appliedLiveFilter.revision === revision) {
+      return;
+    }
+    const visible = liveNameMatchKeys(roRowModel.rows, draft);
+    setListProjectionVisibleKeys(visible);
+    content.querySelectorAll("tbody tr[data-key], .ro-cardlist > .ro-pcard[data-key]").forEach((item) => {
+      item.classList.toggle(
+        FILTER_HIDE_CLASS,
+        !!visible && !visible.has(item.dataset.key)
       );
     });
     virtualizeOnFilterChange();
+    appliedLiveFilter = { content, draft, revision };
   }
   function issueFilterNavigation(href) {
     const content = document.getElementById("resource-list-content");
     const input = document.getElementById("ro-filter-input");
-    const htmx2 = getHtmx3();
+    const htmx2 = getHtmx();
     if (!content || !input || !htmx2) {
       window.location.assign(href);
       return;
@@ -1764,7 +1367,7 @@
     if (!parsed) {
       return;
     }
-    if (!filterFieldKnown(roRowModel2.fields, parsed.field)) {
+    if (!filterFieldKnown(roRowModel.fields, parsed.field)) {
       showFilterFieldHint();
       return;
     }
@@ -1797,7 +1400,7 @@
     if (!el) {
       return;
     }
-    const names = filterSuggestionFields(roRowModel2.fields).slice(0, 3).map((f) => f.text);
+    const names = filterSuggestionFields(roRowModel.fields).slice(0, 3).map((f) => f.text);
     el.textContent = `no such field — try ${names.join(", ")}…`;
     el.hidden = false;
   }
@@ -1879,14 +1482,14 @@
     }
     const parsed = splitFilterDraft(draft);
     if (!parsed) {
-      openFilterAC(rankFieldSuggestions(roRowModel2.fields, draft));
+      openFilterAC(rankFieldSuggestions(roRowModel.fields, draft));
       return;
     }
-    if (parsed.op !== ":" || !filterFieldKnown(roRowModel2.fields, parsed.field)) {
+    if (parsed.op !== ":" || !filterFieldKnown(roRowModel.fields, parsed.field)) {
       closeFilterAC();
       return;
     }
-    openFilterAC(rankValueSuggestions(roRowModel2.fields, roRowModel2.rows, parsed));
+    openFilterAC(rankValueSuggestions(roRowModel.fields, roRowModel.rows, parsed));
   }
   function acceptFilterAC(commitValues) {
     const input = document.getElementById("ro-filter-input");
@@ -2026,6 +1629,2631 @@
     }
   ];
 
+  // internal/assets/src/js/row-selection.ts
+  var rowSelection = /* @__PURE__ */ new Map();
+  var rowFocusKey = null;
+  function reapplyRowState() {
+    const content = document.getElementById("resource-list-content");
+    if (!content) {
+      return;
+    }
+    let focusedRow = null;
+    content.querySelectorAll("tr[data-key]").forEach((tr) => {
+      const row = tr;
+      row.classList.toggle("is-selected", rowSelection.has(row.dataset.key));
+      const focused = row.dataset.key === rowFocusKey;
+      row.classList.toggle("kfocus", focused);
+      if (focused) {
+        focusedRow = row;
+      }
+    });
+    content.querySelectorAll(".ro-table-wrap").forEach((wrap) => {
+      const fr = focusedRow;
+      if (fr?.id && wrap.contains(fr)) {
+        wrap.setAttribute("aria-activedescendant", fr.id);
+      } else {
+        wrap.removeAttribute("aria-activedescendant");
+      }
+    });
+  }
+  function lastKeySegment(key) {
+    const parts = (key || "").split("/");
+    return parts[parts.length - 1] || "";
+  }
+  function rowSelectionEntry(key) {
+    const content = document.getElementById("resource-list-content");
+    let entry = null;
+    if (content) {
+      content.querySelectorAll("tr[data-key]").forEach((tr) => {
+        const row = tr;
+        if (row.dataset.key === key) {
+          entry = { name: row.dataset.name || lastKeySegment(key) };
+        }
+      });
+    }
+    return entry || { name: lastKeySegment(key) };
+  }
+  function setRowSelected(key, on) {
+    if (on) {
+      rowSelection.set(key, rowSelectionEntry(key));
+    } else {
+      rowSelection.delete(key);
+    }
+    reapplyRowState();
+    updateBulkBar();
+  }
+  function clearRowState() {
+    rowSelection.clear();
+    rowFocusKey = null;
+    reapplyRowState();
+    updateBulkBar();
+  }
+  window.roRowState = {
+    setSelected: setRowSelected,
+    setFocus(key) {
+      rowFocusKey = key || null;
+      reapplyRowState();
+    },
+    // focusedKey is the j/k focus seam the windowed walker (virtualizeMoveFocus,
+    // still in legacy.js) reads across the module boundary -- the focused row can
+    // be detached off-window, so the store (not the DOM kfocus class) is the
+    // truth there. Also a debug sim the console can poll.
+    focusedKey() {
+      return rowFocusKey;
+    },
+    clear: clearRowState,
+    selectedKeys() {
+      return Array.from(rowSelection.keys());
+    },
+    // selectedEntries feeds the bulk actions: Copy names reads .name, and the
+    // bulk Download-YAML builds its names list from .key/.name.
+    selectedEntries() {
+      return Array.from(rowSelection, ([key, entry]) => ({ key, name: entry.name }));
+    }
+  };
+  var BULK_NAMES_MAX = 100;
+  var bulkOverCapToasted;
+  function takeRowStateCheckpoint() {
+    return {
+      selected: Array.from(rowSelection.entries()),
+      focus: rowFocusKey,
+      bulkOverCapToasted
+    };
+  }
+  function applyLiveRowDeletions(keys) {
+    let changed = false;
+    for (const key of keys) changed = rowSelection.delete(key) || changed;
+    if (rowFocusKey !== null && keys.has(rowFocusKey)) {
+      rowFocusKey = null;
+      changed = true;
+    }
+    if (changed) updateBulkBar();
+  }
+  function restoreRowStateCheckpoint(checkpoint) {
+    rowSelection.clear();
+    for (const [key, entry] of checkpoint.selected) rowSelection.set(key, entry);
+    rowFocusKey = checkpoint.focus;
+    bulkOverCapToasted = checkpoint.bulkOverCapToasted;
+  }
+  function updateBulkBar() {
+    const bar = document.getElementById("ro-bulkbar");
+    if (!bar) {
+      return;
+    }
+    const count = rowSelection.size;
+    const label = document.getElementById("ro-bulk-count");
+    if (label) {
+      label.textContent = `${count} selected`;
+    }
+    bar.classList.toggle("is-open", count > 0);
+    bar.toggleAttribute("inert", count === 0);
+    const download = document.getElementById("ro-bulk-download");
+    if (download && bar.dataset.bulkHref) {
+      const over = count > BULK_NAMES_MAX;
+      download.disabled = over;
+      download.title = over ? `Over the ${BULK_NAMES_MAX}-object bulk download cap` : "";
+      if (over && !bulkOverCapToasted) {
+        roToast(`Download refused: ${count} selected (max ${BULK_NAMES_MAX})`);
+      }
+      bulkOverCapToasted = over;
+    }
+  }
+  function roToast(message) {
+    const fn = window.roToast;
+    if (typeof fn === "function") {
+      fn(message);
+    }
+  }
+  function roCopyText(text, done) {
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.readOnly = true;
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      try {
+        ta.select();
+        return document.execCommand("copy");
+      } catch {
+        return false;
+      } finally {
+        ta.remove();
+      }
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => done(true),
+        () => done(fallback())
+      );
+      return;
+    }
+    done(fallback());
+  }
+  function toggleRowSelection(tr) {
+    const key = tr.dataset.key;
+    if (!key) {
+      return;
+    }
+    if (rowSelection.has(key)) {
+      rowSelection.delete(key);
+    } else {
+      rowSelection.set(key, { name: tr.dataset.name || lastKeySegment(key) });
+    }
+    reapplyRowState();
+    updateBulkBar();
+  }
+  var rowSelectionBindings = [
+    {
+      event: "click",
+      selector: "#resource-list-content tr[data-key]",
+      handler: (event, matched) => {
+        const target = event.target;
+        if (target?.closest("a, button, input, select, textarea, label")) {
+          return;
+        }
+        toggleRowSelection(matched);
+      }
+    }
+  ];
+
+  // internal/assets/src/js/live-protocol.ts
+  var LIVE_V2_LIMITS = Object.freeze({
+    frameBytes: 16 * 1024 * 1024,
+    deltaBytes: 256 * 1024,
+    fragmentBytes: 128 * 1024,
+    generationLength: 64,
+    snapshotBytes: 16 * 1024 * 1024,
+    keyLength: 2 * 1024,
+    operations: 2e4,
+    revisionLength: 128,
+    resourceVersionLength: 256,
+    schemaLength: 128,
+    screenLength: 8 * 1024
+  });
+  var BASE_FIELDS = /* @__PURE__ */ new Set(["v", "kind", "g", "seq", "screen", "rev", "rv", "schema"]);
+  var GENERATION = /^[A-Za-z0-9._~-]+$/u;
+  var textEncoder = new TextEncoder();
+  var decodedEnvelopeTokens = /* @__PURE__ */ new WeakSet();
+  function wireError(code, message, fatal = false) {
+    return { code, message, fatal };
+  }
+  function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+  function freezeWireValue(value) {
+    if ((typeof value !== "object" || value === null) && !Array.isArray(value)) return;
+    for (const child of Object.values(value)) freezeWireValue(child);
+    Object.freeze(value);
+  }
+  function sealDecodedEnvelope(value) {
+    freezeWireValue(value);
+    decodedEnvelopeTokens.add(value);
+    return value;
+  }
+  function own(record, key) {
+    return Object.hasOwn(record, key);
+  }
+  function hasControlCharacters(value) {
+    for (const character of value) {
+      const code = character.codePointAt(0);
+      if (code <= 31 || code >= 127 && code <= 159) return true;
+    }
+    return false;
+  }
+  function hasDuplicateJSONMembers(source) {
+    let offset = 0;
+    const whitespace = /\s/u;
+    const skipWhitespace = () => {
+      while (whitespace.test(source[offset] || "")) offset += 1;
+    };
+    const parseString = () => {
+      const start = offset;
+      if (source[offset] !== '"') throw new Error("expected string");
+      offset += 1;
+      while (offset < source.length) {
+        const character = source[offset];
+        if (character === "\\") {
+          offset += 2;
+          continue;
+        }
+        offset += 1;
+        if (character === '"') {
+          return JSON.parse(source.slice(start, offset));
+        }
+      }
+      throw new Error("unterminated string");
+    };
+    const parseValue = () => {
+      skipWhitespace();
+      if (source[offset] === "{") return parseObject();
+      if (source[offset] === "[") return parseArray();
+      if (source[offset] === '"') {
+        parseString();
+        return false;
+      }
+      const start = offset;
+      while (offset < source.length && !/[\s,\]}]/u.test(source[offset])) {
+        offset += 1;
+      }
+      if (offset === start) throw new Error("expected value");
+      return false;
+    };
+    const parseArray = () => {
+      offset += 1;
+      skipWhitespace();
+      if (source[offset] === "]") {
+        offset += 1;
+        return false;
+      }
+      while (offset < source.length) {
+        if (parseValue()) return true;
+        skipWhitespace();
+        if (source[offset] === "]") {
+          offset += 1;
+          return false;
+        }
+        if (source[offset] !== ",") throw new Error("expected array separator");
+        offset += 1;
+      }
+      throw new Error("unterminated array");
+    };
+    const parseObject = () => {
+      offset += 1;
+      skipWhitespace();
+      if (source[offset] === "}") {
+        offset += 1;
+        return false;
+      }
+      const keys = /* @__PURE__ */ new Set();
+      while (offset < source.length) {
+        skipWhitespace();
+        const key = parseString();
+        if (keys.has(key)) return true;
+        keys.add(key);
+        skipWhitespace();
+        if (source[offset] !== ":") throw new Error("expected object separator");
+        offset += 1;
+        if (parseValue()) return true;
+        skipWhitespace();
+        if (source[offset] === "}") {
+          offset += 1;
+          return false;
+        }
+        if (source[offset] !== ",") throw new Error("expected object member separator");
+        offset += 1;
+      }
+      throw new Error("unterminated object");
+    };
+    try {
+      skipWhitespace();
+      return parseValue();
+    } catch {
+      return false;
+    }
+  }
+  function rejectUnknownFields(record, allowed, path) {
+    const unknown = Object.keys(record).find((key) => !allowed.has(key));
+    return unknown ? wireError("unexpected-field", `${path}.${unknown} is not allowed`) : null;
+  }
+  function boundedString(value, path, max, options = {}) {
+    if (typeof value !== "string" || !options.allowEmpty && value.length === 0) {
+      return wireError("invalid-field", `${path} must be a non-empty string`);
+    }
+    if (value.length > max || textEncoder.encode(value).byteLength > max) {
+      return wireError("limit-exceeded", `${path} exceeds ${max} bytes`);
+    }
+    if (hasControlCharacters(value) || options.pattern && !options.pattern.test(value)) {
+      return wireError("invalid-field", `${path} contains forbidden characters`);
+    }
+    return value;
+  }
+  function htmlString(value, path, maxBytes) {
+    if (typeof value !== "string" || value.length === 0) {
+      return wireError("invalid-field", `${path} must be non-empty HTML`);
+    }
+    if (value.length > maxBytes || textEncoder.encode(value).byteLength > maxBytes) {
+      return wireError("limit-exceeded", `${path} exceeds the HTML limit`);
+    }
+    return value;
+  }
+  function decodeBase(record) {
+    if (record.v !== 2) {
+      return wireError("unsupported-version", "v must be exactly 2");
+    }
+    if (!Number.isSafeInteger(record.seq) || record.seq < 1) {
+      return wireError("invalid-field", "seq must be a positive safe integer");
+    }
+    const g = boundedString(record.g, "g", LIVE_V2_LIMITS.generationLength, {
+      pattern: GENERATION
+    });
+    if (typeof g !== "string") return g;
+    const screen = boundedString(record.screen, "screen", LIVE_V2_LIMITS.screenLength);
+    if (typeof screen !== "string") return screen;
+    if (own(record, "rev")) {
+      const rev = boundedString(record.rev, "rev", LIVE_V2_LIMITS.revisionLength);
+      if (typeof rev !== "string") return rev;
+    }
+    if (own(record, "rv")) {
+      const rv = boundedString(record.rv, "rv", LIVE_V2_LIMITS.resourceVersionLength);
+      if (typeof rv !== "string") return rv;
+    }
+    if (own(record, "schema")) {
+      const schema = boundedString(record.schema, "schema", LIVE_V2_LIMITS.schemaLength);
+      if (typeof schema !== "string") return schema;
+    }
+    return null;
+  }
+  function decodeSnapshot(record) {
+    const allowed = /* @__PURE__ */ new Set([...BASE_FIELDS, "snapshot"]);
+    const unknown = rejectUnknownFields(record, allowed, "$");
+    if (unknown) return { ok: false, error: unknown };
+    if (!own(record, "rev") || !own(record, "schema")) {
+      return {
+        ok: false,
+        error: wireError("invalid-field", "snapshot rev and schema are required")
+      };
+    }
+    if (!isRecord(record.snapshot)) {
+      return { ok: false, error: wireError("invalid-field", "snapshot must be an object") };
+    }
+    const nestedUnknown = rejectUnknownFields(record.snapshot, /* @__PURE__ */ new Set(["html"]), "snapshot");
+    if (nestedUnknown) return { ok: false, error: nestedUnknown };
+    const html = htmlString(record.snapshot.html, "snapshot.html", LIVE_V2_LIMITS.snapshotBytes);
+    if (typeof html !== "string") return { ok: false, error: html };
+    return {
+      ok: true,
+      value: sealDecodedEnvelope(record)
+    };
+  }
+  function decodeRemove(value) {
+    if (!Array.isArray(value) || value.length > LIVE_V2_LIMITS.operations) {
+      return wireError(
+        Array.isArray(value) ? "limit-exceeded" : "invalid-field",
+        "delta.remove must be a bounded array"
+      );
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const item = value[index];
+      if (!isRecord(item)) return wireError("invalid-field", `delta.remove[${index}]`);
+      const unknown = rejectUnknownFields(
+        item,
+        /* @__PURE__ */ new Set(["key", "cause"]),
+        `delta.remove[${index}]`
+      );
+      if (unknown) return unknown;
+      const key = boundedString(item.key, `delta.remove[${index}].key`, LIVE_V2_LIMITS.keyLength);
+      if (typeof key !== "string") return key;
+      if (item.cause !== "delete" && item.cause !== "project") {
+        return wireError("invalid-field", `delta.remove[${index}].cause is unknown`);
+      }
+      if (seen.has(key)) return wireError("duplicate", `duplicate remove key ${key}`);
+      seen.add(key);
+      result.push({ key, cause: item.cause });
+    }
+    return result;
+  }
+  function decodeUpsert(value) {
+    if (!Array.isArray(value) || value.length > LIVE_V2_LIMITS.operations) {
+      return wireError(
+        Array.isArray(value) ? "limit-exceeded" : "invalid-field",
+        "delta.upsert must be a bounded array"
+      );
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const item = value[index];
+      if (!isRecord(item)) return wireError("invalid-field", `delta.upsert[${index}]`);
+      const unknown = rejectUnknownFields(
+        item,
+        /* @__PURE__ */ new Set(["key", "row", "card"]),
+        `delta.upsert[${index}]`
+      );
+      if (unknown) return unknown;
+      const key = boundedString(item.key, `delta.upsert[${index}].key`, LIVE_V2_LIMITS.keyLength);
+      if (typeof key !== "string") return key;
+      const row = htmlString(
+        item.row,
+        `delta.upsert[${index}].row`,
+        LIVE_V2_LIMITS.fragmentBytes
+      );
+      if (typeof row !== "string") return row;
+      let card;
+      if (own(item, "card")) {
+        const decoded = htmlString(
+          item.card,
+          `delta.upsert[${index}].card`,
+          LIVE_V2_LIMITS.fragmentBytes
+        );
+        if (typeof decoded !== "string") return decoded;
+        card = decoded;
+      }
+      if (seen.has(key)) return wireError("duplicate", `duplicate upsert key ${key}`);
+      seen.add(key);
+      result.push(card === void 0 ? { key, row } : { key, row, card });
+    }
+    return result;
+  }
+  function decodeOrder(value) {
+    if (!Array.isArray(value) || value.length > LIVE_V2_LIMITS.operations) {
+      return wireError(
+        Array.isArray(value) ? "limit-exceeded" : "invalid-field",
+        "delta.order must be a bounded array"
+      );
+    }
+    const result = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (let index = 0; index < value.length; index += 1) {
+      const key = boundedString(value[index], `delta.order[${index}]`, LIVE_V2_LIMITS.keyLength);
+      if (typeof key !== "string") return key;
+      if (seen.has(key)) return wireError("duplicate", `duplicate order key ${key}`);
+      seen.add(key);
+      result.push(key);
+    }
+    return result;
+  }
+  function decodeRegions(value) {
+    if (!Array.isArray(value) || value.length > 3) {
+      return wireError(
+        Array.isArray(value) ? "limit-exceeded" : "invalid-field",
+        "delta.regions must be a bounded array"
+      );
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const item = value[index];
+      if (!isRecord(item)) return wireError("invalid-field", `delta.regions[${index}]`);
+      const unknown = rejectUnknownFields(
+        item,
+        /* @__PURE__ */ new Set(["region", "html"]),
+        `delta.regions[${index}]`
+      );
+      if (unknown) return unknown;
+      if (item.region !== "count" && item.region !== "phase" && item.region !== "found") {
+        return wireError("invalid-field", `delta.regions[${index}].region is unknown`);
+      }
+      const html = htmlString(
+        item.html,
+        `delta.regions[${index}].html`,
+        LIVE_V2_LIMITS.fragmentBytes
+      );
+      if (typeof html !== "string") return html;
+      if (seen.has(item.region)) {
+        return wireError("duplicate", `duplicate region ${item.region}`);
+      }
+      seen.add(item.region);
+      result.push({ region: item.region, html });
+    }
+    return result;
+  }
+  function decodeDelta(record) {
+    const allowed = /* @__PURE__ */ new Set([...BASE_FIELDS, "delta"]);
+    const unknown = rejectUnknownFields(record, allowed, "$");
+    if (unknown) return { ok: false, error: unknown };
+    if (!own(record, "rev") || !own(record, "schema") || !isRecord(record.delta)) {
+      return {
+        ok: false,
+        error: wireError("invalid-field", "delta, envelope rev, and schema are required")
+      };
+    }
+    const delta = record.delta;
+    const nestedUnknown = rejectUnknownFields(
+      delta,
+      /* @__PURE__ */ new Set(["base", "rev", "remove", "upsert", "order", "regions"]),
+      "delta"
+    );
+    if (nestedUnknown) return { ok: false, error: nestedUnknown };
+    const base = boundedString(delta.base, "delta.base", LIVE_V2_LIMITS.revisionLength);
+    if (typeof base !== "string") return { ok: false, error: base };
+    const rev = boundedString(delta.rev, "delta.rev", LIVE_V2_LIMITS.revisionLength);
+    if (typeof rev !== "string") return { ok: false, error: rev };
+    if (record.rev !== rev) {
+      return {
+        ok: false,
+        error: wireError("invalid-field", "envelope.rev must equal delta.rev")
+      };
+    }
+    if (base === rev) {
+      return { ok: false, error: wireError("no-op", "delta base and revision must differ") };
+    }
+    let operationCount = 0;
+    const result = { base, rev };
+    if (own(delta, "remove")) {
+      const remove = decodeRemove(delta.remove);
+      if (!Array.isArray(remove)) return { ok: false, error: remove };
+      result.remove = remove;
+      operationCount += remove.length;
+    }
+    if (own(delta, "upsert")) {
+      const upsert = decodeUpsert(delta.upsert);
+      if (!Array.isArray(upsert)) return { ok: false, error: upsert };
+      result.upsert = upsert;
+      operationCount += upsert.length;
+    }
+    if (operationCount > LIVE_V2_LIMITS.operations) {
+      return { ok: false, error: wireError("limit-exceeded", "too many delta operations") };
+    }
+    const removeKeys = new Set(result.remove?.map((item) => item.key));
+    const overlap = result.upsert?.find((item) => removeKeys.has(item.key));
+    if (overlap) {
+      return {
+        ok: false,
+        error: wireError("duplicate", `key ${overlap.key} is removed and upserted`)
+      };
+    }
+    if (own(delta, "order")) {
+      const order = decodeOrder(delta.order);
+      if (!Array.isArray(order)) return { ok: false, error: order };
+      result.order = order;
+    }
+    if (own(delta, "regions")) {
+      const regions = decodeRegions(delta.regions);
+      if (!Array.isArray(regions)) return { ok: false, error: regions };
+      result.regions = regions;
+    }
+    let aggregateHTMLBytes = 0;
+    for (const html of [
+      ...(result.upsert || []).flatMap(
+        (operation) => operation.card === void 0 ? [operation.row] : [operation.row, operation.card]
+      ),
+      ...(result.regions || []).map((operation) => operation.html)
+    ]) {
+      aggregateHTMLBytes += textEncoder.encode(html).byteLength;
+      if (aggregateHTMLBytes > LIVE_V2_LIMITS.deltaBytes) {
+        return {
+          ok: false,
+          error: wireError("limit-exceeded", "delta HTML exceeds its aggregate limit")
+        };
+      }
+    }
+    if ((result.remove?.length || 0) === 0 && (result.upsert?.length || 0) === 0 && (result.order?.length || 0) === 0 && (result.regions?.length || 0) === 0) {
+      return { ok: false, error: wireError("no-op", "delta has no semantic operations") };
+    }
+    return {
+      ok: true,
+      value: sealDecodedEnvelope({
+        ...record,
+        delta: result
+      })
+    };
+  }
+  function decodeTerminal(record) {
+    const allowed = /* @__PURE__ */ new Set([...BASE_FIELDS, "reason"]);
+    const unknown = rejectUnknownFields(record, allowed, "$");
+    if (unknown) return { ok: false, error: unknown };
+    if (record.reason !== "idle" && record.reason !== "auth" && record.reason !== "watch-failed" && record.reason !== "shutdown") {
+      return { ok: false, error: wireError("invalid-field", "terminal reason is unknown") };
+    }
+    return {
+      ok: true,
+      value: sealDecodedEnvelope(record)
+    };
+  }
+  function decodeLiveV2Envelope(frame) {
+    try {
+      if (typeof frame !== "string" || frame.length > LIVE_V2_LIMITS.frameBytes) {
+        return { ok: false, error: wireError("limit-exceeded", "Live v2 frame is too large") };
+      }
+      if (hasDuplicateJSONMembers(frame)) {
+        return {
+          ok: false,
+          error: wireError("duplicate", "JSON object member names must be unique")
+        };
+      }
+      const parsed = JSON.parse(frame);
+      if (!isRecord(parsed)) {
+        return { ok: false, error: wireError("invalid-frame", "frame root must be an object") };
+      }
+      const maxFrameBytes = parsed.kind === "delta" ? LIVE_V2_LIMITS.deltaBytes : LIVE_V2_LIMITS.frameBytes;
+      if (frame.length > maxFrameBytes) {
+        return { ok: false, error: wireError("limit-exceeded", "Live v2 frame is too large") };
+      }
+      const frameByteLength = textEncoder.encode(frame).byteLength;
+      if (frameByteLength > maxFrameBytes) {
+        return { ok: false, error: wireError("limit-exceeded", "Live v2 frame is too large") };
+      }
+      const baseError = decodeBase(parsed);
+      if (baseError) return { ok: false, error: baseError };
+      if (parsed.kind === "snapshot") return decodeSnapshot(parsed);
+      if (parsed.kind === "delta") return decodeDelta(parsed);
+      if (parsed.kind === "terminal") return decodeTerminal(parsed);
+      return { ok: false, error: wireError("unknown-kind", "kind is unknown") };
+    } catch {
+      return { ok: false, error: wireError("invalid-frame", "frame is not valid JSON") };
+    }
+  }
+  function validateCursor(envelope, cursor) {
+    if (envelope.g !== cursor.g) {
+      return wireError("generation-mismatch", "delta generation does not match the cursor");
+    }
+    if (envelope.screen !== cursor.screen) {
+      return wireError("screen-mismatch", "delta screen does not match the cursor");
+    }
+    if (envelope.seq !== cursor.seq + 1) {
+      return wireError("sequence-gap", "delta sequence is not the cursor successor");
+    }
+    if (envelope.delta.base !== cursor.rev) {
+      return wireError("base-mismatch", "delta base does not match the cursor revision");
+    }
+    if (envelope.schema !== cursor.schema) {
+      return wireError("schema-mismatch", "delta schema does not match the cursor schema");
+    }
+    return null;
+  }
+  function decodeApplyInput(input) {
+    if (typeof input === "object" && input !== null && decodedEnvelopeTokens.has(input)) {
+      return { ok: true, value: input };
+    }
+    if (typeof input === "string") return decodeLiveV2Envelope(input);
+    return {
+      ok: false,
+      error: wireError(
+        "invalid-frame",
+        "Live v2 apply input must be a raw frame or an opaque decoder result"
+      )
+    };
+  }
+  function applyLiveV2Delta(input, cursor, hooks = {}) {
+    const decoded = decodeApplyInput(input);
+    if (!decoded.ok) return decoded;
+    const envelope = decoded.value;
+    if (envelope.kind !== "delta") {
+      return { ok: false, error: wireError("not-delta", "only delta envelopes can be applied") };
+    }
+    const cursorError = validateCursor(envelope, cursor);
+    if (cursorError) return { ok: false, error: cursorError };
+    const plan = {
+      remove: envelope.delta.remove || [],
+      upsert: envelope.delta.upsert || [],
+      order: envelope.delta.order,
+      regions: envelope.delta.regions || []
+    };
+    const deletedKeys = new Set(
+      plan.remove.filter((operation) => operation.cause === "delete").map((operation) => operation.key)
+    );
+    const virtualizerCheckpoint = takeVirtualizerCheckpoint();
+    const filterCheckpoint = takeLiveNameFilterCheckpoint();
+    const rowStateCheckpoint = deletedKeys.size > 0 ? takeRowStateCheckpoint() : null;
+    const result = applyListProjectionDeltaTransaction(plan, {
+      morph: hooks.morph,
+      reconcile: () => {
+        hooks.beforeReconcile?.();
+        if (deletedKeys.size > 0) applyLiveRowDeletions(deletedKeys);
+        applyLiveNameFilter();
+        if (!virtualizerActive()) reapplyRowState();
+        hooks.afterReconcile?.();
+      },
+      restoreExternalState: () => {
+        let failed = false;
+        try {
+          restoreVirtualizerCheckpoint(virtualizerCheckpoint);
+        } catch {
+          failed = true;
+        }
+        try {
+          restoreLiveNameFilterCheckpoint(filterCheckpoint);
+        } catch {
+          failed = true;
+        }
+        if (rowStateCheckpoint) {
+          try {
+            restoreRowStateCheckpoint(rowStateCheckpoint);
+          } catch {
+            failed = true;
+          }
+        }
+        if (failed) throw new Error("external Live state rollback failed");
+      }
+    });
+    if (!result.ok) return result;
+    const nextCursor = {
+      g: envelope.g,
+      seq: envelope.seq,
+      screen: envelope.screen,
+      rev: envelope.rev,
+      schema: envelope.schema
+    };
+    if (envelope.rv !== void 0) nextCursor.rv = envelope.rv;
+    else if (cursor.rv !== void 0) nextCursor.rv = cursor.rv;
+    return {
+      ok: true,
+      cursor: nextCursor,
+      summary: result.summary
+    };
+  }
+
+  // internal/assets/src/js/live-sse.ts
+  var LIVE_SSE_LIMITS = Object.freeze({
+    dataBytes: 16 * 1024 * 1024,
+    // All nonblank field/comment bytes in one uncommitted event. This prevents
+    // ignored extension/comment lines from multiplying bounded data work.
+    eventBytes: 16 * 1024 * 1024 + 1024,
+    eventNameBytes: 64,
+    lines: 32,
+    // A legal max-size one-line payload still carries `data:` plus optional
+    // whitespace. Keep a small, fixed framing allowance separate from the
+    // exact aggregate data ceiling.
+    lineBytes: 16 * 1024 * 1024 + 1024
+  });
+  var LiveSSEError = class extends Error {
+    code;
+    constructor(code, message) {
+      super(message);
+      this.name = "LiveSSEError";
+      this.code = code;
+    }
+  };
+  var fatalUTF8 = new TextDecoder("utf-8", { fatal: true });
+  function decodeLine(bytes) {
+    try {
+      return fatalUTF8.decode(bytes);
+    } catch {
+      throw new LiveSSEError("invalid-utf8", "SSE field line is not valid UTF-8");
+    }
+  }
+  var LiveSSEParser = class {
+    #limits;
+    #lineBuffer = new Uint8Array(1024);
+    #lineBytes = 0;
+    #swallowLF = false;
+    #eventName = null;
+    #eventBytes = 0;
+    #dataLines = [];
+    #dataBytes = 0;
+    #lines = 0;
+    #fatal = null;
+    constructor(limits = {}) {
+      this.#limits = { ...LIVE_SSE_LIMITS, ...limits };
+    }
+    push(chunk) {
+      if (this.#fatal) throw this.#fatal;
+      const events = [];
+      try {
+        this.#consume(chunk, events);
+        return events;
+      } catch (error) {
+        this.#fatal = error instanceof LiveSSEError ? error : new LiveSSEError("invalid-utf8", "SSE framing failed");
+        throw this.#fatal;
+      }
+    }
+    // EOF deliberately drops an unterminated line/event.  The caller decides
+    // whether an EOF is a transport failure; the parser never invents a final
+    // event without the protocol's blank-line commit marker.
+    finish() {
+      if (this.#fatal) throw this.#fatal;
+      this.#lineBytes = 0;
+      this.#resetEvent();
+    }
+    #consume(chunk, events) {
+      let start = 0;
+      for (let index = 0; index < chunk.byteLength; index += 1) {
+        const byte = chunk[index];
+        if (this.#swallowLF) {
+          this.#swallowLF = false;
+          if (byte === 10) {
+            start = index + 1;
+            continue;
+          }
+        }
+        if (byte !== 10 && byte !== 13) continue;
+        this.#appendLinePart(chunk.subarray(start, index));
+        this.#completeLine(events);
+        this.#swallowLF = byte === 13;
+        start = index + 1;
+      }
+      this.#appendLinePart(chunk.subarray(start));
+    }
+    #appendLinePart(part) {
+      if (part.byteLength === 0) return;
+      if (part.byteLength > this.#limits.lineBytes - this.#lineBytes) {
+        throw new LiveSSEError("line-too-large", "SSE field line exceeds its byte limit");
+      }
+      const required = this.#lineBytes + part.byteLength;
+      if (required > this.#lineBuffer.byteLength) {
+        let capacity = this.#lineBuffer.byteLength;
+        while (capacity < required) capacity = Math.min(this.#limits.lineBytes, capacity * 2);
+        const grown = new Uint8Array(capacity);
+        grown.set(this.#lineBuffer.subarray(0, this.#lineBytes));
+        this.#lineBuffer = grown;
+      }
+      this.#lineBuffer.set(part, this.#lineBytes);
+      this.#lineBytes += part.byteLength;
+    }
+    #completeLine(events) {
+      const bytes = this.#lineBuffer.subarray(0, this.#lineBytes);
+      this.#lineBytes = 0;
+      if (bytes.byteLength === 0) {
+        if (this.#dataLines.length > 0) {
+          events.push({
+            name: this.#eventName,
+            data: this.#dataLines.join("\n"),
+            dataBytes: this.#dataBytes
+          });
+        }
+        this.#resetEvent();
+        return;
+      }
+      if (bytes.byteLength > this.#limits.eventBytes - this.#eventBytes) {
+        throw new LiveSSEError("event-too-large", "SSE event framing exceeds its byte limit");
+      }
+      this.#eventBytes += bytes.byteLength;
+      this.#lines += 1;
+      if (this.#lines > this.#limits.lines) {
+        throw new LiveSSEError("too-many-lines", "SSE event has too many nonblank lines");
+      }
+      if (bytes[0] === 58) {
+        decodeLine(bytes);
+        return;
+      }
+      let colon = bytes.indexOf(58);
+      if (colon < 0) colon = bytes.byteLength;
+      let valueStart = Math.min(colon + 1, bytes.byteLength);
+      if (colon < bytes.byteLength && bytes[valueStart] === 32) valueStart += 1;
+      const field = decodeLine(bytes.subarray(0, colon));
+      const valueBytes = bytes.subarray(valueStart);
+      if (field === "event") {
+        if (valueBytes.byteLength > this.#limits.eventNameBytes) {
+          throw new LiveSSEError(
+            "event-name-too-large",
+            "SSE event name exceeds its byte limit"
+          );
+        }
+        this.#eventName = decodeLine(valueBytes);
+        return;
+      }
+      if (field !== "data") {
+        decodeLine(valueBytes);
+        return;
+      }
+      const joinedBytes = this.#dataBytes + valueBytes.byteLength + (this.#dataLines.length ? 1 : 0);
+      if (joinedBytes > this.#limits.dataBytes) {
+        throw new LiveSSEError("data-too-large", "SSE event data exceeds its byte limit");
+      }
+      this.#dataLines.push(decodeLine(valueBytes));
+      this.#dataBytes = joinedBytes;
+    }
+    #resetEvent() {
+      this.#eventName = null;
+      this.#eventBytes = 0;
+      this.#dataLines = [];
+      this.#dataBytes = 0;
+      this.#lines = 0;
+    }
+  };
+
+  // internal/assets/src/js/live-url.ts
+  var CLIENT_GENERATION = /^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/iu;
+  function isClientLiveGeneration(value) {
+    return typeof value === "string" && value.length <= 64 && CLIENT_GENERATION.test(value);
+  }
+  function mintLiveGeneration(cryptoSource = window.crypto) {
+    try {
+      const uuid = cryptoSource.randomUUID();
+      if (isClientLiveGeneration(uuid)) return uuid;
+    } catch {
+    }
+    const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
+    const generation = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (!isClientLiveGeneration(generation)) throw new Error("invalid Live generation");
+    return generation;
+  }
+  function decodedQueryKey(raw) {
+    try {
+      return decodeURIComponent(raw.replaceAll("+", " "));
+    } catch {
+      return null;
+    }
+  }
+  function stripLiveGenerationQuery(rawQuery) {
+    if (rawQuery === "") return "";
+    return rawQuery.split("&").filter((pair) => decodedQueryKey(pair.split("=", 1)[0]) !== "g").join("&");
+  }
+  function withRawQuery(pathname, rawQuery) {
+    return rawQuery === "" ? pathname : `${pathname}?${rawQuery}`;
+  }
+  function liveStreamBaseForURL(url) {
+    const pathname = `${url.pathname.replace(/\/+$/, "")}/_stream`;
+    return withRawQuery(pathname, stripLiveGenerationQuery(url.search.slice(1)));
+  }
+  function liveScreenForBase(base) {
+    const queryStart = base.indexOf("?");
+    const pathname = queryStart < 0 ? base : base.slice(0, queryStart);
+    const query = queryStart < 0 ? "" : base.slice(queryStart + 1);
+    const screenPath = pathname.endsWith("/_stream") ? pathname.slice(0, -"/_stream".length) : pathname;
+    return withRawQuery(screenPath, query);
+  }
+  function liveRequestURL(base, generation) {
+    if (!isClientLiveGeneration(generation)) throw new Error("invalid Live generation");
+    return `${base}${base.includes("?") ? "&" : "?"}g=${generation}`;
+  }
+  function liveStreamBaseFromTableRequest(requestPath) {
+    if (typeof requestPath !== "string") return null;
+    const queryStart = requestPath.indexOf("?");
+    const pathname = queryStart < 0 ? requestPath : requestPath.slice(0, queryStart);
+    if (!pathname.endsWith("/_table")) return null;
+    const rawQuery = queryStart < 0 ? "" : requestPath.slice(queryStart + 1);
+    return withRawQuery(
+      `${pathname.slice(0, -"/_table".length)}/_stream`,
+      stripLiveGenerationQuery(rawQuery)
+    );
+  }
+
+  // internal/assets/src/js/stale.ts
+  var STALE_DIM_CLASS = "ro-stale";
+  var staleCountdownId = null;
+  function updateStaleCountdown() {
+    const span = document.querySelector(".ro-stale-banner [data-stale-countdown]");
+    if (!span) {
+      return;
+    }
+    const nextAt = refreshNextAtMs();
+    if (!nextAt) {
+      span.textContent = "…";
+      return;
+    }
+    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
+    span.textContent = `${remaining}s`;
+  }
+  function isListRefreshEvent(event) {
+    const detail = event.detail;
+    if (!detail || isPreloadRequest(event)) {
+      return false;
+    }
+    const elt = detail.elt;
+    if (elt && elt.id === "resource-list-content") {
+      return true;
+    }
+    const target = detail.target;
+    return !!target && target.id === "resource-list-content";
+  }
+  function markListStale() {
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.add(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector(".ro-stale-banner");
+    if (!banner) {
+      return;
+    }
+    banner.hidden = false;
+    if (staleCountdownId === null) {
+      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
+    }
+    updateStaleCountdown();
+  }
+  function clearListStale() {
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.remove(STALE_DIM_CLASS);
+    }
+    const banner = document.querySelector(".ro-stale-banner");
+    if (banner) {
+      banner.hidden = true;
+    }
+    if (staleCountdownId !== null) {
+      window.clearInterval(staleCountdownId);
+      staleCountdownId = null;
+    }
+  }
+  document.addEventListener("htmx:responseError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+  document.addEventListener("htmx:sendError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+
+  // internal/assets/src/js/live.ts
+  function getHtmx2() {
+    return window.htmx;
+  }
+  var liveState = {
+    status: "idle",
+    abort: null,
+    gen: "",
+    streamPath: ""
+  };
+  var counters = {
+    connections: 0,
+    resyncs: 0,
+    fallbacks: 0,
+    v1Snapshots: 0,
+    v2Snapshots: 0,
+    deltas: 0,
+    terminals: 0,
+    invalidFrames: 0,
+    discards: 0,
+    rawBytes: 0,
+    payloadBytes: 0,
+    snapshotBytes: 0,
+    deltaBytes: 0,
+    inserted: 0,
+    updated: 0,
+    deleted: 0,
+    projected: 0
+  };
+  var MAX_COUNTER = Number.MAX_SAFE_INTEGER;
+  var RESYNC_WINDOW_MS = 3e4;
+  var MAX_RESYNCS_PER_WINDOW = 2;
+  var LIVE_FIRST_FRAME_TIMEOUT_MS = 1e4;
+  var activeConnection = null;
+  var liveFallbackSecs = 0;
+  var pageEpoch = 0;
+  var pendingSnapshotTxn = null;
+  var completedSnapshotTxns = /* @__PURE__ */ new WeakSet();
+  var resyncTimestamps = [];
+  var resyncScheduled = false;
+  var pendingResync = false;
+  var resumeAfterRequests = false;
+  var resumeAfterHidden = false;
+  var resumeBase = "";
+  var liveDiscards = 0;
+  var ownedRequests = /* @__PURE__ */ new Map();
+  function addCounter(name, amount = 1) {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    counters[name] = Math.min(MAX_COUNTER, counters[name] + Math.floor(amount));
+    if (name === "discards") liveDiscards = counters.discards;
+  }
+  function pruneResyncWindow(now = Date.now()) {
+    resyncTimestamps = resyncTimestamps.filter((timestamp) => now - timestamp < RESYNC_WINDOW_MS);
+  }
+  function currentStats() {
+    pruneResyncWindow();
+    return {
+      ...counters,
+      state: liveState.status,
+      protocol: activeConnection?.protocol || null,
+      seq: activeConnection?.cursor?.seq || 0,
+      inFlightRequests: ownedRequests.size,
+      resyncsInWindow: resyncTimestamps.length
+    };
+  }
+  function liveFallbackSeconds() {
+    return liveFallbackSecs;
+  }
+  function liveSupported() {
+    const content = document.getElementById("resource-list-content");
+    if (content?.dataset.liveUrl !== "location") return false;
+    const option = document.querySelector(
+      '[data-ro-action="set-refresh"][data-ro-interval="Live"]'
+    );
+    return !!option && !option.disabled;
+  }
+  function liveStreamBase() {
+    return liveStreamBaseForURL(new URL(window.location.href));
+  }
+  function isActive(connection) {
+    return activeConnection === connection && liveState.abort === connection.ctrl && connection.pageEpoch === pageEpoch;
+  }
+  function connectionToken(source) {
+    return Object.freeze({
+      ...source,
+      protocol: source.protocol || "pending",
+      cursor: source.cursor ? Object.freeze({ ...source.cursor }) : null
+    });
+  }
+  function replaceConnection(current, protocol, cursor) {
+    if (!isActive(current)) return null;
+    const next = connectionToken({ ...current, protocol, cursor });
+    activeConnection = next;
+    return next;
+  }
+  function abortActiveConnection() {
+    const connection = activeConnection;
+    activeConnection = null;
+    liveState.abort = null;
+    pendingSnapshotTxn = null;
+    if (connection && !connection.ctrl.signal.aborted) connection.ctrl.abort();
+  }
+  function liveTeardown() {
+    abortActiveConnection();
+    liveFallbackSecs = 0;
+  }
+  function liveResetPage() {
+    pageEpoch += 1;
+    ownedRequests.clear();
+    pendingSnapshotTxn = null;
+    resumeAfterRequests = false;
+    resumeAfterHidden = false;
+    resumeBase = "";
+    pendingResync = false;
+    resyncScheduled = false;
+    resyncTimestamps = [];
+  }
+  function liveEngageFallback(banner) {
+    abortActiveConnection();
+    pendingResync = false;
+    resyncScheduled = false;
+    resumeAfterRequests = false;
+    resumeAfterHidden = false;
+    liveState.status = "fallback";
+    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
+    addCounter("fallbacks");
+    scheduleRefreshTick();
+    if (banner) markListStale();
+  }
+  function openConnection(base) {
+    abortActiveConnection();
+    liveFallbackSecs = 0;
+    liveState.streamPath = base;
+    if (!base) {
+      liveEngageFallback(false);
+      return;
+    }
+    if (document.hidden) {
+      resumeBase = base;
+      resumeAfterHidden = true;
+      liveState.status = "hidden";
+      scheduleRefreshTick();
+      return;
+    }
+    let generation;
+    try {
+      generation = mintLiveGeneration();
+    } catch {
+      liveEngageFallback(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    const connection = connectionToken({
+      ctrl,
+      generation,
+      base,
+      screen: liveScreenForBase(base),
+      pageEpoch,
+      protocol: "pending",
+      cursor: null
+    });
+    activeConnection = connection;
+    liveState.abort = ctrl;
+    liveState.gen = generation;
+    liveState.status = "connecting";
+    addCounter("connections");
+    scheduleRefreshTick();
+    void liveConnect(connection);
+  }
+  function responseHeader2(response, name) {
+    try {
+      return response.headers.get(name);
+    } catch {
+      return null;
+    }
+  }
+  function negotiatedProtocol(response, connection) {
+    const contentType = responseHeader2(response, "Content-Type");
+    if (contentType?.split(";", 1)[0].trim().toLowerCase() !== "text/event-stream") {
+      return null;
+    }
+    const version = responseHeader2(response, "RO-Live-Version");
+    const generation = responseHeader2(response, "RO-Live-Generation");
+    if (version === null && generation === null) return "v1";
+    if (version === "2" && generation === connection.generation) return "v2";
+    return null;
+  }
+  function firstFrameAccepted() {
+    return liveState.status === "open-v1" || liveState.status === "open-v2";
+  }
+  async function liveConnect(initial) {
+    let firstFrameTimer = window.setTimeout(() => {
+      firstFrameTimer = null;
+      const current = activeConnection;
+      if (current?.ctrl === initial.ctrl && (liveState.status === "connecting" || liveState.status === "syncing-v1" || liveState.status === "syncing-v2")) {
+        liveEngageFallback(false);
+      }
+    }, LIVE_FIRST_FRAME_TIMEOUT_MS);
+    const clearFirstFrameTimer = () => {
+      if (firstFrameTimer !== null) {
+        window.clearTimeout(firstFrameTimer);
+        firstFrameTimer = null;
+      }
+    };
+    try {
+      await runLiveConnection(initial, clearFirstFrameTimer);
+    } finally {
+      clearFirstFrameTimer();
+    }
+  }
+  async function runLiveConnection(initial, clearFirstFrameTimer) {
+    let response;
+    try {
+      response = await fetch(liveRequestURL(initial.base, initial.generation), {
+        signal: initial.ctrl.signal,
+        headers: {
+          "RO-Live-Version": "2",
+          "RO-Live-Generation": initial.generation
+        }
+      });
+    } catch {
+      if (!isActive(initial)) return;
+      liveEngageFallback(false);
+      return;
+    }
+    if (!isActive(initial)) return;
+    if (response.status !== 200 || !response.body) {
+      liveEngageFallback(false);
+      return;
+    }
+    const protocol = negotiatedProtocol(response, initial);
+    if (!protocol) {
+      rejectProtocol(initial);
+      return;
+    }
+    let connection = replaceConnection(initial, protocol, null);
+    if (!connection) return;
+    liveState.status = protocol === "v2" ? "syncing-v2" : "syncing-v1";
+    const parser = new LiveSSEParser();
+    let reader;
+    try {
+      reader = response.body.getReader();
+    } catch {
+      if (isActive(connection)) liveEngageFallback(true);
+      return;
+    }
+    try {
+      for (; ; ) {
+        const result = await reader.read();
+        if (!isActive(connection)) return;
+        if (result.done) {
+          parser.finish();
+          break;
+        }
+        const value = result.value;
+        addCounter("rawBytes", value.byteLength);
+        let events;
+        try {
+          events = parser.push(value);
+        } catch (error) {
+          if (error instanceof LiveSSEError) addCounter("invalidFrames");
+          if (connection.protocol === "v2") rejectProtocol(connection, false);
+          else liveEngageFallback(true);
+          return;
+        }
+        for (const event of events) {
+          if (!isActive(connection)) {
+            addCounter("discards");
+            return;
+          }
+          addCounter("payloadBytes", event.dataBytes);
+          if (connection.protocol === "v2") {
+            if (!handleV2Frame(connection, event.name, event.data, event.dataBytes)) return;
+          } else if (!handleV1Frame(connection, event.name, event.data, event.dataBytes)) {
+            return;
+          }
+          if (firstFrameAccepted()) clearFirstFrameTimer();
+          const current = activeConnection;
+          if (!current || current.ctrl !== connection.ctrl) return;
+          connection = current;
+        }
+      }
+    } catch {
+      if (!isActive(connection)) return;
+    }
+    if (isActive(connection)) liveEngageFallback(true);
+  }
+  function parseJSONRecord(text) {
+    try {
+      const value = JSON.parse(text);
+      return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+  var TERMINAL_REASONS = /* @__PURE__ */ new Set(["idle", "auth", "watch-failed", "shutdown"]);
+  function handleV1Frame(connection, name, text, payloadBytes) {
+    if (name !== "ro-table" && name !== "ro-terminal") return true;
+    const payload = parseJSONRecord(text);
+    if (!payload) {
+      addCounter("invalidFrames");
+      return true;
+    }
+    if (name === "ro-terminal") {
+      if (payload.g !== connection.generation || !TERMINAL_REASONS.has(String(payload.reason))) {
+        addCounter("invalidFrames");
+        return true;
+      }
+      addCounter("terminals");
+      liveEngageFallback(true);
+      return false;
+    }
+    if (typeof payload.g !== "string" || typeof payload.html !== "string") {
+      addCounter("invalidFrames");
+      return true;
+    }
+    const reason = shouldDiscardPush({
+      frameGeneration: payload.g,
+      currentGeneration: connection.generation,
+      liveStreamBase: liveState.streamPath,
+      openedStreamBase: liveState.streamPath,
+      requestInFlight: ownedRequests.size > 0
+    });
+    if (reason === "stale-generation" || liveStreamBase() !== liveState.streamPath || reason === "request-in-flight") {
+      addCounter("discards");
+      return true;
+    }
+    if (!swapSnapshot(payload.html, connection, null)) {
+      addCounter("invalidFrames");
+      liveEngageFallback(true);
+      return false;
+    }
+    addCounter("v1Snapshots");
+    addCounter("snapshotBytes", payloadBytes);
+    liveState.status = "open-v1";
+    return true;
+  }
+  function validEnvelopeIdentity(envelope, connection) {
+    return envelope.g === connection.generation && envelope.screen === connection.screen;
+  }
+  function snapshotCursor(envelope) {
+    const cursor = {
+      g: envelope.g,
+      seq: envelope.seq,
+      screen: envelope.screen,
+      rev: envelope.rev,
+      schema: envelope.schema
+    };
+    if (envelope.rv !== void 0) cursor.rv = envelope.rv;
+    return cursor;
+  }
+  function handleV2Frame(connection, name, text, payloadBytes) {
+    if (name !== "ro-live") {
+      rejectProtocol(connection);
+      return false;
+    }
+    const decoded = decodeLiveV2Envelope(text);
+    if (!decoded.ok) {
+      rejectProtocol(connection);
+      return false;
+    }
+    const envelope = decoded.value;
+    const cursor = connection.cursor;
+    if (!validEnvelopeIdentity(envelope, connection)) {
+      rejectProtocol(connection);
+      return false;
+    }
+    if (!cursor) {
+      if (envelope.kind !== "snapshot" || envelope.seq !== 1) {
+        rejectProtocol(connection);
+        return false;
+      }
+      return commitV2Snapshot(connection, envelope, payloadBytes);
+    }
+    if (envelope.seq !== cursor.seq + 1) {
+      rejectProtocol(connection);
+      return false;
+    }
+    if (envelope.kind === "snapshot") {
+      return commitV2Snapshot(connection, envelope, payloadBytes);
+    }
+    if (envelope.kind === "terminal") {
+      if (envelope.rev !== cursor.rev || envelope.schema !== cursor.schema) {
+        rejectProtocol(connection);
+        return false;
+      }
+      addCounter("terminals");
+      liveEngageFallback(true);
+      return false;
+    }
+    const applied = applyLiveV2Delta(decoded.value, cursor);
+    if (!applied.ok) {
+      rejectProtocol(connection);
+      return false;
+    }
+    if (!replaceConnection(connection, "v2", applied.cursor)) {
+      return false;
+    }
+    clearListValidator();
+    addCounter("deltas");
+    addCounter("deltaBytes", payloadBytes);
+    addCounter("inserted", applied.summary.inserted);
+    addCounter("updated", applied.summary.updated);
+    addCounter("deleted", applied.summary.deleted);
+    addCounter("projected", applied.summary.projected);
+    liveState.status = "open-v2";
+    return true;
+  }
+  function commitV2Snapshot(connection, envelope, payloadBytes) {
+    const txn = Object.freeze({
+      generation: connection.generation,
+      pageEpoch: connection.pageEpoch,
+      sequence: envelope.seq
+    });
+    pendingSnapshotTxn = txn;
+    if (!swapSnapshot(envelope.snapshot.html, connection, txn)) {
+      pendingSnapshotTxn = null;
+      rejectProtocol(connection);
+      return false;
+    }
+    const completed = completedSnapshotTxns.has(txn);
+    pendingSnapshotTxn = null;
+    if (!completed || !isActive(connection)) {
+      rejectProtocol(connection);
+      return false;
+    }
+    const next = replaceConnection(connection, "v2", snapshotCursor(envelope));
+    if (!next) {
+      return false;
+    }
+    addCounter("v2Snapshots");
+    addCounter("snapshotBytes", payloadBytes);
+    liveState.status = "open-v2";
+    return true;
+  }
+  function swapSnapshot(html, connection, txn) {
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx2();
+    if (!content || !htmx2 || typeof htmx2.swap !== "function" || !isActive(connection)) return false;
+    clearListValidator();
+    const eventInfo = { target: content, roLivePush: true };
+    if (txn) eventInfo.roLiveSnapshotTxn = txn;
+    try {
+      htmx2.swap(content, html, { swapStyle: "morph" }, { contextElement: content, eventInfo });
+      return isActive(connection);
+    } catch {
+      return false;
+    }
+  }
+  function rejectProtocol(connection, countInvalid = true) {
+    if (!isActive(connection)) return;
+    if (countInvalid) addCounter("invalidFrames");
+    const base = connection.base;
+    abortActiveConnection();
+    requestResync(base);
+  }
+  function requestResync(base) {
+    if (resyncScheduled) return;
+    if (document.hidden || ownedRequests.size > 0) {
+      pendingResync = true;
+      resumeBase = base;
+      if (document.hidden) {
+        liveState.status = "hidden";
+        resumeAfterHidden = true;
+      } else {
+        liveState.status = "suspended";
+        resumeAfterRequests = true;
+      }
+      return;
+    }
+    const now = Date.now();
+    pruneResyncWindow(now);
+    if (resyncTimestamps.length >= MAX_RESYNCS_PER_WINDOW) {
+      liveEngageFallback(true);
+      return;
+    }
+    resyncTimestamps.push(now);
+    addCounter("resyncs");
+    liveState.status = "resyncing";
+    resyncScheduled = true;
+    const epoch = pageEpoch;
+    queueMicrotask(() => {
+      if (!resyncScheduled || liveState.status !== "resyncing" || pageEpoch !== epoch) return;
+      resyncScheduled = false;
+      openConnection(base);
+    });
+  }
+  function requestDetail(event) {
+    return Object(event.detail);
+  }
+  function requestPathBase(detail) {
+    const pathInfo = Object(detail.pathInfo);
+    return liveStreamBaseFromTableRequest(pathInfo.finalRequestPath) || liveStreamBaseFromTableRequest(pathInfo.requestPath);
+  }
+  function liveBeforeListRequest(event) {
+    const detail = requestDetail(event);
+    const content = document.getElementById("resource-list-content");
+    const xhr = detail.xhr;
+    if (!content || detail.target !== content || !xhr || ownedRequests.has(xhr)) return;
+    const scheduledResync = resyncScheduled || liveState.status === "resyncing";
+    const resumable = activeConnection !== null || scheduledResync || resumeAfterRequests || liveState.status === "hidden" && resumeAfterHidden;
+    const entry = {
+      epoch: pageEpoch,
+      xhr,
+      networkSettled: false,
+      sent: false,
+      swapCompleted: false
+    };
+    ownedRequests.set(xhr, entry);
+    try {
+      xhr.addEventListener("loadend", () => noteRequestNetworkSettled(xhr, entry), {
+        once: true
+      });
+    } catch {
+    }
+    queueMicrotask(() => {
+      if (!entry.sent) finalizeOwnedRequest(xhr, entry);
+    });
+    if (!resumable || liveState.status === "fallback") return;
+    if (scheduledResync) resyncScheduled = false;
+    resumeAfterRequests = true;
+    resumeBase ||= activeConnection?.base || liveState.streamPath;
+    abortActiveConnection();
+    if (document.hidden) {
+      liveState.status = "hidden";
+      resumeAfterHidden = true;
+    } else {
+      liveState.status = "suspended";
+    }
+  }
+  function liveMarkListRequestSent(event) {
+    const xhr = requestDetail(event).xhr;
+    const entry = xhr ? ownedRequests.get(xhr) : void 0;
+    if (entry && entry.epoch === pageEpoch) entry.sent = true;
+  }
+  function liveAfterListRequest(event) {
+    const detail = requestDetail(event);
+    const xhr = detail.xhr;
+    if (!xhr) return;
+    const entry = ownedRequests.get(xhr);
+    if (entry) noteRequestNetworkSettled(xhr, entry);
+  }
+  function requestStatus(xhr) {
+    try {
+      return xhr.status;
+    } catch {
+      return 0;
+    }
+  }
+  function noteRequestNetworkSettled(xhr, entry) {
+    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    entry.networkSettled = true;
+    if (requestStatus(xhr) === 200 && !entry.swapCompleted) {
+      queueMicrotask(() => failOwnedRequestWithoutSwap(xhr, entry));
+      return;
+    }
+    finalizeOwnedRequest(xhr, entry);
+  }
+  function completeOwnedRequestSwap(xhr, entry, successfulBase) {
+    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    entry.swapCompleted = true;
+    if (successfulBase) {
+      resumeBase = successfulBase;
+    }
+    if (entry.networkSettled) finalizeOwnedRequest(xhr, entry);
+  }
+  function failOwnedRequestWithoutSwap(xhr, entry) {
+    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry || entry.swapCompleted || !entry.networkSettled) {
+      return;
+    }
+    ownedRequests.delete(xhr);
+    if (!resumeAfterRequests) return;
+    if (refreshMode() !== "Live") {
+      resumeAfterRequests = false;
+      resumeAfterHidden = false;
+      pendingResync = false;
+      liveState.status = "idle";
+      liveState.streamPath = "";
+      return;
+    }
+    liveEngageFallback(true);
+  }
+  function finalizeOwnedRequest(xhr, entry) {
+    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    ownedRequests.delete(xhr);
+    if (ownedRequests.size > 0 || !resumeAfterRequests) return;
+    if (document.hidden) {
+      liveState.status = "hidden";
+      resumeAfterHidden = true;
+      return;
+    }
+    const base = resumeBase || (liveSupported() ? liveStreamBase() : "");
+    resumeAfterRequests = false;
+    resumeAfterHidden = false;
+    const shouldResync = pendingResync;
+    pendingResync = false;
+    if (refreshMode() !== "Live") {
+      liveState.status = "idle";
+      liveState.streamPath = "";
+      return;
+    }
+    if (shouldResync) requestResync(base);
+    else openConnection(liveSupported() ? base : "");
+  }
+  function liveBeforeListSwapDecision(event) {
+    const detail = requestDetail(event);
+    const xhr = detail.xhr;
+    const entry = xhr ? ownedRequests.get(xhr) : void 0;
+    if (!xhr || !entry || entry.epoch !== pageEpoch) return;
+    queueMicrotask(() => {
+      if (event.defaultPrevented || detail.shouldSwap === false) {
+        completeOwnedRequestSwap(xhr, entry, null);
+      }
+    });
+  }
+  function liveListRequestSwapFailed(event) {
+    const detail = requestDetail(event);
+    const xhr = detail.xhr;
+    const entry = xhr ? ownedRequests.get(xhr) : void 0;
+    if (xhr && entry) completeOwnedRequestSwap(xhr, entry, null);
+  }
+  function liveOnListSwap(event) {
+    const detail = requestDetail(event);
+    const snapshotTxn = detail.roLiveSnapshotTxn;
+    if (snapshotTxn && snapshotTxn === pendingSnapshotTxn) {
+      completedSnapshotTxns.add(snapshotTxn);
+      return;
+    }
+    if (detail.roLivePush) return;
+    const xhr = detail.xhr;
+    const entry = xhr ? ownedRequests.get(xhr) : void 0;
+    if (!entry || entry.epoch !== pageEpoch) return;
+    const base = requestPathBase(detail);
+    completeOwnedRequestSwap(xhr, entry, base);
+  }
+  function liveApply(force) {
+    if (refreshMode() !== "Live") {
+      liveTeardown();
+      liveState.status = "idle";
+      liveState.streamPath = "";
+      return;
+    }
+    const base = liveSupported() ? liveStreamBase() : "";
+    if (force) {
+      resyncTimestamps = [];
+      pendingResync = false;
+      resyncScheduled = false;
+    }
+    if (!force && liveState.status === "fallback") return;
+    if (!force && base === liveState.streamPath && liveState.status !== "idle") return;
+    if (ownedRequests.size > 0) {
+      liveTeardown();
+      resumeAfterRequests = true;
+      resumeBase = base;
+      liveState.streamPath = base;
+      liveState.status = document.hidden ? "hidden" : "suspended";
+      resumeAfterHidden = document.hidden;
+      return;
+    }
+    openConnection(base);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (activeConnection || liveState.status === "suspended" || liveState.status === "resyncing") {
+        resumeBase ||= activeConnection?.base || liveState.streamPath;
+        resumeAfterHidden = true;
+        abortActiveConnection();
+        resyncScheduled = false;
+        liveState.status = "hidden";
+      }
+      return;
+    }
+    if (liveState.status !== "hidden" || !resumeAfterHidden || refreshMode() !== "Live") return;
+    if (ownedRequests.size > 0) {
+      liveState.status = "suspended";
+      return;
+    }
+    resumeAfterHidden = false;
+    const base = resumeBase || (liveSupported() ? liveStreamBase() : "");
+    if (pendingResync) {
+      pendingResync = false;
+      requestResync(base);
+    } else {
+      openConnection(liveSupported() ? base : "");
+    }
+  });
+  window.roLive = {
+    discards() {
+      return liveDiscards;
+    },
+    stats() {
+      return currentStats();
+    }
+  };
+
+  // internal/assets/src/js/prefs.ts
+  var PREFS_COOKIE = "ro_prefs";
+  var PREFS_VERSION_PREFIX = "v1.";
+  var PREFS_MAX_ENCODED = 3072;
+  var PREFS_COOKIE_MAX_AGE = 31536e3;
+  var REFRESH_KEY = "roRefresh";
+  function b64urlEncodeUTF8(text) {
+    const bytes = new TextEncoder().encode(text);
+    const bin = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+    return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  }
+  function b64urlDecodeUTF8(encoded) {
+    const compact = encoded.replaceAll("\r", "").replaceAll("\n", "");
+    if (!/^[A-Za-z0-9_-]*$/.test(compact)) {
+      throw new TypeError();
+    }
+    const b64 = compact.replaceAll("-", "+").replaceAll("_", "/");
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, (char) => char.charCodeAt(0));
+    return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+  }
+  function isRecord2(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+  function setOwnNamespace(ns, cluster, namespace) {
+    Object.defineProperty(ns, cluster, {
+      value: namespace,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+  }
+  function compareUTF8(left, right) {
+    const mismatch = left.subarray(0, right.length).findIndex((byte, index) => byte !== right[index]);
+    if (mismatch !== -1) {
+      return left[mismatch] - right[mismatch];
+    }
+    return left.length - right.length;
+  }
+  function stringifyPrefsJSON(value) {
+    const encoded = JSON.stringify(value);
+    return encoded.replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+  }
+  function canonicalNamespaceJSON(ns) {
+    const encoder = new TextEncoder();
+    const entries = Object.entries(ns).map(([cluster, namespace]) => ({
+      cluster,
+      namespace,
+      encodedCluster: encoder.encode(cluster)
+    }));
+    entries.sort((left, right) => compareUTF8(left.encodedCluster, right.encodedCluster));
+    return `{${entries.map(
+      ({ cluster, namespace }) => `${stringifyPrefsJSON(cluster)}:${stringifyPrefsJSON(namespace)}`
+    ).join(",")}}`;
+  }
+  function decodePrefsValue(value) {
+    const empty = { kinds: [], refresh: "", ns: {} };
+    if (!value?.startsWith(PREFS_VERSION_PREFIX)) {
+      return { prefs: empty, ok: false };
+    }
+    const payload = value.slice(PREFS_VERSION_PREFIX.length);
+    try {
+      const decoded = JSON.parse(b64urlDecodeUTF8(payload));
+      if (!isRecord2(decoded)) {
+        return { prefs: empty, ok: false };
+      }
+      const kinds = [];
+      if (Array.isArray(decoded.kinds)) {
+        decoded.kinds.forEach((raw) => {
+          if (!isRecord2(raw)) {
+            return;
+          }
+          const e = raw;
+          if (typeof e.k !== "string") {
+            return;
+          }
+          const entry = { k: e.k };
+          if (typeof e.sort === "string") {
+            entry.sort = e.sort;
+          }
+          if (Array.isArray(e.hide) && e.hide.every((name) => typeof name === "string")) {
+            entry.hide = e.hide;
+          }
+          kinds.push(entry);
+        });
+      }
+      const ns = {};
+      if (isRecord2(decoded.ns)) {
+        Object.entries(decoded.ns).forEach(([cluster, namespace]) => {
+          if (typeof namespace === "string") {
+            setOwnNamespace(ns, cluster, namespace);
+          }
+        });
+      }
+      return {
+        prefs: {
+          kinds,
+          refresh: typeof decoded.refresh === "string" ? decoded.refresh : "",
+          ns
+        },
+        ok: true
+      };
+    } catch (_e) {
+      return { prefs: empty, ok: false };
+    }
+  }
+  function encodePrefsCandidate(kinds, refresh, ns) {
+    const fields = [];
+    if (kinds.length > 0) {
+      fields.push(`"kinds":${stringifyPrefsJSON(kinds)}`);
+    }
+    if (refresh) {
+      fields.push(`"refresh":${stringifyPrefsJSON(refresh)}`);
+    }
+    if (Object.keys(ns).length > 0) {
+      fields.push(`"ns":${canonicalNamespaceJSON(ns)}`);
+    }
+    return PREFS_VERSION_PREFIX + b64urlEncodeUTF8(`{${fields.join(",")}}`);
+  }
+  function encodePrefsValue(prefs) {
+    const kinds = prefs.kinds ?? [];
+    const refresh = prefs.refresh ?? "";
+    const ns = prefs.ns ?? {};
+    const evictionBoundary = PREFS_MAX_ENCODED + 1;
+    let value = encodePrefsCandidate(kinds, refresh, ns);
+    if (value.length < evictionBoundary) {
+      return value;
+    }
+    Array.from({ length: kinds.length }).some((_, evicted) => {
+      const kept = kinds.length - evicted - 1;
+      value = encodePrefsCandidate(kinds.slice(0, kept), refresh, ns);
+      return value.length < evictionBoundary;
+    });
+    return value;
+  }
+  function prefsCookieValue() {
+    const prefix = `${PREFS_COOKIE}=`;
+    return document.cookie.split("; ").find((part) => part.startsWith(prefix))?.slice(prefix.length);
+  }
+  function readPrefs() {
+    return decodePrefsValue(prefsCookieValue()).prefs;
+  }
+  function writePrefs(prefs) {
+    try {
+      let cookie = PREFS_COOKIE + "=" + encodePrefsValue(prefs) + "; Path=/; SameSite=Lax; Max-Age=" + PREFS_COOKIE_MAX_AGE;
+      if (window.location.protocol === "https:") {
+        cookie += "; Secure";
+      }
+      document.cookie = cookie;
+    } catch (_e) {
+    }
+  }
+  function prefsTouchKind(prefs, plural) {
+    const index = prefs.kinds.findIndex((entry2) => entry2.k === plural);
+    const entry = index < 0 ? { k: plural } : prefs.kinds.splice(index, 1)[0];
+    prefs.kinds.unshift(entry);
+    return entry;
+  }
+  function roPrefsSetSort(plural, sort) {
+    const prefs = readPrefs();
+    prefsTouchKind(prefs, plural).sort = sort;
+    writePrefs(prefs);
+  }
+  function roPrefsSetHiddenColumns(plural, names) {
+    const prefs = readPrefs();
+    prefsTouchKind(prefs, plural).hide = names;
+    writePrefs(prefs);
+  }
+  function roPrefsSetRefresh(mode) {
+    const prefs = readPrefs();
+    prefs.refresh = mode;
+    writePrefs(prefs);
+  }
+  function roPrefsSetNamespace(cluster, namespace) {
+    if (!cluster || !namespace) {
+      return;
+    }
+    const prefs = readPrefs();
+    setOwnNamespace(prefs.ns, cluster, namespace);
+    writePrefs(prefs);
+  }
+
+  // internal/assets/src/js/refresh.ts
+  function getHtmx3() {
+    return window.htmx;
+  }
+  var refreshTimerId = null;
+  var refreshNextAt = 0;
+  var refreshFailureStage = 0;
+  function refreshNextAtMs() {
+    return refreshNextAt;
+  }
+  var userListRequestsInFlight = /* @__PURE__ */ new Set();
+  var containerListRequestsInFlight = /* @__PURE__ */ new Set();
+  function requestDetail2(event) {
+    return Object(event.detail);
+  }
+  function pruneSettledListRequests(requests) {
+    requests.forEach((xhr) => {
+      if (xhr.readyState === 4 || xhr.readyState === 0) {
+        requests.delete(xhr);
+      }
+    });
+  }
+  function isPreloadRequest(event) {
+    const config = Object(requestDetail2(event).requestConfig);
+    const headers = Object(config.headers);
+    return headers["HX-Preloaded"] === "true";
+  }
+  function isUserListRequest(event) {
+    const detail = requestDetail2(event);
+    return detail.elt instanceof Element && detail.target instanceof Element && detail.target.id === "resource-list-content" && !isPreloadRequest(event);
+  }
+  function handleRefreshConfigRequest(event) {
+    const detail = requestDetail2(event);
+    const content = document.getElementById("resource-list-content");
+    const sourceIsContent = content !== null && detail.elt === content;
+    const targetIsContent = content !== null && detail.target === content;
+    if (sourceIsContent || targetIsContent) {
+      const headers = Object(detail.headers);
+      for (const name of Object.keys(headers)) {
+        if (name.toLowerCase() === "ro-no-push") {
+          delete headers[name];
+        }
+      }
+      if (sourceIsContent && (detail.target === void 0 || targetIsContent)) {
+        headers["RO-No-Push"] = "true";
+      }
+    }
+    configureListValidatorRequest(event);
+  }
+  document.addEventListener("htmx:configRequest", handleRefreshConfigRequest);
+  function handleRefreshBeforeRequest(event) {
+    liveBeforeListRequest(event);
+    const detail = requestDetail2(event);
+    const elt = Object(detail.elt);
+    if (elt.id === "resource-list-content") {
+      if (detail.xhr) {
+        containerListRequestsInFlight.add(detail.xhr);
+      }
+      return;
+    }
+    if (!isUserListRequest(event)) {
+      return;
+    }
+    if (detail.xhr) {
+      userListRequestsInFlight.add(detail.xhr);
+    }
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx3();
+    if (content && htmx2) {
+      htmx2.trigger(content, "htmx:abort");
+    }
+  }
+  document.addEventListener("htmx:beforeRequest", handleRefreshBeforeRequest);
+  function handleRefreshBeforeSend(event) {
+    liveMarkListRequestSent(event);
+  }
+  document.addEventListener("htmx:beforeSend", handleRefreshBeforeSend);
+  function handleRefreshBeforeSwap(event) {
+    liveBeforeListSwapDecision(event);
+  }
+  document.addEventListener("htmx:beforeSwap", handleRefreshBeforeSwap);
+  function handleRefreshSwapError(event) {
+    liveListRequestSwapFailed(event);
+  }
+  document.addEventListener("htmx:swapError", handleRefreshSwapError);
+  function handleRefreshAfterRequest(event) {
+    liveAfterListRequest(event);
+    const xhr = requestDetail2(event).xhr;
+    userListRequestsInFlight.delete(xhr);
+    containerListRequestsInFlight.delete(xhr);
+  }
+  document.addEventListener("htmx:afterRequest", handleRefreshAfterRequest);
+  function parseRefreshSeconds(mode) {
+    if (typeof mode !== "string") {
+      return 0;
+    }
+    const unsigned = mode.startsWith("+") ? mode.slice(1) : mode;
+    const seconds = Array.from(unsigned).reduce((value, char) => {
+      const digit = char.charCodeAt(0) - 48;
+      return digit >= 0 && digit <= 9 ? value * 10 + digit : Number.NaN;
+    }, 0);
+    return Number.isSafeInteger(seconds) ? seconds : 0;
+  }
+  function refreshMode() {
+    const stored = readPrefs().refresh;
+    if (stored) {
+      return stored;
+    }
+    let legacy = null;
+    try {
+      legacy = window.localStorage.getItem(REFRESH_KEY);
+    } catch {
+    }
+    if (!legacy) {
+      return "";
+    }
+    const secs = parseRefreshSeconds(legacy);
+    const mode = secs > 0 ? String(secs) : "Off";
+    roPrefsSetRefresh(mode);
+    return mode;
+  }
+  function listTableURL() {
+    const u = new URL(window.location.href);
+    return `${u.pathname.replace(/\/+$/, "")}/_table${u.search}`;
+  }
+  function requestListRefresh() {
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = getHtmx3();
+    if (!content || !htmx2) {
+      return;
+    }
+    if (content.dataset.liveUrl === "location") {
+      const request = htmx2.ajax("GET", listTableURL(), { source: content });
+      if (request && typeof request.catch === "function") {
+        request.catch(() => {
+        });
+      }
+    } else {
+      htmx2.trigger(content, "ro:refresh");
+    }
+  }
+  window.requestListRefresh = requestListRefresh;
+  function fireRefresh() {
+    if (document.hidden) {
+      return;
+    }
+    pruneSettledListRequests(userListRequestsInFlight);
+    pruneSettledListRequests(containerListRequestsInFlight);
+    if (userListRequestsInFlight.size > 0) {
+      return;
+    }
+    if (containerListRequestsInFlight.size > 0) {
+      return;
+    }
+    requestListRefresh();
+  }
+  function effectivePollSeconds2() {
+    const mode = refreshMode();
+    return effectivePollSeconds(mode, parseRefreshSeconds(mode), liveFallbackSeconds());
+  }
+  function refreshDelaySeconds2() {
+    return refreshDelaySeconds(effectivePollSeconds2(), refreshFailureStage);
+  }
+  function scheduleRefreshTick() {
+    if (refreshTimerId !== null) {
+      window.clearTimeout(refreshTimerId);
+      refreshTimerId = null;
+    }
+    const delay = refreshDelaySeconds2();
+    if (delay <= 0) {
+      refreshNextAt = 0;
+      updateStaleCountdown();
+      return;
+    }
+    const delayMs = delay * 1e3;
+    refreshNextAt = Date.now() + delayMs;
+    refreshTimerId = window.setTimeout(() => {
+      refreshTimerId = null;
+      scheduleRefreshTick();
+      fireRefresh();
+    }, delayMs);
+    updateStaleCountdown();
+  }
+  function pauseRefresh() {
+    if (refreshTimerId !== null) {
+      window.clearTimeout(refreshTimerId);
+      refreshTimerId = null;
+    }
+    refreshNextAt = 0;
+    updateStaleCountdown();
+  }
+  function applyRefresh() {
+    refreshFailureStage = 0;
+    scheduleRefreshTick();
+  }
+  function syncRefreshUI() {
+    const mode = refreshMode();
+    const live = mode === "Live";
+    const secs = parseRefreshSeconds(mode);
+    const label = document.getElementById("refresh-label");
+    if (label) {
+      if (live) {
+        label.textContent = "Live";
+      } else if (secs > 0) {
+        label.textContent = `${secs}s`;
+      } else {
+        label.textContent = "Off";
+      }
+    }
+    document.querySelectorAll('[data-ro-action="set-refresh"]').forEach((opt) => {
+      const value = opt.dataset.roInterval;
+      opt.classList.toggle(
+        "is-active",
+        value !== void 0 && (live ? value === "Live" : value !== "Live" && parseRefreshSeconds(value) === secs)
+      );
+    });
+    const dropdown = document.getElementById("refresh-dropdown");
+    if (dropdown) {
+      dropdown.classList.toggle("refresh-on", live || secs > 0);
+    }
+  }
+  function noteRefreshFailure() {
+    refreshFailureStage = nextFailureStage(refreshFailureStage);
+    scheduleRefreshTick();
+  }
+  function noteRefreshRecovery() {
+    if (refreshFailureStage === 0) {
+      return;
+    }
+    refreshFailureStage = 0;
+    scheduleRefreshTick();
+    const toast = window.roToast;
+    if (typeof toast === "function") {
+      toast("Refresh resumed");
+    }
+  }
+  function handleRefreshVisibilityChange() {
+    if (!document.hidden && effectivePollSeconds2() > 0) {
+      fireRefresh();
+    }
+  }
+  document.addEventListener("visibilitychange", handleRefreshVisibilityChange);
+  var refreshBindings = [
+    // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
+    // #resource-list-content through the shared refresh path (the v2 loop derives
+    // the `_table` URL from location.href at click time; the v1 multi-type
+    // container triggers its baked ro:refresh). On success the morph swaps fresh
+    // rows and the afterSwap handler clears the stale dim + re-hides the banner;
+    // on another failure the responseError handler keeps it stale. An in-flight
+    // container request (a HUNG tick is exactly the state this button exists for)
+    // is aborted first -- issuing a second container request would make htmx
+    // QUEUE it, and a queued request replays on the next htmx:abort with its stale
+    // queue-time URL (no queue may ever form). Pure DOM, GET-only -- the
+    // read-only floor is untouched.
+    {
+      event: "click",
+      selector: '[data-ro-action="retry"]',
+      stop: true,
+      handler: (event) => {
+        event.preventDefault();
+        const content = document.getElementById("resource-list-content");
+        const htmx2 = getHtmx3();
+        if (content && htmx2) {
+          htmx2.trigger(content, "htmx:abort");
+        }
+        requestListRefresh();
+        return true;
+      }
+    },
+    // Auto-refresh interval option (navbar #refresh-dropdown): persist the chosen
+    // mode in the ro_prefs cookie, re-arm the poll, and reflect it in the
+    // control. The Live option persists the literal 'Live' and rides
+    // the same path: liveApply opens/tears down the stream, applyRefresh then arms
+    // the poll chain per the EFFECTIVE seconds (0 while a stream is riding). A
+    // disabled Live option (multi-type/multi-cluster page) never fires (the
+    // browser suppresses clicks on disabled buttons). The dropdown opens through
+    // CSS hover/focus, so there is no open/close handler here -- only the
+    // selection. Kept its early-return (stop:true).
+    {
+      event: "click",
+      selector: '[data-ro-action="set-refresh"]',
+      stop: true,
+      handler: (event, matched) => {
+        const option = matched;
+        if (option.dataset.roInterval === "Live") {
+          roPrefsSetRefresh("Live");
+        } else {
+          const interval = parseRefreshSeconds(option.dataset.roInterval);
+          roPrefsSetRefresh(interval > 0 ? String(interval) : "Off");
+        }
+        liveApply(true);
+        syncRefreshUI();
+        applyRefresh();
+        option.blur();
+        event.preventDefault();
+        return true;
+      }
+    }
+  ];
+
+  // internal/assets/src/js/virtualizer-math.ts
+  var VIRT_BUFFER_ROWS = 12;
+  function windowBounds(tbodyTop, innerHeight, rowH, visibleCount, buffer = VIRT_BUFFER_ROWS) {
+    const pitch = rowH || 1;
+    const n = visibleCount;
+    const first = Math.floor((0 - tbodyTop) / pitch);
+    const last = Math.ceil((innerHeight - tbodyTop) / pitch);
+    const start = Math.min(n, Math.max(0, first - buffer));
+    const end = Math.max(start, Math.min(n, last + buffer));
+    return { start, end };
+  }
+  function spacerHeights(start, end, visibleCount, rowH) {
+    return {
+      top: start * rowH,
+      bottom: Math.max(0, visibleCount - end) * rowH
+    };
+  }
+  function prepareSwapSpacers(priorStart, incomingRowCount, rowH) {
+    const start = Math.min(priorStart, incomingRowCount);
+    return {
+      top: start * rowH,
+      bottom: Math.max(0, incomingRowCount - start) * rowH
+    };
+  }
+  function rowOffsetTop(tbodyTop, index, rowH) {
+    return tbodyTop + index * rowH;
+  }
+  function scrollAdjustToReveal(rowTop, rowH, topMin, innerHeight) {
+    const topOverflow = rowTop - topMin;
+    if (topOverflow < 0) {
+      return topOverflow;
+    }
+    return Math.max(0, rowTop + rowH - innerHeight);
+  }
+  function clampFocusIndex(current, delta, visibleCount) {
+    return Math.max(0, Math.min(visibleCount - 1, current + delta));
+  }
+
+  // internal/assets/src/js/virtualizer.ts
+  var FILTER_HIDE_CLASS2 = "ro-row-filtered";
+  function roRowState() {
+    return window.roRowState;
+  }
+  var virtState = {
+    active: false,
+    visible: [],
+    rowH: 0,
+    start: 0,
+    end: 0,
+    table: null,
+    tbody: null,
+    topSpacer: null,
+    bottomSpacer: null,
+    pinnedWidths: [],
+    pendingScrollY: null
+  };
+  var historyRecoveryPending = null;
+  function virtualizerActive() {
+    return virtState.active && virtState.tbody?.isConnected === true;
+  }
+  function takeVirtualizerCheckpoint() {
+    return {
+      // Filter reconciliation replaces `visible`; it never mutates this
+      // array or the width pins in place. Retaining the references makes the
+      // common one-row Live transaction O(1) before its intentional rewindow.
+      state: { ...virtState },
+      historyRecovery: historyRecoveryPending
+    };
+  }
+  function restoreVirtualizerCheckpoint(checkpoint) {
+    Object.assign(virtState, checkpoint.state);
+    historyRecoveryPending = checkpoint.historyRecovery;
+  }
+  function virtReset() {
+    virtState.active = false;
+    virtState.visible = [];
+    virtState.rowH = 0;
+    virtState.start = 0;
+    virtState.end = 0;
+    virtState.table = null;
+    virtState.tbody = null;
+    virtState.topSpacer = null;
+    virtState.bottomSpacer = null;
+    virtState.pinnedWidths = [];
+    virtState.pendingScrollY = null;
+  }
+  function virtMakeSpacer() {
+    const tr = document.createElement("tr");
+    tr.className = "ro-vspacer";
+    tr.setAttribute("aria-hidden", "true");
+    tr.appendChild(document.createElement("td"));
+    return tr;
+  }
+  function virtSetSpacerColspan() {
+    const cols = virtState.table.querySelectorAll("thead th").length || 1;
+    virtState.topSpacer.firstElementChild.colSpan = cols;
+    virtState.bottomSpacer.firstElementChild.colSpan = cols;
+  }
+  function virtMeasureRowHeight() {
+    const rendered = virtState.tbody.querySelectorAll(
+      ":scope > tr[data-key]"
+    );
+    if (rendered.length === 0) {
+      return 0;
+    }
+    const first = rendered[0].getBoundingClientRect();
+    const last = rendered[rendered.length - 1].getBoundingClientRect();
+    const pitch = (last.bottom - first.top) / rendered.length;
+    return Math.max(0, pitch);
+  }
+  function virtFallbackRowHeight() {
+    let py = 9;
+    let lh = 18;
+    try {
+      const cs = window.getComputedStyle(document.documentElement);
+      py = parseFloat(cs.getPropertyValue("--row-py")) || py;
+      const cell = virtState.tbody?.querySelector("td");
+      if (cell) {
+        lh = parseFloat(window.getComputedStyle(cell).lineHeight) || lh;
+      }
+    } catch {
+    }
+    return py * 2 + lh + 1;
+  }
+  function virtApplyPins() {
+    const ths = virtState.table.querySelectorAll("thead th");
+    if (virtState.pinnedWidths.length !== ths.length) {
+      return false;
+    }
+    ths.forEach((th, i) => {
+      th.style.width = `${virtState.pinnedWidths[i]}px`;
+    });
+    virtState.table.classList.add("ro-virtualized");
+    return true;
+  }
+  function virtPinColumns() {
+    const ths = Array.from(virtState.table.querySelectorAll("thead th"));
+    virtState.pinnedWidths = ths.map((th) => th.getBoundingClientRect().width);
+    virtApplyPins();
+  }
+  function virtComputeVisible() {
+    virtState.visible = listProjectionVisibleRows();
+  }
+  function virtRenderWindow() {
+    const s = virtState;
+    const tbody = s.tbody;
+    const rect = tbody.getBoundingClientRect();
+    const bounds = windowBounds(rect.top, window.innerHeight, s.rowH, s.visible.length);
+    s.start = bounds.start;
+    s.end = bounds.end;
+    const heights = spacerHeights(s.start, s.end, s.visible.length, s.rowH);
+    s.topSpacer.firstElementChild.style.height = `${heights.top}px`;
+    s.bottomSpacer.firstElementChild.style.height = `${heights.bottom}px`;
+    const slice = s.visible.slice(s.start, s.end);
+    slice.forEach((tr) => {
+      tr.classList.remove(FILTER_HIDE_CLASS2);
+    });
+    tbody.replaceChildren(s.topSpacer, ...slice, s.bottomSpacer);
+    reapplyRowState();
+  }
+  function virtBindMounts() {
+    const content = document.getElementById("resource-list-content");
+    const wrap = content?.querySelector(".ro-table-wrap.ro-windowed");
+    const table = wrap?.querySelector("table.ro-table") ?? null;
+    const tbody = table?.tBodies.item(0) ?? null;
+    virtState.table = table;
+    virtState.tbody = tbody;
+    return tbody !== null;
+  }
+  function virtualizeInit() {
+    const content = document.getElementById("resource-list-content");
+    const wrap = content?.querySelector(".ro-table-wrap.ro-windowed");
+    if (!content) {
+      resetListProjection();
+      virtReset();
+      return;
+    }
+    if (!wrap) {
+      ensureListProjection(content);
+      virtReset();
+      return;
+    }
+    const table = wrap.querySelector("table.ro-table");
+    const tbody = table?.tBodies.item(0) ?? null;
+    if (!tbody) {
+      ensureListProjection(content);
+      virtReset();
+      return;
+    }
+    if (tbody.querySelector(":scope > tr.ro-vspacer")) {
+      if (virtState.active && virtState.tbody === tbody) {
+        return;
+      }
+      if (historyRecoveryPending?.content === content && historyRecoveryPending.tbody === tbody) {
+        return;
+      }
+      virtReset();
+      ensureListProjection(content);
+      historyRecoveryPending = { content, tbody };
+      clearListValidator();
+      requestListRefresh();
+      return;
+    }
+    ensureListProjection(content);
+    const rows = listProjectionRows();
+    if (rows.length === 0) {
+      virtReset();
+      return;
+    }
+    historyRecoveryPending = null;
+    virtReset();
+    virtState.table = table;
+    virtState.tbody = tbody;
+    virtState.topSpacer = virtMakeSpacer();
+    virtState.bottomSpacer = virtMakeSpacer();
+    virtSetSpacerColspan();
+    virtState.rowH = virtMeasureRowHeight() || virtFallbackRowHeight();
+    virtPinColumns();
+    virtState.active = true;
+    virtComputeVisible();
+    virtRenderWindow();
+  }
+  function virtualizePrepareSwap(fragment) {
+    virtState.pendingScrollY = null;
+    const incoming = prepareListProjectionSwap(fragment);
+    if (!incoming.windowed || incoming.rows.length === 0) {
+      return;
+    }
+    const wrap = fragment.querySelector(".ro-table-wrap.ro-windowed");
+    const tbody = wrap ? wrap.querySelector("table.ro-table tbody") : null;
+    if (!tbody) {
+      return;
+    }
+    virtState.pendingScrollY = window.scrollY;
+    const rowH = virtState.rowH || virtFallbackRowHeight();
+    const priorStart = virtState.active ? virtState.start : 0;
+    const heights = prepareSwapSpacers(priorStart, incoming.rows.length, rowH);
+    const topSpacer = virtMakeSpacer();
+    const bottomSpacer = virtMakeSpacer();
+    topSpacer.firstElementChild.style.height = `${heights.top}px`;
+    bottomSpacer.firstElementChild.style.height = `${heights.bottom}px`;
+    tbody.replaceChildren(topSpacer, bottomSpacer);
+  }
+  function virtualizeAfterSwap() {
+    historyRecoveryPending = null;
+    const wasActive = virtState.active;
+    const previousByKey = commitListProjectionSwap();
+    if (!previousByKey || !listProjectionWindowed() || listProjectionRows().length === 0) {
+      virtReset();
+      return;
+    }
+    if (!virtBindMounts()) {
+      resetListProjection();
+      virtReset();
+      return;
+    }
+    if (!virtState.topSpacer) {
+      virtState.topSpacer = virtMakeSpacer();
+      virtState.bottomSpacer = virtMakeSpacer();
+    }
+    virtSetSpacerColspan();
+    virtState.active = true;
+    if (!virtState.rowH) {
+      virtState.rowH = virtFallbackRowHeight();
+    }
+    virtComputeVisible();
+    virtRenderWindow();
+    if (!wasActive) {
+      const measured = virtMeasureRowHeight();
+      if (measured && Math.abs(measured - virtState.rowH) > 0.5) {
+        virtState.rowH = measured;
+        virtRenderWindow();
+      }
+    }
+    if (!virtApplyPins()) {
+      virtPinColumns();
+    }
+    if (virtState.pendingScrollY !== null && window.scrollY !== virtState.pendingScrollY) {
+      window.scrollTo(0, virtState.pendingScrollY);
+      virtRenderWindow();
+    }
+    virtState.pendingScrollY = null;
+    virtFlashChangedCells(previousByKey);
+  }
+  function virtFlashChangedCells(prior) {
+    if (prior.size === 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    virtState.tbody.querySelectorAll(":scope > tr[data-key]").forEach((tr) => {
+      const old = prior.get(tr.dataset.key);
+      if (!old) {
+        return;
+      }
+      Array.from(tr.children).forEach((newCell, index) => {
+        const oldCell = old.children.item(index);
+        if (oldCell && newCell.tagName === "TD" && oldCell.textContent !== newCell.textContent) {
+          newCell.classList.remove("ro-cell-changed");
+          void newCell.offsetWidth;
+          newCell.classList.add("ro-cell-changed");
+        }
+      });
+    });
+  }
+  function virtualizeOnFilterChange() {
+    if (!virtualizerActive() || listProjectionSwapPending()) {
+      return;
+    }
+    virtComputeVisible();
+    virtRenderWindow();
+  }
+  function virtMoveFocus(delta) {
+    const list = virtState.visible;
+    if (list.length === 0) {
+      return false;
+    }
+    const focusKey = roRowState().focusedKey();
+    const current = list.findIndex((row) => row.dataset.key === focusKey);
+    const next = clampFocusIndex(current, delta, list.length);
+    virtualizeScrollToIndex(next);
+    roRowState().setFocus(list[next].dataset.key);
+    return true;
+  }
+  function virtualizeScrollToIndex(index) {
+    const rect = virtState.tbody.getBoundingClientRect();
+    const rowTop = rowOffsetTop(rect.top, index, virtState.rowH);
+    const topbar = document.querySelector("header.ro-topbar");
+    const topMin = topbar ? topbar.getBoundingClientRect().bottom : 0;
+    const delta = scrollAdjustToReveal(rowTop, virtState.rowH, topMin, window.innerHeight);
+    if (delta !== 0) {
+      window.scrollBy(0, delta);
+    }
+    virtRenderWindow();
+  }
+  function virtRows() {
+    return virtualizerActive() ? Array.from(listProjectionRows()) : [];
+  }
+  function virtVisible() {
+    return virtState.visible;
+  }
+  function virtRowByKey(key) {
+    return virtualizerActive() ? listProjectionRowByKey(key) : null;
+  }
+  var virtScrollScheduled = false;
+  function virtOnScroll() {
+    if (!virtualizerActive()) {
+      return;
+    }
+    const rect = virtState.tbody.getBoundingClientRect();
+    const bounds = windowBounds(
+      rect.top,
+      window.innerHeight,
+      virtState.rowH,
+      virtState.visible.length
+    );
+    if (bounds.start !== virtState.start || bounds.end !== virtState.end) {
+      virtRenderWindow();
+    }
+  }
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (!virtState.active || virtScrollScheduled) {
+        return;
+      }
+      virtScrollScheduled = true;
+      window.requestAnimationFrame(() => {
+        virtScrollScheduled = false;
+        virtOnScroll();
+      });
+    },
+    { passive: true }
+  );
+  window.addEventListener("resize", virtOnScroll);
+  var fontReady = document.fonts?.ready;
+  if (fontReady && typeof fontReady.then === "function") {
+    void fontReady.then(() => {
+      if (!virtualizerActive()) {
+        return;
+      }
+      const measured = virtMeasureRowHeight();
+      if (measured && Math.abs(measured - virtState.rowH) > 0.5) {
+        virtState.rowH = measured;
+        virtRenderWindow();
+      }
+    });
+  }
+  window.roVirtual = {
+    active: virtualizerActive,
+    renderedBounds() {
+      return { start: virtState.start, end: virtState.end, total: virtState.visible.length };
+    },
+    scrollToKey(key) {
+      if (!virtualizerActive()) {
+        return false;
+      }
+      const tr = listProjectionRowByKey(key);
+      const index = tr ? virtState.visible.indexOf(tr) : -1;
+      if (index === -1) {
+        return false;
+      }
+      virtualizeScrollToIndex(index);
+      return true;
+    }
+  };
+
   // internal/assets/src/js/morph.ts
   var idiomorph = typeof Idiomorph !== "undefined" && typeof Idiomorph.morph === "function" ? Idiomorph : void 0;
   if (idiomorph?.defaults?.callbacks && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -2058,7 +4286,7 @@
           return false;
         }
         if (target.id === "resource-list-content") {
-          captureRowModel(fragment);
+          prepareListProjectionSwap(fragment);
           virtualizePrepareSwap(fragment);
         }
         return idiomorph.morph(target, fragment.children, {
@@ -3839,6 +6067,33 @@
 
   // internal/assets/src/js/init.ts
   window.roToast = showToast;
+  function suppressRedundantActiveNavigation(event) {
+    const detail = Object(event.detail);
+    const source = detail.elt;
+    const trigger = detail.triggeringEvent;
+    if (detail.boosted !== true || detail.target !== document.body || detail.verb !== "get" || !(source instanceof HTMLAnchorElement) || !(trigger instanceof MouseEvent) || trigger.type !== "click" || trigger.button !== 0 || trigger.altKey || trigger.ctrlKey || trigger.metaKey || trigger.shiftKey) {
+      return;
+    }
+    if (!source.classList.contains("is-active") && !source.parentElement?.classList.contains("is-active")) {
+      return;
+    }
+    const rawHref = source.getAttribute("href");
+    if (!rawHref || rawHref.includes("#") || typeof detail.path !== "string") {
+      return;
+    }
+    try {
+      const current = new URL(window.location.href);
+      const resolvesToCurrentLocation = (candidate) => {
+        const resolved = new URL(candidate, current);
+        return resolved.origin === current.origin && resolved.pathname === current.pathname && resolved.search === current.search && resolved.hash === current.hash;
+      };
+      if (resolvesToCurrentLocation(rawHref) && resolvesToCurrentLocation(detail.path)) {
+        event.preventDefault();
+      }
+    } catch {
+    }
+  }
+  document.addEventListener("htmx:configRequest", suppressRedundantActiveNavigation);
   function handleSortPreferenceRequest(event) {
     const detail = Object(event.detail);
     const rawCfg = Object(detail.requestConfig);
@@ -3883,6 +6138,14 @@
   }
   document.addEventListener("htmx:beforeRequest", handleSortPreferenceRequest);
   document.addEventListener("htmx:afterSwap", (event) => {
+    const bodySwapped = event.target === document.body;
+    if (bodySwapPending && bodySwapped) {
+      if (bodySwapTicket?.phase === "swap") {
+        completeBodySwap();
+      } else {
+        reloadCurrentHistoryEntry();
+      }
+    }
     if (isListRefreshEvent(event)) {
       rememberListValidator(event);
       noteRefreshRecovery();
@@ -3899,6 +6162,9 @@
       virtualizeAfterSwap();
       liveOnListSwap(event);
     }
+    if (bodySwapped) {
+      runInit();
+    }
   });
   document.addEventListener("htmx:beforeSwap", (event) => {
     const detail = event.detail;
@@ -3908,21 +6174,128 @@
       return;
     }
     if (detail && detail.target === document.body) {
+      if (bodySwapPending || bodyReloading) {
+        event.preventDefault();
+        reloadCurrentHistoryEntry();
+        return;
+      }
       const status = detail.xhr?.status;
       if (typeof status === "number" && status >= 400 && status <= 599) {
         detail.shouldSwap = true;
       }
+      const ticket = claimBodySwap("normal", "swap", null);
       closeRowMenu();
       clearRowState();
       clearListStale();
       liveTeardown();
+      pauseRefresh();
+      liveResetPage();
       liveState.status = "idle";
       liveState.streamPath = "";
+      queueMicrotask(() => {
+        if (event.defaultPrevented || detail.shouldSwap === false) {
+          reloadFailedBodySwap(ticket);
+        }
+      });
+    }
+  });
+  var bodySwapPending = false;
+  var bodySwapTicket = null;
+  var bodyReloading = false;
+  function clearBodySwap() {
+    bodySwapPending = false;
+    bodySwapTicket = null;
+  }
+  function completeBodySwap() {
+    clearBodySwap();
+    bodyReloading = false;
+  }
+  function retireCurrentScreenForBodySwap() {
+    liveTeardown();
+    pauseRefresh();
+    liveResetPage();
+    liveState.status = "idle";
+    liveState.streamPath = "";
+  }
+  function reloadCurrentHistoryEntry() {
+    if (bodyReloading) return;
+    if (!bodySwapPending) retireCurrentScreenForBodySwap();
+    clearBodySwap();
+    bodyReloading = true;
+    window.history.go(0);
+  }
+  function reloadFailedBodySwap(ticket) {
+    if (!bodySwapPending || !ticket || bodySwapTicket !== ticket) return;
+    reloadCurrentHistoryEntry();
+  }
+  function claimBodySwap(kind, phase, xhr) {
+    const ticket = { kind, phase, xhr };
+    bodySwapPending = true;
+    bodySwapTicket = ticket;
+    return ticket;
+  }
+  function beginHistoryBodySwap(event) {
+    if (bodySwapPending || bodyReloading) {
+      event.preventDefault();
+      reloadCurrentHistoryEntry();
+      return;
+    }
+    const miss = event.type === "htmx:historyCacheMiss";
+    const detail = Object(event.detail);
+    const xhr = miss && detail.xhr instanceof EventTarget ? detail.xhr : null;
+    const ticket = claimBodySwap(miss ? "miss" : "hit", miss ? "request" : "swap", xhr);
+    retireCurrentScreenForBodySwap();
+    queueMicrotask(() => {
+      if (event.defaultPrevented) reloadFailedBodySwap(ticket);
+    });
+    if (miss) {
+      if (!xhr) {
+        event.preventDefault();
+        reloadFailedBodySwap(ticket);
+        return;
+      }
+      xhr.addEventListener(
+        "loadend",
+        () => {
+          if (bodySwapTicket === ticket && ticket.phase === "request") {
+            reloadFailedBodySwap(ticket);
+          }
+        },
+        { once: true }
+      );
+    }
+  }
+  document.addEventListener("htmx:historyCacheHit", beginHistoryBodySwap);
+  document.addEventListener("htmx:historyCacheMiss", beginHistoryBodySwap);
+  document.addEventListener("htmx:historyCacheMissLoad", (event) => {
+    const detail = Object(event.detail);
+    const ticket = bodySwapTicket;
+    if (bodyReloading || !bodySwapPending || !ticket || ticket.kind !== "miss" || ticket.phase !== "request" || detail.xhr !== ticket.xhr) {
+      event.preventDefault();
+      reloadCurrentHistoryEntry();
+      return;
+    }
+    ticket.phase = "swap";
+  });
+  document.addEventListener("htmx:historyCacheMissLoadError", (event) => {
+    const detail = Object(event.detail);
+    const ticket = bodySwapTicket;
+    if (bodyReloading || !bodySwapPending || !ticket || ticket.kind !== "miss" || detail.xhr !== ticket.xhr) {
+      reloadCurrentHistoryEntry();
+      return;
+    }
+    reloadFailedBodySwap(ticket);
+  });
+  document.addEventListener("htmx:swapError", (event) => {
+    const detail = Object(event.detail);
+    if (event.target === document.body || detail.target === document.body) {
+      reloadFailedBodySwap(bodySwapTicket);
     }
   });
   document.addEventListener("htmx:historyRestore", () => {
-    reapplyRowState();
-    updateBulkBar();
+  });
+  window.addEventListener("pageshow", () => {
+    completeBodySwap();
   });
   function setupStickyNamespace() {
     document.querySelectorAll(".ro-table-wrap table.ro-table").forEach((table) => {
@@ -3947,13 +6320,9 @@
     }
   }
   function runInit() {
+    if (bodySwapPending || bodyReloading) return;
     [
       syncRefreshUI,
-      // Live stream reconciliation, BEFORE applyRefresh so
-      // the poll chain arms against fresh live state: a riding stream
-      // disarms it (effective 0), a fallback sets the 5s cadence.
-      liveApply,
-      applyRefresh,
       buildYamlFolds,
       collapseSectionsFromHash,
       highlightYamlLine,
@@ -3965,6 +6334,10 @@
       // init that prunes rows from the DOM -- at this point
       // the DOM still IS the complete dataset.
       captureRowModelFromDocument,
+      // A new projection deliberately clears stale visibleKeys. Re-derive
+      // them from the current draft before windowing so navigation/history
+      // cannot carry an old page's filter set into this one.
+      applyLiveNameFilter,
       // Virtualization engagement: windows the >threshold
       // table the server marked `.ro-windowed`. AFTER the model capture,
       // per the order contract above.
@@ -3978,11 +6351,19 @@
       // cached/boosted body carried in -- and the bulk bar re-syncs to the
       // same store right after.
       reapplyRowState,
-      updateBulkBar
+      updateBulkBar,
+      // Live opens only after every synchronous body/model repair. In
+      // particular, virtualizeInit may detect a history-restored viewport
+      // slice and synchronously issue the mandatory full `_table` rebuild;
+      // its beforeRequest ownership must exist before liveApply decides
+      // whether to open or suspend. Keep liveApply immediately BEFORE
+      // applyRefresh so the poll chain still arms against the resulting Live
+      // state: a riding stream disarms it, a fallback selects 5s.
+      liveApply,
+      applyRefresh
     ].forEach(runInitStep);
   }
   document.addEventListener("DOMContentLoaded", runInit);
-  document.addEventListener("htmx:load", runInit);
   document.addEventListener("htmx:afterSettle", setupStickyNamespace);
   window.addEventListener("resize", setupStickyNamespace);
 })();

@@ -402,6 +402,11 @@ const virtualizeThreshold = 500
 // hugeParam, matching nameCell/statusCell/metaKey in helpers.go).
 func tableWindowed(table *TableData) bool { return len(table.Rows) > virtualizeThreshold }
 
+// TableWindowed exposes the template-owned boundary to the Live projection
+// diff engine. Keeping the comparison here prevents the streaming path from
+// growing a second numeric threshold that can drift from snapshot markup.
+func TableWindowed(table *TableData) bool { return tableWindowed(table) }
+
 // tableWrapClass picks the wrap modifier: the mobile-card projection marker
 // below the threshold, the `ro-windowed` marker above it.
 func tableWrapClass(windowed bool) string {

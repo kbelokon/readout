@@ -1,375 +1,890 @@
-// live.ts -- Live mode (client half), migrated from legacy.js.
-// 'Live' is the 6th refresh-dropdown mode: instead of polling, the client opens
-// the read-only `GET …/{plural}/_stream` SSE endpoint and morphs every pushed
-// `_table` fragment through the SAME ro-morph pipeline the polling ticks ride
-// (the extension still lives in legacy.js; htmx.swap routes the 'morph' style
-// through it and dispatches htmx:afterSwap on the container, so the standard
-// post-swap repairs run untouched). The event carries a roLivePush marker so a
-// push never triggers the param-change reopen.
+// live.ts -- negotiated Live v1/v2 browser transport and lifecycle.
 //
-// Native EventSource is deliberately NOT used: it cannot observe the non-200
-// connect statuses the wire contract assigns meaning to (204 watch-less, 429
-// stream cap), and its auto-reconnect fights the close-reason taxonomy. A
-// streaming fetch + a ~20-line SSE line parser gives full control with no new
-// dependency, and the strict CSP is untouched (fetch is connect-src).
-//
-// The PURE decisions -- the close-reason taxonomy (classifyStreamClose) and the
-// morph-time discard gate (shouldDiscardPush) -- live in live-policy.ts
-// (unit-tested as a discriminated union); this module is the transport + state
-// machine around them. The refresh tick chain (refresh.ts) is reused for the 5s
-// fallback; the stale banner (stale.ts) for the honest degradations.
-//
-// The Go needle contract (internal/web/list_redesign_test.go,
-// TestLiveWrongPageGateReadoutJSContract) pins the FORMS preserved here:
-// 'liveStreamBase() !== liveState.streamPath' / liveDiscards / window.roLive.
-// The body-swap teardown (liveTeardown + the liveState reset literals) is
-// orchestrated in legacy.js's htmx:beforeSwap hook, which imports liveState +
-// liveTeardown from this module so the needle literals stay inside that hook.
+// v1 remains a rolling-deploy compatibility lane: the client still sends the
+// legacy query generation and accepts an unversioned response. Negotiated v2
+// carries strict snapshot/delta envelopes, publishes its cursor only after the
+// complete DOM repair transaction, and resynchronizes on any protocol drift.
 
 import { clearListValidator } from './list-etag.js';
-import { classifyStreamClose, shouldDiscardPush } from './live-policy.js';
+import { shouldDiscardPush } from './live-policy.js';
 import {
-    containerListRequestsInFlight,
-    pruneSettledListRequests,
-    refreshMode,
-    scheduleRefreshTick,
-    userListRequestsInFlight,
-} from './refresh.js';
+    applyLiveV2Delta,
+    decodeLiveV2Envelope,
+    type LiveV2Cursor,
+    type LiveV2Envelope,
+    type LiveV2SnapshotEnvelope,
+} from './live-protocol.js';
+import { LiveSSEError, type LiveSSEEvent, LiveSSEParser } from './live-sse.js';
+import {
+    liveRequestURL,
+    liveScreenForBase,
+    liveStreamBaseForURL,
+    liveStreamBaseFromTableRequest,
+    mintLiveGeneration,
+} from './live-url.js';
+import { refreshMode, scheduleRefreshTick } from './refresh.js';
 import { markListStale } from './stale.js';
 
-// The htmx surface this module uses (the vendored ro-morph extension resolves
-// the 'morph' swap style itself). Typed minimally; htmx is a classic-script
-// global loaded before this bundle.
+interface LiveSnapshotEventInfo {
+    target: Element;
+    roLivePush: true;
+    roLiveSnapshotTxn?: object;
+}
+
 interface Htmx {
     swap(
         target: Element,
         content: string,
         swapSpec: { swapStyle: string },
-        swapOptions: { contextElement: Element; eventInfo: { target: Element; roLivePush: true } },
+        swapOptions: { contextElement: Element; eventInfo: LiveSnapshotEventInfo },
     ): void;
 }
+
 function getHtmx(): Htmx | undefined {
     return (window as unknown as { htmx?: Htmx }).htmx;
 }
 
-type LiveStatus = 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden';
+export type LiveStatus =
+    | 'idle'
+    | 'connecting'
+    | 'syncing-v1'
+    | 'syncing-v2'
+    | 'open-v1'
+    | 'open-v2'
+    | 'resyncing'
+    | 'suspended'
+    | 'fallback'
+    | 'hidden';
 
-// liveState is the single source of truth for the stream lifecycle. EXPORTED so
-// legacy.js's htmx:beforeSwap body-swap hook can reset it inline (the
-// wrong-page-gate needle contract requires the reset literals to live in that
-// hook). The AbortController doubles as the supersession token: every async
-// resumption checks `liveState.abort === ctrl` and goes inert when a newer
-// stream (or a teardown) replaced it.
 export const liveState: {
     status: LiveStatus;
     abort: AbortController | null;
     gen: string;
     streamPath: string;
 } = {
-    status: 'idle', // 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden'
-    abort: null, // AbortController of the current stream fetch
-    gen: '', // the minted generation every frame must echo (string compare)
-    streamPath: '', // the stream URL sans ?g= -- the page/params identity
+    status: 'idle',
+    abort: null,
+    gen: '',
+    streamPath: '',
 };
-// liveDiscards counts ro-table frames DISCARDED at morph time (stale
-// generation, wrong page identity, in-flight `_table` request). Exposed via the
-// window.roLive debug seam so the e2e suite can await "the push arrived AND was
-// discarded" deterministically.
-let liveDiscards = 0;
-// The Live FALLBACK poll cadence (seconds): 0 while a stream rides (or Live is
-// off), 5 while degraded to polling. refresh.ts's effectivePollSeconds reads it
-// through liveFallbackSeconds().
-let liveFallbackSecs = 0;
 
-// liveFallbackSeconds() -- the cross-module getter refresh.ts folds into the
-// effective poll cadence.
+type LiveProtocol = 'pending' | 'v1' | 'v2';
+
+interface LiveConnection {
+    readonly ctrl: AbortController;
+    readonly generation: string;
+    readonly base: string;
+    readonly screen: string;
+    readonly pageEpoch: number;
+    readonly protocol: LiveProtocol;
+    readonly cursor: Readonly<LiveV2Cursor> | null;
+}
+
+interface LiveCounters {
+    connections: number;
+    resyncs: number;
+    fallbacks: number;
+    v1Snapshots: number;
+    v2Snapshots: number;
+    deltas: number;
+    terminals: number;
+    invalidFrames: number;
+    discards: number;
+    rawBytes: number;
+    payloadBytes: number;
+    snapshotBytes: number;
+    deltaBytes: number;
+    inserted: number;
+    updated: number;
+    deleted: number;
+    projected: number;
+}
+
+export interface LiveDebugStats extends LiveCounters {
+    state: LiveStatus;
+    protocol: LiveProtocol | null;
+    seq: number;
+    inFlightRequests: number;
+    resyncsInWindow: number;
+}
+
+const counters: LiveCounters = {
+    connections: 0,
+    resyncs: 0,
+    fallbacks: 0,
+    v1Snapshots: 0,
+    v2Snapshots: 0,
+    deltas: 0,
+    terminals: 0,
+    invalidFrames: 0,
+    discards: 0,
+    rawBytes: 0,
+    payloadBytes: 0,
+    snapshotBytes: 0,
+    deltaBytes: 0,
+    inserted: 0,
+    updated: 0,
+    deleted: 0,
+    projected: 0,
+};
+
+type CounterName = keyof LiveCounters;
+const MAX_COUNTER = Number.MAX_SAFE_INTEGER;
+const RESYNC_WINDOW_MS = 30_000;
+const MAX_RESYNCS_PER_WINDOW = 2;
+export const LIVE_FIRST_FRAME_TIMEOUT_MS = 10_000;
+
+let activeConnection: LiveConnection | null = null;
+let liveFallbackSecs = 0;
+let pageEpoch = 0;
+let pendingSnapshotTxn: object | null = null;
+const completedSnapshotTxns = new WeakSet<object>();
+let resyncTimestamps: number[] = [];
+let resyncScheduled = false;
+let pendingResync = false;
+let resumeAfterRequests = false;
+let resumeAfterHidden = false;
+let resumeBase = '';
+// Retain the historical bundle needle and expose the same saturating value
+// through the debug seam. Expected connection aborts/supersessions never feed
+// this counter; only a parsed frame rejected at its identity gate does.
+let liveDiscards = 0;
+
+interface OwnedRequest {
+    readonly epoch: number;
+    readonly xhr: XMLHttpRequest;
+    networkSettled: boolean;
+    sent: boolean;
+    swapCompleted: boolean;
+}
+
+const ownedRequests = new Map<XMLHttpRequest, OwnedRequest>();
+
+function addCounter(name: CounterName, amount = 1): void {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    counters[name] = Math.min(MAX_COUNTER, counters[name] + Math.floor(amount));
+    if (name === 'discards') liveDiscards = counters.discards;
+}
+
+function pruneResyncWindow(now = Date.now()): void {
+    resyncTimestamps = resyncTimestamps.filter((timestamp) => now - timestamp < RESYNC_WINDOW_MS);
+}
+
+function currentStats(): LiveDebugStats {
+    pruneResyncWindow();
+    return {
+        ...counters,
+        state: liveState.status,
+        protocol: activeConnection?.protocol || null,
+        seq: activeConnection?.cursor?.seq || 0,
+        inFlightRequests: ownedRequests.size,
+        resyncsInWindow: resyncTimestamps.length,
+    };
+}
+
 export function liveFallbackSeconds(): number {
     return liveFallbackSecs;
 }
 
-// liveSupported: can THIS page stream? The v2 single-type container must be
-// present (data-live-url="location") and the server-rendered Live option must
-// not be disabled (Live is unsupported on multi-type/multi-cluster pages). Server truth drives the client.
 function liveSupported(): boolean {
     const content = document.getElementById('resource-list-content') as HTMLElement | null;
-    if (content?.dataset.liveUrl !== 'location') {
-        return false;
-    }
+    if (content?.dataset.liveUrl !== 'location') return false;
     const option = document.querySelector(
         '[data-ro-action="set-refresh"][data-ro-interval="Live"]',
     ) as HTMLButtonElement | null;
     return !!option && !option.disabled;
 }
 
-// liveStreamBase derives the stream URL from the LIVE document URL at open time:
-// path + "/_stream" + the RAW query -- raw string concat, never a
-// URLSearchParams round-trip, so an `f` chip's wire-significant raw OR-commas
-// survive byte-exactly.
+// The exact literal comparison `liveStreamBase() !== liveState.streamPath` is
+// retained in the v1 morph gate below for the server-side bundle contract.
 function liveStreamBase(): string {
-    const u = new URL(window.location.href);
-    return `${u.pathname.replace(/\/+$/, '')}/_stream${u.search}`;
+    return liveStreamBaseForURL(new URL(window.location.href));
 }
 
-// liveTeardown aborts the current stream fetch (if any) and zeroes the fallback
-// cadence -- a torn-down stream is no longer degraded-to-polling, so the shared
-// tick chain must not keep the 5s fallback armed on its behalf. Every caller
-// that wants a fallback cadence (liveEngageFallback) sets it AFTER tearing down,
-// so this zero is always the correct floor. EXPORTED for the body-swap hook in
-// legacy.js, where it resets the live state for the OLD page before the new
-// page's init reopens (the body hook's `liveState.status = 'idle'` /
-// `liveState.streamPath = ''` literals stay inline there per the wrong-page-gate
-// needle contract; this zero rides along so the hook need not touch the private
-// liveFallbackSecs).
-export function liveTeardown(): void {
-    const ctrl = liveState.abort;
+function isActive(connection: LiveConnection): boolean {
+    return (
+        activeConnection === connection &&
+        liveState.abort === connection.ctrl &&
+        connection.pageEpoch === pageEpoch
+    );
+}
+
+function connectionToken(
+    source: Omit<LiveConnection, 'protocol' | 'cursor'> &
+        Partial<Pick<LiveConnection, 'protocol' | 'cursor'>>,
+): LiveConnection {
+    return Object.freeze({
+        ...source,
+        protocol: source.protocol || 'pending',
+        cursor: source.cursor ? Object.freeze({ ...source.cursor }) : null,
+    });
+}
+
+function replaceConnection(
+    current: LiveConnection,
+    protocol: LiveProtocol,
+    cursor: LiveV2Cursor | Readonly<LiveV2Cursor> | null,
+): LiveConnection | null {
+    if (!isActive(current)) return null;
+    const next = connectionToken({ ...current, protocol, cursor });
+    activeConnection = next;
+    return next;
+}
+
+function abortActiveConnection(): void {
+    const connection = activeConnection;
+    activeConnection = null;
     liveState.abort = null;
-    liveFallbackSecs = 0;
-    if (ctrl) {
-        ctrl.abort();
-    }
+    pendingSnapshotTxn = null;
+    if (connection && !connection.ctrl.signal.aborted) connection.ctrl.abort();
 }
 
-// liveEngageFallback degrades Live to 5s polling: silently (204/429/connect
-// failure) or with the stale banner (terminal, transport drop). The banner
-// rides the SAME markListStale machinery every stale episode uses. Without a
-// list container the cadence stays 0: there is nothing to poll.
+export function liveTeardown(): void {
+    abortActiveConnection();
+    liveFallbackSecs = 0;
+}
+
+// Called at body/history ownership boundaries. The existing body hook keeps
+// the pinned liveTeardown + state reset literals alongside this epoch bump.
+export function liveResetPage(): void {
+    pageEpoch += 1;
+    ownedRequests.clear();
+    pendingSnapshotTxn = null;
+    resumeAfterRequests = false;
+    resumeAfterHidden = false;
+    resumeBase = '';
+    pendingResync = false;
+    resyncScheduled = false;
+    resyncTimestamps = [];
+}
+
 function liveEngageFallback(banner: boolean): void {
-    liveTeardown();
+    abortActiveConnection();
+    pendingResync = false;
+    resyncScheduled = false;
+    resumeAfterRequests = false;
+    resumeAfterHidden = false;
     liveState.status = 'fallback';
     liveFallbackSecs = document.getElementById('resource-list-content') ? 5 : 0;
+    addCounter('fallbacks');
     scheduleRefreshTick();
-    if (banner) {
-        markListStale();
-    }
+    if (banner) markListStale();
 }
 
-// liveOpen tears down any current stream and opens a fresh one against `base`
-// (the stream URL sans generation). An empty base means "this page cannot
-// stream": silent polling fallback. Minting the generation HERE -- one per open
-// -- is what makes the morph-time echo check sufficient.
-function liveOpen(base: string): void {
-    liveTeardown();
+function openConnection(base: string): void {
+    abortActiveConnection();
+    liveFallbackSecs = 0;
     liveState.streamPath = base;
     if (!base) {
         liveEngageFallback(false);
         return;
     }
-    liveState.status = 'connecting';
-    liveState.gen = window.crypto.getRandomValues(new Uint32Array(4)).toString();
+    if (document.hidden) {
+        resumeBase = base;
+        resumeAfterHidden = true;
+        liveState.status = 'hidden';
+        scheduleRefreshTick();
+        return;
+    }
+    let generation: string;
+    try {
+        generation = mintLiveGeneration();
+    } catch {
+        liveEngageFallback(false);
+        return;
+    }
     const ctrl = new AbortController();
+    const connection = connectionToken({
+        ctrl,
+        generation,
+        base,
+        screen: liveScreenForBase(base),
+        pageEpoch,
+        protocol: 'pending',
+        cursor: null,
+    });
+    activeConnection = connection;
     liveState.abort = ctrl;
-    const separator = base.includes('?') ? '&' : '?';
-    const url = `${base}${separator}g=${liveState.gen}`;
-    scheduleRefreshTick(); // effective cadence is 0 now -> the poll chain disarms
-    void liveConnect(url, ctrl);
+    liveState.gen = generation;
+    liveState.status = 'connecting';
+    addCounter('connections');
+    scheduleRefreshTick();
+    void liveConnect(connection);
 }
 
-// liveConnect is the transport core: a streaming fetch + an SSE line parser.
-// Frames are `event: <name>` + `data: <one JSON line>` + a blank line. Every
-// await resumption re-checks the supersession token; equivalent read-error/EOF
-// exits share one banner-fallback path.
-async function liveConnect(url: string, ctrl: AbortController): Promise<void> {
-    let res: Response;
+function responseHeader(response: Response, name: string): string | null {
     try {
-        res = await fetch(url, { signal: ctrl.signal });
+        return response.headers.get(name);
     } catch {
-        applyClose({ superseded: liveState.abort !== ctrl, cause: 'connect-error' });
-        return;
+        return null;
     }
-    if (liveState.abort !== ctrl) {
-        return;
+}
+
+function negotiatedProtocol(response: Response, connection: LiveConnection): 'v1' | 'v2' | null {
+    const contentType = responseHeader(response, 'Content-Type');
+    if (contentType?.split(';', 1)[0].trim().toLowerCase() !== 'text/event-stream') {
+        return null;
     }
-    if (res.status !== 200 || !res.body) {
-        // 204 watch-less / 429 cap / anything unexpected: silent 5s polling.
-        applyClose({ superseded: false, cause: 'bad-status' });
-        return;
-    }
-    liveState.status = 'open';
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffered = '';
-    let eventName: string | null = null;
-    let dataLines: string[] = [];
-    const readAndHandleChunk = async (): Promise<Uint8Array | undefined> => {
-        const chunk = await reader.read();
-        if (liveState.abort !== ctrl) {
-            return; // torn down while awaiting -- go inert
+    const version = responseHeader(response, 'RO-Live-Version');
+    const generation = responseHeader(response, 'RO-Live-Generation');
+    if (version === null && generation === null) return 'v1';
+    if (version === '2' && generation === connection.generation) return 'v2';
+    return null;
+}
+
+function firstFrameAccepted(): boolean {
+    return liveState.status === 'open-v1' || liveState.status === 'open-v2';
+}
+
+async function liveConnect(initial: LiveConnection): Promise<void> {
+    let firstFrameTimer: number | null = window.setTimeout(() => {
+        firstFrameTimer = null;
+        const current = activeConnection;
+        if (
+            current?.ctrl === initial.ctrl &&
+            (liveState.status === 'connecting' ||
+                liveState.status === 'syncing-v1' ||
+                liveState.status === 'syncing-v2')
+        ) {
+            liveEngageFallback(false);
         }
-        // EOF has no value. Dereferencing the spec-mandated Uint8Array maps EOF
-        // (and a malformed value-less result) into the same caught close path as
-        // a reader rejection, without another unconditional read iteration.
-        const value = chunk.value as Uint8Array;
-        buffered += decoder.decode(value.subarray(), { stream: true });
-        const completeLines = buffered.split('\n');
-        buffered = completeLines.pop() as string;
-        for (const rawLine of completeLines) {
-            // Splitting CRLF on LF leaves a lone CR for the blank frame
-            // delimiter. Event names are trimmed below and JSON accepts a
-            // trailing CR, so normalizing every field line is redundant.
-            const line = rawLine === '\r' ? '' : rawLine;
-            if (line.length === 0) {
-                liveHandleFrame(eventName, dataLines.join('\n'));
-                eventName = null;
-                dataLines = [];
-                if (liveState.abort !== ctrl) {
-                    return; // terminal handled (or superseded mid-frame)
-                }
-            } else if (line.startsWith('event:')) {
-                eventName = line.slice(6).trim();
-            } else if (line.startsWith('data:')) {
-                // JSON accepts the SSE field's optional leading space, so
-                // keep the payload bytes and avoid a redundant normalization.
-                dataLines.push(line.slice(5));
-            }
+    }, LIVE_FIRST_FRAME_TIMEOUT_MS);
+    const clearFirstFrameTimer = () => {
+        if (firstFrameTimer !== null) {
+            window.clearTimeout(firstFrameTimer);
+            firstFrameTimer = null;
         }
-        return value;
     };
     try {
-        // Each condition evaluation consumes exactly one reader result. EOF,
-        // supersession, and terminal frames therefore stop the loop without an
-        // unconditional body that could spin independently of the stream.
-        while (await readAndHandleChunk()) {}
-    } catch {
-        // A reader error and a terminal-less EOF have the same user-visible
-        // outcome: the last good table stays visible and 5s fallback polling
-        // takes over. Fall through to that shared close path.
+        await runLiveConnection(initial, clearFirstFrameTimer);
+    } finally {
+        clearFirstFrameTimer();
     }
-    if (liveState.abort !== ctrl) {
-        return;
-    }
-    liveEngageFallback(true);
 }
 
-// applyClose maps a close fact to its action via the pure taxonomy. 'ignore'
-// means a superseded stream's close surfaced -- do nothing.
-function applyClose(facts: Parameters<typeof classifyStreamClose>[0]): void {
-    const action = classifyStreamClose(facts);
-    if (action.kind === 'ignore') {
-        return;
-    }
-    liveEngageFallback(action.banner);
-}
-
-// liveHandleFrame dispatches one parsed SSE frame. THE morph-time gates live here:
-// the generation echo, the page identity, and the in-flight `_table` check all
-// run at dispatch -- which IS morph time, synchronously before htmx.swap -- so
-// a stale or racing push is dropped whole (shouldDiscardPush), never queued.
-function liveHandleFrame(name: string | null, text: string): void {
-    let parsed: unknown;
+async function runLiveConnection(
+    initial: LiveConnection,
+    clearFirstFrameTimer: () => void,
+): Promise<void> {
+    let response: Response;
     try {
-        parsed = JSON.parse(text);
+        response = await fetch(liveRequestURL(initial.base, initial.generation), {
+            signal: initial.ctrl.signal,
+            headers: {
+                'RO-Live-Version': '2',
+                'RO-Live-Generation': initial.generation,
+            },
+        });
     } catch {
-        // Malformed frames are skipped; every later push is a full snapshot.
-    }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        if (!isActive(initial)) return;
+        liveEngageFallback(false);
         return;
     }
-    const payload = parsed as { g?: unknown; html?: unknown };
+    if (!isActive(initial)) return;
+    if (response.status !== 200 || !response.body) {
+        liveEngageFallback(false);
+        return;
+    }
+    const protocol = negotiatedProtocol(response, initial);
+    if (!protocol) {
+        rejectProtocol(initial);
+        return;
+    }
+    let connection = replaceConnection(initial, protocol, null);
+    if (!connection) return;
+    liveState.status = protocol === 'v2' ? 'syncing-v2' : 'syncing-v1';
+    const parser = new LiveSSEParser();
+    let reader: ReadableStreamDefaultReader<Uint8Array>;
+    try {
+        reader = response.body.getReader();
+    } catch {
+        if (isActive(connection)) liveEngageFallback(true);
+        return;
+    }
+    try {
+        for (;;) {
+            const result = await reader.read();
+            if (!isActive(connection)) return;
+            if (result.done) {
+                parser.finish();
+                break;
+            }
+            const value = result.value;
+            addCounter('rawBytes', value.byteLength);
+            let events: LiveSSEEvent[];
+            try {
+                events = parser.push(value);
+            } catch (error) {
+                if (error instanceof LiveSSEError) addCounter('invalidFrames');
+                if (connection.protocol === 'v2') rejectProtocol(connection, false);
+                else liveEngageFallback(true);
+                return;
+            }
+            for (const event of events) {
+                if (!isActive(connection)) {
+                    addCounter('discards');
+                    return;
+                }
+                addCounter('payloadBytes', event.dataBytes);
+                if (connection.protocol === 'v2') {
+                    if (!handleV2Frame(connection, event.name, event.data, event.dataBytes)) return;
+                } else if (!handleV1Frame(connection, event.name, event.data, event.dataBytes)) {
+                    return;
+                }
+                if (firstFrameAccepted()) clearFirstFrameTimer();
+                const current = activeConnection;
+                if (!current || current.ctrl !== connection.ctrl) return;
+                connection = current;
+            }
+        }
+    } catch {
+        if (!isActive(connection)) return;
+    }
+    if (isActive(connection)) liveEngageFallback(true);
+}
+
+function parseJSONRecord(text: string): Record<string, unknown> | null {
+    try {
+        const value: unknown = JSON.parse(text);
+        return typeof value === 'object' && value !== null && !Array.isArray(value)
+            ? (value as Record<string, unknown>)
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+const TERMINAL_REASONS = new Set(['idle', 'auth', 'watch-failed', 'shutdown']);
+
+function handleV1Frame(
+    connection: LiveConnection,
+    name: string | null,
+    text: string,
+    payloadBytes: number,
+): boolean {
+    if (name !== 'ro-table' && name !== 'ro-terminal') return true;
+    const payload = parseJSONRecord(text);
+    if (!payload) {
+        addCounter('invalidFrames');
+        return true;
+    }
     if (name === 'ro-terminal') {
-        // idle / auth / watch-failed / shutdown: close WITHOUT reconnecting.
-        applyClose({ superseded: false, cause: 'terminal-frame' });
-        return;
-    }
-    if (name !== 'ro-table') {
-        return;
+        if (payload.g !== connection.generation || !TERMINAL_REASONS.has(String(payload.reason))) {
+            addCounter('invalidFrames');
+            return true;
+        }
+        addCounter('terminals');
+        liveEngageFallback(true);
+        return false;
     }
     if (typeof payload.g !== 'string' || typeof payload.html !== 'string') {
-        return;
+        addCounter('invalidFrames');
+        return true;
     }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    // The morph-time discard gate, as the ordered taxonomy of
-    // live-policy.ts (unit-tested): stale generation -> wrong page -> a _table
-    // request in flight. The WRONG-PAGE fact is computed here with its literal
-    // form, `liveStreamBase() !== liveState.streamPath`: it is the independent
-    // morph-time layer that backs the structural body-swap teardown (a boosted
-    // body swap pushes the new URL BEFORE liveApply reconciles, so an old
-    // stream's push must not morph the old resource's table into the new
-    // container), and the Go wrong-page-gate contract pins exactly that form in
-    // the bundle (internal/web/list_redesign_test.go).
     const reason = shouldDiscardPush({
         frameGeneration: payload.g,
-        currentGeneration: liveState.gen,
-        // The Go bundle contract pins the literal page comparison below. Feed
-        // equal page identities here so the policy supplies the first and third
-        // ordered gates (generation, then request); the literal supplies the
-        // page gate between them without evaluating it twice.
+        currentGeneration: connection.generation,
         liveStreamBase: liveState.streamPath,
         openedStreamBase: liveState.streamPath,
-        requestInFlight:
-            userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0,
+        requestInFlight: ownedRequests.size > 0,
     });
     if (
         reason === 'stale-generation' ||
         liveStreamBase() !== liveState.streamPath ||
         reason === 'request-in-flight'
     ) {
-        // STALE GENERATION / WRONG PAGE / a _table request in flight -> dropped
-        // whole at morph time, never deferred (every push is a full snapshot).
-        liveDiscards += 1;
-        return;
+        addCounter('discards');
+        return true;
     }
-    liveMorph(payload.html);
+    if (!swapSnapshot(payload.html, connection, null)) {
+        addCounter('invalidFrames');
+        liveEngageFallback(true);
+        return false;
+    }
+    addCounter('v1Snapshots');
+    addCounter('snapshotBytes', payloadBytes);
+    liveState.status = 'open-v1';
+    return true;
 }
 
-// liveMorph swaps one pushed fragment into the list container through the htmx
-// swap pipeline with the 'morph' style: htmx resolves the container's
-// hx-ext="ro-morph" extension (which runs the EXACT tick path) and dispatches
-// htmx:afterSwap on the container, so the standard post-swap pipeline runs
-// through the existing listener. eventInfo carries target (so isListRefreshEvent
-// matches) and the roLivePush marker (so the reopen hook skips pushes).
-function liveMorph(html: string): void {
+function validEnvelopeIdentity(envelope: LiveV2Envelope, connection: LiveConnection): boolean {
+    return envelope.g === connection.generation && envelope.screen === connection.screen;
+}
+
+function snapshotCursor(envelope: LiveV2SnapshotEnvelope): LiveV2Cursor {
+    const cursor: LiveV2Cursor = {
+        g: envelope.g,
+        seq: envelope.seq,
+        screen: envelope.screen,
+        rev: envelope.rev,
+        schema: envelope.schema,
+    };
+    if (envelope.rv !== undefined) cursor.rv = envelope.rv;
+    return cursor;
+}
+
+function handleV2Frame(
+    connection: LiveConnection,
+    name: string | null,
+    text: string,
+    payloadBytes: number,
+): boolean {
+    if (name !== 'ro-live') {
+        rejectProtocol(connection);
+        return false;
+    }
+    const decoded = decodeLiveV2Envelope(text);
+    if (!decoded.ok) {
+        rejectProtocol(connection);
+        return false;
+    }
+    const envelope = decoded.value;
+    const cursor = connection.cursor;
+    if (!validEnvelopeIdentity(envelope, connection)) {
+        rejectProtocol(connection);
+        return false;
+    }
+    if (!cursor) {
+        if (envelope.kind !== 'snapshot' || envelope.seq !== 1) {
+            rejectProtocol(connection);
+            return false;
+        }
+        return commitV2Snapshot(connection, envelope, payloadBytes);
+    }
+    if (envelope.seq !== cursor.seq + 1) {
+        rejectProtocol(connection);
+        return false;
+    }
+    if (envelope.kind === 'snapshot') {
+        return commitV2Snapshot(connection, envelope, payloadBytes);
+    }
+    if (envelope.kind === 'terminal') {
+        if (envelope.rev !== cursor.rev || envelope.schema !== cursor.schema) {
+            rejectProtocol(connection);
+            return false;
+        }
+        addCounter('terminals');
+        liveEngageFallback(true);
+        return false;
+    }
+    const applied = applyLiveV2Delta(decoded.value, cursor);
+    if (!applied.ok) {
+        rejectProtocol(connection);
+        return false;
+    }
+    if (!replaceConnection(connection, 'v2', applied.cursor)) {
+        return false;
+    }
+    // A direct delta has no response validator and emits no fake HTMX event.
+    // Clear only after the atomic reducer has committed.
+    clearListValidator();
+    addCounter('deltas');
+    addCounter('deltaBytes', payloadBytes);
+    addCounter('inserted', applied.summary.inserted);
+    addCounter('updated', applied.summary.updated);
+    addCounter('deleted', applied.summary.deleted);
+    addCounter('projected', applied.summary.projected);
+    liveState.status = 'open-v2';
+    return true;
+}
+
+function commitV2Snapshot(
+    connection: LiveConnection,
+    envelope: LiveV2SnapshotEnvelope,
+    payloadBytes: number,
+): boolean {
+    const txn = Object.freeze({
+        generation: connection.generation,
+        pageEpoch: connection.pageEpoch,
+        sequence: envelope.seq,
+    });
+    pendingSnapshotTxn = txn;
+    if (!swapSnapshot(envelope.snapshot.html, connection, txn)) {
+        pendingSnapshotTxn = null;
+        rejectProtocol(connection);
+        return false;
+    }
+    const completed = completedSnapshotTxns.has(txn);
+    pendingSnapshotTxn = null;
+    if (!completed || !isActive(connection)) {
+        rejectProtocol(connection);
+        return false;
+    }
+    const next = replaceConnection(connection, 'v2', snapshotCursor(envelope));
+    if (!next) {
+        return false;
+    }
+    addCounter('v2Snapshots');
+    addCounter('snapshotBytes', payloadBytes);
+    liveState.status = 'open-v2';
+    return true;
+}
+
+function swapSnapshot(html: string, connection: LiveConnection, txn: object | null): boolean {
     const content = document.getElementById('resource-list-content');
     const htmx = getHtmx();
-    if (!content || !htmx || typeof htmx.swap !== 'function') {
+    if (!content || !htmx || typeof htmx.swap !== 'function' || !isActive(connection)) return false;
+    clearListValidator();
+    const eventInfo: LiveSnapshotEventInfo = { target: content, roLivePush: true };
+    if (txn) eventInfo.roLiveSnapshotTxn = txn;
+    try {
+        htmx.swap(content, html, { swapStyle: 'morph' }, { contextElement: content, eventInfo });
+        return isActive(connection);
+    } catch {
+        return false;
+    }
+}
+
+function rejectProtocol(connection: LiveConnection, countInvalid = true): void {
+    if (!isActive(connection)) return;
+    if (countInvalid) addCounter('invalidFrames');
+    const base = connection.base;
+    abortActiveConnection();
+    requestResync(base);
+}
+
+function requestResync(base: string): void {
+    if (resyncScheduled) return;
+    if (document.hidden || ownedRequests.size > 0) {
+        pendingResync = true;
+        resumeBase = base;
+        if (document.hidden) {
+            liveState.status = 'hidden';
+            resumeAfterHidden = true;
+        } else {
+            liveState.status = 'suspended';
+            resumeAfterRequests = true;
+        }
         return;
     }
-    // A pushed snapshot has no HTTP validator metadata. Invalidate BEFORE
-    // htmx.swap: global View Transitions may defer afterSwap, while a terminal
-    // frame can engage fallback polling immediately after this accepted frame.
-    // Discarded frames never reach liveMorph and therefore retain the pair.
-    clearListValidator();
-    htmx.swap(
-        content,
-        html,
-        { swapStyle: 'morph' },
-        {
-            contextElement: content,
-            eventInfo: { target: content, roLivePush: true },
-        },
+    const now = Date.now();
+    pruneResyncWindow(now);
+    if (resyncTimestamps.length >= MAX_RESYNCS_PER_WINDOW) {
+        liveEngageFallback(true);
+        return;
+    }
+    resyncTimestamps.push(now);
+    addCounter('resyncs');
+    liveState.status = 'resyncing';
+    resyncScheduled = true;
+    const epoch = pageEpoch;
+    queueMicrotask(() => {
+        if (!resyncScheduled || liveState.status !== 'resyncing' || pageEpoch !== epoch) return;
+        resyncScheduled = false;
+        openConnection(base);
+    });
+}
+
+function requestDetail(event: Event): Record<string, unknown> {
+    return Object((event as CustomEvent).detail) as Record<string, unknown>;
+}
+
+function requestPathBase(detail: Record<string, unknown>): string | null {
+    const pathInfo = Object(detail.pathInfo) as Record<string, unknown>;
+    return (
+        liveStreamBaseFromTableRequest(pathInfo.finalRequestPath) ||
+        liveStreamBaseFromTableRequest(pathInfo.requestPath)
     );
 }
 
-// liveOnListSwap is the param-change reopen (called from the container afterSwap
-// pipeline in legacy.js): while a stream rides, ANY request swap of the
-// container is a query/cookie change, so the stream reopens against the new
-// state under a fresh generation. The new query is taken from the REQUEST path
-// (byte-exact) rather than location. In FALLBACK nothing reopens.
-export function liveOnListSwap(event: Event): void {
-    const detail = (event as CustomEvent).detail;
-    if (detail?.roLivePush) {
-        return; // a push is not a param change
+// Called as the very first statement of refresh.ts's beforeRequest listener.
+// Ownership is tied to the exact current content node and native XHR loadend,
+// so a detached issuer cannot strand the stream in a suspended state.
+export function liveBeforeListRequest(event: Event): void {
+    const detail = requestDetail(event);
+    const content = document.getElementById('resource-list-content');
+    const xhr = detail.xhr as XMLHttpRequest | undefined;
+    if (!content || detail.target !== content || !xhr || ownedRequests.has(xhr)) return;
+    const scheduledResync = resyncScheduled || liveState.status === 'resyncing';
+    const resumable =
+        activeConnection !== null ||
+        scheduledResync ||
+        resumeAfterRequests ||
+        (liveState.status === 'hidden' && resumeAfterHidden);
+    const entry: OwnedRequest = {
+        epoch: pageEpoch,
+        xhr,
+        networkSettled: false,
+        sent: false,
+        swapCompleted: false,
+    };
+    ownedRequests.set(xhr, entry);
+    try {
+        xhr.addEventListener('loadend', () => noteRequestNetworkSettled(xhr, entry), {
+            once: true,
+        });
+    } catch {
+        // htmx:afterRequest remains the ordinary settlement path. Native
+        // XMLHttpRequest always supports addEventListener; this keeps the
+        // public document handler total under synthetic tests/tooling events.
     }
-    if (liveState.status !== 'open' && liveState.status !== 'connecting') {
-        return;
+    // htmx:beforeRequest is cancelable. beforeSend follows synchronously only
+    // when HTMX will actually send this exact XHR; otherwise no native loadend
+    // exists, so retire the speculative ownership in the next microtask.
+    queueMicrotask(() => {
+        if (!entry.sent) finalizeOwnedRequest(xhr, entry);
+    });
+    // Track even polling/Off traffic: an explicit Live pick during this XHR
+    // must see it and defer opening. Sticky fallback itself still never sets a
+    // resume intent and therefore cannot auto-reopen from ordinary polling.
+    if (!resumable || liveState.status === 'fallback') return;
+    // The resync budget was charged when this ticket was scheduled. Cancel its
+    // queued opener and let the ordinary final-request barrier perform that
+    // already-paid reopen once; leaving the flag set would poison all later
+    // resync attempts.
+    if (scheduledResync) resyncScheduled = false;
+    resumeAfterRequests = true;
+    resumeBase ||= activeConnection?.base || liveState.streamPath;
+    abortActiveConnection();
+    if (document.hidden) {
+        liveState.status = 'hidden';
+        resumeAfterHidden = true;
+    } else {
+        liveState.status = 'suspended';
     }
-    let base = liveStreamBase();
-    const requestPath = detail?.pathInfo?.finalRequestPath || detail?.pathInfo?.requestPath;
-    if (typeof requestPath === 'string') {
-        const queryStart = requestPath.indexOf('?');
-        const pathname = queryStart === -1 ? requestPath : requestPath.slice(0, queryStart);
-        if (pathname.endsWith('/_table')) {
-            const query = queryStart === -1 ? '' : requestPath.slice(queryStart);
-            base = `${pathname.slice(0, -'/_table'.length)}/_stream${query}`;
-        }
-    }
-    liveOpen(base);
 }
 
-// liveApply is the init-time (and dropdown-pick) reconciliation: open, keep,
-// degrade, or tear down the stream per the persisted mode and THIS page's
-// capability. Idempotent across the htmx:load re-inits every swap fires.
-// `force` (the explicit dropdown pick) always reopens.
+export function liveMarkListRequestSent(event: Event): void {
+    const xhr = requestDetail(event).xhr as XMLHttpRequest | undefined;
+    const entry = xhr ? ownedRequests.get(xhr) : undefined;
+    if (entry && entry.epoch === pageEpoch) entry.sent = true;
+}
+
+export function liveAfterListRequest(event: Event): void {
+    const detail = requestDetail(event);
+    const xhr = detail.xhr as XMLHttpRequest | undefined;
+    if (!xhr) return;
+    const entry = ownedRequests.get(xhr);
+    if (entry) noteRequestNetworkSettled(xhr, entry);
+}
+
+function requestStatus(xhr: XMLHttpRequest): number {
+    try {
+        return xhr.status;
+    } catch {
+        return 0;
+    }
+}
+
+function noteRequestNetworkSettled(xhr: XMLHttpRequest, entry: OwnedRequest): void {
+    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    entry.networkSettled = true;
+    // A successful HTMX request is not complete from Live's point of view until
+    // its final afterSwap repair marker lands. Readout disables delayed native
+    // transitions, so HTMX normally supplies that marker before afterRequest.
+    // A beforeSwap cancellation resolves in an earlier queued microtask. Give
+    // that synchronous lifecycle one microtask to finish; if no terminal swap
+    // signal exists, fail closed instead of keeping a timer-owned request.
+    if (requestStatus(xhr) === 200 && !entry.swapCompleted) {
+        queueMicrotask(() => failOwnedRequestWithoutSwap(xhr, entry));
+        return;
+    }
+    finalizeOwnedRequest(xhr, entry);
+}
+
+function completeOwnedRequestSwap(
+    xhr: XMLHttpRequest,
+    entry: OwnedRequest,
+    successfulBase: string | null,
+): void {
+    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    entry.swapCompleted = true;
+    if (successfulBase) {
+        resumeBase = successfulBase;
+    }
+    if (entry.networkSettled) finalizeOwnedRequest(xhr, entry);
+}
+
+function failOwnedRequestWithoutSwap(xhr: XMLHttpRequest, entry: OwnedRequest): void {
+    if (
+        entry.epoch !== pageEpoch ||
+        ownedRequests.get(xhr) !== entry ||
+        entry.swapCompleted ||
+        !entry.networkSettled
+    ) {
+        return;
+    }
+    ownedRequests.delete(xhr);
+    if (!resumeAfterRequests) return;
+    if (refreshMode() !== 'Live') {
+        resumeAfterRequests = false;
+        resumeAfterHidden = false;
+        pendingResync = false;
+        liveState.status = 'idle';
+        liveState.streamPath = '';
+        return;
+    }
+    // A 200 without afterSwap, an explicit cancellation, or swapError violates
+    // the owned HTMX lifecycle. Sticky polling is the safe fail-closed state;
+    // only an explicit Live repick may leave it.
+    liveEngageFallback(true);
+}
+
+function finalizeOwnedRequest(xhr: XMLHttpRequest, entry: OwnedRequest): void {
+    if (entry.epoch !== pageEpoch || ownedRequests.get(xhr) !== entry) return;
+    ownedRequests.delete(xhr);
+    if (ownedRequests.size > 0 || !resumeAfterRequests) return;
+    if (document.hidden) {
+        liveState.status = 'hidden';
+        resumeAfterHidden = true;
+        return;
+    }
+    const base = resumeBase || (liveSupported() ? liveStreamBase() : '');
+    resumeAfterRequests = false;
+    resumeAfterHidden = false;
+    const shouldResync = pendingResync;
+    pendingResync = false;
+    if (refreshMode() !== 'Live') {
+        liveState.status = 'idle';
+        liveState.streamPath = '';
+        return;
+    }
+    if (shouldResync) requestResync(base);
+    else openConnection(liveSupported() ? base : '');
+}
+
+// Registered before init.ts's beforeSwap policy listener. Deferring the check
+// to a microtask observes the final shouldSwap/defaultPrevented decision after
+// every synchronous listener has run, including the app-managed 304 gate.
+export function liveBeforeListSwapDecision(event: Event): void {
+    const detail = requestDetail(event);
+    const xhr = detail.xhr as XMLHttpRequest | undefined;
+    const entry = xhr ? ownedRequests.get(xhr) : undefined;
+    if (!xhr || !entry || entry.epoch !== pageEpoch) return;
+    queueMicrotask(() => {
+        if ((event as CustomEvent).defaultPrevented || detail.shouldSwap === false) {
+            completeOwnedRequestSwap(xhr, entry, null);
+        }
+    });
+}
+
+// HTMX reports a thrown/failed swap separately from afterSwap. Treat it as a
+// completed (unsuccessful) DOM barrier so a 200 cannot strand Live forever.
+export function liveListRequestSwapFailed(event: Event): void {
+    const detail = requestDetail(event);
+    const xhr = detail.xhr as XMLHttpRequest | undefined;
+    const entry = xhr ? ownedRequests.get(xhr) : undefined;
+    if (xhr && entry) completeOwnedRequestSwap(xhr, entry, null);
+}
+
+// Called at the end of init.ts's fixed afterSwap pipeline. A Live snapshot
+// marks only its exact transaction complete; a real request swap records its
+// final byte-preserved table path for the one post-loadend resume.
+export function liveOnListSwap(event: Event): void {
+    const detail = requestDetail(event);
+    const snapshotTxn = detail.roLiveSnapshotTxn;
+    if (snapshotTxn && snapshotTxn === pendingSnapshotTxn) {
+        completedSnapshotTxns.add(snapshotTxn as object);
+        return;
+    }
+    if (detail.roLivePush) return;
+    const xhr = detail.xhr as XMLHttpRequest | undefined;
+    const entry = xhr ? ownedRequests.get(xhr) : undefined;
+    if (!entry || entry.epoch !== pageEpoch) return;
+    const base = requestPathBase(detail);
+    completeOwnedRequestSwap(xhr as XMLHttpRequest, entry, base);
+}
+
 export function liveApply(force?: boolean): void {
     if (refreshMode() !== 'Live') {
         liveTeardown();
@@ -378,34 +893,60 @@ export function liveApply(force?: boolean): void {
         return;
     }
     const base = liveSupported() ? liveStreamBase() : '';
-    if (!force && base === liveState.streamPath && liveState.status !== 'idle') {
-        return; // same page + params: the standing state holds
+    if (force) {
+        resyncTimestamps = [];
+        pendingResync = false;
+        resyncScheduled = false;
     }
-    liveOpen(base);
+    if (!force && liveState.status === 'fallback') return;
+    if (!force && base === liveState.streamPath && liveState.status !== 'idle') return;
+    if (ownedRequests.size > 0) {
+        liveTeardown();
+        resumeAfterRequests = true;
+        resumeBase = base;
+        liveState.streamPath = base;
+        liveState.status = document.hidden ? 'hidden' : 'suspended';
+        resumeAfterHidden = document.hidden;
+        return;
+    }
+    openConnection(base);
 }
 
-// Visibility close/reopen: hiding the tab closes a riding stream;
-// returning reopens ONLY after such a hidden-close. A terminal/429/204 fallback
-// and user-selected polling never reopen here.
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-        if (liveState.status === 'open' || liveState.status === 'connecting') {
-            liveTeardown();
+        if (
+            activeConnection ||
+            liveState.status === 'suspended' ||
+            liveState.status === 'resyncing'
+        ) {
+            resumeBase ||= activeConnection?.base || liveState.streamPath;
+            resumeAfterHidden = true;
+            abortActiveConnection();
+            resyncScheduled = false;
             liveState.status = 'hidden';
         }
         return;
     }
-    if (liveState.status === 'hidden' && refreshMode() === 'Live') {
-        liveOpen(liveSupported() ? liveStreamBase() : '');
+    if (liveState.status !== 'hidden' || !resumeAfterHidden || refreshMode() !== 'Live') return;
+    if (ownedRequests.size > 0) {
+        liveState.status = 'suspended';
+        return;
+    }
+    resumeAfterHidden = false;
+    const base = resumeBase || (liveSupported() ? liveStreamBase() : '');
+    if (pendingResync) {
+        pendingResync = false;
+        requestResync(base);
+    } else {
+        openConnection(liveSupported() ? base : '');
     }
 });
 
-// The deliberate external seam (e2e / console), the roVirtual/roRowState
-// pattern: morph-time discard observability. The specs poll discards() to prove
-// a held push ARRIVED and was dropped before asserting the view stayed
-// unchanged.
-(window as unknown as { roLive: { discards(): number } }).roLive = {
+window.roLive = {
     discards() {
         return liveDiscards;
+    },
+    stats() {
+        return currentStats();
     },
 };

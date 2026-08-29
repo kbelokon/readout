@@ -17,7 +17,7 @@ package templates
 templ cardList(d ListData, table TableData) {
 	<div class="ro-cardlist">
 		for _, row := range table.Rows {
-			@pcard(d, table, row)
+			@LiveResourceCard(d, table, row)
 		}
 		</div>
 }
@@ -29,8 +29,13 @@ templ cardList(d ListData, table TableData) {
 // the cell's value rendered in the same rich vocabulary). The leading Cluster /
 // Namespace columns and the trailing Created column join the meta rows so the card
 // surfaces the full row, not just the per-kind cells.
-templ pcard(d ListData, table TableData, row TableRow) {
-	<div class="ro-pcard">
+templ LiveResourceCard(d ListData, table TableData, row TableRow) {
+	<div
+		class="ro-pcard"
+		if row.Key != "" {
+			data-key={ row.Key }
+		}
+	>
 		<div class="pc-top">@pcardName(row)@pcardStatus(row)</div>
 		<div class="pc-meta">
 			if table.MultiCluster {

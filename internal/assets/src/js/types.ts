@@ -182,9 +182,11 @@ declare global {
             renderedBounds(): { start: number; end: number; total: number };
             scrollToKey(key: string): boolean;
         };
-        // live.ts: the discard observability counter (await "push discarded").
+        // live.ts: discard observability plus a copied, saturating diagnostics
+        // snapshot (never a mutable reference to the transport state).
         roLive: {
             discards(): number;
+            stats(): import('./live.js').LiveDebugStats;
         };
         // toasts.ts (bridged through init.ts): the detached-result notifier.
         roToast?: (message: string) => void;

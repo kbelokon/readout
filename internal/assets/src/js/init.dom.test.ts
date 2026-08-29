@@ -17,9 +17,11 @@ const steps = vi.hoisted(() => ({
     isListRefreshEvent: vi.fn(() => false),
     liveApply: vi.fn(),
     liveOnListSwap: vi.fn(),
+    liveResetPage: vi.fn(),
     liveState: { status: 'idle', streamPath: '' },
     liveTeardown: vi.fn(),
     noteRefreshRecovery: vi.fn(),
+    pauseRefresh: vi.fn(),
     rememberListValidator: vi.fn(),
     reapplyRowState: vi.fn(),
     roPrefsSetSort: vi.fn(),
@@ -53,6 +55,7 @@ vi.mock('./list-etag.js', () => ({
 vi.mock('./live.js', () => ({
     liveApply: steps.liveApply,
     liveOnListSwap: steps.liveOnListSwap,
+    liveResetPage: steps.liveResetPage,
     liveState: steps.liveState,
     liveTeardown: steps.liveTeardown,
 }));
@@ -62,6 +65,7 @@ vi.mock('./prefs.js', () => ({ roPrefsSetSort: steps.roPrefsSetSort }));
 vi.mock('./refresh.js', () => ({
     applyRefresh: steps.applyRefresh,
     noteRefreshRecovery: steps.noteRefreshRecovery,
+    pauseRefresh: steps.pauseRefresh,
     syncRefreshUI: steps.syncRefreshUI,
 }));
 vi.mock('./row-selection.js', () => ({
@@ -88,7 +92,7 @@ vi.mock('./yaml-folds.js', () => ({
 vi.mock('./skeleton.js', () => ({}));
 
 // Import exactly once: init.ts installs resident document/window listeners at module load.
-import { handleSortPreferenceRequest } from './init.js';
+import { handleSortPreferenceRequest, suppressRedundantActiveNavigation } from './init.js';
 
 interface CallTracked {
     mock: { invocationCallOrder: number[] };
@@ -105,8 +109,6 @@ function expectCalledOnceInOrder(...calls: CallTracked[]): void {
 function expectInitOrder(): void {
     expectCalledOnceInOrder(
         steps.syncRefreshUI,
-        steps.liveApply,
-        steps.applyRefresh,
         steps.buildYamlFolds,
         steps.collapseSectionsFromHash,
         steps.highlightYamlLine,
@@ -118,6 +120,8 @@ function expectInitOrder(): void {
         steps.syncColsPopState,
         steps.reapplyRowState,
         steps.updateBulkBar,
+        steps.liveApply,
+        steps.applyRefresh,
     );
 }
 
@@ -125,13 +129,45 @@ function dispatchBeforeRequest(detail?: object): void {
     handleSortPreferenceRequest(new CustomEvent('htmx:beforeRequest', { detail }));
 }
 
+type HistoryEventType =
+    | 'htmx:historyCacheHit'
+    | 'htmx:historyCacheMiss'
+    | 'htmx:historyCacheMissLoad'
+    | 'htmx:historyCacheMissLoadError';
+
+function historyXHR(): XMLHttpRequest {
+    return new EventTarget() as XMLHttpRequest;
+}
+
+function historyEvent(type: HistoryEventType, xhr?: XMLHttpRequest): CustomEvent {
+    return new CustomEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        detail: xhr ? { xhr } : {},
+    });
+}
+
+function dispatchNormalBodyBeforeSwap(shouldSwap = true): CustomEvent {
+    const event = new CustomEvent('htmx:beforeSwap', {
+        bubbles: true,
+        cancelable: true,
+        detail: { shouldSwap, target: document.body, xhr: { status: 200 } },
+    });
+    document.body.dispatchEvent(event);
+    return event;
+}
+
 beforeEach(() => {
+    // Model the fresh document boundary after a hard reload without
+    // re-importing this resident-listener module between tests.
+    window.dispatchEvent(new Event('pageshow'));
     vi.clearAllMocks();
     steps.colsPopOpen.mockReturnValue(false);
     steps.isListRefreshEvent.mockReturnValue(false);
     steps.suppressListNotModified.mockReset().mockReturnValue(false);
     steps.liveState.status = 'idle';
     steps.liveState.streamPath = '';
+    vi.spyOn(window.history, 'go').mockImplementation(() => {});
 });
 
 test('publishes showToast through the resident window seam', () => {
@@ -143,12 +179,32 @@ test('publishes showToast through the resident window seam', () => {
 });
 
 describe('runInit orchestration', () => {
-    test('runs the complete repair chain once and in order for both load events', () => {
+    test('runs the complete repair chain once and in order for the initial document', () => {
         document.dispatchEvent(new Event('DOMContentLoaded'));
         expectInitOrder();
+    });
 
-        vi.clearAllMocks();
-        document.dispatchEvent(new Event('htmx:load'));
+    test('runs the complete repair chain once during a successful body afterSwap', () => {
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+
+        expectInitOrder();
+    });
+
+    test('never reruns whole-document init for descendant htmx:load events', () => {
+        document.body.innerHTML = '<main><section><div id="loaded-child"></div></section></main>';
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+        expectInitOrder();
+
+        for (const target of [
+            document.querySelector('main'),
+            document.querySelector('section'),
+            document.getElementById('loaded-child'),
+        ]) {
+            target?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+        }
+
+        // A body swap already ran the chain before paint. HTMX subsequently
+        // emits load once per inserted top-level element; none may repeat it.
         expectInitOrder();
     });
 
@@ -159,16 +215,16 @@ describe('runInit orchestration', () => {
         });
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-        document.dispatchEvent(new Event('htmx:load'));
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
 
         expectCalledOnceInOrder(
             steps.syncRefreshUI,
-            steps.liveApply,
-            steps.applyRefresh,
             steps.captureRowModelFromDocument,
             steps.applyLiveNameFilter,
             steps.virtualizeInit,
             steps.updateBulkBar,
+            steps.liveApply,
+            steps.applyRefresh,
         );
         expect(warn).toHaveBeenCalledExactlyOnceWith('readout init step failed', failure);
     });
@@ -184,7 +240,7 @@ describe('runInit orchestration', () => {
             .spyOn(cell, 'getBoundingClientRect')
             .mockReturnValue({ width: 72 } as DOMRect);
 
-        document.dispatchEvent(new Event('htmx:load'));
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
 
         expectCalledOnceInOrder(
             steps.syncThemeTogglePostTarget,
@@ -331,8 +387,37 @@ describe('htmx swap lifecycle', () => {
             steps.clearRowState,
             steps.clearListStale,
             steps.liveTeardown,
+            steps.liveResetPage,
         );
         expect(steps.liveState).toStrictEqual({ status: 'idle', streamPath: '' });
+    });
+
+    test('initializes the accepted body once after teardown and before descendant loads', () => {
+        document.body.innerHTML = '<main id="old-body"></main>';
+
+        dispatchNormalBodyBeforeSwap();
+        expect(steps.liveApply).not.toHaveBeenCalled();
+
+        document.body.innerHTML = '<main id="fresh-body"><div id="fresh-child"></div></main>';
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+
+        expectCalledOnceInOrder(
+            steps.closeRowMenu,
+            steps.liveTeardown,
+            steps.syncRefreshUI,
+            steps.buildYamlFolds,
+            steps.captureRowModelFromDocument,
+            steps.virtualizeInit,
+            steps.liveApply,
+            steps.applyRefresh,
+        );
+
+        document
+            .getElementById('fresh-child')
+            ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+        expect(steps.buildYamlFolds).toHaveBeenCalledOnce();
+        expect(steps.liveApply).toHaveBeenCalledOnce();
+        expect(steps.applyRefresh).toHaveBeenCalledOnce();
     });
 
     test('repairs a list afterSwap in fixed order before handing it back to Live', () => {
@@ -346,10 +431,11 @@ describe('htmx swap lifecycle', () => {
         steps.isListRefreshEvent.mockReturnValue(true);
         steps.colsPopOpen.mockReturnValue(true);
         const event = new CustomEvent('htmx:afterSwap', {
+            bubbles: true,
             detail: { target: document.getElementById('resource-list-content') },
         });
 
-        document.dispatchEvent(event);
+        document.getElementById('resource-list-content')?.dispatchEvent(event);
 
         expectCalledOnceInOrder(
             steps.rememberListValidator,
@@ -366,6 +452,9 @@ describe('htmx swap lifecycle', () => {
         expect(steps.setColsPopOpen).toHaveBeenCalledExactlyOnceWith(true);
         expect(steps.rememberListValidator).toHaveBeenCalledExactlyOnceWith(event);
         expect(steps.liveOnListSwap).toHaveBeenCalledExactlyOnceWith(event);
+        expect(steps.buildYamlFolds).not.toHaveBeenCalled();
+        expect(steps.virtualizeInit).not.toHaveBeenCalled();
+        expect(steps.liveApply).not.toHaveBeenCalled();
     });
 
     test('ignores an afterSwap that is not a list refresh', () => {
@@ -424,10 +513,433 @@ describe('htmx swap lifecycle', () => {
         expect(steps.liveOnListSwap).toHaveBeenCalledExactlyOnceWith(event);
     });
 
-    test('repaints row and bulk state in order on history restore', () => {
+    test.each(['htmx:historyCacheHit', 'htmx:historyCacheMiss'] as const)(
+        '%s retires old Live ownership before the history body swap',
+        (type) => {
+            steps.liveState.status = 'open-v2';
+            steps.liveState.streamPath = '/old/_stream';
+            const xhr = type === 'htmx:historyCacheMiss' ? historyXHR() : undefined;
+
+            document.body.dispatchEvent(historyEvent(type, xhr));
+
+            expectCalledOnceInOrder(steps.liveTeardown, steps.pauseRefresh, steps.liveResetPage);
+            expect(steps.liveState).toStrictEqual({ status: 'idle', streamPath: '' });
+            expect(steps.liveApply).not.toHaveBeenCalled();
+            expect(steps.reapplyRowState).not.toHaveBeenCalled();
+            expect(steps.updateBulkBar).not.toHaveBeenCalled();
+
+            if (xhr) document.body.dispatchEvent(historyEvent('htmx:historyCacheMissLoad', xhr));
+            document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+        },
+    );
+
+    test('historyRestore itself never initializes or repairs the outgoing body', () => {
         document.dispatchEvent(new Event('htmx:historyRestore'));
 
-        expectCalledOnceInOrder(steps.reapplyRowState, steps.updateBulkBar);
+        expect(steps.liveTeardown).not.toHaveBeenCalled();
+        expect(steps.liveResetPage).not.toHaveBeenCalled();
+        expect(steps.reapplyRowState).not.toHaveBeenCalled();
+        expect(steps.updateBulkBar).not.toHaveBeenCalled();
+        expect(steps.liveApply).not.toHaveBeenCalled();
+    });
+
+    test.each(['htmx:historyCacheHit', 'htmx:historyCacheMiss'] as const)(
+        'a later %s listener cancellation reloads once and keeps the mismatched body inert',
+        async (type) => {
+            document.body.innerHTML = '<main id="outgoing-list">old body</main>';
+            const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+            const xhr = type === 'htmx:historyCacheMiss' ? historyXHR() : undefined;
+            document.addEventListener(
+                type,
+                (event) => {
+                    event.preventDefault();
+                },
+                { once: true },
+            );
+            const start = historyEvent(type, xhr);
+
+            document.body.dispatchEvent(start);
+
+            expect(start.defaultPrevented).toBe(true);
+            expect(reload).not.toHaveBeenCalled();
+            await Promise.resolve();
+            expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+            expect(steps.pauseRefresh).toHaveBeenCalledOnce();
+
+            document.body.dispatchEvent(new Event('htmx:swapError', { bubbles: true }));
+            document
+                .getElementById('outgoing-list')
+                ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+            xhr?.dispatchEvent(new Event('loadend'));
+            await Promise.resolve();
+            expect(reload).toHaveBeenCalledOnce();
+            expect(steps.liveApply).not.toHaveBeenCalled();
+            expect(steps.applyRefresh).not.toHaveBeenCalled();
+        },
+    );
+
+    test.each(['htmx:historyCacheHit', 'htmx:historyCacheMiss'] as const)(
+        'a pending %s body swapError reloads exactly once without afterSwap',
+        async (type) => {
+            document.body.innerHTML = '<main id="outgoing-list">old body</main>';
+            const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+            const xhr = type === 'htmx:historyCacheMiss' ? historyXHR() : undefined;
+            document.body.dispatchEvent(historyEvent(type, xhr));
+            if (xhr) document.body.dispatchEvent(historyEvent('htmx:historyCacheMissLoad', xhr));
+            await Promise.resolve();
+            expect(reload).not.toHaveBeenCalled();
+
+            document.body.dispatchEvent(new Event('htmx:swapError', { bubbles: true }));
+            document.body.dispatchEvent(new Event('htmx:swapError', { bubbles: true }));
+            document
+                .getElementById('outgoing-list')
+                ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+
+            expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+            expect(steps.pauseRefresh).toHaveBeenCalledOnce();
+            expect(steps.liveApply).not.toHaveBeenCalled();
+            expect(steps.applyRefresh).not.toHaveBeenCalled();
+        },
+    );
+
+    test.each(['domain error', 'native loadend'] as const)(
+        'a cache-miss %s reloads once before any body swap',
+        (failure) => {
+            const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+            const xhr = historyXHR();
+            document.body.dispatchEvent(historyEvent('htmx:historyCacheMiss', xhr));
+
+            if (failure === 'domain error') {
+                document.body.dispatchEvent(historyEvent('htmx:historyCacheMissLoadError', xhr));
+            } else {
+                xhr.dispatchEvent(new Event('loadend'));
+            }
+
+            expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+            document.body.dispatchEvent(historyEvent('htmx:historyCacheMissLoadError', xhr));
+            xhr.dispatchEvent(new Event('loadend'));
+            expect(reload).toHaveBeenCalledOnce();
+        },
+    );
+
+    test('a malformed cache-miss start without an XHR is cancelled and reloaded', async () => {
+        const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+        const start = historyEvent('htmx:historyCacheMiss');
+
+        document.body.dispatchEvent(start);
+        await Promise.resolve();
+
+        expect(start.defaultPrevented).toBe(true);
+        expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+    });
+
+    test('an anonymous body afterSwap during the cache-miss network phase fails closed', () => {
+        const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+        const xhr = historyXHR();
+        document.body.dispatchEvent(historyEvent('htmx:historyCacheMiss', xhr));
+
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+
+        expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+        document.dispatchEvent(new Event('htmx:load'));
+        expect(steps.liveApply).not.toHaveBeenCalled();
+        expect(steps.applyRefresh).not.toHaveBeenCalled();
+    });
+
+    test.each(['normal', 'hit', 'miss'] as const)(
+        'owns a %s body swap without scheduling a fallback timer',
+        (kind) => {
+            const schedule = vi.spyOn(window, 'setTimeout');
+            const xhr = kind === 'miss' ? historyXHR() : undefined;
+            if (kind === 'normal') {
+                dispatchNormalBodyBeforeSwap();
+            } else {
+                document.body.dispatchEvent(
+                    historyEvent(
+                        kind === 'miss' ? 'htmx:historyCacheMiss' : 'htmx:historyCacheHit',
+                        xhr,
+                    ),
+                );
+            }
+
+            expect(schedule).not.toHaveBeenCalled();
+            if (xhr) document.body.dispatchEvent(historyEvent('htmx:historyCacheMissLoad', xhr));
+            document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+            expect(steps.liveApply).toHaveBeenCalledOnce();
+        },
+    );
+
+    test('successful body and synchronous history swaps never reload', async () => {
+        const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+
+        document.body.dispatchEvent(historyEvent('htmx:historyCacheHit'));
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+        await Promise.resolve();
+        const xhr = historyXHR();
+        document.body.dispatchEvent(historyEvent('htmx:historyCacheMiss', xhr));
+        document.body.dispatchEvent(historyEvent('htmx:historyCacheMissLoad', xhr));
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+        xhr.dispatchEvent(new Event('loadend'));
+
+        expect(reload).not.toHaveBeenCalled();
+    });
+
+    test('preventing cache-miss load cannot cancel its already accepted body swap', async () => {
+        const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+        const xhr = historyXHR();
+        document.body.dispatchEvent(historyEvent('htmx:historyCacheMiss', xhr));
+        document.addEventListener(
+            'htmx:historyCacheMissLoad',
+            (event) => {
+                event.preventDefault();
+            },
+            { once: true },
+        );
+        const cacheMissLoad = historyEvent('htmx:historyCacheMissLoad', xhr);
+
+        document.body.dispatchEvent(cacheMissLoad);
+        await Promise.resolve();
+
+        expect(cacheMissLoad.defaultPrevented).toBe(true);
+        expect(reload).not.toHaveBeenCalled();
+        expect(steps.liveApply).not.toHaveBeenCalled();
+        expect(steps.applyRefresh).not.toHaveBeenCalled();
+
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+        document.dispatchEvent(new Event('htmx:load'));
+        expect(reload).not.toHaveBeenCalled();
+        expect(steps.liveApply).toHaveBeenCalledOnce();
+        expect(steps.applyRefresh).toHaveBeenCalledOnce();
+    });
+
+    test.each([
+        { completionOrder: ['first', 'second'], firstType: 'hit', secondType: 'hit' },
+        { completionOrder: ['second', 'first'], firstType: 'hit', secondType: 'hit' },
+        { completionOrder: ['first', 'second'], firstType: 'hit', secondType: 'miss' },
+        { completionOrder: ['second', 'first'], firstType: 'hit', secondType: 'miss' },
+        { completionOrder: ['first', 'second'], firstType: 'miss', secondType: 'hit' },
+        { completionOrder: ['second', 'first'], firstType: 'miss', secondType: 'hit' },
+        { completionOrder: ['first', 'second'], firstType: 'miss', secondType: 'miss' },
+        { completionOrder: ['second', 'first'], firstType: 'miss', secondType: 'miss' },
+    ])(
+        'serializes $firstType->$secondType history intents when bodies finish $completionOrder',
+        async ({ completionOrder, firstType, secondType }) => {
+            const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+            const firstXHR = firstType === 'miss' ? historyXHR() : undefined;
+            const secondXHR = secondType === 'miss' ? historyXHR() : undefined;
+            const first = historyEvent(
+                firstType === 'miss' ? 'htmx:historyCacheMiss' : 'htmx:historyCacheHit',
+                firstXHR,
+            );
+            const second = historyEvent(
+                secondType === 'miss' ? 'htmx:historyCacheMiss' : 'htmx:historyCacheHit',
+                secondXHR,
+            );
+
+            document.body.dispatchEvent(first);
+            document.body.dispatchEvent(second);
+
+            expect(first.defaultPrevented).toBe(false);
+            expect(second.defaultPrevented).toBe(true);
+            expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+            expect(steps.liveTeardown).toHaveBeenCalledOnce();
+            expect(steps.pauseRefresh).toHaveBeenCalledOnce();
+            expect(steps.liveResetPage).toHaveBeenCalledOnce();
+
+            for (const completion of completionOrder) {
+                const xhr = completion === 'first' ? firstXHR : secondXHR;
+                if (xhr) {
+                    document.body.dispatchEvent(historyEvent('htmx:historyCacheMissLoad', xhr));
+                }
+                document.body.innerHTML = `<main id="${completion}-history-body"></main>`;
+                document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+                document
+                    .getElementById(`${completion}-history-body`)
+                    ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+            }
+            await Promise.resolve();
+
+            expect(reload).toHaveBeenCalledOnce();
+            expect(steps.liveApply).not.toHaveBeenCalled();
+            expect(steps.applyRefresh).not.toHaveBeenCalled();
+        },
+    );
+
+    test.each(['wrong xhr', 'wrong phase'] as const)(
+        'fails closed when cache-miss load has %s identity',
+        (failure) => {
+            const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+            const xhr = historyXHR();
+            if (failure === 'wrong xhr') {
+                document.body.dispatchEvent(historyEvent('htmx:historyCacheMiss', xhr));
+            } else {
+                document.body.dispatchEvent(historyEvent('htmx:historyCacheHit'));
+            }
+
+            const staleLoad = historyEvent('htmx:historyCacheMissLoad', historyXHR());
+            document.body.dispatchEvent(staleLoad);
+
+            expect(staleLoad.defaultPrevented).toBe(true);
+            expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+        },
+    );
+
+    test.each(['pending', 'reloading'] as const)(
+        'a normal body swap cannot clear a %s history gate',
+        (state) => {
+            document.body.innerHTML = '<main id="outgoing-list">old body</main>';
+            const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+            document.body.dispatchEvent(historyEvent('htmx:historyCacheHit'));
+            if (state === 'reloading') {
+                document.body.dispatchEvent(historyEvent('htmx:historyCacheHit'));
+            }
+            const beforeSwap = new CustomEvent('htmx:beforeSwap', {
+                bubbles: true,
+                cancelable: true,
+                detail: { target: document.body, xhr: { status: 200 } },
+            });
+
+            document.body.dispatchEvent(beforeSwap);
+
+            expect(beforeSwap.defaultPrevented).toBe(true);
+            expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+            document.body.innerHTML = '<main id="late-normal-body"></main>';
+            document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+            document
+                .getElementById('late-normal-body')
+                ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+            expect(steps.liveApply).not.toHaveBeenCalled();
+            expect(steps.applyRefresh).not.toHaveBeenCalled();
+        },
+    );
+
+    test.each(['hit', 'miss'] as const)(
+        'an older normal body completion cannot clear a newer history %s gate',
+        (historyKind) => {
+            document.body.innerHTML = '<main id="outgoing-list">old body</main>';
+            const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+            const normal = dispatchNormalBodyBeforeSwap();
+            const xhr = historyKind === 'miss' ? historyXHR() : undefined;
+            const history = historyEvent(
+                historyKind === 'miss' ? 'htmx:historyCacheMiss' : 'htmx:historyCacheHit',
+                xhr,
+            );
+
+            document.body.dispatchEvent(history);
+
+            expect(normal.defaultPrevented).toBe(false);
+            expect(history.defaultPrevented).toBe(true);
+            expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+            document.body.innerHTML = '<main id="late-normal-body"></main>';
+            document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+            document
+                .getElementById('late-normal-body')
+                ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+            expect(reload).toHaveBeenCalledOnce();
+            expect(steps.liveApply).not.toHaveBeenCalled();
+            expect(steps.applyRefresh).not.toHaveBeenCalled();
+        },
+    );
+
+    test.each(['prevented', 'shouldSwap=false'] as const)(
+        'a later listener making a normal body swap %s triggers one reload',
+        async (failure) => {
+            document.body.innerHTML = '<main id="outgoing-list">old body</main>';
+            const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+            document.addEventListener(
+                'htmx:beforeSwap',
+                (event) => {
+                    const detail = (event as CustomEvent).detail;
+                    if (detail?.target !== document.body) return;
+                    if (failure === 'prevented') event.preventDefault();
+                    else detail.shouldSwap = false;
+                },
+                { once: true },
+            );
+
+            const beforeSwap = dispatchNormalBodyBeforeSwap();
+            await Promise.resolve();
+
+            expect(beforeSwap.defaultPrevented).toBe(failure === 'prevented');
+            expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+            document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+            document.dispatchEvent(new Event('htmx:load'));
+            expect(steps.liveApply).not.toHaveBeenCalled();
+            expect(steps.applyRefresh).not.toHaveBeenCalled();
+        },
+    );
+
+    test('a normal body swapError dispatched on its request source reloads immediately', () => {
+        const reload = vi.spyOn(window.history, 'go').mockImplementation(() => {});
+        const source = document.createElement('a');
+        document.body.appendChild(source);
+        dispatchNormalBodyBeforeSwap();
+
+        source.dispatchEvent(
+            new CustomEvent('htmx:swapError', {
+                bubbles: true,
+                detail: { target: document.body },
+            }),
+        );
+
+        expect(reload).toHaveBeenCalledExactlyOnceWith(0);
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+        source.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+        expect(steps.liveApply).not.toHaveBeenCalled();
+        expect(steps.applyRefresh).not.toHaveBeenCalled();
+    });
+
+    test.each([
+        {
+            name: 'detail to list',
+            outgoing: '<main id="outgoing-detail">detail</main>',
+        },
+        {
+            name: 'list to list',
+            outgoing:
+                '<main id="outgoing-list"><div id="resource-list-content" data-screen="old-list"></div></main>',
+        },
+    ])('delays $name Live initialization until the cached body actually lands', ({ outgoing }) => {
+        document.body.innerHTML = outgoing;
+        const observedBodies: string[] = [];
+        steps.liveApply.mockImplementation(() => {
+            observedBodies.push(
+                document.getElementById('restored-list')?.dataset.screen || 'outgoing',
+            );
+        });
+
+        document.body.dispatchEvent(new Event('htmx:historyCacheHit', { bubbles: true }));
+        document.querySelector('main')?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+        document.body.dispatchEvent(new Event('htmx:historyRestore', { bubbles: true }));
+
+        expect(steps.liveApply).not.toHaveBeenCalled();
+        expect(observedBodies).toStrictEqual([]);
+
+        document.body.innerHTML =
+            '<main id="restored-list" data-screen="cached-list"><div id="resource-list-content"></div></main>';
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+        document
+            .getElementById('restored-list')
+            ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+
+        expect(steps.liveApply).toHaveBeenCalledOnce();
+        expect(observedBodies).toStrictEqual(['cached-list']);
+        expect(steps.liveTeardown).toHaveBeenCalledOnce();
+        expect(steps.liveResetPage).toHaveBeenCalledOnce();
+    });
+
+    test('a synchronous cache restore keeps the stream opened by body afterSwap', () => {
+        document.body.innerHTML = '<main id="outgoing-detail">detail</main>';
+        document.body.dispatchEvent(new Event('htmx:historyCacheHit', { bubbles: true }));
+        document.body.innerHTML = '<main id="restored-list" data-screen="cached-list"></main>';
+        document.body.dispatchEvent(new Event('htmx:afterSwap', { bubbles: true }));
+
+        expect(steps.liveApply).toHaveBeenCalledOnce();
+        document.body.dispatchEvent(new Event('htmx:historyRestore', { bubbles: true }));
+
+        expect(steps.liveApply).toHaveBeenCalledOnce();
+        expect(steps.liveTeardown).toHaveBeenCalledOnce();
+        expect(steps.liveResetPage).toHaveBeenCalledOnce();
     });
 });
 
@@ -477,6 +989,127 @@ describe('sticky namespace measurement', () => {
 
         expect(namespaceMeasure).toHaveBeenCalledTimes(2);
         expect(all.style.getPropertyValue('--ns-col-w')).toBe('96px');
+    });
+});
+
+describe('exact active navigation no-op', () => {
+    function navigationEvent(
+        anchor: HTMLAnchorElement,
+        overrides: Record<string, unknown> = {},
+    ): CustomEvent {
+        return new CustomEvent('htmx:configRequest', {
+            bubbles: true,
+            cancelable: true,
+            detail: {
+                boosted: true,
+                elt: anchor,
+                path: anchor.getAttribute('href'),
+                target: document.body,
+                triggeringEvent: new MouseEvent('click', { button: 0 }),
+                verb: 'get',
+                ...overrides,
+            },
+        });
+    }
+
+    test('cancels an exact current active sidebar or tab click before request', () => {
+        const original = window.location.href;
+        window.history.replaceState(null, '', '/clusters/prod/namespaces');
+        document.body.innerHTML = `
+            <aside><a id="sidebar" class="menu-item is-active"
+                href="/clusters/prod/namespaces">Namespaces</a></aside>
+            <nav><span class="is-active"><a id="tab"
+                href="/clusters/prod/namespaces">Namespaces tab</a></span></nav>
+        `;
+
+        for (const id of ['sidebar', 'tab']) {
+            const anchor = document.getElementById(id) as HTMLAnchorElement;
+            const event = navigationEvent(anchor);
+            anchor.dispatchEvent(event);
+            expect(event.defaultPrevented).toBe(true);
+        }
+
+        window.history.replaceState(null, '', original);
+    });
+
+    test('treats the Default tab bare query delimiter as the current screen', () => {
+        const original = window.location.href;
+        window.history.replaceState(
+            null,
+            '',
+            '/clusters/prod/namespaces/checkout/pods/checkout-api-9f2a-h8k7p',
+        );
+        document.body.innerHTML = '<nav><a class="is-active" href="?">Default</a></nav>';
+        const anchor = document.querySelector('a') as HTMLAnchorElement;
+        const event = navigationEvent(anchor);
+
+        anchor.dispatchEvent(event);
+
+        expect(event.defaultPrevented).toBe(true);
+        window.history.replaceState(null, '', original);
+    });
+
+    test('keeps Default useful when it clears a non-empty detail query', () => {
+        const original = window.location.href;
+        window.history.replaceState(
+            null,
+            '',
+            '/clusters/prod/namespaces/checkout/pods/checkout-api-9f2a-h8k7p?view=yaml',
+        );
+        document.body.innerHTML = '<nav><a class="is-active" href="?">Default</a></nav>';
+        const anchor = document.querySelector('a') as HTMLAnchorElement;
+        const event = navigationEvent(anchor);
+
+        anchor.dispatchEvent(event);
+
+        expect(event.defaultPrevented).toBe(false);
+        window.history.replaceState(null, '', original);
+    });
+
+    test('keeps useful active-path, retry, fragment, modifier, and non-body requests', () => {
+        const original = window.location.href;
+        window.history.replaceState(null, '', '/clusters/prod/namespaces?sort=Name');
+        document.body.innerHTML = `
+            <a id="active" class="is-active" href="/clusters/prod/namespaces">Namespaces</a>
+            <a id="exact" class="is-active"
+                href="/clusters/prod/namespaces?sort=Name">Current tab</a>
+            <a id="retry" href="/clusters/prod/namespaces?sort=Name">Retry</a>
+            <a id="fragment" class="is-active" href="#section">Section</a>
+        `;
+        const active = document.getElementById('active') as HTMLAnchorElement;
+        const exact = document.getElementById('exact') as HTMLAnchorElement;
+        const retry = document.getElementById('retry') as HTMLAnchorElement;
+        const fragment = document.getElementById('fragment') as HTMLAnchorElement;
+        const cases = [
+            navigationEvent(active), // clears the current query
+            navigationEvent(retry), // same URL but not active navigation
+            navigationEvent(fragment, { path: window.location.pathname + window.location.search }),
+            navigationEvent(exact, {
+                path: window.location.pathname + window.location.search,
+                triggeringEvent: new MouseEvent('click', { metaKey: true }),
+            }),
+            navigationEvent(exact, {
+                path: window.location.pathname + window.location.search,
+                target: document.createElement('div'),
+            }),
+            navigationEvent(exact, {
+                path: window.location.pathname + window.location.search,
+                verb: 'post',
+            }),
+        ];
+
+        for (const event of cases) {
+            expect(() => suppressRedundantActiveNavigation(event)).not.toThrow();
+            expect(event.defaultPrevented).toBe(false);
+        }
+
+        for (const detail of [undefined, null, 7, {}, { boosted: true }]) {
+            const event = new CustomEvent('htmx:configRequest', { cancelable: true, detail });
+            expect(() => suppressRedundantActiveNavigation(event)).not.toThrow();
+            expect(event.defaultPrevented).toBe(false);
+        }
+
+        window.history.replaceState(null, '', original);
     });
 });
 
@@ -626,16 +1259,28 @@ test('registers every required resident document and window event at module load
         .map(([type, listener]) => ({ listener: typeof listener, type }));
     expect(documentRegistrations).toEqual(
         expect.arrayContaining([
+            { type: 'htmx:configRequest', listener: 'function' },
             { type: 'htmx:beforeRequest', listener: 'function' },
             { type: 'htmx:afterSwap', listener: 'function' },
             { type: 'htmx:beforeSwap', listener: 'function' },
+            { type: 'htmx:historyCacheHit', listener: 'function' },
+            { type: 'htmx:historyCacheMiss', listener: 'function' },
+            { type: 'htmx:historyCacheMissLoad', listener: 'function' },
+            { type: 'htmx:historyCacheMissLoadError', listener: 'function' },
             { type: 'htmx:historyRestore', listener: 'function' },
+            { type: 'htmx:swapError', listener: 'function' },
             { type: 'DOMContentLoaded', listener: 'function' },
-            { type: 'htmx:load', listener: 'function' },
             { type: 'htmx:afterSettle', listener: 'function' },
         ]),
     );
+    expect(documentRegistrations).not.toContainEqual({
+        type: 'htmx:load',
+        listener: 'function',
+    });
     expect(windowRegistrations).toEqual(
-        expect.arrayContaining([{ type: 'resize', listener: 'function' }]),
+        expect.arrayContaining([
+            { type: 'pageshow', listener: 'function' },
+            { type: 'resize', listener: 'function' },
+        ]),
     );
 });

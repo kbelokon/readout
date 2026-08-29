@@ -160,6 +160,26 @@ test('YAML fold: hover-revealed chevron folds the containers block to the "… N
   const opener = specCard.locator('td.code pre > span[id*="line-"]').first();
   const toggle = opener.locator('.ro-fold-toggle');
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  const foldGeometry = await opener.evaluate((line) => {
+    const control = line.querySelector('.ro-fold-toggle');
+    const firstToken = Array.from(line.children).find(
+      (child) => child.tagName === 'SPAN' && !child.classList.contains('ro-fold-note')
+    );
+    if (!(control instanceof HTMLElement) || !(firstToken instanceof HTMLElement)) {
+      throw new Error('fold opener is missing its control or first YAML token');
+    }
+    const lineRect = line.getBoundingClientRect();
+    const tokenRect = firstToken.getBoundingClientRect();
+    return {
+      controlPosition: getComputedStyle(control).position,
+      tokenOffset: tokenRect.x - lineRect.x,
+    };
+  });
+  // The fold control is injected after an HTMX body swap. It must live in the
+  // pre-existing code-cell padding instead of consuming inline width; otherwise
+  // only opener keys visibly jump right as runInit enhances the new YAML DOM.
+  expect(foldGeometry.controlPosition).toBe('absolute');
+  expect(foldGeometry.tokenOffset).toBeCloseTo(0, 2);
   await expect(toggle).toHaveCSS('opacity', '0');
   await opener.hover();
   await expect(toggle).toHaveCSS('opacity', '1');

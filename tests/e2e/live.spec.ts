@@ -7,14 +7,12 @@ import { controlURL } from './playwright.config';
 //   - enabling Live opens the `_stream` SSE fetch (a client-minted ?g=
 //     generation on the URL), pulses the topbar livedot, and a scripted pod
 //     status change lands as a PUSH -- well under any polling cadence -- and
-//     flashes exactly the changed cell through the shared morph pipeline;
+//     flashes exactly the changed cell through the semantic delta reducer;
 //   - the choice persists via the ro_prefs cookie (SSR renders Live + the
 //     stream reopens on reload);
-//   - a filter-chip commit while a delayMs-held push from the OLD stream is
-//     in flight: the stale unfiltered push is DISCARDED at morph time, the
-//     stream reopens with a FRESH generation carrying the f= query, and the
-//     reopened stream keeps pushing (filter coherence, the review-named
-//     failure mode);
+//   - a filter-chip request synchronously aborts the OLD stream before the
+//     request leaves the browser, stays suspended while canonical state
+//     changes, then reopens with a FRESH generation carrying the f= query;
 //   - `/__control/watch-401` + a scripted EOF make readout's re-watch hit a
 //     401 -> the server emits `ro-terminal` (reason auth) -> the stale banner
 //     appears, 5s polling resumes, and a later tab-hide/show does NOT reopen
@@ -61,6 +59,36 @@ async function openWatchCount(): Promise<number> {
   }
   const body = (await res.json()) as { openWatches?: string[] };
   return (body.openWatches ?? []).length;
+}
+
+async function appliedScriptEventCount(): Promise<number> {
+  const res = await fetch(`${controlURL}/__control/watch-script`);
+  if (!res.ok) {
+    throw new Error(`watch snapshot: ${res.status}`);
+  }
+  const body = (await res.json()) as { events?: Array<{ applied?: boolean }> };
+  return (body.events ?? []).filter((event) => event.applied === true).length;
+}
+
+function requestOwnershipStats(page: Page): Promise<{
+  state: string;
+  connections: number;
+  inFlightRequests: number;
+}> {
+  return page.evaluate(() => {
+    const stats = (
+      window as unknown as {
+        roLive: {
+          stats(): { state: string; connections: number; inFlightRequests: number };
+        };
+      }
+    ).roLive.stats();
+    return {
+      state: stats.state,
+      connections: stats.connections,
+      inFlightRequests: stats.inFlightRequests,
+    };
+  });
 }
 
 // A polling tick (or any programmatic re-fetch) marks itself RO-No-Push (the
@@ -134,7 +162,7 @@ test('Live opens the stream: livedot pulses, a status change lands as a push and
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
 
   // A scripted change arrives as a PUSH: Live arms NO polling timer, so the
-  // morph landing at all proves the stream delivered it — and the 1s budget
+  // cell update proves the stream delivered it — and the 1s budget
   // pins it SUB-SECOND (push latency after the 300ms floor is ~tens of ms;
   // no polling cadence could land this fast). The changed STATUS cell
   // flashes; the untouched NAME cell does not.
@@ -167,7 +195,7 @@ test('Live opens the stream: livedot pulses, a status change lands as a push and
   await reopened;
 });
 
-test('a filter chip while an old-generation push is held in flight: morph-time discard + fresh-generation reopen', async ({
+test('a filter request aborts the old generation before send, suspends, and reopens canonically', async ({
   page,
 }) => {
   await page.goto(PODS);
@@ -175,21 +203,52 @@ test('a filter chip while an old-generation push is held in flight: morph-time d
   await pickLive(page);
   const gen1 = streamGen((await firstStream).url());
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
+  const before = await requestOwnershipStats(page);
 
-  // Hold the upcoming user `_table` commit open for 1.5s -- the in-flight
-  // window the held push must land inside (deterministic, no timing race).
-  await page.route('**/_table*', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
-    await route.continue();
+  // Hold the exact user `_table` request at the browser boundary. The route
+  // starts only after htmx:beforeRequest has given Live synchronous ownership
+  // and aborted the old connection, so the absence of an upstream watch below
+  // is causal evidence rather than a timing inference.
+  let markTableStarted!: () => void;
+  let releaseTable!: () => void;
+  const tableStarted = new Promise<void>((resolve) => {
+    markTableStarted = resolve;
   });
-  // Hold the my-app mutation 600ms: fakeapi delays the list-state change AND
-  // the stream emission, so the OLD stream pushes an UNFILTERED fragment
-  // (my-app CrashLooping) squarely inside the commit's in-flight window.
+  const tableRelease = new Promise<void>((resolve) => {
+    releaseTable = resolve;
+  });
+  await page.route(
+    '**/_table*',
+    async (route) => {
+      markTableStarted();
+      await tableRelease;
+      await route.continue();
+    },
+    { times: 1 }
+  );
+
+  // Begin a status:Running commit. No replacement generation may open while
+  // this request owns the persistent list container.
+  await page.locator('#ro-filter-input').click();
+  await page.locator('#ro-filter-input').pressSequentially('status:Running');
+  await page.locator('#ro-filter-input').press('Enter');
+  await tableStarted;
+  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
+  await expect.poll(() => requestOwnershipStats(page)).toMatchObject({
+    state: 'suspended',
+    connections: before.connections,
+    inFlightRequests: 1,
+  });
+
+  // Mutate canonical state while both the old stream and the held list request
+  // are unable to update the page. The fakeapi applied flag proves the event
+  // happened; zero watches plus the unchanged DOM prove there was no stale
+  // generation delivery to discard at morph time.
   await scriptEvents([
     {
       path: PODS_LIST_PATH,
       type: 'MODIFIED',
-      delayMs: 600,
+      delayMs: 100,
       object: {
         apiVersion: 'v1',
         kind: 'Pod',
@@ -199,39 +258,22 @@ test('a filter chip while an old-generation push is held in flight: morph-time d
       cells: ['my-app', '0/1', 'CrashLoopBackOff', '7', '5m'],
     },
   ]);
-
-  const secondStream = page.waitForRequest(
-    (r) => isStreamRequest(r.url()) && streamGen(r.url()) !== gen1,
-    { timeout: 10_000 }
-  );
-  // Commit a status:Running chip: my-app (now CrashLooping server-side once
-  // the delay fires) is filtered OUT of every subsequent server render.
-  await page.locator('#ro-filter-input').click();
-  await page.locator('#ro-filter-input').pressSequentially('status:Running');
-  await page.locator('#ro-filter-input').press('Enter');
-
-  // The held push ARRIVED and was DISCARDED — observable on the roLive debug
-  // seam, not inferred from a sleep: the discard counter ticks at ~t+0.6s
-  // (the fakeapi delay) while the commit is still held in flight until
-  // ~t+1.5s, so the unchanged-view assert below runs squarely inside the
-  // in-flight window. The route-hold margins stay as the backstop.
-  await expect
-    .poll(
-      () =>
-        page.evaluate(
-          () => (window as unknown as { roLive: { discards(): number } }).roLive.discards()
-        ),
-      { timeout: 5_000 }
-    )
-    .toBeGreaterThan(0);
-  // my-app still shows its pre-change status: the unfiltered stale fragment
-  // never morphed in.
+  await expect.poll(appliedScriptEventCount, { timeout: 5_000 }).toBe(1);
+  expect(await openWatchCount()).toBe(0);
   await expect(
     page.locator('tr[data-key="e2e/default/my-app"] td:has(span.cell-status)')
   ).toContainText('Running');
 
-  // The commit lands: the filtered view holds nginx only, and the stream
-  // reopened under a FRESH generation carrying the f= query.
+  // Release the request only after the mutation is canonical. Its 200 snapshot
+  // filters my-app out, then the request barrier permits exactly the fresh,
+  // query-coherent generation.
+  const tableResponse = page.waitForResponse((r) => r.url().includes('/_table'));
+  const secondStream = page.waitForRequest(
+    (r) => isStreamRequest(r.url()) && streamGen(r.url()) !== gen1,
+    { timeout: 10_000 }
+  );
+  releaseTable();
+  expect((await tableResponse).status()).toBe(200);
   const req2 = await secondStream;
   expect(req2.url()).toContain('f=status');
   await expect(rowNames(page)).toHaveText(['nginx']);
@@ -278,21 +320,30 @@ test('watch-401 terminal: banner appears, 5s polling resumes, tab-hide/show neve
   // The first successful poll clears the degradation banner -- the standard
   // stale recovery; the data is fresh again (5s-polling fresh).
   await expect(page.locator('.ro-stale-banner')).toBeHidden();
+  const fallback = await requestOwnershipStats(page);
+  expect(fallback).toMatchObject({ state: 'fallback', inFlightRequests: 0 });
 
   // A subsequent tab-hide/show must NOT reopen the stream: the terminal
   // fallback is sticky (only a fresh page init or an explicit re-pick
-  // re-attempts). The catch-up _table poll on return is fine -- only
-  // /_stream is forbidden.
+  // re-attempts). Await the visibility-return catch-up poll as the causal
+  // observation window; only /_stream is forbidden.
   const streamRequests: string[] = [];
   page.on('request', (r) => {
     if (isStreamRequest(r.url())) {
       streamRequests.push(r.url());
     }
   });
+  const visibilityPoll = page.waitForResponse(isTickResponse, { timeout: 15_000 });
   await setHidden(page, true);
   await setHidden(page, false);
-  await page.waitForTimeout(800);
+  await visibilityPoll;
+  expect(await openWatchCount()).toBe(0);
   expect(streamRequests).toEqual([]);
+  expect(await requestOwnershipStats(page)).toMatchObject({
+    state: 'fallback',
+    connections: fallback.connections,
+    inFlightRequests: 0,
+  });
 
   // Live stays the selected mode and the livedot keeps pulsing: the fallback
   // is an ACTIVE polling mode (the livedot pulses for any active refresh mode).

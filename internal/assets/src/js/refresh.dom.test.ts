@@ -3,16 +3,26 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 const dependencies = vi.hoisted(() => ({
+    liveAfterListRequest: vi.fn(),
     liveApply: vi.fn(),
+    liveBeforeListSwapDecision: vi.fn(),
+    liveBeforeListRequest: vi.fn(),
     liveFallbackSeconds: vi.fn(() => 0),
+    liveListRequestSwapFailed: vi.fn(),
+    liveMarkListRequestSent: vi.fn(),
     readPrefs: vi.fn(() => ({ kinds: [], refresh: '', ns: {} })),
     roPrefsSetRefresh: vi.fn(),
     updateStaleCountdown: vi.fn(),
 }));
 
 vi.mock('./live.js', () => ({
+    liveAfterListRequest: dependencies.liveAfterListRequest,
     liveApply: dependencies.liveApply,
+    liveBeforeListSwapDecision: dependencies.liveBeforeListSwapDecision,
+    liveBeforeListRequest: dependencies.liveBeforeListRequest,
     liveFallbackSeconds: dependencies.liveFallbackSeconds,
+    liveListRequestSwapFailed: dependencies.liveListRequestSwapFailed,
+    liveMarkListRequestSent: dependencies.liveMarkListRequestSent,
 }));
 vi.mock('./prefs.js', () => ({
     REFRESH_KEY: 'roRefresh',
@@ -30,11 +40,15 @@ import {
     fireRefresh,
     handleRefreshAfterRequest,
     handleRefreshBeforeRequest,
+    handleRefreshBeforeSend,
+    handleRefreshBeforeSwap,
     handleRefreshConfigRequest,
+    handleRefreshSwapError,
     handleRefreshVisibilityChange,
     isPreloadRequest,
     noteRefreshFailure,
     noteRefreshRecovery,
+    pauseRefresh,
     pruneSettledListRequests,
     refreshBindings,
     refreshInterval,
@@ -72,14 +86,23 @@ function xhrAt(readyState: number): XMLHttpRequest {
 }
 
 function dispatchHtmx(
-    type: 'htmx:afterRequest' | 'htmx:beforeRequest' | 'htmx:configRequest',
+    type:
+        | 'htmx:afterRequest'
+        | 'htmx:beforeRequest'
+        | 'htmx:beforeSend'
+        | 'htmx:beforeSwap'
+        | 'htmx:configRequest'
+        | 'htmx:swapError',
     detail: unknown,
 ): void {
     const event = new CustomEvent(type, { bubbles: true, detail });
     const handler = {
         'htmx:afterRequest': handleRefreshAfterRequest,
         'htmx:beforeRequest': handleRefreshBeforeRequest,
+        'htmx:beforeSend': handleRefreshBeforeSend,
+        'htmx:beforeSwap': handleRefreshBeforeSwap,
         'htmx:configRequest': handleRefreshConfigRequest,
+        'htmx:swapError': handleRefreshSwapError,
     }[type];
     handler(event);
 }
@@ -131,8 +154,13 @@ function captureTimeouts() {
 }
 
 beforeEach(() => {
+    dependencies.liveAfterListRequest.mockReset();
     dependencies.liveApply.mockReset();
+    dependencies.liveBeforeListSwapDecision.mockReset();
+    dependencies.liveBeforeListRequest.mockReset();
     dependencies.liveFallbackSeconds.mockReset().mockReturnValue(0);
+    dependencies.liveListRequestSwapFailed.mockReset();
+    dependencies.liveMarkListRequestSent.mockReset();
     dependencies.readPrefs.mockReset().mockReturnValue({ kinds: [], refresh: '', ns: {} });
     dependencies.roPrefsSetRefresh.mockReset();
     dependencies.updateStaleCountdown.mockReset();
@@ -259,6 +287,7 @@ describe('htmx request lifecycle', () => {
     test('integrates the exact stored validator only for current-container traffic', () => {
         window.history.replaceState(null, '', '/clusters/prod/pods');
         const content = renderContent();
+        content.append(document.createElement('table'));
         content.dataset.roEtag = 'W/"stored"';
         content.dataset.roEtagPath = '/clusters/prod/pods/_table?sort=Name';
         const containerHeaders = {
@@ -326,6 +355,7 @@ describe('htmx request lifecycle', () => {
         expect(htmx.trigger).not.toHaveBeenCalled();
 
         htmx.trigger.mockImplementationOnce(() => {
+            expect(dependencies.liveBeforeListRequest).toHaveBeenCalledTimes(2);
             expect(userListRequestsInFlight).toContain(userXHR);
         });
         dispatchHtmx('htmx:beforeRequest', {
@@ -335,6 +365,9 @@ describe('htmx request lifecycle', () => {
         });
         expect(userListRequestsInFlight).toContain(userXHR);
         expect(htmx.trigger).toHaveBeenCalledExactlyOnceWith(content, 'htmx:abort');
+        expect(
+            dependencies.liveBeforeListRequest.mock.invocationCallOrder[1] as number,
+        ).toBeLessThan(htmx.trigger.mock.invocationCallOrder[0] as number);
 
         dispatchHtmx('htmx:afterRequest', null);
         dispatchHtmx('htmx:afterRequest', {});
@@ -346,6 +379,35 @@ describe('htmx request lifecycle', () => {
         dispatchHtmx('htmx:afterRequest', { xhr: userXHR });
         expect(containerListRequestsInFlight).toHaveLength(0);
         expect(userListRequestsInFlight).toHaveLength(0);
+    });
+
+    test('forwards the exact XHR beforeSend marker to Live', () => {
+        const content = renderContent();
+        const request = xhrAt(1);
+        const event = new CustomEvent('htmx:beforeSend', {
+            detail: { target: content, xhr: request },
+        });
+
+        handleRefreshBeforeSend(event);
+
+        expect(dependencies.liveMarkListRequestSent).toHaveBeenCalledExactlyOnceWith(event);
+    });
+
+    test('forwards the final swap decision and swap failure barriers to Live', () => {
+        const content = renderContent();
+        const request = xhrAt(4);
+        const beforeSwap = new CustomEvent('htmx:beforeSwap', {
+            detail: { target: content, xhr: request, shouldSwap: true },
+        });
+        const swapError = new CustomEvent('htmx:swapError', {
+            detail: { target: content, xhr: request },
+        });
+
+        handleRefreshBeforeSwap(beforeSwap);
+        handleRefreshSwapError(swapError);
+
+        expect(dependencies.liveBeforeListSwapDecision).toHaveBeenCalledExactlyOnceWith(beforeSwap);
+        expect(dependencies.liveListRequestSwapFailed).toHaveBeenCalledExactlyOnceWith(swapError);
     });
 
     test('treats a container request without an XHR as container-owned and inert', () => {
@@ -731,6 +793,24 @@ test('disarms a pending timer at zero cadence and repaints the stale countdown',
     expect(dependencies.updateStaleCountdown).toHaveBeenCalledOnce();
 });
 
+test('pauses an armed polling chain across a pending history body swap', () => {
+    const now = new Date('2026-08-25T10:00:00Z').getTime();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const timers = captureTimeouts();
+    dependencies.readPrefs.mockReturnValue({ kinds: [], refresh: '5', ns: {} });
+    applyRefresh();
+    expect(refreshNextAtMs()).toBe(now + 5_000);
+    expect(timers.setTimeout).toHaveBeenCalledOnce();
+
+    timers.clearTimeout.mockClear();
+    dependencies.updateStaleCountdown.mockClear();
+    pauseRefresh();
+
+    expect(timers.clearTimeout).toHaveBeenCalledExactlyOnceWith(1);
+    expect(refreshNextAtMs()).toBe(0);
+    expect(dependencies.updateStaleCountdown).toHaveBeenCalledOnce();
+});
+
 test('keeps an ordinary stage-zero recovery silent and does not re-arm', () => {
     const timers = captureTimeouts();
     const toast = vi.fn();
@@ -963,6 +1043,9 @@ test('registers every required resident listener and binding at module load', as
         expect.arrayContaining([
             ['htmx:configRequest', fresh.handleRefreshConfigRequest],
             ['htmx:beforeRequest', fresh.handleRefreshBeforeRequest],
+            ['htmx:beforeSend', fresh.handleRefreshBeforeSend],
+            ['htmx:beforeSwap', fresh.handleRefreshBeforeSwap],
+            ['htmx:swapError', fresh.handleRefreshSwapError],
             ['htmx:afterRequest', fresh.handleRefreshAfterRequest],
             ['visibilitychange', fresh.handleRefreshVisibilityChange],
         ]),

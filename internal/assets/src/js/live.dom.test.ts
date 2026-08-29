@@ -3,924 +3,1137 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const dependencies = vi.hoisted(() => ({
-    containerRequests: new Set<XMLHttpRequest>(),
     markListStale: vi.fn(),
-    pruneSettledListRequests: vi.fn((requests: Set<XMLHttpRequest>) => {
-        for (const xhr of requests) {
-            if (xhr.readyState === 0 || xhr.readyState === 4) {
-                requests.delete(xhr);
-            }
-        }
-    }),
     refreshMode: vi.fn(() => 'Live'),
     scheduleRefreshTick: vi.fn(),
-    userRequests: new Set<XMLHttpRequest>(),
 }));
 
 vi.mock('./refresh.js', () => ({
-    containerListRequestsInFlight: dependencies.containerRequests,
-    pruneSettledListRequests: dependencies.pruneSettledListRequests,
     refreshMode: dependencies.refreshMode,
     scheduleRefreshTick: dependencies.scheduleRefreshTick,
-    userListRequestsInFlight: dependencies.userRequests,
 }));
-vi.mock('./stale.js', () => ({
-    markListStale: dependencies.markListStale,
-}));
+vi.mock('./stale.js', () => ({ markListStale: dependencies.markListStale }));
 
-import { liveApply, liveFallbackSeconds, liveOnListSwap, liveState, liveTeardown } from './live.js';
-
-const importedLiveState = { ...liveState };
-const importedLiveDiscards = window.roLive.discards();
-const importedFallbackSeconds = liveFallbackSeconds();
+import {
+    adoptListProjection,
+    listProjectionRowByKey,
+    resetListProjection,
+} from './list-projection.js';
+import {
+    LIVE_FIRST_FRAME_TIMEOUT_MS,
+    liveAfterListRequest,
+    liveApply,
+    liveBeforeListRequest,
+    liveBeforeListSwapDecision,
+    liveFallbackSeconds,
+    liveListRequestSwapFailed,
+    liveMarkListRequestSent,
+    liveOnListSwap,
+    liveResetPage,
+    liveState,
+    liveTeardown,
+} from './live.js';
+import { isClientLiveGeneration } from './live-url.js';
 
 interface HtmxHarness {
     swap: ReturnType<typeof vi.fn>;
 }
 
-interface Deferred<T> {
-    promise: Promise<T>;
-    reject(reason: unknown): void;
-    resolve(value: T): void;
+interface ControlledStream {
+    close(): void;
+    enqueue(value: string | Uint8Array): void;
+    headers: Headers;
+    response: Response;
 }
 
-function deferred<T>(): Deferred<T> {
-    let resolve!: (value: T) => void;
-    let reject!: (reason: unknown) => void;
-    const promise = new Promise<T>((done, fail) => {
-        resolve = done;
-        reject = fail;
-    });
-    return { promise, reject, resolve };
-}
-
-function xhrAt(readyState: number): XMLHttpRequest {
-    return { readyState } as unknown as XMLHttpRequest;
-}
-
-function renderLivePage(disabled = false): HTMLElement {
+function renderLivePage(path = '/clusters/prod/pods'): HTMLElement {
+    window.history.replaceState(null, '', path);
     const content = document.createElement('div');
     content.id = 'resource-list-content';
     content.dataset.liveUrl = 'location';
     const option = document.createElement('button');
     option.dataset.roAction = 'set-refresh';
     option.dataset.roInterval = 'Live';
-    option.disabled = disabled;
-    document.body.append(content, option);
+    const bulk = document.createElement('div');
+    bulk.id = 'ro-bulkbar';
+    bulk.setAttribute('inert', '');
+    bulk.innerHTML = '<span id="ro-bulk-count">0 selected</span>';
+    document.body.append(content, option, bulk);
     return content;
 }
 
-function installHtmx(): HtmxHarness {
-    const htmx = { swap: vi.fn() };
+function listHTML(name = 'Alpha', status = 'Ready'): string {
+    return `
+        <input id="ro-filter-input" value="">
+        <div class="ro-table-wrap" tabindex="0">
+            <table class="ro-table">
+                <thead><tr><th data-hint="string">Name</th><th data-hint="enum">Status</th></tr></thead>
+                <tbody>
+                    <tr id="row-dev/a" data-key="dev/a" data-name="${name}">
+                        <td class="cell-name"><a href="#a">${name}</a></td><td>${status}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="ro-cardlist"><div class="ro-pcard" data-key="dev/a"><a href="#a-card">${name} card</a></div></div>
+        <span class="ro-count" data-ro-live-region="count">1</span>
+        <div class="ro-phase-strip" data-ro-live-region="phase" hidden></div>
+        <span class="ro-foundline" data-ro-live-region="found">1 found</span>
+        <div id="ro-live-status" role="status" aria-live="polite"></div>`;
+}
+
+function rowHTML(name: string, status = 'Ready'): string {
+    return `<tr id="row-dev/a" data-key="dev/a" data-name="${name}"><td class="cell-name"><a href="#a">${name}</a></td><td>${status}</td></tr>`;
+}
+
+function cardHTML(name: string): string {
+    return `<div class="ro-pcard" data-key="dev/a"><a href="#a-card">${name} card</a></div>`;
+}
+
+function installHtmx(options: { completeSnapshot?: boolean; mutate?: boolean } = {}): HtmxHarness {
+    const completeSnapshot = options.completeSnapshot ?? true;
+    const mutate = options.mutate ?? true;
+    const swap = vi.fn(
+        (
+            target: Element,
+            html: string,
+            _swapSpec: unknown,
+            swapOptions: { eventInfo: Record<string, unknown> },
+        ) => {
+            if (mutate) {
+                target.innerHTML = html;
+                if (target.querySelector('tbody tr[data-key]')) adoptListProjection(target);
+            }
+            if (completeSnapshot) {
+                liveOnListSwap(
+                    new CustomEvent('htmx:afterSwap', {
+                        detail: { ...swapOptions.eventInfo, target },
+                    }),
+                );
+            }
+        },
+    );
+    const htmx = { swap };
     (window as unknown as { htmx: HtmxHarness }).htmx = htmx;
     return htmx;
 }
 
-function streamResponse(parts: Array<string | Uint8Array | Error>, status = 200): Response {
+function controlledStream(
+    headers: HeadersInit = { 'Content-Type': 'text/event-stream' },
+): ControlledStream {
+    const encoder = new TextEncoder();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+        start(value) {
+            controller = value;
+        },
+    });
+    const responseHeaders = new Headers(headers);
+    return {
+        close: () => controller.close(),
+        enqueue: (value) =>
+            controller.enqueue(typeof value === 'string' ? encoder.encode(value) : value),
+        headers: responseHeaders,
+        response: { status: 200, body, headers: responseHeaders } as unknown as Response,
+    };
+}
+
+function response(
+    parts: Array<string | Uint8Array>,
+    status = 200,
+    headers: HeadersInit = { 'Content-Type': 'text/event-stream' },
+): Response {
     const encoder = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({
         start(controller) {
             for (const part of parts) {
-                if (part instanceof Error) {
-                    controller.error(part);
-                    return;
-                }
                 controller.enqueue(typeof part === 'string' ? encoder.encode(part) : part);
             }
             controller.close();
         },
     });
-    return {
-        status,
-        body,
-    } as unknown as Response;
+    return { status, body, headers: new Headers(headers) } as unknown as Response;
 }
 
-function readerOnlyResponse(parts: string[]): Response {
-    const encoder = new TextEncoder();
-    const queue = parts.map((part) => encoder.encode(part));
-    const body = {
-        getReader: () => ({
-            read: vi.fn(async () => {
-                const value = queue.shift();
-                return value === undefined
-                    ? { done: true as const, value: undefined }
-                    : { done: false as const, value };
-            }),
-        }),
-    };
-    return { status: 200, body } as unknown as Response;
-}
-
-interface ControlledStream {
-    close(): void;
-    enqueue(text: string): void;
-    response: Response;
-}
-
-function controlledStream(): ControlledStream {
-    const encoder = new TextEncoder();
-    let streamController!: ReadableStreamDefaultController<Uint8Array>;
-    const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-            streamController = controller;
-        },
-    });
-    return {
-        close: () => streamController.close(),
-        enqueue: (text) => streamController.enqueue(encoder.encode(text)),
-        response: { status: 200, body } as unknown as Response,
-    };
-}
-
-function statusResponse(status: number): Response {
-    return { status, body: null } as unknown as Response;
+function pendingFetch(): Promise<Response> {
+    return new Promise(() => {});
 }
 
 function installFetch(
     implementation: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
-): ReturnType<typeof vi.fn> {
-    const fetchMock = vi.fn(implementation);
-    vi.stubGlobal('fetch', fetchMock);
-    return fetchMock;
+) {
+    const mock = vi.fn(implementation);
+    vi.stubGlobal('fetch', mock);
+    return mock;
 }
 
-function installAbortablePendingFetch(): ReturnType<typeof vi.fn> {
-    return installFetch((_input, init) => {
-        return new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
-                once: true,
-            });
-        });
+function requestHeaders(init?: RequestInit): Record<string, string> {
+    return init?.headers as Record<string, string>;
+}
+
+function sse(name: string, payload: unknown): string {
+    return `event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
+function snapshot(g: string, overrides: Record<string, unknown> = {}) {
+    return {
+        v: 2,
+        kind: 'snapshot',
+        g,
+        seq: 1,
+        screen: '/clusters/prod/pods',
+        rev: 'rev-1',
+        rv: '10',
+        schema: 'schema-1',
+        snapshot: { html: listHTML() },
+        ...overrides,
+    };
+}
+
+function xhr(status = 200): XMLHttpRequest {
+    const target = new EventTarget() as XMLHttpRequest;
+    Object.defineProperties(target, {
+        readyState: { configurable: true, value: 1, writable: true },
+        status: { configurable: true, value: status, writable: true },
     });
+    return target;
+}
+
+function htmxRequest(type: string, content: Element, request: XMLHttpRequest, extra = {}): Event {
+    return new CustomEvent(type, {
+        detail: { target: content, xhr: request, ...extra },
+    });
+}
+
+async function flush(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
 }
 
 beforeEach(() => {
     liveTeardown();
+    liveResetPage();
     liveState.status = 'idle';
     liveState.abort = null;
     liveState.gen = '';
     liveState.streamPath = '';
-    dependencies.containerRequests.clear();
-    dependencies.userRequests.clear();
-    dependencies.markListStale.mockReset();
-    dependencies.pruneSettledListRequests.mockClear();
     dependencies.refreshMode.mockReset().mockReturnValue('Live');
     dependencies.scheduleRefreshTick.mockReset();
+    dependencies.markListStale.mockReset();
+    document.body.replaceChildren();
+    resetListProjection();
     delete (window as unknown as { htmx?: HtmxHarness }).htmx;
 });
 
 afterEach(async () => {
     liveTeardown();
-    liveState.status = 'idle';
-    liveState.streamPath = '';
-    await Promise.resolve();
+    liveResetPage();
+    vi.useRealTimers();
+    await flush();
 });
 
-test('starts from a clean, idle stream state', () => {
-    expect(importedLiveState).toStrictEqual({
-        status: 'idle',
-        abort: null,
-        gen: '',
-        streamPath: '',
-    });
-    expect(importedLiveDiscards).toBe(0);
-    expect(importedFallbackSeconds).toBe(0);
-});
-
-test('liveApply derives the raw stream URL, is idempotent, force-reopens, and tears down', () => {
-    window.history.replaceState(
-        null,
-        '',
-        '/clusters/prod/namespaces/default/pods///?f=status:Running,Pending&sort=Age%3Adesc',
-    );
-    renderLivePage();
-    const fetchMock = installAbortablePendingFetch();
+test('opens with one valid UUID/hex generation, raw query cleanup, and both negotiation headers', () => {
+    renderLivePage('/clusters/prod/pods?g=old&f=status:Running,Pending&%67=older&x=%ZZ');
+    const fetchMock = installFetch(pendingFetch);
 
     liveApply();
 
-    const base =
-        '/clusters/prod/namespaces/default/pods/_stream?f=status:Running,Pending&sort=Age%3Adesc';
-    const first = liveState.abort;
+    expect(isClientLiveGeneration(liveState.gen)).toBe(true);
+    expect(liveState.streamPath).toBe('/clusters/prod/pods/_stream?f=status:Running,Pending&x=%ZZ');
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+        `${liveState.streamPath}&g=${liveState.gen}`,
+        {
+            signal: liveState.abort?.signal,
+            headers: {
+                'RO-Live-Version': '2',
+                'RO-Live-Generation': liveState.gen,
+            },
+        },
+    );
     expect(liveState.status).toBe('connecting');
-    expect(liveState.streamPath).toBe(base);
-    expect(first).not.toBeNull();
-    const firstGeneration = liveState.gen;
-    expect(firstGeneration).not.toBe('');
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(`${base}&g=${liveState.gen}`, {
-        signal: first?.signal,
-    });
-    expect(dependencies.scheduleRefreshTick).toHaveBeenCalledOnce();
 
     liveApply();
     expect(fetchMock).toHaveBeenCalledOnce();
-
+    const first = liveState.abort;
     liveApply(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(first?.signal.aborted).toBe(true);
-    expect(liveState.abort).not.toBe(first);
-    expect(liveState.gen).not.toBe(firstGeneration);
-
-    const second = liveState.abort;
-    liveTeardown();
-    expect(second?.signal.aborted).toBe(true);
-    expect(liveState.abort).toBeNull();
-    expect(liveFallbackSeconds()).toBe(0);
-
-    dependencies.refreshMode.mockReturnValue('Off');
-    liveApply();
-    expect(liveState.status).toBe('idle');
-    expect(liveState.streamPath).toBe('');
 });
 
-test('a queryless stream URL uses the first query delimiter for its generation', () => {
-    window.history.replaceState(null, '', '/clusters/prod/pods');
-    renderLivePage();
-    const fetchMock = installAbortablePendingFetch();
+test('an unsupported page and a non-Live preference use sticky polling/idle states', () => {
+    const content = renderLivePage();
+    const fetchMock = installFetch(pendingFetch);
+    content.dataset.liveUrl = 'baked';
 
     liveApply();
-
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
-        `/clusters/prod/pods/_stream?g=${liveState.gen}`,
-        { signal: liveState.abort?.signal },
-    );
-});
-
-describe('unsupported Live pages', () => {
-    test.each([
-        ['disabled option', () => renderLivePage(true), 5],
-        [
-            'missing option',
-            () => {
-                const content = document.createElement('div');
-                content.id = 'resource-list-content';
-                content.dataset.liveUrl = 'location';
-                document.body.append(content);
-            },
-            5,
-        ],
-        [
-            'wrong live contract',
-            () => {
-                const content = renderLivePage();
-                content.dataset.liveUrl = 'baked';
-            },
-            5,
-        ],
-        [
-            'missing list container',
-            () => {
-                const option = document.createElement('button');
-                option.dataset.roAction = 'set-refresh';
-                option.dataset.roInterval = 'Live';
-                document.body.append(option);
-            },
-            0,
-        ],
-    ] as const)('%s degrades without opening a stream', (_name, render, fallbackSeconds) => {
-        render();
-        const fetchMock = installAbortablePendingFetch();
-
-        liveApply();
-
-        expect(fetchMock).not.toHaveBeenCalled();
-        expect(liveState.status).toBe('fallback');
-        expect(liveState.streamPath).toBe('');
-        expect(liveFallbackSeconds()).toBe(fallbackSeconds);
-        expect(dependencies.scheduleRefreshTick).toHaveBeenCalledOnce();
-        expect(dependencies.markListStale).not.toHaveBeenCalled();
-    });
-});
-
-test('an idle state with the same page identity still opens a stream', () => {
-    window.history.replaceState(null, '', '/clusters/prod/pods');
-    renderLivePage();
-    const fetchMock = installAbortablePendingFetch();
-    liveState.status = 'idle';
-    liveState.streamPath = '/clusters/prod/pods/_stream';
-
-    liveApply();
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(liveState.status).toBe('connecting');
-    expect(liveState.abort).not.toBeNull();
-});
-
-test('a changed page identity reopens without an explicit force', () => {
-    window.history.replaceState(null, '', '/clusters/prod/pods');
-    renderLivePage();
-    const fetchMock = installAbortablePendingFetch();
-    liveApply();
-    const first = liveState.abort;
-    window.history.replaceState(null, '', '/clusters/prod/services?sort=Name');
-
-    liveApply();
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(first?.signal.aborted).toBe(true);
-    expect(liveState.streamPath).toBe('/clusters/prod/services/_stream?sort=Name');
-});
-
-test('a standing fallback is idempotent until an explicit retry', () => {
-    renderLivePage(true);
-    const fetchMock = installAbortablePendingFetch();
-    liveApply();
-
-    liveApply();
-
     expect(fetchMock).not.toHaveBeenCalled();
     expect(liveState.status).toBe('fallback');
     expect(liveFallbackSeconds()).toBe(5);
-    expect(dependencies.scheduleRefreshTick).toHaveBeenCalledOnce();
-});
 
-test('switching Off cleans even an inconsistent idle fallback state', () => {
-    renderLivePage(true);
-    installAbortablePendingFetch();
-    liveApply();
-    expect(liveFallbackSeconds()).toBe(5);
-    liveState.status = 'idle';
     dependencies.refreshMode.mockReturnValue('Off');
-
     liveApply();
-
     expect(liveState.status).toBe('idle');
     expect(liveState.streamPath).toBe('');
-    expect(liveState.abort).toBeNull();
     expect(liveFallbackSeconds()).toBe(0);
 });
 
-test('liveOnListSwap ignores pushes and every non-riding state', () => {
-    window.history.replaceState(null, '', '/clusters/prod/pods?sort=Name');
-    renderLivePage();
-    const fetchMock = installAbortablePendingFetch();
-    liveApply();
-
-    liveOnListSwap(new CustomEvent('htmx:afterSwap', { detail: { roLivePush: true } }));
-    expect(fetchMock).toHaveBeenCalledOnce();
-
-    for (const status of ['idle', 'fallback', 'hidden'] as const) {
-        liveState.status = status;
-        liveOnListSwap(new CustomEvent('htmx:afterSwap'));
-    }
-    expect(fetchMock).toHaveBeenCalledOnce();
-});
-
-describe.each(['connecting', 'open'] as const)('%s list swaps', (status) => {
-    test.each([
-        [
-            'prefers the final request path and preserves its raw query',
-            {
-                finalRequestPath: '/clusters/prod/pods/_table?f=status:Running,Pending',
-                requestPath: '/clusters/prod/pods/_table?f=wrong',
-            },
-            '/clusters/prod/pods/_stream?f=status:Running,Pending',
-        ],
-        [
-            'falls back to a queryless request path',
-            { requestPath: '/clusters/prod/services/_table' },
-            '/clusters/prod/services/_stream',
-        ],
-        [
-            'does not rewrite a table-looking query value',
-            { finalRequestPath: '/clusters/prod/pods?next=/_table' },
-            '/clusters/prod/pods/_stream?sort=Name',
-        ],
-        [
-            'uses the live location when pathInfo is absent',
-            undefined,
-            '/clusters/prod/pods/_stream?sort=Name',
-        ],
-        [
-            'uses the live location when the request path is not a string',
-            { finalRequestPath: 42 },
-            '/clusters/prod/pods/_stream?sort=Name',
-        ],
-        [
-            'uses the live location when a present detail has no path info',
-            null,
-            '/clusters/prod/pods/_stream?sort=Name',
-        ],
-    ] as const)('%s', (_name, pathInfo, expectedBase) => {
-        window.history.replaceState(null, '', '/clusters/prod/pods?sort=Name');
-        renderLivePage();
-        const fetchMock = installAbortablePendingFetch();
-        liveApply();
-        liveState.status = status;
-        const first = liveState.abort;
-        const detail = pathInfo === undefined ? undefined : { pathInfo: pathInfo ?? undefined };
-
-        liveOnListSwap(new CustomEvent('htmx:afterSwap', { detail }));
-
-        expect(first?.signal.aborted).toBe(true);
-        expect(liveState.streamPath).toBe(expectedBase);
-        expect(fetchMock).toHaveBeenCalledTimes(2);
-        const separator = expectedBase.includes('?') ? '&' : '?';
-        expect(fetchMock.mock.calls[1][0]).toBe(`${expectedBase}${separator}g=${liveState.gen}`);
-    });
-});
-
-test('a fetch connection failure enters silent polling fallback', async () => {
-    renderLivePage();
-    installFetch(async () => {
-        throw new Error('offline');
-    });
-
-    liveApply();
-    const ctrl = liveState.abort;
-
-    await vi.waitFor(() => expect(liveState.status).toBe('fallback'));
-    expect(ctrl?.signal.aborted).toBe(true);
-    expect(liveState.abort).toBeNull();
-    expect(liveFallbackSeconds()).toBe(5);
-    expect(dependencies.markListStale).not.toHaveBeenCalled();
-    expect(dependencies.scheduleRefreshTick).toHaveBeenCalledTimes(2);
-});
-
-test.each([
-    ['HTTP 204 with no body', () => statusResponse(204)],
-    ['HTTP 429 with no body', () => statusResponse(429)],
-    ['HTTP 200 with no body', () => statusResponse(200)],
-    ['HTTP 503 even with a body', () => streamResponse([], 503)],
-] as const)('%s enters silent polling fallback', async (_name, response) => {
-    renderLivePage();
-    installFetch(async () => response());
-
-    liveApply();
-    const ctrl = liveState.abort;
-
-    await vi.waitFor(() => expect(liveState.status).toBe('fallback'));
-    expect(ctrl?.signal.aborted).toBe(true);
-    expect(liveState.abort).toBeNull();
-    expect(liveFallbackSeconds()).toBe(5);
-    expect(dependencies.markListStale).not.toHaveBeenCalled();
-});
-
-test.each(['rejects', 'resolves'] as const)(
-    'a superseded connection that later %s cannot alter the replacement stream',
-    async (outcome) => {
-        const firstResponse = deferred<Response>();
-        const replacement = controlledStream();
-        renderLivePage();
-        let fetchCount = 0;
-        installFetch(() => {
-            fetchCount += 1;
-            return fetchCount === 1 ? firstResponse.promise : Promise.resolve(replacement.response);
-        });
-
-        liveApply();
-        const first = liveState.abort;
-        liveApply(true);
-        const second = liveState.abort;
-        await vi.waitFor(() => expect(liveState.status).toBe('open'));
-
-        if (outcome === 'rejects') {
-            firstResponse.reject(new Error('old connection failed'));
-        } else {
-            firstResponse.resolve(statusResponse(429));
-        }
-        await Promise.resolve();
-        await Promise.resolve();
-
-        expect(first?.signal.aborted).toBe(true);
-        expect(second).not.toBeNull();
-        expect(liveState.abort).toBe(second);
-        expect(liveState.status).toBe('open');
-        expect(liveFallbackSeconds()).toBe(0);
-        expect(dependencies.scheduleRefreshTick).toHaveBeenCalledTimes(2);
-        expect(dependencies.markListStale).not.toHaveBeenCalled();
-        liveTeardown();
-        replacement.close();
-    },
-);
-
-test('a superseded reader goes inert before dispatching its next chunk', async () => {
-    const oldStream = controlledStream();
-    const replacement = controlledStream();
+test('an unversioned text/event-stream stays on the legacy v1 lane', async () => {
     const content = renderLivePage();
-    const htmx = installHtmx();
-    let fetchCount = 0;
-    installFetch(async () => {
-        fetchCount += 1;
-        return fetchCount === 1 ? oldStream.response : replacement.response;
-    });
-
-    liveApply();
-    await vi.waitFor(() => expect(liveState.status).toBe('open'));
-    liveApply(true);
-    const replacementController = liveState.abort;
-    await vi.waitFor(() => expect(liveState.status).toBe('open'));
-
-    oldStream.enqueue(
-        `event: ro-table\ndata: ${JSON.stringify({ g: liveState.gen, html: '<p>old</p>' })}\n\n`,
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(document.getElementById('resource-list-content')).toBe(content);
-    expect(htmx.swap).not.toHaveBeenCalled();
-    expect(liveState.abort).toBe(replacementController);
-    expect(liveState.status).toBe('open');
-    expect(liveFallbackSeconds()).toBe(0);
-    expect(dependencies.markListStale).not.toHaveBeenCalled();
-    liveTeardown();
-    replacement.close();
-});
-
-test('a stream closed after teardown cannot engage EOF fallback', async () => {
-    const stream = controlledStream();
-    renderLivePage();
-    installFetch(async () => stream.response);
-    liveApply();
-    await vi.waitFor(() => expect(liveState.status).toBe('open'));
-
-    liveTeardown();
-    liveState.status = 'hidden';
-    stream.close();
-    // Let the reader's EOF continuation finish, not merely the close promise's
-    // first microtask. The post-read supersession guard must own the outcome.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(liveState.status).toBe('hidden');
-    expect(liveFallbackSeconds()).toBe(0);
-    expect(dependencies.scheduleRefreshTick).toHaveBeenCalledOnce();
-    expect(dependencies.markListStale).not.toHaveBeenCalled();
-});
-
-test.each([
-    ['a reader failure', [new Error('stream dropped')]],
-    ['terminal-less EOF', []],
-] as const)('%s enters banner polling fallback', async (_name, parts) => {
-    renderLivePage();
-    installFetch(async () => streamResponse([...parts]));
-
-    liveApply();
-    const ctrl = liveState.abort;
-
-    await vi.waitFor(() => expect(liveState.status).toBe('fallback'));
-    expect(ctrl?.signal.aborted).toBe(true);
-    expect(liveState.abort).toBeNull();
-    expect(liveFallbackSeconds()).toBe(5);
-    expect(dependencies.markListStale).toHaveBeenCalledOnce();
-});
-
-test('an ro-terminal frame stops reading and enters banner polling fallback', async () => {
-    renderLivePage();
-    const htmx = installHtmx();
-    installFetch(async () => {
-        const laterTable = JSON.stringify({ g: liveState.gen, html: '<p>must-not-land</p>' });
-        return streamResponse([
-            `event: ro-terminal\r\ndata: {"g":"server","reason":"auth"}\r\n\r\nevent: ro-table\r\ndata: ${laterTable}\r\n\r\n`,
-        ]);
-    });
-
-    liveApply();
-    const ctrl = liveState.abort;
-
-    await vi.waitFor(() => expect(liveState.status).toBe('fallback'));
-    expect(ctrl?.signal.aborted).toBe(true);
-    expect(liveState.abort).toBeNull();
-    expect(liveFallbackSeconds()).toBe(5);
-    expect(dependencies.markListStale).toHaveBeenCalledOnce();
-    expect(htmx.swap).not.toHaveBeenCalled();
-});
-
-test('parses split CRLF and multi-data frames, skips malformed payloads, and swaps exactly', async () => {
-    const content = renderLivePage();
-    const htmx = installHtmx();
-    content.dataset.roEtag = 'W/"last-good"';
+    content.dataset.roEtag = '"old"';
     content.dataset.roEtagPath = '/clusters/prod/pods/_table';
-    htmx.swap.mockImplementationOnce(() => {
-        // Invalidation is synchronous, before a View-Transition-delayed swap
-        // could let a terminal frame engage fallback polling.
-        expect(content.dataset.roEtag).toBeUndefined();
-        expect(content.dataset.roEtagPath).toBeUndefined();
-    });
-    installFetch(async () => {
-        const payload = JSON.stringify({
-            g: liveState.gen,
-            html: '<tbody data-state="fresh"><tr><td>pod-a</td></tr></tbody>',
-        });
-        const split = payload.indexOf('"html"');
-        return streamResponse([
-            'event: ignored\r\ndata: {}\r\n\r\nevent: ro-table\r\ndata: {broken}\r\n\r\n',
-            `event: ro-table\r\ndata: ${payload.slice(0, split)}\r`,
-            `\ndata: ${payload.slice(split)}\r\n\r\n`,
-        ]);
-    });
+    const htmx = installHtmx();
+    const stream = controlledStream();
+    installFetch(async () => stream.response);
 
     liveApply();
+    await vi.waitFor(() => expect(liveState.status).toBe('syncing-v1'));
+    stream.enqueue(sse('ro-table', { g: liveState.gen, html: '<p>legacy</p>' }));
 
-    await vi.waitFor(() => expect(htmx.swap).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(liveState.status).toBe('open-v1'));
     expect(htmx.swap).toHaveBeenCalledExactlyOnceWith(
         content,
-        '<tbody data-state="fresh"><tr><td>pod-a</td></tr></tbody>',
+        '<p>legacy</p>',
         { swapStyle: 'morph' },
         {
             contextElement: content,
             eventInfo: { target: content, roLivePush: true },
         },
     );
+    expect(content.dataset.roEtag).toBeUndefined();
+    expect(window.roLive.stats().v1Snapshots).toBeGreaterThan(0);
 });
 
-test('preserves split UTF-8 and data lines without the optional leading space', async () => {
+test('exact v2 response headers negotiate and commit the first seq=1 snapshot after its marker', async () => {
     const content = renderLivePage();
+    content.dataset.roEtag = '"old"';
+    content.dataset.roEtagPath = '/clusters/prod/pods/_table';
+    let seqInsideSwap = -1;
     const htmx = installHtmx();
-    installFetch(async () => {
-        const frame = `event: ro-table\ndata:${JSON.stringify({
-            g: liveState.gen,
-            html: '<p>pod-🐝 keeps this space</p>',
-        })}\n\n`;
-        const encoded = new TextEncoder().encode(frame);
-        const beeStart = frame.indexOf('🐝');
-        const byteSplit = new TextEncoder().encode(frame.slice(0, beeStart)).length + 2;
-        return streamResponse([encoded.slice(0, byteSplit), encoded.slice(byteSplit)]);
+    htmx.swap.mockImplementationOnce((target, html, _spec, options) => {
+        expect(content.dataset.roEtag).toBeUndefined();
+        seqInsideSwap = window.roLive.stats().seq;
+        target.innerHTML = html;
+        adoptListProjection(target);
+        liveOnListSwap(
+            new CustomEvent('htmx:afterSwap', {
+                detail: { ...options.eventInfo, target },
+            }),
+        );
+    });
+    const stream = controlledStream();
+    installFetch(async (_url, init) => {
+        const generation = requestHeaders(init)['RO-Live-Generation'];
+        stream.headers.set('RO-Live-Version', '2');
+        stream.headers.set('RO-Live-Generation', generation);
+        return stream.response;
+    });
+
+    liveApply();
+    await vi.waitFor(() => expect(liveState.status).toBe('syncing-v2'));
+    stream.enqueue(sse('ro-live', snapshot(liveState.gen)));
+
+    await vi.waitFor(() => expect(liveState.status).toBe('open-v2'));
+    expect(seqInsideSwap).toBe(0);
+    expect(window.roLive.stats().seq).toBe(1);
+    expect(htmx.swap.mock.calls[0][2]).toStrictEqual({ swapStyle: 'morph' });
+});
+
+test.each([
+    ['version without generation', { 'RO-Live-Version': '2' }],
+    ['generation without version', { 'RO-Live-Generation': 'wrong' }],
+    ['unsupported version', { 'RO-Live-Version': '3', 'RO-Live-Generation': 'wrong' }],
+    ['mismatched generation', { 'RO-Live-Version': '2', 'RO-Live-Generation': 'wrong' }],
+])('%s is a protocol failure and starts one resync', async (_name, responseHeaders) => {
+    renderLivePage();
+    const fetchMock = installFetch(async (_url, init) => {
+        if (fetchMock.mock.calls.length > 1) return pendingFetch();
+        const headers = new Headers({ 'Content-Type': 'text/event-stream', ...responseHeaders });
+        if (headers.get('RO-Live-Generation') === 'echo') {
+            headers.set('RO-Live-Generation', requestHeaders(init)['RO-Live-Generation']);
+        }
+        return response([], 200, headers);
     });
 
     liveApply();
 
-    await vi.waitFor(() => expect(htmx.swap).toHaveBeenCalledOnce());
-    expect(htmx.swap).toHaveBeenCalledWith(
-        content,
-        '<p>pod-🐝 keeps this space</p>',
-        expect.anything(),
-        expect.anything(),
-    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(window.roLive.stats().resyncsInWindow).toBe(1);
+    expect(liveState.status).toBe('connecting');
 });
 
-test('reads a Fetch body that exposes getReader without an async iterator', async () => {
-    const content = renderLivePage();
-    const htmx = installHtmx();
-    installFetch(async () => {
-        const payload = JSON.stringify({ g: liveState.gen, html: '<p>reader-only</p>' });
-        const response = readerOnlyResponse([`event: ro-table\ndata: ${payload}\n\n`]);
-        expect(Symbol.asyncIterator in (response.body as unknown as object)).toBe(false);
-        return response;
-    });
-
+test.each([
+    ['bad status', response([], 429)],
+    ['missing body', { status: 200, body: null, headers: new Headers() } as unknown as Response],
+])('%s enters silent fallback', async (_name, result) => {
+    renderLivePage();
+    installFetch(async () => result);
     liveApply();
-
-    await vi.waitFor(() => expect(htmx.swap).toHaveBeenCalledOnce());
-    expect(htmx.swap).toHaveBeenCalledWith(
-        content,
-        '<p>reader-only</p>',
-        expect.anything(),
-        expect.anything(),
-    );
+    await vi.waitFor(() => expect(liveState.status).toBe('fallback'));
+    expect(dependencies.markListStale).not.toHaveBeenCalled();
+    expect(liveFallbackSeconds()).toBe(5);
 });
 
-test('rejects JSON made valid only by illegally concatenating SSE data lines', async () => {
+test('legacy parsing survives comments, CR variants, split emoji, malformed JSON and stale frames', async () => {
     renderLivePage();
     const htmx = installHtmx();
-    installFetch(async () => {
-        const invalid = JSON.stringify({
-            g: liveState.gen,
-            html: '<p>must-not-land</p>',
+    const stream = controlledStream();
+    installFetch(async () => stream.response);
+    const beforeDiscards = window.roLive.discards();
+    liveApply();
+    await vi.waitFor(() => expect(liveState.status).toBe('syncing-v1'));
+
+    const wire = new TextEncoder().encode(
+        `: heartbeat\revent: ro-table\rdata: {broken}\r\r${sse('ro-table', {
+            g: 'stale',
+            html: '<p>stale</p>',
+        })}${sse('ro-table', { g: liveState.gen, html: '<p>🫠</p>' })}`,
+    );
+    const emoji = Array.from(wire).findIndex((byte) => byte >= 0xf0);
+    stream.enqueue(wire.slice(0, emoji + 2));
+    stream.enqueue(wire.slice(emoji + 2));
+
+    await vi.waitFor(() => expect(htmx.swap).toHaveBeenCalledOnce());
+    expect(htmx.swap.mock.calls[0][1]).toBe('<p>🫠</p>');
+    expect(window.roLive.discards()).toBe(beforeDiscards + 1);
+    expect(window.roLive.stats().invalidFrames).toBeGreaterThan(0);
+});
+
+test('a valid legacy terminal stops the stream and shows stale fallback', async () => {
+    renderLivePage();
+    installHtmx();
+    const stream = controlledStream();
+    installFetch(async () => stream.response);
+    liveApply();
+    await vi.waitFor(() => expect(liveState.status).toBe('syncing-v1'));
+    stream.enqueue(sse('ro-terminal', { g: liveState.gen, reason: 'auth' }));
+    await vi.waitFor(() => expect(liveState.status).toBe('fallback'));
+    expect(dependencies.markListStale).toHaveBeenCalledOnce();
+});
+
+test.each(['delta', 'terminal'] as const)(
+    'a first v2 %s frame is rejected before DOM/cursor',
+    async (kind) => {
+        renderLivePage();
+        const htmx = installHtmx();
+        const fetchMock = installFetch(async (_url, init) => {
+            if (fetchMock.mock.calls.length > 1) return pendingFetch();
+            const generation = requestHeaders(init)['RO-Live-Generation'];
+            const envelope =
+                kind === 'delta'
+                    ? {
+                          v: 2,
+                          kind,
+                          g: generation,
+                          seq: 1,
+                          screen: '/clusters/prod/pods',
+                          rev: 'rev-2',
+                          schema: 'schema-1',
+                          delta: {
+                              base: 'rev-1',
+                              rev: 'rev-2',
+                              regions: [
+                                  {
+                                      region: 'count',
+                                      html: '<span class="ro-count" data-ro-live-region="count">2</span>',
+                                  },
+                              ],
+                          },
+                      }
+                    : {
+                          v: 2,
+                          kind,
+                          g: generation,
+                          seq: 1,
+                          screen: '/clusters/prod/pods',
+                          reason: 'idle',
+                      };
+            return response([sse('ro-live', envelope)], 200, {
+                'Content-Type': 'text/event-stream',
+                'RO-Live-Version': '2',
+                'RO-Live-Generation': generation,
+            });
         });
-        const split = invalid.indexOf('not-land');
-        const valid = JSON.stringify({ g: liveState.gen, html: '<p>fresh</p>' });
-        return streamResponse([
-            `event: ro-table\ndata:${invalid.slice(0, split)}\ndata:${invalid.slice(split)}\n\n` +
-                `event: ro-table\ndata:${valid}\n\n`,
-        ]);
+
+        liveApply();
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+        expect(htmx.swap).not.toHaveBeenCalled();
+        expect(window.roLive.stats().seq).toBe(0);
+    },
+);
+
+test.each([
+    [
+        'generation',
+        (generation: string) => ({
+            ...snapshot(generation),
+            kind: 'terminal',
+            seq: 2,
+            g: '00112233445566778899aabbccddeeff',
+            reason: 'idle',
+            snapshot: undefined,
+        }),
+    ],
+    [
+        'screen',
+        (generation: string) => ({
+            ...snapshot(generation),
+            kind: 'terminal',
+            seq: 2,
+            screen: '/clusters/prod/services',
+            reason: 'idle',
+            snapshot: undefined,
+        }),
+    ],
+    [
+        'sequence',
+        (generation: string) => ({
+            ...snapshot(generation),
+            kind: 'terminal',
+            seq: 3,
+            reason: 'idle',
+            snapshot: undefined,
+        }),
+    ],
+    [
+        'terminal revision',
+        (generation: string) => ({
+            ...snapshot(generation),
+            kind: 'terminal',
+            seq: 2,
+            rev: 'wrong',
+            reason: 'idle',
+            snapshot: undefined,
+        }),
+    ],
+    [
+        'terminal schema',
+        (generation: string) => ({
+            ...snapshot(generation),
+            kind: 'terminal',
+            seq: 2,
+            schema: 'wrong',
+            reason: 'idle',
+            snapshot: undefined,
+        }),
+    ],
+    [
+        'delta base',
+        (generation: string) => ({
+            v: 2,
+            kind: 'delta',
+            g: generation,
+            seq: 2,
+            screen: '/clusters/prod/pods',
+            rev: 'rev-2',
+            schema: 'schema-1',
+            delta: {
+                base: 'wrong',
+                rev: 'rev-2',
+                regions: [
+                    {
+                        region: 'count',
+                        html: '<span class="ro-count" data-ro-live-region="count">2</span>',
+                    },
+                ],
+            },
+        }),
+    ],
+    [
+        'delta schema',
+        (generation: string) => ({
+            v: 2,
+            kind: 'delta',
+            g: generation,
+            seq: 2,
+            screen: '/clusters/prod/pods',
+            rev: 'rev-2',
+            schema: 'wrong',
+            delta: {
+                base: 'rev-1',
+                rev: 'rev-2',
+                regions: [
+                    {
+                        region: 'count',
+                        html: '<span class="ro-count" data-ro-live-region="count">2</span>',
+                    },
+                ],
+            },
+        }),
+    ],
+] as const)(
+    'rejects a successor with mismatched %s without touching the snapshot',
+    async (_name, next) => {
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async (_url, init) => {
+            if (fetchMock.mock.calls.length > 1) return pendingFetch();
+            const generation = requestHeaders(init)['RO-Live-Generation'];
+            stream.headers.set('RO-Live-Version', '2');
+            stream.headers.set('RO-Live-Generation', generation);
+            return stream.response;
+        });
+        liveApply();
+        await vi.waitFor(() => expect(liveState.status).toBe('syncing-v2'));
+        stream.enqueue(sse('ro-live', snapshot(liveState.gen)));
+        await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(1));
+        const before = document.getElementById('resource-list-content')?.innerHTML;
+        stream.enqueue(sse('ro-live', next(liveState.gen)));
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+        expect(document.getElementById('resource-list-content')?.innerHTML).toBe(before);
+    },
+);
+
+test('successor checkpoint snapshots may retain rev and replace schema', async () => {
+    renderLivePage();
+    installHtmx();
+    const stream = controlledStream();
+    installFetch(async (_url, init) => {
+        const generation = requestHeaders(init)['RO-Live-Generation'];
+        stream.headers.set('RO-Live-Version', '2');
+        stream.headers.set('RO-Live-Generation', generation);
+        return stream.response;
+    });
+    const before = window.roLive.stats().v2Snapshots;
+    liveApply();
+    await vi.waitFor(() => expect(liveState.status).toBe('syncing-v2'));
+    stream.enqueue(sse('ro-live', snapshot(liveState.gen)));
+    await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(1));
+    stream.enqueue(
+        sse(
+            'ro-live',
+            snapshot(liveState.gen, {
+                seq: 2,
+                schema: 'schema-2',
+                snapshot: { html: listHTML('Checkpoint') },
+            }),
+        ),
+    );
+
+    await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(2));
+    expect(window.roLive.stats().v2Snapshots).toBe(before + 2);
+    expect(document.querySelector('[data-key="dev/a"]')?.textContent).toContain('Checkpoint');
+});
+
+test('a committed delta updates directly without another htmx swap/afterSwap/transition', async () => {
+    renderLivePage();
+    const htmx = installHtmx();
+    const stream = controlledStream();
+    installFetch(async (_url, init) => {
+        const generation = requestHeaders(init)['RO-Live-Generation'];
+        stream.headers.set('RO-Live-Version', '2');
+        stream.headers.set('RO-Live-Generation', generation);
+        return stream.response;
+    });
+    vi.stubGlobal('Idiomorph', {
+        morph: (current: HTMLElement, incoming: HTMLElement) => {
+            for (const attribute of Array.from(current.attributes))
+                current.removeAttribute(attribute.name);
+            for (const attribute of Array.from(incoming.attributes)) {
+                current.setAttribute(attribute.name, attribute.value);
+            }
+            current.replaceChildren(
+                ...Array.from(incoming.childNodes, (node) => node.cloneNode(true)),
+            );
+        },
+    });
+    const afterSwap = vi.fn();
+    document.addEventListener('htmx:afterSwap', afterSwap);
+    const beforeDeltaCount = window.roLive.stats().deltas;
+
+    liveApply();
+    await vi.waitFor(() => expect(liveState.status).toBe('syncing-v2'));
+    stream.enqueue(sse('ro-live', snapshot(liveState.gen)));
+    await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(1));
+    const row = listProjectionRowByKey('dev/a');
+    stream.enqueue(
+        sse('ro-live', {
+            v: 2,
+            kind: 'delta',
+            g: liveState.gen,
+            seq: 2,
+            screen: '/clusters/prod/pods',
+            rev: 'rev-2',
+            rv: '11',
+            schema: 'schema-1',
+            delta: {
+                base: 'rev-1',
+                rev: 'rev-2',
+                upsert: [
+                    {
+                        key: 'dev/a',
+                        row: rowHTML('Beta', 'Running'),
+                        card: cardHTML('Beta'),
+                    },
+                ],
+            },
+        }),
+    );
+    await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(2));
+    expect(listProjectionRowByKey('dev/a')).toBe(row);
+    expect(row?.textContent).toContain('Beta');
+    expect(htmx.swap).toHaveBeenCalledOnce();
+    expect(afterSwap).not.toHaveBeenCalled();
+    expect(window.roLive.stats().deltas).toBe(beforeDeltaCount + 1);
+    document.removeEventListener('htmx:afterSwap', afterSwap);
+});
+
+test('a reducer failure leaves the snapshot DOM intact and does not publish a delta cursor', async () => {
+    renderLivePage();
+    installHtmx();
+    const first = controlledStream();
+    const fetchMock = installFetch(async (_url, init) => {
+        if (fetchMock.mock.calls.length > 1) return pendingFetch();
+        const generation = requestHeaders(init)['RO-Live-Generation'];
+        first.headers.set('RO-Live-Version', '2');
+        first.headers.set('RO-Live-Generation', generation);
+        return first.response;
+    });
+    liveApply();
+    await vi.waitFor(() => expect(liveState.status).toBe('syncing-v2'));
+    first.enqueue(sse('ro-live', snapshot(liveState.gen)));
+    await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(1));
+    const before = document.getElementById('resource-list-content')?.innerHTML;
+    const deltas = window.roLive.stats().deltas;
+    first.enqueue(
+        sse('ro-live', {
+            v: 2,
+            kind: 'delta',
+            g: liveState.gen,
+            seq: 2,
+            screen: '/clusters/prod/pods',
+            rev: 'rev-2',
+            schema: 'schema-1',
+            delta: {
+                base: 'rev-1',
+                rev: 'rev-2',
+                upsert: [{ key: 'dev/a', row: '<tr data-key="wrong"><td>bad</td></tr>' }],
+            },
+        }),
+    );
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(document.getElementById('resource-list-content')?.innerHTML).toBe(before);
+    expect(window.roLive.stats().deltas).toBe(deltas);
+});
+
+test('a valid successor terminal requires current rev/schema and enters banner fallback', async () => {
+    renderLivePage();
+    installHtmx();
+    const stream = controlledStream();
+    installFetch(async (_url, init) => {
+        const generation = requestHeaders(init)['RO-Live-Generation'];
+        stream.headers.set('RO-Live-Version', '2');
+        stream.headers.set('RO-Live-Generation', generation);
+        return stream.response;
+    });
+    liveApply();
+    await vi.waitFor(() => expect(liveState.status).toBe('syncing-v2'));
+    stream.enqueue(sse('ro-live', snapshot(liveState.gen)));
+    await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(1));
+    stream.enqueue(
+        sse('ro-live', {
+            v: 2,
+            kind: 'terminal',
+            g: liveState.gen,
+            seq: 2,
+            screen: '/clusters/prod/pods',
+            rev: 'rev-1',
+            schema: 'schema-1',
+            reason: 'shutdown',
+        }),
+    );
+    await vi.waitFor(() => expect(liveState.status).toBe('fallback'));
+    expect(dependencies.markListStale).toHaveBeenCalledOnce();
+});
+
+test('two protocol resyncs are allowed in 30s; the third failure falls back with a banner', async () => {
+    renderLivePage();
+    installHtmx();
+    const fetchMock = installFetch(async (_url, init) => {
+        const generation = requestHeaders(init)['RO-Live-Generation'];
+        return response(
+            [
+                sse('ro-live', {
+                    v: 2,
+                    kind: 'terminal',
+                    g: generation,
+                    seq: 1,
+                    screen: '/clusters/prod/pods',
+                    reason: 'idle',
+                }),
+            ],
+            200,
+            {
+                'Content-Type': 'text/event-stream',
+                'RO-Live-Version': '2',
+                'RO-Live-Generation': generation,
+            },
+        );
     });
 
     liveApply();
 
     await vi.waitFor(() => expect(liveState.status).toBe('fallback'));
-    expect(htmx.swap).toHaveBeenCalledExactlyOnceWith(
-        expect.any(Element),
-        '<p>fresh</p>',
-        expect.anything(),
-        expect.anything(),
-    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(window.roLive.stats().resyncsInWindow).toBe(2);
+    expect(dependencies.markListStale).toHaveBeenCalledOnce();
 });
 
-test('skips empty, malformed, wrong-event, and schema-invalid frames, then keeps reading', async () => {
+test('a snapshot without the exact final repair marker is not committed', async () => {
     renderLivePage();
-    const htmx = installHtmx();
-    installFetch(async () => {
-        const invalidFrames = [
-            'event: ro-terminal\ndata: []\n\n',
-            'event: ro-terminal\ndata: "scalar"\n\n',
-            'event: ro-table\ndata: null\n\n',
-            'event: ro-table\ndata: "scalar"\n\n',
-            'event: ro-table\ndata: {}\n\n',
-            `event: ro-table\ndata: ${JSON.stringify({ g: 7, html: '<p>number-g</p>' })}\n\n`,
-            `event: ro-table\ndata: ${JSON.stringify({ g: liveState.gen })}\n\n`,
-            `event: ro-table\ndata: ${JSON.stringify({ g: liveState.gen, html: null })}\n\n`,
-            `event: ignored\ndata: ${JSON.stringify({ g: liveState.gen, html: '<p>wrong-event</p>' })}\n\n`,
-            `event: ro-table\njunk:${JSON.stringify({ g: liveState.gen, html: '<p>wrong-field</p>' })}\n\n`,
-            'event: ro-table\n\n',
-            'event: ro-table\ndata: {broken}\n\n',
-        ];
-        const first = JSON.stringify({ g: liveState.gen, html: '<p>first-valid</p>' });
-        const second = JSON.stringify({ g: liveState.gen, html: '<p>second-valid</p>' });
-        return streamResponse([
-            `${invalidFrames.join('')}event: ro-table\ndata: ${first}\n\nevent: ro-table\ndata: ${second}\n\n`,
-        ]);
+    const htmx = installHtmx({ completeSnapshot: false });
+    const fetchMock = installFetch(async (_url, init) => {
+        if (fetchMock.mock.calls.length > 1) return pendingFetch();
+        const generation = requestHeaders(init)['RO-Live-Generation'];
+        return response([sse('ro-live', snapshot(generation))], 200, {
+            'Content-Type': 'text/event-stream',
+            'RO-Live-Version': '2',
+            'RO-Live-Generation': generation,
+        });
     });
-
+    const snapshots = window.roLive.stats().v2Snapshots;
     liveApply();
-
-    await vi.waitFor(() => expect(htmx.swap).toHaveBeenCalledTimes(2));
-    expect(htmx.swap.mock.calls.map((call) => call[1])).toStrictEqual([
-        '<p>first-valid</p>',
-        '<p>second-valid</p>',
-    ]);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(htmx.swap).toHaveBeenCalledOnce();
+    expect(window.roLive.stats().v2Snapshots).toBe(snapshots);
 });
 
-test('a discarded generation does not stop the following fresh snapshot', async () => {
-    renderLivePage();
-    const htmx = installHtmx();
-    const before = window.roLive.discards();
-    installFetch(async () => {
-        const stale = JSON.stringify({ g: `${liveState.gen}.old`, html: '<p>old</p>' });
-        const fresh = JSON.stringify({ g: liveState.gen, html: '<p>fresh</p>' });
-        return streamResponse([
-            `event: ro-table\ndata: ${stale}\n\nevent: ro-table\ndata: ${fresh}\n\n`,
-        ]);
-    });
-
-    liveApply();
-
-    await vi.waitFor(() => expect(htmx.swap).toHaveBeenCalledOnce());
-    expect(window.roLive.discards()).toBe(before + 1);
-    expect(htmx.swap.mock.calls[0][1]).toBe('<p>fresh</p>');
-});
-
-test.each(['missing-content', 'missing-htmx', 'non-callable-swap'] as const)(
-    '%s safely ignores an otherwise valid pushed fragment',
-    async (missing) => {
-        const content = renderLivePage();
+describe('current-list request suspension', () => {
+    async function ridingStream() {
         const stream = controlledStream();
-        const swap = vi.fn();
-        if (missing === 'missing-htmx') {
-            delete (window as unknown as { htmx?: HtmxHarness }).htmx;
-        } else if (missing === 'non-callable-swap') {
-            (window as unknown as { htmx: { swap: null } }).htmx = { swap: null };
-        } else {
-            (window as unknown as { htmx: HtmxHarness }).htmx = { swap };
-        }
-        installFetch(async () => stream.response);
+        const fetchMock = installFetch(async () =>
+            fetchMock.mock.calls.length === 1 ? stream.response : pendingFetch(),
+        );
         liveApply();
-        await vi.waitFor(() => expect(liveState.status).toBe('open'));
-        if (missing === 'missing-content') {
-            content.remove();
-        }
+        await vi.waitFor(() => expect(liveState.status).toBe('syncing-v1'));
+        stream.enqueue(sse('ro-table', { g: liveState.gen, html: '<p>live</p>' }));
+        await vi.waitFor(() => expect(liveState.status).toBe('open-v1'));
+        return { fetchMock, stream };
+    }
 
-        stream.enqueue(
-            `event: ro-table\ndata: ${JSON.stringify({ g: liveState.gen, html: '<p>fresh</p>' })}\n\n`,
-        );
-
-        await vi.waitFor(() =>
-            expect(dependencies.pruneSettledListRequests).toHaveBeenCalledTimes(2),
-        );
-        await Promise.resolve();
-        expect(swap).not.toHaveBeenCalled();
-        expect(liveState.status).toBe('open');
-        expect(liveFallbackSeconds()).toBe(0);
-        liveTeardown();
-        stream.close();
-    },
-);
-
-describe.each([
-    'stale-generation',
-    'wrong-page',
-    'user-request-in-flight',
-    'container-request-in-flight',
-] as const)('%s discard', (reason) => {
-    test('drops the full frame before htmx.swap and increments observability', async () => {
-        const response = deferred<Response>();
+    test('a list request cancels a queued resync opener without consuming another budget slot', async () => {
         const content = renderLivePage();
-        content.dataset.roEtag = 'W/"last-good"';
-        content.dataset.roEtagPath = '/clusters/prod/pods/_table';
-        const htmx = installHtmx();
-        installFetch(() => response.promise);
-        window.history.replaceState(null, '', '/clusters/prod/pods');
+        installHtmx();
+        const first = controlledStream();
+        const second = controlledStream();
+        const fetchMock = installFetch(async (_url, init) => {
+            const call = fetchMock.mock.calls.length;
+            if (call > 2) return pendingFetch();
+            const stream = call === 1 ? first : second;
+            const generation = requestHeaders(init)['RO-Live-Generation'];
+            stream.headers.set('RO-Live-Version', '2');
+            stream.headers.set('RO-Live-Generation', generation);
+            return stream.response;
+        });
+        const queued: Array<() => void> = [];
+        const queue = vi
+            .spyOn(globalThis, 'queueMicrotask')
+            .mockImplementation((callback) => queued.push(callback));
         liveApply();
-        const before = window.roLive.discards();
-        const generation = reason === 'stale-generation' ? `${liveState.gen}.old` : liveState.gen;
+        await vi.waitFor(() => expect(liveState.status).toBe('syncing-v2'));
+        first.enqueue(
+            sse('ro-live', {
+                v: 2,
+                kind: 'terminal',
+                g: liveState.gen,
+                seq: 1,
+                screen: '/clusters/prod/pods',
+                reason: 'idle',
+            }),
+        );
+        await vi.waitFor(() => expect(liveState.status).toBe('resyncing'));
+        expect(window.roLive.stats().resyncsInWindow).toBe(1);
 
-        if (reason === 'wrong-page') {
-            window.history.replaceState(null, '', '/clusters/prod/services');
-        }
-        if (reason === 'user-request-in-flight') {
-            dependencies.userRequests.add(xhrAt(1));
-        }
-        if (reason === 'container-request-in-flight') {
-            dependencies.containerRequests.add(xhrAt(1));
-        }
-        response.resolve(
-            streamResponse([
-                `event: ro-table\ndata: ${JSON.stringify({ g: generation, html: '<p>wrong</p>' })}\n\n`,
-            ]),
+        const request = xhr(500);
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+        expect(liveState.status).toBe('suspended');
+        for (const callback of queued.splice(0)) callback();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        queue.mockRestore();
+
+        request.dispatchEvent(new Event('loadend'));
+        await vi.waitFor(() => expect(liveState.status).toBe('syncing-v2'));
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(window.roLive.stats().resyncsInWindow).toBe(1);
+
+        second.enqueue(
+            sse('ro-live', {
+                v: 2,
+                kind: 'terminal',
+                g: liveState.gen,
+                seq: 1,
+                screen: '/clusters/prod/pods',
+                reason: 'idle',
+            }),
+        );
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+        expect(window.roLive.stats().resyncsInWindow).toBe(2);
+    });
+
+    test('overlapping XHRs abort before send and reopen exactly once after the last settles', async () => {
+        const content = renderLivePage();
+        installHtmx();
+        const { fetchMock } = await ridingStream();
+        const firstController = liveState.abort;
+        const a = xhr(200);
+        const b = xhr(500);
+
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, a));
+        expect(firstController?.signal.aborted).toBe(true);
+        expect(liveState.status).toBe('suspended');
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, a));
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, b));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, b));
+        liveOnListSwap(
+            htmxRequest('htmx:afterSwap', content, a, {
+                pathInfo: { finalRequestPath: '/clusters/prod/pods/_table?sort=Name' },
+            }),
         );
 
-        await vi.waitFor(() => expect(window.roLive.discards()).toBe(before + 1));
-        expect(htmx.swap).not.toHaveBeenCalled();
-        expect(dependencies.pruneSettledListRequests).toHaveBeenCalledTimes(2);
-        expect(content.dataset.roEtag).toBe('W/"last-good"');
-        expect(content.dataset.roEtagPath).toBe('/clusters/prod/pods/_table');
-    });
-});
+        liveAfterListRequest(htmxRequest('htmx:afterRequest', content, a));
+        expect(fetchMock).toHaveBeenCalledOnce();
+        b.dispatchEvent(new Event('loadend'));
 
-test('settled requests are pruned and do not block a fresh frame', async () => {
-    renderLivePage();
-    const htmx = installHtmx();
-    dependencies.userRequests.add(xhrAt(4));
-    dependencies.containerRequests.add(xhrAt(0));
-    installFetch(async () => {
-        const payload = JSON.stringify({ g: liveState.gen, html: '<p>fresh</p>' });
-        return streamResponse([`event: ro-table\ndata: ${payload}\n\n`]);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(liveState.streamPath).toBe('/clusters/prod/pods/_stream?sort=Name');
+        a.dispatchEvent(new Event('loadend'));
+        expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    liveApply();
-
-    await vi.waitFor(() => expect(htmx.swap).toHaveBeenCalledOnce());
-    expect(dependencies.userRequests).toHaveLength(0);
-    expect(dependencies.containerRequests).toHaveLength(0);
-    expect(dependencies.pruneSettledListRequests).toHaveBeenCalledTimes(2);
-});
-
-describe('visibility lifecycle', () => {
-    test.each(['open', 'connecting'] as const)('hiding a %s stream closes it', (status) => {
-        vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
-        const ctrl = new AbortController();
-        liveState.status = status;
-        liveState.abort = ctrl;
-        liveState.streamPath = '/clusters/prod/pods/_stream';
-
-        document.dispatchEvent(new Event('visibilitychange'));
-
-        expect(ctrl.signal.aborted).toBe(true);
-        expect(liveState.abort).toBeNull();
-        expect(liveState.status).toBe('hidden');
-        expect(liveFallbackSeconds()).toBe(0);
+    test.each([304, 500, 0])('native loadend resumes after status %i', async (status) => {
+        const content = renderLivePage();
+        installHtmx();
+        const { fetchMock } = await ridingStream();
+        const request = xhr(status);
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+        request.dispatchEvent(new Event('loadend'));
+        expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    test.each(['idle', 'fallback', 'hidden'] as const)(
-        'hiding leaves the %s state untouched',
-        (status) => {
-            vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
-            const ctrl = new AbortController();
-            liveState.status = status;
-            liveState.abort = ctrl;
+    test('a later beforeSwap cancellation satisfies the 200 DOM barrier without reopening early', async () => {
+        const content = renderLivePage();
+        installHtmx();
+        const { fetchMock } = await ridingStream();
+        const request = xhr(200);
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+        const event = htmxRequest('htmx:beforeSwap', content, request, { shouldSwap: true });
+        liveBeforeListSwapDecision(event);
+        (event as CustomEvent).detail.shouldSwap = false;
 
-            document.dispatchEvent(new Event('visibilitychange'));
+        liveAfterListRequest(htmxRequest('htmx:afterRequest', content, request));
+        expect(fetchMock).toHaveBeenCalledOnce();
+        await flush();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(window.roLive.stats().inFlightRequests).toBe(0);
+    });
 
-            expect(ctrl.signal.aborted).toBe(false);
-            expect(liveState.abort).toBe(ctrl);
-            expect(liveState.status).toBe(status);
-        },
-    );
+    test('swapError releases a network-settled 200 request exactly once', async () => {
+        const content = renderLivePage();
+        installHtmx();
+        const { fetchMock } = await ridingStream();
+        const request = xhr(200);
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+        liveAfterListRequest(htmxRequest('htmx:afterRequest', content, request));
 
-    test('showing a hidden Live stream reopens it', () => {
-        vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+        liveListRequestSwapFailed(htmxRequest('htmx:swapError', content, request));
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        request.dispatchEvent(new Event('loadend'));
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('a network-settled 200 with no terminal swap event fails closed next microtask', async () => {
+        const content = renderLivePage();
+        installHtmx();
+        const { fetchMock } = await ridingStream();
+        const request = xhr(200);
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+        liveAfterListRequest(htmxRequest('htmx:afterRequest', content, request));
+
+        await flush();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(window.roLive.stats().inFlightRequests).toBe(0);
+        expect(liveState.status).toBe('fallback');
+
         window.history.replaceState(null, '', '/clusters/prod/pods?sort=Name');
+        liveOnListSwap(
+            htmxRequest('htmx:afterSwap', content, request, {
+                pathInfo: { finalRequestPath: '/clusters/prod/pods/_table?sort=Name' },
+            }),
+        );
+        liveApply();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(liveState.status).toBe('fallback');
+    });
+
+    test('a page reset makes a queued missing-swap check inert', async () => {
+        const content = renderLivePage();
+        installHtmx();
+        const { fetchMock } = await ridingStream();
+        const request = xhr(200);
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+        liveAfterListRequest(htmxRequest('htmx:afterRequest', content, request));
+        liveResetPage();
+        liveTeardown();
+        liveState.status = 'idle';
+
+        expect(window.roLive.stats().inFlightRequests).toBe(0);
+        await flush();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(liveState.status).toBe('idle');
+    });
+
+    test('a canceled beforeRequest self-settles in a microtask', async () => {
+        const content = renderLivePage();
+        installHtmx();
+        const { fetchMock } = await ridingStream();
+        const request = xhr();
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        expect(liveState.status).toBe('suspended');
+        await flush();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('a stale page epoch makes an old detached loadend inert', async () => {
+        const content = renderLivePage();
+        installHtmx();
+        const { fetchMock } = await ridingStream();
+        const request = xhr();
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+        liveResetPage();
+        liveTeardown();
+        liveState.status = 'idle';
+        request.dispatchEvent(new Event('loadend'));
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(liveState.status).toBe('idle');
+    });
+
+    test('an Off/poll XHR is tracked so an explicit Live pick waits for loadend', async () => {
+        const content = renderLivePage();
+        const fetchMock = installFetch(pendingFetch);
+        dependencies.refreshMode.mockReturnValue('Off');
+        const request = xhr();
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+
+        dependencies.refreshMode.mockReturnValue('Live');
+        liveApply(true);
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(liveState.status).toBe('suspended');
+        liveOnListSwap(
+            htmxRequest('htmx:afterSwap', content, request, {
+                pathInfo: { finalRequestPath: '/clusters/prod/pods/_table' },
+            }),
+        );
+        request.dispatchEvent(new Event('loadend'));
+        expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
+    test('fallback polling never auto-resumes a stream', async () => {
+        const content = renderLivePage();
+        installFetch(async () => response([], 429));
+        liveApply();
+        await vi.waitFor(() => expect(liveState.status).toBe('fallback'));
+        const request = xhr(304);
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+        request.dispatchEvent(new Event('loadend'));
+        expect(liveState.status).toBe('fallback');
+    });
+});
+
+describe('visibility and first-frame deadline', () => {
+    test('initialization in a hidden tab defers fetch until the first visible event', () => {
         renderLivePage();
-        const fetchMock = installAbortablePendingFetch();
-        liveState.status = 'hidden';
-        liveState.streamPath = '/clusters/prod/pods/_stream?sort=Name';
+        const fetchMock = installFetch(pendingFetch);
+        vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
 
+        liveApply();
+        expect(liveState.status).toBe('hidden');
+        expect(fetchMock).not.toHaveBeenCalled();
+
+        vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
         document.dispatchEvent(new Event('visibilitychange'));
-
         expect(fetchMock).toHaveBeenCalledOnce();
         expect(liveState.status).toBe('connecting');
-        expect(liveState.streamPath).toBe('/clusters/prod/pods/_stream?sort=Name');
     });
 
-    test.each([
-        ['hidden but Off', 'hidden', 'Off'],
-        ['fallback while Live', 'fallback', 'Live'],
-        ['idle while Live', 'idle', 'Live'],
-    ] as const)('showing %s does not open a stream', (_name, status, mode) => {
+    test('hidden aborts; visible waits for owned XHR then opens once', async () => {
+        const content = renderLivePage();
+        installHtmx();
+        const fetchMock = installFetch(pendingFetch);
+        liveApply();
+        const first = liveState.abort;
+        const request = xhr(304);
+        liveBeforeListRequest(htmxRequest('htmx:beforeRequest', content, request));
+        liveMarkListRequestSent(htmxRequest('htmx:beforeSend', content, request));
+        vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+        document.dispatchEvent(new Event('visibilitychange'));
+        expect(first?.signal.aborted).toBe(true);
+        expect(liveState.status).toBe('hidden');
+
         vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+        document.dispatchEvent(new Event('visibilitychange'));
+        expect(liveState.status).toBe('suspended');
+        expect(fetchMock).toHaveBeenCalledOnce();
+        request.dispatchEvent(new Event('loadend'));
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('a heartbeat-only hung stream silently falls back at the first-frame deadline', async () => {
+        vi.useFakeTimers();
         renderLivePage();
-        const fetchMock = installAbortablePendingFetch();
-        dependencies.refreshMode.mockReturnValue(mode);
-        liveState.status = status;
-
-        document.dispatchEvent(new Event('visibilitychange'));
-
-        expect(fetchMock).not.toHaveBeenCalled();
-        expect(liveState.status).toBe(status);
-    });
-
-    test('showing a hidden stream on a now-unsupported page enters fallback', () => {
-        vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
-        renderLivePage(true);
-        const fetchMock = installAbortablePendingFetch();
-        liveState.status = 'hidden';
-        liveState.streamPath = '/clusters/prod/pods/_stream';
-
-        document.dispatchEvent(new Event('visibilitychange'));
-
-        expect(fetchMock).not.toHaveBeenCalled();
+        installHtmx();
+        const stream = controlledStream();
+        installFetch(async () => stream.response);
+        liveApply();
+        await flush();
+        expect(liveState.status).toBe('syncing-v1');
+        stream.enqueue(': heartbeat\n\n');
+        await flush();
+        await vi.advanceTimersByTimeAsync(LIVE_FIRST_FRAME_TIMEOUT_MS);
         expect(liveState.status).toBe('fallback');
-        expect(liveState.streamPath).toBe('');
-        expect(liveFallbackSeconds()).toBe(5);
-        expect(dependencies.scheduleRefreshTick).toHaveBeenCalledOnce();
+        expect(dependencies.markListStale).not.toHaveBeenCalled();
     });
+
+    test('a fetch that never returns headers is covered by the same silent deadline', async () => {
+        vi.useFakeTimers();
+        renderLivePage();
+        installFetch(pendingFetch);
+        liveApply();
+        expect(liveState.status).toBe('connecting');
+        await vi.advanceTimersByTimeAsync(LIVE_FIRST_FRAME_TIMEOUT_MS);
+        expect(liveState.status).toBe('fallback');
+        expect(liveState.abort).toBeNull();
+        expect(dependencies.markListStale).not.toHaveBeenCalled();
+    });
+
+    test('an accepted table clears the first-frame deadline', async () => {
+        vi.useFakeTimers();
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        installFetch(async () => stream.response);
+        liveApply();
+        await flush();
+        stream.enqueue(sse('ro-table', { g: liveState.gen, html: '<p>ready</p>' }));
+        await flush();
+        expect(liveState.status).toBe('open-v1');
+        await vi.advanceTimersByTimeAsync(LIVE_FIRST_FRAME_TIMEOUT_MS + 1);
+        expect(liveState.status).toBe('open-v1');
+    });
+});
+
+test('debug stats are copied rather than exposing mutable transport state', () => {
+    const first = window.roLive.stats();
+    first.connections = -1;
+    expect(window.roLive.stats().connections).toBeGreaterThanOrEqual(0);
+    expect(window.roLive.discards()).toBe(window.roLive.stats().discards);
 });

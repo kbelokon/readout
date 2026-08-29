@@ -84,6 +84,19 @@ interface VirtState {
     pendingScrollY: number | null;
 }
 
+interface HistoryRecoveryPending {
+    content: HTMLElement;
+    tbody: HTMLTableSectionElement;
+}
+
+// Opaque rollback token for the synchronous Live v2 projection transaction.
+// It intentionally snapshots geometry/state only; list-projection owns the
+// canonical rows and the transaction's DOM journal owns tbody child order.
+export interface VirtualizerCheckpoint {
+    readonly state: VirtState;
+    readonly historyRecovery: HistoryRecoveryPending | null;
+}
+
 const virtState: VirtState = {
     active: false,
     visible: [],
@@ -98,17 +111,29 @@ const virtState: VirtState = {
     pendingScrollY: null,
 };
 
-// Multiple descendant htmx:load events can run virtualizeInit for the same
-// history-restored viewport slice before its forced rebuild settles. Keep that
-// recovery one-shot for the exact mounted content/tbody pair; an actual list
-// afterSwap (or a fresh complete model) clears it.
-let historyRecoveryPending: {
-    content: HTMLElement;
-    tbody: HTMLTableSectionElement;
-} | null = null;
+// Keep history recovery one-shot for the exact mounted content/tbody pair. This
+// also makes the exported initializer safe if a defensive caller repeats it
+// before the forced rebuild settles; an actual list afterSwap (or a fresh
+// complete model) clears the guard.
+let historyRecoveryPending: HistoryRecoveryPending | null = null;
 
 export function virtualizerActive(): boolean {
     return virtState.active && virtState.tbody?.isConnected === true;
+}
+
+export function takeVirtualizerCheckpoint(): VirtualizerCheckpoint {
+    return {
+        // Filter reconciliation replaces `visible`; it never mutates this
+        // array or the width pins in place. Retaining the references makes the
+        // common one-row Live transaction O(1) before its intentional rewindow.
+        state: { ...virtState },
+        historyRecovery: historyRecoveryPending,
+    };
+}
+
+export function restoreVirtualizerCheckpoint(checkpoint: VirtualizerCheckpoint): void {
+    Object.assign(virtState, checkpoint.state);
+    historyRecoveryPending = checkpoint.historyRecovery;
 }
 
 function virtReset(): void {

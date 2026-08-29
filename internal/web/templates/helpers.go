@@ -137,11 +137,14 @@ func pluralSuffix(count int) string {
 	return "s"
 }
 
-// formatSeconds renders a duration in seconds with the %.3f the list footer +
-// phase-total timing used.
-func formatSeconds(seconds float64) string {
+// FormatListDuration is the one display law for list timing. The Live projection
+// fingerprints this exact token so a later row delta can update both timing
+// mounts without disagreeing with the snapshot templates.
+func FormatListDuration(seconds float64) string {
 	return fmt.Sprintf("%.3f", seconds)
 }
+
+func formatSeconds(seconds float64) string { return FormatListDuration(seconds) }
 
 // activeSuffix is the tools-form is-active class suffix: " is-active" when
 // active, else "".

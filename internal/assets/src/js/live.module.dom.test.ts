@@ -26,7 +26,7 @@ test('module load publishes clean state and registers the visibility lifecycle',
     vi.resetModules();
     const addEventListener = vi.spyOn(document, 'addEventListener');
 
-    const { liveFallbackSeconds, liveState } = await import('./live.js');
+    const { liveApply, liveFallbackSeconds, liveState, liveTeardown } = await import('./live.js');
 
     expect(liveState).toStrictEqual({
         status: 'idle',
@@ -36,11 +36,19 @@ test('module load publishes clean state and registers the visibility lifecycle',
     });
     expect(liveFallbackSeconds()).toBe(0);
     expect(window.roLive.discards()).toBe(0);
+    expect(window.roLive.stats().state).toBe('idle');
     expect(addEventListener).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
 
-    const ctrl = new AbortController();
-    liveState.status = 'connecting';
-    liveState.abort = ctrl;
+    document.body.innerHTML = `
+        <div id="resource-list-content" data-live-url="location"></div>
+        <button data-ro-action="set-refresh" data-ro-interval="Live"></button>`;
+    window.history.replaceState(null, '', '/clusters/prod/pods');
+    vi.stubGlobal(
+        'fetch',
+        vi.fn(() => new Promise<Response>(() => {})),
+    );
+    liveApply();
+    const ctrl = liveState.abort as AbortController;
     vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
 
     document.dispatchEvent(new Event('visibilitychange'));
@@ -48,4 +56,5 @@ test('module load publishes clean state and registers the visibility lifecycle',
     expect(ctrl.signal.aborted).toBe(true);
     expect(liveState.abort).toBeNull();
     expect(liveState.status).toBe('hidden');
+    liveTeardown();
 });
