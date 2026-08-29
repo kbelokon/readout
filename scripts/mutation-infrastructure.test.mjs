@@ -19,8 +19,9 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildSync } from 'esbuild';
+import { checkMutationReport, isMutationReportCheckerMain } from './check-mutation-report.mjs';
 import { frontendJavaScriptBuildOptions } from './frontend-build-config.mjs';
 import { parseMutationCliArguments } from './mutation-cli.mjs';
 import { resolveSafeHostExecutable } from './mutation-host.mjs';
@@ -107,6 +108,11 @@ function makeFixture(t) {
     'internal/web/testdata/prefs_golden/01_simple.json',
     '{"payload":{}}\n',
   );
+  writeFixtureFile(
+    repoRoot,
+    'internal/web/testdata/live_render_contract.json',
+    '{"version":1,"rows":[],"regions":[]}\n',
+  );
   return repoRoot;
 }
 
@@ -128,6 +134,83 @@ function attestFixture(repoRoot) {
       repoRoot,
       reportBytes,
       runId: '00000000-0000-4000-8000-000000000000',
+      startedAt,
+    }),
+  );
+}
+
+function attestCheckerFixture(repoRoot, outcomes) {
+  const source = readFileSync(join(repoRoot, 'internal/assets/src/js/runtime.ts'), 'utf8');
+  const mutants = outcomes.map((outcome, index) => ({
+    ...(typeof outcome === 'string' ? { status: outcome } : outcome),
+    id: `mutation-${index + 1}`,
+    location: {
+      end: { column: 32, line: 1 },
+      start: { column: 23, line: 1 },
+    },
+    mutatorName: 'ArithmeticOperator',
+  }));
+  const report = {
+    schemaVersion: '2',
+    thresholds: { break: 0, high: 100, low: 100 },
+    config: {
+      allowEmpty: false,
+      checkerNodeArgs: [
+        '--import',
+        pathToFileURL(join(repoRoot, '.mutation-stage/scripts/stryker-typescript-hook.mjs')).href,
+      ],
+      checkers: ['typescript'],
+      cleanTempDir: 'always',
+      coverageAnalysis: 'perTest',
+      disableBail: false,
+      dryRunOnly: false,
+      force: false,
+      ignorePatterns: [],
+      ignoreStatic: false,
+      ignorers: [],
+      inPlace: false,
+      incremental: false,
+      mutate: [
+        'internal/assets/src/js/**/*.ts',
+        '!internal/assets/src/js/**/*.test.ts',
+        '!internal/assets/src/js/test/**',
+        '!internal/assets/src/js/types.ts',
+      ],
+      mutator: { excludedMutations: [] },
+      reporters: ['clear-text', 'json', 'html'],
+      symlinkNodeModules: true,
+      tempDirName: '.stryker-tmp',
+      testFiles: [],
+      testRunner: 'vitest',
+      tsconfigFile: 'tsconfig.json',
+      typescriptChecker: { experimentalNativePreview: true },
+      vitest: { configFile: 'vitest.config.ts', related: true },
+    },
+    files: {
+      'internal/assets/src/js/runtime.ts': {
+        language: 'typescript',
+        mutants,
+        source,
+      },
+    },
+  };
+  const reportBytes = Buffer.from(`${JSON.stringify(report)}\n`);
+  const htmlReportBytes = Buffer.from('<!doctype html><title>checker fixture</title>\n');
+  const startedAt = new Date(Date.now() - 2_000).toISOString();
+  writeFixtureFile(repoRoot, mutationReportRelativePath, reportBytes);
+  writeFixtureFile(repoRoot, mutationHtmlReportRelativePath, htmlReportBytes);
+  const completedAt = new Date().toISOString();
+  const inputs = snapshotMutationInputs(repoRoot);
+  writeFullRunAttestation(
+    repoRoot,
+    createFullRunAttestation({
+      completedAt,
+      executionInputs: inputs,
+      htmlReportBytes,
+      inputs,
+      repoRoot,
+      reportBytes,
+      runId: '00000000-0000-4000-8000-000000000001',
       startedAt,
     }),
   );
@@ -184,6 +267,11 @@ function processGroupExists(processGroupId) {
 }
 
 test('launcher accepts only its mode-aware CLI', () => {
+  assert.deepEqual(parseMutationCliArguments(['--mode=full']), {
+    concurrency: 4,
+    mode: 'full',
+    strykerArgs: ['--concurrency', '4'],
+  });
   assert.deepEqual(parseMutationCliArguments(['--mode=full', '-c1']), {
     concurrency: 1,
     mode: 'full',
@@ -196,6 +284,7 @@ test('launcher accepts only its mode-aware CLI', () => {
   });
 
   for (const args of [
+    ['--mode=full', '-c5'],
     ['--mode=full', '-c99'],
     ['--mode=full', 'positional'],
     ['--mode=full', '--unknown'],
@@ -205,6 +294,109 @@ test('launcher accepts only its mode-aware CLI', () => {
   ]) {
     assert.throws(() => parseMutationCliArguments(args), Error, args.join(' '));
   }
+});
+
+test('canonical full mutation policy uses four workers and non-breaking Stryker reporting', () => {
+  const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(
+    packageJson.scripts['test:mutation:run'],
+    'node scripts/run-mutation.mjs --mode=full --concurrency=4',
+  );
+
+  const configUrl = new URL('../stryker.config.mjs', import.meta.url).href;
+  const probe = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `process.env.READOUT_MUTATION_GUARD = '1';
+process.env.READOUT_MUTATION_MODE = 'full';
+const { default: config } = await import(${JSON.stringify(configUrl)});
+process.stdout.write(JSON.stringify({ concurrency: config.concurrency, thresholds: config.thresholds }));`,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.deepEqual(JSON.parse(probe.stdout), {
+    concurrency: 4,
+    thresholds: { break: 0, high: 100, low: 100 },
+  });
+});
+
+test('canonical launcher has no campaign wall-clock deadline', () => {
+  const launcher = readFileSync(new URL('./run-mutation.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(
+    launcher,
+    /MUTATION_MAX_MINUTES|maximumRunMilliseconds|wallClockTimer|runtime reached/u,
+  );
+  assert.match(launcher, /deadline=none/u);
+});
+
+test('mutation checker recognizes a symlinked main-module path', (t) => {
+  const checkerPath = fileURLToPath(new URL('./check-mutation-report.mjs', import.meta.url));
+  const tempRoot = mkdtempSync(join(tmpdir(), 'readout-mutation-checker-main-'));
+  const checkerLink = join(tempRoot, 'checker.mjs');
+  t.after(() => rmSync(tempRoot, { force: true, recursive: true }));
+  symlinkSync(checkerPath, checkerLink);
+
+  assert.equal(isMutationReportCheckerMain(checkerPath), true);
+  assert.equal(isMutationReportCheckerMain(checkerLink), true);
+  assert.equal(isMutationReportCheckerMain(join(tempRoot, 'missing.mjs')), false);
+});
+
+test('attested checker rejects unresolved outcomes without deleting evidence', (t) => {
+  const assertEvidenceRemains = (fixtureRoot) => {
+    assert.doesNotThrow(() => verifyFullRunAttestation(fixtureRoot));
+    for (const path of [
+      mutationReportRelativePath,
+      mutationHtmlReportRelativePath,
+      fullRunAttestationRelativePath,
+    ]) {
+      assert.equal(existsSync(join(fixtureRoot, path)), true, path);
+    }
+  };
+
+  const survivorRoot = makeFixture(t);
+  attestCheckerFixture(survivorRoot, ['Killed', 'Survived']);
+  assert.throws(
+    () => checkMutationReport(survivorRoot, () => {}),
+    /unresolved mutation statuses: Survived=1/u,
+  );
+  assertEvidenceRemains(survivorRoot);
+
+  const runtimeErrorRoot = makeFixture(t);
+  attestCheckerFixture(runtimeErrorRoot, ['Killed', 'RuntimeError']);
+  assert.throws(
+    () => checkMutationReport(runtimeErrorRoot, () => {}),
+    /unresolved mutation statuses: RuntimeError=1/u,
+  );
+  assertEvidenceRemains(runtimeErrorRoot);
+
+  const passingRoot = makeFixture(t);
+  attestCheckerFixture(passingRoot, ['Killed', 'CompileError']);
+  const output = [];
+  assert.doesNotThrow(() => checkMutationReport(passingRoot, (line) => output.push(line)));
+  assert.ok(
+    output.includes(
+      'Directly killed: 1/2 all generated mutants ' + '(50.00%; CompileError reported separately)',
+    ),
+    output.join('\n'),
+  );
+  assert.ok(output.includes('  CompileError 1'), output.join('\n'));
+  assert.doesNotThrow(() => verifyFullRunAttestation(passingRoot));
+});
+
+test('attested checker rejects every Timeout outcome', (t) => {
+  const repoRoot = makeFixture(t);
+  attestCheckerFixture(repoRoot, [
+    'Killed',
+    { status: 'Timeout', statusReason: 'Hit limit reached (11201/11200)' },
+  ]);
+
+  assert.throws(
+    () => checkMutationReport(repoRoot, () => {}),
+    /unresolved mutation statuses: Timeout=1/u,
+  );
 });
 
 test('TypeScript AST guards type-only and side-effect-import-only modules', () => {
@@ -244,6 +436,10 @@ test('mutation stage is an exact input snapshot isolated from working-tree ABA',
   writeFixtureFile(repoRoot, testPath, originalTest);
   assert.deepEqual(snapshotMutationInputs(repoRoot), expectedInputs);
   assert.deepEqual(readFileSync(join(stageRoot, testPath)), originalTest);
+  assert.deepEqual(
+    readFileSync(join(stageRoot, 'internal/web/testdata/live_render_contract.json')),
+    readFileSync(join(repoRoot, 'internal/web/testdata/live_render_contract.json')),
+  );
   assert.deepEqual(snapshotMutationInputs(stageRoot), expectedInputs);
 
   removeMutationInputStage(repoRoot);
@@ -522,6 +718,20 @@ test('checker provenance rejects changed external Vitest test data', (t) => {
   assert.throws(
     () => verifyFullRunAttestation(repoRoot),
     /attested mutation inputs changed.*prefs_golden\/01_simple\.json/u,
+  );
+});
+
+test('checker provenance rejects a changed Live render contract', (t) => {
+  const repoRoot = makeFixture(t);
+  attestFixture(repoRoot);
+  writeFixtureFile(
+    repoRoot,
+    'internal/web/testdata/live_render_contract.json',
+    '{"version":1,"rows":[{"changed":true}],"regions":[]}\n',
+  );
+  assert.throws(
+    () => verifyFullRunAttestation(repoRoot),
+    /attested mutation inputs changed.*live_render_contract\.json/u,
   );
 });
 

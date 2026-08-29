@@ -11,14 +11,10 @@
 // GETs the server answers with the canonical HX-Push-Url), and the schema/value
 // autocomplete.
 //
-// THE FULL ROW MODEL: every matcher/frequency scan reads roRowModel, a
-// capture of the COMPLETE server-rendered table -- taken from the incoming
-// server fragment in the ro-morph handleSwap (before the morph, before any
-// client windowing touches the DOM) and from the full document at init. The
-// virtualizer (virtualizer.ts) CONSUMES roRowModel.visibleKeys to decide which
-// rows are renderable; it reads that through the window.roRowModel seam, so
-// THIS module depends on the virtualizer (applyLiveNameFilter calls
-// virtualizeOnFilterChange), not the reverse -- no import cycle.
+// THE FULL ROW MODEL: every matcher/frequency scan reads the stable facade owned
+// by list-projection.ts. That module captures the COMPLETE server-rendered table
+// before any client windowing touches it; filters and the virtualizer are peers
+// consuming the same canonical snapshot rather than owning overlapping copies.
 //
 // The PURE grammar + suggestion ranking + the value-frequency scan live in
 // filters-parse.ts (unit-tested); this module is the DOM + dispatch around it:
@@ -36,19 +32,21 @@
 import type { Binding } from './events.js';
 import {
     type ACItem,
-    fieldSuggestionText,
     filterFieldKnown,
     filterSuggestionFields,
     liveNameMatchKeys,
-    type ModelField,
-    type ModelRow,
-    normalizeFieldWhitespace,
     rankFieldSuggestions,
     rankValueSuggestions,
     splitFilterDraft,
     trimFilterWhitespace,
 } from './filters-parse.js';
-import type { RowModelWire } from './types.js';
+import {
+    adoptListProjection,
+    ensureListProjection,
+    listProjectionRevision,
+    listProjectionRowModel,
+    setListProjectionVisibleKeys,
+} from './list-projection.js';
 import { virtualizeOnFilterChange, virtualizerActive } from './virtualizer.js';
 
 function getHtmx():
@@ -63,79 +61,44 @@ function getHtmx():
     ).htmx;
 }
 
-// roRowModel is the full server-render capture. EXPOSED as window.roRowModel
-// (the seam the virtualizer reads visibleKeys through, and a documented debug
-// seam) -- morph.ts's ro-morph handleSwap also reaches captureRowModel by name.
-// RowModelWire (types.ts) is the shared seam shape declared on the global
-// Window, so this assignment is compiler-checked against the frozen e2e contract
-// instead of an `as unknown` cast.
-const roRowModel: RowModelWire = {
-    fields: [],
-    rows: [],
-    visibleKeys: null,
-};
-window.roRowModel = roRowModel;
+// Stable full-model facade. list-projection.ts owns and exposes the same object
+// as window.roRowModel for the documented debug/e2e seam.
+const roRowModel = listProjectionRowModel();
 
-// captureRowModel reads the chips-editor model from `root` -- the incoming
-// server fragment (a DocumentFragment) or the live container at init. The header
-// cells carry data-hint ONLY on filterable columns (server-resolved Table
-// columns), so synthetic headers (Created, Cluster, Namespace) are captured as
-// alignment-only fields with hint ''. Exported for legacy.js's ro-morph
-// handleSwap (the fragment capture before the morph).
+// Compatibility wrapper retained for callers/tests that capture the chips
+// editor model directly.  The canonical projection now performs the capture.
 export function captureRowModel(root: ParentNode): void {
-    const table = root.querySelector('table.ro-table');
-    if (!table) {
-        roRowModel.fields = [];
-        roRowModel.rows = [];
-        return;
-    }
-    const fields: ModelField[] = [];
-    table.querySelectorAll('thead th').forEach((th) => {
-        const label = normalizeFieldWhitespace(th.textContent || '');
-        fields.push({
-            label,
-            name: fieldSuggestionText(label),
-            hint: (th as HTMLElement).dataset.hint || '',
-        });
-    });
-    const rows: ModelRow[] = [];
-    table.querySelectorAll('tbody tr[data-key]').forEach((tr) => {
-        const cells: string[] = [];
-        tr.querySelectorAll('td').forEach((td) => {
-            cells.push(trimFilterWhitespace(td.textContent || ''));
-        });
-        const nameLink = tr.querySelector('td.cell-name a');
-        rows.push({
-            key: (tr as HTMLElement).dataset.key as string,
-            name: nameLink ? trimFilterWhitespace(nameLink.textContent || '') : cells[0] || '',
-            cells,
-        });
-    });
-    roRowModel.fields = fields;
-    roRowModel.rows = rows;
+    adoptListProjection(root);
 }
 
 // captureRowModelFromDocument: the first paint is the full server-rendered list,
 // so the live DOM IS the complete model here. Must run before the windowing init
-// step (windowing) prunes rows -- and must NEVER re-capture once the virtualizer is
-// engaged: runInit re-runs on htmx:load, and by then the DOM is a window, not the
-// dataset. A runInit step (exported for legacy.js's runInit chain).
+// step (windowing) prunes rows -- and must NEVER re-capture once the virtualizer
+// is engaged, because the DOM is then a window, not the dataset. The guard keeps
+// this exported runInit step safe under any defensive repeat call.
 export function captureRowModelFromDocument(): void {
     const content = document.getElementById('resource-list-content');
-    if (content && document.getElementById('ro-filter-input') && !virtualizerActive()) {
-        captureRowModel(content);
+    if (content && !virtualizerActive()) {
+        ensureListProjection(content);
     }
 }
 
 // ---- live free-text name match (NO request) --------------------------------
 const FILTER_HIDE_CLASS = 'ro-row-filtered';
 
+interface AppliedLiveFilter {
+    content: HTMLElement;
+    draft: string;
+    revision: number;
+}
+
+let appliedLiveFilter: AppliedLiveFilter | null = null;
+
 // applyLiveNameFilter narrows the rows to the names containing the draft text,
 // entirely client-side. The MATCH (liveNameMatchKeys, filters-parse.ts) runs on
 // the full row model; only the application toggles classes on whatever rows are
 // rendered. A draft containing an operator is a chip in progress -- no live
-// narrowing. Exported for legacy.js's htmx:afterSwap pipeline (re-derive from the
-// surviving draft after a morph).
+// narrowing. The shared post-list-update pipeline re-derives it after changes.
 export function applyLiveNameFilter(): void {
     const content = document.getElementById('resource-list-content');
     if (!content) {
@@ -143,18 +106,29 @@ export function applyLiveNameFilter(): void {
     }
     const input = document.getElementById('ro-filter-input') as HTMLInputElement | null;
     const draft = input ? input.value : '';
+    const revision = listProjectionRevision();
+    if (
+        appliedLiveFilter?.content === content &&
+        appliedLiveFilter.draft === draft &&
+        appliedLiveFilter.revision === revision
+    ) {
+        return;
+    }
     const visible = liveNameMatchKeys(roRowModel.rows, draft);
-    roRowModel.visibleKeys = visible;
-    content.querySelectorAll('tbody tr[data-key]').forEach((tr) => {
-        tr.classList.toggle(
-            FILTER_HIDE_CLASS,
-            !!visible && !visible.has((tr as HTMLElement).dataset.key as string),
-        );
-    });
+    setListProjectionVisibleKeys(visible);
+    content
+        .querySelectorAll<HTMLElement>('tbody tr[data-key], .ro-cardlist > .ro-pcard[data-key]')
+        .forEach((item) => {
+            item.classList.toggle(
+                FILTER_HIDE_CLASS,
+                !!visible && !visible.has(item.dataset.key as string),
+            );
+        });
     // Virtualization: the class application above only reaches the
     // rendered window -- re-window over the new visible set so a match currently
     // OUTSIDE the window becomes a rendered row.
     virtualizeOnFilterChange();
+    appliedLiveFilter = { content, draft, revision };
 }
 
 // ---- chip commit / pop: ride the v2 loop ------------------------------------
@@ -328,7 +302,7 @@ function moveFilterACActive(delta: number): void {
 }
 
 // updateFilterAC re-derives the dropdown from the current draft. Exported for
-// legacy.js's htmx:afterSwap pipeline (re-open mid-draft after a morph).
+// the shared post-list-update pipeline (re-open mid-draft after a change).
 export function updateFilterAC(): void {
     const input = document.getElementById('ro-filter-input') as HTMLInputElement | null;
     if (!input) {

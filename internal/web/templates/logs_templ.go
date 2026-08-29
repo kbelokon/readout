@@ -24,7 +24,7 @@ import templruntime "github.com/a-h/templ/runtime"
 // never ride the Refresh GET. The Download-logs anchor is a plain GET
 // (?download=txt over the same container/tail/filter view) and opts out of
 // hx-boost: boost would swap the attachment bytes into <body> instead of
-// downloading (htmx 2.0.4, the download-anchor lesson).
+// downloading (the download-anchor lesson from the vendored HTMX runtime).
 //
 // The outermost content element carries the `ro-rd` content marker so the
 // canonical class names below (.ro-detail-title, .ro-kind-badge, .ro-tabs,

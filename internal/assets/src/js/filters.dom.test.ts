@@ -232,6 +232,11 @@ describe('complete row-model capture', () => {
         replacementInput.id = 'ro-filter-input';
         document.getElementById('ro-filter-field')?.appendChild(replacementInput);
         filters.captureRowModelFromDocument();
+        expect(window.roRowModel.rows[0]?.name).toBe('Web Alpha');
+
+        // The init path is identity-idempotent; an explicit forced capture is
+        // still available to callers that mutate a mounted projection in place.
+        filters.captureRowModel(content);
         expect(window.roRowModel.rows[0]?.name).toBe('Changed window row');
     });
 });
@@ -258,6 +263,60 @@ describe('live filtering and autocomplete', () => {
         expect(rows[0]).not.toHaveClass('ro-row-filtered');
         expect(rows[1]).not.toHaveClass('ro-row-filtered');
         expect(virtualizer.virtualizeOnFilterChange).toHaveBeenCalledTimes(2);
+    });
+
+    test('keeps keyed mobile cards in lockstep with their canonical table rows', () => {
+        const { content, input } = renderEditor();
+        const cards = document.createElement('div');
+        cards.className = 'ro-cardlist';
+        cards.innerHTML = `
+            <article class="ro-pcard" data-key="dev/pods/web-alpha">Web Alpha card</article>
+            <article class="ro-pcard" data-key="dev/pods/worker-beta">Worker Beta card</article>
+            <article class="ro-pcard">unkeyed state card</article>`;
+        content.append(cards);
+        filters.captureRowModel(content);
+        const webCard = cards.querySelector('[data-key="dev/pods/web-alpha"]');
+        const workerCard = cards.querySelector('[data-key="dev/pods/worker-beta"]');
+        const unkeyedCard = cards.querySelector('.ro-pcard:not([data-key])');
+
+        input.value = 'alpha';
+        filters.applyLiveNameFilter();
+
+        expect(webCard).not.toHaveClass('ro-row-filtered');
+        expect(workerCard).toHaveClass('ro-row-filtered');
+        expect(unkeyedCard).not.toHaveClass('ro-row-filtered');
+
+        input.value = '';
+        filters.applyLiveNameFilter();
+
+        expect(webCard).not.toHaveClass('ro-row-filtered');
+        expect(workerCard).not.toHaveClass('ro-row-filtered');
+    });
+
+    test('deduplicates descendant-load repairs by projection revision, root and draft', () => {
+        const { content, input } = renderEditor();
+        filters.captureRowModel(content);
+        input.value = 'beta';
+
+        for (let load = 0; load < 8; load += 1) {
+            filters.applyLiveNameFilter();
+        }
+
+        expect(virtualizer.virtualizeOnFilterChange).toHaveBeenCalledOnce();
+        expect(Array.from(window.roRowModel.visibleKeys || [])).toStrictEqual([
+            'dev/pods/worker-beta',
+        ]);
+
+        input.value = 'alpha';
+        filters.applyLiveNameFilter();
+        filters.applyLiveNameFilter();
+        expect(virtualizer.virtualizeOnFilterChange).toHaveBeenCalledTimes(2);
+
+        // A fresh server projection with the same root/draft must re-apply: its
+        // DOM classes may have been synchronized away by the morph.
+        filters.captureRowModel(content);
+        filters.applyLiveNameFilter();
+        expect(virtualizer.virtualizeOnFilterChange).toHaveBeenCalledTimes(3);
     });
 
     test('degrades safely when the list or editor input is absent', () => {

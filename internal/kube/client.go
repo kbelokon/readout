@@ -259,38 +259,117 @@ func (c *Client) Denied() *Client {
 	}
 }
 
-// discoveryResult carries one outcome of the blocking discovery call back from
-// its goroutine.
+// contextRoundTripper binds client-go discovery requests to the caller's
+// context. DiscoveryInterface.ServerGroupsAndResources itself accepts no
+// context; without this transport a deadline can release the caller while the
+// real HTTP request and its goroutine remain stuck waiting for response headers.
+// The request's own context is retained too, so either cancellation source wins.
+type contextRoundTripper struct {
+	ctx  context.Context
+	base http.RoundTripper
+}
+
+func (rt contextRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	requestCtx, cancel := context.WithCancel(req.Context())
+	stop := context.AfterFunc(rt.ctx, cancel)
+	if err := rt.ctx.Err(); err != nil {
+		stop()
+		cancel()
+		return nil, err
+	}
+	resp, err := rt.base.RoundTrip(req.Clone(requestCtx))
+	if err != nil {
+		stop()
+		cancel()
+		return nil, err
+	}
+	if resp.Body == nil {
+		stop()
+		cancel()
+		return resp, nil
+	}
+	// A request context governs reading the response body, not just receiving
+	// headers. Keep it live until the consumer closes the body; otherwise a
+	// slow/chunked but healthy discovery response is canceled immediately after
+	// RoundTrip returns its headers and client-go observes a truncated body.
+	resp.Body = &contextResponseBody{
+		ReadCloser: resp.Body,
+		stop:       stop,
+		cancel:     cancel,
+	}
+	return resp, nil
+}
+
+type contextResponseBody struct {
+	io.ReadCloser
+	stop   func() bool
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
 type discoveryResult struct {
 	lists []*metav1.APIResourceList
 	err   error
 }
 
-// discoverResources runs client-go's ServerGroupsAndResources -- which takes no
-// context and blocks until the OS reaps a dead connection (a TCP-blackholed
-// cluster can hold it for one to two minutes) -- and races it against ctx so a
-// caller's deadline actually cuts the call. On ctx expiry it returns ctx.Err()
-// wrapped with %w so the chain still classifies as a timeout.
-//
-// The discovery call runs in a goroutine that delivers its result on a buffered
-// channel, so when ctx wins the race the goroutine can still send and exit
-// instead of leaking blocked on the send. The goroutine itself keeps running
-// against the dead connection until the OS TCP timeout reaps it; that one leaked
-// goroutine per timed-out discovery is an accepted trade -- there is no way to
-// interrupt the context-less client-go call, and the alternative (holding the
-// caller until the OS gives up) is exactly the hang we are removing.
-func (c *Client) discoverResources(ctx context.Context) ([]*metav1.APIResourceList, error) {
+// awaitDiscovery gives the context-less client-go discovery call an outer
+// cancellation boundary. The transport above cancels real HTTP work and owns
+// response bodies, but an exec credential plugin can block before RoundTrip and
+// does not accept the request context. A buffered handoff lets that worker exit
+// later without retaining the caller when the context wins first.
+func awaitDiscovery(ctx context.Context, discover func() ([]*metav1.APIResourceList, error)) ([]*metav1.APIResourceList, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("kube discovery: %w", err)
+	}
 	resultCh := make(chan discoveryResult, 1)
 	go func() {
-		_, lists, err := c.discovery.ServerGroupsAndResources()
+		lists, err := discover()
 		resultCh <- discoveryResult{lists: lists, err: err}
 	}()
 	select {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("kube discovery: %w", ctx.Err())
-	case res := <-resultCh:
-		return res.lists, res.err
+	case result := <-resultCh:
+		return result.lists, result.err
 	}
+}
+
+func (body *contextResponseBody) Close() error {
+	err := body.ReadCloser.Close()
+	body.once.Do(func() {
+		body.stop()
+		body.cancel()
+	})
+	return err
+}
+
+// discoverResources gives the context-less client-go discovery API a fresh
+// client whose transport is bound to ctx. The normal configured transport is
+// reused (TLS, auth, proxying and instrumentation stay identical), while the
+// shallow http.Client copy prevents concurrent discovery calls from mutating
+// shared transport state.
+func (c *Client) discoverResources(ctx context.Context) ([]*metav1.APIResourceList, error) {
+	if c.config == nil || c.httpClient == nil {
+		return nil, errors.New("kube discovery client is not configured")
+	}
+	httpClient := *c.httpClient
+	base := httpClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	httpClient.Transport = contextRoundTripper{ctx: ctx, base: base}
+	disco, err := discovery.NewDiscoveryClientForConfigAndClient(c.config, &httpClient)
+	if err != nil {
+		return nil, err
+	}
+	lists, err := awaitDiscovery(ctx, func() ([]*metav1.APIResourceList, error) {
+		_, lists, discoverErr := disco.ServerGroupsAndResources()
+		return lists, discoverErr
+	})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, fmt.Errorf("kube discovery: %w", ctxErr)
+	}
+	return lists, err
 }
 
 func (c *Client) ResourceTypes(ctx context.Context) ([]ResourceType, []ResourceType, error) {

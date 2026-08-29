@@ -494,7 +494,7 @@ func TestLiveOptionScopeGate(t *testing.T) {
 func TestPrefsReadoutJSContract(t *testing.T) {
 	js := readoutJS(t)
 	for _, needle := range []string{
-		"'ro_prefs'",                            // the cookie name
+		"'ro_prefs='",                           // the cookie name and separator
 		"'v1.'",                                 // the pinned version prefix
 		"PREFS_MAX_ENCODED = 3072",              // the eviction cap
 		"Path=/; SameSite=Lax; Max-Age=",        // the pinned attributes
@@ -507,7 +507,7 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 		"roPrefsSetNamespace",     // namespace switch
 		"closest('thead th')",     // sort writes ONLY from header gestures
 		"#namespace-dropdown [data-ro-action='pick-namespace']", // the namespace-switch surface
-		"localStorage.getItem(REFRESH_KEY)",                     // the read-once roRefresh migration
+		"localStorage.getItem('roRefresh')",                     // the read-once roRefresh migration
 		"refreshMode",                                           // cookie-canonical mode reader
 	} {
 		if !strings.Contains(js, needle) {
@@ -517,21 +517,18 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 	// Decoder normalization is behavior-tested in prefs.test.ts against the
 	// shared Go/TypeScript golden fixtures. Do not pin its emitted JavaScript
 	// spelling here: equivalent iteration or narrowing must remain a safe refactor.
-	// The sort-write hook treats programmatic traffic as do-not-write: the
-	// RO-No-Push marker and preload warm-ups are guarded in the SAME
-	// beforeRequest gate (one expression) that then discriminates on the
-	// thead ancestor before writing. The generated bundle strips section
-	// comments, so pin the guard expression and the write call themselves
-	// rather than comment anchors.
-	if !strings.Contains(js, "cfg.headers['RO-No-Push'] || cfg.headers['HX-Preloaded'] === 'true'") {
-		t.Fatalf("sort-write hook lost its combined RO-No-Push/HX-Preloaded do-not-write guard")
+	// The sort-write hook treats RO-No-Push programmatic traffic as do-not-write
+	// before it discriminates on the thead ancestor. Hover preload no longer
+	// exists, so its retired request header is absent from this contract.
+	if !strings.Contains(js, "if (cfg.headers['RO-No-Push'])") {
+		t.Fatalf("sort-write hook lost its RO-No-Push do-not-write guard")
 	}
 	if !strings.Contains(js, "roPrefsSetSort(plural, sort)") {
 		t.Fatalf("sort-write hook lost its roPrefsSetSort write")
 	}
 	// The legacy roRefresh localStorage WRITE is gone: the cookie is canonical
 	// (the key survives only as refreshMode()'s migration read).
-	if strings.Contains(js, "localStorage.setItem(REFRESH_KEY") {
+	if strings.Contains(js, "localStorage.setItem('roRefresh'") {
 		t.Fatalf("readout.js still WRITES the legacy roRefresh localStorage key; the ro_prefs cookie is canonical")
 	}
 }

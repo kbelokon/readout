@@ -231,14 +231,18 @@ type hiddenInput struct {
 // rowView precomputes the per-row status class and per-cell render data so the
 // table body render needs no request access.
 type rowView struct {
-	StatusClass  string
-	Cluster      string
-	Namespace    string
-	ClusterHref  string // cell link for the Cluster column (multi-cluster)
-	NsHref       string // cell link for the Namespace column (all-namespaces)
-	Cells        []cellView
-	CreatedClass string
-	CreatedText  string
+	StatusClass string
+	Cluster     string
+	Namespace   string
+	// ResourceVersion is not rendered. Live projections use it to distinguish
+	// a real object update from a clock-only refresh of volatile cells (notably
+	// an Event's "Last Seen" age).
+	ResourceVersion string
+	ClusterHref     string // cell link for the Cluster column (multi-cluster)
+	NsHref          string // cell link for the Namespace column (all-namespaces)
+	Cells           []cellView
+	CreatedClass    string
+	CreatedText     string
 
 	// Key is the row's stable object identity "cluster/ns/name" (empty segments
 	// collapsed) -- the row-identity contract. The renderer emits it as
@@ -276,6 +280,9 @@ type cellView struct {
 	Class    string // augmented cellClass (incl. age) for the <td>
 	ColClass string // table.Columns[i].Class
 	Href     string // resolved link target for name/label/node branches
+	// Volatile marks display text derived from the server clock rather than
+	// from a new Kubernetes resource state. It is projection metadata only.
+	Volatile bool
 
 	// Tone is the redesign status-dot/cell-status tone (ok/warn/err/info/mute),
 	// mapped from the Bulma cellClass; "" means no tone colour (generic fallback).

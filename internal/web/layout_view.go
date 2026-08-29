@@ -207,7 +207,7 @@ func (s *Server) buildLayoutViewScopedWithClients(r *http.Request, title, cluste
 	explicit := themeExplicit(r)
 
 	var scripts []string
-	for _, name := range []string{"htmx.min.js", "idiomorph-ext.min.js", "preload.min.js", "readout.js"} {
+	for _, name := range []string{"htmx.min.js", "idiomorph-ext.min.js", "readout.js"} {
 		if href := s.assetURL(name); href != "" {
 			scripts = append(scripts, href)
 		}

@@ -161,6 +161,13 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, view.State.SourceErr)
 		return
 	}
+	data := toListData(&view)
+	etag, err := resourceListETag(&data)
+	if err != nil {
+		s.error(w, r, fmt.Errorf("build resource-list validator: %w", err))
+		return
+	}
+	setResourceListValidatorHeaders(w.Header(), etag)
 	// Canonical-URL history push: a USER-initiated sort/filter request gets
 	// the CANONICAL list URL (path minus `/_table`, current query) pushed into
 	// history -- never the partial URL (hx-push-url="true" would push
@@ -170,17 +177,19 @@ func (s *Server) resourceListPartial(w http.ResponseWriter, r *http.Request) {
 	// 5s refresh interval into one junk entry per tick. Ticks and every other
 	// programmatic re-fetch mark themselves with RO-No-Push (readout.js sets it
 	// on requests issued by #resource-list-content itself; column toggles and
-	// later programmatic surfaces ride the same header), preload warm-ups carry
-	// HX-Preloaded, non-htmx requests have no HX-Request, and the loop is
-	// single-type-only -- none of those push.
+	// later programmatic surfaces ride the same header), non-htmx requests have
+	// no HX-Request, and the loop is single-type-only -- none of those push.
 	if isSingleListType(r.PathValue("plural")) &&
 		r.Header.Get("HX-Request") == "true" &&
-		r.Header.Get("RO-No-Push") == "" &&
-		r.Header.Get("HX-Preloaded") != "true" {
+		r.Header.Get("RO-No-Push") == "" {
 		w.Header().Set("HX-Push-Url", resourceListBaseURL(r.URL).String())
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.ResourceTable(toListData(&view)).Render(r.Context(), w)
+	if isConditionalListRefresh(r) && ifNoneMatch(r.Header.Values("If-None-Match"), etag) {
+		w.Header().Del("Content-Length")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	_ = templates.ResourceTable(data).Render(r.Context(), w)
 }
 
 func (s *Server) downloadTSV(w http.ResponseWriter, r *http.Request, table *kube.Table) {

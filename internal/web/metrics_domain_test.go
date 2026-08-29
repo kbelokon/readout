@@ -55,11 +55,12 @@ func TestDomainMetricsScrape(t *testing.T) {
 	}
 
 	// 2) A stream driven to its idle terminal: increments the terminal counter.
-	streamReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=1", nil)
+	streamReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream", nil)
 	streamReq.Header.Set("X-Forwarded-User", "alice")
+	setTestLiveHeaders(streamReq, "metrics-domain")
 	s := openStreamRequest(t, streamReq)
-	s.requireEvent(t, "ro-table", 5*time.Second)
-	term := s.requireEvent(t, "ro-terminal", 3*time.Second)
+	s.requireEvent(t, "ro-live", 5*time.Second)
+	term := s.requireEvent(t, "ro-live", 3*time.Second)
 	if reason := decodeFrame(t, term).Reason; reason != "idle" {
 		t.Fatalf("terminal reason = %q, want idle", reason)
 	}

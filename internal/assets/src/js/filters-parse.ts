@@ -46,17 +46,15 @@ export interface ACItem {
     kind: 'field' | 'value';
 }
 
-// Go strings.Fields splits on unicode.IsSpace, whose stable White_Space set is
-// NOT JavaScript's `\s`/trim set: Go includes U+0085 (NEXT LINE) and excludes
-// U+FEFF (BOM). Keep the exact run here so client suggestions and server field
-// resolution cannot disagree at that language boundary.
-const goFieldWhitespaceRun = /\p{White_Space}+/gu;
-const goFieldWhitespaceEdges = /^\p{White_Space}+|\p{White_Space}+$/gu;
+// Unicode White_Space matches Go unicode.IsSpace for the code points accepted
+// by strings.Fields: notably it includes U+0085 and excludes U+FEFF.
+const GO_FIELD_WHITESPACE_TRIM = /^\p{White_Space}+|\p{White_Space}+$/gu;
+const GO_FIELD_WHITESPACE_RUN = /\p{White_Space}+/gu;
 
 // trimFilterWhitespace mirrors strings.TrimSpace for fields and values parsed
 // from a draft. In particular, it trims U+0085 and preserves U+FEFF.
 export function trimFilterWhitespace(s: string): string {
-    return (s || '').replace(goFieldWhitespaceEdges, '');
+    return (s || '').replace(GO_FIELD_WHITESPACE_TRIM, '');
 }
 
 // normalizeFieldWhitespace collapses the same whitespace runs as
@@ -64,7 +62,7 @@ export function trimFilterWhitespace(s: string): string {
 // Header capture uses it instead of String.trim(), which would wrongly discard
 // a leading/trailing U+FEFF that the Go resolver treats as field-name data.
 export function normalizeFieldWhitespace(s: string): string {
-    return trimFilterWhitespace((s || '').replace(goFieldWhitespaceRun, ' '));
+    return trimFilterWhitespace(s).replace(GO_FIELD_WHITESPACE_RUN, ' ');
 }
 
 // normalizeFieldName mirrors the server's resolveFilterColumn: lowercase, dashes

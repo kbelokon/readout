@@ -43,9 +43,6 @@ export function collapseSectionsFromHash(): void {
 // --- dispatcher bindings ---------------------------------------------------
 
 export const miscBindings: Binding[] = [
-    // Mobile hamburger: a delegated click on [data-ro-action="toggle-sidebar"] reveals/hides the
-    // sidebar by toggling `.is-active` on `.ro-sidebar`. No-op when no sidebar is
-    // present (e.g. the Clusters entry page). Kept its early-return (stop:true).
     {
         event: 'click',
         selector: '[data-ro-action="toggle-sidebar"]',
@@ -59,13 +56,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // data-ro-action="copy" (per-section YAML copy): copy THIS section's raw YAML to the
-    // clipboard via navigator.clipboard.writeText -- CSP-clean. The raw text is
-    // read from the section's Pygments `td.code` cell (the gutter lives in a
-    // separate `td.linenos`), with any injected fold controls stripped first
-    // (yamlCodeText) so the copy is the full source YAML in any fold state. The
-    // button briefly flips its label to "copied". Matched (and stop:true) BEFORE
-    // the section-fold binding so a copy click never toggles the section fold.
     {
         event: 'click',
         selector: '[data-ro-action="copy"]',
@@ -97,12 +87,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // .collapsible h4.title: toggle `is-collapsed` on the section and sync the
-    // URL fragment (collapsed=<names>) with all currently-collapsed sections. The
-    // section is resolved via closest('.collapsible') (NOT parentElement) so a
-    // Unit-10 YAML card (h4.title nested in .ro-card-head) folds the right node.
-    // Registered AFTER the copy binding (copy's stop:true short-circuits a copy
-    // click), reproducing the monolith order. Kept its early-return (stop:true).
     {
         event: 'click',
         selector: 'main .collapsible h4.title',
@@ -132,12 +116,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // Namespace switch: picking a namespace in the topbar dropdown records it
-    // as this cluster's last-used namespace in the ro_prefs cookie (server-read
-    // only, for cluster-entry hrefs -- never a redirect). The click is
-    // deliberately NOT prevented; the boosted navigation proceeds. The cookie
-    // write rides the prefs.ts surface directly (the same seam legacy uses).
-    // Kept its early-return (stop:true).
     {
         event: 'click',
         selector: '#namespace-dropdown [data-ro-action="pick-namespace"]',
@@ -156,8 +134,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // #namespace-dropdown .context-trigger: toggle `is-active`; focus the
-    // searchbox when opening. Kept its early-return (stop:true).
     {
         event: 'click',
         selector: '#namespace-dropdown .context-trigger',
@@ -177,9 +153,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // #namespace-searchbox input: filter the [data-ro-action="pick-namespace"] links by
-    // case-insensitive substring. Terminal branch in the monolith input listener
-    // (no branch followed it), reproduced as stop:true.
     {
         event: 'input',
         selector: '#namespace-searchbox',
@@ -197,8 +170,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // #namespace-searchbox keyup: Enter selects the first still-visible match.
-    // Sole branch of the monolith keyup listener; stop:true mirrors its return.
     {
         event: 'keyup',
         selector: '#namespace-searchbox',
@@ -214,13 +185,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // In-cell +N overflow (label/selector chips and data keys): the `.ro-chip.more[data-ro-more]` button
-    // toggles `.expanded` on its OWN `.ro-chips` strip, revealing the `.xtra` chips
-    // in place (the button face flips +N <-> "less" in CSS). Delegated so it
-    // survives every morph; aria-expanded mirrors the state. A refresh morph
-    // re-renders the strip collapsed (server truth) -- expansion is a transient
-    // peek, not persisted state. Was a trailing branch of the monolith big click
-    // listener (C1); kept its early-return (stop:true).
     {
         event: 'click',
         selector: '[data-ro-more]',
@@ -235,13 +199,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // Long-annotation toggle: a >120-char annotation renders as a
-    // collapsed `key · size` button + a hidden scrollable <pre> payload. The
-    // delegated click flips the [hidden] attribute on the sibling .anno-pre,
-    // mirrors the state into aria-expanded, and rotates the chevron via the .open
-    // class -- CSP-clean and morph-safe (server truth re-renders collapsed; a
-    // transient peek, like the chip overflow above). C1 trailing branch;
-    // early-return (stop:true).
     {
         event: 'click',
         selector: '[data-ro-annolong]',
@@ -261,8 +218,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // data-ro-action="toggle-tools": toggle `is-active` on the control itself and on the element
-    // named by its `data-target`. C1 trailing branch; early-return (stop:true).
     {
         event: 'click',
         selector: '[data-ro-action="toggle-tools"]',
@@ -280,10 +235,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // Search-button enable (change): a checkbox carries `data-ro-toggle-button="<id>"`.
-    // The named button is enabled iff any checkbox sharing that same value is
-    // checked, else disabled. Was the lead branch of the monolith change listener;
-    // early-return (stop:true).
     {
         event: 'change',
         selector: 'input[data-ro-toggle-button]',
@@ -300,10 +251,6 @@ export const miscBindings: Binding[] = [
             return true;
         },
     },
-    // form.tools-form (the v1 multi-type tools form): on submit, blank the `name`
-    // of empty inputs so they do not become empty query parameters in the
-    // resulting GET URL. Sole branch of the monolith submit listener; it did NOT
-    // early-return (the form still submits), so this binding does NOT stop.
     {
         event: 'submit',
         selector: 'form.tools-form',

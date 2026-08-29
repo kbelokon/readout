@@ -69,18 +69,14 @@ async function seedAges(): Promise<void> {
 
 // A tick (or any programmatic re-fetch) marks itself RO-No-Push; a user sort
 // click does not. Matching on the REQUEST header keeps the two awaitable
-// independently (and ignores preload warm-ups, which carry HX-Preloaded).
+// independently.
 function isTickResponse(r: Response): boolean {
   return r.url().includes('/_table') && r.request().headers()['ro-no-push'] === 'true';
 }
 
 function isUserTableResponse(r: Response): boolean {
   const headers = r.request().headers();
-  return (
-    r.url().includes('/_table') &&
-    headers['ro-no-push'] !== 'true' &&
-    headers['hx-preloaded'] !== 'true'
-  );
+  return r.url().includes('/_table') && headers['ro-no-push'] !== 'true';
 }
 
 function waitForTick(page: Page): Promise<Response> {

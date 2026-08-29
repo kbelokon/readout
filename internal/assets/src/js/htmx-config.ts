@@ -5,11 +5,12 @@
 // htmx.min.js but BEFORE htmx walks the document, so the config set here governs
 // every boosted navigation and swap.
 //
-// NATIVE VIEW TRANSITIONS, reduced-motion-aware (the only config we touch):
-// enabling globalViewTransitions makes htmx wrap swaps in
-// document.startViewTransition() for a native crossfade. It degrades
-// automatically where the API is unsupported (htmx just swaps). We turn it OFF
-// entirely under prefers-reduced-motion so those users get NO animation at all.
+// NATIVE VIEW TRANSITIONS (the only config we touch): keep them disabled.
+// Whole-document snapshots made ordinary navigation look like the viewport was
+// being kicked, while delayed post-swap enhancements could visibly reflow the
+// new page. Readout owns those lifecycle seams directly and always performs a
+// plain HTMX swap; no browser animation capability or motion preference can
+// silently re-enable a root transition.
 //
 // Vendor-agnostic: htmx is a classic-script global (loaded before this bundle),
 // reached through a typeof guard -- never imported (the bundle has no module for
@@ -19,8 +20,7 @@
 declare const htmx: { config: { globalViewTransitions: boolean } } | undefined;
 
 if (typeof htmx !== 'undefined') {
-    htmx.config.globalViewTransitions = !window.matchMedia('(prefers-reduced-motion: reduce)')
-        .matches;
+    htmx.config.globalViewTransitions = false;
 }
 
 export {};

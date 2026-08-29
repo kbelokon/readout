@@ -9,10 +9,11 @@
 // Vendor globals: htmx + Idiomorph are classic-script globals (the vendored
 // idiomorph extension exposes Idiomorph; htmx loads before this bundle), reached
 // through typeof guards -- never imported (no module exists for the vendored
-// libs). Cross-module surfaces this module's handleSwap calls (captureRowModel /
-// virtualizePrepareSwap) ARE imported -- they live in the typed modules.
+// libs). Cross-module surfaces this module's handleSwap calls
+// (prepare/cancelListProjectionSwap / virtualizePrepareSwap) ARE imported --
+// they live in the typed modules.
 
-import { captureRowModel } from './filters.js';
+import { cancelListProjectionSwap, prepareListProjectionSwap } from './list-projection.js';
 import { virtualizePrepareSwap } from './virtualizer.js';
 
 // Minimal vendor typings (classic-script globals). Only the surfaces this module
@@ -116,8 +117,8 @@ if (
 // NEEDS non-default morph config: ignoreActiveValue keeps the user's filter
 // draft + caret when a refresh tick morphs the fragment mid-typing (the server
 // fragment would otherwise sync the stale value over the draft; hx-preserve is
-// no alternative -- htmx 2.0.4 detaches/reattaches preserved nodes, dropping
-// focus). So the config is delivered FROM JS: this handleSwap hook calls
+// no alternative -- HTMX detaches/reattaches preserved nodes, dropping focus).
+// So the config is delivered FROM JS: this handleSwap hook calls
 // Idiomorph.morph with an explicit config OBJECT -- no attribute eval anywhere.
 // Used by #resource-list-content (hx-ext="ro-morph" + hx-swap="morph") and the
 // sort-header partial requests inside it (hx-ext is inherited). morphStyle
@@ -133,24 +134,29 @@ if (typeof htmx !== 'undefined' && typeof htmx.defineExtension === 'function' &&
             if (swapStyle !== 'morph') {
                 return false; // not ours -> htmx falls through to its native swaps
             }
-            // Filters v2: capture the FULL row model from the incoming
+            const listTarget = target.id === 'resource-list-content';
+            // Capture the canonical FULL list projection from the incoming
             // SERVER fragment before the morph. The server always renders the
-            // complete list (no pagination), so the fragment is the full dataset
-            // even when a client-side windowing layer keeps only a
-            // window of rows in the live DOM -- the free-text matcher and the
-            // value-frequency autocomplete must never read the windowed DOM.
-            if (target.id === 'resource-list-content') {
-                captureRowModel(fragment);
-                // Virtualization, AFTER the model capture: a
-                // >threshold fragment's rows are detached for adoption so
-                // they never ride the morph (height-preserving spacers stand
-                // in); virtualizeAfterSwap re-windows once the morph lands.
-                virtualizePrepareSwap(fragment);
+            // complete list (no pagination), so rows, cards, identity order and
+            // the filter model all come from one snapshot even when the live DOM
+            // contains only a virtualized window.
+            try {
+                if (listTarget) {
+                    prepareListProjectionSwap(fragment);
+                    // Virtualization, AFTER the projection capture: a
+                    // >threshold fragment's rows are detached for adoption so
+                    // they never ride the morph (height-preserving spacers stand
+                    // in); virtualizeAfterSwap re-windows once the morph lands.
+                    virtualizePrepareSwap(fragment);
+                }
+                return idiomorph.morph(target, fragment.children, {
+                    morphStyle: 'innerHTML',
+                    ignoreActiveValue: true,
+                });
+            } catch (error) {
+                cancelListProjectionSwap(fragment);
+                throw error;
             }
-            return idiomorph.morph(target, fragment.children, {
-                morphStyle: 'innerHTML',
-                ignoreActiveValue: true,
-            });
         },
     });
 }

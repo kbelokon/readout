@@ -57,10 +57,79 @@ test('normalizeFieldName lowercases, dashes->spaces, and collapses whitespace', 
 });
 
 test('header whitespace normalization uses Go unicode.IsSpace rather than JavaScript trim', () => {
+    expect(normalizeFieldWhitespace('Alpha   \tBeta')).toBe('Alpha Beta');
     expect(normalizeFieldWhitespace('\u0085 Workload\u00a0 Status \u0085')).toBe('Workload Status');
     expect(normalizeFieldWhitespace('\uFEFFStatus\uFEFF')).toBe('\uFEFFStatus\uFEFF');
+    expect(trimFilterWhitespace('left  middle')).toBe('left  middle');
+    expect(trimFilterWhitespace('\t  value')).toBe('value');
     expect(trimFilterWhitespace('\u0085 status \u0085')).toBe('status');
+    expect(trimFilterWhitespace('status \t\u00a0\u0085')).toBe('status');
     expect(trimFilterWhitespace('\uFEFFstatus\uFEFF')).toBe('\uFEFFstatus\uFEFF');
+});
+
+test('pins the complete Go unicode.IsSpace set, its boundaries, and the excluded BOM', () => {
+    const spaces = [
+        '\u0009',
+        '\u000a',
+        '\u000b',
+        '\u000c',
+        '\u000d',
+        '\u0020',
+        '\u0085',
+        '\u00a0',
+        '\u1680',
+        '\u2000',
+        '\u2001',
+        '\u2002',
+        '\u2003',
+        '\u2004',
+        '\u2005',
+        '\u2006',
+        '\u2007',
+        '\u2008',
+        '\u2009',
+        '\u200a',
+        '\u2028',
+        '\u2029',
+        '\u202f',
+        '\u205f',
+        '\u3000',
+    ];
+    const nonSpaces = [
+        '\u0008',
+        '\u000e',
+        '\u001f',
+        '\u0021',
+        '\u0084',
+        '\u0086',
+        '\u009f',
+        '\u00a1',
+        '\u167f',
+        '\u1681',
+        '\u1fff',
+        '\u200b',
+        '\u2027',
+        '\u202a',
+        '\u202e',
+        '\u2030',
+        '\u205e',
+        '\u2060',
+        '\u2fff',
+        '\u3001',
+        '\uFEFF',
+    ];
+
+    for (const space of spaces) {
+        expect(trimFilterWhitespace(`${space}value${space}`)).toBe('value');
+    }
+    for (const nonSpace of nonSpaces) {
+        expect(trimFilterWhitespace(`${nonSpace}value${nonSpace}`)).toBe(
+            `${nonSpace}value${nonSpace}`,
+        );
+    }
+    expect(
+        normalizeFieldWhitespace(`${spaces.join('')}alpha${spaces.join('')}beta${spaces.join('')}`),
+    ).toBe('alpha beta');
 });
 
 test('fieldSuggestionText emits the dashed form of the shared field normalization', () => {

@@ -156,15 +156,23 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 		multiCluster := len(table.Clusters) > 1
 		for _, row := range table.Rows {
 			ns := nestedString(row.Object, "metadata", "namespace")
-			name := cellString(row, nameColumn(table))
+			// Object metadata is the identity source even for printer tables
+			// without a Name column (notably Events, whose first cell is age).
+			// Keep the cell fallback for partial/synthetic Table rows that omit
+			// their embedded object metadata.
+			name := nestedString(row.Object, "metadata", "name")
+			if name == "" {
+				name = cellString(row, nameColumn(table))
+			}
 			rv := rowView{
 				// The row stripe (err/warn rows only) derives from the same
 				// kube.StatusTone table the status dot uses, via RowStatusClass.
-				StatusClass:  kube.RowStatusClass(table, row),
-				Cluster:      row.Cluster,
-				Namespace:    ns,
-				CreatedClass: s.ageClass(nestedString(row.Object, "metadata", "creationTimestamp")),
-				CreatedText:  formatTimestamp(nestedString(row.Object, "metadata", "creationTimestamp")),
+				StatusClass:     kube.RowStatusClass(table, row),
+				Cluster:         row.Cluster,
+				Namespace:       ns,
+				ResourceVersion: nestedString(row.Object, "metadata", "resourceVersion"),
+				CreatedClass:    s.ageClass(nestedString(row.Object, "metadata", "creationTimestamp")),
+				CreatedText:     formatTimestamp(nestedString(row.Object, "metadata", "creationTimestamp")),
 			}
 			if single {
 				rv.Key = rowKey(row.Cluster, ns, name)

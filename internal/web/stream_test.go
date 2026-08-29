@@ -14,11 +14,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -91,12 +93,23 @@ type sseEvent struct {
 	at   time.Time
 }
 
-// streamFrame decodes either pinned data payload: ro-table carries g + html,
-// ro-terminal carries g + reason.
+// streamFrame decodes the v2 snapshot/delta/terminal envelope. HTML is a test
+// convenience populated by decodeFrame from either the full snapshot or the
+// fragments in a delta.
 type streamFrame struct {
-	G      string `json:"g"`
-	HTML   string `json:"html"`
-	Reason string `json:"reason"`
+	V        int                  `json:"v"`
+	Kind     string               `json:"kind"`
+	G        string               `json:"g"`
+	Seq      uint64               `json:"seq"`
+	Rev      string               `json:"rev"`
+	RV       string               `json:"rv"`
+	Schema   string               `json:"schema"`
+	HTML     string               `json:"html"`
+	Reason   string               `json:"reason"`
+	Delta    *liveProjectionDelta `json:"delta"`
+	Snapshot *struct {
+		HTML string `json:"html"`
+	} `json:"snapshot"`
 }
 
 type sseStream struct {
@@ -106,29 +119,54 @@ type sseStream struct {
 
 // dialStream GETs a stream URL and returns the raw response (no status
 // assertion — the non-200 taxonomy tests read the code directly).
-func dialStream(t *testing.T, url string) *http.Response {
+func dialStream(t *testing.T, url, generation string) *http.Response {
 	t.Helper()
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTestLiveHeaders(req, generation)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return resp
 }
 
+// assertStreamPreHandshakeResponse pins the cache and representation metadata
+// shared by every exit before the initial snapshot commits SSE. Error writers
+// may choose text/plain (and a 204 has no type), but only a successful stream
+// may advertise text/event-stream.
+func assertStreamPreHandshakeResponse(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("pre-handshake status %d Cache-Control = %q, want no-store", resp.StatusCode, got)
+	}
+	for _, selector := range []string{streamVersionHeader, streamGenerationHeader} {
+		if !headerHasToken(resp.Header.Values("Vary"), selector) {
+			t.Fatalf("pre-handshake status %d Vary = %q, want %s", resp.StatusCode, resp.Header.Values("Vary"), selector)
+		}
+	}
+	if contentType := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		t.Fatalf("pre-handshake status %d advertised SSE Content-Type %q", resp.StatusCode, contentType)
+	}
+}
+
 // openStream dials a stream URL, asserts the 200 handshake, and starts a
 // background SSE parser delivering events on a channel. The body closes at
 // cleanup so the test server can drain its handler.
-func openStream(t *testing.T, url string) *sseStream {
+func openStream(t *testing.T, url, generation string) *sseStream {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	setTestLiveHeaders(req, generation)
 	return openStreamRequest(t, req)
 }
 
-// openStreamRequest is openStream for a caller-built request (the OIDC
-// session-expiry test attaches a session cookie).
+// openStreamRequest is openStream for a fully-built request. Callers attach the
+// explicit v2 negotiation headers plus any cookies or fault-specific headers.
 func openStreamRequest(t *testing.T, req *http.Request) *sseStream {
 	t.Helper()
 	resp, err := http.DefaultClient.Do(req)
@@ -144,6 +182,11 @@ func openStreamRequest(t *testing.T, req *http.Request) *sseStream {
 	t.Cleanup(s.close)
 	go s.read()
 	return s
+}
+
+func setTestLiveHeaders(req *http.Request, generation string) {
+	req.Header.Set(streamVersionHeader, "2")
+	req.Header.Set(streamGenerationHeader, generation)
 }
 
 // waitForOpenWatch polls the fakeapi hub snapshot until at least one
@@ -261,6 +304,19 @@ func decodeFrame(t *testing.T, ev sseEvent) streamFrame {
 	if err := json.Unmarshal([]byte(ev.data), &f); err != nil {
 		t.Fatalf("frame %q does not decode: %v", ev.data, err)
 	}
+	if f.Snapshot != nil {
+		f.HTML = f.Snapshot.HTML
+	} else if f.Delta != nil {
+		var fragments strings.Builder
+		for _, upsert := range f.Delta.Upserts {
+			fragments.WriteString(upsert.RowHTML)
+			fragments.WriteString(upsert.CardHTML)
+		}
+		for _, region := range f.Delta.Regions {
+			fragments.WriteString(region.HTML)
+		}
+		f.HTML = fragments.String()
+	}
 	return f
 }
 
@@ -320,10 +376,10 @@ func TestMergeTableEventDeleteReleasesRows(t *testing.T) {
 // TestStreamHandshakeInitialPush pins the SSE handshake: event-stream
 // headers (Content-Type / no-store / X-Accel-Buffering through the real
 // middleware chain incl. statusWriter flushing) and the initial full push as
-// an `ro-table` frame echoing the client-minted generation verbatim.
+// a v2 snapshot frame echoing the client-minted generation verbatim.
 func TestStreamHandshakeInitialPush(t *testing.T) {
 	ts, _ := newStreamFixture(t)
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=42")
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "42")
 	for header, want := range map[string]string{
 		"Content-Type":      "text/event-stream",
 		"Cache-Control":     "no-store",
@@ -333,9 +389,12 @@ func TestStreamHandshakeInitialPush(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", header, got, want)
 		}
 	}
-	ev := s.requireEvent(t, "ro-table", 5*time.Second)
+	if got := s.resp.Header.Get(streamVersionHeader); got != "2" {
+		t.Fatalf("%s = %q, want 2", streamVersionHeader, got)
+	}
+	ev := s.requireEvent(t, "ro-live", 5*time.Second)
 	frame := decodeFrame(t, ev)
-	if frame.G != "42" {
+	if frame.Kind != "snapshot" || frame.G != "42" {
 		t.Fatalf("generation echo = %q, want the client-minted \"42\"", frame.G)
 	}
 	for _, needle := range []string{"nginx", "my-app", `data-key="test/default/nginx"`} {
@@ -345,21 +404,250 @@ func TestStreamHandshakeInitialPush(t *testing.T) {
 	}
 }
 
+func TestStreamInitialListFailureStaysPreHandshake(t *testing.T) {
+	ts, fake := newStreamFixture(t)
+	arm, err := http.Get(fake.URL + "/__control/fail-lists?mode=500")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = arm.Body.Close()
+	if arm.StatusCode != http.StatusOK {
+		t.Fatalf("arm fail-lists status = %d, want 200", arm.StatusCode)
+	}
+
+	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "list-failure")
+	defer func() { _ = resp.Body.Close() }()
+	assertStreamPreHandshakeResponse(t, resp)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("initial-list failure status = %d, want 502", resp.StatusCode)
+	}
+}
+
+func TestStreamV2NegotiationSnapshotAndTerminal(t *testing.T) {
+	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
+		tuning.idleCap = 100 * time.Millisecond
+		tuning.heartbeat = 10 * time.Millisecond
+	})
+	rawQuery := "g=query-generation&%67=encoded-generation&f=status%3DRunning,Pending"
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream?"+rawQuery, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(streamVersionHeader, "2")
+	req.Header.Set(streamGenerationHeader, "header-generation")
+	s := openStreamRequest(t, req)
+	if got := s.resp.Header.Get(streamVersionHeader); got != "2" {
+		t.Fatalf("response live version = %q, want 2", got)
+	}
+	if got := s.resp.Header.Get(streamGenerationHeader); got != "header-generation" {
+		t.Fatalf("response live generation = %q, want negotiated header generation", got)
+	}
+	vary := strings.Join(s.resp.Header.Values("Vary"), ",")
+	if !strings.Contains(vary, streamVersionHeader) || !strings.Contains(vary, streamGenerationHeader) {
+		t.Fatalf("v2 Vary = %q, want both negotiation headers", vary)
+	}
+
+	snapshot := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second))
+	if snapshot.V != 2 || snapshot.Kind != "snapshot" || snapshot.G != "header-generation" || snapshot.Seq != 1 {
+		t.Fatalf("v2 snapshot identity = %+v", snapshot)
+	}
+	if snapshot.Rev == "" || snapshot.RV == "" || snapshot.Schema == "" || snapshot.Snapshot == nil || !strings.Contains(snapshot.Snapshot.HTML, "nginx") {
+		t.Fatalf("v2 snapshot state is incomplete: %+v", snapshot)
+	}
+
+	terminal := decodeFrame(t, s.requireEvent(t, "ro-live", 2*time.Second))
+	if terminal.V != 2 || terminal.Kind != "terminal" || terminal.G != snapshot.G || terminal.Seq != 2 {
+		t.Fatalf("v2 terminal identity = %+v", terminal)
+	}
+	if terminal.Rev != snapshot.Rev || terminal.Schema != snapshot.Schema || terminal.Reason != "idle" {
+		t.Fatalf("v2 terminal state = %+v, snapshot = %+v", terminal, snapshot)
+	}
+	s.requireClosed(t, time.Second)
+}
+
+func TestNegotiateLiveStreamHeaderContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		rawQuery   string
+		headers    http.Header
+		wantGen    string
+		wantStatus int
+	}{
+		{name: "headers absent", wantStatus: http.StatusBadRequest},
+		{name: "query generation is not negotiation", rawQuery: "g=legacy", wantStatus: http.StatusBadRequest},
+		{name: "generation header alone", rawQuery: "g=legacy", headers: http.Header{streamGenerationHeader: {"ignored"}}, wantStatus: http.StatusBadRequest},
+		{name: "header v2 ignores query duplicates", rawQuery: "g=first&%67=second&bad%ZZ=kept", headers: http.Header{streamVersionHeader: {"2"}, streamGenerationHeader: {"header"}}, wantGen: "header"},
+		{name: "unsupported header", headers: http.Header{streamVersionHeader: {"3"}, streamGenerationHeader: {"header"}}, wantStatus: http.StatusNotAcceptable},
+		{name: "empty explicit version", headers: http.Header{streamVersionHeader: {""}, streamGenerationHeader: {"header"}}, wantStatus: http.StatusNotAcceptable},
+		{name: "missing header generation", headers: http.Header{streamVersionHeader: {"2"}}, wantStatus: http.StatusBadRequest},
+		{name: "duplicate same version header", headers: http.Header{streamVersionHeader: {"2", "2"}, streamGenerationHeader: {"header"}}, wantStatus: http.StatusBadRequest},
+		{name: "duplicate conflicting version header", headers: http.Header{streamVersionHeader: {"2", "3"}, streamGenerationHeader: {"header"}}, wantStatus: http.StatusBadRequest},
+		{name: "comma folded version header", headers: http.Header{streamVersionHeader: {"2, 2"}, streamGenerationHeader: {"header"}}, wantStatus: http.StatusBadRequest},
+		{name: "duplicate same generation header", headers: http.Header{streamVersionHeader: {"2"}, streamGenerationHeader: {"header", "header"}}, wantStatus: http.StatusBadRequest},
+		{name: "duplicate conflicting generation header", headers: http.Header{streamVersionHeader: {"2"}, streamGenerationHeader: {"header", "other"}}, wantStatus: http.StatusBadRequest},
+		{name: "comma folded generation header", headers: http.Header{streamVersionHeader: {"2"}, streamGenerationHeader: {"header,other"}}, wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/_stream", nil)
+			req.URL.RawQuery = tc.rawQuery
+			for key, values := range tc.headers {
+				for _, value := range values {
+					req.Header.Add(key, value)
+				}
+			}
+			got, status := negotiateLiveStream(req)
+			if status != tc.wantStatus || got.gen != tc.wantGen {
+				t.Fatalf("negotiation = {gen:%q}, status %d; want {gen:%q}, status %d", got.gen, status, tc.wantGen, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestStreamNegotiationRejectsInvalidGeneration(t *testing.T) {
+	ts, _ := newStreamFixture(t)
+	path := ts.URL + "/clusters/test/namespaces/default/pods/_stream"
+
+	request := func(version, generation, query string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, path+query, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version != "" {
+			req.Header.Set(streamVersionHeader, version)
+		}
+		if generation != "" {
+			req.Header.Set(streamGenerationHeader, generation)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = resp.Body.Close() })
+		assertStreamPreHandshakeResponse(t, resp)
+		return resp
+	}
+
+	if got := request("2", "", "").StatusCode; got != http.StatusBadRequest {
+		t.Fatalf("v2 missing generation status = %d, want 400", got)
+	}
+	if got := request("3", "short", "").StatusCode; got != http.StatusNotAcceptable {
+		t.Fatalf("unsupported version status = %d, want 406", got)
+	}
+	long := strings.Repeat("g", streamMaxGenerationBytes+1)
+	if got := request("2", long, "").StatusCode; got != http.StatusBadRequest {
+		t.Fatalf("v2 long generation status = %d, want 400", got)
+	}
+	if got := request("2", "bad generation", "").StatusCode; got != http.StatusBadRequest {
+		t.Fatalf("v2 non-token generation status = %d, want 400", got)
+	}
+	if got := request("", "", "?g="+long).StatusCode; got != http.StatusBadRequest {
+		t.Fatalf("missing v2 headers with query generation status = %d, want 400", got)
+	}
+}
+
+func TestValidLiveGeneration(t *testing.T) {
+	for _, gen := range []string{"550e8400-e29b-41d4-a716-446655440000", "AbC_123-xyz", "token.~"} {
+		if !validLiveGeneration(gen) {
+			t.Errorf("valid generation %q rejected", gen)
+		}
+	}
+	for _, gen := range []string{"", "comma,separated", "has space", "slash/value", "é", strings.Repeat("a", streamMaxGenerationBytes+1)} {
+		if validLiveGeneration(gen) {
+			t.Errorf("invalid generation %q accepted", gen)
+		}
+	}
+}
+
+func TestEncodeStreamPayloadIsBoundedAndDoesNotEscapeHTML(t *testing.T) {
+	payload := streamLiveEnvelope{V: 2, Kind: "snapshot", G: "g", Seq: 1, Snapshot: &streamLiveSnapshot{HTML: "<div data-x=\"a&b\">line 1\nline 2</div>"}}
+	data, err := encodeStreamPayload(payload, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(data)
+	if !strings.Contains(encoded, `<div data-x=\"a&b\">`) {
+		t.Fatalf("HTML was escaped in stream JSON: %s", encoded)
+	}
+	if strings.Contains(encoded, `\u003c`) || strings.Contains(encoded, `\u003e`) || strings.Contains(encoded, `\u0026`) {
+		t.Fatalf("stream JSON contains HTML escapes: %s", encoded)
+	}
+	if strings.ContainsAny(encoded, "\r\n") || !strings.Contains(encoded, `line 1\nline 2`) {
+		t.Fatalf("stream JSON is not a single escaped-control line: %q", encoded)
+	}
+	if _, err := encodeStreamPayload(payload, len(data)-1); !errors.Is(err, errStreamEventTooLarge) {
+		t.Fatalf("oversized payload error = %v, want errStreamEventTooLarge", err)
+	}
+}
+
+func TestStreamHeartbeatComment(t *testing.T) {
+	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
+		tuning.heartbeat = 10 * time.Millisecond
+		tuning.idleCap = 150 * time.Millisecond
+	})
+	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "heartbeat")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d, want 200", resp.StatusCode)
+	}
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("stream ended before heartbeat: %v", err)
+		}
+		if line == ": heartbeat\n" {
+			return
+		}
+		if strings.Contains(line, `"reason":"idle"`) {
+			t.Fatal("idle terminal arrived before heartbeat")
+		}
+	}
+}
+
+func TestStreamEventWindowIsFixedSize(t *testing.T) {
+	var window streamEventWindow
+	now := time.Now()
+	for range 100_000 {
+		window.note(now)
+	}
+	if window.count != streamChurnEvents || len(window.times) != streamChurnEvents {
+		t.Fatalf("event window retained %d/%d timestamps, want fixed %d", window.count, len(window.times), streamChurnEvents)
+	}
+	if !window.high(now) {
+		t.Fatal("100,000 simultaneous events were not classified as high churn")
+	}
+	if window.high(now.Add(streamChurnWindow)) {
+		t.Fatal("events at the trailing-window boundary remained high churn")
+	}
+}
+
+func TestStreamRenderRequestClearsRawPathAndKeepsQuery(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/_stream?f=status%3DRunning,Pending", nil)
+	req.URL.RawPath = "/clusters/test/namespaces/default/pods/%5fstream"
+	renderReq := streamRenderRequest(req)
+	if renderReq.URL.RequestURI() != "/clusters/test/namespaces/default/pods?f=status%3DRunning,Pending" || renderReq.URL.RawPath != "" {
+		t.Fatalf("render URI = %q rawPath=%q", renderReq.URL.RequestURI(), renderReq.URL.RawPath)
+	}
+}
+
 // TestStreamModifiedEventPushes pins the core loop: a MODIFIED watch event
 // merges into the snapshot and the next push carries the changed cell — with
 // `?sort=` applied at RENDER time (the snapshot stays raw): sort=Name flips
 // the fixture's nginx-first order to my-app first.
 func TestStreamModifiedEventPushes(t *testing.T) {
 	ts, fake := newStreamFixture(t)
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=1&sort=Name")
-	initial := decodeFrame(t, s.requireEvent(t, "ro-table", 5*time.Second))
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?sort=Name", "1")
+	initial := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second))
 	myApp := strings.Index(initial.HTML, `data-key="test/default/my-app"`)
 	nginx := strings.Index(initial.HTML, `data-key="test/default/nginx"`)
 	if myApp < 0 || nginx < 0 || myApp > nginx {
 		t.Fatalf("sort=Name not applied at render: my-app@%d nginx@%d", myApp, nginx)
 	}
 	postStreamScript(t, fake.URL, `{"events":[`+podModifiedEvent("Error", 0)+`]}`)
-	push := decodeFrame(t, s.requireEvent(t, "ro-table", 3*time.Second))
+	push := decodeFrame(t, s.requireEvent(t, "ro-live", 3*time.Second))
 	if !strings.Contains(push.HTML, "Error") {
 		t.Fatal("push after MODIFIED is missing the changed Status cell")
 	}
@@ -373,8 +661,8 @@ func TestStreamModifiedEventPushes(t *testing.T) {
 // dirty or push the table. The same watch must still deliver the next data event.
 func TestStreamBookmarkAdvancesSilently(t *testing.T) {
 	ts, fake := newStreamFixture(t)
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=bookmark")
-	s.requireEvent(t, "ro-table", 5*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "bookmark")
+	s.requireEvent(t, "ro-live", 5*time.Second)
 
 	// BOOKMARK is a non-replayable control frame, so arm it only after the
 	// upstream watch is open. A regressed data-path treatment schedules a push
@@ -384,7 +672,7 @@ func TestStreamBookmarkAdvancesSilently(t *testing.T) {
 	s.requireQuiet(t, 750*time.Millisecond)
 
 	postStreamScript(t, fake.URL, `{"events":[`+podModifiedEvent("Error", 0)+`]}`)
-	after := decodeFrame(t, s.requireEvent(t, "ro-table", 3*time.Second))
+	after := decodeFrame(t, s.requireEvent(t, "ro-live", 3*time.Second))
 	if !strings.Contains(after.HTML, "Error") {
 		t.Fatal("data event after BOOKMARK did not update the Live table")
 	}
@@ -395,10 +683,10 @@ func TestStreamBookmarkAdvancesSilently(t *testing.T) {
 // 300ms floor after the initial push, and nothing further follows.
 func TestStreamCoalescesBurst(t *testing.T) {
 	ts, fake := newStreamFixture(t)
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=2")
-	initial := s.requireEvent(t, "ro-table", 5*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "2")
+	initial := s.requireEvent(t, "ro-live", 5*time.Second)
 	postStreamScript(t, fake.URL, `{"events":[`+podModifiedEvent("Error", 0)+`,`+podModifiedEvent("CrashLoopBackOff", 50)+`]}`)
-	push := s.requireEvent(t, "ro-table", 3*time.Second)
+	push := s.requireEvent(t, "ro-live", 3*time.Second)
 	if gap := push.at.Sub(initial.at); gap < 280*time.Millisecond {
 		t.Fatalf("coalesced push arrived %s after the initial push, violating the 300ms floor", gap)
 	}
@@ -415,8 +703,8 @@ func TestStreamCoalescesBurst(t *testing.T) {
 // transport/scheduler jitter allowance on top).
 func TestStreamChurnPacing(t *testing.T) {
 	ts, fake := newStreamFixture(t)
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=3")
-	initial := s.requireEvent(t, "ro-table", 5*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "3")
+	initial := s.requireEvent(t, "ro-live", 5*time.Second)
 
 	var events []string
 	for i := 0; i < 26; i++ {
@@ -437,7 +725,7 @@ collect:
 			if !ok {
 				t.Fatal("stream closed during churn")
 			}
-			if ev.name != "ro-table" {
+			if ev.name != "ro-live" {
 				t.Fatalf("unexpected %s during churn: %s", ev.name, ev.data)
 			}
 			times = append(times, ev.at)
@@ -475,24 +763,24 @@ collect:
 // removes it — the snapshot itself never drops non-matching rows.
 func TestStreamFilterTransitions(t *testing.T) {
 	ts, fake := newStreamFixture(t)
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=7&f=Status:Error")
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?f=Status:Error", "7")
 	const nginxKey = `data-key="test/default/nginx"`
 
-	initial := decodeFrame(t, s.requireEvent(t, "ro-table", 5*time.Second))
+	initial := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second))
 	if strings.Contains(initial.HTML, nginxKey) {
 		t.Fatal("initial push shows nginx although it does not match f=Status:Error")
 	}
 
 	// non-matching → matching: nginx turns Error and must APPEAR.
 	postStreamScript(t, fake.URL, `{"events":[`+podModifiedEvent("Error", 0)+`]}`)
-	appeared := decodeFrame(t, s.requireEvent(t, "ro-table", 3*time.Second))
+	appeared := decodeFrame(t, s.requireEvent(t, "ro-live", 3*time.Second))
 	if !strings.Contains(appeared.HTML, nginxKey) {
 		t.Fatal("nginx did not appear after MODIFY made it match the active filter")
 	}
 
 	// matching → non-matching: nginx recovers and must DISAPPEAR.
 	postStreamScript(t, fake.URL, fmt.Sprintf(`{"events":[{"path":%q,"type":"MODIFIED","cells":["nginx","1/1","Running","0","10m"],"object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"nginx","namespace":"default"},"status":{"phase":"Running"}}}]}`, streamPodsPath))
-	gone := decodeFrame(t, s.requireEvent(t, "ro-table", 3*time.Second))
+	gone := decodeFrame(t, s.requireEvent(t, "ro-live", 3*time.Second))
 	if strings.Contains(gone.HTML, nginxKey) {
 		t.Fatal("nginx still shown after MODIFY made it stop matching the active filter")
 	}
@@ -518,8 +806,8 @@ func TestStreamGoneRelists(t *testing.T) {
 		}
 		mu.Unlock()
 	})
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=4")
-	s.requireEvent(t, "ro-table", 5*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "4")
+	s.requireEvent(t, "ro-live", 5*time.Second)
 
 	// The GONE must land on an OPEN watch (control entries never replay):
 	// wait for the server's first watch connect before posting.
@@ -528,7 +816,7 @@ func TestStreamGoneRelists(t *testing.T) {
 	goneArmed = true
 	mu.Unlock()
 	postStreamScript(t, fake.URL, fmt.Sprintf(`{"events":[{"path":%q,"type":"GONE"}]}`, streamPodsPath))
-	relist := s.requireEvent(t, "ro-table", 3*time.Second) // the relist full push, NOT ro-terminal
+	relist := s.requireEvent(t, "ro-live", 3*time.Second) // the relist snapshot, not a terminal envelope
 	if !strings.Contains(decodeFrame(t, relist).HTML, "nginx") {
 		t.Fatal("relist push is missing the listed rows")
 	}
@@ -541,7 +829,7 @@ func TestStreamGoneRelists(t *testing.T) {
 
 	// The re-watch from the fresh RV is live: a new MODIFY still pushes.
 	postStreamScript(t, fake.URL, `{"events":[`+podModifiedEvent("Error", 0)+`]}`)
-	after := decodeFrame(t, s.requireEvent(t, "ro-table", 3*time.Second))
+	after := decodeFrame(t, s.requireEvent(t, "ro-live", 3*time.Second))
 	if !strings.Contains(after.HTML, "Error") {
 		t.Fatal("stream stopped delivering changes after the 410 relist")
 	}
@@ -552,8 +840,9 @@ func TestStreamGoneRelists(t *testing.T) {
 // client falls back to polling silently.
 func TestStreamWatchlessKind204(t *testing.T) {
 	ts, _ := newStreamFixture(t)
-	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=1&apiVersion=metrics.k8s.io/v1beta1")
+	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?apiVersion=metrics.k8s.io/v1beta1", "watchless")
 	defer func() { _ = resp.Body.Close() }()
+	assertStreamPreHandshakeResponse(t, resp)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("watch-less kind stream status = %d, want 204", resp.StatusCode)
 	}
@@ -571,11 +860,43 @@ func TestStreamScope404(t *testing.T) {
 		"/clusters/test/namespaces/default/pods,services/_stream",
 		"/clusters/test/namespaces/_all/_all/_stream",
 	} {
-		resp := dialStream(t, ts.URL+path+"?g=1")
+		resp := dialStream(t, ts.URL+path, "invalid-scope")
 		_ = resp.Body.Close()
+		assertStreamPreHandshakeResponse(t, resp)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s status = %d, want 404", path, resp.StatusCode)
 		}
+	}
+
+	for _, path := range []string{
+		"/clusters/missing/namespaces/default/pods/_stream",
+		"/clusters/test/namespaces/default/not-a-resource/_stream",
+	} {
+		resp := dialStream(t, ts.URL+path, "missing-resource")
+		_ = resp.Body.Close()
+		assertStreamPreHandshakeResponse(t, resp)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404", path, resp.StatusCode)
+		}
+	}
+}
+
+func TestStreamForbiddenNamespaceStaysPreHandshake(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:              8080,
+		Clusters:          []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:      "dark",
+		ExcludeNamespaces: []*regexp.Regexp{regexp.MustCompile(`^secret$`)},
+	})
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/secret/pods/_stream", "forbidden-namespace")
+	defer func() { _ = resp.Body.Close() }()
+	assertStreamPreHandshakeResponse(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("forbidden namespace stream status = %d, want 403", resp.StatusCode)
 	}
 }
 
@@ -586,7 +907,7 @@ func TestStreamCapAndRelease(t *testing.T) {
 	ts, _ := newStreamFixture(t)
 	streams := make([]*http.Response, 0, streamCapMax)
 	for i := 0; i < streamCapMax; i++ {
-		resp := dialStream(t, fmt.Sprintf("%s/clusters/test/namespaces/default/pods/_stream?g=%d", ts.URL, i))
+		resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", fmt.Sprintf("normal-%d", i))
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("stream %d status = %d, want 200", i, resp.StatusCode)
 		}
@@ -598,8 +919,9 @@ func TestStreamCapAndRelease(t *testing.T) {
 		}
 	})
 
-	over := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=33")
+	over := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "normal-over-cap")
 	_ = over.Body.Close()
+	assertStreamPreHandshakeResponse(t, over)
 	if over.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("33rd stream status = %d, want 429", over.StatusCode)
 	}
@@ -611,7 +933,7 @@ func TestStreamCapAndRelease(t *testing.T) {
 	_ = streams[0].Body.Close()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		retry := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=34")
+		retry := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "normal-retry")
 		status := retry.StatusCode
 		_ = retry.Body.Close()
 		if status == http.StatusOK {
@@ -624,15 +946,45 @@ func TestStreamCapAndRelease(t *testing.T) {
 	}
 }
 
+func TestDemoStreamCapacityAdmitsMoreThanNormalCap(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:         8080,
+		Demo:         true,
+		Clusters:     []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme: "dark",
+	})
+	if got := cap(app.streamSlots); got != demoStreamCapMax || got < 256 {
+		t.Fatalf("demo Live capacity = %d, want %d and at least 256", got, demoStreamCapMax)
+	}
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	streams := make([]*http.Response, 0, streamCapMax+1)
+	t.Cleanup(func() {
+		for _, resp := range streams {
+			_ = resp.Body.Close()
+		}
+	})
+	for i := 0; i <= streamCapMax; i++ {
+		resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", fmt.Sprintf("demo-%d", i))
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			t.Fatalf("demo stream %d status = %d, want 200 beyond the normal %d-stream cap", i+1, resp.StatusCode, streamCapMax)
+		}
+		streams = append(streams, resp)
+	}
+}
+
 // TestStreamIdleTerminal pins the server-local idle cap: a stream with no
-// watch data for the cap emits `ro-terminal` reason "idle" and closes.
+// watch data for the cap emits a terminal `ro-live` envelope and closes.
 func TestStreamIdleTerminal(t *testing.T) {
 	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
 		tuning.idleCap = 250 * time.Millisecond
 	})
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=5")
-	s.requireEvent(t, "ro-table", 5*time.Second)
-	term := s.requireEvent(t, "ro-terminal", 3*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "5")
+	s.requireEvent(t, "ro-live", 5*time.Second)
+	term := s.requireEvent(t, "ro-live", 3*time.Second)
 	frame := decodeFrame(t, term)
 	if frame.Reason != "idle" {
 		t.Fatalf("terminal reason = %q, want idle", frame.Reason)
@@ -662,8 +1014,8 @@ func TestStreamEOFStormTerminal(t *testing.T) {
 		tuning.backoffBase = 20 * time.Millisecond
 		tuning.backoffCap = 100 * time.Millisecond
 	})
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=6")
-	s.requireEvent(t, "ro-table", 5*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "6")
+	s.requireEvent(t, "ro-live", 5*time.Second)
 
 	// Five EOFs, each landing while a (re-)watch is open: spacing 400ms vs a
 	// ≤100ms re-watch delay leaves a wide margin. Every killed attempt ends
@@ -678,7 +1030,7 @@ func TestStreamEOFStormTerminal(t *testing.T) {
 	}
 	postStreamScript(t, fake.URL, `{"events":[`+strings.Join(eofs, ",")+`]}`)
 
-	term := s.requireEvent(t, "ro-terminal", 6*time.Second)
+	term := s.requireEvent(t, "ro-live", 6*time.Second)
 	if reason := decodeFrame(t, term).Reason; reason != "watch-failed" {
 		t.Fatalf("terminal reason = %q, want watch-failed", reason)
 	}
@@ -720,14 +1072,20 @@ func TestStreamBackoffSchedule(t *testing.T) {
 func TestDefaultStreamTuning(t *testing.T) {
 	got := defaultStreamTuning()
 	want := streamTuning{
-		idleCap:         30 * time.Minute,
-		backoffBase:     250 * time.Millisecond,
-		backoffCap:      10 * time.Second,
-		healthyReset:    time.Minute,
-		immediateWindow: time.Second,
-		metricsPoll:     30 * time.Second,
-		maxLifetime:     12 * time.Hour,
-		writeTimeout:    30 * time.Second,
+		idleCap:               30 * time.Minute,
+		backoffBase:           250 * time.Millisecond,
+		backoffCap:            10 * time.Second,
+		healthyReset:          time.Minute,
+		immediateWindow:       time.Second,
+		metricsPoll:           30 * time.Second,
+		maxLifetime:           12 * time.Hour,
+		writeTimeout:          30 * time.Second,
+		heartbeat:             20 * time.Second,
+		checkpointInterval:    10 * time.Minute,
+		checkpointDeltas:      2048,
+		handshakeTimeout:      15 * time.Second,
+		initialMetricsTimeout: 10 * time.Second,
+		metricsRequestTimeout: 10 * time.Second,
 	}
 	if got != want {
 		t.Fatalf("default stream tuning = %#v, want %#v", got, want)
@@ -759,9 +1117,9 @@ func TestStreamAuthExpiryTerminal(t *testing.T) {
 		t.Fatalf("arming watch-401 status = %d", resp.StatusCode)
 	}
 
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=8")
-	s.requireEvent(t, "ro-table", 5*time.Second)
-	term := s.requireEvent(t, "ro-terminal", 3*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "8")
+	s.requireEvent(t, "ro-live", 5*time.Second)
+	term := s.requireEvent(t, "ro-live", 3*time.Second)
 	if reason := decodeFrame(t, term).Reason; reason != "auth" {
 		t.Fatalf("terminal reason = %q, want auth", reason)
 	}
@@ -769,7 +1127,7 @@ func TestStreamAuthExpiryTerminal(t *testing.T) {
 }
 
 // TestStreamShutdownTerminal pins the shutdown branch: cancelling the
-// server's base context (the New() ctx) sends `ro-terminal` reason
+// server's base context (the New() ctx) sends a terminal `ro-live` reason
 // "shutdown" to open streams before they close.
 func TestStreamShutdownTerminal(t *testing.T) {
 	fake := newServerFakeAPI(t)
@@ -782,10 +1140,10 @@ func TestStreamShutdownTerminal(t *testing.T) {
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
 
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=9")
-	s.requireEvent(t, "ro-table", 5*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "9")
+	s.requireEvent(t, "ro-live", 5*time.Second)
 	cancel()
-	term := s.requireEvent(t, "ro-terminal", 3*time.Second)
+	term := s.requireEvent(t, "ro-live", 3*time.Second)
 	if reason := decodeFrame(t, term).Reason; reason != "shutdown" {
 		t.Fatalf("terminal reason = %q, want shutdown", reason)
 	}
@@ -803,9 +1161,9 @@ func TestStreamMaxLifetimeTerminal(t *testing.T) {
 	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
 		tuning.maxLifetime = 300 * time.Millisecond
 	})
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=12")
-	s.requireEvent(t, "ro-table", 5*time.Second)
-	term := s.requireEvent(t, "ro-terminal", 3*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "12")
+	s.requireEvent(t, "ro-live", 5*time.Second)
+	term := s.requireEvent(t, "ro-live", 3*time.Second)
 	if reason := decodeFrame(t, term).Reason; reason != "idle" {
 		t.Fatalf("terminal reason = %q, want idle", reason)
 	}
@@ -816,7 +1174,7 @@ func TestStreamMaxLifetimeTerminal(t *testing.T) {
 // (security review, waves E+F): in OIDC mode the connect-time cookie check is
 // the ONLY auth check an SSE stream ever gets, so the stream must not outlive
 // the session it was authorized with — at the session's Expires instant the
-// server emits `ro-terminal` reason "auth" and closes. The expiry is
+// server emits a terminal `ro-live` reason "auth" and closes. The expiry is
 // injectable through the session cookie itself (Expires is unix seconds, so
 // the shortest deterministic TTL is ~2s).
 func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
@@ -842,15 +1200,16 @@ func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=13", nil)
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: value})
+	setTestLiveHeaders(req, "13")
 
 	s := openStreamRequest(t, req)
-	s.requireEvent(t, "ro-table", 5*time.Second)
-	term := s.requireEvent(t, "ro-terminal", 4*time.Second)
+	s.requireEvent(t, "ro-live", 5*time.Second)
+	term := s.requireEvent(t, "ro-live", 4*time.Second)
 	if reason := decodeFrame(t, term).Reason; reason != "auth" {
 		t.Fatalf("terminal reason = %q, want auth", reason)
 	}
@@ -873,6 +1232,10 @@ func TestStreamWriteDeadlineFreesWedgedSlot(t *testing.T) {
 	t.Cleanup(fake.Close)
 	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
 	app.streamTuning.writeTimeout = 250 * time.Millisecond
+	// V2 normally emits a tiny row delta. Force every changed projection to a
+	// full checkpoint so the non-reading peer exercises a genuinely blocked
+	// downstream write rather than an obsolete v1 full-table assumption.
+	app.streamTuning.checkpointDeltas = 1
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
 
@@ -884,8 +1247,13 @@ func TestStreamWriteDeadlineFreesWedgedSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		if err := tcp.SetReadBuffer(1024); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(func() { _ = conn.Close() })
-	if _, err := fmt.Fprintf(conn, "GET /clusters/test/namespaces/big/pods/_stream?g=wedge HTTP/1.1\r\nHost: readout-test\r\n\r\n"); err != nil {
+	if _, err := fmt.Fprintf(conn, "GET /clusters/test/namespaces/big/pods/_stream HTTP/1.1\r\nHost: readout-test\r\n%s: 2\r\n%s: wedge\r\n\r\n", streamVersionHeader, streamGenerationHeader); err != nil {
 		t.Fatal(err)
 	}
 
@@ -918,8 +1286,8 @@ func TestStreamMetricsJoinSubPoll(t *testing.T) {
 	ts, fake := newStreamFixture(t, func(tuning *streamTuning) {
 		tuning.metricsPoll = 150 * time.Millisecond
 	})
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=10&join=metrics")
-	initial := decodeFrame(t, s.requireEvent(t, "ro-table", 5*time.Second))
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?join=metrics", "10")
+	initial := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second))
 	if !strings.Contains(initial.HTML, "250m") {
 		t.Fatal("initial push is missing the merged CPU usage cell (250m)")
 	}
@@ -928,7 +1296,7 @@ func TestStreamMetricsJoinSubPoll(t *testing.T) {
 
 	deadline := time.Now().Add(4 * time.Second)
 	for {
-		ev := s.requireEvent(t, "ro-table", 4*time.Second)
+		ev := s.requireEvent(t, "ro-live", 4*time.Second)
 		if strings.Contains(decodeFrame(t, ev).HTML, "900m") {
 			return
 		}
@@ -943,8 +1311,8 @@ func TestStreamMetricsJoinSubPoll(t *testing.T) {
 // in the duration histogram (a 30-minute stream is not request latency).
 func TestStreamExcludedFromDurationHistogram(t *testing.T) {
 	ts, _ := newStreamFixture(t)
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream?g=11")
-	s.requireEvent(t, "ro-table", 5*time.Second)
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "11")
+	s.requireEvent(t, "ro-live", 5*time.Second)
 	s.close() // end the stream; the middleware records it when the handler returns
 
 	const routeLabel = `path="/clusters/{cluster}/namespaces/{namespace}/{plural}/_stream"`

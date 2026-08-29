@@ -5,8 +5,8 @@
 // top-level execution order.
 //
 // IMPORT ORDER (load-bearing):
-//   1. ./htmx-config FIRST -- it sets htmx.config (globalViewTransitions,
-//      reduced-motion-aware) at the top of the bundle body. The bundle loads
+//   1. ./htmx-config FIRST -- it disables htmx globalViewTransitions at the top
+//      of the bundle body. The bundle loads
 //      after htmx.min.js but BEFORE htmx walks the DOM, so the config must be set
 //      before any other module's body runs (none of them touch htmx.config, but
 //      the FIRST-import contract keeps it unambiguous + future-proof).
@@ -22,8 +22,9 @@
 //      front-run the lifecycle orchestration). Idempotent at load.
 //   4. ./init LAST -- the resident htmx-lifecycle orchestration (the sort-write
 //      hook, the afterSwap pipeline, the body-swap teardown, the history-restore
-//      repaint) + the idempotent runInit chain on DOMContentLoaded / htmx:load /
-//      afterSettle / resize. It depends on the dispatcher already being live.
+//      repaint) + the idempotent runInit chain on DOMContentLoaded / successful
+//      body afterSwap / afterSettle / resize. It depends on the dispatcher
+//      already being live.
 //
 // Leaf feature modules with module-load side effects (theme's matchMedia
 // listener, stale/skeleton's own document listeners, the window debug seams

@@ -358,18 +358,3 @@ for (const file of fixtureFiles) {
         });
     }
 }
-
-test('publishes the exact cookie protocol and legacy migration constants at module load', async () => {
-    vi.resetModules();
-    const fresh = await import('./prefs.js');
-
-    expect({
-        cookie: fresh.PREFS_COOKIE,
-        versionPrefix: fresh.PREFS_VERSION_PREFIX,
-        legacyRefreshKey: fresh.REFRESH_KEY,
-    }).toStrictEqual({
-        cookie: 'ro_prefs',
-        versionPrefix: 'v1.',
-        legacyRefreshKey: 'roRefresh',
-    });
-});

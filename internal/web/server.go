@@ -90,8 +90,8 @@ type Server struct {
 	streamSlots chan struct{}
 
 	// shutdownCh mirrors the New() context's Done channel: when the process
-	// is shutting down, open Live streams emit `event: ro-terminal` (reason
-	// "shutdown") and close instead of dying mid-frame.
+	// is shutting down, open Live streams emit a terminal `event: ro-live`
+	// envelope (reason "shutdown") and close instead of dying mid-frame.
 	shutdownCh <-chan struct{}
 }
 
@@ -135,7 +135,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		listBudget:         listFanoutBudget,
 		searchBudget:       searchFanoutBudget,
 		streamTuning:       defaultStreamTuning(),
-		streamSlots:        make(chan struct{}, streamCapMax),
+		streamSlots:        make(chan struct{}, liveStreamCapacity(cfg.Demo)),
 		shutdownCh:         ctx.Done(),
 	}
 	// Wire domain metrics: the kube Manager bakes the per-cluster request
@@ -150,6 +150,13 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	s.warnUntrustedHeaderProxy()
 	s.warnSessionTokenDeniesViewers()
 	return s, nil
+}
+
+func liveStreamCapacity(demo bool) int {
+	if demo {
+		return demoStreamCapMax
+	}
+	return streamCapMax
 }
 
 // warnUntrustedHeaderProxy warns at startup when headers auth mode is on but no
@@ -284,7 +291,7 @@ func warnSessionTokenDeniesViewers(passthrough bool, clusters []*kube.Cluster) {
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.hostAllowlist(s.readOnly(s.sameOrigin(s.securityHeaders(s.observeMetrics(s.auth.Middleware(s.mux))))))
+	return s.hostAllowlist(s.readOnly(s.sameOrigin(s.securityHeaders(s.observeMetrics(compressResponses(s.auth.Middleware(s.mux)))))))
 }
 
 func (s *Server) routes() {

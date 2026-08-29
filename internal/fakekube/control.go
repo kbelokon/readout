@@ -25,13 +25,20 @@ package fakekube
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 )
 
 const controlPrefix = "/__control/"
+
+// watchScriptMaxBytes bounds the whole deterministic mutation request before
+// decoding. Per-event and cumulative owned-buffer budgets are enforced again
+// after canonical serialization by prepareScriptEvent/enqueueEvents.
+const watchScriptMaxBytes = 4 << 20
 
 // controlState carries the toggles the control surface flips.
 type controlState struct {
@@ -103,31 +110,56 @@ func (s *Server) handleWatch401(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleWatchScript(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusOK, s.watches.snapshot())
+		writeJSON(w, http.StatusOK, s.watches.snapshot(s.store))
 		return
 	}
 	var script struct {
 		Events []ScriptEvent `json:"events"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&script); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, watchScriptMaxBytes)
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&script); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "watch script body is too large"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "parse script: " + err.Error()})
 		return
 	}
-	// Validate the WHOLE batch up front so a malformed entry rejects the
-	// entire script before any mutation lands (no partial application). Apply
-	// re-validates each event, but that pass is redundant here and keeps the
-	// in-process and HTTP paths on one validate-then-enqueue primitive.
-	for i := range script.Events {
-		if err := s.validateScriptEvent(&script.Events[i]); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "watch script body is too large"})
 			return
 		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "watch script must contain one JSON document"})
+		return
 	}
+	// Canonicalize and validate the WHOLE batch up front so malformed,
+	// non-serializable, delayed-too-long, and oversized entries reject the entire
+	// script before mutation. enqueueEvents then performs one atomic cumulative
+	// byte/count admission for the prepared batch.
+	prepared := make([]preparedScriptEvent, len(script.Events))
 	for i := range script.Events {
-		if err := s.Apply(script.Events[i]); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		event, err := s.prepareScriptEvent(script.Events[i])
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errWatchEventTooLarge) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			writeJSON(w, status, map[string]any{"error": err.Error()})
 			return
 		}
+		prepared[i] = event
+	}
+	if err := s.enqueueEvents(prepared); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errWatchPendingLimit) {
+			status = http.StatusTooManyRequests
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error()})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"queued": len(script.Events)})
 }
@@ -138,10 +170,31 @@ func (s *Server) handleReset(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.watches.reset()
-	s.store.replaceWith(fresh)
+	s.resetWithStore(fresh, nil)
 	s.ctrl.reset()
 	writeJSON(w, http.StatusOK, map[string]any{"reset": true})
+}
+
+// resetWithStore is the reset transaction. Every watcher/apply/snapshot path
+// uses watches.mu -> store.mu; holding both across watch-cache clearing and the
+// store pointer swap prevents a reconnect or delayed apply from binding an old
+// listState into the new generation. barrier is nil in production and gives the
+// race test a deterministic observation point while both locks are held.
+func (s *Server) resetWithStore(fresh *store, barrier func()) {
+	s.watches.mu.Lock()
+	defer s.watches.mu.Unlock()
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+
+	s.watches.resetLocked()
+	if barrier != nil {
+		barrier()
+	}
+	s.store.discovery = fresh.discovery
+	s.store.objects = fresh.objects
+	s.store.logs = fresh.logs
+	s.store.lists = fresh.lists
+	s.store.rv = fresh.rv
 }
 
 // serveListFailure renders the armed fail-lists mode as a real apiserver

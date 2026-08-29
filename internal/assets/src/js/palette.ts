@@ -554,9 +554,6 @@ export function closePalette(): void {
 // delegated mirror of that return).
 
 export const paletteBindings: Binding[] = [
-    // ⌘K palette result row: a click on a result row activates it (navigate or
-    // run its named action, then close). FIRST so a click inside the open
-    // palette never falls through to a page handler. (C1 head, returned.)
     {
         event: 'click',
         selector: '[data-ro-action="pick-palette-row"]',
@@ -567,8 +564,6 @@ export const paletteBindings: Binding[] = [
             return true;
         },
     },
-    // The read-only topbar search box ([data-ro-palette-open]) opens the palette on
-    // click instead of typing inline. (C1, returned.)
     {
         event: 'click',
         selector: '[data-ro-palette-open]',
@@ -579,8 +574,6 @@ export const paletteBindings: Binding[] = [
             return true;
         },
     },
-    // The search page's "Refine · ⌘K" button: open the palette PREFILLED
-    // with the query the page searched (server-baked data-query). (C1, returned.)
     {
         event: 'click',
         selector: '[data-ro-search-refine]',
@@ -591,10 +584,6 @@ export const paletteBindings: Binding[] = [
             return true;
         },
     },
-    // A click on the palette backdrop ITSELF (the dimmed area outside the panel)
-    // closes it, like Esc. A click inside the panel does not match. The selector
-    // is the backdrop root id; the handler still verifies that the original
-    // target is that matched root, so a descendant click does NOT close it.
     {
         event: 'click',
         selector: `#${PALETTE_ID}`,
@@ -607,8 +596,6 @@ export const paletteBindings: Binding[] = [
             return false;
         },
     },
-    // ⌘K palette query box: re-render the grouped rows fuzzy-matched + ranked
-    // against the label, re-seating the active row. (Monolith input head, returned.)
     {
         event: 'input',
         selector: '#ro-palette-input',
@@ -618,13 +605,6 @@ export const paletteBindings: Binding[] = [
             return true;
         },
     },
-    // ⌘K / Ctrl+K chord opens the palette from anywhere (ignored with Alt/Shift,
-    // so an unrelated OS/browser shortcut is never hijacked). The palette is
-    // exclusive: an open "?" overlay or row menu closes FIRST so one Esc later
-    // closes exactly one surface. No selector (it keys off the chord, not a
-    // delegated target). Does NOT stop: the still-resident gesture keydown (K3)
-    // returns on the modifier chord on its own, and the filter editor's keydown
-    // is unaffected -- mirroring the monolith's separate listeners.
     {
         event: 'keydown',
         handler: (event) => {
@@ -642,22 +622,13 @@ export const paletteBindings: Binding[] = [
             }
         },
     },
-    // Palette-open keyboard model (Esc/Arrow/Enter/Tab). Acts ONLY while the
-    // palette is open AND the target is not the filter editor: in the monolith
-    // the filter-input keydown branch RETURNED before this palette branch, so an
-    // Escape with focus in #ro-filter-input routed to the filter handler and
-    // never reached closePalette (compound case 4). The still-resident filter
-    // keydown listener keeps owning #ro-filter-input keys; this binding excludes
-    // that target so the focus-routed Escape semantics are byte-identical. No
-    // stop: the gesture keydown (K3) is kept inert by keyboardSurfaceBusy()
-    // (palette `.open`), the real decoupler.
     {
         event: 'keydown',
         handler: (event) => {
             const e = event as KeyboardEvent;
             const target = e.target as Element | null;
             if (target && (target as HTMLElement).id === 'ro-filter-input') {
-                return; // the filter editor owns its keys (its own keydown listener)
+                return;
             }
             const palette = document.getElementById(PALETTE_ID);
             if (!palette?.classList.contains('open')) {
@@ -676,19 +647,11 @@ export const paletteBindings: Binding[] = [
                 e.preventDefault();
                 activatePaletteSelection();
             } else if (e.key === 'Tab') {
-                // Trap focus inside the panel: steer Tab/Shift-Tab through the
-                // visible rows via the same active-row model the arrows use.
                 e.preventDefault();
                 movePaletteActive(e.shiftKey ? -1 : 1);
             }
         },
     },
-    // The topbar search box also opens the palette on keyboard FOCUS (Tab-into /
-    // programmatic focus): focusin bubbles to document. openPalette runs FIRST
-    // (while the box still holds focus) so it captures the box as the Esc restore
-    // target; the blur after only matters when openPalette no-opped. The
-    // paletteRestoringFocus gate keeps the close-restore from re-opening: focusing
-    // the box FROM closePalette fires this very binding.
     {
         event: 'focusin',
         selector: '[data-ro-palette-open]',

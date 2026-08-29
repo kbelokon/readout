@@ -69,11 +69,7 @@ function isTickResponse(r: Response): boolean {
 
 function isUserTableResponse(r: Response): boolean {
   const headers = r.request().headers();
-  return (
-    r.url().includes('/_table') &&
-    headers['ro-no-push'] !== 'true' &&
-    headers['hx-preloaded'] !== 'true'
-  );
+  return r.url().includes('/_table') && headers['ro-no-push'] !== 'true';
 }
 
 function waitForTick(page: Page): Promise<Response> {

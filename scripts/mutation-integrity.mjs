@@ -51,6 +51,8 @@ const fixedMutationInputs = [
 const mutationTestDataPatterns = [
   // prefs.test.ts enumerates this shared Go/TypeScript codec corpus at module load.
   'internal/web/testdata/prefs_golden/**/*.json',
+  // live-render-contract.dom.test.ts consumes the server-rendered Live fragments.
+  'internal/web/testdata/live_render_contract.json',
 ];
 
 function sha256(value) {

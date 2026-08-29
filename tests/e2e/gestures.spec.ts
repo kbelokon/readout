@@ -72,11 +72,7 @@ function isTickResponse(r: Response): boolean {
 
 function isUserTableResponse(r: Response): boolean {
   const headers = r.request().headers();
-  return (
-    r.url().includes('/_table') &&
-    headers['ro-no-push'] !== 'true' &&
-    headers['hx-preloaded'] !== 'true'
-  );
+  return r.url().includes('/_table') && headers['ro-no-push'] !== 'true';
 }
 
 function waitForTick(page: Page): Promise<Response> {
@@ -118,6 +114,35 @@ test.beforeEach(async ({}, testInfo) => {
     'row gestures are a desktop surface (below 760px the card layer replaces the table)'
   );
   await control('/__control/reset');
+});
+
+test('boosted chrome navigation issues one dynamic request across mousedown and click', async ({
+  page,
+}) => {
+  await page.goto(PODS);
+  await page.clock.install();
+
+  const serviceRequests: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === SERVICES) {
+      serviceRequests.push(request.url());
+    }
+  });
+
+  const services = page.locator(`a[href="${SERVICES}"]`).first();
+  await services.hover();
+  await page.mouse.down();
+  await page.clock.runFor(350);
+  expect(serviceRequests).toHaveLength(0);
+
+  const response = page.waitForResponse((candidate) => {
+    return new URL(candidate.url()).pathname === SERVICES;
+  });
+  await page.mouse.up();
+  await response;
+
+  await expect(page).toHaveURL(SERVICES);
+  expect(serviceRequests).toHaveLength(1);
 });
 
 test('right-click on a pod row opens the 5-action menu bound to that row; esc closes; Open navigates', async ({

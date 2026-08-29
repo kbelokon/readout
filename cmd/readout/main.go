@@ -25,7 +25,7 @@ var listenAndServe = func(srv *http.Server) error {
 }
 
 // shutdownGrace bounds the graceful drain after SIGINT/SIGTERM: long enough
-// for open Live streams to flush their `ro-terminal` "shutdown" frames (the
+// for open Live streams to flush their `ro-live` terminal "shutdown" frames (the
 // app's shutdownCh is the same signal context) before the listener dies.
 const shutdownGrace = 5 * time.Second
 
@@ -127,7 +127,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: level})))
 
 	// The signal context is the app's shutdown signal (web.New wires its Done
-	// channel to every open Live stream's `ro-terminal` "shutdown" frame) AND
+	// channel to every open Live stream's `ro-live` terminal "shutdown" frame) AND
 	// the trigger for the graceful http.Server.Shutdown below — with a plain
 	// context.Background() neither ever fired.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

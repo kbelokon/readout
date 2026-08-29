@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 )
 
@@ -18,19 +19,29 @@ import (
 // comes back within the caller's budget. release() unblocks every pending and
 // future handler so the test can stop the server cleanly.
 type hangingDiscoveryServer struct {
-	srv     *httptest.Server
-	ca      []byte
-	release chan struct{}
-	once    sync.Once
+	srv        *httptest.Server
+	ca         []byte
+	release    chan struct{}
+	once       sync.Once
+	started    chan struct{}
+	canceled   chan struct{}
+	startOnce  sync.Once
+	cancelOnce sync.Once
 }
 
 func newHangingDiscoveryServer(t *testing.T) *hangingDiscoveryServer {
 	t.Helper()
-	h := &hangingDiscoveryServer{release: make(chan struct{})}
+	h := &hangingDiscoveryServer{
+		release:  make(chan struct{}),
+		started:  make(chan struct{}),
+		canceled: make(chan struct{}),
+	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.startOnce.Do(func() { close(h.started) })
 		select {
 		case <-h.release:
 		case <-r.Context().Done():
+			h.cancelOnce.Do(func() { close(h.canceled) })
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -68,6 +79,74 @@ func (h *hangingDiscoveryServer) client(t *testing.T) *Client {
 	return client
 }
 
+func waitDiscoverySignal(t *testing.T, ch <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func TestAwaitDiscoveryCutsContextlessCredentialWork(t *testing.T) {
+	t.Run("already canceled does not launch", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		called := false
+		_, err := awaitDiscovery(ctx, func() ([]*metav1.APIResourceList, error) {
+			called = true
+			return nil, nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("awaitDiscovery error = %v, want context.Canceled", err)
+		}
+		if called {
+			t.Fatal("already-canceled discovery launched context-less work")
+		}
+	})
+
+	t.Run("active call returns when canceled", func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		workerDone := make(chan struct{})
+		t.Cleanup(func() {
+			select {
+			case <-release:
+			default:
+				close(release)
+			}
+			waitDiscoverySignal(t, workerDone, "released discovery worker")
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		result := make(chan error, 1)
+		go func() {
+			_, err := awaitDiscovery(ctx, func() ([]*metav1.APIResourceList, error) {
+				close(started)
+				<-release
+				close(workerDone)
+				return nil, nil
+			})
+			result <- err
+		}()
+
+		waitDiscoverySignal(t, started, "context-less discovery worker")
+		start := time.Now()
+		cancel()
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("awaitDiscovery error = %v, want context.Canceled", err)
+			}
+			if elapsed := time.Since(start); elapsed > time.Second {
+				t.Fatalf("context-less discovery held canceled caller for %s", elapsed)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("context-less discovery held canceled caller")
+		}
+	})
+}
+
 // TestResourceTypesDiscoveryTimeout proves the ctx deadline cuts a discovery
 // call that would otherwise block on a blackholed cluster: with a short-deadline
 // ctx against a server that never answers, ResourceTypes returns well within the
@@ -97,6 +176,63 @@ func TestResourceTypesDiscoveryTimeout(t *testing.T) {
 	}
 	if got := ClassifyError(err); got != FailureTimeout {
 		t.Fatalf("ClassifyError(%v) = %q, want %q", err, got, FailureTimeout)
+	}
+	waitDiscoverySignal(t, srv.started, "discovery request")
+	waitDiscoverySignal(t, srv.canceled, "discovery request cancellation")
+}
+
+// TestResourceTypesDiscoveryContextSurvivesResponseHeaders pins the response-
+// body half of the context transport contract. RoundTrip returns as soon as the
+// server flushes headers, but the same request context must remain live while
+// client-go reads a delayed/chunked discovery body.
+func TestResourceTypesDiscoveryContextSurvivesResponseHeaders(t *testing.T) {
+	type response struct {
+		body string
+	}
+	responses := map[string]response{
+		"/api":    {body: `{"kind":"APIVersions","versions":["v1"]}`},
+		"/api/v1": {body: `{"kind":"APIResourceList","groupVersion":"v1","resources":[]}`},
+		"/apis":   {body: `{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`},
+	}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response, ok := responses[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "test response writer does not flush", http.StatusInternalServerError)
+			return
+		}
+		flusher.Flush() // RoundTrip returns before the body exists.
+		select {
+		case <-time.After(25 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte(response.body))
+	}))
+	t.Cleanup(srv.Close)
+	client, err := NewClient(&rest.Config{
+		Host: srv.URL,
+		TLSClientConfig: rest.TLSClientConfig{
+			CAData: serverCAPEM(t, srv),
+		},
+	}, nil, false)
+	if err != nil {
+		t.Fatalf("NewClient against chunked discovery: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	namespaced, cluster, err := client.ResourceTypes(ctx)
+	if err != nil {
+		t.Fatalf("slow discovery body was canceled after headers: %v", err)
+	}
+	if len(namespaced) == 0 || len(cluster) == 0 {
+		t.Fatalf("successful discovery omitted metrics pseudo-types: ns=%d cluster=%d", len(namespaced), len(cluster))
 	}
 }
 

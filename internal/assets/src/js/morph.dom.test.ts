@@ -3,12 +3,14 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const dependencies = vi.hoisted(() => ({
-    captureRowModel: vi.fn(),
+    cancelListProjectionSwap: vi.fn(),
+    prepareListProjectionSwap: vi.fn(),
     virtualizePrepareSwap: vi.fn(),
 }));
 
-vi.mock('./filters.js', () => ({
-    captureRowModel: dependencies.captureRowModel,
+vi.mock('./list-projection.js', () => ({
+    cancelListProjectionSwap: dependencies.cancelListProjectionSwap,
+    prepareListProjectionSwap: dependencies.prepareListProjectionSwap,
 }));
 
 vi.mock('./virtualizer.js', () => ({
@@ -168,7 +170,7 @@ describe('ro-morph vendor guards and extension', () => {
         const target = document.createElement('div');
         const fragment = document.createDocumentFragment();
         expect(extension.handleSwap('innerHTML', target, fragment)).toBe(false);
-        expect(dependencies.captureRowModel).not.toHaveBeenCalled();
+        expect(dependencies.prepareListProjectionSwap).not.toHaveBeenCalled();
         expect(dependencies.virtualizePrepareSwap).not.toHaveBeenCalled();
         expect(vendor.morph).not.toHaveBeenCalled();
     });
@@ -185,7 +187,7 @@ describe('ro-morph vendor guards and extension', () => {
         fragment.append(document.createElement('p'));
 
         expect(extension.handleSwap('morph', target, fragment)).toBe(false);
-        expect(dependencies.captureRowModel).not.toHaveBeenCalled();
+        expect(dependencies.prepareListProjectionSwap).not.toHaveBeenCalled();
         expect(dependencies.virtualizePrepareSwap).not.toHaveBeenCalled();
         expect(vendor.morph).toHaveBeenCalledExactlyOnceWith(target, fragment.children, {
             morphStyle: 'innerHTML',
@@ -204,15 +206,39 @@ describe('ro-morph vendor guards and extension', () => {
         fragment.append(document.createElement('table'));
 
         expect(extension.handleSwap('morph', target, fragment)).toBe(true);
-        expect(dependencies.captureRowModel).toHaveBeenCalledExactlyOnceWith(fragment);
+        expect(dependencies.prepareListProjectionSwap).toHaveBeenCalledExactlyOnceWith(fragment);
         expect(dependencies.virtualizePrepareSwap).toHaveBeenCalledExactlyOnceWith(fragment);
-        expect(dependencies.captureRowModel.mock.invocationCallOrder[0]).toBeLessThan(
+        expect(dependencies.prepareListProjectionSwap.mock.invocationCallOrder[0]).toBeLessThan(
             dependencies.virtualizePrepareSwap.mock.invocationCallOrder[0] as number,
         );
         expect(vendor.morph).toHaveBeenCalledExactlyOnceWith(target, fragment.children, {
             morphStyle: 'innerHTML',
             ignoreActiveValue: true,
         });
+        expect(dependencies.cancelListProjectionSwap).not.toHaveBeenCalled();
+    });
+
+    test('cancels the matching list preparation when Idiomorph throws synchronously', async () => {
+        const failure = new Error('synchronous morph failure');
+        const vendor = installVendors();
+        vendor.morph.mockImplementationOnce(() => {
+            throw failure;
+        });
+        await importMorph();
+        const target = document.createElement('div');
+        target.id = 'resource-list-content';
+        const fragment = document.createDocumentFragment();
+        fragment.append(document.createElement('table'));
+
+        expect(() => vendor.extension().handleSwap('morph', target, fragment)).toThrow(failure);
+
+        expect(dependencies.cancelListProjectionSwap).toHaveBeenCalledExactlyOnceWith(fragment);
+        expect(dependencies.virtualizePrepareSwap.mock.invocationCallOrder[0]).toBeLessThan(
+            vendor.morph.mock.invocationCallOrder[0] as number,
+        );
+        expect(vendor.morph.mock.invocationCallOrder[0]).toBeLessThan(
+            dependencies.cancelListProjectionSwap.mock.invocationCallOrder[0] as number,
+        );
     });
 });
 

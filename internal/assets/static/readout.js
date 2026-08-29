@@ -2,17 +2,17 @@
 (() => {
   // internal/assets/src/js/htmx-config.ts
   if (typeof htmx !== "undefined") {
-    htmx.config.globalViewTransitions = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    htmx.config.globalViewTransitions = false;
   }
 
   // internal/assets/src/js/filters-parse.ts
-  var goFieldWhitespaceRun = /\p{White_Space}+/gu;
-  var goFieldWhitespaceEdges = /^\p{White_Space}+|\p{White_Space}+$/gu;
+  var GO_FIELD_WHITESPACE_TRIM = /^\p{White_Space}+|\p{White_Space}+$/gu;
+  var GO_FIELD_WHITESPACE_RUN = /\p{White_Space}+/gu;
   function trimFilterWhitespace(s) {
-    return (s || "").replace(goFieldWhitespaceEdges, "");
+    return (s || "").replace(GO_FIELD_WHITESPACE_TRIM, "");
   }
   function normalizeFieldWhitespace(s) {
-    return trimFilterWhitespace((s || "").replace(goFieldWhitespaceRun, " "));
+    return trimFilterWhitespace(s).replace(GO_FIELD_WHITESPACE_RUN, " ");
   }
   function normalizeFieldName(s) {
     return normalizeFieldWhitespace((s || "").toLowerCase().replace(/-/g, " "));
@@ -146,6 +146,1509 @@
     return pathname + (query ? `?${query}` : "");
   }
 
+  // internal/assets/src/js/list-projection.ts
+  var rowModel = {
+    fields: [],
+    rows: [],
+    visibleKeys: null
+  };
+  function emptySnapshot() {
+    return {
+      rows: [],
+      byKey: /* @__PURE__ */ new Map(),
+      indexByKey: /* @__PURE__ */ new Map(),
+      order: [],
+      cardsByKey: /* @__PURE__ */ new Map(),
+      fields: [],
+      modelRows: [],
+      windowed: false
+    };
+  }
+  var projection = emptySnapshot();
+  var prepared = null;
+  var projectionRoot = null;
+  var projectionRevision = 0;
+  window.roRowModel = rowModel;
+  function captureFields(table) {
+    return Array.from(table.querySelectorAll("thead th")).map((th) => {
+      const label = normalizeFieldWhitespace(th.textContent || "");
+      return {
+        label,
+        name: fieldSuggestionText(label),
+        hint: th.dataset.hint || ""
+      };
+    });
+  }
+  function captureModelRow(tr) {
+    const cells = Array.from(tr.querySelectorAll("td")).map(
+      (td) => trimFilterWhitespace(td.textContent || "")
+    );
+    const nameLink = tr.querySelector("td.cell-name a");
+    return {
+      key: tr.dataset.key,
+      name: nameLink ? trimFilterWhitespace(nameLink.textContent || "") : cells[0] || "",
+      cells
+    };
+  }
+  function captureModelRows(rows) {
+    return rows.map(captureModelRow);
+  }
+  function captureCards(root) {
+    const cards = Array.from(root.querySelectorAll(".ro-cardlist > .ro-pcard"));
+    const cardsByKey = /* @__PURE__ */ new Map();
+    cards.forEach((card) => {
+      const key = card.dataset.key;
+      if (key) {
+        cardsByKey.set(key, card);
+      }
+    });
+    return cardsByKey;
+  }
+  function snapshotFrom(root) {
+    const table = root.querySelector("table.ro-table");
+    if (!table) {
+      return emptySnapshot();
+    }
+    const tbody = table.tBodies.item(0);
+    if (!tbody || tbody.querySelector(":scope > tr.ro-vspacer")) {
+      return emptySnapshot();
+    }
+    const rows = Array.from(tbody.querySelectorAll(":scope > tr[data-key]"));
+    const byKey = new Map(rows.map((row) => [row.dataset.key, row]));
+    const order = rows.map((row) => row.dataset.key);
+    return {
+      rows,
+      byKey,
+      indexByKey: new Map(order.map((key, index) => [key, index])),
+      order,
+      cardsByKey: captureCards(root),
+      fields: captureFields(table),
+      modelRows: captureModelRows(rows),
+      windowed: table.closest(".ro-table-wrap.ro-windowed") !== null
+    };
+  }
+  function publishModel(snapshot) {
+    rowModel.fields = snapshot.fields;
+    rowModel.rows = snapshot.modelRows;
+  }
+  function adoptListProjection(root) {
+    projection = snapshotFrom(root);
+    projectionRoot = root;
+    prepared = null;
+    projectionRevision += 1;
+    publishModel(projection);
+    rowModel.visibleKeys = null;
+  }
+  function ensureListProjection(root) {
+    if (projectionRoot === root) {
+      return false;
+    }
+    adoptListProjection(root);
+    return true;
+  }
+  function prepareListProjectionSwap(root) {
+    if (prepared?.root !== root) {
+      const snapshot = snapshotFrom(root);
+      const previousRevision = projectionRevision;
+      projectionRevision += 1;
+      prepared = {
+        root,
+        snapshot,
+        previousRevision,
+        // Snapshot maps are created once and never mutated or exposed. Keep
+        // the immutable prior index by reference for the windowed cell diff.
+        previousByKey: projection.byKey
+      };
+      publishModel(snapshot);
+    }
+    return {
+      rows: prepared.snapshot.rows,
+      windowed: prepared.snapshot.windowed
+    };
+  }
+  function cancelListProjectionSwap(root) {
+    const incoming = prepared;
+    if (!incoming || incoming.root !== root) return;
+    prepared = null;
+    projectionRevision = incoming.previousRevision;
+    publishModel(projection);
+  }
+  function commitListProjectionSwap() {
+    if (!prepared) {
+      return null;
+    }
+    const incoming = prepared;
+    prepared = null;
+    const content = document.getElementById("resource-list-content");
+    if (incoming.snapshot.windowed) {
+      projection = incoming.snapshot;
+      projectionRoot = content || incoming.root;
+    } else {
+      projection = content ? snapshotFrom(content) : emptySnapshot();
+      projectionRoot = content;
+      publishModel(projection);
+    }
+    return incoming.previousByKey;
+  }
+  function resetListProjection() {
+    projection = emptySnapshot();
+    projectionRoot = null;
+    prepared = null;
+    projectionRevision += 1;
+    publishModel(projection);
+    rowModel.visibleKeys = null;
+  }
+  function listProjectionSwapPending() {
+    return prepared !== null;
+  }
+  function listProjectionRevision() {
+    return projectionRevision;
+  }
+  function listProjectionWindowed() {
+    return projection.windowed;
+  }
+  function listProjectionRows() {
+    return projection.rows;
+  }
+  function listProjectionRowByKey(key) {
+    return projection.byKey.get(key) || null;
+  }
+  function listProjectionRowModel() {
+    return rowModel;
+  }
+  function setListProjectionVisibleKeys(keys) {
+    rowModel.visibleKeys = keys;
+  }
+  function listProjectionVisibleRows() {
+    const keys = rowModel.visibleKeys;
+    return keys ? projection.rows.filter((row) => keys.has(row.dataset.key)) : projection.rows;
+  }
+  var focusableSelector = "a[href], button, input, select, textarea, [tabindex]";
+  function oneElementRoot(parent) {
+    let root = null;
+    for (const node of parent.childNodes) {
+      if (node instanceof Text && !node.data.trim()) continue;
+      if (root || !(node instanceof HTMLElement)) return null;
+      root = node;
+    }
+    return root;
+  }
+  function parseRowFragment(html, key) {
+    const tbody = document.createElement("tbody");
+    tbody.innerHTML = html;
+    const row = oneElementRoot(tbody);
+    return row?.dataset.key === key ? row : null;
+  }
+  function parseCardFragment(html, key) {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const card = oneElementRoot(template.content);
+    return card?.dataset.key === key ? card : null;
+  }
+  function parseRegionFragment(content, update) {
+    const selector = `[data-ro-live-region="${update.region}"]`;
+    const current = content.querySelector(selector);
+    const template = document.createElement("template");
+    template.innerHTML = update.html;
+    const incoming = oneElementRoot(template.content);
+    if (!current || !incoming || incoming.dataset.roLiveRegion !== update.region) return null;
+    return { current, incoming };
+  }
+  function currentListMounts() {
+    const content = document.getElementById("resource-list-content");
+    if (!content || projectionRoot !== content || prepared) return null;
+    const table = content.querySelector("table.ro-table");
+    const tbody = table?.tBodies.item(0) || null;
+    if (!tbody) return null;
+    return {
+      cardMount: content.querySelector(".ro-cardlist"),
+      content,
+      tbody
+    };
+  }
+  function arraysEqual(left, right) {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+  function morphElement(current, incoming) {
+    const implementation = Idiomorph;
+    const outcome = implementation.morph(current, incoming, {
+      morphStyle: "outerHTML",
+      ignoreActiveValue: true
+    });
+    if (Array.isArray(outcome)) {
+      const landed = outcome.find((node) => node instanceof HTMLElement);
+      if (landed instanceof HTMLElement) return landed;
+    }
+    return current;
+  }
+  function placeElementsInOrder(parent, elements) {
+    let cursor = parent.firstElementChild;
+    for (const element of elements) {
+      if (element === cursor) {
+        cursor = cursor.nextElementSibling;
+      } else {
+        parent.insertBefore(element, cursor);
+      }
+    }
+  }
+  function captureFocusBookmark() {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement)) return null;
+    const row = active.closest("tr[data-key]");
+    const key = row?.dataset.key;
+    const cell = active.closest("td, th");
+    if (!row || !key || !cell || cell.parentElement !== row) return null;
+    const focusables = cellFocusTargets(cell);
+    const focusableIndex = focusables.indexOf(active);
+    if (focusableIndex === -1) return null;
+    return {
+      active,
+      cellIndex: Array.from(row.cells).indexOf(cell),
+      focusableIndex,
+      key
+    };
+  }
+  function cellFocusTargets(cell) {
+    return [cell, ...cell.querySelectorAll(focusableSelector)];
+  }
+  function focusRestorer(bookmark) {
+    return () => {
+      if (!bookmark) return;
+      const row = projection.byKey.get(bookmark.key);
+      if (!row?.isConnected) return;
+      const cell = row.cells.item(bookmark.cellIndex);
+      if (!(cell instanceof HTMLElement)) return;
+      const focusables = cellFocusTargets(cell);
+      focusables[bookmark.focusableIndex]?.focus({ preventScroll: true });
+    };
+  }
+  function updateLiveStatus(summary) {
+    const status = document.getElementById("ro-live-status");
+    if (!status) return;
+    const changed = summary.inserted + summary.updated + summary.deleted + summary.projected;
+    const parts = [];
+    if (changed > 0) parts.push(`${changed} row${changed === 1 ? "" : "s"}`);
+    if (summary.reordered) parts.push("order changed");
+    if (summary.regions.length > 0) {
+      parts.push(`${summary.regions.length} region${summary.regions.length === 1 ? "" : "s"}`);
+    }
+    status.textContent = `Live update: ${parts.join(", ")}`;
+  }
+  function applyListProjectionDelta(plan) {
+    const mounts = currentListMounts();
+    if (!mounts) return { ok: false };
+    const parsedRows = /* @__PURE__ */ new Map();
+    const parsedCards = /* @__PURE__ */ new Map();
+    const parsedRegions = [];
+    for (const operation of plan.upsert) {
+      const row = parseRowFragment(operation.row, operation.key);
+      if (!row) return { ok: false };
+      parsedRows.set(operation.key, row);
+      if (operation.card !== void 0) {
+        const card = parseCardFragment(operation.card, operation.key);
+        if (!card || !mounts.cardMount) return { ok: false };
+        parsedCards.set(operation.key, card);
+      }
+    }
+    for (const operation of plan.regions) {
+      const region = parseRegionFragment(mounts.content, operation);
+      if (!region) return { ok: false };
+      parsedRegions.push(region);
+    }
+    const removedKeys = new Set(plan.remove.map((operation) => operation.key));
+    const nextByKey = new Map(projection.byKey);
+    const nextCards = new Map(projection.cardsByKey);
+    for (const key of removedKeys) {
+      nextByKey.delete(key);
+    }
+    for (const [key, incoming] of parsedRows) {
+      nextByKey.set(key, projection.byKey.get(key) || incoming);
+    }
+    for (const [key, incoming] of parsedCards) {
+      nextCards.set(key, projection.cardsByKey.get(key) || incoming);
+    }
+    const implicitOrder = projection.order.filter((key) => !removedKeys.has(key));
+    for (const key of parsedRows.keys()) {
+      if (!projection.byKey.has(key)) implicitOrder.push(key);
+    }
+    const nextOrder = plan.order ? [...plan.order] : implicitOrder;
+    if (nextOrder.length !== nextByKey.size || nextOrder.some((key) => !nextByKey.has(key))) {
+      return { ok: false };
+    }
+    const nextRowSet = new Set(nextOrder);
+    const focus = captureFocusBookmark();
+    const restoreFocus = focusRestorer(focus);
+    const previousByKey = /* @__PURE__ */ new Map();
+    for (const { key } of plan.upsert) {
+      const current = projection.byKey.get(key);
+      if (current) previousByKey.set(key, current.cloneNode(true));
+    }
+    const summary = {
+      inserted: plan.upsert.filter((operation) => !projection.byKey.has(operation.key)).length,
+      updated: plan.upsert.filter((operation) => projection.byKey.has(operation.key)).length,
+      deleted: plan.remove.filter((operation) => operation.cause === "delete").length,
+      projected: plan.remove.filter((operation) => operation.cause === "project").length,
+      reordered: !arraysEqual(nextOrder, projection.order),
+      regions: plan.regions.map((operation) => operation.region)
+    };
+    try {
+      for (const operation of plan.remove) {
+        projection.byKey.get(operation.key)?.remove();
+        projection.cardsByKey.get(operation.key)?.remove();
+      }
+      for (const [key, incoming] of parsedRows) {
+        const current = projection.byKey.get(key);
+        if (current) nextByKey.set(key, morphElement(current, incoming));
+      }
+      for (const [key, incoming] of parsedCards) {
+        const current = projection.cardsByKey.get(key);
+        if (current) nextCards.set(key, morphElement(current, incoming));
+      }
+      for (const region of parsedRegions) morphElement(region.current, region.incoming);
+      const nextRows = nextOrder.map((key) => nextByKey.get(key));
+      const nextCardEntries = nextOrder.flatMap((key) => {
+        const card = nextCards.get(key);
+        return card ? [[key, card]] : [];
+      });
+      if (!projection.windowed) placeElementsInOrder(mounts.tbody, nextRows);
+      if (mounts.cardMount) {
+        placeElementsInOrder(
+          mounts.cardMount,
+          nextCardEntries.map(([, card]) => card)
+        );
+      }
+      const byKey = new Map(nextOrder.map((key, index) => [key, nextRows[index]]));
+      projection = {
+        rows: nextRows,
+        byKey,
+        indexByKey: new Map(nextOrder.map((key, index) => [key, index])),
+        order: nextOrder,
+        cardsByKey: new Map(nextCardEntries),
+        fields: projection.fields,
+        modelRows: captureModelRows(nextRows),
+        windowed: projection.windowed
+      };
+      projectionRoot = mounts.content;
+      prepared = null;
+      projectionRevision += 1;
+      publishModel(projection);
+      if (rowModel.visibleKeys) {
+        rowModel.visibleKeys = new Set(
+          Array.from(rowModel.visibleKeys).filter((key) => nextRowSet.has(key))
+        );
+      }
+      updateLiveStatus(summary);
+      return { ok: true, focusKey: focus?.key || null, previousByKey, summary, restoreFocus };
+    } catch {
+      restoreFocus();
+      return { ok: false };
+    }
+  }
+
+  // internal/assets/src/js/list-etag.ts
+  var LIST_CONTENT_ID = "resource-list-content";
+  var ETAG_DATA_KEY = "roEtag";
+  var PATH_DATA_KEY = "roEtagPath";
+  function eventDetail(event) {
+    return Object(event.detail);
+  }
+  function currentListContent() {
+    return document.getElementById(LIST_CONTENT_ID);
+  }
+  function validETag(value) {
+    return typeof value === "string" && /^(?:W\/)?"[\x21\x23-\x7e]*"$/.test(value);
+  }
+  function tableRequestKey(value) {
+    if (typeof value !== "string" || value.length === 0) {
+      return null;
+    }
+    try {
+      const url = new URL(value, window.location.href);
+      if (url.origin !== window.location.origin || !url.pathname.endsWith("/_table")) {
+        return null;
+      }
+      return `${url.pathname}${url.search}`;
+    } catch {
+      return null;
+    }
+  }
+  function headerRecord(value) {
+    return Object(value);
+  }
+  function headerValue(headers, wanted) {
+    const lowerWanted = wanted.toLowerCase();
+    for (const [name, value] of Object.entries(headerRecord(headers))) {
+      if (name.toLowerCase() === lowerWanted && typeof value === "string") {
+        return value;
+      }
+    }
+    return null;
+  }
+  function deleteHeader(headers, unwanted) {
+    const record = headerRecord(headers);
+    const lowerUnwanted = unwanted.toLowerCase();
+    for (const name of Object.keys(record)) {
+      if (name.toLowerCase() === lowerUnwanted) {
+        delete record[name];
+      }
+    }
+  }
+  function responseHeader(xhr, name) {
+    const candidate = Object(xhr);
+    if (typeof candidate.getResponseHeader !== "function") {
+      return null;
+    }
+    try {
+      const value = candidate.getResponseHeader.call(xhr, name);
+      return typeof value === "string" ? value : null;
+    } catch {
+      return null;
+    }
+  }
+  function clearContentValidator(content) {
+    delete content.dataset[ETAG_DATA_KEY];
+    delete content.dataset[PATH_DATA_KEY];
+  }
+  function readContentValidator(content) {
+    const etag = content.dataset[ETAG_DATA_KEY];
+    const path = content.dataset[PATH_DATA_KEY];
+    if (!validETag(etag) || tableRequestKey(path) !== path) {
+      clearContentValidator(content);
+      return null;
+    }
+    return { etag, path };
+  }
+  function writeContentValidator(content, validator) {
+    content.dataset[PATH_DATA_KEY] = validator.path;
+    content.dataset[ETAG_DATA_KEY] = validator.etag;
+  }
+  function configureListValidatorRequest(event) {
+    const detail = eventDetail(event);
+    const content = currentListContent();
+    if (!content) {
+      return;
+    }
+    const sourceIsContent = detail.elt === content;
+    const targetIsContent = detail.target === content;
+    if (!sourceIsContent && !targetIsContent) {
+      return;
+    }
+    const headers = headerRecord(detail.headers);
+    deleteHeader(headers, "If-None-Match");
+    if (!sourceIsContent || detail.target !== void 0 && !targetIsContent || headerValue(headers, "RO-No-Push") !== "true") {
+      return;
+    }
+    if (content.childElementCount === 0) {
+      clearContentValidator(content);
+      return;
+    }
+    const validator = readContentValidator(content);
+    const requestKey = tableRequestKey(detail.path);
+    if (!validator || requestKey !== validator.path) {
+      return;
+    }
+    headers["If-None-Match"] = validator.etag;
+  }
+  function rememberListValidator(event) {
+    const detail = eventDetail(event);
+    const content = currentListContent();
+    if (!content || detail.target !== content) {
+      return;
+    }
+    if (detail.roLivePush === true) {
+      clearContentValidator(content);
+      return;
+    }
+    const xhr = Object(detail.xhr);
+    if (xhr.status !== 200) {
+      return;
+    }
+    const pathInfo = Object(detail.pathInfo);
+    const path = tableRequestKey(pathInfo.finalRequestPath);
+    const etag = responseHeader(detail.xhr, "ETag");
+    if (!path || !validETag(etag)) {
+      clearContentValidator(content);
+      return;
+    }
+    writeContentValidator(content, { etag, path });
+  }
+  function clearListValidator() {
+    const content = currentListContent();
+    if (content) {
+      clearContentValidator(content);
+    }
+  }
+  function suppressListNotModified(event) {
+    const detail = eventDetail(event);
+    const content = currentListContent();
+    const xhr = Object(detail.xhr);
+    if (!content || detail.target !== content || xhr.status !== 304) {
+      return false;
+    }
+    detail.shouldSwap = false;
+    detail.isError = true;
+    const validator = readContentValidator(content);
+    const config = Object(detail.requestConfig);
+    const pathInfo = Object(detail.pathInfo);
+    if (config.elt !== content || !validator || headerValue(config.headers, "RO-No-Push") !== "true" || headerValue(config.headers, "If-None-Match") !== validator.etag || tableRequestKey(pathInfo.finalRequestPath) !== validator.path || responseHeader(detail.xhr, "ETag") !== validator.etag) {
+      return false;
+    }
+    detail.isError = false;
+    return true;
+  }
+
+  // internal/assets/src/js/live-protocol.ts
+  var LIST_DELTA_APPLIED_EVENT = "ro:list-delta-applied";
+  var BASE_FIELDS = /* @__PURE__ */ new Set(["v", "kind", "g", "seq", "rev", "rv", "schema"]);
+  var decodedEnvelopes = /* @__PURE__ */ new WeakSet();
+  function own(record, key) {
+    return Object.hasOwn(record, key);
+  }
+  function exactFields(record, allowed) {
+    return Object.keys(record).every((key) => allowed.has(key));
+  }
+  function nonemptyString(value) {
+    return typeof value === "string" && value.length > 0;
+  }
+  function seal(value) {
+    decodedEnvelopes.add(value);
+    return value;
+  }
+  function decodeBase(record) {
+    return record.v === 2 && nonemptyString(record.g) && Number.isSafeInteger(record.seq) && record.seq > 0 && (!own(record, "rev") || nonemptyString(record.rev)) && (!own(record, "rv") || nonemptyString(record.rv)) && (!own(record, "schema") || nonemptyString(record.schema));
+  }
+  function decodeSnapshot(record) {
+    const snapshot = record.snapshot;
+    if (!exactFields(record, /* @__PURE__ */ new Set([...BASE_FIELDS, "snapshot"])) || !nonemptyString(record.rev) || !nonemptyString(record.schema) || !exactFields(snapshot, /* @__PURE__ */ new Set(["html"])) || !nonemptyString(snapshot.html)) {
+      return { ok: false };
+    }
+    return { ok: true, value: seal(record) };
+  }
+  function decodeRemove(value) {
+    if (!Array.isArray(value)) return null;
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const valueItem of value) {
+      const item = valueItem;
+      if (!exactFields(item, /* @__PURE__ */ new Set(["key", "cause"])) || !nonemptyString(item.key) || item.cause !== "delete" && item.cause !== "project" || seen.has(item.key)) {
+        return null;
+      }
+      seen.add(item.key);
+      result.push({ key: item.key, cause: item.cause });
+    }
+    return result;
+  }
+  function decodeUpsert(value) {
+    if (!Array.isArray(value)) return null;
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const valueItem of value) {
+      const item = valueItem;
+      if (!exactFields(item, /* @__PURE__ */ new Set(["key", "row", "card"])) || !nonemptyString(item.key) || !nonemptyString(item.row) || own(item, "card") && !nonemptyString(item.card) || seen.has(item.key)) {
+        return null;
+      }
+      seen.add(item.key);
+      result.push(
+        own(item, "card") ? { key: item.key, row: item.row, card: item.card } : { key: item.key, row: item.row }
+      );
+    }
+    return result;
+  }
+  function decodeOrder(value) {
+    if (!Array.isArray(value)) return null;
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const key of value) {
+      if (!nonemptyString(key) || seen.has(key)) return null;
+      seen.add(key);
+      result.push(key);
+    }
+    return result;
+  }
+  function decodeRegions(value) {
+    if (!Array.isArray(value)) return null;
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const valueItem of value) {
+      const item = valueItem;
+      if (!exactFields(item, /* @__PURE__ */ new Set(["region", "html"])) || item.region !== "count" && item.region !== "phase" && item.region !== "found" || !nonemptyString(item.html) || seen.has(item.region)) {
+        return null;
+      }
+      seen.add(item.region);
+      result.push({ region: item.region, html: item.html });
+    }
+    return result;
+  }
+  function decodeDelta(record) {
+    const wireDelta = record.delta;
+    if (!exactFields(record, /* @__PURE__ */ new Set([...BASE_FIELDS, "delta"])) || !nonemptyString(record.rev) || !nonemptyString(record.schema) || !exactFields(wireDelta, /* @__PURE__ */ new Set(["base", "rev", "remove", "upsert", "order", "regions"])) || !nonemptyString(wireDelta.base) || !nonemptyString(wireDelta.rev) || wireDelta.rev !== record.rev) {
+      return { ok: false };
+    }
+    const delta = { base: wireDelta.base, rev: wireDelta.rev };
+    if (own(wireDelta, "remove")) {
+      const remove = decodeRemove(wireDelta.remove);
+      if (!remove) return { ok: false };
+      delta.remove = remove;
+    }
+    if (own(wireDelta, "upsert")) {
+      const upsert = decodeUpsert(wireDelta.upsert);
+      if (!upsert) return { ok: false };
+      delta.upsert = upsert;
+    }
+    const removed = new Set(delta.remove?.map((operation) => operation.key));
+    if (delta.upsert?.some((operation) => removed.has(operation.key))) {
+      return { ok: false };
+    }
+    if (own(wireDelta, "order")) {
+      const order = decodeOrder(wireDelta.order);
+      if (!order) return { ok: false };
+      delta.order = order;
+    }
+    if (own(wireDelta, "regions")) {
+      const regions = decodeRegions(wireDelta.regions);
+      if (!regions) return { ok: false };
+      delta.regions = regions;
+    }
+    return {
+      ok: true,
+      value: seal({ ...record, delta })
+    };
+  }
+  function decodeTerminal(record) {
+    if (!exactFields(record, /* @__PURE__ */ new Set([...BASE_FIELDS, "reason"])) || record.reason !== "idle" && record.reason !== "auth" && record.reason !== "watch-failed" && record.reason !== "shutdown") {
+      return { ok: false };
+    }
+    return { ok: true, value: seal(record) };
+  }
+  function decodeLiveV2Envelope(frame) {
+    try {
+      const parsed = JSON.parse(frame);
+      if (!decodeBase(parsed)) {
+        return { ok: false };
+      }
+      if (parsed.kind === "snapshot") return decodeSnapshot(parsed);
+      if (parsed.kind === "delta") return decodeDelta(parsed);
+      if (parsed.kind === "terminal") return decodeTerminal(parsed);
+      return { ok: false };
+    } catch {
+      return { ok: false };
+    }
+  }
+  function validateCursor(envelope, cursor) {
+    return envelope.g === cursor.g && envelope.seq === cursor.seq + 1 && envelope.delta.base === cursor.rev && envelope.schema === cursor.schema;
+  }
+  function decodeApplyInput(input) {
+    if (typeof input === "string") return decodeLiveV2Envelope(input);
+    if (typeof input === "object" && input !== null && decodedEnvelopes.has(input)) {
+      return { ok: true, value: input };
+    }
+    return { ok: false };
+  }
+  function applyLiveV2Delta(input, cursor) {
+    const decoded = decodeApplyInput(input);
+    if (!decoded.ok || decoded.value.kind !== "delta" || !validateCursor(decoded.value, cursor)) {
+      return { ok: false };
+    }
+    const envelope = decoded.value;
+    const plan = {
+      remove: envelope.delta.remove || [],
+      upsert: envelope.delta.upsert || [],
+      order: envelope.delta.order,
+      regions: envelope.delta.regions || []
+    };
+    const applied = applyListProjectionDelta(plan);
+    if (!applied.ok) return applied;
+    const detail = {
+      kind: "delta",
+      deletedKeys: new Set(
+        plan.remove.filter((operation) => operation.cause === "delete").map((operation) => operation.key)
+      ),
+      focusKey: applied.focusKey,
+      previousByKey: applied.previousByKey,
+      summary: applied.summary
+    };
+    document.dispatchEvent(
+      new CustomEvent(LIST_DELTA_APPLIED_EVENT, { detail })
+    );
+    applied.restoreFocus();
+    const nextCursor = {
+      g: envelope.g,
+      seq: envelope.seq,
+      rev: envelope.rev,
+      schema: envelope.schema
+    };
+    if (envelope.rv !== void 0) nextCursor.rv = envelope.rv;
+    else if (cursor.rv !== void 0) nextCursor.rv = cursor.rv;
+    return { ok: true, cursor: nextCursor, summary: applied.summary };
+  }
+
+  // internal/assets/src/js/bounded-byte-buffer.ts
+  function ensureBoundedByteBufferCapacity(buffer, retainedBytes, appendedBytes, hardLimit) {
+    const required = retainedBytes + appendedBytes;
+    if (required <= buffer.byteLength) return buffer;
+    const capacity = Math.min(
+      hardLimit,
+      buffer.byteLength + Math.max(buffer.byteLength, appendedBytes)
+    );
+    const grown = new Uint8Array(capacity);
+    grown.set(buffer.subarray(0, retainedBytes));
+    return grown;
+  }
+
+  // internal/assets/src/js/live-sse.ts
+  var LIVE_SSE_DATA_CEILING_BYTES = 16777216;
+  var LIVE_SSE_FRAMED_CEILING_BYTES = 16778240;
+  var LIVE_SSE_LIMITS = Object.freeze({
+    dataBytes: LIVE_SSE_DATA_CEILING_BYTES,
+    // All nonblank field/comment bytes in one uncommitted event. This prevents
+    // ignored extension/comment lines from multiplying bounded data work.
+    eventBytes: LIVE_SSE_FRAMED_CEILING_BYTES,
+    eventNameBytes: 64,
+    lines: 32,
+    // A legal max-size one-line payload still carries `data:` plus optional
+    // whitespace. Keep a small, fixed framing allowance separate from the
+    // exact aggregate data ceiling.
+    lineBytes: LIVE_SSE_FRAMED_CEILING_BYTES
+  });
+  var LiveSSEError = class extends Error {
+    code;
+    constructor(code) {
+      super(code);
+      this.code = code;
+    }
+  };
+  var fatalUTF8 = new TextDecoder("utf-8", { fatal: true });
+  function decodeLine(bytes) {
+    try {
+      return fatalUTF8.decode(bytes);
+    } catch {
+      throw new LiveSSEError("invalid-utf8");
+    }
+  }
+  var LiveSSEParser = class {
+    #limits;
+    #lineBuffer = new Uint8Array();
+    #lineBytes = 0;
+    #pendingDelimiter = "none";
+    #eventName = null;
+    #eventBytes = 0;
+    #dataLines = [];
+    #dataBytes = 0;
+    #lines = 0;
+    #fatal = null;
+    constructor(limits = {}) {
+      this.#limits = { ...LIVE_SSE_LIMITS, ...limits };
+    }
+    push(chunk) {
+      if (this.#fatal) throw this.#fatal;
+      const events = [];
+      try {
+        this.#consume(chunk, events);
+        return events;
+      } catch (error) {
+        this.#fatal = error instanceof LiveSSEError ? error : new LiveSSEError("invalid-utf8");
+        throw this.#fatal;
+      }
+    }
+    #consume(chunk, events) {
+      let start = 0;
+      for (let index = 0, byte = chunk[index]; byte !== void 0; index += 1, byte = chunk[index]) {
+        if (this.#pendingDelimiter === "cr") {
+          this.#pendingDelimiter = "none";
+          if (byte === 10) {
+            start = index + 1;
+            continue;
+          }
+        }
+        if (byte !== 10 && byte !== 13) continue;
+        this.#appendLinePart(chunk.subarray(start, index));
+        this.#completeLine(events);
+        this.#pendingDelimiter = byte === 13 ? "cr" : "none";
+        start = index + 1;
+      }
+      this.#appendLinePart(chunk.subarray(start));
+    }
+    #appendLinePart(part) {
+      if (part.byteLength > this.#limits.lineBytes - this.#lineBytes) {
+        throw new LiveSSEError("line-too-large");
+      }
+      const required = this.#lineBytes + part.byteLength;
+      this.#lineBuffer = ensureBoundedByteBufferCapacity(
+        this.#lineBuffer,
+        this.#lineBytes,
+        part.byteLength,
+        this.#limits.lineBytes
+      );
+      this.#lineBuffer.set(part, this.#lineBytes);
+      this.#lineBytes = required;
+    }
+    #completeLine(events) {
+      const bytes = this.#lineBuffer.subarray(0, this.#lineBytes);
+      this.#lineBytes = 0;
+      if (bytes.byteLength === 0) {
+        if (this.#dataLines.length > 0) {
+          events.push({
+            name: this.#eventName,
+            data: this.#dataLines.join("\n"),
+            dataBytes: this.#dataBytes
+          });
+        }
+        this.#resetEvent();
+        return;
+      }
+      if (bytes.byteLength > this.#limits.eventBytes - this.#eventBytes) {
+        throw new LiveSSEError("event-too-large");
+      }
+      this.#eventBytes += bytes.byteLength;
+      this.#lines += 1;
+      if (this.#lines > this.#limits.lines) {
+        throw new LiveSSEError("too-many-lines");
+      }
+      const colon = bytes.indexOf(58);
+      const fieldEnd = colon === -1 ? bytes.byteLength : colon;
+      let valueStart = colon === -1 ? bytes.byteLength : colon + 1;
+      if (bytes[valueStart] === 32) valueStart += 1;
+      const field = decodeLine(bytes.subarray(0, fieldEnd));
+      const valueBytes = bytes.subarray(valueStart);
+      if (field === "event") {
+        if (valueBytes.byteLength > this.#limits.eventNameBytes) {
+          throw new LiveSSEError("event-name-too-large");
+        }
+        this.#eventName = decodeLine(valueBytes);
+        return;
+      }
+      if (field !== "data") {
+        decodeLine(valueBytes);
+        return;
+      }
+      const joinedBytes = this.#dataBytes + valueBytes.byteLength + (this.#dataLines.length ? 1 : 0);
+      if (joinedBytes > this.#limits.dataBytes) {
+        throw new LiveSSEError("data-too-large");
+      }
+      this.#dataLines.push(decodeLine(valueBytes));
+      this.#dataBytes = joinedBytes;
+    }
+    #resetEvent() {
+      this.#eventName = null;
+      this.#eventBytes = 0;
+      this.#dataLines = [];
+      this.#dataBytes = 0;
+      this.#lines = 0;
+    }
+  };
+
+  // internal/assets/src/js/live-url.ts
+  var CLIENT_GENERATION_HEX_LENGTH = 32;
+  var CLIENT_GENERATION_UUID_LENGTH = 36;
+  var CLIENT_GENERATION_UUID_DASHES = /* @__PURE__ */ new Set([8, 13, 18, 23]);
+  var ASCII_HEX_DIGITS = "0123456789abcdefABCDEF";
+  function isClientLiveGeneration(value) {
+    if (typeof value !== "string" || value.length !== CLIENT_GENERATION_HEX_LENGTH && value.length !== CLIENT_GENERATION_UUID_LENGTH) {
+      return false;
+    }
+    const uuid = value.length === CLIENT_GENERATION_UUID_LENGTH;
+    return Array.from(value).every(
+      (character, index) => uuid && CLIENT_GENERATION_UUID_DASHES.has(index) ? character === "-" : ASCII_HEX_DIGITS.includes(character)
+    );
+  }
+  function mintLiveGeneration(cryptoSource = window.crypto) {
+    try {
+      const uuid = cryptoSource.randomUUID();
+      if (isClientLiveGeneration(uuid)) return uuid;
+    } catch {
+    }
+    const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  function withRawQuery(pathname, rawQuery) {
+    return rawQuery === "" ? pathname : `${pathname}?${rawQuery}`;
+  }
+  function liveStreamBaseForURL(url) {
+    const pathname = `${url.pathname.replace(/\/+$/, "")}/_stream`;
+    return withRawQuery(pathname, url.search.slice(1));
+  }
+
+  // internal/assets/src/js/stale.ts
+  var staleCountdownId = null;
+  var listStaleOwner = /* @__PURE__ */ Symbol();
+  var liveUnavailableOwner = /* @__PURE__ */ Symbol();
+  var staleOwners = /* @__PURE__ */ new Set();
+  function bannerElement() {
+    return document.querySelector(".ro-stale-banner");
+  }
+  function bannerParts(banner) {
+    return {
+      button: banner.querySelector('[data-ro-action="retry"]'),
+      message: banner.querySelector(".bn-text"),
+      title: banner.querySelector(".bn-title")
+    };
+  }
+  function rememberBannerCopy(banner) {
+    const serialized = banner.dataset.roStaleOriginalCopy;
+    if (serialized) {
+      try {
+        return JSON.parse(serialized);
+      } catch {
+      }
+    }
+    const { button, message, title } = bannerParts(banner);
+    const copy = {
+      ariaLabel: banner.getAttribute("aria-label"),
+      buttonText: button.textContent,
+      messageHTML: message.innerHTML,
+      messageHidden: message.hidden,
+      titleText: title.textContent
+    };
+    banner.dataset.roStaleOriginalCopy = JSON.stringify(copy);
+    return copy;
+  }
+  function restoreBannerCopy(banner) {
+    const copy = rememberBannerCopy(banner);
+    const { button, message, title } = bannerParts(banner);
+    title.textContent = copy.titleText;
+    message.innerHTML = copy.messageHTML;
+    message.hidden = copy.messageHidden;
+    button.textContent = copy.buttonText;
+    if (copy.ariaLabel === null) banner.removeAttribute("aria-label");
+    else banner.setAttribute("aria-label", copy.ariaLabel);
+  }
+  function stopStaleCountdown() {
+    if (staleCountdownId !== null) {
+      window.clearInterval(staleCountdownId);
+      staleCountdownId = null;
+    }
+  }
+  function startStaleCountdown() {
+    if (staleCountdownId === null) {
+      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
+    }
+    updateStaleCountdown();
+  }
+  function paintStaleState() {
+    const listStale = staleOwners.has(listStaleOwner);
+    const liveUnavailable = staleOwners.has(liveUnavailableOwner);
+    document.getElementById("resource-list-content")?.classList.toggle("ro-stale", listStale);
+    const banner = bannerElement();
+    if (!banner) {
+      stopStaleCountdown();
+      return;
+    }
+    restoreBannerCopy(banner);
+    if (liveUnavailable) {
+      const { button, message, title } = bannerParts(banner);
+      title.textContent = "Live unavailable, polling ·";
+      message.hidden = false;
+      button.textContent = "Retry";
+    }
+    banner.hidden = !(listStale || liveUnavailable);
+    if (banner.hidden) stopStaleCountdown();
+    else startStaleCountdown();
+  }
+  function updateStaleCountdown() {
+    const banner = bannerElement();
+    if (!banner) return;
+    const span = banner.querySelector("[data-stale-countdown]");
+    if (!span) {
+      return;
+    }
+    const nextAt = refreshNextAtMs();
+    if (!nextAt) {
+      span.textContent = "…";
+    } else {
+      const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
+      span.textContent = `${remaining}s`;
+    }
+    if (staleOwners.has(liveUnavailableOwner)) {
+      banner.setAttribute(
+        "aria-label",
+        `Live unavailable, polling. Retrying in ${span.textContent}. Retry`
+      );
+    }
+  }
+  function isListRefreshEvent(event) {
+    const detail = event.detail;
+    if (!detail) {
+      return false;
+    }
+    const elt = detail.elt;
+    if (elt && elt.id === "resource-list-content") {
+      return true;
+    }
+    const target = detail.target;
+    return !!target && target.id === "resource-list-content";
+  }
+  function markListStale() {
+    staleOwners.add(listStaleOwner);
+    paintStaleState();
+  }
+  function markLiveUnavailable() {
+    staleOwners.add(liveUnavailableOwner);
+    paintStaleState();
+  }
+  function clearLiveUnavailable() {
+    staleOwners.delete(liveUnavailableOwner);
+    paintStaleState();
+  }
+  function clearListStale() {
+    staleOwners.delete(listStaleOwner);
+    paintStaleState();
+  }
+  document.addEventListener("htmx:responseError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+  document.addEventListener("htmx:sendError", (event) => {
+    if (isListRefreshEvent(event)) {
+      noteRefreshFailure();
+      markListStale();
+    }
+  });
+
+  // internal/assets/src/js/live.ts
+  var runtime = {
+    status: "off",
+    connection: null
+  };
+  var counters = {
+    connections: 0,
+    resyncs: 0,
+    fallbacks: 0,
+    v2Snapshots: 0,
+    deltas: 0,
+    terminals: 0,
+    invalidFrames: 0,
+    rawBytes: 0,
+    payloadBytes: 0,
+    snapshotBytes: 0,
+    deltaBytes: 0,
+    inserted: 0,
+    updated: 0,
+    deleted: 0,
+    projected: 0
+  };
+  var RESYNC_WINDOW_MS = 3e4;
+  var MAX_RESYNCS_PER_WINDOW = 2;
+  var FALLBACK_RETRY_INITIAL_MS = 6e4;
+  var FALLBACK_RETRY_MAX_MS = 3e5;
+  var LIVE_FIRST_FRAME_TIMEOUT_MS = 3e4;
+  var completedSnapshotTxns = /* @__PURE__ */ new WeakSet();
+  var liveFallbackSecs = 0;
+  var resyncTimestamps = [];
+  var resumeIntent = null;
+  var requestSubscribed = false;
+  var fallbackRetryTimerId;
+  var fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
+  function addCounter(name, amount = 1) {
+    counters[name] += amount;
+  }
+  function pruneResyncWindow(now = Date.now()) {
+    resyncTimestamps = resyncTimestamps.filter((timestamp) => now - timestamp < RESYNC_WINDOW_MS);
+  }
+  function currentStats() {
+    pruneResyncWindow();
+    return {
+      ...counters,
+      state: runtime.status,
+      seq: runtime.connection?.cursor?.seq || 0,
+      inFlightRequests: listRequestTrackerSnapshot().count,
+      resyncsInWindow: resyncTimestamps.length
+    };
+  }
+  function liveFallbackSeconds() {
+    return liveFallbackSecs;
+  }
+  function liveSupported() {
+    const content = document.getElementById("resource-list-content");
+    if (content?.dataset.liveUrl !== "location") return false;
+    const option = document.querySelector(
+      '[data-ro-action="set-refresh"][data-ro-interval="Live"]'
+    );
+    return !!option && !option.disabled;
+  }
+  function liveStreamBase() {
+    return liveStreamBaseForURL(new URL(window.location.href));
+  }
+  function isActive(connection) {
+    return runtime.connection === connection;
+  }
+  function connectionToken(source) {
+    return Object.freeze({
+      ...source,
+      cursor: source.cursor ? Object.freeze({ ...source.cursor }) : null
+    });
+  }
+  function replaceConnection(current, cursor) {
+    if (!isActive(current)) return null;
+    const next = connectionToken({ ...current, cursor });
+    runtime.connection = next;
+    return next;
+  }
+  function abortActiveConnection() {
+    const connection = runtime.connection;
+    runtime.connection = null;
+    connection?.ctrl.abort();
+  }
+  function clearFallbackRetry() {
+    window.clearTimeout(fallbackRetryTimerId);
+    fallbackRetryTimerId = void 0;
+  }
+  function resetFallbackRetry() {
+    clearFallbackRetry();
+    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
+  }
+  function setOff() {
+    abortActiveConnection();
+    resetFallbackRetry();
+    resumeIntent = null;
+    liveFallbackSecs = 0;
+    runtime.status = "off";
+    clearLiveUnavailable();
+  }
+  function liveResetPage() {
+    setOff();
+    resetListRequestTracker();
+    resyncTimestamps = [];
+  }
+  function scheduleFallbackRetry() {
+    fallbackRetryTimerId = window.setTimeout(() => {
+      fallbackRetryTimerId = void 0;
+      if (refreshMode() !== "Live") return;
+      const base = liveSupported() ? liveStreamBase() : "";
+      fallbackRetryDelayMs = Math.min(fallbackRetryDelayMs * 2, FALLBACK_RETRY_MAX_MS);
+      openConnection(base);
+    }, fallbackRetryDelayMs);
+  }
+  function liveEngageFallback() {
+    abortActiveConnection();
+    resumeIntent = null;
+    runtime.status = "fallback";
+    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
+    addCounter("fallbacks");
+    scheduleRefreshTick();
+    scheduleFallbackRetry();
+    markLiveUnavailable();
+  }
+  function openConnection(base) {
+    abortActiveConnection();
+    clearFallbackRetry();
+    liveFallbackSecs = 0;
+    runtime.streamPath = base;
+    if (!base) {
+      liveEngageFallback();
+      return;
+    }
+    const deferredStatus = document.hidden ? "hidden" : listRequestTrackerSnapshot().count > 0 ? "suspended" : null;
+    if (deferredStatus) {
+      resumeIntent = { base };
+      runtime.status = deferredStatus;
+      scheduleRefreshTick();
+      return;
+    }
+    let generation;
+    try {
+      generation = mintLiveGeneration();
+    } catch {
+      liveEngageFallback();
+      return;
+    }
+    const ctrl = new AbortController();
+    const connection = connectionToken({
+      ctrl,
+      generation,
+      base,
+      cursor: null
+    });
+    runtime.connection = connection;
+    runtime.status = "connecting";
+    addCounter("connections");
+    scheduleRefreshTick();
+    void liveConnect(connection);
+  }
+  function responseHeader2(response, name) {
+    try {
+      return response.headers.get(name);
+    } catch {
+      return null;
+    }
+  }
+  function acceptsV2Response(response, connection) {
+    const contentType = responseHeader2(response, "Content-Type");
+    if (contentType?.split(";", 1)[0].trim().toLowerCase() !== "text/event-stream") {
+      return false;
+    }
+    const version = responseHeader2(response, "RO-Live-Version");
+    if (version !== null && version !== "2") return false;
+    const generation = responseHeader2(response, "RO-Live-Generation");
+    return generation === null || generation === connection.generation;
+  }
+  async function liveConnect(initial) {
+    let firstFrameTimer = window.setTimeout(() => {
+      firstFrameTimer = null;
+      if (runtime.connection?.ctrl === initial.ctrl) {
+        liveEngageFallback();
+      }
+    }, LIVE_FIRST_FRAME_TIMEOUT_MS);
+    const clearFirstFrameTimer = () => {
+      if (firstFrameTimer !== null) {
+        window.clearTimeout(firstFrameTimer);
+        firstFrameTimer = null;
+      }
+    };
+    try {
+      await runLiveConnection(initial, clearFirstFrameTimer);
+    } finally {
+      clearFirstFrameTimer();
+    }
+  }
+  async function runLiveConnection(initial, clearFirstFrameTimer) {
+    let response;
+    try {
+      response = await fetch(initial.base, {
+        signal: initial.ctrl.signal,
+        headers: {
+          "RO-Live-Version": "2",
+          "RO-Live-Generation": initial.generation
+        }
+      });
+    } catch {
+      if (isActive(initial)) liveEngageFallback();
+      return;
+    }
+    if (!isActive(initial)) return;
+    if (response.status !== 200 || !response.body) {
+      liveEngageFallback();
+      return;
+    }
+    if (!acceptsV2Response(response, initial)) {
+      rejectProtocol(initial);
+      return;
+    }
+    const accepted = replaceConnection(initial, null);
+    if (!accepted) return;
+    let connection = accepted;
+    try {
+      const reader = response.body.getReader();
+      const parser = new LiveSSEParser();
+      const readNext = async () => {
+        const result = await reader.read();
+        if (!isActive(connection) || result.done) return;
+        addCounter("rawBytes", result.value.byteLength);
+        let events;
+        try {
+          events = parser.push(result.value);
+        } catch {
+          addCounter("invalidFrames");
+          rejectProtocol(connection, false);
+          return;
+        }
+        for (const event of events) {
+          addCounter("payloadBytes", event.dataBytes);
+          handleV2Frame(connection, event.name, event.data, event.dataBytes);
+          const current = runtime.connection;
+          if (!current || current.ctrl !== connection.ctrl) return;
+          connection = current;
+          clearFirstFrameTimer();
+        }
+        return connection;
+      };
+      while (await readNext()) {
+      }
+    } catch {
+    }
+    if (isActive(connection)) liveEngageFallback();
+  }
+  function handleV2Frame(connection, name, text, payloadBytes) {
+    if (name !== "ro-live") {
+      rejectProtocol(connection);
+      return;
+    }
+    const decoded = decodeLiveV2Envelope(text);
+    if (!decoded.ok) {
+      rejectProtocol(connection);
+      return;
+    }
+    const envelope = decoded.value;
+    const cursor = connection.cursor;
+    if (envelope.g !== connection.generation) {
+      rejectProtocol(connection);
+      return;
+    }
+    if (!cursor) {
+      if (envelope.kind !== "snapshot" || envelope.seq !== 1) {
+        rejectProtocol(connection);
+        return;
+      }
+      commitV2Snapshot(connection, envelope, payloadBytes);
+      return;
+    }
+    if (envelope.kind === "delta") {
+      const applied = applyLiveV2Delta(envelope, cursor);
+      if (!applied.ok) {
+        rejectProtocol(connection);
+        return;
+      }
+      if (!replaceConnection(connection, applied.cursor)) return;
+      clearListValidator();
+      addCounter("deltas");
+      addCounter("deltaBytes", payloadBytes);
+      addCounter("inserted", applied.summary.inserted);
+      addCounter("updated", applied.summary.updated);
+      addCounter("deleted", applied.summary.deleted);
+      addCounter("projected", applied.summary.projected);
+      runtime.status = "open";
+      return;
+    }
+    if (envelope.seq !== cursor.seq + 1) {
+      rejectProtocol(connection);
+      return;
+    }
+    if (envelope.kind === "snapshot") {
+      commitV2Snapshot(connection, envelope, payloadBytes);
+      return;
+    }
+    if (envelope.rev !== cursor.rev || envelope.schema !== cursor.schema) {
+      rejectProtocol(connection);
+      return;
+    }
+    addCounter("terminals");
+    liveEngageFallback();
+  }
+  function commitV2Snapshot(connection, envelope, payloadBytes) {
+    const txn = Object.freeze({});
+    swapSnapshot(envelope.snapshot.html, connection, txn);
+    if (!completedSnapshotTxns.has(txn) || !isActive(connection)) {
+      rejectProtocol(connection);
+      return;
+    }
+    const cursor = {
+      g: envelope.g,
+      seq: envelope.seq,
+      rev: envelope.rev,
+      schema: envelope.schema
+    };
+    if (envelope.rv !== void 0) cursor.rv = envelope.rv;
+    replaceConnection(connection, cursor);
+    addCounter("v2Snapshots");
+    addCounter("snapshotBytes", payloadBytes);
+    runtime.status = "open";
+    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
+    clearLiveUnavailable();
+  }
+  function swapSnapshot(html, connection, txn) {
+    const content = document.getElementById("resource-list-content");
+    const htmx2 = window.htmx;
+    if (!content || !htmx2 || !isActive(connection)) return;
+    clearListValidator();
+    const eventInfo = {
+      target: content,
+      roLivePush: true,
+      roLiveSnapshotTxn: txn
+    };
+    try {
+      htmx2.swap(content, html, { swapStyle: "morph" }, { contextElement: content, eventInfo });
+    } catch {
+    }
+  }
+  function rejectProtocol(connection, countInvalid = true) {
+    if (!isActive(connection)) return;
+    if (countInvalid) addCounter("invalidFrames");
+    const base = connection.base;
+    requestResync(base);
+  }
+  function requestResync(base) {
+    pruneResyncWindow();
+    if (resyncTimestamps.length >= MAX_RESYNCS_PER_WINDOW) {
+      liveEngageFallback();
+      return;
+    }
+    resyncTimestamps.push(Date.now());
+    addCounter("resyncs");
+    openConnection(base);
+  }
+  function requestActivity(activity) {
+    if (activity.phase === "start") {
+      const connection = runtime.connection;
+      if (connection) {
+        resumeIntent = { base: connection.base };
+        abortActiveConnection();
+        runtime.status = document.hidden ? "hidden" : "suspended";
+      } else if (runtime.status === "fallback" && !resumeIntent) {
+        resumeIntent = { base: runtime.streamPath, waitForChangedBase: true };
+      }
+      return;
+    }
+    if (!resumeIntent || activity.inFlight !== 0) return;
+    if (refreshMode() !== "Live") {
+      setOff();
+      return;
+    }
+    const { base, waitForChangedBase } = resumeIntent;
+    resumeIntent = null;
+    if (waitForChangedBase) {
+      runtime.status = "fallback";
+      return;
+    }
+    openConnection(base);
+  }
+  function liveOnListSwap(event) {
+    const detail = Object(event.detail);
+    if (detail.roLivePush !== true) {
+      if (resumeIntent) {
+        const base = liveSupported() ? liveStreamBase() : "";
+        if (!resumeIntent.waitForChangedBase || base !== resumeIntent.base) {
+          resumeIntent = { base };
+        }
+        runtime.streamPath = base;
+      }
+      return;
+    }
+    const snapshotTxn = detail.roLiveSnapshotTxn;
+    if (typeof snapshotTxn === "object" && snapshotTxn !== null) {
+      completedSnapshotTxns.add(snapshotTxn);
+    }
+  }
+  function liveApply(force) {
+    if (!requestSubscribed) {
+      subscribeListRequests(requestActivity);
+      requestSubscribed = true;
+    }
+    if (refreshMode() !== "Live") {
+      setOff();
+      return;
+    }
+    const base = liveSupported() ? liveStreamBase() : "";
+    if (force) {
+      resyncTimestamps = [];
+      resumeIntent = null;
+      resetFallbackRetry();
+    }
+    if (!force && base === runtime.streamPath && runtime.status !== "off") return;
+    openConnection(base);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      const connection = runtime.connection;
+      if (connection) resumeIntent = { base: connection.base };
+      const intent = resumeIntent;
+      if (!intent || intent.waitForChangedBase) return;
+      abortActiveConnection();
+      runtime.status = "hidden";
+      return;
+    }
+    if (runtime.status === "hidden" && resumeIntent) {
+      if (refreshMode() !== "Live") {
+        setOff();
+        return;
+      }
+      const { base } = resumeIntent;
+      resumeIntent = null;
+      openConnection(base);
+    }
+  });
+  window.roLive = { stats: currentStats };
+
   // internal/assets/src/js/live-policy.ts
   function effectivePollSeconds(mode, intervalSeconds, liveFallbackSeconds2) {
     if (intervalSeconds > 0) {
@@ -164,346 +1667,10 @@
   function nextFailureStage(stage) {
     return Math.min(stage + 1, 3);
   }
-  function classifyStreamClose(facts) {
-    if (facts.superseded) {
-      return { kind: "ignore" };
-    }
-    switch (facts.cause) {
-      case "connect-error":
-      case "bad-status":
-        return { kind: "fallback", banner: false, terminal: false };
-      case "read-error":
-      case "eof":
-        return { kind: "fallback", banner: true, terminal: false };
-      case "terminal-frame":
-        return { kind: "fallback", banner: true, terminal: true };
-    }
-  }
-  function shouldDiscardPush(facts) {
-    if (facts.frameGeneration !== facts.currentGeneration) {
-      return "stale-generation";
-    }
-    if (facts.liveStreamBase !== facts.openedStreamBase) {
-      return "wrong-page";
-    }
-    if (facts.requestInFlight) {
-      return "request-in-flight";
-    }
-    return "none";
-  }
-
-  // internal/assets/src/js/stale.ts
-  var STALE_DIM_CLASS = "ro-stale";
-  var staleCountdownId = null;
-  function updateStaleCountdown() {
-    const span = document.querySelector(".ro-stale-banner [data-stale-countdown]");
-    if (!span) {
-      return;
-    }
-    const nextAt = refreshNextAtMs();
-    if (!nextAt) {
-      span.textContent = "…";
-      return;
-    }
-    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
-    span.textContent = `${remaining}s`;
-  }
-  function isListRefreshEvent(event) {
-    const detail = event.detail;
-    if (!detail || isPreloadRequest(event)) {
-      return false;
-    }
-    const elt = detail.elt;
-    if (elt && elt.id === "resource-list-content") {
-      return true;
-    }
-    const target = detail.target;
-    return !!target && target.id === "resource-list-content";
-  }
-  function markListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.add(STALE_DIM_CLASS);
-    }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (!banner) {
-      return;
-    }
-    banner.hidden = false;
-    if (staleCountdownId === null) {
-      staleCountdownId = window.setInterval(updateStaleCountdown, 1e3);
-    }
-    updateStaleCountdown();
-  }
-  function clearListStale() {
-    const content = document.getElementById("resource-list-content");
-    if (content) {
-      content.classList.remove(STALE_DIM_CLASS);
-    }
-    const banner = document.querySelector(".ro-stale-banner");
-    if (banner) {
-      banner.hidden = true;
-    }
-    if (staleCountdownId !== null) {
-      window.clearInterval(staleCountdownId);
-      staleCountdownId = null;
-    }
-  }
-  document.addEventListener("htmx:responseError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
-    }
-  });
-  document.addEventListener("htmx:sendError", (event) => {
-    if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
-      markListStale();
-    }
-  });
-
-  // internal/assets/src/js/live.ts
-  function getHtmx() {
-    return window.htmx;
-  }
-  var liveState = {
-    status: "idle",
-    // 'idle' | 'connecting' | 'open' | 'fallback' | 'hidden'
-    abort: null,
-    // AbortController of the current stream fetch
-    gen: "",
-    // the minted generation every frame must echo (string compare)
-    streamPath: ""
-    // the stream URL sans ?g= -- the page/params identity
-  };
-  var liveDiscards = 0;
-  var liveFallbackSecs = 0;
-  function liveFallbackSeconds() {
-    return liveFallbackSecs;
-  }
-  function liveSupported() {
-    const content = document.getElementById("resource-list-content");
-    if (content?.dataset.liveUrl !== "location") {
-      return false;
-    }
-    const option = document.querySelector(
-      '[data-ro-action="set-refresh"][data-ro-interval="Live"]'
-    );
-    return !!option && !option.disabled;
-  }
-  function liveStreamBase() {
-    const u = new URL(window.location.href);
-    return `${u.pathname.replace(/\/+$/, "")}/_stream${u.search}`;
-  }
-  function liveTeardown() {
-    const ctrl = liveState.abort;
-    liveState.abort = null;
-    liveFallbackSecs = 0;
-    if (ctrl) {
-      ctrl.abort();
-    }
-  }
-  function liveEngageFallback(banner) {
-    liveTeardown();
-    liveState.status = "fallback";
-    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
-    scheduleRefreshTick();
-    if (banner) {
-      markListStale();
-    }
-  }
-  function liveOpen(base) {
-    liveTeardown();
-    liveState.streamPath = base;
-    if (!base) {
-      liveEngageFallback(false);
-      return;
-    }
-    liveState.status = "connecting";
-    liveState.gen = window.crypto.getRandomValues(new Uint32Array(4)).toString();
-    const ctrl = new AbortController();
-    liveState.abort = ctrl;
-    const separator = base.includes("?") ? "&" : "?";
-    const url = `${base}${separator}g=${liveState.gen}`;
-    scheduleRefreshTick();
-    void liveConnect(url, ctrl);
-  }
-  async function liveConnect(url, ctrl) {
-    let res;
-    try {
-      res = await fetch(url, { signal: ctrl.signal });
-    } catch {
-      applyClose({ superseded: liveState.abort !== ctrl, cause: "connect-error" });
-      return;
-    }
-    if (liveState.abort !== ctrl) {
-      return;
-    }
-    if (res.status !== 200 || !res.body) {
-      applyClose({ superseded: false, cause: "bad-status" });
-      return;
-    }
-    liveState.status = "open";
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffered = "";
-    let eventName = null;
-    let dataLines = [];
-    const readAndHandleChunk = async () => {
-      const chunk = await reader.read();
-      if (liveState.abort !== ctrl) {
-        return;
-      }
-      const value = chunk.value;
-      buffered += decoder.decode(value.subarray(), { stream: true });
-      const completeLines = buffered.split("\n");
-      buffered = completeLines.pop();
-      for (const rawLine of completeLines) {
-        const line = rawLine === "\r" ? "" : rawLine;
-        if (line.length === 0) {
-          liveHandleFrame(eventName, dataLines.join("\n"));
-          eventName = null;
-          dataLines = [];
-          if (liveState.abort !== ctrl) {
-            return;
-          }
-        } else if (line.startsWith("event:")) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5));
-        }
-      }
-      return value;
-    };
-    try {
-      while (await readAndHandleChunk()) {
-      }
-    } catch {
-    }
-    if (liveState.abort !== ctrl) {
-      return;
-    }
-    liveEngageFallback(true);
-  }
-  function applyClose(facts) {
-    const action = classifyStreamClose(facts);
-    if (action.kind === "ignore") {
-      return;
-    }
-    liveEngageFallback(action.banner);
-  }
-  function liveHandleFrame(name, text) {
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return;
-    }
-    const payload = parsed;
-    if (name === "ro-terminal") {
-      applyClose({ superseded: false, cause: "terminal-frame" });
-      return;
-    }
-    if (name !== "ro-table") {
-      return;
-    }
-    if (typeof payload.g !== "string" || typeof payload.html !== "string") {
-      return;
-    }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    const reason = shouldDiscardPush({
-      frameGeneration: payload.g,
-      currentGeneration: liveState.gen,
-      // The Go bundle contract pins the literal page comparison below. Feed
-      // equal page identities here so the policy supplies the first and third
-      // ordered gates (generation, then request); the literal supplies the
-      // page gate between them without evaluating it twice.
-      liveStreamBase: liveState.streamPath,
-      openedStreamBase: liveState.streamPath,
-      requestInFlight: userListRequestsInFlight.size > 0 || containerListRequestsInFlight.size > 0
-    });
-    if (reason === "stale-generation" || liveStreamBase() !== liveState.streamPath || reason === "request-in-flight") {
-      liveDiscards += 1;
-      return;
-    }
-    liveMorph(payload.html);
-  }
-  function liveMorph(html) {
-    const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx();
-    if (!content || !htmx2 || typeof htmx2.swap !== "function") {
-      return;
-    }
-    htmx2.swap(
-      content,
-      html,
-      { swapStyle: "morph" },
-      {
-        contextElement: content,
-        eventInfo: { target: content, roLivePush: true }
-      }
-    );
-  }
-  function liveOnListSwap(event) {
-    const detail = event.detail;
-    if (detail?.roLivePush) {
-      return;
-    }
-    if (liveState.status !== "open" && liveState.status !== "connecting") {
-      return;
-    }
-    let base = liveStreamBase();
-    const requestPath = detail?.pathInfo?.finalRequestPath || detail?.pathInfo?.requestPath;
-    if (typeof requestPath === "string") {
-      const queryStart = requestPath.indexOf("?");
-      const pathname = queryStart === -1 ? requestPath : requestPath.slice(0, queryStart);
-      if (pathname.endsWith("/_table")) {
-        const query = queryStart === -1 ? "" : requestPath.slice(queryStart);
-        base = `${pathname.slice(0, -"/_table".length)}/_stream${query}`;
-      }
-    }
-    liveOpen(base);
-  }
-  function liveApply(force) {
-    if (refreshMode() !== "Live") {
-      liveTeardown();
-      liveState.status = "idle";
-      liveState.streamPath = "";
-      return;
-    }
-    const base = liveSupported() ? liveStreamBase() : "";
-    if (!force && base === liveState.streamPath && liveState.status !== "idle") {
-      return;
-    }
-    liveOpen(base);
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      if (liveState.status === "open" || liveState.status === "connecting") {
-        liveTeardown();
-        liveState.status = "hidden";
-      }
-      return;
-    }
-    if (liveState.status === "hidden" && refreshMode() === "Live") {
-      liveOpen(liveSupported() ? liveStreamBase() : "");
-    }
-  });
-  window.roLive = {
-    discards() {
-      return liveDiscards;
-    }
-  };
 
   // internal/assets/src/js/prefs.ts
-  var PREFS_COOKIE = "ro_prefs";
-  var PREFS_VERSION_PREFIX = "v1.";
   var PREFS_MAX_ENCODED = 3072;
   var PREFS_COOKIE_MAX_AGE = 31536e3;
-  var REFRESH_KEY = "roRefresh";
   function b64urlEncodeUTF8(text) {
     const bytes = new TextEncoder().encode(text);
     const bin = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
@@ -555,10 +1722,11 @@
   }
   function decodePrefsValue(value) {
     const empty = { kinds: [], refresh: "", ns: {} };
-    if (!value?.startsWith(PREFS_VERSION_PREFIX)) {
+    const prefix = "v1.";
+    if (!value?.startsWith(prefix)) {
       return { prefs: empty, ok: false };
     }
-    const payload = value.slice(PREFS_VERSION_PREFIX.length);
+    const payload = value.slice(prefix.length);
     try {
       const decoded = JSON.parse(b64urlDecodeUTF8(payload));
       if (!isRecord(decoded)) {
@@ -615,7 +1783,8 @@
     if (Object.keys(ns).length > 0) {
       fields.push(`"ns":${canonicalNamespaceJSON(ns)}`);
     }
-    return PREFS_VERSION_PREFIX + b64urlEncodeUTF8(`{${fields.join(",")}}`);
+    const payload = b64urlEncodeUTF8(`{${fields.join(",")}}`);
+    return `v1.${payload}`;
   }
   function encodePrefsValue(prefs) {
     const kinds = prefs.kinds ?? [];
@@ -634,7 +1803,7 @@
     return value;
   }
   function prefsCookieValue() {
-    const prefix = `${PREFS_COOKIE}=`;
+    const prefix = "ro_prefs=";
     return document.cookie.split("; ").find((part) => part.startsWith(prefix))?.slice(prefix.length);
   }
   function readPrefs() {
@@ -642,7 +1811,7 @@
   }
   function writePrefs(prefs) {
     try {
-      let cookie = PREFS_COOKIE + "=" + encodePrefsValue(prefs) + "; Path=/; SameSite=Lax; Max-Age=" + PREFS_COOKIE_MAX_AGE;
+      let cookie = "ro_prefs=" + encodePrefsValue(prefs) + "; Path=/; SameSite=Lax; Max-Age=" + PREFS_COOKIE_MAX_AGE;
       if (window.location.protocol === "https:") {
         cookie += "; Secure";
       }
@@ -681,7 +1850,7 @@
   }
 
   // internal/assets/src/js/refresh.ts
-  function getHtmx2() {
+  function getHtmx() {
     return window.htmx;
   }
   var refreshTimerId = null;
@@ -690,63 +1859,92 @@
   function refreshNextAtMs() {
     return refreshNextAt;
   }
-  var userListRequestsInFlight = /* @__PURE__ */ new Set();
-  var containerListRequestsInFlight = /* @__PURE__ */ new Set();
+  var listRequestEpoch = 0;
+  var listRequestsInFlight = /* @__PURE__ */ new Map();
+  var listRequestSubscribers = /* @__PURE__ */ new Set();
   function requestDetail(event) {
     return Object(event.detail);
   }
-  function pruneSettledListRequests(requests) {
-    requests.forEach((xhr) => {
-      if (xhr.readyState === 4 || xhr.readyState === 0) {
-        requests.delete(xhr);
+  function listRequestTrackerSnapshot() {
+    return { count: listRequestsInFlight.size };
+  }
+  function subscribeListRequests(subscriber) {
+    listRequestSubscribers.add(subscriber);
+    return () => listRequestSubscribers.delete(subscriber);
+  }
+  function publishListRequest(phase) {
+    const activity = {
+      phase,
+      inFlight: listRequestsInFlight.size
+    };
+    listRequestSubscribers.forEach((subscriber) => {
+      subscriber(activity);
+    });
+  }
+  function settleListRequest(xhr, owner) {
+    const currentOwner = listRequestsInFlight.get(xhr);
+    if (currentOwner === void 0 || owner !== void 0 && currentOwner !== owner) return;
+    listRequestsInFlight.delete(xhr);
+    publishListRequest("settle");
+  }
+  function trackListRequest(xhr, requestEvent) {
+    if (listRequestsInFlight.has(xhr)) return;
+    const owner = ++listRequestEpoch;
+    listRequestsInFlight.set(xhr, owner);
+    xhr.addEventListener("loadend", () => settleListRequest(xhr, owner));
+    publishListRequest("start");
+    queueMicrotask(() => {
+      if (requestEvent.defaultPrevented || xhr.readyState === 0) {
+        settleListRequest(xhr, owner);
       }
     });
   }
-  function isPreloadRequest(event) {
-    const config = Object(requestDetail(event).requestConfig);
-    const headers = Object(config.headers);
-    return headers["HX-Preloaded"] === "true";
+  function resetListRequestTracker() {
+    listRequestEpoch += 1;
+    if (listRequestsInFlight.size === 0) return;
+    listRequestsInFlight.clear();
+    publishListRequest("settle");
   }
-  function isUserListRequest(event) {
-    const detail = requestDetail(event);
-    return detail.elt instanceof Element && detail.target instanceof Element && detail.target.id === "resource-list-content" && !isPreloadRequest(event);
+  function pruneSettledListRequests() {
+    listRequestsInFlight.forEach((owner, xhr) => {
+      if (xhr.readyState === 4 || xhr.readyState === 0) settleListRequest(xhr, owner);
+    });
   }
   function handleRefreshConfigRequest(event) {
     const detail = requestDetail(event);
-    const elt = Object(detail.elt);
-    if (elt.id !== "resource-list-content") {
-      return;
+    const content = document.getElementById("resource-list-content");
+    const sourceIsContent = content !== null && detail.elt === content;
+    const targetIsContent = content !== null && detail.target === content;
+    if (sourceIsContent || targetIsContent) {
+      const headers = Object(detail.headers);
+      for (const name of Object.keys(headers)) {
+        if (name.toLowerCase() === "ro-no-push") {
+          delete headers[name];
+        }
+      }
+      if (sourceIsContent && (detail.target === void 0 || targetIsContent)) {
+        headers["RO-No-Push"] = "true";
+      }
     }
-    const headers = Object(detail.headers);
-    headers["RO-No-Push"] = "true";
+    configureListValidatorRequest(event);
   }
   document.addEventListener("htmx:configRequest", handleRefreshConfigRequest);
   function handleRefreshBeforeRequest(event) {
     const detail = requestDetail(event);
-    const elt = Object(detail.elt);
-    if (elt.id === "resource-list-content") {
-      if (detail.xhr) {
-        containerListRequestsInFlight.add(detail.xhr);
-      }
-      return;
-    }
-    if (!isUserListRequest(event)) {
-      return;
-    }
-    if (detail.xhr) {
-      userListRequestsInFlight.add(detail.xhr);
-    }
     const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx2();
-    if (content && htmx2) {
-      htmx2.trigger(content, "htmx:abort");
-    }
+    const xhr = detail.xhr;
+    if (!content || !(xhr instanceof XMLHttpRequest) || detail.target !== content) return;
+    const sourceIsContent = detail.elt === content;
+    if (!sourceIsContent && !(detail.elt instanceof Element)) return;
+    trackListRequest(xhr, event);
+    if (sourceIsContent) return;
+    const htmx2 = getHtmx();
+    htmx2?.trigger(content, "htmx:abort");
   }
   document.addEventListener("htmx:beforeRequest", handleRefreshBeforeRequest);
   function handleRefreshAfterRequest(event) {
     const xhr = requestDetail(event).xhr;
-    userListRequestsInFlight.delete(xhr);
-    containerListRequestsInFlight.delete(xhr);
+    if (xhr instanceof XMLHttpRequest) settleListRequest(xhr);
   }
   document.addEventListener("htmx:afterRequest", handleRefreshAfterRequest);
   function parseRefreshSeconds(mode) {
@@ -767,7 +1965,7 @@
     }
     let legacy = null;
     try {
-      legacy = window.localStorage.getItem(REFRESH_KEY);
+      legacy = window.localStorage.getItem("roRefresh");
     } catch {
     }
     if (!legacy) {
@@ -784,7 +1982,7 @@
   }
   function requestListRefresh() {
     const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx2();
+    const htmx2 = getHtmx();
     if (!content || !htmx2) {
       return;
     }
@@ -803,12 +2001,8 @@
     if (document.hidden) {
       return;
     }
-    pruneSettledListRequests(userListRequestsInFlight);
-    pruneSettledListRequests(containerListRequestsInFlight);
-    if (userListRequestsInFlight.size > 0) {
-      return;
-    }
-    if (containerListRequestsInFlight.size > 0) {
+    pruneSettledListRequests();
+    if (listRequestsInFlight.size > 0) {
       return;
     }
     requestListRefresh();
@@ -838,6 +2032,14 @@
       scheduleRefreshTick();
       fireRefresh();
     }, delayMs);
+    updateStaleCountdown();
+  }
+  function pauseRefresh() {
+    if (refreshTimerId !== null) {
+      window.clearTimeout(refreshTimerId);
+      refreshTimerId = null;
+    }
+    refreshNextAt = 0;
     updateStaleCountdown();
   }
   function applyRefresh() {
@@ -893,9 +2095,9 @@
   document.addEventListener("visibilitychange", handleRefreshVisibilityChange);
   var refreshBindings = [
     // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
-    // #resource-list-content through the shared refresh path (the v2 loop derives
-    // the `_table` URL from location.href at click time; the v1 multi-type
-    // container triggers its baked ro:refresh). On success the morph swaps fresh
+    // #resource-list-content through the shared refresh path (location-backed
+    // lists derive `_table` from location.href; multi-type containers trigger
+    // their baked ro:refresh). On success the morph swaps fresh
     // rows and the afterSwap handler clears the stale dim + re-hides the banner;
     // on another failure the responseError handler keeps it stale. An in-flight
     // container request (a HUNG tick is exactly the state this button exists for)
@@ -910,11 +2112,15 @@
       handler: (event) => {
         event.preventDefault();
         const content = document.getElementById("resource-list-content");
-        const htmx2 = getHtmx2();
+        const htmx2 = getHtmx();
         if (content && htmx2) {
           htmx2.trigger(content, "htmx:abort");
         }
-        requestListRefresh();
+        if (refreshMode() === "Live") {
+          liveApply(true);
+        } else {
+          requestListRefresh();
+        }
         return true;
       }
     },
@@ -1033,6 +2239,15 @@
   };
   var BULK_NAMES_MAX = 100;
   var bulkOverCapToasted;
+  function applyLiveRowDeletions(keys) {
+    let changed = false;
+    for (const key of keys) changed = rowSelection.delete(key) || changed;
+    if (rowFocusKey !== null && keys.has(rowFocusKey)) {
+      rowFocusKey = null;
+      changed = true;
+    }
+    if (changed) updateBulkBar();
+  }
   function updateBulkBar() {
     const bar = document.getElementById("ro-bulkbar");
     if (!bar) {
@@ -1155,16 +2370,11 @@
 
   // internal/assets/src/js/virtualizer.ts
   var FILTER_HIDE_CLASS = "ro-row-filtered";
-  function roRowModel() {
-    return window.roRowModel;
-  }
   function roRowState() {
     return window.roRowState;
   }
   var virtState = {
     active: false,
-    rows: [],
-    byKey: /* @__PURE__ */ new Map(),
     visible: [],
     rowH: 0,
     start: 0,
@@ -1174,16 +2384,14 @@
     topSpacer: null,
     bottomSpacer: null,
     pinnedWidths: [],
-    pendingRows: null,
     pendingScrollY: null
   };
+  var historyRecoveryPending = null;
   function virtualizerActive() {
     return virtState.active && virtState.tbody?.isConnected === true;
   }
   function virtReset() {
     virtState.active = false;
-    virtState.rows = [];
-    virtState.byKey = /* @__PURE__ */ new Map();
     virtState.visible = [];
     virtState.rowH = 0;
     virtState.start = 0;
@@ -1193,7 +2401,6 @@
     virtState.topSpacer = null;
     virtState.bottomSpacer = null;
     virtState.pinnedWidths = [];
-    virtState.pendingRows = null;
     virtState.pendingScrollY = null;
   }
   function virtMakeSpacer() {
@@ -1251,8 +2458,7 @@
     virtApplyPins();
   }
   function virtComputeVisible() {
-    const keys = roRowModel().visibleKeys;
-    virtState.visible = keys ? virtState.rows.filter((tr) => keys.has(tr.dataset.key)) : virtState.rows;
+    virtState.visible = listProjectionVisibleRows();
   }
   function virtRenderWindow() {
     const s = virtState;
@@ -1283,13 +2489,20 @@
   function virtualizeInit() {
     const content = document.getElementById("resource-list-content");
     const wrap = content?.querySelector(".ro-table-wrap.ro-windowed");
+    if (!content) {
+      resetListProjection();
+      virtReset();
+      return;
+    }
     if (!wrap) {
+      ensureListProjection(content);
       virtReset();
       return;
     }
     const table = wrap.querySelector("table.ro-table");
     const tbody = table?.tBodies.item(0) ?? null;
     if (!tbody) {
+      ensureListProjection(content);
       virtReset();
       return;
     }
@@ -1297,20 +2510,26 @@
       if (virtState.active && virtState.tbody === tbody) {
         return;
       }
+      if (historyRecoveryPending?.content === content && historyRecoveryPending.tbody === tbody) {
+        return;
+      }
       virtReset();
+      ensureListProjection(content);
+      historyRecoveryPending = { content, tbody };
+      clearListValidator();
       requestListRefresh();
       return;
     }
-    const rows = Array.from(tbody.querySelectorAll(":scope > tr[data-key]"));
+    ensureListProjection(content);
+    const rows = listProjectionRows();
     if (rows.length === 0) {
       virtReset();
       return;
     }
-    virtReset();
+    historyRecoveryPending = null;
+    virtState.pendingScrollY = null;
     virtState.table = table;
     virtState.tbody = tbody;
-    virtState.rows = rows;
-    virtState.byKey = new Map(rows.map((tr) => [tr.dataset.key, tr]));
     virtState.topSpacer = virtMakeSpacer();
     virtState.bottomSpacer = virtMakeSpacer();
     virtSetSpacerColspan();
@@ -1321,22 +2540,20 @@
     virtRenderWindow();
   }
   function virtualizePrepareSwap(fragment) {
-    virtState.pendingRows = null;
     virtState.pendingScrollY = null;
+    const incoming = prepareListProjectionSwap(fragment);
+    if (!incoming.windowed || incoming.rows.length === 0) {
+      return;
+    }
     const wrap = fragment.querySelector(".ro-table-wrap.ro-windowed");
     const tbody = wrap ? wrap.querySelector("table.ro-table tbody") : null;
     if (!tbody) {
       return;
     }
-    const rows = Array.from(tbody.querySelectorAll(":scope > tr[data-key]"));
-    if (rows.length === 0) {
-      return;
-    }
-    virtState.pendingRows = rows;
     virtState.pendingScrollY = window.scrollY;
     const rowH = virtState.rowH || virtFallbackRowHeight();
     const priorStart = virtState.active ? virtState.start : 0;
-    const heights = prepareSwapSpacers(priorStart, rows.length, rowH);
+    const heights = prepareSwapSpacers(priorStart, incoming.rows.length, rowH);
     const topSpacer = virtMakeSpacer();
     const bottomSpacer = virtMakeSpacer();
     topSpacer.firstElementChild.style.height = `${heights.top}px`;
@@ -1344,20 +2561,18 @@
     tbody.replaceChildren(topSpacer, bottomSpacer);
   }
   function virtualizeAfterSwap() {
-    const pending = virtState.pendingRows;
-    virtState.pendingRows = null;
-    if (!pending) {
-      virtReset();
-      return;
-    }
-    const prior = virtState.byKey;
+    historyRecoveryPending = null;
     const wasActive = virtState.active;
-    if (!virtBindMounts()) {
+    const previousByKey = commitListProjectionSwap();
+    if (!previousByKey || !listProjectionWindowed() || listProjectionRows().length === 0) {
       virtReset();
       return;
     }
-    virtState.rows = pending;
-    virtState.byKey = new Map(pending.map((tr) => [tr.dataset.key, tr]));
+    if (!virtBindMounts()) {
+      resetListProjection();
+      virtReset();
+      return;
+    }
     if (!virtState.topSpacer) {
       virtState.topSpacer = virtMakeSpacer();
       virtState.bottomSpacer = virtMakeSpacer();
@@ -1384,7 +2599,7 @@
       virtRenderWindow();
     }
     virtState.pendingScrollY = null;
-    virtFlashChangedCells(prior);
+    virtFlashChangedCells(previousByKey);
   }
   function virtFlashChangedCells(prior) {
     if (prior.size === 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -1406,11 +2621,16 @@
     });
   }
   function virtualizeOnFilterChange() {
-    if (!virtualizerActive() || virtState.pendingRows) {
+    if (!virtualizerActive() || listProjectionSwapPending()) {
       return;
     }
     virtComputeVisible();
     virtRenderWindow();
+  }
+  function virtualizeAfterDelta(previousByKey, focusKey = null) {
+    if (!virtualizerActive()) return;
+    if (focusKey) virtualizeRevealKey(focusKey);
+    virtFlashChangedCells(previousByKey);
   }
   function virtMoveFocus(delta) {
     const list = virtState.visible;
@@ -1430,19 +2650,26 @@
     const topbar = document.querySelector("header.ro-topbar");
     const topMin = topbar ? topbar.getBoundingClientRect().bottom : 0;
     const delta = scrollAdjustToReveal(rowTop, virtState.rowH, topMin, window.innerHeight);
-    if (delta !== 0) {
-      window.scrollBy(0, delta);
-    }
+    if (delta === 0) return;
+    window.scrollBy(0, delta);
     virtRenderWindow();
   }
+  function virtualizeRevealKey(key) {
+    if (!virtualizerActive()) return false;
+    const index = virtState.visible.findIndex((row2) => row2.dataset.key === key);
+    if (index === -1) return false;
+    const row = virtState.visible[index];
+    virtualizeScrollToIndex(index);
+    return row.isConnected;
+  }
   function virtRows() {
-    return virtState.rows;
+    return virtualizerActive() ? Array.from(listProjectionRows()) : [];
   }
   function virtVisible() {
     return virtState.visible;
   }
   function virtRowByKey(key) {
-    return virtState.byKey.get(key) || null;
+    return virtualizerActive() ? listProjectionRowByKey(key) : null;
   }
   var virtScrollScheduled = false;
   function virtOnScroll() {
@@ -1497,7 +2724,7 @@
       if (!virtualizerActive()) {
         return false;
       }
-      const tr = virtState.byKey.get(key);
+      const tr = listProjectionRowByKey(key);
       const index = tr ? virtState.visible.indexOf(tr) : -1;
       if (index === -1) {
         return false;
@@ -1507,55 +2734,138 @@
     }
   };
 
-  // internal/assets/src/js/filters.ts
-  function getHtmx3() {
-    return window.htmx;
+  // internal/assets/src/js/morph.ts
+  var idiomorph = typeof Idiomorph !== "undefined" && typeof Idiomorph.morph === "function" ? Idiomorph : void 0;
+  if (idiomorph?.defaults?.callbacks && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const PRIOR = /* @__PURE__ */ new WeakMap();
+    idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode) => {
+      if (oldNode.nodeName !== "TD") {
+        return;
+      }
+      PRIOR.set(oldNode, oldNode.textContent);
+    };
+    idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode) => {
+      if (!PRIOR.has(oldNode)) {
+        return;
+      }
+      const el = oldNode;
+      const before = PRIOR.get(oldNode);
+      PRIOR.delete(oldNode);
+      if (before !== el.textContent) {
+        el.classList.remove("ro-cell-changed");
+        void el.offsetWidth;
+        el.classList.add("ro-cell-changed");
+      }
+    };
   }
-  var roRowModel2 = {
-    fields: [],
-    rows: [],
-    visibleKeys: null
-  };
-  window.roRowModel = roRowModel2;
-  function captureRowModel(root) {
-    const table = root.querySelector("table.ro-table");
-    if (!table) {
-      roRowModel2.fields = [];
-      roRowModel2.rows = [];
+  if (typeof htmx !== "undefined" && typeof htmx.defineExtension === "function" && idiomorph) {
+    htmx.defineExtension("ro-morph", {
+      isInlineSwap: (swapStyle) => swapStyle === "morph",
+      handleSwap: (swapStyle, target, fragment) => {
+        if (swapStyle !== "morph") {
+          return false;
+        }
+        const listTarget = target.id === "resource-list-content";
+        try {
+          if (listTarget) {
+            prepareListProjectionSwap(fragment);
+            virtualizePrepareSwap(fragment);
+          }
+          return idiomorph.morph(target, fragment.children, {
+            morphStyle: "innerHTML",
+            ignoreActiveValue: true
+          });
+        } catch (error) {
+          cancelListProjectionSwap(fragment);
+          throw error;
+        }
+      }
+    });
+  }
+
+  // internal/assets/src/js/bulk-actions.ts
+  var bulkCopyResetTimer = 0;
+  function bulkCopyNames(button) {
+    const entries = roRowState2().selectedEntries();
+    const names = entries.map((entry) => entry.name).join("\n");
+    roCopyText(names, (ok) => {
+      if (!ok) {
+        return;
+      }
+      const label = button.querySelector("span:last-child");
+      if (!label) {
+        return;
+      }
+      window.clearTimeout(bulkCopyResetTimer);
+      label.textContent = "Copied";
+      bulkCopyResetTimer = window.setTimeout(() => {
+        label.textContent = "Copy names";
+      }, 1100);
+    });
+  }
+  function bulkDownloadYAML(bar) {
+    if (!bar?.dataset.bulkHref) {
       return;
     }
-    const fields = [];
-    table.querySelectorAll("thead th").forEach((th) => {
-      const label = normalizeFieldWhitespace(th.textContent || "");
-      fields.push({
-        label,
-        name: fieldSuggestionText(label),
-        hint: th.dataset.hint || ""
-      });
+    const entries = roRowState2().selectedEntries();
+    if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
+      return;
+    }
+    const cluster = bar.dataset.bulkCluster;
+    const names = entries.map((entry) => {
+      if (bar.dataset.bulkAllns === "true" && cluster && entry.key.startsWith(`${cluster}/`)) {
+        return entry.key.slice(cluster.length + 1);
+      }
+      return entry.name;
     });
-    const rows = [];
-    table.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
-      const cells = [];
-      tr.querySelectorAll("td").forEach((td) => {
-        cells.push(trimFilterWhitespace(td.textContent || ""));
-      });
-      const nameLink = tr.querySelector("td.cell-name a");
-      rows.push({
-        key: tr.dataset.key,
-        name: nameLink ? trimFilterWhitespace(nameLink.textContent || "") : cells[0] || "",
-        cells
-      });
-    });
-    roRowModel2.fields = fields;
-    roRowModel2.rows = rows;
+    window.location.assign(`${bar.dataset.bulkHref}&names=${encodeURIComponent(names.join(","))}`);
   }
+  function roRowState2() {
+    return window.roRowState;
+  }
+  var bulkBindings = [
+    {
+      event: "click",
+      selector: "#ro-bulk-download",
+      stop: true,
+      handler: (_event, matched) => {
+        bulkDownloadYAML(matched.closest("#ro-bulkbar"));
+        return true;
+      }
+    },
+    {
+      event: "click",
+      selector: "#ro-bulk-copy",
+      stop: true,
+      handler: (_event, matched) => {
+        bulkCopyNames(matched);
+        return true;
+      }
+    },
+    {
+      event: "click",
+      selector: "#ro-bulk-clear",
+      stop: true,
+      handler: () => {
+        clearRowState();
+        return true;
+      }
+    }
+  ];
+
+  // internal/assets/src/js/filters.ts
+  function getHtmx2() {
+    return window.htmx;
+  }
+  var roRowModel = listProjectionRowModel();
   function captureRowModelFromDocument() {
     const content = document.getElementById("resource-list-content");
-    if (content && document.getElementById("ro-filter-input") && !virtualizerActive()) {
-      captureRowModel(content);
+    if (content && !virtualizerActive()) {
+      ensureListProjection(content);
     }
   }
   var FILTER_HIDE_CLASS2 = "ro-row-filtered";
+  var appliedLiveFilter = null;
   function applyLiveNameFilter() {
     const content = document.getElementById("resource-list-content");
     if (!content) {
@@ -1563,20 +2873,25 @@
     }
     const input = document.getElementById("ro-filter-input");
     const draft = input ? input.value : "";
-    const visible = liveNameMatchKeys(roRowModel2.rows, draft);
-    roRowModel2.visibleKeys = visible;
-    content.querySelectorAll("tbody tr[data-key]").forEach((tr) => {
-      tr.classList.toggle(
+    const revision = listProjectionRevision();
+    if (appliedLiveFilter?.content === content && appliedLiveFilter.draft === draft && appliedLiveFilter.revision === revision) {
+      return;
+    }
+    const visible = liveNameMatchKeys(roRowModel.rows, draft);
+    setListProjectionVisibleKeys(visible);
+    content.querySelectorAll("tbody tr[data-key], .ro-cardlist > .ro-pcard[data-key]").forEach((item) => {
+      item.classList.toggle(
         FILTER_HIDE_CLASS2,
-        !!visible && !visible.has(tr.dataset.key)
+        !!visible && !visible.has(item.dataset.key)
       );
     });
     virtualizeOnFilterChange();
+    appliedLiveFilter = { content, draft, revision };
   }
   function issueFilterNavigation(href) {
     const content = document.getElementById("resource-list-content");
     const input = document.getElementById("ro-filter-input");
-    const htmx2 = getHtmx3();
+    const htmx2 = getHtmx2();
     if (!content || !input || !htmx2) {
       window.location.assign(href);
       return;
@@ -1597,7 +2912,7 @@
     if (!parsed) {
       return;
     }
-    if (!filterFieldKnown(roRowModel2.fields, parsed.field)) {
+    if (!filterFieldKnown(roRowModel.fields, parsed.field)) {
       showFilterFieldHint();
       return;
     }
@@ -1630,7 +2945,7 @@
     if (!el) {
       return;
     }
-    const names = filterSuggestionFields(roRowModel2.fields).slice(0, 3).map((f) => f.text);
+    const names = filterSuggestionFields(roRowModel.fields).slice(0, 3).map((f) => f.text);
     el.textContent = `no such field — try ${names.join(", ")}…`;
     el.hidden = false;
   }
@@ -1712,14 +3027,14 @@
     }
     const parsed = splitFilterDraft(draft);
     if (!parsed) {
-      openFilterAC(rankFieldSuggestions(roRowModel2.fields, draft));
+      openFilterAC(rankFieldSuggestions(roRowModel.fields, draft));
       return;
     }
-    if (parsed.op !== ":" || !filterFieldKnown(roRowModel2.fields, parsed.field)) {
+    if (parsed.op !== ":" || !filterFieldKnown(roRowModel.fields, parsed.field)) {
       closeFilterAC();
       return;
     }
-    openFilterAC(rankValueSuggestions(roRowModel2.fields, roRowModel2.rows, parsed));
+    openFilterAC(rankValueSuggestions(roRowModel.fields, roRowModel.rows, parsed));
   }
   function acceptFilterAC(commitValues) {
     const input = document.getElementById("ro-filter-input");
@@ -1859,121 +3174,8 @@
     }
   ];
 
-  // internal/assets/src/js/morph.ts
-  var idiomorph = typeof Idiomorph !== "undefined" && typeof Idiomorph.morph === "function" ? Idiomorph : void 0;
-  if (idiomorph?.defaults?.callbacks && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    const PRIOR = /* @__PURE__ */ new WeakMap();
-    idiomorph.defaults.callbacks.beforeNodeMorphed = (oldNode) => {
-      if (oldNode.nodeName !== "TD") {
-        return;
-      }
-      PRIOR.set(oldNode, oldNode.textContent);
-    };
-    idiomorph.defaults.callbacks.afterNodeMorphed = (oldNode) => {
-      if (!PRIOR.has(oldNode)) {
-        return;
-      }
-      const el = oldNode;
-      const before = PRIOR.get(oldNode);
-      PRIOR.delete(oldNode);
-      if (before !== el.textContent) {
-        el.classList.remove("ro-cell-changed");
-        void el.offsetWidth;
-        el.classList.add("ro-cell-changed");
-      }
-    };
-  }
-  if (typeof htmx !== "undefined" && typeof htmx.defineExtension === "function" && idiomorph) {
-    htmx.defineExtension("ro-morph", {
-      isInlineSwap: (swapStyle) => swapStyle === "morph",
-      handleSwap: (swapStyle, target, fragment) => {
-        if (swapStyle !== "morph") {
-          return false;
-        }
-        if (target.id === "resource-list-content") {
-          captureRowModel(fragment);
-          virtualizePrepareSwap(fragment);
-        }
-        return idiomorph.morph(target, fragment.children, {
-          morphStyle: "innerHTML",
-          ignoreActiveValue: true
-        });
-      }
-    });
-  }
-
-  // internal/assets/src/js/bulk-actions.ts
-  var bulkCopyResetTimer = 0;
-  function bulkCopyNames(button) {
-    const entries = roRowState2().selectedEntries();
-    const names = entries.map((entry) => entry.name).join("\n");
-    roCopyText(names, (ok) => {
-      if (!ok) {
-        return;
-      }
-      const label = button.querySelector("span:last-child");
-      if (!label) {
-        return;
-      }
-      window.clearTimeout(bulkCopyResetTimer);
-      label.textContent = "Copied";
-      bulkCopyResetTimer = window.setTimeout(() => {
-        label.textContent = "Copy names";
-      }, 1100);
-    });
-  }
-  function bulkDownloadYAML(bar) {
-    if (!bar?.dataset.bulkHref) {
-      return;
-    }
-    const entries = roRowState2().selectedEntries();
-    if (entries.length === 0 || entries.length > BULK_NAMES_MAX) {
-      return;
-    }
-    const cluster = bar.dataset.bulkCluster;
-    const names = entries.map((entry) => {
-      if (bar.dataset.bulkAllns === "true" && cluster && entry.key.startsWith(`${cluster}/`)) {
-        return entry.key.slice(cluster.length + 1);
-      }
-      return entry.name;
-    });
-    window.location.assign(`${bar.dataset.bulkHref}&names=${encodeURIComponent(names.join(","))}`);
-  }
-  function roRowState2() {
-    return window.roRowState;
-  }
-  var bulkBindings = [
-    {
-      event: "click",
-      selector: "#ro-bulk-download",
-      stop: true,
-      handler: (_event, matched) => {
-        bulkDownloadYAML(matched.closest("#ro-bulkbar"));
-        return true;
-      }
-    },
-    {
-      event: "click",
-      selector: "#ro-bulk-copy",
-      stop: true,
-      handler: (_event, matched) => {
-        bulkCopyNames(matched);
-        return true;
-      }
-    },
-    {
-      event: "click",
-      selector: "#ro-bulk-clear",
-      stop: true,
-      handler: () => {
-        clearRowState();
-        return true;
-      }
-    }
-  ];
-
   // internal/assets/src/js/columns.ts
-  function getHtmx4() {
+  function getHtmx3() {
     return window.htmx;
   }
   var colsPopOpenFlag = false;
@@ -2012,7 +3214,7 @@
     });
     roPrefsSetHiddenColumns(plural, hidden);
     const content = document.getElementById("resource-list-content");
-    const htmx2 = getHtmx4();
+    const htmx2 = getHtmx3();
     if (content && htmx2) {
       htmx2.trigger(content, "htmx:abort");
     }
@@ -2033,12 +3235,6 @@
     return mergeColParams(window.location.pathname, window.location.search, owned, fields);
   }
   var columnsBindings = [
-    // Column-visibility popover: the ⊞ title-row button toggles the popover
-    // open/closed. Open state is derived from the DOM (a boosted body swap
-    // renders it closed). NOT stop:true -- C4's own [data-ro-cols-toggle] guard
-    // (the outside-click binding below) keeps the double-fire single, not a stop
-    // signal (listener-inventory C1/C4: both see the same click, no propagation
-    // stop between them).
     {
       event: "click",
       selector: "[data-ro-cols-toggle]",
@@ -2048,11 +3244,6 @@
         setColsPopOpen(!!pop && !pop.classList.contains("is-open"));
       }
     },
-    // A column checkbox row: flip the checkbox optimistically, then commit the
-    // COMPLETE hidden set (as the user now sees it) to the ro_prefs cookie and
-    // re-render through the container's own programmatic path -- cookie-state,
-    // not URL-state: RO-No-Push, zero history entries. The identity row
-    // is a disabled <button>, so its clicks never fire.
     {
       event: "click",
       selector: '[data-ro-action="toggle-column"]',
@@ -2068,12 +3259,6 @@
       },
       stop: true
     },
-    // C4: a click outside the popover (and not on its ⊞ opener) closes it -- the
-    // same dismissal contract the autocomplete dropdown uses. The
-    // [data-ro-cols-toggle] escape: when the ⊞ toggle is clicked WHILE open, the
-    // toggle binding above already set colsPopOpen=false (closed), and this
-    // guard makes this binding a no-op so it does NOT re-toggle (no double-fire /
-    // no reopen). No selector (it keys off the flag + the closest() escapes).
     {
       event: "click",
       handler: (event) => {
@@ -2087,11 +3272,6 @@
         setColsPopOpen(false);
       }
     },
-    // form.ro-pop-form (the popover's labelcols/selector form): intercept and
-    // MERGE into the live query, riding the v2 loop exactly like a chip commit
-    // (issueFilterNavigation falls back to a plain navigation when the loop is
-    // unavailable). The native submit would rebuild the query from the round-trip
-    // hidden inputs alone and wipe every `?f=` chip.
     {
       event: "submit",
       selector: "form.ro-pop-form",
@@ -2658,9 +3838,6 @@
     });
   }
   var miscBindings = [
-    // Mobile hamburger: a delegated click on [data-ro-action="toggle-sidebar"] reveals/hides the
-    // sidebar by toggling `.is-active` on `.ro-sidebar`. No-op when no sidebar is
-    // present (e.g. the Clusters entry page). Kept its early-return (stop:true).
     {
       event: "click",
       selector: '[data-ro-action="toggle-sidebar"]',
@@ -2674,13 +3851,6 @@
         return true;
       }
     },
-    // data-ro-action="copy" (per-section YAML copy): copy THIS section's raw YAML to the
-    // clipboard via navigator.clipboard.writeText -- CSP-clean. The raw text is
-    // read from the section's Pygments `td.code` cell (the gutter lives in a
-    // separate `td.linenos`), with any injected fold controls stripped first
-    // (yamlCodeText) so the copy is the full source YAML in any fold state. The
-    // button briefly flips its label to "copied". Matched (and stop:true) BEFORE
-    // the section-fold binding so a copy click never toggles the section fold.
     {
       event: "click",
       selector: '[data-ro-action="copy"]',
@@ -2712,12 +3882,6 @@
         return true;
       }
     },
-    // .collapsible h4.title: toggle `is-collapsed` on the section and sync the
-    // URL fragment (collapsed=<names>) with all currently-collapsed sections. The
-    // section is resolved via closest('.collapsible') (NOT parentElement) so a
-    // Unit-10 YAML card (h4.title nested in .ro-card-head) folds the right node.
-    // Registered AFTER the copy binding (copy's stop:true short-circuits a copy
-    // click), reproducing the monolith order. Kept its early-return (stop:true).
     {
       event: "click",
       selector: "main .collapsible h4.title",
@@ -2747,12 +3911,6 @@
         return true;
       }
     },
-    // Namespace switch: picking a namespace in the topbar dropdown records it
-    // as this cluster's last-used namespace in the ro_prefs cookie (server-read
-    // only, for cluster-entry hrefs -- never a redirect). The click is
-    // deliberately NOT prevented; the boosted navigation proceeds. The cookie
-    // write rides the prefs.ts surface directly (the same seam legacy uses).
-    // Kept its early-return (stop:true).
     {
       event: "click",
       selector: '#namespace-dropdown [data-ro-action="pick-namespace"]',
@@ -2769,8 +3927,6 @@
         return true;
       }
     },
-    // #namespace-dropdown .context-trigger: toggle `is-active`; focus the
-    // searchbox when opening. Kept its early-return (stop:true).
     {
       event: "click",
       selector: "#namespace-dropdown .context-trigger",
@@ -2790,9 +3946,6 @@
         return true;
       }
     },
-    // #namespace-searchbox input: filter the [data-ro-action="pick-namespace"] links by
-    // case-insensitive substring. Terminal branch in the monolith input listener
-    // (no branch followed it), reproduced as stop:true.
     {
       event: "input",
       selector: "#namespace-searchbox",
@@ -2810,8 +3963,6 @@
         return true;
       }
     },
-    // #namespace-searchbox keyup: Enter selects the first still-visible match.
-    // Sole branch of the monolith keyup listener; stop:true mirrors its return.
     {
       event: "keyup",
       selector: "#namespace-searchbox",
@@ -2827,13 +3978,6 @@
         return true;
       }
     },
-    // In-cell +N overflow (label/selector chips and data keys): the `.ro-chip.more[data-ro-more]` button
-    // toggles `.expanded` on its OWN `.ro-chips` strip, revealing the `.xtra` chips
-    // in place (the button face flips +N <-> "less" in CSS). Delegated so it
-    // survives every morph; aria-expanded mirrors the state. A refresh morph
-    // re-renders the strip collapsed (server truth) -- expansion is a transient
-    // peek, not persisted state. Was a trailing branch of the monolith big click
-    // listener (C1); kept its early-return (stop:true).
     {
       event: "click",
       selector: "[data-ro-more]",
@@ -2848,13 +3992,6 @@
         return true;
       }
     },
-    // Long-annotation toggle: a >120-char annotation renders as a
-    // collapsed `key · size` button + a hidden scrollable <pre> payload. The
-    // delegated click flips the [hidden] attribute on the sibling .anno-pre,
-    // mirrors the state into aria-expanded, and rotates the chevron via the .open
-    // class -- CSP-clean and morph-safe (server truth re-renders collapsed; a
-    // transient peek, like the chip overflow above). C1 trailing branch;
-    // early-return (stop:true).
     {
       event: "click",
       selector: "[data-ro-annolong]",
@@ -2872,8 +4009,6 @@
         return true;
       }
     },
-    // data-ro-action="toggle-tools": toggle `is-active` on the control itself and on the element
-    // named by its `data-target`. C1 trailing branch; early-return (stop:true).
     {
       event: "click",
       selector: '[data-ro-action="toggle-tools"]',
@@ -2889,10 +4024,6 @@
         return true;
       }
     },
-    // Search-button enable (change): a checkbox carries `data-ro-toggle-button="<id>"`.
-    // The named button is enabled iff any checkbox sharing that same value is
-    // checked, else disabled. Was the lead branch of the monolith change listener;
-    // early-return (stop:true).
     {
       event: "change",
       selector: "input[data-ro-toggle-button]",
@@ -2907,10 +4038,6 @@
         return true;
       }
     },
-    // form.tools-form (the v1 multi-type tools form): on submit, blank the `name`
-    // of empty inputs so they do not become empty query parameters in the
-    // resulting GET URL. Sole branch of the monolith submit listener; it did NOT
-    // early-return (the form still submits), so this binding does NOT stop.
     {
       event: "submit",
       selector: "form.tools-form",
@@ -3385,9 +4512,6 @@
     }
   }
   var paletteBindings = [
-    // ⌘K palette result row: a click on a result row activates it (navigate or
-    // run its named action, then close). FIRST so a click inside the open
-    // palette never falls through to a page handler. (C1 head, returned.)
     {
       event: "click",
       selector: '[data-ro-action="pick-palette-row"]',
@@ -3398,8 +4522,6 @@
         return true;
       }
     },
-    // The read-only topbar search box ([data-ro-palette-open]) opens the palette on
-    // click instead of typing inline. (C1, returned.)
     {
       event: "click",
       selector: "[data-ro-palette-open]",
@@ -3410,8 +4532,6 @@
         return true;
       }
     },
-    // The search page's "Refine · ⌘K" button: open the palette PREFILLED
-    // with the query the page searched (server-baked data-query). (C1, returned.)
     {
       event: "click",
       selector: "[data-ro-search-refine]",
@@ -3422,10 +4542,6 @@
         return true;
       }
     },
-    // A click on the palette backdrop ITSELF (the dimmed area outside the panel)
-    // closes it, like Esc. A click inside the panel does not match. The selector
-    // is the backdrop root id; the handler still verifies that the original
-    // target is that matched root, so a descendant click does NOT close it.
     {
       event: "click",
       selector: `#${PALETTE_ID2}`,
@@ -3438,8 +4554,6 @@
         return false;
       }
     },
-    // ⌘K palette query box: re-render the grouped rows fuzzy-matched + ranked
-    // against the label, re-seating the active row. (Monolith input head, returned.)
     {
       event: "input",
       selector: "#ro-palette-input",
@@ -3449,13 +4563,6 @@
         return true;
       }
     },
-    // ⌘K / Ctrl+K chord opens the palette from anywhere (ignored with Alt/Shift,
-    // so an unrelated OS/browser shortcut is never hijacked). The palette is
-    // exclusive: an open "?" overlay or row menu closes FIRST so one Esc later
-    // closes exactly one surface. No selector (it keys off the chord, not a
-    // delegated target). Does NOT stop: the still-resident gesture keydown (K3)
-    // returns on the modifier chord on its own, and the filter editor's keydown
-    // is unaffected -- mirroring the monolith's separate listeners.
     {
       event: "keydown",
       handler: (event) => {
@@ -3468,15 +4575,6 @@
         }
       }
     },
-    // Palette-open keyboard model (Esc/Arrow/Enter/Tab). Acts ONLY while the
-    // palette is open AND the target is not the filter editor: in the monolith
-    // the filter-input keydown branch RETURNED before this palette branch, so an
-    // Escape with focus in #ro-filter-input routed to the filter handler and
-    // never reached closePalette (compound case 4). The still-resident filter
-    // keydown listener keeps owning #ro-filter-input keys; this binding excludes
-    // that target so the focus-routed Escape semantics are byte-identical. No
-    // stop: the gesture keydown (K3) is kept inert by keyboardSurfaceBusy()
-    // (palette `.open`), the real decoupler.
     {
       event: "keydown",
       handler: (event) => {
@@ -3507,12 +4605,6 @@
         }
       }
     },
-    // The topbar search box also opens the palette on keyboard FOCUS (Tab-into /
-    // programmatic focus): focusin bubbles to document. openPalette runs FIRST
-    // (while the box still holds focus) so it captures the box as the Esc restore
-    // target; the blur after only matters when openPalette no-opped. The
-    // paletteRestoringFocus gate keeps the close-restore from re-opening: focusing
-    // the box FROM closePalette fires this very binding.
     {
       event: "focusin",
       selector: "[data-ro-palette-open]",
@@ -3672,6 +4764,33 @@
 
   // internal/assets/src/js/init.ts
   window.roToast = showToast;
+  function suppressRedundantActiveNavigation(event) {
+    const detail = Object(event.detail);
+    const source = detail.elt;
+    const trigger = detail.triggeringEvent;
+    if (detail.boosted !== true || detail.target !== document.body || detail.verb !== "get" || !(source instanceof HTMLAnchorElement) || !(trigger instanceof MouseEvent) || trigger.type !== "click" || trigger.button !== 0 || trigger.altKey || trigger.ctrlKey || trigger.metaKey || trigger.shiftKey) {
+      return;
+    }
+    if (!source.classList.contains("is-active") && !source.parentElement?.classList.contains("is-active")) {
+      return;
+    }
+    const rawHref = source.getAttribute("href");
+    if (!rawHref || rawHref.includes("#") || typeof detail.path !== "string") {
+      return;
+    }
+    try {
+      const current = new URL(window.location.href);
+      const resolvesToCurrentLocation = (candidate) => {
+        const resolved = new URL(candidate, current);
+        return resolved.origin === current.origin && resolved.pathname === current.pathname && resolved.search === current.search && resolved.hash === current.hash;
+      };
+      if (resolvesToCurrentLocation(rawHref) && resolvesToCurrentLocation(detail.path)) {
+        event.preventDefault();
+      }
+    } catch {
+    }
+  }
+  document.addEventListener("htmx:configRequest", suppressRedundantActiveNavigation);
   function handleSortPreferenceRequest(event) {
     const detail = Object(event.detail);
     const rawCfg = Object(detail.requestConfig);
@@ -3683,7 +4802,7 @@
     if (target.id !== "resource-list-content") {
       return;
     }
-    if (cfg.headers["RO-No-Push"] || cfg.headers["HX-Preloaded"] === "true") {
+    if (cfg.headers["RO-No-Push"]) {
       return;
     }
     const elt = Object(detail.elt);
@@ -3715,37 +4834,166 @@
     roPrefsSetSort(plural, sort);
   }
   document.addEventListener("htmx:beforeRequest", handleSortPreferenceRequest);
+  function refreshFilterAutocomplete() {
+    const input = document.getElementById("ro-filter-input");
+    if (input && document.activeElement === input && input.value) updateFilterAC();
+  }
+  function restoreColumnsPopover() {
+    if (colsPopOpen()) setColsPopOpen(true);
+  }
+  function afterListUpdate(update) {
+    if (update.kind === "swap") {
+      runInitStep(() => rememberListValidator(update.event));
+    } else {
+      runInitStep(() => applyLiveRowDeletions(update.deletedKeys));
+    }
+    [
+      noteRefreshRecovery,
+      clearListStale,
+      reapplyRowState,
+      applyLiveNameFilter,
+      refreshFilterAutocomplete,
+      restoreColumnsPopover
+    ].forEach(runInitStep);
+    if (update.kind === "swap") runInitStep(virtualizeAfterSwap);
+    else runInitStep(() => virtualizeAfterDelta(update.previousByKey, update.focusKey));
+    runInitStep(setupStickyNamespace);
+  }
+  document.addEventListener(LIST_DELTA_APPLIED_EVENT, (event) => {
+    const detail = event.detail;
+    afterListUpdate(detail);
+  });
   document.addEventListener("htmx:afterSwap", (event) => {
+    const bodySwapped = event.target === document.body;
+    if (bodySwapTicket && bodySwapped) {
+      if (bodySwapTicket.phase === "swap") {
+        completeBodySwap();
+      } else {
+        reloadCurrentHistoryEntry();
+      }
+    }
     if (isListRefreshEvent(event)) {
-      noteRefreshRecovery();
-      clearListStale();
-      reapplyRowState();
-      applyLiveNameFilter();
-      const filterInput = document.getElementById("ro-filter-input");
-      if (filterInput && document.activeElement === filterInput && filterInput.value) {
-        updateFilterAC();
+      try {
+        afterListUpdate({ kind: "swap", event });
+      } finally {
+        liveOnListSwap(event);
       }
-      if (colsPopOpen()) {
-        setColsPopOpen(true);
-      }
-      virtualizeAfterSwap();
-      liveOnListSwap(event);
+    }
+    if (bodySwapped && !bodyReloading) {
+      bodyInitPending = document.body;
+      runInitStep(buildYamlFolds);
     }
   });
   document.addEventListener("htmx:beforeSwap", (event) => {
     const detail = event.detail;
+    if (suppressListNotModified(event)) {
+      noteRefreshRecovery();
+      clearListStale();
+      return;
+    }
     if (detail && detail.target === document.body) {
+      if (bodySwapTicket || bodyReloading) {
+        event.preventDefault();
+        reloadCurrentHistoryEntry();
+        return;
+      }
+      const status = detail.xhr?.status;
+      if (typeof status === "number" && status >= 400 && status <= 599) {
+        detail.shouldSwap = true;
+      }
+      const ticket = claimBodySwap("normal", "swap", null);
       closeRowMenu();
       clearRowState();
       clearListStale();
-      liveTeardown();
-      liveState.status = "idle";
-      liveState.streamPath = "";
+      pauseRefresh();
+      liveResetPage();
+      queueMicrotask(() => {
+        if (!event.defaultPrevented && detail.shouldSwap !== false) return;
+        reloadFailedBodySwap(ticket);
+      });
+    }
+  });
+  var bodySwapTicket = null;
+  var bodyReloading;
+  var bodyInitPending = null;
+  function clearBodySwap() {
+    bodySwapTicket = null;
+  }
+  function completeBodySwap() {
+    clearBodySwap();
+    bodyReloading = void 0;
+  }
+  function retireCurrentScreenForBodySwap() {
+    clearListStale();
+    pauseRefresh();
+    liveResetPage();
+  }
+  function reloadCurrentHistoryEntry() {
+    if (bodyReloading) return;
+    if (!bodySwapTicket) retireCurrentScreenForBodySwap();
+    clearBodySwap();
+    bodyReloading = true;
+    window.history.go(0);
+  }
+  function reloadFailedBodySwap(ticket) {
+    if (!ticket || bodySwapTicket !== ticket) return;
+    reloadCurrentHistoryEntry();
+  }
+  function claimBodySwap(kind, phase, xhr) {
+    const ticket = { kind, phase, xhr };
+    bodySwapTicket = ticket;
+    return ticket;
+  }
+  function beginHistoryBodySwap(event) {
+    if (bodySwapTicket || bodyReloading) {
+      event.preventDefault();
+      reloadCurrentHistoryEntry();
+      return;
+    }
+    const miss = event.type === "htmx:historyCacheMiss";
+    const detail = Object(event.detail);
+    const xhr = miss && detail.xhr instanceof EventTarget ? detail.xhr : null;
+    const ticket = claimBodySwap(miss ? "miss" : "hit", miss ? "request" : "swap", xhr);
+    retireCurrentScreenForBodySwap();
+    queueMicrotask(() => {
+      if (event.defaultPrevented) reloadFailedBodySwap(ticket);
+    });
+    if (miss) {
+      if (!xhr) {
+        event.preventDefault();
+        return;
+      }
+      xhr.addEventListener("loadend", () => {
+        if (ticket.phase === "request") {
+          reloadFailedBodySwap(ticket);
+        }
+      });
+    }
+  }
+  document.addEventListener("htmx:historyCacheHit", beginHistoryBodySwap);
+  document.addEventListener("htmx:historyCacheMiss", beginHistoryBodySwap);
+  document.addEventListener("htmx:historyCacheMissLoad", (event) => {
+    const detail = Object(event.detail);
+    const ticket = bodySwapTicket;
+    if (ticket?.kind !== "miss" || ticket.phase !== "request" || detail.xhr !== ticket.xhr) {
+      event.preventDefault();
+      reloadCurrentHistoryEntry();
+      return;
+    }
+    ticket.phase = "swap";
+  });
+  document.addEventListener("htmx:historyCacheMissLoadError", reloadCurrentHistoryEntry);
+  document.addEventListener("htmx:swapError", (event) => {
+    const detail = Object(event.detail);
+    if (event.target === document.body || detail.target === document.body) {
+      reloadFailedBodySwap(bodySwapTicket);
     }
   });
   document.addEventListener("htmx:historyRestore", () => {
-    reapplyRowState();
-    updateBulkBar();
+  });
+  window.addEventListener("pageshow", () => {
+    completeBodySwap();
+    bodyInitPending = null;
   });
   function setupStickyNamespace() {
     document.querySelectorAll(".ro-table-wrap table.ro-table").forEach((table) => {
@@ -3769,15 +5017,10 @@
       console.warn("readout init step failed", e);
     }
   }
-  function runInit() {
-    [
+  function runInit(yamlFoldsBuilt = false) {
+    if (bodySwapTicket || bodyReloading) return;
+    const steps = [
       syncRefreshUI,
-      // Live stream reconciliation, BEFORE applyRefresh so
-      // the poll chain arms against fresh live state: a riding stream
-      // disarms it (effective 0), a fallback sets the 5s cadence.
-      liveApply,
-      applyRefresh,
-      buildYamlFolds,
       collapseSectionsFromHash,
       highlightYamlLine,
       initLogsFollow,
@@ -3788,6 +5031,10 @@
       // init that prunes rows from the DOM -- at this point
       // the DOM still IS the complete dataset.
       captureRowModelFromDocument,
+      // A new projection deliberately clears stale visibleKeys. Re-derive
+      // them from the current draft before windowing so navigation/history
+      // cannot carry an old page's filter set into this one.
+      applyLiveNameFilter,
       // Virtualization engagement: windows the >threshold
       // table the server marked `.ro-windowed`. AFTER the model capture,
       // per the order contract above.
@@ -3801,11 +5048,33 @@
       // cached/boosted body carried in -- and the bulk bar re-syncs to the
       // same store right after.
       reapplyRowState,
-      updateBulkBar
-    ].forEach(runInitStep);
+      updateBulkBar,
+      // Live opens only after every synchronous body/model repair. In
+      // particular, virtualizeInit may detect a history-restored viewport
+      // slice and synchronously issue the mandatory full `_table` rebuild;
+      // its beforeRequest ownership must exist before liveApply decides
+      // whether to open or suspend. Keep liveApply immediately BEFORE
+      // applyRefresh so the poll chain still arms against the resulting Live
+      // state: a riding stream disarms it, a fallback selects 5s.
+      liveApply,
+      applyRefresh
+    ];
+    if (!yamlFoldsBuilt) steps.splice(1, 0, buildYamlFolds);
+    steps.forEach(runInitStep);
   }
-  document.addEventListener("DOMContentLoaded", runInit);
-  document.addEventListener("htmx:load", runInit);
-  document.addEventListener("htmx:afterSettle", setupStickyNamespace);
+  document.addEventListener("DOMContentLoaded", () => runInit());
+  document.addEventListener("htmx:afterSettle", (event) => {
+    const pending = bodyInitPending;
+    const detail = Object(event.detail);
+    if (pending && event.target !== pending && detail.target !== pending) {
+      return;
+    }
+    if (!pending) {
+      if (!isListRefreshEvent(event)) setupStickyNamespace();
+      return;
+    }
+    bodyInitPending = null;
+    runInit(true);
+  });
   window.addEventListener("resize", setupStickyNamespace);
 })();

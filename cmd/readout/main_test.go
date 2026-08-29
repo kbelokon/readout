@@ -128,7 +128,7 @@ func TestRunServerInitAndListenErrors(t *testing.T) {
 // TestRunGracefulShutdownOnSignal pins the shutdown terminal's reachability
 // (waves E+F review): run() must catch SIGTERM/SIGINT and drive
 // http.Server.Shutdown — with a plain context.Background() the app's
-// shutdownCh never fires, open Live streams never get their `ro-terminal`
+// shutdownCh never fires, open Live streams never get their `ro-live` terminal
 // "shutdown" frame, and the process dies mid-write. The listenAndServe seam
 // serves a real listener on an ephemeral port so Shutdown's listener close is
 // observable as Serve returning (run exiting 0). A REAL signal is sent to the

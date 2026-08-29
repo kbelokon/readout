@@ -15,14 +15,17 @@ vi.mock('./row-selection.js', () => ({
     reapplyRowState: dependencies.reapplyRowState,
 }));
 
+import { applyListProjectionDelta, listProjectionOrder } from './list-projection.js';
 import {
     virtMoveFocus,
     virtRowByKey,
     virtRows,
+    virtualizeAfterDelta,
     virtualizeAfterSwap,
     virtualizeInit,
     virtualizeOnFilterChange,
     virtualizePrepareSwap,
+    virtualizeRevealKey,
     virtualizerActive,
     virtVisible,
 } from './virtualizer.js';
@@ -141,10 +144,7 @@ function directRowKeys(tbody: ParentNode): string[] {
 }
 
 function setVisibleKeys(keys: ReadonlySet<string> | null): void {
-    (window as unknown as { roRowModel: { visibleKeys: ReadonlySet<string> | null } }).roRowModel =
-        {
-            visibleKeys: keys,
-        };
+    window.roRowModel.visibleKeys = keys ? new Set(keys) : null;
 }
 
 function virtualizerSeam(): VirtualizerSeam {
@@ -310,17 +310,68 @@ describe('engagement', () => {
 
     test('refetches a history snapshot that contains spacers but not the full row set', () => {
         const tbody = renderList(['cached-row']);
+        const content = tbody.closest('#resource-list-content') as HTMLElement;
+        content.dataset.roEtag = 'W/"cached-window"';
+        content.dataset.roEtagPath = '/clusters/prod/pods/_table';
         const cachedSpacer = document.createElement('tr');
         cachedSpacer.className = 'ro-vspacer';
         cachedSpacer.append(document.createElement('td'));
         tbody.replaceChildren(cachedSpacer);
+        dependencies.requestListRefresh.mockImplementationOnce(() => {
+            // The forced full-model rebuild must be unconditional at request
+            // configuration time, not merely clear the pair afterwards.
+            expect(content.dataset.roEtag).toBeUndefined();
+            expect(content.dataset.roEtagPath).toBeUndefined();
+        });
 
+        virtualizeInit();
         virtualizeInit();
 
         expect(dependencies.requestListRefresh).toHaveBeenCalledOnce();
+        expect(content.dataset.roEtag).toBeUndefined();
+        expect(content.dataset.roEtagPath).toBeUndefined();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(listProjectionOrder()).toStrictEqual([]);
         expect(tbody).toContainElement(cachedSpacer);
+    });
+
+    test('allows a replacement cached tbody and resets the one-shot gate after adoption', () => {
+        const first = renderList(['first-cached-row']);
+        const firstContent = first.closest('#resource-list-content') as HTMLElement;
+        const firstSpacer = document.createElement('tr');
+        firstSpacer.className = 'ro-vspacer';
+        firstSpacer.append(document.createElement('td'));
+        first.replaceChildren(firstSpacer);
+
+        virtualizeInit();
+        virtualizeInit();
+        expect(dependencies.requestListRefresh).toHaveBeenCalledOnce();
+
+        const second = renderList(['second-cached-row']);
+        const secondContent = second.closest('#resource-list-content') as HTMLElement;
+        const secondSpacer = document.createElement('tr');
+        secondSpacer.className = 'ro-vspacer';
+        secondSpacer.append(document.createElement('td'));
+        second.replaceChildren(secondSpacer);
+
+        virtualizeInit();
+        virtualizeInit();
+        expect(dependencies.requestListRefresh).toHaveBeenCalledTimes(2);
+
+        const recovered = listFragment(rowKeys(20));
+        virtualizePrepareSwap(recovered);
+        document.body.replaceChildren(recovered.firstElementChild as Element);
+        virtualizeAfterSwap();
+        expect(virtualizerActive()).toBe(true);
+
+        // Re-mounting the exact prior cached pair models a later history restore:
+        // the successful adoption cleared its old one-shot recovery gate.
+        document.body.replaceChildren(secondContent);
+        virtualizeInit();
+
+        expect(dependencies.requestListRefresh).toHaveBeenCalledTimes(3);
+        expect(firstContent).not.toBe(secondContent);
     });
 
     test('refetches a cached spacer mounted on a different tbody from the active one', () => {
@@ -338,6 +389,33 @@ describe('engagement', () => {
         expect(dependencies.requestListRefresh).toHaveBeenCalledOnce();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(virtVisible()).toStrictEqual([]);
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 0, total: 0 });
+        expect(listProjectionOrder()).toStrictEqual([]);
+    });
+
+    test('does not mistake a replacement tbody in the same content for the pending recovery', () => {
+        const first = renderList(['cached-row']);
+        const content = first.closest('#resource-list-content') as HTMLElement;
+        const firstSpacer = document.createElement('tr');
+        firstSpacer.className = 'ro-vspacer';
+        firstSpacer.append(document.createElement('td'));
+        first.replaceChildren(firstSpacer);
+        virtualizeInit();
+
+        const replacement = buildList(['replacement-row']).querySelector(
+            'tbody',
+        ) as HTMLTableSectionElement;
+        const replacementSpacer = document.createElement('tr');
+        replacementSpacer.className = 'ro-vspacer';
+        replacementSpacer.append(document.createElement('td'));
+        replacement.replaceChildren(replacementSpacer);
+        first.replaceWith(replacement);
+        expect(replacement.closest('#resource-list-content')).toBe(content);
+
+        virtualizeInit();
+
+        expect(dependencies.requestListRefresh).toHaveBeenCalledTimes(2);
     });
 
     test('fully disengages when a live list becomes plain, malformed, or empty', () => {
@@ -354,6 +432,7 @@ describe('engagement', () => {
         expect(virtRows()).toStrictEqual([]);
         expect(virtVisible()).toStrictEqual([]);
         expect(directRowKeys(plain)).toStrictEqual(['plain-row']);
+        expect(listProjectionOrder()).toStrictEqual(['plain-row']);
         expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 0, total: 0 });
         expect(virtualizerSeam().scrollToKey('plain-row')).toBe(false);
 
@@ -367,12 +446,17 @@ describe('engagement', () => {
         virtualizeInit();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(virtVisible()).toStrictEqual([]);
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 0, total: 0 });
+        expect(listProjectionOrder()).toStrictEqual([]);
 
         engage();
         renderList([]);
         virtualizeInit();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(virtVisible()).toStrictEqual([]);
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 0, total: 0 });
     });
 
     test('reports a detached mount as inactive and leaves its viewport events inert', () => {
@@ -434,6 +518,72 @@ describe('engagement', () => {
 });
 
 describe('swap adoption', () => {
+    test('flashes a changed cell after a windowed delta uses the shared update pipeline', () => {
+        renderList(rowKeys(60), { changedValues: { 'row-5': 'old value' } });
+        virtualizeInit();
+        vi.stubGlobal('Idiomorph', {
+            morph: (current: HTMLElement, incoming: HTMLElement) => {
+                for (const attribute of Array.from(current.attributes)) {
+                    current.removeAttribute(attribute.name);
+                }
+                for (const attribute of Array.from(incoming.attributes)) {
+                    current.setAttribute(attribute.name, attribute.value);
+                }
+                current.replaceChildren(
+                    ...Array.from(incoming.childNodes, (child) => child.cloneNode(true)),
+                );
+                return [current];
+            },
+        });
+        const incoming = buildList(['row-5'], {
+            changedValues: { 'row-5': 'new value' },
+        }).querySelector('tbody tr') as HTMLTableRowElement;
+
+        const applied = applyListProjectionDelta({
+            remove: [],
+            upsert: [{ key: 'row-5', row: incoming.outerHTML }],
+            regions: [],
+        });
+        expect(applied.ok).toBe(true);
+        if (!applied.ok) return;
+        virtualizeOnFilterChange();
+        virtualizeAfterDelta(applied.previousByKey);
+
+        const changedCell = document.querySelector('#id-row-5 td:nth-child(2)');
+        expect(changedCell).toHaveTextContent('new value');
+        expect(changedCell).toHaveClass('ro-cell-changed');
+    });
+
+    test('reveals a reordered focused row before restoring its focused descendant', () => {
+        const keys = rowKeys(60);
+        const tbody = renderList(keys);
+        const focusedRow = tbody.querySelector('[data-key="row-5"]') as HTMLTableRowElement;
+        const link = document.createElement('a');
+        link.href = '#row-5';
+        link.textContent = 'row-5';
+        focusedRow.cells[0]?.replaceChildren(link);
+        virtualizeInit();
+        link.focus();
+
+        const result = applyListProjectionDelta({
+            remove: [],
+            upsert: [],
+            order: [...keys.filter((key) => key !== 'row-5'), 'row-5'],
+            regions: [],
+        });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+
+        virtualizeOnFilterChange();
+        expect(focusedRow.isConnected).toBe(false);
+        virtualizeAfterDelta(result.previousByKey, result.focusKey);
+        result.restoreFocus();
+
+        expect(scrollByMock).toHaveBeenCalledOnce();
+        expect(focusedRow.isConnected).toBe(true);
+        expect(document.activeElement).toBe(link);
+    });
+
     test('preserves spacer height, adopts all incoming rows, restores scroll, and flashes changes', () => {
         const oldKeys = rowKeys(60);
         scrollYValue = 600;
@@ -584,6 +734,8 @@ describe('swap adoption', () => {
         virtualizeAfterSwap();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(virtVisible()).toStrictEqual([]);
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 0, total: 0 });
 
         renderList(rowKeys(20));
         virtualizeInit();
@@ -593,6 +745,9 @@ describe('swap adoption', () => {
         virtualizeAfterSwap();
         expect(virtualizerActive()).toBe(false);
         expect(virtRows()).toStrictEqual([]);
+        expect(virtVisible()).toStrictEqual([]);
+        expect(virtualizerSeam().renderedBounds()).toStrictEqual({ start: 0, end: 0, total: 0 });
+        expect(listProjectionOrder()).toStrictEqual([]);
     });
 
     test('leaves a windowed fragment with no keyed rows untouched', () => {
@@ -632,6 +787,62 @@ describe('swap adoption', () => {
 });
 
 describe('full-set filtering and focus', () => {
+    test('keeps inactive delta repair inert', () => {
+        const prior = new Map<string, HTMLElement>([['detached', document.createElement('tr')]]);
+
+        expect(() => virtualizeAfterDelta(prior, 'detached')).not.toThrow();
+        expect(scrollByMock).not.toHaveBeenCalled();
+    });
+
+    test('reveals only known detached rows and leaves known rendered rows in place', () => {
+        renderList(rowKeys(40));
+        virtualizeInit();
+        scrollByMock.mockClear();
+        dependencies.reapplyRowState.mockClear();
+
+        expect(virtualizeRevealKey('row-0')).toBe(true);
+        expect(virtualizeRevealKey('missing')).toBe(false);
+        expect(scrollByMock).not.toHaveBeenCalled();
+        expect(dependencies.reapplyRowState).not.toHaveBeenCalled();
+
+        setVisibleKeys(new Set(['row-0']));
+        virtualizeOnFilterChange();
+        scrollByMock.mockClear();
+        dependencies.reapplyRowState.mockClear();
+        expect(virtualizeRevealKey('row-30')).toBe(false);
+        expect(scrollByMock).not.toHaveBeenCalled();
+        expect(dependencies.reapplyRowState).not.toHaveBeenCalled();
+
+        setVisibleKeys(null);
+        virtualizeOnFilterChange();
+        scrollByMock.mockClear();
+        expect(virtualizeRevealKey('row-30')).toBe(true);
+        expect(scrollByMock).toHaveBeenCalledOnce();
+        expect(document.querySelector('[data-key="row-30"]')).not.toBeNull();
+
+        document.getElementById('resource-list-content')?.remove();
+        scrollYValue = 0;
+        scrollByMock.mockClear();
+        dependencies.reapplyRowState.mockClear();
+        expect(virtualizeRevealKey('row-30')).toBe(false);
+        expect(scrollByMock).not.toHaveBeenCalled();
+        expect(dependencies.reapplyRowState).not.toHaveBeenCalled();
+    });
+
+    test('scrolls a connected buffered row into the real viewport before focus restoration', () => {
+        renderList(rowKeys(40));
+        virtualizeInit();
+        const buffered = document.querySelector('[data-key="row-10"]');
+        expect(buffered?.isConnected).toBe(true);
+        scrollByMock.mockClear();
+
+        expect(virtualizeRevealKey('row-10')).toBe(true);
+
+        expect(scrollByMock).toHaveBeenCalledExactlyOnceWith(0, 120);
+        expect(scrollYValue).toBe(120);
+        expect(document.querySelector('[data-key="row-10"]')).toBe(buffered);
+    });
+
     test('windows over the full model visibility set and exposes detached rows by identity', () => {
         const keys = rowKeys(40);
         const tbody = renderList(keys, {

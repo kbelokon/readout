@@ -2395,6 +2395,10 @@
     display: flex;
   }
 
+  .ro-phase-strip[hidden] {
+    display: none;
+  }
+
   .ro-phase-tally {
     flex-wrap: wrap;
     align-items: center;
@@ -2736,6 +2740,18 @@
     font-family: var(--font-mono);
     color: var(--text-faint);
     font-size: 11.5px;
+  }
+
+  .ro-live-status {
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    position: absolute;
+    overflow: hidden;
   }
 
   .ro-chips {
@@ -3459,7 +3475,14 @@
     margin: 0;
   }
 
+  .highlighttable td.code pre > span[id*="line-"] {
+    position: relative;
+  }
+
   .ro-fold-toggle {
+    inset-inline-start: -.875rem;
+    width: .875rem;
+    height: 1lh;
     color: var(--text-faint);
     font: inherit;
     line-height: inherit;
@@ -3469,9 +3492,13 @@
     transition: opacity var(--dur);
     background: none;
     border: 0;
-    margin: 0 .3em 0 0;
+    justify-content: center;
+    align-items: center;
+    margin: 0;
     padding: 0;
-    display: inline;
+    display: inline-flex;
+    position: absolute;
+    top: 0;
   }
 
   .ro-fold-toggle:before {
@@ -4920,7 +4947,7 @@
     font-size: 11.5px;
   }
 
-  .ro-rd tr.ro-row-filtered {
+  .ro-rd tr.ro-row-filtered, .ro-rd .ro-pcard.ro-row-filtered {
     display: none;
   }
 

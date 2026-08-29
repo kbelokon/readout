@@ -44,7 +44,7 @@ async function scriptEvents(events: object[]): Promise<void> {
 
 // A tick (or any programmatic re-fetch, the Retry-now click included) marks
 // itself RO-No-Push; matching on the request header keeps it awaitable apart
-// from user sorts and preload warm-ups (the list-loop.spec.ts pattern).
+// from user sorts (the list-loop.spec.ts pattern).
 function isTickResponse(r: Response): boolean {
   return r.url().includes('/_table') && r.request().headers()['ro-no-push'] === 'true';
 }

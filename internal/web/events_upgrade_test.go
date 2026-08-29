@@ -223,6 +223,9 @@ func TestEventListThroughHandler(t *testing.T) {
 
 	// The chronic aggregate: ×141 amber, two-layer age.
 	backoff := p.doc.Find(`table.ro-table tbody tr:has(td:contains("BackOff"))`)
+	if key, _ := backoff.Attr("data-key"); key != "test/default/ugc-backend-8b9fc9d44-nxxz9.0001" {
+		t.Fatalf("BackOff row key = %q, want metadata.name identity", key)
+	}
 	if got := normSpace(backoff.Find(".restarts.some").Text()); got != "×141" {
 		t.Fatalf("BackOff count cell = %q, want the amber ×141 (≥20 is chronic)", got)
 	}

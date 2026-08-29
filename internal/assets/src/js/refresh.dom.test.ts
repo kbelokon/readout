@@ -15,7 +15,6 @@ vi.mock('./live.js', () => ({
     liveFallbackSeconds: dependencies.liveFallbackSeconds,
 }));
 vi.mock('./prefs.js', () => ({
-    REFRESH_KEY: 'roRefresh',
     readPrefs: dependencies.readPrefs,
     roPrefsSetRefresh: dependencies.roPrefsSetRefresh,
 }));
@@ -25,25 +24,26 @@ vi.mock('./stale.js', () => ({
 
 import {
     applyRefresh,
-    containerListRequestsInFlight,
     effectivePollSeconds,
     fireRefresh,
     handleRefreshAfterRequest,
     handleRefreshBeforeRequest,
     handleRefreshConfigRequest,
     handleRefreshVisibilityChange,
-    isPreloadRequest,
+    listRequestTrackerSnapshot,
     noteRefreshFailure,
     noteRefreshRecovery,
+    pauseRefresh,
     pruneSettledListRequests,
     refreshBindings,
     refreshInterval,
     refreshMode,
     refreshNextAtMs,
     requestListRefresh,
+    resetListRequestTracker,
     scheduleRefreshTick,
+    subscribeListRequests,
     syncRefreshUI,
-    userListRequestsInFlight,
 } from './refresh.js';
 
 interface HtmxHarness {
@@ -68,7 +68,13 @@ function renderContent(liveURL?: string): HTMLElement {
 }
 
 function xhrAt(readyState: number): XMLHttpRequest {
-    return { readyState } as unknown as XMLHttpRequest;
+    const xhr = new XMLHttpRequest();
+    Object.defineProperty(xhr, 'readyState', {
+        configurable: true,
+        value: readyState,
+        writable: true,
+    });
+    return xhr;
 }
 
 function dispatchHtmx(
@@ -131,67 +137,43 @@ function captureTimeouts() {
 }
 
 beforeEach(() => {
+    document.body.replaceChildren();
     dependencies.liveApply.mockReset();
     dependencies.liveFallbackSeconds.mockReset().mockReturnValue(0);
     dependencies.readPrefs.mockReset().mockReturnValue({ kinds: [], refresh: '', ns: {} });
     dependencies.roPrefsSetRefresh.mockReset();
     dependencies.updateStaleCountdown.mockReset();
-    userListRequestsInFlight.clear();
-    containerListRequestsInFlight.clear();
     delete (window as unknown as { htmx?: HtmxHarness }).htmx;
     delete window.roToast;
 
-    // Reset the module-owned failure stage and retire any timer left by the
-    // preceding test without re-importing the listener-owning module.
+    // Reset the module-owned lifecycle without re-importing its resident DOM
+    // listeners.
+    resetListRequestTracker();
     applyRefresh();
     vi.clearAllMocks();
 });
 
-test('prunes only DONE and aborted XHRs from an in-flight set', () => {
+test('the tracker prunes only DONE and aborted list XHRs', () => {
+    const content = renderContent();
     const aborted = xhrAt(0);
     const opened = xhrAt(1);
     const headersReceived = xhrAt(2);
     const loading = xhrAt(3);
     const done = xhrAt(4);
-    const requests = new Set([aborted, opened, headersReceived, loading, done]);
+    const requests = [aborted, opened, headersReceived, loading, done];
+    requests.forEach((xhr) => {
+        dispatchHtmx('htmx:beforeRequest', { elt: content, target: content, xhr });
+    });
 
-    pruneSettledListRequests(requests);
+    pruneSettledListRequests();
 
-    expect([...requests]).toStrictEqual([opened, headersReceived, loading]);
+    expect(listRequestTrackerSnapshot().count).toBe(3);
+    [opened, headersReceived, loading].forEach((xhr) => {
+        dispatchHtmx('htmx:afterRequest', { xhr });
+    });
 });
 
 describe('htmx request lifecycle', () => {
-    test('recognizes only the exact preload header and tolerates missing request metadata', () => {
-        expect(isPreloadRequest(new Event('plain'))).toBe(false);
-        expect(isPreloadRequest(new CustomEvent('request', { detail: null }))).toBe(false);
-        expect(isPreloadRequest(new CustomEvent('request', { detail: {} }))).toBe(false);
-        expect(
-            isPreloadRequest(new CustomEvent('request', { detail: { requestConfig: null } })),
-        ).toBe(false);
-        expect(
-            isPreloadRequest(new CustomEvent('request', { detail: { requestConfig: {} } })),
-        ).toBe(false);
-        expect(
-            isPreloadRequest(
-                new CustomEvent('request', { detail: { requestConfig: { headers: {} } } }),
-            ),
-        ).toBe(false);
-        expect(
-            isPreloadRequest(
-                new CustomEvent('request', {
-                    detail: { requestConfig: { headers: { 'HX-Preloaded': 'false' } } },
-                }),
-            ),
-        ).toBe(false);
-        expect(
-            isPreloadRequest(
-                new CustomEvent('request', {
-                    detail: { requestConfig: { headers: { 'HX-Preloaded': 'true' } } },
-                }),
-            ),
-        ).toBe(true);
-    });
-
     test('marks only a container config request RO-No-Push', () => {
         const content = renderContent();
         const other = document.createElement('button');
@@ -208,68 +190,284 @@ describe('htmx request lifecycle', () => {
         expect(headers).toStrictEqual({ 'RO-No-Push': 'true' });
     });
 
-    test('tracks each request class, lets a user request win, and settles both sets', () => {
+    test('does not invent container ownership when the current container is absent', () => {
+        const headers: Record<string, string> = { 'RO-No-Push': 'external' };
+
+        dispatchHtmx('htmx:configRequest', { elt: null, target: null, headers });
+
+        expect(headers).toStrictEqual({ 'RO-No-Push': 'external' });
+    });
+
+    test('owns every RO-No-Push casing without suppressing user history', () => {
+        const content = renderContent();
+        const userSource = document.createElement('a');
+        const containerHeaders: Record<string, string> = {
+            'ro-no-push': 'false',
+            'Ro-No-Push': 'spoof-one',
+            'RO-NO-PUSH': 'spoof-two',
+            'HX-Push-Url': 'false',
+        };
+
+        dispatchHtmx('htmx:configRequest', {
+            elt: content,
+            target: content,
+            headers: containerHeaders,
+        });
+
+        expect(containerHeaders).toStrictEqual({
+            'HX-Push-Url': 'false',
+            'RO-No-Push': 'true',
+        });
+
+        const userHeaders: Record<string, string> = {
+            'ro-no-push': 'true',
+            'RO-No-Push': 'spoof',
+            'HX-Push-Url': 'true',
+        };
+        dispatchHtmx('htmx:configRequest', {
+            elt: userSource,
+            target: content,
+            headers: userHeaders,
+        });
+
+        expect(userHeaders).toStrictEqual({ 'HX-Push-Url': 'true' });
+    });
+
+    test('strips RO-No-Push when the current container explicitly targets elsewhere', () => {
+        const content = renderContent();
+        const headers = { 'rO-nO-pUsH': 'true', 'HX-Push-Url': 'true' };
+
+        dispatchHtmx('htmx:configRequest', {
+            elt: content,
+            target: document.createElement('main'),
+            headers,
+        });
+
+        expect(headers).toStrictEqual({ 'HX-Push-Url': 'true' });
+    });
+
+    test('integrates the exact stored validator only for current-container traffic', () => {
+        window.history.replaceState(null, '', '/clusters/prod/pods');
+        const content = renderContent();
+        content.append(document.createElement('table'));
+        content.dataset.roEtag = 'W/"stored"';
+        content.dataset.roEtagPath = '/clusters/prod/pods/_table?sort=Name';
+        const containerHeaders = {
+            'if-none-match': '"spoof"',
+            'ro-no-push': 'false',
+            'RO-NO-PUSH': 'spoof',
+        };
+
+        dispatchHtmx('htmx:configRequest', {
+            elt: content,
+            target: content,
+            path: '/clusters/prod/pods/_table?sort=Name',
+            headers: containerHeaders,
+        });
+
+        expect(containerHeaders).toStrictEqual({
+            'RO-No-Push': 'true',
+            'If-None-Match': 'W/"stored"',
+        });
+
+        const userSource = document.createElement('a');
+        const userHeaders = { 'If-None-Match': '"spoof"' };
+        dispatchHtmx('htmx:configRequest', {
+            elt: userSource,
+            target: content,
+            path: '/clusters/prod/pods/_table?sort=Name',
+            headers: userHeaders,
+        });
+
+        expect(userHeaders).toStrictEqual({});
+    });
+
+    test('a detached same-id source cannot earn refresh or conditional headers', () => {
+        const content = renderContent();
+        content.dataset.roEtag = 'W/"stored"';
+        content.dataset.roEtagPath = '/pods/_table';
+        const detached = document.createElement('div');
+        detached.id = 'resource-list-content';
+        const headers = { 'If-None-Match': '"spoof"' };
+
+        dispatchHtmx('htmx:configRequest', {
+            elt: detached,
+            target: content,
+            path: '/pods/_table',
+            headers,
+        });
+
+        expect(headers).toStrictEqual({});
+    });
+
+    test('one tracker publishes container and user request lifecycles and user traffic wins', () => {
         const content = renderContent();
         const userSource = document.createElement('button');
         document.body.appendChild(userSource);
         const htmx = installHtmx();
         const containerXHR = xhrAt(1);
         const userXHR = xhrAt(1);
+        const activities: Array<{ phase: string; inFlight: number }> = [];
+        const unsubscribe = subscribeListRequests((activity) => activities.push(activity));
 
         dispatchHtmx('htmx:beforeRequest', {
             elt: content,
             target: content,
             xhr: containerXHR,
+            pathInfo: { finalRequestPath: '/pods/_table?sort=Name' },
         });
-        expect(containerListRequestsInFlight).toContain(containerXHR);
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 1 });
         expect(htmx.trigger).not.toHaveBeenCalled();
 
-        htmx.trigger.mockImplementationOnce(() => {
-            expect(userListRequestsInFlight).toContain(userXHR);
-        });
         dispatchHtmx('htmx:beforeRequest', {
             elt: userSource,
             target: content,
             xhr: userXHR,
+            pathInfo: { requestPath: '/pods/_table?sort=Age' },
         });
-        expect(userListRequestsInFlight).toContain(userXHR);
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 2 });
         expect(htmx.trigger).toHaveBeenCalledExactlyOnceWith(content, 'htmx:abort');
 
         dispatchHtmx('htmx:afterRequest', null);
         dispatchHtmx('htmx:afterRequest', {});
         dispatchHtmx('htmx:afterRequest', { unrelated: true });
-        expect(containerListRequestsInFlight).toContain(containerXHR);
-        expect(userListRequestsInFlight).toContain(userXHR);
+        expect(listRequestTrackerSnapshot().count).toBe(2);
 
         dispatchHtmx('htmx:afterRequest', { xhr: containerXHR });
         dispatchHtmx('htmx:afterRequest', { xhr: userXHR });
-        expect(containerListRequestsInFlight).toHaveLength(0);
-        expect(userListRequestsInFlight).toHaveLength(0);
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 0 });
+        expect(activities).toStrictEqual([
+            { phase: 'start', inFlight: 1 },
+            { phase: 'start', inFlight: 2 },
+            { phase: 'settle', inFlight: 1 },
+            { phase: 'settle', inFlight: 0 },
+        ]);
+        unsubscribe();
+
+        const afterUnsubscribe = xhrAt(1);
+        dispatchHtmx('htmx:beforeRequest', {
+            elt: content,
+            target: content,
+            xhr: afterUnsubscribe,
+        });
+        dispatchHtmx('htmx:afterRequest', { xhr: afterUnsubscribe });
+        expect(activities).toHaveLength(4);
     });
 
-    test('treats a container request without an XHR as container-owned and inert', () => {
+    test('unowned settlement and an empty page reset publish no request activity', () => {
+        const activities: Array<{ phase: string; inFlight: number }> = [];
+        const unsubscribe = subscribeListRequests((activity) => activities.push(activity));
+
+        dispatchHtmx('htmx:afterRequest', { xhr: xhrAt(4) });
+        resetListRequestTracker();
+
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 0 });
+        expect(activities).toStrictEqual([]);
+        unsubscribe();
+    });
+
+    test('the same XHR identity is tracked only once until it settles', () => {
         const content = renderContent();
-        const htmx = installHtmx();
+        const request = xhrAt(1);
+        const activities: Array<{ phase: string; inFlight: number }> = [];
+        const unsubscribe = subscribeListRequests((activity) => activities.push(activity));
 
-        dispatchHtmx('htmx:beforeRequest', { elt: content, target: content });
+        dispatchHtmx('htmx:beforeRequest', { elt: content, target: content, xhr: request });
+        dispatchHtmx('htmx:beforeRequest', { elt: content, target: content, xhr: request });
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 1 });
+        expect(activities).toStrictEqual([{ phase: 'start', inFlight: 1 }]);
 
-        expect(containerListRequestsInFlight).toHaveLength(0);
-        expect(userListRequestsInFlight).toHaveLength(0);
-        expect(htmx.trigger).not.toHaveBeenCalled();
+        request.dispatchEvent(new Event('loadend'));
+        expect(activities).toStrictEqual([
+            { phase: 'start', inFlight: 1 },
+            { phase: 'settle', inFlight: 0 },
+        ]);
+        unsubscribe();
     });
 
-    test('aborts for a genuine user request even when htmx did not expose an XHR', () => {
+    test('a page reset retires the old owner without letting its late loadend settle a reuse', () => {
         const content = renderContent();
-        const userSource = document.createElement('button');
-        const htmx = installHtmx();
+        const request = xhrAt(1);
+        const loadends: EventListener[] = [];
+        vi.spyOn(request, 'addEventListener').mockImplementation((type, listener) => {
+            if (type === 'loadend' && typeof listener === 'function') loadends.push(listener);
+        });
 
-        dispatchHtmx('htmx:beforeRequest', { elt: userSource, target: content });
+        dispatchHtmx('htmx:beforeRequest', { elt: content, target: content, xhr: request });
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 1 });
+        resetListRequestTracker();
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 0 });
 
-        expect(userListRequestsInFlight).toHaveLength(0);
-        expect(htmx.trigger).toHaveBeenCalledExactlyOnceWith(content, 'htmx:abort');
+        dispatchHtmx('htmx:beforeRequest', { elt: content, target: content, xhr: request });
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 1 });
+        loadends[0]?.call(request, new Event('loadend'));
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 1 });
+
+        loadends[1]?.call(request, new Event('loadend'));
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 0 });
     });
 
-    test('ignores incomplete, wrong-target, and non-Element user-request shapes', () => {
+    test('native loadend settles a request even when its issuing element detaches', () => {
+        const content = renderContent();
+        const request = xhrAt(1);
+        dispatchHtmx('htmx:beforeRequest', {
+            elt: content,
+            target: content,
+            xhr: request,
+        });
+        content.remove();
+
+        request.dispatchEvent(new Event('loadend'));
+
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 0 });
+    });
+
+    test('a cancelled beforeRequest with an UNSENT xhr retires after dispatch', async () => {
+        const content = renderContent();
+        const request = xhrAt(0);
+        dispatchHtmx('htmx:beforeRequest', {
+            elt: content,
+            target: content,
+            xhr: request,
+        });
+
+        expect(listRequestTrackerSnapshot().count).toBe(1);
+        await Promise.resolve();
+
+        expect(listRequestTrackerSnapshot().count).toBe(0);
+    });
+
+    test('a later beforeRequest canceler retires an OPENED xhr after dispatch', async () => {
+        const content = renderContent();
+        const request = xhrAt(1);
+        const event = new CustomEvent('htmx:beforeRequest', {
+            cancelable: true,
+            detail: { elt: content, target: content, xhr: request },
+        });
+
+        handleRefreshBeforeRequest(event);
+        expect(listRequestTrackerSnapshot().count).toBe(1);
+
+        event.preventDefault();
+        await Promise.resolve();
+
+        expect(event.defaultPrevented).toBe(true);
+        expect(listRequestTrackerSnapshot().count).toBe(0);
+    });
+
+    test('an ordinary OPENED request remains tracked after the cancellation checkpoint', async () => {
+        const content = renderContent();
+        const request = xhrAt(1);
+
+        dispatchHtmx('htmx:beforeRequest', { elt: content, target: content, xhr: request });
+        await Promise.resolve();
+
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 1 });
+        request.dispatchEvent(new Event('loadend'));
+        expect(listRequestTrackerSnapshot()).toStrictEqual({ count: 0 });
+    });
+
+    test('missing XHR and incomplete or wrong-target request shapes are inert', () => {
         const content = renderContent();
         const otherTarget = document.createElement('div');
         const userSource = document.createElement('button');
@@ -277,39 +475,28 @@ describe('htmx request lifecycle', () => {
         const cases: unknown[] = [
             null,
             {},
-            { elt: userSource },
-            { target: content },
-            { elt: 'not-an-element', target: content },
-            { elt: userSource, target: 'not-an-element' },
-            { elt: userSource, target: otherTarget },
+            { elt: content, target: content },
+            { elt: userSource, target: content },
+            { elt: userSource, target: otherTarget, xhr: xhrAt(1) },
+            { elt: content, target: otherTarget, xhr: xhrAt(1) },
+            { elt: 'not-an-element', target: content, xhr: xhrAt(1) },
+            { elt: content, target: content, xhr: {} },
+            {
+                elt: content,
+                target: content,
+                xhr: { addEventListener: vi.fn(), readyState: 1 },
+            },
         ];
 
         cases.forEach((detail) => {
             dispatchHtmx('htmx:beforeRequest', detail);
         });
 
-        expect(userListRequestsInFlight).toHaveLength(0);
-        expect(containerListRequestsInFlight).toHaveLength(0);
+        expect(listRequestTrackerSnapshot().count).toBe(0);
         expect(htmx.trigger).not.toHaveBeenCalled();
     });
 
-    test('does not track or abort a preloaded user request', () => {
-        const content = renderContent();
-        const userSource = document.createElement('a');
-        const htmx = installHtmx();
-
-        dispatchHtmx('htmx:beforeRequest', {
-            elt: userSource,
-            target: content,
-            xhr: xhrAt(1),
-            requestConfig: { headers: { 'HX-Preloaded': 'true' } },
-        });
-
-        expect(userListRequestsInFlight).toHaveLength(0);
-        expect(htmx.trigger).not.toHaveBeenCalled();
-    });
-
-    test('tracks a user XHR without aborting when the live content or htmx seam is absent', () => {
+    test('a detached same-id target is ignored while a current target is tracked without htmx', () => {
         const detachedTarget = document.createElement('div');
         detachedTarget.id = 'resource-list-content';
         const source = document.createElement('button');
@@ -321,19 +508,19 @@ describe('htmx request lifecycle', () => {
             target: detachedTarget,
             xhr: firstXHR,
         });
-        expect(userListRequestsInFlight).toContain(firstXHR);
+        expect(listRequestTrackerSnapshot().count).toBe(0);
         expect(htmx.trigger).not.toHaveBeenCalled();
 
-        userListRequestsInFlight.clear();
         delete (window as unknown as { htmx?: HtmxHarness }).htmx;
-        renderContent();
+        const content = renderContent();
         const secondXHR = xhrAt(1);
         dispatchHtmx('htmx:beforeRequest', {
             elt: source,
-            target: document.getElementById('resource-list-content'),
+            target: content,
             xhr: secondXHR,
         });
-        expect(userListRequestsInFlight).toContain(secondXHR);
+        expect(listRequestTrackerSnapshot().count).toBe(1);
+        dispatchHtmx('htmx:afterRequest', { xhr: secondXHR });
     });
 });
 
@@ -414,6 +601,20 @@ describe('refresh requests', () => {
         );
     });
 
+    test('retry reopens Live instead of issuing a competing poll request', () => {
+        dependencies.readPrefs.mockReturnValue({ kinds: [], refresh: 'Live', ns: {} });
+        const content = renderContent('location');
+        const htmx = installHtmx();
+        const retry = refreshBinding('[data-ro-action="retry"]');
+        const event = new Event('click', { cancelable: true });
+
+        expect(retry.handler(event, null)).toBe(true);
+
+        expect(htmx.trigger).toHaveBeenCalledExactlyOnceWith(content, 'htmx:abort');
+        expect(dependencies.liveApply).toHaveBeenCalledExactlyOnceWith(true);
+        expect(htmx.ajax).not.toHaveBeenCalled();
+    });
+
     test('retry remains a handled, prevented no-op when no refresh surface exists', () => {
         const retry = refreshBinding('[data-ro-action="retry"]');
         const htmx = installHtmx();
@@ -432,8 +633,8 @@ describe('refresh requests', () => {
     });
 });
 
-test('fireRefresh is suppressed while hidden or while either request class is in flight', () => {
-    renderContent('location');
+test('fireRefresh is suppressed while hidden or while the request tracker is occupied', () => {
+    const content = renderContent('location');
     const htmx = installHtmx();
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
 
@@ -441,21 +642,14 @@ test('fireRefresh is suppressed while hidden or while either request class is in
     expect(htmx.ajax).not.toHaveBeenCalled();
 
     hidden.mockReturnValue(false);
-    userListRequestsInFlight.add(xhrAt(1));
+    const opened = xhrAt(1);
+    dispatchHtmx('htmx:beforeRequest', { elt: content, target: content, xhr: opened });
     fireRefresh();
     expect(htmx.ajax).not.toHaveBeenCalled();
 
-    userListRequestsInFlight.clear();
-    containerListRequestsInFlight.add(xhrAt(1));
+    Object.defineProperty(opened, 'readyState', { value: 4 });
     fireRefresh();
-    expect(htmx.ajax).not.toHaveBeenCalled();
-
-    containerListRequestsInFlight.clear();
-    userListRequestsInFlight.add(xhrAt(4));
-    containerListRequestsInFlight.add(xhrAt(0));
-    fireRefresh();
-    expect(userListRequestsInFlight).toHaveLength(0);
-    expect(containerListRequestsInFlight).toHaveLength(0);
+    expect(listRequestTrackerSnapshot().count).toBe(0);
     expect(htmx.ajax).toHaveBeenCalledOnce();
 });
 
@@ -626,6 +820,24 @@ test('disarms a pending timer at zero cadence and repaints the stale countdown',
 
     expect(timers.clearTimeout).toHaveBeenCalledExactlyOnceWith(1);
     expect(timers.setTimeout).not.toHaveBeenCalled();
+    expect(refreshNextAtMs()).toBe(0);
+    expect(dependencies.updateStaleCountdown).toHaveBeenCalledOnce();
+});
+
+test('pauses an armed polling chain across a pending history body swap', () => {
+    const now = new Date('2026-08-25T10:00:00Z').getTime();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const timers = captureTimeouts();
+    dependencies.readPrefs.mockReturnValue({ kinds: [], refresh: '5', ns: {} });
+    applyRefresh();
+    expect(refreshNextAtMs()).toBe(now + 5_000);
+    expect(timers.setTimeout).toHaveBeenCalledOnce();
+
+    timers.clearTimeout.mockClear();
+    dependencies.updateStaleCountdown.mockClear();
+    pauseRefresh();
+
+    expect(timers.clearTimeout).toHaveBeenCalledExactlyOnceWith(1);
     expect(refreshNextAtMs()).toBe(0);
     expect(dependencies.updateStaleCountdown).toHaveBeenCalledOnce();
 });

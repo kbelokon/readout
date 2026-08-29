@@ -19,7 +19,7 @@
 // dependency. Its only event hook is the matchMedia `change` listener (NOT a
 // document delegated event, so it is NOT a dispatcher binding) attached ONCE at
 // module load; syncThemeTogglePostTarget is an idempotent INIT step the
-// runInit chain in legacy.js re-runs on DOMContentLoaded + htmx:load.
+// runInit chain re-runs on DOMContentLoaded + successful body htmx:afterSwap.
 
 const PREFERS_DARK = window.matchMedia('(prefers-color-scheme: dark)');
 

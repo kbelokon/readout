@@ -301,21 +301,34 @@
        the section CARDS (Default tab) and the single YAML-tab block alike (both are
        the same .highlighttable shape), so these rules are NOT card-scoped.
 
-       The toggle is a borderless inline button carrying ONLY a caret (drawn via
-       ::before so it adds no text node -- the copy clone strips the control anyway,
-       but a contentless caret keeps the rendered line text clean too). It points
-       down when expanded, right when folded (matches the section-card caret).
+       The toggle is a borderless absolutely-positioned button carrying ONLY a
+       caret (drawn via ::before so it adds no text node -- the copy clone strips
+       the control anyway, but a contentless caret keeps the rendered line text
+       clean too). It lives in the code cell's existing left padding instead of
+       consuming inline width. buildYamlFolds runs after an HTMX body swap; an
+       inline control would therefore shove only opener keys ~13px to the right
+       after first paint. Absolute placement makes that enhancement layout-neutral
+       on the full YAML tab and every Default-tab YAML card. It points down when
+       expanded, right when folded (matches the section-card caret).
 
-       the caret is a quiet hover affordance -- invisible (opacity 0,
-       its inline space still reserved so the YAML text never shifts) until the
+       the caret is a quiet hover affordance -- invisible (opacity 0, with its
+       absolute gutter position leaving YAML text untouched) until the
        pointer is over its line, the button has keyboard focus, or the block is
        folded; revealed with the shared opacity transition, like the prototype's
        gutter-hover chevron. The Pygments structure has no per-line gutter cell
        (one .linenos column for the whole block), so "gutter hover" maps to the
        line span the toggle lives in. */
+    .highlighttable td.code pre > span[id*="line-"] { position: relative; }
     .ro-fold-toggle {
-        display: inline;
-        margin: 0 0.3em 0 0;
+        position: absolute;
+        inset-inline-start: -0.875rem;
+        top: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 0.875rem;
+        height: 1lh;
+        margin: 0;
         padding: 0;
         border: 0;
         background: transparent;

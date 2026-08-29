@@ -9,7 +9,7 @@
 //     server-side filter dropped its row from the DOM.
 //   - rowFocusKey:  the single j/k keyboard-focus row.
 // A morph syncs the server's class attribute over any client-added class, so the
-// classes are RE-APPLIED from this store on htmx:afterSwap (legacy.js). Because
+// classes are re-applied from this store after every list update. Because
 // the keys are object identities, a re-sorted/filtered fragment re-decorates the
 // SAME objects wherever their rows land. window.roRowState is the deliberate
 // seam the gesture layer + e2e suite drive; everything is pure DOM classList
@@ -136,6 +136,19 @@ export function clearRowState(): void {
 // refusal per cap crossing (re-armed once the selection drops back under).
 export const BULK_NAMES_MAX = 100;
 let bulkOverCapToasted: boolean | undefined;
+
+// A real deletion invalidates bulk/focus identity. A projection removal (the
+// object merely stopped matching the server filter) deliberately does not call
+// this and keeps the existing cross-filter selection contract.
+export function applyLiveRowDeletions(keys: ReadonlySet<string>): void {
+    let changed = false;
+    for (const key of keys) changed = rowSelection.delete(key) || changed;
+    if (rowFocusKey !== null && keys.has(rowFocusKey)) {
+        rowFocusKey = null;
+        changed = true;
+    }
+    if (changed) updateBulkBar();
+}
 
 export function updateBulkBar(): void {
     const bar = document.getElementById('ro-bulkbar');
