@@ -98,11 +98,6 @@ func defaultStreamTuning() streamTuning {
 }
 
 const (
-	// streamMaxImmediateEOFs consecutive immediate EOFs are a re-watch
-	// failure (terminal reason "watch-failed") — an EOF storm must not
-	// spin re-watch attempts forever.
-	streamMaxImmediateEOFs = 5
-
 	// streamMinPushGap / streamMaxPushLatency are the pacing bounds: pushes
 	// are at least 300ms apart, and while events pend a push happens at most
 	// 2s after the previous one.
@@ -208,67 +203,6 @@ func validLiveGeneration(gen string) bool {
 		}
 	}
 	return true
-}
-
-// streamEventWindow is a fixed-size trailing-event ring. High-churn detection
-// only needs the threshold's most recent timestamps; retaining every event in
-// a pathological two-second burst would make an otherwise bounded stream grow.
-type streamEventWindow struct {
-	times [streamChurnEvents]time.Time
-	next  int
-	count int
-}
-
-func (w *streamEventWindow) note(now time.Time) {
-	w.times[w.next] = now
-	w.next = (w.next + 1) % len(w.times)
-	if w.count < len(w.times) {
-		w.count++
-	}
-}
-
-func (w *streamEventWindow) high(now time.Time) bool {
-	if w.count < streamChurnEvents {
-		return false
-	}
-	cutoff := now.Add(-streamChurnWindow)
-	for i := range w.count {
-		if !w.times[i].After(cutoff) {
-			return false
-		}
-	}
-	return true
-}
-
-// streamBackoff is the re-watch delay schedule: the server's base doubles per
-// attempt up to its cap. noteAttempt resets the schedule after a healthy watch.
-type streamBackoff struct {
-	tuning  streamTuning
-	attempt int
-}
-
-// next returns the delay before the upcoming re-watch attempt and advances
-// the schedule.
-func (b *streamBackoff) next() time.Duration {
-	d := b.tuning.backoffBase
-	for i := 0; i < b.attempt && d < b.tuning.backoffCap; i++ {
-		d *= 2
-	}
-	if d > b.tuning.backoffCap {
-		d = b.tuning.backoffCap
-	}
-	if b.attempt < 63 {
-		b.attempt++
-	}
-	return d
-}
-
-// noteAttempt records a finished watch attempt's lifetime: a healthy attempt
-// resets the schedule so the next re-watch waits only the base delay again.
-func (b *streamBackoff) noteAttempt(lived time.Duration) {
-	if lived >= b.tuning.healthyReset {
-		b.attempt = 0
-	}
 }
 
 // watchResult is one delivery from the watch reader goroutine: a decoded

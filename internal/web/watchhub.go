@@ -7,11 +7,11 @@ package web
 // apiserver one LIST and one watch instead of a hundred of each.
 //
 // Each source is a single-goroutine ACTOR: subscribe, unsubscribe, the initial
-// list result, watch events and retention expiry all arrive as commands on one
-// mailbox, so the source's state needs no locks and every ordering question
-// ("did this event land before that attach?") has one answer. The only state
-// read outside the actor is the latest published revision, held in an atomic
-// pointer.
+// list result, watch events, re-watch/relist completions, overlay polls and
+// retention expiry all arrive as commands on one mailbox, so the source's
+// state needs no locks and every ordering question ("did this event land
+// before that attach?") has one answer. The only state read outside the actor
+// is the latest published revision, held in an atomic pointer.
 //
 // A revision is immutable once published: events are applied by copying the
 // row slice and swapping the pointer, never by editing a table a subscriber
@@ -19,12 +19,20 @@ package web
 // capacity-one mailbox that only ever means "a newer revision exists", so a
 // slow browser can neither queue unbounded events nor block the source.
 //
+// The source also owns the whole watch lifecycle. A clean EOF or transient
+// error re-watches from the last seen resourceVersion with bounded backoff; a
+// 410 relists once and publishes a forced-snapshot revision; only an upstream
+// 401/403, an immediate-EOF storm, a failed relist or hub shutdown is
+// terminal. Subscribers stay attached through recovery and are closed once,
+// with one reason, when a source really dies.
+//
 // The hub map is guarded by an ordinary mutex, held only to find, insert or
 // remove a source pointer -- never while waiting on an actor.
 
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,11 +55,35 @@ const hubMailbox = 64
 // lookup creates a replacement; the bound is a safety net, not a schedule.
 const hubAttachAttempts = 8
 
+// streamMaxImmediateEOFs consecutive immediate EOFs are a re-watch failure
+// (terminal reason "watch-failed") — an EOF storm must not spin re-watch
+// attempts forever.
+const streamMaxImmediateEOFs = 5
+
+// cacheAccountingHeadroom multiplies a source's accounted bytes before they
+// are compared against live.maxCacheAccountedBytes. Accounting measures
+// encoded Table metadata and row/object sizes; the Go heap additionally holds
+// the decoded maps, slices and per-row indexes those bytes turn into, so the
+// bound is applied to a deliberately pessimistic multiple of the measured
+// size rather than to the measurement itself.
+const cacheAccountingHeadroom = 3
+
 // Results reported to the metrics sink for one source lookup.
 const (
 	hubSourceCreated = "created"
 	hubSourceReused  = "reused"
 	hubSourceFailed  = "failed"
+)
+
+// Terminal reasons a source can close its subscribers with. They are the
+// existing Live v2 terminal vocabulary: the browser already knows that "auth"
+// must not be retried and that "watch-failed"/"shutdown" reconnect. A source
+// released for any non-terminal reason (unsubscribe, retention) carries the
+// empty reason: nothing failed, so the subscriber decides what to report.
+const (
+	hubTerminalAuth        = "auth"
+	hubTerminalWatchFailed = "watch-failed"
+	hubTerminalShutdown    = "shutdown"
 )
 
 var (
@@ -64,8 +96,9 @@ var (
 	errHubSourceGone = errors.New("live source is shutting down")
 )
 
-// hubClock is the hub's time surface. Sources schedule the retention window
-// through it, so a test can release a 30-second window without waiting.
+// hubClock is the hub's time surface. Sources schedule retention, re-watch
+// backoff and the overlay poll through it, so a test can release a 30-second
+// window without waiting.
 type hubClock interface {
 	Now() time.Time
 	AfterFunc(d time.Duration, f func()) hubTimer
@@ -95,29 +128,46 @@ type hubMetricsSink interface {
 	// observeHubCounts reports the live source and subscriber totals after a
 	// change.
 	observeHubCounts(sources, subscribers int)
+	// observeHubCache reports the hub-wide accounted retained bytes after a
+	// change.
+	observeHubCache(bytes int64)
 }
 
 type noopHubMetrics struct{}
 
 func (noopHubMetrics) observeHubSource(string)   {}
 func (noopHubMetrics) observeHubCounts(int, int) {}
+func (noopHubMetrics) observeHubCache(int64)     {}
 
 // hubListFunc performs the source's authoritative Table LIST. hubWatchFunc
-// opens one watch from a resourceVersion. Both are injected so the hub owns
-// sharing and lifecycle while the caller owns credentials and HTTP.
+// opens one watch from a resourceVersion. hubOverlayFunc resolves the join
+// overlays the attached subscribers currently ask for. All three are injected
+// so the hub owns sharing and lifecycle while the caller owns credentials and
+// HTTP.
 type (
-	hubListFunc  func(ctx context.Context) (kube.Table, error)
-	hubWatchFunc func(ctx context.Context, resourceVersion string) (streamTableWatch, error)
+	hubListFunc    func(ctx context.Context) (kube.Table, error)
+	hubWatchFunc   func(ctx context.Context, resourceVersion string) (streamTableWatch, error)
+	hubOverlayFunc func(ctx context.Context, demand hubDemand) renderOverlays
 )
+
+// hubDemand is one subscriber's join requirement. The source keeps a count per
+// join and polls upstream only while at least one subscriber needs it, so a
+// hundred subscribers on a ?join=metrics list still cost one metrics read per
+// interval and a list with no join costs none at all.
+type hubDemand struct {
+	metrics bool
+	nodes   bool
+}
 
 // hubSourceSpec is everything needed to CREATE a source. Only the key
 // participates in sharing: an attach that matches an existing source ignores
 // the rest, because a matching key means the same upstream request under the
 // same identity.
 type hubSourceSpec struct {
-	key   watchHubKey
-	list  hubListFunc
-	watch hubWatchFunc
+	key     watchHubKey
+	list    hubListFunc
+	watch   hubWatchFunc
+	overlay hubOverlayFunc
 }
 
 // hubRevision is one immutable published state of a source. Subscribers read
@@ -135,6 +185,10 @@ type hubRevision struct {
 	// forceSnapshot marks a discontinuity -- a relist -- after which a
 	// subscriber must send a full snapshot rather than a delta.
 	forceSnapshot bool
+	// highChurn reports that the SOURCE was taking sustained event traffic
+	// when this revision was published. Only the source sees the raw events,
+	// so it is the only place push pacing can learn the rate from.
+	highChurn bool
 	// overlays carries the demand-driven join reads (metrics, nodes) that were
 	// current when this revision was published.
 	overlays renderOverlays
@@ -157,15 +211,21 @@ type watchHub struct {
 	// request context of whichever subscriber happened to arrive first.
 	ctx     context.Context
 	limits  liveLimits
+	tuning  streamTuning
 	clock   hubClock
 	metrics hubMetricsSink
 
 	mu          sync.Mutex
 	sources     map[watchHubKey]*hubSource
 	subscribers int
+	accounted   int64
 }
 
-func newWatchHub(ctx context.Context, limits liveLimits, clock hubClock, metrics hubMetricsSink) *watchHub {
+func newWatchHub(ctx context.Context, limits liveLimits, tuning *streamTuning, clock hubClock, metrics hubMetricsSink) *watchHub {
+	if tuning == nil {
+		defaults := defaultStreamTuning()
+		tuning = &defaults
+	}
 	if clock == nil {
 		clock = realHubClock{}
 	}
@@ -175,6 +235,7 @@ func newWatchHub(ctx context.Context, limits liveLimits, clock hubClock, metrics
 	return &watchHub{
 		ctx:     ctx,
 		limits:  limits,
+		tuning:  *tuning,
 		clock:   clock,
 		metrics: metrics,
 		sources: map[watchHubKey]*hubSource{},
@@ -186,7 +247,11 @@ func newWatchHub(ctx context.Context, limits liveLimits, clock hubClock, metrics
 // subscriber renders from the shared state immediately and only then waits for
 // notifications. While the source is initializing the caller blocks on ITS OWN
 // context; a caller giving up never cancels the shared initialization.
-func (h *watchHub) Subscribe(ctx context.Context, spec *hubSourceSpec) (*hubSubscription, *hubRevision, error) {
+//
+// demand is this subscriber's join requirement, not the source's: it is added
+// to the source's per-join counters for exactly as long as the subscription
+// lives.
+func (h *watchHub) Subscribe(ctx context.Context, spec *hubSourceSpec, demand hubDemand) (*hubSubscription, *hubRevision, error) {
 	for range hubAttachAttempts {
 		if err := h.ctx.Err(); err != nil {
 			return nil, nil, err
@@ -195,7 +260,7 @@ func (h *watchHub) Subscribe(ctx context.Context, spec *hubSourceSpec) (*hubSubs
 		if err != nil {
 			return nil, nil, err
 		}
-		sub, rev, err := src.attach(ctx)
+		sub, rev, err := src.attach(ctx, demand)
 		if errors.Is(err, errHubSourceGone) {
 			// The source shut down between the map lookup and the attach. It
 			// is already out of the map, so the next pass creates its
@@ -250,6 +315,20 @@ func (h *watchHub) noteSubscribers(delta int) {
 	h.observeCountsLocked()
 }
 
+// noteAccounted folds one source's change in retained bytes into the hub-wide
+// total. Sources report deltas rather than totals so the hub never has to walk
+// every source to answer "how much is retained right now?".
+func (h *watchHub) noteAccounted(delta int64) {
+	if delta == 0 {
+		return
+	}
+	h.mu.Lock()
+	h.accounted += delta
+	total := h.accounted
+	h.mu.Unlock()
+	h.metrics.observeHubCache(total)
+}
+
 func (h *watchHub) observeCountsLocked() {
 	h.metrics.observeHubCounts(len(h.sources), h.subscribers)
 }
@@ -258,6 +337,21 @@ func (h *watchHub) sourceCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.sources)
+}
+
+// accountedBytes is the hub-wide retained-state estimate: encoded Table
+// metadata plus current row/object sizes across every live source. It never
+// accumulates historical watch-event bytes.
+func (h *watchHub) accountedBytes() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.accounted
+}
+
+// cacheChargedBytes is accountedBytes with the headroom multiplier applied:
+// the number admission compares against live.maxCacheAccountedBytes.
+func (h *watchHub) cacheChargedBytes() int64 {
+	return h.accountedBytes() * cacheAccountingHeadroom
 }
 
 // sourceStats reports one source's actor-owned counters. The map lock is
@@ -278,10 +372,13 @@ type hubCommand func(*hubSource)
 // hubSourceStats is a point-in-time view of a source, answered by the actor so
 // it can never race the state it reports.
 type hubSourceStats struct {
-	subscribers int
-	waiters     int
-	revision    uint64
-	initialized bool
+	subscribers   int
+	waiters       int
+	revision      uint64
+	initialized   bool
+	accounted     int64
+	demandMetrics int
+	demandNodes   int
 }
 
 // hubSource owns ONE upstream list+watch and the retained Table state it
@@ -305,6 +402,7 @@ type hubSource struct {
 	state    hubSourceState
 	stopping bool
 	err      error
+	reason   string
 	revNum   uint64
 	table    *kube.Table
 	lastRV   string
@@ -312,6 +410,36 @@ type hubSource struct {
 	watch    streamTableWatch
 	subs     map[*hubSubscription]struct{}
 	waiters  []*hubWaiter
+
+	// accounted is this source's share of the hub-wide retained-bytes total.
+	accounted int64
+
+	// Watch-attempt lifecycle. attemptStart/attemptSawEvent classify how an
+	// attempt ended, immediateEOFs counts the consecutive event-less instant
+	// ends that make an EOF storm, and backoff schedules the next attempt.
+	// Attempts are strictly serial: exactly one in-flight attempt reports
+	// exactly one end, which is what starts the next one.
+	attemptStart    time.Time
+	attemptSawEvent bool
+	immediateEOFs   int
+	backoff         streamBackoff
+	relisting       bool
+	eventWindow     streamEventWindow
+
+	// rewatch holds the pending re-watch delay; rewatchGen invalidates a timer
+	// that already fired when the schedule changed underneath it.
+	rewatch    hubTimer
+	rewatchGen uint64
+
+	// Demand-driven join polling: counters over the attached subscribers, the
+	// pending interval timer, and the in-flight guard that keeps one slow poll
+	// from stacking up behind the next interval.
+	demandMetrics   int
+	demandNodes     int
+	overlayActive   bool
+	overlayInFlight bool
+	overlayTimer    hubTimer
+	overlayGen      uint64
 
 	// retention holds the no-subscriber release timer; idleGen invalidates a
 	// timer that already fired when a new subscriber arrives.
@@ -329,6 +457,7 @@ func newHubSource(hub *watchHub, spec *hubSourceSpec) *hubSource {
 		cancel:  cancel,
 		stopped: make(chan struct{}),
 		subs:    map[*hubSubscription]struct{}{},
+		backoff: streamBackoff{tuning: hub.tuning},
 	}
 }
 
@@ -374,19 +503,29 @@ func (s *hubSource) listed(table *kube.Table, err error) {
 		return
 	}
 	if err != nil {
-		s.fail(err)
+		s.failTerminal(hubListTerminal(err), err)
 		return
 	}
 	s.state = hubReady
-	s.table = table
+	s.adoptTable(table)
 	s.lastRV = table.ResourceVersion
-	s.publish(table, false)
+	s.publish(s.table, false)
 	for _, waiter := range s.waiters {
-		waiter.serve(s.newSubscription(), s.current.Load(), nil)
+		waiter.serve(s.newSubscription(waiter.demand), s.current.Load(), nil)
 	}
 	s.waiters = nil
 	s.checkIdle()
 	s.startWatch()
+}
+
+// hubListTerminal classifies a failed LIST for the subscribers waiting on it:
+// an upstream 401/403 is the no-retry "auth" outcome, anything else is a
+// recoverable "watch-failed" the browser may reconnect from.
+func hubListTerminal(err error) string {
+	if kube.IsForbidden(err) {
+		return hubTerminalAuth
+	}
+	return hubTerminalWatchFailed
 }
 
 // startWatch opens the source's watch and pumps its events into the mailbox.
@@ -394,6 +533,11 @@ func (s *hubSource) listed(table *kube.Table, err error) {
 // the source is still running, so a stopped source retains no goroutine and no
 // upstream body.
 func (s *hubSource) startWatch() {
+	if s.stopping || s.state != hubReady {
+		return
+	}
+	s.attemptStart = s.hub.clock.Now()
+	s.attemptSawEvent = false
 	from := s.lastRV
 	go func() {
 		watch, err := s.spec.watch(s.ctx, from)
@@ -429,59 +573,192 @@ func (s *hubSource) watchOpened(watch streamTableWatch) {
 	s.watch = watch
 }
 
-// watchEnded handles the end of the source's watch attempt. Recovery
-// (re-watch with backoff, relist on 410, the terminal taxonomy) is the
-// lifecycle work that follows; for now an ended watch ends the source, and
-// the next attach starts a fresh one.
+// watchEnded classifies a finished watch attempt, exactly as the per-stream
+// session used to: a 410 relists once and re-watches from the fresh
+// resourceVersion; an upstream 401/403 is the terminal "auth"; everything else
+// (clean EOF included) re-watches from lastRV with bounded backoff -- unless it
+// is the streamMaxImmediateEOFs-th consecutive event-less instant end, which is
+// the terminal "watch-failed". Subscribers stay attached through every
+// recoverable branch: only a terminal closes them.
 func (s *hubSource) watchEnded(err error) {
-	if err == nil {
-		err = errors.New("live watch ended")
+	if s.stopping || s.state != hubReady {
+		return
 	}
-	s.fail(err)
+	if s.watch != nil {
+		_ = s.watch.Close()
+		s.watch = nil
+	}
+	if err == nil {
+		err = io.EOF
+	}
+	lived := s.hub.clock.Now().Sub(s.attemptStart)
+	switch {
+	case errors.Is(err, kube.ErrWatchGone):
+		// 410: the resourceVersion fell out of the apiserver history window.
+		// One asynchronous relist recovers it; a stalled relist must not
+		// freeze the source's other timers.
+		s.startRelist()
+		return
+	case kube.IsForbidden(err):
+		// Upstream 401/403 — e.g. session token expiry in passthrough mode.
+		// No retry can recover it.
+		s.failTerminal(hubTerminalAuth, err)
+		return
+	}
+	if !s.attemptSawEvent && lived < s.hub.tuning.immediateWindow {
+		s.immediateEOFs++
+		if s.immediateEOFs >= streamMaxImmediateEOFs {
+			s.failTerminal(hubTerminalWatchFailed, err)
+			return
+		}
+	} else {
+		s.immediateEOFs = 0
+	}
+	s.backoff.noteAttempt(lived)
+	s.scheduleRewatch(s.backoff.next())
+}
+
+// scheduleRewatch arms the next attempt. The generation makes a timer that
+// already fired a no-op once the schedule moved on (a relist, or teardown).
+func (s *hubSource) scheduleRewatch(d time.Duration) {
+	s.cancelRewatch()
+	gen := s.rewatchGen
+	s.rewatch = s.hub.clock.AfterFunc(d, func() {
+		s.post(func(s *hubSource) { s.rewatchDue(gen) })
+	})
+}
+
+func (s *hubSource) cancelRewatch() {
+	if s.rewatch != nil {
+		s.rewatch.Stop()
+		s.rewatch = nil
+	}
+	s.rewatchGen++
+}
+
+func (s *hubSource) rewatchDue(gen uint64) {
+	if gen != s.rewatchGen || s.rewatch == nil || s.relisting {
+		return
+	}
+	s.rewatch = nil
+	s.startWatch()
+}
+
+// startRelist performs the 410 recovery LIST off the actor goroutine. Only one
+// runs at a time; its result comes back as a command like everything else.
+func (s *hubSource) startRelist() {
+	if s.relisting {
+		return
+	}
+	s.cancelRewatch()
+	s.relisting = true
+	go func() {
+		table, err := s.spec.list(s.ctx)
+		s.post(func(s *hubSource) { s.relisted(&table, err) })
+	}()
+}
+
+// relisted adopts the recovery LIST: the retained table is replaced wholesale
+// (so accounted bytes are replaced, not adjusted), the new revision is marked
+// forceSnapshot because the delta chain is broken, and the watch restarts from
+// the fresh resourceVersion with a clean backoff schedule.
+func (s *hubSource) relisted(table *kube.Table, err error) {
+	if !s.relisting {
+		return
+	}
+	s.relisting = false
+	if s.stopping || s.state != hubReady {
+		return
+	}
+	if err != nil {
+		s.failTerminal(hubTerminalWatchFailed, err)
+		return
+	}
+	s.adoptTable(table)
+	s.lastRV = table.ResourceVersion
+	s.publish(s.table, true)
+	s.backoff = streamBackoff{tuning: s.hub.tuning}
+	s.immediateEOFs = 0
+	s.startWatch()
 }
 
 // applyEvent folds one watch event into a NEW retained table and publishes it.
 // Bookmarks carry no rows: they only advance the re-watch point, so they
-// publish nothing.
+// publish nothing and count as neither churn nor watch data.
 func (s *hubSource) applyEvent(ev *kube.WatchEvent) {
-	if s.state != hubReady {
+	if s.state != hubReady || s.stopping {
 		return
 	}
+	s.attemptSawEvent = true
+	s.immediateEOFs = 0
 	if ev.ResourceVersion != "" {
 		s.lastRV = ev.ResourceVersion
 	}
 	if ev.Type == kube.WatchBookmark {
 		return
 	}
-	s.table = hubApplyEvent(s.table, ev)
+	prev := s.table
+	next, delta := hubApplyEvent(prev, ev)
+	s.table = next
+	if len(prev.Columns) == 0 && len(next.Columns) > 0 {
+		// The first event supplied the column definitions the list lacked, so
+		// the metadata half of the estimate has to be measured again.
+		s.setAccounted(hubTableBytes(next))
+	} else {
+		s.setAccounted(s.accounted + delta)
+	}
+	s.eventWindow.note(s.hub.clock.Now())
 	s.publish(s.table, false)
+}
+
+// adoptTable replaces the retained table wholesale and re-measures its
+// accounted bytes. It is the initial-list and relist path; ordinary events
+// adjust the running total instead.
+func (s *hubSource) adoptTable(table *kube.Table) {
+	s.table = table
+	s.setAccounted(hubTableBytes(table))
+}
+
+// setAccounted moves this source to a new retained-bytes total and reports the
+// difference to the hub, so the hub-wide sum never has to be recomputed.
+func (s *hubSource) setAccounted(total int64) {
+	if total < 0 {
+		total = 0
+	}
+	delta := total - s.accounted
+	s.accounted = total
+	s.hub.noteAccounted(delta)
 }
 
 // publish stores the next immutable revision and wakes every subscriber. The
 // store happens BEFORE the wakeups, so a woken subscriber always finds at
 // least the revision it was woken for.
 func (s *hubSource) publish(table *kube.Table, forceSnapshot bool) {
+	now := s.hub.clock.Now()
 	s.revNum++
 	s.current.Store(&hubRevision{
 		num:           s.revNum,
 		table:         table,
 		rv:            s.lastRV,
 		forceSnapshot: forceSnapshot,
+		highChurn:     s.eventWindow.high(now),
 		overlays:      s.overlays,
-		eventAt:       s.hub.clock.Now(),
+		eventAt:       now,
 	})
 	for sub := range s.subs {
 		sub.wake()
 	}
 }
 
-// fail records the source's terminal error, hands it to every waiter that was
-// still expecting a snapshot, and ends the source. Waiters are served before
-// the source leaves the map so a burst of attaches sees ONE failure rather
-// than each starting a doomed replacement.
-func (s *hubSource) fail(err error) {
+// failTerminal records the source's terminal outcome, hands the error to every
+// waiter that was still expecting a snapshot, and ends the source. Waiters are
+// served before the source leaves the map so a burst of attaches sees ONE
+// failure rather than each starting a doomed replacement; the subscribers are
+// then all closed with this one reason by stop.
+func (s *hubSource) failTerminal(reason string, err error) {
 	s.state = hubFailed
 	s.err = err
+	s.reason = reason
 	s.hub.metrics.observeHubSource(hubSourceFailed)
 	for _, waiter := range s.waiters {
 		waiter.serve(nil, nil, err)
@@ -492,25 +769,45 @@ func (s *hubSource) fail(err error) {
 
 // stop is the single teardown path: leave the map first so no new attach can
 // find this source, then cancel the source context (which unblocks the watch
-// reader), close the upstream watch, release the subscribers, and finally open
+// reader), close the upstream watch, release the subscribers with the terminal
+// reason, drop this source's share of the accounted bytes, and finally open
 // the stopped gate that tells racing attaches to retry elsewhere.
 func (s *hubSource) stop() {
 	s.hub.remove(s)
 	s.cancel()
+	s.cancelRewatch()
+	s.cancelOverlayTimer()
 	if s.watch != nil {
 		_ = s.watch.Close()
 		s.watch = nil
 	}
+	reason := s.stopReason()
 	for sub := range s.subs {
 		delete(s.subs, sub)
 		s.hub.noteSubscribers(-1)
-		sub.finish()
+		sub.finish(reason)
 	}
 	for _, waiter := range s.waiters {
 		waiter.serve(nil, nil, s.stopErr())
 	}
 	s.waiters = nil
+	s.setAccounted(0)
 	close(s.stopped)
+}
+
+// stopReason is the terminal reason the released subscribers are closed with:
+// the source's own failure when it had one, "shutdown" when the hub itself is
+// going away, and no reason at all for an ordinary retention release (nobody
+// is attached to hear it).
+func (s *hubSource) stopReason() string {
+	switch {
+	case s.reason != "":
+		return s.reason
+	case s.hub.ctx.Err() != nil:
+		return hubTerminalShutdown
+	default:
+		return ""
+	}
 }
 
 // stopErr is what a waiter still queued at teardown is told: the source's own
@@ -529,8 +826,8 @@ func (s *hubSource) stopErr() error {
 // attach registers one subscriber. Registration and event application are both
 // actor commands, so an event racing this call is either already in the
 // returned revision or arrives later as exactly one notification.
-func (s *hubSource) attach(ctx context.Context) (*hubSubscription, *hubRevision, error) {
-	waiter := &hubWaiter{reply: make(chan hubAttachResult, 1)}
+func (s *hubSource) attach(ctx context.Context, demand hubDemand) (*hubSubscription, *hubRevision, error) {
+	waiter := &hubWaiter{reply: make(chan hubAttachResult, 1), demand: demand}
 	if !s.post(func(s *hubSource) { s.serveWaiter(waiter) }) {
 		return nil, nil, errHubSourceGone
 	}
@@ -560,7 +857,7 @@ func (s *hubSource) serveWaiter(waiter *hubWaiter) {
 	case hubInitializing:
 		s.waiters = append(s.waiters, waiter)
 	case hubReady:
-		waiter.serve(s.newSubscription(), s.current.Load(), nil)
+		waiter.serve(s.newSubscription(waiter.demand), s.current.Load(), nil)
 	case hubFailed:
 		waiter.serve(nil, nil, s.err)
 	}
@@ -581,14 +878,22 @@ func (s *hubSource) withdrawWaiter(waiter *hubWaiter) {
 	}
 }
 
-func (s *hubSource) newSubscription() *hubSubscription {
+func (s *hubSource) newSubscription(demand hubDemand) *hubSubscription {
 	sub := &hubSubscription{
 		src:    s,
+		demand: demand,
 		notify: make(chan struct{}, 1),
 		done:   make(chan struct{}),
 	}
 	s.subs[sub] = struct{}{}
+	if demand.metrics {
+		s.demandMetrics++
+	}
+	if demand.nodes {
+		s.demandNodes++
+	}
 	s.hub.noteSubscribers(1)
+	s.syncOverlayDemand()
 	return sub
 }
 
@@ -599,9 +904,94 @@ func (s *hubSource) detach(sub *hubSubscription) {
 		return
 	}
 	delete(s.subs, sub)
+	if sub.demand.metrics {
+		s.demandMetrics--
+	}
+	if sub.demand.nodes {
+		s.demandNodes--
+	}
 	s.hub.noteSubscribers(-1)
-	sub.finish()
+	sub.finish("")
+	s.syncOverlayDemand()
 	s.checkIdle()
+}
+
+// syncOverlayDemand starts or stops the shared join poll on the transition
+// between "somebody needs a join" and "nobody does". Gaining demand polls
+// immediately so the first subscriber does not stare at a missing join for a
+// whole interval; losing it cancels the pending timer, so an unwatched source
+// makes no upstream join requests at all.
+func (s *hubSource) syncOverlayDemand() {
+	want := s.demandMetrics > 0 || s.demandNodes > 0
+	if want == s.overlayActive {
+		return
+	}
+	s.overlayActive = want
+	if !want {
+		s.cancelOverlayTimer()
+		return
+	}
+	s.pollOverlays()
+}
+
+// pollOverlays fetches the joins the currently attached subscribers need. One
+// poll serves every subscriber: the count never multiplies upstream requests.
+func (s *hubSource) pollOverlays() {
+	if s.spec.overlay == nil || s.overlayInFlight || !s.overlayActive || s.stopping {
+		return
+	}
+	s.cancelOverlayTimer()
+	s.overlayInFlight = true
+	demand := hubDemand{metrics: s.demandMetrics > 0, nodes: s.demandNodes > 0}
+	fetch := s.spec.overlay
+	timeout := s.hub.tuning.metricsRequestTimeout
+	go func() {
+		ctx, cancel := context.WithTimeout(s.ctx, timeout)
+		defer cancel()
+		overlays := fetch(ctx, demand)
+		s.post(func(s *hubSource) { s.overlaysFetched(overlays) })
+	}()
+}
+
+// overlaysFetched publishes the poll as a new revision -- an overlay change is
+// a render change even when no watch event happened -- and arms the next
+// interval while the demand is still there.
+func (s *hubSource) overlaysFetched(overlays renderOverlays) {
+	s.overlayInFlight = false
+	if s.stopping {
+		return
+	}
+	s.overlays = overlays
+	if s.state == hubReady {
+		s.publish(s.table, false)
+	}
+	if s.overlayActive {
+		s.armOverlayTimer()
+	}
+}
+
+func (s *hubSource) armOverlayTimer() {
+	s.cancelOverlayTimer()
+	gen := s.overlayGen
+	s.overlayTimer = s.hub.clock.AfterFunc(s.hub.tuning.metricsPoll, func() {
+		s.post(func(s *hubSource) { s.overlayDue(gen) })
+	})
+}
+
+func (s *hubSource) cancelOverlayTimer() {
+	if s.overlayTimer != nil {
+		s.overlayTimer.Stop()
+		s.overlayTimer = nil
+	}
+	s.overlayGen++
+}
+
+func (s *hubSource) overlayDue(gen uint64) {
+	if gen != s.overlayGen || s.overlayTimer == nil {
+		return
+	}
+	s.overlayTimer = nil
+	s.pollOverlays()
 }
 
 // checkIdle arms the retention window once nobody is attached and nobody is
@@ -650,10 +1040,13 @@ func (s *hubSource) stats() hubSourceStats {
 	reply := make(chan hubSourceStats, 1)
 	if !s.post(func(s *hubSource) {
 		reply <- hubSourceStats{
-			subscribers: len(s.subs),
-			waiters:     len(s.waiters),
-			revision:    s.revNum,
-			initialized: s.state == hubReady,
+			subscribers:   len(s.subs),
+			waiters:       len(s.waiters),
+			revision:      s.revNum,
+			initialized:   s.state == hubReady,
+			accounted:     s.accounted,
+			demandMetrics: s.demandMetrics,
+			demandNodes:   s.demandNodes,
 		}
 	}) {
 		return hubSourceStats{}
@@ -681,8 +1074,9 @@ type hubAttachResult struct {
 // blocks on a caller that has already given up; sub is actor-owned and lets a
 // withdrawal release a subscription that was granted concurrently.
 type hubWaiter struct {
-	reply chan hubAttachResult
-	sub   *hubSubscription
+	reply  chan hubAttachResult
+	demand hubDemand
+	sub    *hubSubscription
 }
 
 func (w *hubWaiter) serve(sub *hubSubscription, rev *hubRevision, err error) {
@@ -695,8 +1089,14 @@ func (w *hubWaiter) serve(sub *hubSubscription, rev *hubRevision, err error) {
 // a done channel that closes when the source releases it.
 type hubSubscription struct {
 	src    *hubSource
+	demand hubDemand
 	notify chan struct{}
 	done   chan struct{}
+
+	// reason is the terminal reason the source released this subscription
+	// with, published atomically because Close can race the source's own
+	// teardown.
+	reason atomic.Pointer[string]
 
 	closeOnce  sync.Once
 	finishOnce sync.Once
@@ -709,6 +1109,16 @@ func (sub *hubSubscription) Notify() <-chan struct{} { return sub.notify }
 // Done closes when the source has released this subscription.
 func (sub *hubSubscription) Done() <-chan struct{} { return sub.done }
 
+// Reason is the source's terminal reason once Done has closed: "auth",
+// "watch-failed" or "shutdown" for a source that died, and empty when the
+// subscription was simply released.
+func (sub *hubSubscription) Reason() string {
+	if reason := sub.reason.Load(); reason != nil {
+		return *reason
+	}
+	return ""
+}
+
 // Revision returns the latest published revision. It is immutable: render from
 // a cloneTableForRender copy, never from its table directly.
 func (sub *hubSubscription) Revision() *hubRevision { return sub.src.current.Load() }
@@ -718,7 +1128,7 @@ func (sub *hubSubscription) Revision() *hubRevision { return sub.src.current.Loa
 func (sub *hubSubscription) Close() {
 	sub.closeOnce.Do(func() {
 		if !sub.src.post(func(s *hubSource) { s.detach(sub) }) {
-			sub.finish()
+			sub.finish("")
 		}
 	})
 }
@@ -730,8 +1140,72 @@ func (sub *hubSubscription) wake() {
 	}
 }
 
-func (sub *hubSubscription) finish() {
-	sub.finishOnce.Do(func() { close(sub.done) })
+func (sub *hubSubscription) finish(reason string) {
+	sub.finishOnce.Do(func() {
+		sub.reason.Store(&reason)
+		close(sub.done)
+	})
+}
+
+// streamEventWindow is a fixed-size trailing-event ring. High-churn detection
+// only needs the threshold's most recent timestamps; retaining every event in
+// a pathological two-second burst would make an otherwise bounded stream grow.
+type streamEventWindow struct {
+	times [streamChurnEvents]time.Time
+	next  int
+	count int
+}
+
+func (w *streamEventWindow) note(now time.Time) {
+	w.times[w.next] = now
+	w.next = (w.next + 1) % len(w.times)
+	if w.count < len(w.times) {
+		w.count++
+	}
+}
+
+func (w *streamEventWindow) high(now time.Time) bool {
+	if w.count < streamChurnEvents {
+		return false
+	}
+	cutoff := now.Add(-streamChurnWindow)
+	for i := range w.count {
+		if !w.times[i].After(cutoff) {
+			return false
+		}
+	}
+	return true
+}
+
+// streamBackoff is the re-watch delay schedule: the server's base doubles per
+// attempt up to its cap. noteAttempt resets the schedule after a healthy watch.
+type streamBackoff struct {
+	tuning  streamTuning
+	attempt int
+}
+
+// next returns the delay before the upcoming re-watch attempt and advances
+// the schedule.
+func (b *streamBackoff) next() time.Duration {
+	d := b.tuning.backoffBase
+	for i := 0; i < b.attempt && d < b.tuning.backoffCap; i++ {
+		d *= 2
+	}
+	if d > b.tuning.backoffCap {
+		d = b.tuning.backoffCap
+	}
+	if b.attempt < 63 {
+		b.attempt++
+	}
+	return d
+}
+
+// noteAttempt records a finished watch attempt's lifetime: a healthy attempt
+// resets the schedule so the next re-watch waits only the base delay again.
+func (b *streamBackoff) noteAttempt(lived time.Duration) {
+	if lived >= b.tuning.healthyReset {
+		b.attempt = 0
+	}
 }
 
 // hubApplyEvent folds one watch event into a NEW Table value: the row slice is
@@ -739,10 +1213,111 @@ func (sub *hubSubscription) finish() {
 // be rendering right now -- keeps its own rows. Row objects are shared by
 // reference; the merge replaces them wholesale rather than editing in place,
 // so no subscriber can observe a half-applied object.
-func hubApplyEvent(prev *kube.Table, ev *kube.WatchEvent) *kube.Table {
+//
+// It also reports the accounted-bytes delta for the rows the event names,
+// measured as the difference across the merge: a replacement subtracts the old
+// row and adds the new one, a delete subtracts, an add adds. Rows the event
+// does not name are not measured at all.
+func hubApplyEvent(prev *kube.Table, ev *kube.WatchEvent) (*kube.Table, int64) {
 	next := *prev
 	next.Rows = make([]kube.Row, len(prev.Rows))
 	copy(next.Rows, prev.Rows)
+	before := hubEventRowBytes(&next, ev)
 	mergeTableEvent(&next, ev)
-	return &next
+	after := hubEventRowBytes(&next, ev)
+	return &next, after - before
+}
+
+// hubEventRowBytes sums the accounted size of the table rows the event names,
+// so the merge's effect can be measured without walking the whole table.
+func hubEventRowBytes(table *kube.Table, ev *kube.WatchEvent) int64 {
+	var total int64
+	for i := range table.Rows {
+		row := &table.Rows[i]
+		name := nestedString(row.Object, "metadata", "name")
+		ns := nestedString(row.Object, "metadata", "namespace")
+		for j := range ev.Table.Rows {
+			other := &ev.Table.Rows[j]
+			if nestedString(other.Object, "metadata", "name") == name &&
+				nestedString(other.Object, "metadata", "namespace") == ns {
+				total += hubRowBytes(row)
+				break
+			}
+		}
+	}
+	return total
+}
+
+// hubTableBytes is the full retained-state estimate for one Table: encoded
+// metadata plus every current row. It is the initial-list and relist
+// measurement; events adjust the result rather than repeating this walk.
+func hubTableBytes(table *kube.Table) int64 {
+	total := hubTableMetaBytes(table)
+	for i := range table.Rows {
+		total += hubRowBytes(&table.Rows[i])
+	}
+	return total
+}
+
+// hubTableMetaBytes estimates the encoded size of the Table's non-row state:
+// the column definitions the rows' cells are read through, the cluster list,
+// and the consistency point.
+func hubTableMetaBytes(table *kube.Table) int64 {
+	total := int64(len(table.ResourceVersion) + 2)
+	for i := range table.Columns {
+		col := &table.Columns[i]
+		total += int64(len(col.Name)+len(col.Type)+len(col.Format)+len(col.Description)+len(col.Class)+len(col.Label)) + 12
+	}
+	for _, cluster := range table.Clusters {
+		total += int64(len(cluster)) + 3
+	}
+	return total
+}
+
+// hubRowBytes estimates one retained row: its printed cells plus the raw
+// object the custom-column and detail paths read.
+func hubRowBytes(row *kube.Row) int64 {
+	total := int64(len(row.Cluster)) + 2
+	for _, cell := range row.Cells {
+		total += hubValueBytes(cell) + 1
+	}
+	return total + hubValueBytes(row.Object)
+}
+
+// hubValueBytes estimates the encoded JSON size of one decoded value. It is a
+// deliberate approximation -- allocation-free and error-free, unlike a real
+// encode on every watch event -- and it is only ever compared against a
+// configured bound that already carries cacheAccountingHeadroom.
+func hubValueBytes(v any) int64 {
+	switch value := v.(type) {
+	case nil:
+		return 4 // null
+	case string:
+		return int64(len(value)) + 2 // quotes
+	case bool:
+		return 5
+	case map[string]any:
+		total := int64(2) // braces
+		for key, item := range value {
+			total += int64(len(key)) + 4 // "key":
+			total += hubValueBytes(item)
+		}
+		if len(value) > 1 {
+			total += int64(len(value)) - 1 // commas
+		}
+		return total
+	case []any:
+		total := int64(2) // brackets
+		for _, item := range value {
+			total += hubValueBytes(item)
+		}
+		if len(value) > 1 {
+			total += int64(len(value)) - 1 // commas
+		}
+		return total
+	default:
+		// Numbers and anything the decoder produced that is not a container:
+		// one short scalar literal.
+		return 8
+	}
 }

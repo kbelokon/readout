@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kbelokon/readout/internal/kube"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // fakeHubClock is a manually advanced clock: Now only moves when a test says
@@ -95,6 +96,12 @@ type hubTestUpstream struct {
 	closes   int
 	last     *hubTestWatch
 
+	// overlays counts the demand-driven join polls and records the demand each
+	// one was made with, so a test can prove the count does not scale with
+	// subscribers.
+	overlays      int
+	overlayDemand []hubDemand
+
 	// listGate blocks the initial LIST until the test closes it, so every
 	// concurrent attach is guaranteed to arrive while the source is still
 	// initializing.
@@ -115,7 +122,68 @@ func newHubTestUpstream(table *kube.Table) *hubTestUpstream {
 func (u *hubTestUpstream) openGate() { close(u.listGate) }
 
 func (u *hubTestUpstream) spec(key *watchHubKey) *hubSourceSpec {
-	return &hubSourceSpec{key: *key, list: u.list, watch: u.watch}
+	return &hubSourceSpec{key: *key, list: u.list, watch: u.watch, overlay: u.overlay}
+}
+
+// overlay is the shared join poll. It records the demand it was asked for and
+// returns a distinguishable overlay per call so a test can see the revision
+// change.
+func (u *hubTestUpstream) overlay(_ context.Context, demand hubDemand) renderOverlays {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.overlays++
+	var overlays renderOverlays
+	if demand.metrics {
+		overlays.metrics = map[string][2]float64{"poll": {float64(u.overlays), 0}}
+	}
+	if demand.nodes {
+		overlays.nodes = map[string]map[string]any{}
+	}
+	u.overlayDemand = append(u.overlayDemand, demand)
+	return overlays
+}
+
+// setTable swaps what the NEXT list returns, so a relist is distinguishable
+// from the initial snapshot.
+func (u *hubTestUpstream) setTable(table *kube.Table) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.table = *table
+}
+
+func (u *hubTestUpstream) overlayCount() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.overlays
+}
+
+// setListErr swaps the LIST outcome mid-test, so a relist can fail after the
+// initial list succeeded.
+func (u *hubTestUpstream) setListErr(err error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.listErr = err
+}
+
+// failWatch ends the CURRENT attempt with a specific upstream error instead of
+// the clean EOF Close produces.
+func (u *hubTestUpstream) failWatch(t *testing.T, err error) {
+	t.Helper()
+	u.mu.Lock()
+	w := u.last
+	u.mu.Unlock()
+	if w == nil {
+		t.Fatal("no watch attempt to fail")
+	}
+	w.fail(err)
+}
+
+// watchAttempts reports the resourceVersion each attempt started from, which is
+// how a test proves a re-watch resumed instead of relisting.
+func (u *hubTestUpstream) watchAttempts() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.watchRVs...)
 }
 
 func (u *hubTestUpstream) list(ctx context.Context) (kube.Table, error) {
@@ -187,6 +255,25 @@ type hubTestWatch struct {
 	events chan kube.WatchEvent
 	closed chan struct{}
 	once   sync.Once
+
+	// failErr is the error Next reports instead of io.EOF when the test ended
+	// this attempt with a specific upstream failure (a 410, a 403).
+	failMu sync.Mutex
+	failed error
+}
+
+// fail ends the attempt with err rather than a clean close.
+func (w *hubTestWatch) fail(err error) {
+	w.failMu.Lock()
+	w.failed = err
+	w.failMu.Unlock()
+	_ = w.Close()
+}
+
+func (w *hubTestWatch) failErr() error {
+	w.failMu.Lock()
+	defer w.failMu.Unlock()
+	return w.failed
 }
 
 func (w *hubTestWatch) Next() (kube.WatchEvent, error) {
@@ -194,6 +281,9 @@ func (w *hubTestWatch) Next() (kube.WatchEvent, error) {
 	case ev := <-w.events:
 		return ev, nil
 	case <-w.closed:
+		if err := w.failErr(); err != nil {
+			return kube.WatchEvent{}, err
+		}
 		return kube.WatchEvent{}, io.EOF
 	case <-w.ctx.Done():
 		return kube.WatchEvent{}, w.ctx.Err()
@@ -216,6 +306,7 @@ type recordingHubMetrics struct {
 	results     map[string]int
 	sources     int
 	subscribers int
+	cache       int64
 }
 
 func newRecordingHubMetrics() *recordingHubMetrics {
@@ -233,6 +324,18 @@ func (m *recordingHubMetrics) observeHubCounts(sources, subscribers int) {
 	defer m.mu.Unlock()
 	m.sources = sources
 	m.subscribers = subscribers
+}
+
+func (m *recordingHubMetrics) observeHubCache(bytes int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cache = bytes
+}
+
+func (m *recordingHubMetrics) cacheBytes() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cache
 }
 
 func (m *recordingHubMetrics) result(name string) int {
@@ -287,15 +390,22 @@ func hubRowNames(table *kube.Table) []string {
 	return names
 }
 
-// newTestWatchHub builds a hub with the manual clock and a recording sink. The
-// hub context is canceled by cleanup so no source outlives its test.
+// newTestWatchHub builds a hub with the manual clock, the production timing
+// policy and a recording sink. The hub context is canceled by cleanup so no
+// source outlives its test.
 func newTestWatchHub(t *testing.T, limits liveLimits) (*watchHub, *fakeHubClock, *recordingHubMetrics) {
+	t.Helper()
+	tuning := defaultStreamTuning()
+	return newTestWatchHubTuned(t, limits, &tuning)
+}
+
+func newTestWatchHubTuned(t *testing.T, limits liveLimits, tuning *streamTuning) (*watchHub, *fakeHubClock, *recordingHubMetrics) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	clock := newFakeHubClock()
 	metrics := newRecordingHubMetrics()
-	return newWatchHub(ctx, limits, clock, metrics), clock, metrics
+	return newWatchHub(ctx, limits, tuning, clock, metrics), clock, metrics
 }
 
 func testHubLimits() liveLimits {
@@ -310,6 +420,22 @@ func waitFor(t *testing.T, label string, cond func() bool) {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", label)
 		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// advanceUntil drives the fake clock until cond holds. Hub timers are armed
+// from the actor goroutine, so one advance can land before the timer it was
+// meant to fire even exists; repeating it is how a test reaches a scheduled
+// step without waiting out the real delay.
+func advanceUntil(t *testing.T, clock *fakeHubClock, step time.Duration, label string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", label)
+		}
+		clock.Advance(step)
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -354,7 +480,7 @@ func TestWatchHubConcurrentSubscribesShareOneSource(t *testing.T) {
 	results := make(chan attach, subscribers)
 	for range subscribers {
 		go func() {
-			sub, rev, err := hub.Subscribe(context.Background(), up.spec(key))
+			sub, rev, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 			results <- attach{sub: sub, rev: rev, err: err}
 		}()
 	}
@@ -411,7 +537,7 @@ func TestWatchHubInitialRevision(t *testing.T) {
 	up := newHubTestUpstream(hubTestTable("10", "alpha"))
 	up.openGate()
 
-	sub, rev, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")))
+	sub, rev, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -456,7 +582,7 @@ func TestWatchHubSubscribeRacingEventIsNeitherLostNorDuplicated(t *testing.T) {
 		up.openGate()
 		key := hubTestKey("ns")
 
-		primary, _, err := hub.Subscribe(context.Background(), up.spec(key))
+		primary, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 		if err != nil {
 			t.Fatalf("attempt %d: primary Subscribe failed: %v", attempt, err)
 		}
@@ -474,7 +600,7 @@ func TestWatchHubSubscribeRacingEventIsNeitherLostNorDuplicated(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			racer, raceRev, raceErr = hub.Subscribe(context.Background(), up.spec(key))
+			racer, raceRev, raceErr = hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 		}()
 		go func() {
 			defer wg.Done()
@@ -514,7 +640,7 @@ func TestWatchHubNotificationsCoalesce(t *testing.T) {
 	up := newHubTestUpstream(hubTestTable("10", "alpha"))
 	up.openGate()
 
-	sub, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")))
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -546,7 +672,7 @@ func TestWatchHubAppliesDeletesAndBookmarks(t *testing.T) {
 	up.openGate()
 	key := hubTestKey("ns")
 
-	sub, rev, err := hub.Subscribe(context.Background(), up.spec(key))
+	sub, rev, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -578,7 +704,7 @@ func TestWatchHubPublishedRevisionsAreImmutable(t *testing.T) {
 	up := newHubTestUpstream(hubTestTable("10", "alpha"))
 	up.openGate()
 
-	sub, rev, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")))
+	sub, rev, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -625,7 +751,7 @@ func TestWatchHubRetentionReleasesIdleSource(t *testing.T) {
 	up.openGate()
 	key := hubTestKey("ns")
 
-	sub, _, err := hub.Subscribe(context.Background(), up.spec(key))
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -664,7 +790,7 @@ func TestWatchHubResubscribeCancelsRetention(t *testing.T) {
 	up.openGate()
 	key := hubTestKey("ns")
 
-	first, _, err := hub.Subscribe(context.Background(), up.spec(key))
+	first, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -677,7 +803,7 @@ func TestWatchHubResubscribeCancelsRetention(t *testing.T) {
 		return hub.sourceStats(key).subscribers == 0
 	})
 
-	second, rev, err := hub.Subscribe(context.Background(), up.spec(key))
+	second, rev, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 	if err != nil {
 		t.Fatalf("re-Subscribe failed: %v", err)
 	}
@@ -703,7 +829,7 @@ func TestWatchHubResubscribeCancelsRetention(t *testing.T) {
 // A failed initial LIST is delivered to every waiter that joined it, once, and
 // the source is discarded so the next attach starts a fresh attempt.
 func TestWatchHubInitialListFailureReachesEveryWaiter(t *testing.T) {
-	const waiters = 10
+	const waiters = 100
 	hub, _, metrics := newTestWatchHub(t, testHubLimits())
 	up := newHubTestUpstream(&kube.Table{})
 	up.listErr = errors.New("boom")
@@ -712,7 +838,7 @@ func TestWatchHubInitialListFailureReachesEveryWaiter(t *testing.T) {
 	errs := make(chan error, waiters)
 	for range waiters {
 		go func() {
-			_, _, err := hub.Subscribe(context.Background(), up.spec(key))
+			_, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 			errs <- err
 		}()
 	}
@@ -744,7 +870,7 @@ func TestWatchHubInitializationSurvivesTheFirstSubscriber(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	firstErr := make(chan error, 1)
 	go func() {
-		_, _, err := hub.Subscribe(ctx, up.spec(key))
+		_, _, err := hub.Subscribe(ctx, up.spec(key), hubDemand{})
 		firstErr <- err
 	}()
 	waitFor(t, "the first subscriber to queue", func() bool {
@@ -753,7 +879,7 @@ func TestWatchHubInitializationSurvivesTheFirstSubscriber(t *testing.T) {
 	secondErr := make(chan error, 1)
 	var second *hubSubscription
 	go func() {
-		sub, _, err := hub.Subscribe(context.Background(), up.spec(key))
+		sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 		second = sub
 		secondErr <- err
 	}()
@@ -788,7 +914,7 @@ func TestWatchHubCanceledAttachLeavesNoSubscriber(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := hub.Subscribe(ctx, up.spec(key))
+		_, _, err := hub.Subscribe(ctx, up.spec(key), hubDemand{})
 		done <- err
 	}()
 	waitFor(t, "the subscriber to queue", func() bool {
@@ -816,17 +942,17 @@ func TestWatchHubSourceLimitRejectsNewKeys(t *testing.T) {
 	up := newHubTestUpstream(hubTestTable("10", "alpha"))
 	up.openGate()
 
-	sub, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")))
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 	t.Cleanup(sub.Close)
 
-	if _, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("other"))); !errors.Is(err, errHubSourceLimit) {
+	if _, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("other")), hubDemand{}); !errors.Is(err, errHubSourceLimit) {
 		t.Fatalf("second key error = %v, want errHubSourceLimit", err)
 	}
 	// The existing key still joins its running source.
-	reused, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")))
+	reused, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")), hubDemand{})
 	if err != nil {
 		t.Fatalf("reuse of an admitted key failed: %v", err)
 	}
@@ -839,11 +965,11 @@ func TestWatchHubSourceLimitRejectsNewKeys(t *testing.T) {
 // Hub shutdown closes every subscription and releases every source.
 func TestWatchHubShutdownClosesSources(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	hub := newWatchHub(ctx, testHubLimits(), newFakeHubClock(), newRecordingHubMetrics())
+	hub := newWatchHub(ctx, testHubLimits(), nil, newFakeHubClock(), newRecordingHubMetrics())
 	up := newHubTestUpstream(hubTestTable("10", "alpha"))
 	up.openGate()
 
-	sub, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")))
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -854,25 +980,134 @@ func TestWatchHubShutdownClosesSources(t *testing.T) {
 
 	cancel()
 	requireSignal(t, sub.Done(), "subscription closed by hub shutdown")
+	if got := sub.Reason(); got != hubTerminalShutdown {
+		t.Fatalf("terminal reason = %q, want %q", got, hubTerminalShutdown)
+	}
 	waitFor(t, "sources to be released", func() bool { return hub.sourceCount() == 0 })
 	waitFor(t, "the upstream watch to close", func() bool {
 		_, _, closes := up.counts()
 		return closes == 1
 	})
-	if _, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns"))); err == nil {
+	if _, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")), hubDemand{}); err == nil {
 		t.Fatal("Subscribe succeeded after hub shutdown")
 	}
 }
 
-// A watch that ends releases every subscriber and discards the source, so the
-// next attach starts a fresh attempt rather than joining dead state.
-func TestWatchHubWatchEndReleasesSubscribers(t *testing.T) {
+// A clean upstream EOF is recovery, not a terminal: the source re-watches from
+// the last seen resourceVersion after the backoff delay, does NOT relist, and
+// every subscriber stays attached across the gap.
+func TestWatchHubCleanEOFRewatchesWithoutTerminal(t *testing.T) {
+	hub, clock, _ := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	t.Cleanup(sub.Close)
+	waitFor(t, "the source watch to open", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 1
+	})
+	up.emit(t, hubTestEvent(kube.WatchModified, "11", "alpha"))
+	waitRevision(t, sub, 2)
+
+	up.endWatch(t)
+	advanceUntil(t, clock, time.Minute, "the scheduled re-watch", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 2
+	})
+
+	attempts := up.watchAttempts()
+	if len(attempts) != 2 || attempts[1] != "11" {
+		t.Fatalf("watch attempts = %v, want the second to resume from the last event 11", attempts)
+	}
+	select {
+	case <-sub.Done():
+		t.Fatal("a clean EOF closed the subscription instead of re-watching")
+	default:
+	}
+	if lists, _, _ := up.counts(); lists != 1 {
+		t.Fatalf("LIST count = %d, want 1: a clean EOF must not relist", lists)
+	}
+	if hub.sourceCount() != 1 {
+		t.Fatal("a clean EOF discarded the source")
+	}
+}
+
+// A 410 costs exactly one relist no matter how many browsers are attached, and
+// every one of them sees the same single forced-snapshot revision -- the
+// discontinuity the delta chain cannot survive.
+func TestWatchHubGoneRelistsOnceForEverySubscriber(t *testing.T) {
+	const subscribers = 8
 	hub, _, _ := newTestWatchHub(t, testHubLimits())
 	up := newHubTestUpstream(hubTestTable("10", "alpha"))
 	up.openGate()
 	key := hubTestKey("ns")
 
-	sub, _, err := hub.Subscribe(context.Background(), up.spec(key))
+	subs := make([]*hubSubscription, 0, subscribers)
+	for range subscribers {
+		sub, rev, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+		if err != nil {
+			t.Fatalf("Subscribe failed: %v", err)
+		}
+		if rev.forceSnapshot {
+			t.Fatal("the initial revision was marked forceSnapshot")
+		}
+		t.Cleanup(sub.Close)
+		subs = append(subs, sub)
+	}
+	waitFor(t, "the source watch to open", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 1
+	})
+
+	up.setTable(hubTestTable("20", "alpha", "beta"))
+	up.failWatch(t, fmt.Errorf("%w: too old", kube.ErrWatchGone))
+
+	for _, sub := range subs {
+		rev := waitRevision(t, sub, 2)
+		if !rev.forceSnapshot {
+			t.Fatal("the relist revision was not marked forceSnapshot")
+		}
+		if rev.num != 2 {
+			t.Fatalf("relist revision num = %d, want 2: the relist published more than one revision", rev.num)
+		}
+		if rev.rv != "20" {
+			t.Fatalf("relist revision rv = %q, want the fresh list version 20", rev.rv)
+		}
+		if got := hubRowNames(rev.table); len(got) != 2 {
+			t.Fatalf("relist revision rows = %v, want the fresh two-row list", got)
+		}
+		select {
+		case <-sub.Done():
+			t.Fatal("a 410 closed a subscription instead of relisting")
+		default:
+		}
+	}
+	waitFor(t, "the watch to resume from the relist", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 2
+	})
+	if lists, _, _ := up.counts(); lists != 2 {
+		t.Fatalf("LIST count = %d, want exactly one relist on top of the initial list", lists)
+	}
+	if attempts := up.watchAttempts(); attempts[1] != "20" {
+		t.Fatalf("re-watch resumed from %q, want the relisted version 20", attempts[1])
+	}
+}
+
+// A relist that fails has no recovery left: it is the "watch-failed" terminal,
+// delivered once to every subscriber.
+func TestWatchHubFailedRelistIsTerminal(t *testing.T) {
+	hub, _, _ := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -881,48 +1116,312 @@ func TestWatchHubWatchEndReleasesSubscribers(t *testing.T) {
 		return watches == 1
 	})
 
-	up.endWatch(t)
-	requireSignal(t, sub.Done(), "subscription closed by the ended watch")
-	waitFor(t, "the source to be discarded", func() bool { return hub.sourceCount() == 0 })
+	up.setListErr(errors.New("relist refused"))
+	up.failWatch(t, fmt.Errorf("%w: too old", kube.ErrWatchGone))
 
-	replacement, _, err := hub.Subscribe(context.Background(), up.spec(key))
-	if err != nil {
-		t.Fatalf("Subscribe after the ended watch failed: %v", err)
+	requireSignal(t, sub.Done(), "subscription closed by the failed relist")
+	if got := sub.Reason(); got != hubTerminalWatchFailed {
+		t.Fatalf("terminal reason = %q, want %q", got, hubTerminalWatchFailed)
 	}
-	t.Cleanup(replacement.Close)
-	waitFor(t, "the replacement source to list", func() bool {
-		lists, _, _ := up.counts()
-		return lists == 2
-	})
+	waitFor(t, "the source to be discarded", func() bool { return hub.sourceCount() == 0 })
 }
 
-// A watch that never opens is the same terminal outcome: the source fails
-// instead of retaining state nothing will ever update.
-func TestWatchHubWatchOpenFailureFailsSource(t *testing.T) {
+// An immediate-EOF storm ends the source once: every subscriber is closed with
+// the same reason, and the reconnect burst that follows builds exactly ONE
+// replacement source (one LIST), not one per reconnecting browser.
+func TestWatchHubEOFStormClosesSubscribersOnce(t *testing.T) {
+	const subscribers = 3
+	const reconnects = 20
+	// A generous immediate-EOF window keeps the storm classification
+	// independent of how far the test has to wind the clock to release each
+	// scheduled re-watch.
+	tuning := defaultStreamTuning()
+	tuning.immediateWindow = time.Hour
+	hub, clock, _ := newTestWatchHubTuned(t, testHubLimits(), &tuning)
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	subs := make([]*hubSubscription, 0, subscribers)
+	for range subscribers {
+		sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+		if err != nil {
+			t.Fatalf("Subscribe failed: %v", err)
+		}
+		subs = append(subs, sub)
+	}
+	for attempt := 1; attempt <= streamMaxImmediateEOFs; attempt++ {
+		waitFor(t, fmt.Sprintf("watch attempt %d", attempt), func() bool {
+			_, watches, _ := up.counts()
+			return watches == attempt
+		})
+		up.endWatch(t)
+		if attempt == streamMaxImmediateEOFs {
+			break
+		}
+		advanceUntil(t, clock, time.Minute, "the next re-watch attempt", func() bool {
+			_, watches, _ := up.counts()
+			return watches == attempt+1
+		})
+	}
+
+	for _, sub := range subs {
+		requireSignal(t, sub.Done(), "subscription closed by the EOF storm")
+		if got := sub.Reason(); got != hubTerminalWatchFailed {
+			t.Fatalf("terminal reason = %q, want %q", got, hubTerminalWatchFailed)
+		}
+	}
+	waitFor(t, "the source to be discarded", func() bool { return hub.sourceCount() == 0 })
+
+	results := make(chan error, reconnects)
+	for range reconnects {
+		go func() {
+			sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+			if sub != nil {
+				t.Cleanup(sub.Close)
+			}
+			results <- err
+		}()
+	}
+	for range reconnects {
+		if err := <-results; err != nil {
+			t.Fatalf("reconnect Subscribe failed: %v", err)
+		}
+	}
+	if lists, _, _ := up.counts(); lists != 2 {
+		t.Fatalf("LIST count = %d, want 2: the reconnect burst must build one replacement source", lists)
+	}
+	if got := hub.sourceCount(); got != 1 {
+		t.Fatalf("source count = %d, want 1", got)
+	}
+}
+
+// An upstream 401/403 is the one outcome no retry can fix: the source publishes
+// the "auth" terminal instead of scheduling another attempt.
+func TestWatchHubForbiddenWatchIsAuthTerminal(t *testing.T) {
 	hub, _, _ := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	waitFor(t, "the source watch to open", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 1
+	})
+
+	up.failWatch(t, apiStatus(403, metav1.StatusReasonForbidden, "forbidden"))
+	requireSignal(t, sub.Done(), "subscription closed by the forbidden watch")
+	if got := sub.Reason(); got != hubTerminalAuth {
+		t.Fatalf("terminal reason = %q, want %q", got, hubTerminalAuth)
+	}
+	waitFor(t, "the source to be discarded", func() bool { return hub.sourceCount() == 0 })
+	if _, watches, _ := up.counts(); watches != 1 {
+		t.Fatalf("watch attempts = %d, want 1: a 403 must not be retried", watches)
+	}
+}
+
+// A watch that never opens is an ordinary transient failure: it re-watches on
+// the backoff schedule until the storm guard turns it into "watch-failed".
+func TestWatchHubWatchOpenFailureRetriesThenFails(t *testing.T) {
+	tuning := defaultStreamTuning()
+	tuning.immediateWindow = time.Hour
+	hub, clock, _ := newTestWatchHubTuned(t, testHubLimits(), &tuning)
 	up := newHubTestUpstream(hubTestTable("10", "alpha"))
 	up.watchErr = errors.New("watch refused")
 	up.openGate()
 
-	sub, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")))
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")), hubDemand{})
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
-	requireSignal(t, sub.Done(), "subscription closed by the failed watch open")
+	advanceUntil(t, clock, time.Minute, "the source to exhaust its re-watch attempts", func() bool {
+		select {
+		case <-sub.Done():
+			return true
+		default:
+			return false
+		}
+	})
+	if got := sub.Reason(); got != hubTerminalWatchFailed {
+		t.Fatalf("terminal reason = %q, want %q", got, hubTerminalWatchFailed)
+	}
+	if _, watches, _ := up.counts(); watches != streamMaxImmediateEOFs {
+		t.Fatalf("watch attempts = %d, want %d", watches, streamMaxImmediateEOFs)
+	}
 	waitFor(t, "the source to be discarded", func() bool { return hub.sourceCount() == 0 })
+}
+
+// The join polls belong to the SOURCE, not to its subscribers: no demand means
+// no upstream join request at all, and any amount of demand costs one request
+// per interval.
+func TestWatchHubOverlayPollIsSharedAndDemandDriven(t *testing.T) {
+	const demanding = 10
+	hub, clock, _ := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	quiet, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	waitFor(t, "the source watch to open", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 1
+	})
+	clock.Advance(5 * defaultStreamTuning().metricsPoll)
+	if got := up.overlayCount(); got != 0 {
+		t.Fatalf("join polls with no demand = %d, want 0", got)
+	}
+
+	subs := make([]*hubSubscription, 0, demanding)
+	for range demanding {
+		sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{metrics: true})
+		if err != nil {
+			t.Fatalf("Subscribe with demand failed: %v", err)
+		}
+		subs = append(subs, sub)
+	}
+	waitFor(t, "the first shared join poll", func() bool { return up.overlayCount() == 1 })
+	if got := hub.sourceStats(key).demandMetrics; got != demanding {
+		t.Fatalf("metrics demand = %d, want %d", got, demanding)
+	}
+	rev := waitRevision(t, subs[0], 2)
+	if rev.overlays.metrics == nil {
+		t.Fatal("the join poll did not publish a revision carrying the overlay")
+	}
+
+	for interval := 2; interval <= 3; interval++ {
+		advanceUntil(t, clock, defaultStreamTuning().metricsPoll, fmt.Sprintf("join poll %d", interval), func() bool {
+			return up.overlayCount() == interval
+		})
+	}
+	for _, demand := range up.overlayDemand {
+		if !demand.metrics || demand.nodes {
+			t.Fatalf("join poll demand = %+v, want metrics only", demand)
+		}
+	}
+
+	for _, sub := range subs {
+		sub.Close()
+	}
+	waitFor(t, "the demand to drop back to zero", func() bool {
+		return hub.sourceStats(key).demandMetrics == 0
+	})
+	settled := up.overlayCount()
+	clock.Advance(5 * defaultStreamTuning().metricsPoll)
+	if got := up.overlayCount(); got != settled {
+		t.Fatalf("join polls after the demand left = %d, want %d", got, settled)
+	}
+	quiet.Close()
+}
+
+// Accounting tracks CURRENT retained state, never the history of events that
+// produced it: churn is neutral, a delete shrinks the total, and a relist
+// replaces it outright.
+func TestWatchHubAccountsRetainedBytes(t *testing.T) {
+	hub, clock, metrics := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha", "beta"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	waitFor(t, "the source watch to open", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 1
+	})
+
+	base := hub.accountedBytes()
+	if want := hubTableBytes(hubTestTable("10", "alpha", "beta")); base != want {
+		t.Fatalf("accounted bytes after the initial list = %d, want %d", base, want)
+	}
+
+	up.emit(t, hubTestEvent(kube.WatchModified, "11", "alpha"))
+	waitRevision(t, sub, 2)
+	if got := hub.accountedBytes(); got != base {
+		t.Fatalf("accounted bytes after replace churn = %d, want the unchanged %d", got, base)
+	}
+
+	up.emit(t, hubTestEvent(kube.WatchDeleted, "12", "beta"))
+	waitRevision(t, sub, 3)
+	afterDelete := hub.accountedBytes()
+	if afterDelete >= base {
+		t.Fatalf("accounted bytes after a delete = %d, want less than %d", afterDelete, base)
+	}
+	if want := hubTableBytes(hubTestTable("10", "alpha")); afterDelete != want {
+		t.Fatalf("accounted bytes after a delete = %d, want %d", afterDelete, want)
+	}
+
+	up.setTable(hubTestTable("20", "gamma"))
+	up.failWatch(t, fmt.Errorf("%w: too old", kube.ErrWatchGone))
+	waitRevision(t, sub, 4)
+	relisted := hub.accountedBytes()
+	if want := hubTableBytes(hubTestTable("20", "gamma")); relisted != want {
+		t.Fatalf("accounted bytes after a relist = %d, want the replaced total %d", relisted, want)
+	}
+	if got := metrics.cacheBytes(); got != relisted {
+		t.Fatalf("reported cache bytes = %d, want %d", got, relisted)
+	}
+	if got, want := hub.cacheChargedBytes(), relisted*cacheAccountingHeadroom; got != want {
+		t.Fatalf("charged bytes = %d, want the accounted total with headroom %d", got, want)
+	}
+	if got := hub.sourceStats(key).accounted; got != relisted {
+		t.Fatalf("source accounted bytes = %d, want %d", got, relisted)
+	}
+
+	sub.Close()
+	advanceUntil(t, clock, hubSourceRetention, "the released source", func() bool {
+		return hub.sourceCount() == 0
+	})
+	waitFor(t, "the accounted total to return to zero", func() bool { return hub.accountedBytes() == 0 })
+}
+
+// Only the source sees the raw event rate, so it is the source that marks a
+// revision as high-churn for the subscribers' push pacing.
+func TestWatchHubRevisionReportsChurn(t *testing.T) {
+	hub, _, _ := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+
+	sub, rev, err := hub.Subscribe(context.Background(), up.spec(hubTestKey("ns")), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	t.Cleanup(sub.Close)
+	if rev.highChurn {
+		t.Fatal("the initial revision reported high churn")
+	}
+	waitFor(t, "the source watch to open", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 1
+	})
+	for i := range streamChurnEvents {
+		up.emit(t, hubTestEvent(kube.WatchModified, fmt.Sprintf("%d", 11+i), "alpha"))
+	}
+	churned := waitRevision(t, sub, uint64(1+streamChurnEvents))
+	if !churned.highChurn {
+		t.Fatalf("revision %d did not report the sustained event rate", churned.num)
+	}
 }
 
 // Hub shutdown during initialization fails the waiters instead of leaving them
 // blocked on a snapshot that will never arrive.
 func TestWatchHubShutdownDuringInitializationFailsWaiters(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	hub := newWatchHub(ctx, testHubLimits(), newFakeHubClock(), newRecordingHubMetrics())
+	hub := newWatchHub(ctx, testHubLimits(), nil, newFakeHubClock(), newRecordingHubMetrics())
 	up := newHubTestUpstream(hubTestTable("10", "alpha"))
 	key := hubTestKey("ns")
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := hub.Subscribe(context.Background(), up.spec(key))
+		_, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
 		done <- err
 	}()
 	waitFor(t, "the waiter to queue", func() bool {
