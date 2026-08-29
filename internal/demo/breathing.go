@@ -5,8 +5,10 @@ package demo
 // demo. It drives each fakekube engine through Server.Apply (NOT the /__control/
 // surface, which the demo omits): on every tick it emits one MODIFIED event per
 // engine that bumps the restart counter of an already-seeded healthy pod and
-// then settles it back, so a list reflects the change synchronously (DelayMs ==
-// 0) and every open watch receives a frame.
+// then settles it back. Each pulse is applied to both the pod's namespaced
+// collection and Kubernetes' all-namespaces collection: fakekube stores those
+// routes independently, just like two separately seeded API responses, so both
+// must be driven for the namespace and "All namespaces" Live screens to move.
 //
 // The churn is deliberately gentle and referentially safe AND non-destructive:
 // each target's FULL seeded row (its cells + complete object — containers,
@@ -36,6 +38,8 @@ import (
 // churn reads as a gentle pulse (not a strobe), fast enough that a Live viewer
 // sees motion within a couple of seconds.
 const breathInterval = 3 * time.Second
+
+const allNamespacesPodsPath = "/api/v1/pods"
 
 // breathTarget names one engine's breathing victim: the pods list route to
 // MODIFY and the already-seeded pod (by name+namespace) whose Restarts cell the
@@ -226,8 +230,10 @@ func (d *BreathingDriver) Stop() {
 // (Name, Ready, Status, Restarts, Age).
 const restartsCellIndex = 3
 
-// pulse emits one MODIFIED event per target, alternating the restart count up
-// and back down so the churn is a gentle two-state breath. The event carries the
+// pulse emits one logical MODIFIED pulse per target, alternating the restart
+// count up and back down so the churn is a gentle two-state breath. The pulse is
+// applied to both fakekube collection states that contain the pod (the
+// namespaced route and the all-namespaces route). The event carries the
 // target pod's FULL captured object (deep-copied per pulse) with only the
 // container restartCount bumped, and the FULL row cells with only the Restarts
 // cell updated — so a pulse never blanks the pod's CREATED list cell or its
@@ -242,11 +248,14 @@ func (d *BreathingDriver) pulse() {
 	d.mu.Unlock()
 
 	for _, t := range targets {
-		ev := t.pulseEvent(restarts)
-		// Apply errors only on a malformed event or unknown path; the targets
-		// are derived from the seeded scenario, so a breathing pulse is
-		// best-effort and never fails the demo if a path drifts.
-		_ = t.server.Apply(ev)
+		for _, path := range []string{t.listPath, allNamespacesPodsPath} {
+			ev := t.pulseEvent(restarts)
+			ev.Path = path
+			// Apply errors only on a malformed event or unknown path; the targets
+			// are derived from the seeded scenario, so a breathing pulse is
+			// best-effort and never fails the demo if a path drifts.
+			_ = t.server.Apply(ev)
+		}
 	}
 }
 
