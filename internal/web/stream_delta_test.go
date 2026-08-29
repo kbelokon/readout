@@ -1128,24 +1128,24 @@ func TestStreamAsyncUpstreamLateResultsDoNotHandoffOrLeak(t *testing.T) {
 		}
 	})
 
-	t.Run("metrics result drops", func(t *testing.T) {
+	t.Run("overlay result drops", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		release := make(chan struct{})
-		result := make(chan streamMetricsResult)
+		result := make(chan streamOverlayResult)
 		done := make(chan struct{})
 		go func() {
-			metricsAsync(ctx, func(context.Context) map[string][2]float64 {
+			overlayAsync(ctx, func(context.Context) streamOverlayResult {
 				<-release
-				return map[string][2]float64{"late": {1, 2}}
+				return streamOverlayResult{usage: map[string][2]float64{"late": {1, 2}}}
 			}, result)
 			close(done)
 		}()
 		cancel()
 		close(release)
-		requireSignal(t, done, "late metrics exit")
+		requireSignal(t, done, "late overlay exit")
 		select {
 		case <-result:
-			t.Fatal("late canceled metrics refresh mutated the owner channel")
+			t.Fatal("late canceled overlay refresh mutated the owner channel")
 		default:
 		}
 	})

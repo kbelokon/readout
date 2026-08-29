@@ -302,8 +302,12 @@ type streamRelistResult struct {
 	err   error
 }
 
-type streamMetricsResult struct {
+// streamOverlayResult carries one sub-poll's join overlays. A field is nil
+// when the render does not ask for that join, so an unwanted overlay never
+// costs an upstream request and never marks the session dirty.
+type streamOverlayResult struct {
 	usage map[string][2]float64
+	nodes map[string]map[string]any
 }
 
 // newStreamChildContext transfers cancellation ownership to the session loop.
@@ -363,17 +367,17 @@ func relistAsync(
 	}
 }
 
-func metricsAsync(
+func overlayAsync(
 	ctx context.Context,
-	fetch func(context.Context) map[string][2]float64,
-	out chan<- streamMetricsResult,
+	fetch func(context.Context) streamOverlayResult,
+	out chan<- streamOverlayResult,
 ) {
-	usage := fetch(ctx)
+	result := fetch(ctx)
 	if ctx.Err() != nil {
 		return
 	}
 	select {
-	case out <- streamMetricsResult{usage: usage}:
+	case out <- result:
 	case <-ctx.Done():
 	}
 }
@@ -494,6 +498,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		selector:       r.URL.Query().Get("selector"),
 		gen:            negotiation.gen,
 		wantMetrics:    r.URL.Query().Get("join") == "metrics" && (plural == "pods" || plural == "nodes"),
+		wantNodes:      streamWantsNodeJoin(r, s.cfg.DefaultCustomColumns[plural], plural),
 		lifetime:       lifetime,
 		lifetimeReason: lifetimeReason,
 		tuning:         s.streamTuning,
@@ -543,8 +548,11 @@ type streamSession struct {
 	// clean EOF (and the replay floor, so already-seen events never repeat).
 	lastRV string
 
+	// wantMetrics / wantNodes record which join overlays the render query
+	// asks for; the sub-poll fetches exactly those and nothing else.
 	wantMetrics bool
-	metrics     map[string][2]float64
+	wantNodes   bool
+	overlays    renderOverlays
 
 	// lifetime / lifetimeReason bound the stream's TOTAL lifetime (resolved
 	// at connect by streamLifetime; the loop arms a single never-reset timer).
@@ -604,13 +612,13 @@ func (st *streamSession) run(ctx, handshakeCtx context.Context) {
 	}
 	st.snapshot = table
 	st.lastRV = table.ResourceVersion
-	if st.wantMetrics {
+	if st.wantMetrics || st.wantNodes {
 		timeout := st.tuning.initialMetricsTimeout
 		if timeout <= 0 {
 			timeout = defaultStreamTuning().initialMetricsTimeout
 		}
-		metricsCtx, cancel := context.WithTimeout(handshakeCtx, timeout)
-		st.metrics = st.fetchMetrics(metricsCtx)
+		overlayCtx, cancel := context.WithTimeout(handshakeCtx, timeout)
+		st.applyOverlays(st.fetchOverlays(overlayCtx))
 		cancel()
 	}
 
@@ -633,15 +641,80 @@ func (st *streamSession) list(ctx context.Context) (kube.Table, error) {
 	return st.client.Table(ctx, &st.rt, kube.ListOptions{Namespace: st.listNS, LabelSelector: st.selector})
 }
 
-// fetchMetrics wraps the shared usage fetch, normalizing a failed fetch to an
-// empty non-nil map so renders never fall back to a live per-push fetch
-// inside applyTableOptionsWithUsage (nil there means "fetch now").
-func (st *streamSession) fetchMetrics(ctx context.Context) map[string][2]float64 {
-	usage := st.srv.fetchMetricsUsage(ctx, st.client, st.rt.Namespaced, st.listNS, false, st.selector)
-	if usage == nil {
-		usage = map[string][2]float64{}
+// streamWantsNodeJoin decides whether the stream must carry the ?join=nodes
+// overlay: Pod lists whose render actually has custom columns to evaluate it
+// in (the join only ever feeds a custom-column expression, so without one the
+// Nodes LIST would be pure waste).
+func streamWantsNodeJoin(r *http.Request, defaultCustom, plural string) bool {
+	q := r.URL.Query()
+	if q.Get("join") != "nodes" || plural != "pods" {
+		return false
 	}
-	return usage
+	return first(q.Get("customcols"), q.Get("custom-columns"), defaultCustom) != ""
+}
+
+// fetchOverlays resolves the join overlays this stream asked for, normalizing a
+// failed fetch to an empty non-nil map so renders never fall back to a live
+// per-push fetch inside applyTableOptionsWithOverlays (nil there means "fetch
+// now"). An unwanted overlay stays nil and is never fetched.
+func (st *streamSession) fetchOverlays(ctx context.Context) streamOverlayResult {
+	var result streamOverlayResult
+	if st.wantMetrics {
+		result.usage = st.srv.fetchMetricsUsage(ctx, st.client, st.rt.Namespaced, st.listNS, false, st.selector)
+		if result.usage == nil {
+			result.usage = map[string][2]float64{}
+		}
+	}
+	if st.wantNodes {
+		result.nodes = st.srv.fetchNodeObjects(ctx, st.client)
+		if result.nodes == nil {
+			result.nodes = map[string]map[string]any{}
+		}
+	}
+	return result
+}
+
+// emptyOverlays is the "upstream is not answering" overlay state: an empty
+// non-nil map for every join the render asked for, so a timed-out source
+// publishes placeholders instead of leaving stale values on screen.
+func (st *streamSession) emptyOverlays() streamOverlayResult {
+	var result streamOverlayResult
+	if st.wantMetrics {
+		result.usage = map[string][2]float64{}
+	}
+	if st.wantNodes {
+		result.nodes = map[string]map[string]any{}
+	}
+	return result
+}
+
+// applyOverlays adopts a sub-poll result, reporting whether anything the
+// render can see actually changed (so an unchanged poll never schedules a
+// push). The adoption is UNCONDITIONAL: a nil overlay means "fetch it now" at
+// render time, so the empty-map normalization must land even though it renders
+// identically to nil -- otherwise a failed fetch would leave the render path
+// re-listing upstream on every push.
+func (st *streamSession) applyOverlays(result streamOverlayResult) bool {
+	changed := !maps.Equal(result.usage, st.overlays.metrics) || !sameNodeOverlay(result.nodes, st.overlays.nodes)
+	st.overlays.metrics = result.usage
+	st.overlays.nodes = result.nodes
+	return changed
+}
+
+// sameNodeOverlay compares two node overlays by name and resourceVersion: a
+// mutated Node always gets a fresh resourceVersion, so this settles "did the
+// join change?" without deep-comparing whole Node objects on every sub-poll.
+func sameNodeOverlay(a, b map[string]map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, obj := range a {
+		other, ok := b[name]
+		if !ok || nestedString(obj, "metadata", "resourceVersion") != nestedString(other, "metadata", "resourceVersion") {
+			return false
+		}
+	}
+	return true
 }
 
 // loop is the stream's single event loop: watch lifecycle (connect, re-watch
@@ -662,11 +735,11 @@ func (st *streamSession) loop(ctx context.Context) {
 	// path every re-watch takes.
 	rewatchTimer := time.NewTimer(0)
 	defer rewatchTimer.Stop()
-	var metricsCh <-chan time.Time
-	if st.wantMetrics {
+	var overlayCh <-chan time.Time
+	if st.wantMetrics || st.wantNodes {
 		ticker := time.NewTicker(st.tuning.metricsPoll)
 		defer ticker.Stop()
-		metricsCh = ticker.C
+		overlayCh = ticker.C
 	}
 	var heartbeatCh <-chan time.Time
 	if st.tuning.heartbeat > 0 {
@@ -714,10 +787,10 @@ func (st *streamSession) loop(ctx context.Context) {
 		relistResults   = make(chan streamRelistResult)
 		relisting       bool
 		relistCancel    context.CancelFunc
-		metricsResults  <-chan streamMetricsResult
-		metricsDone     <-chan struct{}
-		metricsInFlight bool
-		metricsCancel   context.CancelFunc
+		overlayResults  <-chan streamOverlayResult
+		overlayDone     <-chan struct{}
+		overlayInFlight bool
+		overlayCancel   context.CancelFunc
 		attemptStart    time.Time
 		attemptSawEvent bool
 		backoff         = streamBackoff{tuning: st.tuning}
@@ -736,14 +809,14 @@ func (st *streamSession) loop(ctx context.Context) {
 			relistCancel = nil
 		}
 	}
-	cancelMetrics := func() {
-		if metricsCancel != nil {
-			metricsCancel()
+	cancelOverlays := func() {
+		if overlayCancel != nil {
+			overlayCancel()
 		}
-		metricsCancel = nil
-		metricsResults = nil
-		metricsDone = nil
-		metricsInFlight = false
+		overlayCancel = nil
+		overlayResults = nil
+		overlayDone = nil
+		overlayInFlight = false
 	}
 	startRelist := func() {
 		if relisting {
@@ -754,26 +827,26 @@ func (st *streamSession) loop(ctx context.Context) {
 		relisting = true
 		go relistAsync(relistCtx, st.list, relistResults)
 	}
-	startMetrics := func() {
-		if metricsInFlight {
+	startOverlays := func() {
+		if overlayInFlight {
 			return
 		}
 		timeout := st.tuning.metricsRequestTimeout
 		if timeout <= 0 {
 			timeout = defaultStreamTuning().metricsRequestTimeout
 		}
-		metricsCtx, cancel := newStreamTimeoutContext(ctx, timeout)
-		results := make(chan streamMetricsResult)
-		metricsCancel = cancel
-		metricsResults = results
-		metricsDone = metricsCtx.Done()
-		metricsInFlight = true
-		go metricsAsync(metricsCtx, st.fetchMetrics, results)
+		overlayCtx, cancel := newStreamTimeoutContext(ctx, timeout)
+		results := make(chan streamOverlayResult)
+		overlayCancel = cancel
+		overlayResults = results
+		overlayDone = overlayCtx.Done()
+		overlayInFlight = true
+		go overlayAsync(overlayCtx, st.fetchOverlays, results)
 	}
 	defer func() {
 		cancelAttempt()
 		cancelRelist()
-		cancelMetrics()
+		cancelOverlays()
 		if cur != nil {
 			_ = cur.Close()
 		}
@@ -913,23 +986,22 @@ func (st *streamSession) loop(ctx context.Context) {
 					resetCheckpoint()
 				}
 			}
-		case <-metricsCh:
-			startMetrics()
-		case result := <-metricsResults:
-			cancelMetrics()
-			if !maps.Equal(result.usage, st.metrics) {
-				st.metrics = result.usage
+		case <-overlayCh:
+			startOverlays()
+		case result := <-overlayResults:
+			cancelOverlays()
+			if st.applyOverlays(result) {
 				st.dirty = true
 				st.schedulePush(pushTimer)
 			}
-		case <-metricsDone:
-			// The owner clears the lane on deadline even though metricsAsync drops
+		case <-overlayDone:
+			// The owner clears the lane on deadline even though overlayAsync drops
 			// its canceled result. The next ticker edge can therefore recover with
 			// a fresh request; the old per-attempt channel can never feed it. A
-			// timed-out metrics source is not valid indefinitely: clear the stale
-			// overlay and publish the same empty usage state as an upstream failure.
-			cancelMetrics()
-			st.metrics = map[string][2]float64{}
+			// timed-out overlay source is not valid indefinitely: clear the stale
+			// overlays and publish the same empty state as an upstream failure.
+			cancelOverlays()
+			st.applyOverlays(st.emptyOverlays())
 			st.dirty = true
 			st.schedulePush(pushTimer)
 		case <-heartbeatCh:

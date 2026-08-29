@@ -1306,6 +1306,95 @@ func TestStreamMetricsJoinSubPoll(t *testing.T) {
 	}
 }
 
+// TestStreamCustomColumnsAndNodeJoinListOnce pins the render cost of a Live
+// stream that asks for BOTH custom columns and the ?join=nodes overlay: the
+// handshake makes exactly one pods Table LIST and one Nodes LIST, and every
+// subsequent push re-renders the retained snapshot with ZERO upstream LISTs.
+// (Before the overlays were hoisted, each push re-listed the pods collection
+// for the JSONPath objects and re-listed Nodes for the join -- two upstream
+// requests per push, at up to ~3 pushes/s per subscriber.)
+func TestStreamCustomColumnsAndNodeJoinListOnce(t *testing.T) {
+	var mu sync.Mutex
+	lists := map[string]int{}
+	ts, fake := newStreamFixtureWithRecorder(t, func(r *http.Request) {
+		if r.URL.Query().Get("watch") == "true" {
+			return
+		}
+		mu.Lock()
+		lists[r.URL.Path]++
+		mu.Unlock()
+	}, func(tuning *streamTuning) {
+		// Park the overlay sub-poll and the maintenance frames outside the test
+		// window so the counts below describe the render path alone.
+		tuning.metricsPoll = time.Hour
+		tuning.heartbeat = 0
+		tuning.checkpointInterval = 0
+	})
+	count := func(path string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return lists[path]
+	}
+
+	// NodeAddr resolves through the synthetic `node` key the join installs, so
+	// an "InternalIP" cell proves the overlay reached the JSONPath engine.
+	const spec = "?join=nodes&custom-columns=NodeAddr%3Dnode.status.addresses%5B0%5D.type"
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream"+spec, "40")
+	initial := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second))
+	if !strings.Contains(initial.HTML, "NodeAddr") || !strings.Contains(initial.HTML, "InternalIP") {
+		t.Fatalf("initial push did not render the node-joined custom column: %s", initial.HTML)
+	}
+	if got := count(streamPodsPath); got != 1 {
+		t.Fatalf("pods LISTs during handshake = %d, want exactly 1", got)
+	}
+	if got := count("/api/v1/nodes"); got != 1 {
+		t.Fatalf("nodes LISTs during handshake = %d, want exactly 1", got)
+	}
+
+	waitForOpenWatch(t, fake.URL)
+	for _, status := range []string{"Error", "CrashLoopBackOff", "Completed"} {
+		postStreamScript(t, fake.URL, `{"events":[`+podModifiedEvent(status, 0)+`]}`)
+		frame := decodeFrame(t, s.requireEvent(t, "ro-live", 3*time.Second))
+		if !strings.Contains(frame.HTML, status) {
+			t.Fatalf("push did not carry the %s change: %s", status, frame.HTML)
+		}
+	}
+	if got := count(streamPodsPath); got != 1 {
+		t.Fatalf("pods LISTs after three pushes = %d, want still 1 (a push re-listed upstream)", got)
+	}
+	if got := count("/api/v1/nodes"); got != 1 {
+		t.Fatalf("nodes LISTs after three pushes = %d, want still 1 (a push re-listed the join)", got)
+	}
+}
+
+// TestStreamNodeJoinSubPoll pins the ?join=nodes plumbing: the Nodes overlay
+// rides the SAME 30s sub-poll (compressed here) the metrics overlay does, so a
+// Node change reaches the joined column without any per-push Nodes LIST.
+func TestStreamNodeJoinSubPoll(t *testing.T) {
+	ts, fake := newStreamFixture(t, func(tuning *streamTuning) {
+		tuning.metricsPoll = 150 * time.Millisecond
+	})
+	const spec = "?join=nodes&custom-columns=NodeAddr%3Dnode.status.addresses%5B0%5D.type"
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream"+spec, "41")
+	initial := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second))
+	if !strings.Contains(initial.HTML, "InternalIP") {
+		t.Fatalf("initial push is missing the joined node address type: %s", initial.HTML)
+	}
+
+	postStreamScript(t, fake.URL, `{"events":[{"path":"/api/v1/nodes","type":"MODIFIED","object":{"apiVersion":"v1","kind":"Node","metadata":{"name":"127.0.0.1","resourceVersion":"9001"},"status":{"addresses":[{"type":"ExternalIP","address":"203.0.113.9"}]}}}]}`)
+
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		ev := s.requireEvent(t, "ro-live", 4*time.Second)
+		if strings.Contains(decodeFrame(t, ev).HTML, "ExternalIP") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("node sub-poll never surfaced the changed node address type")
+		}
+	}
+}
+
 // TestStreamExcludedFromDurationHistogram pins the metrics contract: a
 // completed stream request appears in readout_http_requests_total but NEVER
 // in the duration histogram (a 30-minute stream is not request latency).

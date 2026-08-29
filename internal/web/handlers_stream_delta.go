@@ -70,7 +70,7 @@ const (
 
 func (st *streamSession) currentListData() templates.ListData {
 	clone := cloneTableForRender(&st.snapshot)
-	lc := st.srv.streamListContext(st.renderReq, st.client, st.cluster, &clone, st.metrics)
+	lc := st.srv.streamListContext(st.renderReq, st.client, st.cluster, &clone, st.overlays)
 	view := st.srv.buildListView(st.renderReq, &lc)
 	return toListData(&view)
 }

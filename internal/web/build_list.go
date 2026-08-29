@@ -161,10 +161,11 @@ func (s *Server) clusterTables(ctx context.Context, r *http.Request, client *kub
 // then the full applyTableOptions pass — decorations, hidecols, the legacy
 // filter params AND the `?f=` chips, sort — exactly like clusterTables, so
 // the pushed fragment is byte-shaped like a `_table` response and morphs
-// cleanly. The ?join=metrics columns are fed from the stream's cached 30s
-// sub-poll (metricsUsage) instead of a per-push live fetch. The snapshot
-// arrives as a render clone; every mutation this pass makes stays in it.
-func (s *Server) streamListContext(r *http.Request, client *kube.Client, cluster string, table *kube.Table, metricsUsage map[string][2]float64) listContext {
+// cleanly. The ?join=metrics and ?join=nodes columns are fed from the stream's
+// cached 30s sub-poll (overlays) instead of a per-push live fetch. The
+// snapshot arrives as a render clone; every mutation this pass makes stays in
+// it.
+func (s *Server) streamListContext(r *http.Request, client *kube.Client, cluster string, table *kube.Table, overlays renderOverlays) listContext {
 	start := s.clock()
 	namespace := r.PathValue("namespace")
 	isAllNamespaces := namespace == kube.AllNamespaces
@@ -172,7 +173,7 @@ func (s *Server) streamListContext(r *http.Request, client *kube.Client, cluster
 	for i := range table.Rows {
 		table.Rows[i].Cluster = cluster
 	}
-	vis := s.applyTableOptionsWithUsage(r, client, table, namespace, isAllNamespaces, metricsUsage)
+	vis := s.applyTableOptionsWithOverlays(r, client, table, namespace, isAllNamespaces, overlays)
 	return listContext{
 		Cluster:         cluster,
 		Namespace:       namespace,
