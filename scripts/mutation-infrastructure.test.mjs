@@ -134,16 +134,16 @@ function attestFixture(repoRoot) {
   );
 }
 
-function attestCheckerFixture(repoRoot, statuses) {
+function attestCheckerFixture(repoRoot, outcomes) {
   const source = readFileSync(join(repoRoot, 'internal/assets/src/js/runtime.ts'), 'utf8');
-  const mutants = statuses.map((status, index) => ({
+  const mutants = outcomes.map((outcome, index) => ({
+    ...(typeof outcome === 'string' ? { status: outcome } : outcome),
     id: `mutation-${index + 1}`,
     location: {
       end: { column: 32, line: 1 },
       start: { column: 23, line: 1 },
     },
     mutatorName: 'ArithmeticOperator',
-    status,
   }));
   const report = {
     schemaVersion: '2',
@@ -327,26 +327,111 @@ test('canonical launcher has no campaign wall-clock deadline', () => {
   assert.match(launcher, /deadline=none/u);
 });
 
-test('attested checker rejects survivors without deleting evidence and accepts killed plus compile errors', (t) => {
+test('attested checker rejects unresolved outcomes without deleting evidence', (t) => {
+  const assertEvidenceRemains = (fixtureRoot) => {
+    assert.doesNotThrow(() => verifyFullRunAttestation(fixtureRoot));
+    for (const path of [
+      mutationReportRelativePath,
+      mutationHtmlReportRelativePath,
+      fullRunAttestationRelativePath,
+    ]) {
+      assert.equal(existsSync(join(fixtureRoot, path)), true, path);
+    }
+  };
+
   const survivorRoot = makeFixture(t);
   attestCheckerFixture(survivorRoot, ['Killed', 'Survived']);
   assert.throws(
     () => checkMutationReport(survivorRoot, () => {}),
     /unresolved mutation statuses: Survived=1/u,
   );
-  assert.doesNotThrow(() => verifyFullRunAttestation(survivorRoot));
-  for (const path of [
-    mutationReportRelativePath,
-    mutationHtmlReportRelativePath,
-    fullRunAttestationRelativePath,
-  ]) {
-    assert.equal(existsSync(join(survivorRoot, path)), true, path);
-  }
+  assertEvidenceRemains(survivorRoot);
+
+  const runtimeErrorRoot = makeFixture(t);
+  attestCheckerFixture(runtimeErrorRoot, ['Killed', 'RuntimeError']);
+  assert.throws(
+    () => checkMutationReport(runtimeErrorRoot, () => {}),
+    /unresolved mutation statuses: RuntimeError=1/u,
+  );
+  assertEvidenceRemains(runtimeErrorRoot);
 
   const passingRoot = makeFixture(t);
   attestCheckerFixture(passingRoot, ['Killed', 'CompileError']);
-  assert.doesNotThrow(() => checkMutationReport(passingRoot, () => {}));
+  const output = [];
+  assert.doesNotThrow(() => checkMutationReport(passingRoot, (line) => output.push(line)));
+  assert.ok(
+    output.includes(
+      'Directly killed: 1/2 all generated mutants ' +
+        '(50.00%; CompileError reported separately; any accepted Timeout is ' +
+        'undetermined/non-direct)',
+    ),
+    output.join('\n'),
+  );
+  assert.ok(output.includes('  CompileError 1'), output.join('\n'));
   assert.doesNotThrow(() => verifyFullRunAttestation(passingRoot));
+});
+
+test('attested checker accepts only one exact, rare Stryker hit-limit timeout', (t) => {
+  const repoRoot = makeFixture(t);
+  attestCheckerFixture(repoRoot, [
+    ...Array.from({ length: 499 }, () => 'Killed'),
+    { status: 'Timeout', statusReason: 'Hit limit reached (11201/11200)' },
+  ]);
+  const output = [];
+
+  assert.doesNotThrow(() => checkMutationReport(repoRoot, (line) => output.push(line)));
+  assert.ok(output.includes('  Timeout      1'), output.join('\n'));
+  assert.ok(
+    output.includes(
+      'Accepted undetermined/non-direct Timeout: ' +
+        'internal/assets/src/js/runtime.ts#mutation-500 ' +
+        '(Hit limit reached (11201/11200))',
+    ),
+    output.join('\n'),
+  );
+});
+
+test('attested checker rejects every non-hit-limit timeout reason', (t) => {
+  for (const timeout of [
+    { status: 'Timeout' },
+    { status: 'Timeout', statusReason: 'Test timed out' },
+    { status: 'Timeout', statusReason: 'Hit limit reached (11200/11200)' },
+  ]) {
+    const repoRoot = makeFixture(t);
+    attestCheckerFixture(repoRoot, [...Array.from({ length: 499 }, () => 'Killed'), timeout]);
+
+    assert.throws(
+      () => checkMutationReport(repoRoot, () => {}),
+      /is not an exact Stryker hit-limit outcome/u,
+    );
+  }
+});
+
+test('attested checker rejects multiple hit-limit timeouts even below the ratio cap', (t) => {
+  const repoRoot = makeFixture(t);
+  attestCheckerFixture(repoRoot, [
+    ...Array.from({ length: 998 }, () => 'Killed'),
+    { status: 'Timeout', statusReason: 'Hit limit reached (11201/11200)' },
+    { status: 'Timeout', statusReason: 'Hit limit reached (14901/14900)' },
+  ]);
+
+  assert.throws(
+    () => checkMutationReport(repoRoot, () => {}),
+    /unresolved mutation statuses: Timeout=2 \(at most 1 exact hit-limit timeout is accepted\)/u,
+  );
+});
+
+test('attested checker rejects one hit-limit timeout above the full-report ratio cap', (t) => {
+  const repoRoot = makeFixture(t);
+  attestCheckerFixture(repoRoot, [
+    ...Array.from({ length: 498 }, () => 'Killed'),
+    { status: 'Timeout', statusReason: 'Hit limit reached (11201/11200)' },
+  ]);
+
+  assert.throws(
+    () => checkMutationReport(repoRoot, () => {}),
+    /Timeout=1 is 0\.2004% of all mutants, above the 0\.2000% cap/u,
+  );
 });
 
 test('TypeScript AST guards type-only and side-effect-import-only modules', () => {
