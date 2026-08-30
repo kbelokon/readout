@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.11.5
-appVersion: 0.11.5
+version: 0.12.0
+appVersion: 0.12.0
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,9 +29,11 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.11.5
+      image: ghcr.io/kbelokon/readout:0.12.0
   artifacthub.io/changes: |
-    - kind: fixed
-      description: "Harden OIDC identity verification, Kubernetes client and discovery handling, bounded upstream responses, streaming, rendering, and frontend interaction state around malformed and boundary inputs."
+    - kind: added
+      description: "Add opt-in Live updates backed by a pod-local WatchHub that shares Kubernetes LIST/watch state across matching viewers."
     - kind: changed
-      description: "Update the default readout image to v0.11.5 with Go 1.27.0, Kubernetes client libraries v0.36.4, and refreshed runtime and frontend dependencies."
+      description: "Replace interval polling with a Live toggle and one-shot Refresh, with stable navigation and list updates that preserve interaction state."
+    - kind: added
+      description: "Add configurable per-pod Live capacity limits, metrics, reconnect handling, and graceful draining."
