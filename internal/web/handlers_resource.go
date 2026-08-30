@@ -126,7 +126,7 @@ func (s *Server) resourceList(w http.ResponseWriter, r *http.Request) {
 	}
 	view := s.buildListView(r, &ctx)
 	partialURL := partialResourceListURL(r)
-	s.pageComponentWithClients(w, r, view.Title(), ctx.Clients, templates.ResourceList(toListPageData(&view, partialURL)))
+	s.pageComponentLive(w, r, view.Title(), ctx.Clients, ctx.LiveType, templates.ResourceList(toListPageData(&view, partialURL)))
 }
 
 func selectDownloadTable(tables []kube.Table, plural string) *kube.Table {

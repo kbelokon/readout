@@ -413,76 +413,85 @@ func TestPrefsNamespaceIgnoredOnDirectLoads(t *testing.T) {
 	}
 }
 
-// TestPrefsRefreshModeRendered pins the SSR half of the refresh persistence:
-// the topbar renders the persisted mode (label text, active interval option,
-// the refresh-on styling hook) so the choice paints without the JS sync flash
-// -- readout.js re-derives the identical state from the same cookie.
-func TestPrefsRefreshModeRendered(t *testing.T) {
+// TestPrefsLiveToggleRendered pins the SSR half of the Live persistence: the
+// topbar renders the persisted choice as the toggle's aria-pressed so it paints
+// without the JS sync flash -- readout.js re-derives the identical state from
+// the same cookie. The vocabulary is exactly two values: only the literal
+// "Live" presses the toggle, and everything else -- "Off", a legacy polling
+// interval written by an older build, junk -- renders off. That is the whole
+// migration: a stale numeric value can never re-arm a poll loop that no longer
+// exists.
+func TestPrefsLiveToggleRendered(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
+	const toggle = `[data-ro-action="toggle-live"]`
+	// A watchable single-type list is the scope that renders the toggle at all.
+	const listPath = "/clusters/test/namespaces/default/pods"
 
-	// No pref: Off, exactly the markup the JS sync would produce.
-	p := prefsGet(t, app, "/clusters", "", nil)
-	p.wantText("#refresh-label", "Off")
-	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown")
-	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option is-active")
+	// No pref: off, exactly the markup the JS sync would produce.
+	p := prefsGet(t, app, listPath, "", nil)
+	p.wantAttr(toggle, "aria-pressed", "false")
 
-	// Persisted interval: label + active option + the refresh-on hook.
-	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "30"}), nil)
-	p.wantText("#refresh-label", "30s")
-	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown refresh-on")
-	p.wantAttr(`.refresh-option[data-ro-interval="30"]`, "class", "refresh-option is-active")
-	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option")
+	// Persisted Live: pressed.
+	p = prefsGet(t, app, listPath, encodePrefs(prefs{Refresh: "Live"}), nil)
+	p.wantAttr(toggle, "aria-pressed", "true")
 
-	// Persisted Off: an explicit choice renders like the default (and the
-	// legacy "0" never reaches the cookie -- the JS writes "Off").
-	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "Off"}), nil)
-	p.wantText("#refresh-label", "Off")
-	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown")
-	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option is-active")
+	// Persisted Off: an explicit choice renders like the default.
+	p = prefsGet(t, app, listPath, encodePrefs(prefs{Refresh: "Off"}), nil)
+	p.wantAttr(toggle, "aria-pressed", "false")
 
-	// Persisted Live (the Live SSE refresh mode): the label says Live, the Live option is the
-	// active one (NOT Off, even though Live arms no polling interval), and the
-	// refresh-on hook keeps the livedot pulsing at SSR.
-	p = prefsGet(t, app, "/clusters", encodePrefs(prefs{Refresh: "Live"}), nil)
-	p.wantText("#refresh-label", "Live")
-	p.wantAttr("#refresh-dropdown", "class", "refresh-dropdown refresh-on")
-	p.wantAttr(`.refresh-option[data-ro-interval="Live"]`, "class", "refresh-option is-active")
-	p.wantAttr(`.refresh-option[data-ro-interval="0"]`, "class", "refresh-option")
+	// A legacy interval and outright junk both render off -- never pressed, and
+	// never a third state.
+	for _, stale := range []string{"30", "0", "5", "live", "LIVE", "Live "} {
+		p = prefsGet(t, app, listPath, encodePrefs(prefs{Refresh: stale}), nil)
+		if got := p.attr(toggle, "aria-pressed"); got != "false" {
+			t.Fatalf("stored refresh %q rendered aria-pressed=%q, want false", stale, got)
+		}
+	}
 }
 
-// TestLiveOptionScopeGate pins the server-rendered Live availability (the Live
-// mode's scope cut): the dropdown's Live option is DISABLED (with an explanatory
-// title) on multi-type and multi-cluster list pages -- the `_stream` endpoint
-// 404s that scope -- and enabled on single-type single-cluster lists. Non-list
-// pages (detail) keep it enabled-but-inert, like the interval options.
-func TestLiveOptionScopeGate(t *testing.T) {
+// TestLiveToggleScopeGate pins the server-rendered Live availability. The
+// toggle renders ONLY where `_stream` answers: one type, one cluster, a list
+// page (not a detail page), and a kind whose discovery verbs include `watch`.
+// Everywhere else the page shows Refresh alone -- an offered toggle is a
+// promise the endpoint keeps, so an unsupported page must not offer one.
+func TestLiveToggleScopeGate(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
-	live := `.refresh-option[data-ro-interval="Live"]`
+	const toggle = `[data-ro-action="toggle-live"]`
+	const refresh = `[data-ro-action="refresh-now"]`
 
-	// Single-type, single-cluster list: enabled.
+	// Single-type, single-cluster list of a watchable kind: offered.
 	p := prefsGet(t, app, "/clusters/test/namespaces/default/pods", "", nil)
-	p.wantHas(live)
-	p.wantAbsent(live + "[disabled]")
+	p.wantHas(toggle)
+	p.wantHas(refresh)
 
-	// Multi-type list (plural "all"): disabled with the scope title.
-	p = prefsGet(t, app, "/clusters/test/namespaces/default/all", "", nil)
-	p.wantHas(live + "[disabled]")
-	if title := p.attr(live, "title"); !strings.Contains(title, "single-type") {
-		t.Fatalf("disabled Live option title = %q, want a single-type scope explanation", title)
+	// Every scope `_stream` refuses renders Refresh and no toggle.
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"multi-type plural", "/clusters/test/namespaces/default/all"},
+		{"CSV multi-type", "/clusters/test/namespaces/default/pods,services"},
+		{"multi-cluster union", "/clusters/_all/pods"},
+		{"detail page", "/clusters/test/namespaces/default/pods/nginx"},
+		{"cluster-less page", "/clusters"},
+		// A kind without the watch verb (the metrics pseudo-type, which
+		// `_stream` answers with 204). The toolbar must not offer Live for it.
+		{"watch-less kind", "/clusters/test/namespaces/default/pods?apiVersion=metrics.k8s.io/v1beta1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := prefsGet(t, app, tc.path, "", nil)
+			p.wantAbsent(toggle)
+			p.wantHas(refresh)
+		})
 	}
 
-	// CSV multi-type list: disabled too.
-	p = prefsGet(t, app, "/clusters/test/namespaces/default/pods,services", "", nil)
-	p.wantHas(live + "[disabled]")
-
-	// Multi-cluster list (_all union): disabled.
-	p = prefsGet(t, app, "/clusters/_all/pods", "", nil)
-	p.wantHas(live + "[disabled]")
-
-	// A detail page is not a list: the option stays enabled (inert client-side,
-	// exactly like picking an interval there).
-	p = prefsGet(t, app, "/clusters/test/namespaces/default/pods/nginx", "", nil)
-	p.wantAbsent(live + "[disabled]")
+	// The watch-less case must fail for the RIGHT reason: the page really is a
+	// single-type single-cluster list (so only the missing verb rules it out),
+	// and its rows rendered.
+	p = prefsGet(t, app, "/clusters/test/namespaces/default/pods?apiVersion=metrics.k8s.io/v1beta1", "", nil)
+	if rows := p.doc.Find("table.ro-table tbody tr").Length(); rows == 0 {
+		t.Fatalf("metrics pseudo-type list rendered no rows; the watch-less gate would pass vacuously")
+	}
 }
 
 // TestPrefsReadoutJSContract pins the JS writer half needle-style (the suite

@@ -23,7 +23,7 @@ import (
 
 // TestShellTopbarChrome pins the redesign topbar: it is a <header class="ro-topbar">
 // (NOT a <nav>, per the redesign chrome scoping), carries the brand mask + name, the
-// read-only ⌘K search box, the live-refresh control with its label, and the
+// read-only ⌘K search box, the Live toggle + one-shot Refresh pair, and the
 // server-POST theme toggle (hx-boost="false") -- never a client-JS toggle.
 func TestShellTopbarChrome(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Date(2024, 1, 3, 6, 0, 0, 0, time.UTC))
@@ -48,21 +48,23 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantHas("header.ro-topbar .ro-search .kbd-hint .ro-kbd")
 	p.wantAttr("header.ro-topbar .ro-search", "data-ro-palette-open", "true")
 
-	// Refresh control: the five interval options (10s replaced the old 15s)
-	// plus the Live mode, the #refresh-label, the
-	// #refresh-dropdown hook.
-	if got := p.attrs("#refresh-dropdown .refresh-option", "data-ro-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
-		t.Fatalf("refresh-option data-ro-interval set = %v, want [0 5 10 30 60 Live]", got)
-	}
-	p.wantHas(".tb-group .tb-btn.refresh-trigger")
-	p.wantHas(".tb-group .tb-btn.refresh-trigger .ro-livedot")
-	// The livedot's live state has exactly ONE owner: `refresh-on` on
-	// #refresh-dropdown (SSR refreshDropdownClass + JS syncRefreshUI). The old
-	// static `refresh-live` class painted the dot brand-green even at Off -- a
-	// false live-health signal (the colour law: green only for live signals; the ctx-dot.none precedent) --
-	// so it must never come back.
+	// Update controls: two buttons, no menu. The Live toggle (rendered here
+	// because pods is a watchable single-type single-cluster list) carries the
+	// livedot and the stable "Live" label; the one-shot Refresh sits beside it.
+	p.wantHas(`.tb-group .tb-btn.live-toggle[data-ro-action="toggle-live"]`)
+	p.wantHas(".tb-group .tb-btn.live-toggle .ro-livedot")
+	p.wantText(".tb-group .tb-btn.live-toggle .live-label", "Live")
+	p.wantAttr(`.tb-group [data-ro-action="refresh-now"]`, "aria-label", "Refresh now")
+	// The livedot's live state has exactly ONE owner: aria-pressed on the
+	// toggle (rendered at SSR from the cookie, flipped by the toggle handler).
+	// The old static `refresh-live` class painted the dot brand-green even at
+	// Off -- a false live-health signal (the colour law: green only for live
+	// signals; the ctx-dot.none precedent) -- so it must never come back, and
+	// neither may the interval picker it replaced.
 	p.wantAbsent(".refresh-live")
-	p.wantHas("#refresh-label")
+	p.wantAbsent("#refresh-dropdown")
+	p.wantAbsent(".refresh-option")
+	p.wantAbsent("[data-ro-interval]")
 
 	// Theme toggle stays a server POST /preferences that opts OUT of hx-boost.
 	p.wantAttr("#btn-theme-toggle", "data-theme-explicit", "false")

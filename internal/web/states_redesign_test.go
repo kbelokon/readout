@@ -506,11 +506,12 @@ func TestLoadingSkeletonStateHooks(t *testing.T) {
 
 // TestStatesStaleMarkupHooks proves the CLIENT-SIDE stale path has its markup
 // hooks in the FIRST server response: a hidden `.ro-banner.warn` readout.js
-// reveals (with the designed stale copy: "Auto-refresh failed — showing the last good
-// data", the "Retrying in Ns" countdown hook the auto-refresh JS wires, and the Retry now
-// control), and the dim target (#resource-list-content) the JS dims. The
-// server never decides stale (no last-good cache); these are the hooks the JS
-// needs.
+// reveals, carrying BOTH copy variants -- the recoverable one ("Auto-refresh
+// failed — showing the last good data" with the "Retrying in Ns" countdown hook
+// and Retry now) and the terminal Unavailable one with its Reload action -- plus
+// the dim target (#resource-list-content) the JS dims. The server never decides
+// stale (no last-good cache); these are the hooks the JS needs, and shipping
+// both variants keeps the copy in the template rather than in JS literals.
 func TestStatesStaleMarkupHooks(t *testing.T) {
 	app := newServer(t, baseConfig(t), time.Now())
 	p := get(t, app, "/clusters/test/namespaces/default/pods", http.StatusOK)
@@ -524,17 +525,44 @@ func TestStatesStaleMarkupHooks(t *testing.T) {
 	if _, hidden := banner.Attr("hidden"); !hidden {
 		t.Fatalf("stale banner must be hidden on first paint (JS reveals it)")
 	}
-	if title := normSpace(banner.Find(".bn-title").Text()); title != "Auto-refresh failed — showing the last good data" {
+	recoverable := banner.Find(".bn-body:not(.ro-stale-unavailable)")
+	if title := normSpace(recoverable.Find(".bn-title").Text()); title != "Auto-refresh failed — showing the last good data" {
 		t.Fatalf("stale banner title = %q, want the designed stale-state copy", title)
 	}
-	if !strings.Contains(banner.Find(".bn-text").Text(), "Retrying in") {
-		t.Fatalf("stale banner text = %q, want the Retrying-in line", banner.Find(".bn-text").Text())
+	if !strings.Contains(recoverable.Find(".bn-text").Text(), "Retrying in") {
+		t.Fatalf("stale banner text = %q, want the Retrying-in line", recoverable.Find(".bn-text").Text())
 	}
-	// The countdown span is a wiring hook for the auto-refresh JS (mono, data-stale-countdown).
+	// The countdown span is a wiring hook for the reconnect schedule (mono, data-stale-countdown).
 	p.wantHas(".ro-stale-banner .bn-text span.mono[data-stale-countdown]")
 	if got := normSpace(banner.Find(".ro-stale-retry").Text()); got != "Retry now" {
 		t.Fatalf("stale banner retry label = %q, want %q", got, "Retry now")
 	}
+
+	// The Unavailable variant ships in the same banner, HIDDEN alongside the
+	// recoverable one: the client reveals exactly one. Its action is reload, not
+	// retry -- a 401/403 or the `auth` terminal means no retry can help, so
+	// offering one would lie.
+	unavailable := banner.Find(".bn-body.ro-stale-unavailable")
+	if unavailable.Length() != 1 {
+		t.Fatalf("expected exactly one Unavailable copy variant, found %d", unavailable.Length())
+	}
+	if _, hidden := unavailable.Attr("hidden"); !hidden {
+		t.Fatalf("the Unavailable variant must be hidden on first paint (the recoverable copy is the default)")
+	}
+	if title := normSpace(unavailable.Find(".bn-title").Text()); !strings.Contains(title, "unavailable") {
+		t.Fatalf("Unavailable variant title = %q, want the unavailable copy", title)
+	}
+	reload := banner.Find(`[data-ro-action="reload"]`)
+	if reload.Length() != 1 {
+		t.Fatalf("expected exactly one reload action, found %d", reload.Length())
+	}
+	if _, hidden := reload.Attr("hidden"); !hidden {
+		t.Fatalf("the Reload action must be hidden on first paint (Retry now is the default)")
+	}
+	if got := normSpace(reload.Text()); got != "Reload" {
+		t.Fatalf("reload action label = %q, want %q", got, "Reload")
+	}
+
 	// The dim target the JS toggles exists.
 	p.wantHas("#resource-list-content")
 }

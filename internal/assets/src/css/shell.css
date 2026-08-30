@@ -1,7 +1,7 @@
 /* shell.css -- app-shell chrome that is NOT part of the redesign topbar/sidebar
    port (those live in redesign.css and own header.ro-topbar / aside.ro-sidebar).
    What remains here are the live shell rules with no redesign twin: the ⌘K kbd
-   chip, the refresh-on icon affordance + theme-toggle glyph swap, the brand mask,
+   chip, the Live/Refresh control affordances + theme-toggle glyph swap, the brand mask,
    the main/heading layout, and the numeric-column alignment. Bundled by
    scripts/build-assets.mjs; cascade order is set by readout.css's @import list. */
 
@@ -51,14 +51,17 @@
         :root:not([data-theme="light"]) #btn-theme-toggle .theme-icon-dark { display: none; }
     }
 
-    /* Auto-refresh control affordance (navbar #refresh-dropdown). When refresh is
-       on, the trigger reads as active (accent wash) and the rotate icon spins
-       slowly. #refresh-dropdown.refresh-on is the one live-state owner (set at SSR,
-       toggled by syncRefreshUI on an interval pick). The .ro-livedot pulse in
-       redesign.css carries the same live signal on the dot. */
-    .refresh-label { margin-left: 0.4rem; font-size: 0.8125rem; }
-    #refresh-dropdown.refresh-on .refresh-trigger { color: var(--accent-text); background: var(--accent-weak); }
-    #refresh-dropdown.refresh-on .refresh-icon svg { animation: refresh-spin 3s linear infinite; }
+    /* Live toggle affordance (navbar [data-ro-action="toggle-live"]). Pressed
+       reads as active (accent wash); the .ro-livedot pulse below carries the
+       same signal on the dot. aria-pressed is the ONE live-state owner -- it is
+       rendered at SSR from the cookie and flipped by the toggle handler -- so
+       the styling has no separate class to fall out of sync with.
+       The one-shot Refresh button spins its rotate icon only while its request
+       is in flight (the handler disables the button for exactly that window). */
+    .live-label { margin-left: 0.4rem; font-size: 0.8125rem; }
+    .tb-btn.live-toggle[aria-pressed="true"] { color: var(--accent-text); background: var(--accent-weak); }
+    .tb-btn.refresh-now:disabled { cursor: default; }
+    .tb-btn.refresh-now:disabled .refresh-icon svg { animation: refresh-spin 1s linear infinite; }
     @keyframes refresh-spin { to { transform: rotate(360deg); } }
 
     main { flex-grow: 1; flex-shrink: 1; }
@@ -206,48 +209,38 @@
         color: var(--text-muted); font-size: 12px; cursor: pointer;
     }
     .tb-btn:hover { background: var(--surface-2); color: var(--text); }
+    .tb-btn:disabled { opacity: 0.55; }
     .tb-btn .ico { display: inline-flex; }
-    /* (the live `.refresh-label` size is owned by the existing app rule above; the
+    /* (the live `.live-label` size is owned by the existing app rule above; the
        redesign bar reuses it -- no duplicate here to keep this additive.) */
     .ro-livedot { width: 6px; height: 6px; border-radius: 50%;
         background: var(--text-ghost); flex: none; }
-    /* the dot is GHOST-GREY by default and turns
-       brand + PULSES only while a refresh mode is active (the pulsing brand dot
-       signals live -- any non-Off interval today; Live joins through
-       the same refresh-on hook). Green is a live-health signal, so Off keeps
-       the grey dot (matching the no-namespace ctx-dot.none precedent).
-       refresh-on is the ONE state owner: rendered at SSR (refreshDropdownClass)
-       and toggled by syncRefreshUI on an interval pick. */
-    #refresh-dropdown.refresh-on .ro-livedot { background: var(--brand); animation: ro-pulse 1.8s ease-out infinite; }
+    /* the dot is GHOST-GREY by default and turns brand + PULSES only while Live
+       is on (the pulsing brand dot signals live). Green is a live-health
+       signal, so Off keeps the grey dot (matching the no-namespace ctx-dot.none
+       precedent). aria-pressed is the ONE state owner: rendered at SSR from the
+       cookie and flipped by the toggle handler. */
+    .tb-btn.live-toggle[aria-pressed="true"] .ro-livedot { background: var(--brand); animation: ro-pulse 1.8s ease-out infinite; }
     @keyframes ro-pulse {
         0% { box-shadow: 0 0 0 0 rgba(86,224,188,.5); }
         70% { box-shadow: 0 0 0 6px rgba(86,224,188,0); }
         100% { box-shadow: 0 0 0 0 rgba(86,224,188,0); }
     }
 
-    /* ---- topbar dropdown panels (namespace context + refresh interval) --------
-       The redesign header.ro-topbar chrome renamed the old dropdown panels to
-       NET-NEW class names: `.ctx-menu` (namespace list) and
-       `.refresh-menu` (interval picker). The old styling was scoped to
+    /* ---- topbar namespace context panel --------------------------------
+       The redesign header.ro-topbar chrome renamed the namespace dropdown panel
+       to the NET-NEW class `.ctx-menu`. The old styling was scoped to
        `nav.navbar.ro-topbar .navbar-dropdown`, which no longer matches under
-       <header>, so without these rules the panels render permanently expanded,
-       unpositioned and unstyled inline in the bar. These are additive (no old rule,
-       no .ro-rd collision): an elevated themed popover anchored under its trigger,
-       CLOSED by default, revealed only on the open state.
+       <header>, so without these rules the panel renders permanently expanded,
+       unpositioned and unstyled inline in the bar: an elevated themed popover
+       anchored under its trigger, CLOSED by default, revealed only when the
+       delegated readout.js click handler puts `is-active` on the container.
 
-       Two different open contracts, matching the JS that already drives the
-       triggers (readout.js):
-         - namespace: CLICK-toggled. The delegated click handler toggles `is-active`
-           on the #namespace-dropdown container, so the panel reveals on
-           `#namespace-dropdown.is-active`.
-         - refresh: HOVER/FOCUS-revealed. There is NO JS open/close handler for it --
-           `refresh-on` means "an interval is active", not "menu open" -- so the
-           panel reveals on container :hover / :focus-within. */
+       This is the topbar's only panel. The update controls next to it are two
+       plain buttons -- no menu, so no hover bridge and no second open contract. */
     #namespace-dropdown { position: relative; min-width: 0; }
-    #refresh-dropdown { position: relative; }
 
-    .ctx-menu,
-    .refresh-menu {
+    .ctx-menu {
         display: none;
         position: absolute;
         top: calc(100% + 6px);
@@ -259,31 +252,13 @@
         border-radius: var(--radius);
         box-shadow: var(--shadow-pop);
     }
-    /* refresh menu is right-aligned (it sits at the end of the bar) */
-    .refresh-menu { right: 0; min-width: 150px; }
-    /* Hover bridge: the menu floats 6px below the trigger, and that gap lies
-       OUTSIDE #refresh-dropdown -- a pointer travelling from the trigger into
-       the menu would drop :hover mid-way and the menu would slam shut (the
-       click-first behavior users hit before this strip existed). The invisible
-       strip keeps the container hovered across the gap. */
-    .refresh-menu::before {
-        content: "";
-        position: absolute;
-        top: -8px;
-        left: 0;
-        right: 0;
-        height: 8px;
-    }
     .ctx-menu { left: 0; max-height: 60vh; overflow-y: auto; }
 
-    /* OPEN contracts: closed by default above, shown only on the open state. */
+    /* OPEN contract: closed by default above, shown only on the open state. */
     #namespace-dropdown.is-active .ctx-menu { display: block; }
-    #refresh-dropdown:hover .refresh-menu,
-    #refresh-dropdown:focus-within .refresh-menu { display: block; }
 
     /* panel items: muted mono rows that firm up on hover/focus (palette language). */
-    .namespace-item,
-    .refresh-option {
+    .namespace-item {
         display: block;
         width: 100%;
         text-align: left;
@@ -298,27 +273,9 @@
         white-space: nowrap;
     }
     .namespace-item:hover,
-    .namespace-item:focus,
-    .refresh-option:hover,
-    .refresh-option:focus {
+    .namespace-item:focus {
         background: var(--surface-2);
         color: var(--text);
-    }
-    /* the active (stored) interval reads as selected via the accent wash. */
-    .refresh-option.is-active {
-        background: var(--accent-weak);
-        color: var(--accent-text);
-        font-weight: 600;
-    }
-    /* a disabled option (Live on multi-type/multi-cluster pages, where Live is
-       unsupported) reads as unavailable: faded, no hover wash, the title explains why. */
-    .refresh-option:disabled,
-    .refresh-option:disabled:hover,
-    .refresh-option:disabled:focus {
-        background: transparent;
-        color: var(--text-muted);
-        opacity: 0.45;
-        cursor: not-allowed;
     }
 
     /* namespace filter input inside the panel: matches the topbar search chip. */

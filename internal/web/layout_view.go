@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/kbelokon/readout/internal/config"
@@ -74,19 +75,21 @@ type navbarView struct {
 	ToggleNextURL string
 	ThemeExplicit bool
 
-	// RefreshMode is the persisted auto-refresh mode from the ro_prefs cookie:
-	// "" (no preference) / "Off" / an interval in seconds as a string /
-	// "Live" (the SSE refresh option). The topbar renders the refresh label + active option
-	// from it at SSR so the persisted choice paints without the JS sync flash;
-	// readout.js re-derives the same state from the same cookie on init.
-	RefreshMode string
+	// LiveOn is the persisted Live preference from the ro_prefs cookie: true
+	// exactly when Refresh is the literal "Live". The topbar renders it as the
+	// toggle's aria-pressed at SSR so the persisted choice paints without the
+	// JS sync flash; readout.js re-derives the same state from the same cookie
+	// on init. Any other stored value renders off -- there is no third state.
+	LiveOn bool
 
-	// LiveDisabled disables the dropdown's Live option (the Live scope
-	// cut): set on multi-type and multi-cluster LIST pages, the scope the
-	// `_stream` endpoint 404s. Mirrors resourceStream's gate exactly
-	// (isSingleListType + the all/CSV cluster check) so the rendered option is
-	// the single client-consumable truth about Live availability.
-	LiveDisabled bool
+	// LiveAvailable renders the topbar Live toggle. It is the single
+	// client-consumable truth about Live availability and mirrors
+	// resourceStream's own gates: a single-type, single-cluster LIST page
+	// (isSingleListType + the all/CSV cluster check -- the scope `_stream`
+	// 404s) of a kind whose discovery verbs contain `watch` (the scope
+	// `_stream` answers 204). False everywhere else, including every detail and
+	// non-resource page, where no stream could be opened anyway.
+	LiveAvailable bool
 }
 
 // sidebarView is the resolved sidebar: the grouped resource-type links (each
@@ -421,8 +424,7 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 		NextTheme:       nextTheme,
 		ToggleNextURL:   r.URL.RequestURI(),
 		ThemeExplicit:   explicit,
-		RefreshMode:     prefsFromRequest(r).Refresh,
-		LiveDisabled:    liveOptionDisabled(r, cluster),
+		LiveOn:          prefsFromRequest(r).Refresh == livePrefValue,
 	}
 	if cluster != "" && cluster != kube.AllClusters {
 		if clusterObj, ok := s.manager.Get(cluster); ok {
@@ -443,20 +445,29 @@ func (s *Server) buildNavbarView(r *http.Request, cluster, namespace, themeName 
 	return v
 }
 
-// liveOptionDisabled decides the topbar Live option's disabled state:
-// true exactly on LIST pages outside the `_stream` scope cut --
-// multi-type plurals ("all"/"_all"/CSV) or multi-cluster scope ("_all"/CSV
-// cluster). Detail pages ({name} bound) and non-resource pages keep the
-// option enabled; it is inert there, like the interval options (no
-// #resource-list-content to refresh). The predicate restates resourceStream's
-// 404 gate so the server renders the availability the endpoint will enforce.
-func liveOptionDisabled(r *http.Request, cluster string) bool {
+// liveToggleAvailable decides whether the topbar renders the Live toggle at
+// all. Live needs three things to be true at once, and the server owns all
+// three: the page must be a LIST (a bound {name} is a detail page, which has no
+// list region to stream into), the scope must be the one `_stream` serves
+// (exactly one type, exactly one cluster -- multi-type plurals "all"/"_all"/CSV
+// and the "_all"/CSV cluster union are 404 there), and the kind must actually
+// support watching. That last fact is not derivable from the URL, so the list
+// handler hands in the ResourceType it already resolved for the table; rt is
+// nil when nothing was resolved (a non-list page, a failed lookup), which reads
+// as unavailable. The predicate restates resourceStream's 404 and 204 gates so
+// a rendered toggle is a page where the stream answers.
+func liveToggleAvailable(r *http.Request, cluster string, rt *kube.ResourceType) bool {
+	if rt == nil {
+		return false
+	}
 	plural := r.PathValue("plural")
 	if plural == "" || r.PathValue("name") != "" {
-		return false // not a list page: enabled-but-inert
+		return false
 	}
-	multiCluster := cluster == kube.AllClusters || strings.Contains(cluster, ",")
-	return !isSingleListType(plural) || multiCluster
+	if !isSingleListType(plural) || cluster == kube.AllClusters || strings.Contains(cluster, ",") {
+		return false
+	}
+	return slices.Contains(rt.Verbs, "watch")
 }
 
 func (s *Server) buildSidebarView(r *http.Request, cluster, namespace string, clients requestKubeClients) sidebarView {

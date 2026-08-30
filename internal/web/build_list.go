@@ -30,6 +30,14 @@ type listContext struct {
 	Duration        time.Duration
 	Clients         requestKubeClients
 
+	// LiveType is the ResourceType resolved for a single-type list (nil for
+	// multi-type plurals, and when discovery failed). The topbar's Live gate
+	// needs the kind's `watch` verb, and this is where that lookup already
+	// happened -- carrying the resolved type out means the gate costs no second
+	// discovery call. It survives a failed Table fetch, so an error page still
+	// renders the toggle the successful page would have.
+	LiveType *kube.ResourceType
+
 	// ColVis maps each table's plural to its column-visibility universe:
 	// every column of the fully-decorated table plus the synthetic Created, with
 	// hidden/identity flags -- captured at the removal point in applyTableOptions
@@ -85,10 +93,15 @@ func (s *Server) listContext(r *http.Request) (listContext, error) {
 
 	var tables []kube.Table
 	var errs []error
+	var liveType *kube.ResourceType
 	byPlural := map[string]int{}
 	colVis := map[string][]columnVis{}
 	for _, slot := range slots {
 		errs = append(errs, slot.errs...)
+		if liveType == nil && isSingleListType(plural) && len(slot.types) == 1 {
+			rt := slot.types[0]
+			liveType = &rt
+		}
 		for plural, vis := range slot.colVis {
 			colVis[plural] = mergeColumnVis(colVis[plural], vis)
 		}
@@ -102,7 +115,7 @@ func (s *Server) listContext(r *http.Request) (listContext, error) {
 			}
 		}
 	}
-	return listContext{Cluster: clusterName, Namespace: namespace, Plural: plural, IsAllClusters: allClusters, IsAllNamespaces: isAllNamespaces, ClusterCount: len(clusters), Tables: tables, Errors: errs, Duration: s.clock().Sub(start), Clients: clients, ColVis: colVis}, nil
+	return listContext{Cluster: clusterName, Namespace: namespace, Plural: plural, IsAllClusters: allClusters, IsAllNamespaces: isAllNamespaces, ClusterCount: len(clusters), Tables: tables, Errors: errs, Duration: s.clock().Sub(start), Clients: clients, LiveType: liveType, ColVis: colVis}, nil
 }
 
 // clusterTableResult is one cluster's fan-out slot: its ordered tables (in
@@ -114,6 +127,12 @@ type clusterTableResult struct {
 	tables []kube.Table
 	colVis map[string][]columnVis
 	errs   []error
+
+	// types holds the ResourceTypes discovery resolved for this cluster, in the
+	// same order as the requested types and INDEPENDENT of whether the table
+	// fetch that followed succeeded. The Live gate reads the single-type case
+	// out of it.
+	types []kube.ResourceType
 }
 
 // clusterTables builds one cluster's ordered tables for the requested resource
@@ -122,6 +141,7 @@ type clusterTableResult struct {
 func (s *Server) clusterTables(ctx context.Context, r *http.Request, client *kube.Client, cluster *kube.Cluster, resourceTypes []string, namespace string, isAllNamespaces bool) clusterTableResult {
 	var tables []kube.Table
 	var errs []error
+	var types []kube.ResourceType
 	colVis := map[string][]columnVis{}
 	for _, typ := range resourceTypes {
 		typ = strings.TrimSpace(typ)
@@ -133,6 +153,7 @@ func (s *Server) clusterTables(ctx context.Context, r *http.Request, client *kub
 			errs = append(errs, fmt.Errorf("%s/%s: %w", cluster.Name, typ, err))
 			continue
 		}
+		types = append(types, rt)
 		listNS := namespace
 		if isAllNamespaces {
 			listNS = ""
@@ -153,7 +174,7 @@ func (s *Server) clusterTables(ctx context.Context, r *http.Request, client *kub
 		colVis[table.Resource.Plural] = mergeColumnVis(colVis[table.Resource.Plural], vis)
 		tables = append(tables, table)
 	}
-	return clusterTableResult{tables: tables, colVis: colVis, errs: errs}
+	return clusterTableResult{tables: tables, colVis: colVis, errs: errs, types: types}
 }
 
 // streamListContext wraps ONE cluster's pristine snapshot table into the same

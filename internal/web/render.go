@@ -39,6 +39,17 @@ func (s *Server) pageComponentWithNamespaceAndClients(w http.ResponseWriter, r *
 	s.renderLayout(w, &v, body)
 }
 
+// pageComponentLive renders a list page that may offer the topbar Live toggle.
+// liveType is the ResourceType the list handler already resolved for the table
+// (nil when nothing was resolved); its verbs decide whether the toggle renders,
+// so the gate costs no second discovery call. Every other page uses the plain
+// pageComponent* variants and renders no toggle.
+func (s *Server) pageComponentLive(w http.ResponseWriter, r *http.Request, title string, clients requestKubeClients, liveType *kube.ResourceType, body templ.Component) {
+	v := s.buildLayoutViewWithClients(r, title, nil, clients)
+	v.Navbar.LiveAvailable = liveToggleAvailable(r, r.PathValue("cluster"), liveType)
+	s.renderLayout(w, &v, body)
+}
+
 // pageComponentWithScope renders a templ-body page whose cluster/namespace scope
 // is supplied explicitly (not from path values). The param-less /search route
 // uses it so the shell sidebar + navbar context render from the ?cluster= /
