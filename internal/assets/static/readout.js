@@ -1424,6 +1424,7 @@
       return;
     }
     if (!window.navigator.onLine) {
+      noteDisconnected();
       enterDeferred("offline", base);
       return;
     }
@@ -1591,6 +1592,10 @@
       return;
     }
     if (!cursor) {
+      if (envelope.kind === "terminal" && envelope.seq === 1) {
+        handleV2Terminal(connection, envelope);
+        return;
+      }
       if (envelope.kind !== "snapshot" || envelope.seq !== 1) {
         rejectProtocol(connection);
         return;
@@ -1629,6 +1634,9 @@
       rejectProtocol(connection);
       return;
     }
+    handleV2Terminal(connection, envelope);
+  }
+  function handleV2Terminal(connection, envelope) {
     addCounter("terminals");
     if (envelope.reason === "auth" || envelope.reason === "protocol") {
       enterUnavailable();

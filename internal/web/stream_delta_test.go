@@ -456,6 +456,37 @@ func TestStreamLiveV2DeleteProjectAndDeleteAddClassification(t *testing.T) {
 	}
 }
 
+// A session's wakeup is level-triggered and its notification slot holds one
+// entry, so the revision it adopts after a relist is often NOT the revision the
+// relist published. The discontinuity is therefore read from the source's
+// monotonic epoch: skipping straight from an epoch-0 revision to an epoch-1 one
+// still owes the client a full snapshot.
+func TestStreamLiveV2AdoptForcesSnapshotOnACoalescedRelist(t *testing.T) {
+	st := newLiveV2TestSession(streamLiveRenderers{})
+	first := hubRevisionFor(1, &kube.Table{Rows: []kube.Row{hubTestRow("alpha")}})
+	if !st.adopt(first) || st.forceSnapshot {
+		t.Fatalf("initial adopt force=%t, want the first revision adopted without a forced snapshot", st.forceSnapshot)
+	}
+	st.forceSnapshot = false
+
+	// Revision 2 was the relist; this session only ever sees revision 3, the
+	// event published on top of it before the wakeup was drained.
+	afterRelist := hubRevisionFor(3, &kube.Table{Rows: []kube.Row{hubTestRow("beta")}})
+	afterRelist.epoch = 1
+	if !st.adopt(afterRelist) || !st.forceSnapshot {
+		t.Fatalf("post-relist adopt force=%t, want a forced snapshot for the epoch this session skipped", st.forceSnapshot)
+	}
+
+	// The epoch is level, not an edge: every later revision carries the same 1
+	// and must not force a second snapshot.
+	next := hubRevisionFor(4, &kube.Table{Rows: []kube.Row{hubTestRow("beta")}})
+	next.epoch = 1
+	st.forceSnapshot = false
+	if !st.adopt(next) || st.forceSnapshot {
+		t.Fatalf("steady-state adopt force=%t, want no forced snapshot without a new discontinuity", st.forceSnapshot)
+	}
+}
+
 // TestStreamLiveV2DeleteTrackingCapForcesSnapshot pins the bound on the
 // classification set: a base revision that lost more rows than the wire
 // contract can tombstone falls back to a full snapshot instead of carrying a
@@ -1336,6 +1367,86 @@ func TestStreamLiveV2TerminalUsesCommittedSchemaAndSanitizesRV(t *testing.T) {
 	if st.seq != 2 {
 		t.Fatalf("failed terminal advanced seq to %d", st.seq)
 	}
+}
+
+// TestStreamNoopRevisionSpendsItsFlushSample pins the event-to-flush histogram
+// against the quiet-stream trap: a revision whose render changes nothing the
+// client can see (a filtered-out watch event, an unchanged overlay poll)
+// carries no delivery to sample -- but it is CONSUMED all the same. Leaving it
+// unsampled would let the next frame measure itself against that revision's
+// event timestamp, and on an otherwise quiet stream the next frame is a
+// recovery checkpoint: the histogram would fill with samples of the checkpoint
+// period and its p99 would alert on silence.
+func TestStreamNoopRevisionSpendsItsFlushSample(t *testing.T) {
+	app := &Server{metrics: newAppMetrics()}
+	st := newLiveV2TestSession(streamLiveRenderers{})
+	st.srv = app
+	data := liveProjectionFixture(2)
+	now := time.Unix(1_800_002_200, 0)
+
+	st.rev = &hubRevision{num: 7, rv: "101", eventAt: now.Add(-500 * time.Millisecond)}
+	initial := prepareInitialLiveSnapshot(t, st, &data, now)
+	st.commitLivePush(&initial, now)
+	requireMetric(t, scrapeMetrics(t, app), "readout_watchhub_event_to_flush_seconds_count", 1)
+
+	// A later revision that renders to exactly the same projection.
+	st.rev = &hubRevision{num: 8, rv: "102", eventAt: now.Add(time.Second)}
+	st.dirty = true
+	noop, err := st.prepareLiveV2Data(context.Background(), &data, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noop.kind != livePreparedNoop {
+		t.Fatalf("prepared kind = %d, want a no-op for an unchanged render", noop.kind)
+	}
+	st.commitLivePush(&noop, now.Add(time.Second))
+
+	// The recovery checkpoint that follows re-sends state the client already
+	// holds, a full interval after the no-op's event.
+	st.forceSnapshot = true
+	checkpoint, err := st.prepareLiveV2Data(context.Background(), &data, now.Add(31*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.commitLivePush(&checkpoint, now.Add(31*time.Second))
+
+	requireMetric(t, scrapeMetrics(t, app), "readout_watchhub_event_to_flush_seconds_count", 1)
+}
+
+// The handshake renders the first frame BEFORE writing the SSE headers, so a
+// list this pod cannot render or encode ends the session with the terminal as
+// FRAME 1: sequence 1, and no rev/schema, because no projection was ever
+// committed. The client accepts exactly that shape as a stop signal; a frame it
+// could not place would instead spend its whole resync budget re-running the
+// identical failing render.
+func TestStreamProtocolFailureBeforeTheFirstSnapshotIsFrameOne(t *testing.T) {
+	w := &liveFaultWriter{writeN: -1}
+	st := newLiveV2TestSession(streamLiveRenderers{})
+	st.srv = &Server{metrics: newAppMetrics()}
+	st.w = w
+	st.rc = http.NewResponseController(w)
+
+	st.failFrame(errStreamEventTooLarge)
+
+	wire := w.buffer.String()
+	start := strings.Index(wire, "data: ")
+	if start < 0 {
+		t.Fatalf("pre-snapshot protocol failure wrote no terminal frame: %q", wire)
+	}
+	var envelope testLiveEnvelope
+	if err := json.Unmarshal([]byte(strings.TrimSpace(wire[start+len("data: "):])), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Kind != "terminal" || envelope.Reason != streamTerminalProtocol {
+		t.Fatalf("pre-snapshot terminal envelope = %+v", envelope)
+	}
+	if envelope.Seq != 1 {
+		t.Fatalf("pre-snapshot terminal seq = %d, want 1 (the client accepts a terminal only as frame 1)", envelope.Seq)
+	}
+	if envelope.Rev != "" || envelope.Schema != "" {
+		t.Fatalf("pre-snapshot terminal carried a projection it never committed: rev=%q schema=%q", envelope.Rev, envelope.Schema)
+	}
+	requireMetric(t, scrapeMetrics(t, st.srv), `readout_stream_terminal_total{reason="`+streamTerminalProtocol+`"}`, 1)
 }
 
 // A render/encode fault is this server's own, and the connection under it is

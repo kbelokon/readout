@@ -350,7 +350,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lifetime, lifetimeReason := s.streamLifetime(r)
+	deadline, lifetimeReason := s.streamDeadline(r, started)
 	sess := &streamSession{
 		srv:            s,
 		w:              w,
@@ -362,7 +362,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		gen:            negotiation.gen,
 		wantMetrics:    r.URL.Query().Get("join") == "metrics" && (plural == "pods" || plural == "nodes"),
 		wantNodes:      streamWantsNodeJoin(r, s.cfg.DefaultCustomColumns[plural], rt.Kind),
-		lifetime:       lifetime,
+		deadline:       deadline,
 		lifetimeReason: lifetimeReason,
 		tuning:         s.streamTuning,
 		startedAt:      started,
@@ -458,20 +458,25 @@ func (s *Server) streamSourceSpec(key *watchHubKey, client *kube.Client, rt *kub
 	}
 }
 
-// streamLifetime resolves the stream's total-lifetime bound at connect time
+// streamDeadline resolves the stream's total-lifetime bound at connect time
 // (the only auth check an SSE stream ever gets — without this a revoked or
 // expired session keeps receiving cluster state indefinitely). OIDC mode: the
 // session cookie's own Expires, terminal reason "auth" (the client's
 // no-reconnect taxonomy). Trusted-headers / none modes have no per-session
 // expiry: the server's hard max-lifetime cap applies, terminal reason
 // "lifetime".
-func (s *Server) streamLifetime(r *http.Request) (time.Duration, string) {
+//
+// The bound is ABSOLUTE, not a duration handed to the loop: the handshake
+// (discovery, the shared LIST, the join overlays) can spend tens of seconds
+// between this call and the first frame, and a duration re-armed after it
+// would grant the session its whole expiry again on top of that wait.
+func (s *Server) streamDeadline(r *http.Request, now time.Time) (time.Time, string) {
 	if s.cfg.AuthMode == config.AuthModeOIDC {
 		if session, ok := s.auth.Session(r); ok {
-			return time.Until(time.Unix(session.Expires, 0)), streamTerminalAuth
+			return time.Unix(session.Expires, 0), streamTerminalAuth
 		}
 	}
-	return s.streamTuning.maxLifetime, streamTerminalLifetime
+	return now.Add(s.streamTuning.maxLifetime), streamTerminalLifetime
 }
 
 // streamSession is one open Live stream: the hub subscription it renders from
@@ -500,8 +505,11 @@ type streamSession struct {
 	rev  *hubRevision
 	base *hubRevision
 
-	// lastRV mirrors the adopted revision's resourceVersion for the wire.
+	// lastRV mirrors the adopted revision's resourceVersion for the wire, and
+	// epoch the adopted revision's source discontinuity count: a change in it
+	// is a relist whose delta chain this session cannot bridge.
 	lastRV string
+	epoch  uint64
 
 	// wantMetrics / wantNodes record which join overlays this render asks for.
 	// They become the subscription's demand, so the shared source polls a join
@@ -509,9 +517,10 @@ type streamSession struct {
 	wantMetrics bool
 	wantNodes   bool
 
-	// lifetime / lifetimeReason bound the stream's TOTAL lifetime (resolved
-	// at connect by streamLifetime; the loop arms a single never-reset timer).
-	lifetime       time.Duration
+	// deadline / lifetimeReason bound the stream's TOTAL lifetime (resolved at
+	// connect by streamDeadline as an ABSOLUTE instant; the loop arms a single
+	// never-reset timer for whatever is left of it once the handshake is done).
+	deadline       time.Time
 	lifetimeReason string
 	tuning         streamTuning
 
@@ -541,6 +550,10 @@ type streamSession struct {
 	// so a non-reading peer cannot consume the whole graceful drain.
 	writeBound time.Duration
 
+	// flushedRev is the revision the last event-to-flush sample was taken for,
+	// so a re-send of state the client already holds is not counted again.
+	flushedRev uint64
+
 	// finished guards the single terminal outcome counted per session.
 	finished bool
 }
@@ -563,20 +576,41 @@ func streamHandshakeStatus(err error) int {
 // run adopts the revision the attach returned, completes the SSE handshake
 // with the initial full push, and hands off to the event loop. A failure before
 // the handshake stays a plain HTTP status — the stream never half-connects.
+//
+// The initial frame is RENDERED BEFORE the handshake headers so the session
+// bound can be rechecked with the frame in hand: a first snapshot of a large
+// scope takes real time to build, and an expiry check that ran only before the
+// render would hand an identity that died during it a full picture of the
+// cluster.
 func (st *streamSession) run(ctx, handshakeCtx context.Context, rev *hubRevision) {
 	if !st.adopt(rev) {
+		// An admitted session that never reaches the wire still owes the
+		// census its one final outcome: this pod could not produce a frame,
+		// which is the same server-side fault class as a failed render.
+		st.finish(streamTerminalProtocol)
 		http.Error(st.w, "live source published no snapshot", http.StatusBadGateway)
 		return
 	}
 	st.awaitOverlays(handshakeCtx)
-
-	h := st.w.Header()
-	h.Set("Content-Type", "text/event-stream")
-	h.Set("X-Accel-Buffering", "no")
-	h.Set(streamVersionHeader, "2")
-	h.Set(streamGenerationHeader, st.gen)
-	st.w.WriteHeader(http.StatusOK)
-	if err := st.push(ctx); err != nil {
+	if st.rejectExpiredHandshake() {
+		return
+	}
+	prepared, err := st.prepareNextPush(ctx)
+	if err != nil {
+		// A render/encode fault is this SERVER's own and the peer is healthy,
+		// so it is told the same way a mid-stream fault is: complete the
+		// handshake and write the no-retry protocol terminal. A plain non-200
+		// here would put the browser on its reconnect ladder, re-running the
+		// same failing render for the life of the tab.
+		st.writeHandshakeHeaders()
+		st.failFrame(err)
+		return
+	}
+	if st.rejectExpiredHandshake() {
+		return
+	}
+	st.writeHandshakeHeaders()
+	if err := st.pushPreparedLiveV2(&prepared); err != nil {
 		st.failFrame(err)
 		return
 	}
@@ -584,17 +618,58 @@ func (st *streamSession) run(ctx, handshakeCtx context.Context, rev *hubRevision
 	st.loop(ctx)
 }
 
+// writeHandshakeHeaders completes the SSE handshake. Nothing before this point
+// has touched the ResponseWriter, so every earlier exit is still free to answer
+// with a plain HTTP status.
+func (st *streamSession) writeHandshakeHeaders() {
+	h := st.w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("X-Accel-Buffering", "no")
+	h.Set(streamVersionHeader, "2")
+	h.Set(streamGenerationHeader, st.gen)
+	st.w.WriteHeader(http.StatusOK)
+}
+
+// rejectExpiredHandshake answers an AUTH-bounded stream that ran out of session
+// before its first frame with a plain 401 -- the answer the browser turns into
+// the Reload banner without retrying -- and records the session's one terminal
+// outcome. Nothing has been written at either call site, so the plain status is
+// still available.
+func (st *streamSession) rejectExpiredHandshake() bool {
+	if !st.authExpired() {
+		return false
+	}
+	st.finish(streamTerminalAuth)
+	http.Error(st.w, "session expired", http.StatusUnauthorized)
+	return true
+}
+
+// authExpired reports that an AUTH-bounded stream has outlived its session.
+// Only that bound gates cluster data: the trusted-headers/none hard cap is a
+// resource bound on how long one pod holds a stream, so a stream whose cap
+// already elapsed still gets its snapshot and is then closed by the loop's
+// timer at zero.
+func (st *streamSession) authExpired() bool {
+	return st.lifetimeReason == streamTerminalAuth && !time.Now().Before(st.deadline)
+}
+
 // adopt takes a newly published revision as this session's render source.
 // Revisions are monotonically numbered, so an older or repeated one is
 // ignored; a discontinuity (a relist) latches forceSnapshot until the next
 // committed push, because the delta chain the client holds is broken.
+//
+// The discontinuity is read from the source's MONOTONIC epoch, not from a flag
+// on the revision that recovered it: wakeups are level-triggered, so this
+// session may only ever see a later revision. An epoch that differs from the
+// one this session last rendered is a relist it would otherwise have missed.
 func (st *streamSession) adopt(rev *hubRevision) bool {
 	if rev == nil || (st.rev != nil && rev.num <= st.rev.num) {
 		return false
 	}
-	if rev.forceSnapshot {
+	if st.rev != nil && rev.epoch != st.epoch {
 		st.forceSnapshot = true
 	}
+	st.epoch = rev.epoch
 	st.rev = rev
 	st.lastRV = rev.rv
 	st.churn = rev.highChurn
@@ -732,7 +807,7 @@ func (st *streamSession) rowIdentity(obj map[string]any) (string, bool) {
 func (st *streamSession) loop(ctx context.Context) {
 	// The total-lifetime bound (session expiry in OIDC mode, the hard cap
 	// otherwise). NEVER reset — watch data must not extend it.
-	lifetimeTimer := time.NewTimer(st.lifetime)
+	lifetimeTimer := time.NewTimer(time.Until(st.deadline))
 	defer lifetimeTimer.Stop()
 	pushTimer := time.NewTimer(time.Hour)
 	pushTimer.Stop()
@@ -797,6 +872,13 @@ func (st *streamSession) loop(ctx context.Context) {
 			st.terminal(reason)
 			return
 		case <-pushTimer.C:
+			if st.authExpired() {
+				// The session bound outranks pending watch data: an expired
+				// identity is told the stream is over, not shown one more
+				// frame that the lifetime timer would have cut off anyway.
+				st.terminal(st.lifetimeReason)
+				return
+			}
 			if st.dirty {
 				lastSnapshotAt := st.lastSnapshotAt
 				if err := st.push(ctx); err != nil {
@@ -847,11 +929,23 @@ func (st *streamSession) schedulePush(timer *time.Timer) {
 	timer.Reset(target.Sub(now))
 }
 
-// push classifies the deletions this frame must report, then runs the v2
-// projection/delta transaction.
-func (st *streamSession) push(ctx context.Context) error {
+// prepareNextPush classifies the deletions this frame must report and renders
+// the v2 frame -- WITHOUT writing anything. The handshake runs it before the
+// SSE headers, so a session that expired during the render can still be
+// refused with a plain status; the loop runs it inside push.
+func (st *streamSession) prepareNextPush(ctx context.Context) (livePreparedPush, error) {
 	st.deletedKeys = st.watchDeletions()
-	return st.pushLiveV2(ctx)
+	return st.prepareLiveV2(ctx, time.Now())
+}
+
+// push runs one complete v2 transaction: prepare the frame, write it, commit
+// the state it represents.
+func (st *streamSession) push(ctx context.Context) error {
+	prepared, err := st.prepareNextPush(ctx)
+	if err != nil {
+		return err
+	}
+	return st.pushPreparedLiveV2(&prepared)
 }
 
 // finish records this session's single final outcome. Every exit funnels
@@ -871,11 +965,30 @@ func (st *streamSession) finish(reason string) {
 // the pre-render half of the latency is visible. A session assembled directly
 // by a render unit test has no server and no published revision behind it, so
 // there is nothing to sample.
+//
+// Exactly one sample per revision: a frame that carries no revision the client
+// has not already been shown carries no change either. Recovery checkpoints on
+// a quiet stream are the case that matters -- they re-send the current state
+// every checkpointInterval, and measuring those against a source event that is
+// an interval or more old would fill the histogram with samples of the
+// checkpoint period and make its p99 an alert on silence.
 func (st *streamSession) observeFlush(now time.Time) {
-	if st.srv == nil || st.rev == nil || st.rev.eventAt.IsZero() {
+	if st.srv == nil || st.rev == nil || st.rev.eventAt.IsZero() || st.rev.num == st.flushedRev {
 		return
 	}
+	st.consumeFlushRevision()
 	st.srv.observeLiveEventToFlush(now.Sub(st.rev.eventAt))
+}
+
+// consumeFlushRevision marks the adopted revision as accounted for by the
+// event-to-flush histogram. Every committed push consumes its revision --
+// with a sample when the frame carried the change, without one when the
+// render turned out to be a semantic no-op -- so no later frame can be
+// measured against an event timestamp that is already spent.
+func (st *streamSession) consumeFlushRevision() {
+	if st.rev != nil {
+		st.flushedRev = st.rev.num
+	}
 }
 
 // terminal writes a v2 ro-live terminal frame and records the outcome.
@@ -1024,20 +1137,20 @@ func (st *streamSession) writeEvent(event string, payload any) error {
 	if err != nil {
 		return err
 	}
-	return st.writeEncodedEvent(event, data)
+	return st.writeEncodedEvent(event, data, st.writeBound)
 }
 
 // writeEncodedEvent frames a payload that has already passed its kind-specific
 // bound. v2 preparation calls this directly so the exact bytes used for the
 // delta-ratio decision and snapshot checkpoint accounting are the bytes sent.
-func (st *streamSession) writeEncodedEvent(event string, data []byte) error {
+func (st *streamSession) writeEncodedEvent(event string, data []byte, bound time.Duration) error {
 	frame := make([]byte, 0, len(event)+len(data)+16)
 	frame = append(frame, "event: "...)
 	frame = append(frame, event...)
 	frame = append(frame, "\ndata: "...)
 	frame = append(frame, data...)
 	frame = append(frame, '\n', '\n')
-	return st.writeSSE(frame)
+	return st.writeSSE(frame, bound)
 }
 
 // writeHeartbeat emits a transport-only SSE comment. Browsers ignore it, but
@@ -1045,13 +1158,39 @@ func (st *streamSession) writeEncodedEvent(event string, data []byte) error {
 // deliberately does not touch dirty, lastPush, resourceVersion, revision, or
 // sequence state.
 func (st *streamSession) writeHeartbeat() error {
-	return st.writeSSE([]byte(": heartbeat\n\n"))
+	return st.writeSSE([]byte(": heartbeat\n\n"), st.writeBound)
 }
 
-func (st *streamSession) writeSSE(frame []byte) error {
+// dataWriteBound is the write budget for a frame that carries CLUSTER STATE.
+// In OIDC mode it never reaches past the session's own expiry: the identity
+// that authorized the render stops being valid at the deadline, so a snapshot
+// must not still be draining into a slow socket after it. Terminal frames and
+// heartbeats keep the plain bound -- they carry no cluster state, and the
+// "auth" terminal in particular is written AT the deadline, where the browser
+// needs it to raise the Reload banner.
+//
+// The loop refuses to push at all once the deadline has passed, so a
+// non-positive remainder here is the microsecond race between that check and
+// this write: it becomes a deadline already in the past, and the frame fails
+// instead of going out.
+func (st *streamSession) dataWriteBound() time.Duration {
+	if st.lifetimeReason != streamTerminalAuth {
+		return st.writeBound
+	}
+	remaining := time.Until(st.deadline)
+	if remaining < time.Nanosecond {
+		remaining = time.Nanosecond
+	}
+	if st.writeBound > 0 && st.writeBound < remaining {
+		return st.writeBound
+	}
+	return remaining
+}
+
+func (st *streamSession) writeSSE(frame []byte, bound time.Duration) error {
 	deadline := st.tuning.writeTimeout
-	if st.writeBound > 0 && st.writeBound < deadline {
-		deadline = st.writeBound
+	if bound > 0 && bound < deadline {
+		deadline = bound
 	}
 	_ = st.rc.SetWriteDeadline(time.Now().Add(deadline))
 	n, err := st.w.Write(frame)

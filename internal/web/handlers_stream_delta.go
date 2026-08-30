@@ -92,14 +92,6 @@ func (st *streamSession) liveRenderers() streamLiveRenderers {
 	return renderers
 }
 
-func (st *streamSession) pushLiveV2(ctx context.Context) error {
-	prepared, err := st.prepareLiveV2(ctx, time.Now())
-	if err != nil {
-		return err
-	}
-	return st.pushPreparedLiveV2(&prepared)
-}
-
 // pushPreparedLiveV2 is the transactional write boundary: a prepared state is
 // committed only after the complete SSE frame has been written and flushed.
 func (st *streamSession) pushPreparedLiveV2(prepared *livePreparedPush) error {
@@ -107,7 +99,7 @@ func (st *streamSession) pushPreparedLiveV2(prepared *livePreparedPush) error {
 		st.commitLivePush(prepared, time.Now())
 		return nil
 	}
-	if err := st.writeEncodedEvent("ro-live", prepared.payload); err != nil {
+	if err := st.writeEncodedEvent("ro-live", prepared.payload, st.dataWriteBound()); err != nil {
 		return err
 	}
 	st.commitLivePush(prepared, time.Now())
@@ -235,6 +227,13 @@ func (st *streamSession) commitLivePush(prepared *livePreparedPush, now time.Tim
 	st.base = st.rev
 	st.lastPush = now
 	if prepared.kind == livePreparedNoop {
+		// Nothing this client can see changed, so there is no delivery to
+		// sample -- but the revision is consumed all the same. Leaving it
+		// unsampled would let the NEXT frame measure itself against this
+		// revision's event timestamp: on an otherwise quiet stream that next
+		// frame is a recovery checkpoint, and the histogram would fill with
+		// samples of the checkpoint period.
+		st.consumeFlushRevision()
 		return
 	}
 	st.seq++

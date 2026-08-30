@@ -976,6 +976,29 @@ func TestLiveLimitsRejectNonPositiveAndUnparsable(t *testing.T) {
 		t.Fatalf("error should name the key: %v", err)
 	}
 
+	// A decimal quantity too large for an int64 must be an error, NOT a wrap:
+	// Quantity.Value() truncates the big.Int form to its low 64 bits, so
+	// 2^64+1 bytes would otherwise read back as a 1-byte limit that passes the
+	// positive check and then refuses every Live source. The same truncation
+	// turns an oversized NEGATIVE quantity positive (-(2^64-1) reads back as
+	// 1), which the non-positive check downstream can no longer see, so both
+	// signs are rejected on the quantity itself.
+	for _, huge := range []string{
+		"18446744073709551617",
+		"9223372036854775808",
+		"-18446744073709551615",
+		"-9223372036854775809",
+	} {
+		content := "live:\n  maxCacheAccountedBytes: \"" + huge + "\"\n"
+		cfg, err := Parse([]string{"--config", writeConfig(t, content)})
+		if err == nil {
+			t.Fatalf("Parse(%q) = %d bytes, want an error instead of a wrapped limit", huge, cfg.LiveMaxCacheAccountedBytes)
+		}
+		if !strings.Contains(err.Error(), "maxCacheAccountedBytes") {
+			t.Fatalf("error should name the key: %v", err)
+		}
+	}
+
 	if _, err := Parse([]string{"--config", writeConfig(t, "live:\n  bogusKey: 1\n")}); err == nil {
 		t.Fatal("unknown key under live: should be rejected by strict parse")
 	}

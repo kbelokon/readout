@@ -464,6 +464,30 @@ func TestLiveMetricsCountOneTerminalPerSession(t *testing.T) {
 	requireMetric(t, body, `readout_stream_terminal_total{reason="lifetime"}`, 1)
 }
 
+// TestLiveMetricsQuietCheckpointsAreNotFlushSamples pins what
+// readout_watchhub_event_to_flush_seconds measures: the delivery latency of a
+// CHANGE. Recovery checkpoints re-send the current state on a stream where the
+// source published nothing, so measuring them from a source event an interval
+// or more old would fill the histogram with samples of the checkpoint period
+// and turn its p99 into an alert on a healthy, quiet namespace.
+func TestLiveMetricsQuietCheckpointsAreNotFlushSamples(t *testing.T) {
+	app, ts, _ := newLiveMetricsFixture(t, nil, func(app *Server) {
+		app.streamTuning.checkpointInterval = 50 * time.Millisecond
+		app.streamTuning.heartbeat = 0
+	})
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "quiet-checkpoints")
+	for i := range 3 {
+		frame := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second))
+		if frame.Kind != "snapshot" {
+			t.Fatalf("frame %d kind = %q, want the initial snapshot and its checkpoint re-sends", i, frame.Kind)
+		}
+	}
+	defer s.close()
+
+	body := scrapeMetrics(t, app)
+	requireMetric(t, body, "readout_watchhub_event_to_flush_seconds_count", 1)
+}
+
 // TestLiveMetricsRelistCounted pins readout_watchhub_relists_total to the 410
 // recovery path: a scripted GONE on the shared watch produces exactly one
 // relist regardless of how many subscribers are attached to it.

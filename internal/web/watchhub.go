@@ -203,9 +203,13 @@ type hubRevision struct {
 	table *kube.Table
 	// rv is the last seen resourceVersion (the list's, then each event's).
 	rv string
-	// forceSnapshot marks a discontinuity -- a relist -- after which a
-	// subscriber must send a full snapshot rather than a delta.
-	forceSnapshot bool
+	// epoch counts the source's discontinuities (relists). It is MONOTONIC and
+	// carried by every later revision rather than flagged on the one that
+	// recovered, because a subscriber's wakeup is level-triggered: a revision
+	// published before it drains would otherwise hide the discontinuity
+	// entirely. A subscriber whose epoch differs from the one it last adopted
+	// owes the client a full snapshot -- its delta chain is broken.
+	epoch uint64
 	// highChurn reports that the SOURCE was taking sustained event traffic
 	// when this revision was published. Only the source sees the raw events,
 	// so it is the only place push pacing can learn the rate from.
@@ -639,6 +643,7 @@ type hubSource struct {
 	err      error
 	reason   string
 	revNum   uint64
+	epoch    uint64
 	table    *kube.Table
 	lastRV   string
 	overlays renderOverlays
@@ -759,7 +764,7 @@ func (s *hubSource) listed(table *kube.Table, err error) {
 		return
 	}
 	s.lastRV = table.ResourceVersion
-	s.publish(s.table, false)
+	s.publish(s.table)
 	for _, waiter := range s.waiters {
 		waiter.serve(s.newSubscription(waiter.demand), s.current.Load(), nil)
 	}
@@ -910,9 +915,12 @@ func (s *hubSource) startRelist() {
 }
 
 // relisted adopts the recovery LIST: the retained table is replaced wholesale
-// (so accounted bytes are replaced, not adjusted), the new revision is marked
-// forceSnapshot because the delta chain is broken, and the watch restarts from
-// the fresh resourceVersion with a clean backoff schedule.
+// (so accounted bytes are replaced, not adjusted), the source's snapshot epoch
+// advances because the delta chain is broken, and the watch restarts from the
+// fresh resourceVersion with a clean backoff schedule. A FAILED relist is
+// classified exactly like the initial LIST it repeats -- passthrough
+// credentials that expired mid-stream are the terminal "auth", not a
+// "watch-failed" the browser would pointlessly reconnect from.
 func (s *hubSource) relisted(table *kube.Table, err error) {
 	if !s.relisting {
 		return
@@ -922,12 +930,13 @@ func (s *hubSource) relisted(table *kube.Table, err error) {
 		return
 	}
 	if err != nil {
-		s.failTerminal(hubTerminalWatchFailed, err)
+		s.failTerminal(hubListTerminal(err), err)
 		return
 	}
 	s.adoptTable(table)
 	s.lastRV = table.ResourceVersion
-	s.publish(s.table, true)
+	s.epoch++
+	s.publish(s.table)
 	s.backoff = streamBackoff{tuning: s.hub.tuning}
 	s.immediateEOFs = 0
 	s.startWatch()
@@ -959,7 +968,7 @@ func (s *hubSource) applyEvent(ev *kube.WatchEvent) {
 		s.setAccounted(s.accounted + delta)
 	}
 	s.eventWindow.note(s.hub.clock.Now())
-	s.publish(s.table, false)
+	s.publish(s.table)
 }
 
 // adoptTable replaces the retained table wholesale and re-measures its
@@ -988,17 +997,17 @@ func (s *hubSource) setAccounted(total int64) {
 // publish stores the next immutable revision and wakes every subscriber. The
 // store happens BEFORE the wakeups, so a woken subscriber always finds at
 // least the revision it was woken for.
-func (s *hubSource) publish(table *kube.Table, forceSnapshot bool) {
+func (s *hubSource) publish(table *kube.Table) {
 	now := s.hub.clock.Now()
 	s.revNum++
 	s.current.Store(&hubRevision{
-		num:           s.revNum,
-		table:         table,
-		rv:            s.lastRV,
-		forceSnapshot: forceSnapshot,
-		highChurn:     s.eventWindow.high(now),
-		overlays:      s.overlays,
-		eventAt:       now,
+		num:       s.revNum,
+		table:     table,
+		rv:        s.lastRV,
+		epoch:     s.epoch,
+		highChurn: s.eventWindow.high(now),
+		overlays:  s.overlays,
+		eventAt:   now,
 	})
 	for sub := range s.subs {
 		sub.wake()
@@ -1231,7 +1240,7 @@ func (s *hubSource) overlaysFetched(overlays renderOverlays) {
 	}
 	s.overlays = overlays
 	if s.state == hubReady {
-		s.publish(s.table, false)
+		s.publish(s.table)
 	}
 	if !s.overlayActive {
 		return

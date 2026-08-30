@@ -590,8 +590,8 @@ func TestWatchHubInitialRevision(t *testing.T) {
 	if rev.rv != "10" {
 		t.Fatalf("initial revision rv = %q, want %q", rev.rv, "10")
 	}
-	if rev.forceSnapshot {
-		t.Fatal("initial revision asked for a forced snapshot")
+	if rev.epoch != 0 {
+		t.Fatalf("initial revision epoch = %d, want 0: nothing has been relisted", rev.epoch)
 	}
 	if rev.overlays.metrics != nil || rev.overlays.nodes != nil {
 		t.Fatal("initial revision carried join overlays nobody asked for")
@@ -1103,8 +1103,8 @@ func TestWatchHubGoneRelistsOnceForEverySubscriber(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Subscribe failed: %v", err)
 		}
-		if rev.forceSnapshot {
-			t.Fatal("the initial revision was marked forceSnapshot")
+		if rev.epoch != 0 {
+			t.Fatalf("initial revision epoch = %d, want 0: nothing has been relisted", rev.epoch)
 		}
 		t.Cleanup(sub.Close)
 		subs = append(subs, sub)
@@ -1119,8 +1119,8 @@ func TestWatchHubGoneRelistsOnceForEverySubscriber(t *testing.T) {
 
 	for _, sub := range subs {
 		rev := waitRevision(t, sub, 2)
-		if !rev.forceSnapshot {
-			t.Fatal("the relist revision was not marked forceSnapshot")
+		if rev.epoch != 1 {
+			t.Fatalf("relist revision epoch = %d, want the one discontinuity the 410 caused", rev.epoch)
 		}
 		if rev.num != 2 {
 			t.Fatalf("relist revision num = %d, want 2: the relist published more than one revision", rev.num)
@@ -1174,6 +1174,75 @@ func TestWatchHubFailedRelistIsTerminal(t *testing.T) {
 		t.Fatalf("terminal reason = %q, want %q", got, hubTerminalWatchFailed)
 	}
 	waitFor(t, "the source to be discarded", func() bool { return hub.sourceCount() == 0 })
+}
+
+// A relist is a LIST, so it is classified like one: passthrough credentials
+// that expired mid-stream close the source with the terminal "auth" the browser
+// must not reconnect from, not the recoverable "watch-failed" that would cost
+// one doomed reconnect per viewer before the replacement source said the same.
+func TestWatchHubForbiddenRelistIsAuthTerminal(t *testing.T) {
+	hub, _, _ := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	waitFor(t, "the source watch to open", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 1
+	})
+
+	up.setListErr(apiStatus(403, metav1.StatusReasonForbidden, "forbidden"))
+	up.failWatch(t, fmt.Errorf("%w: too old", kube.ErrWatchGone))
+
+	requireSignal(t, sub.Done(), "subscription closed by the forbidden relist")
+	if got := sub.Reason(); got != hubTerminalAuth {
+		t.Fatalf("terminal reason = %q, want %q", got, hubTerminalAuth)
+	}
+	waitFor(t, "the source to be discarded", func() bool { return hub.sourceCount() == 0 })
+}
+
+// The discontinuity a relist creates has to survive notification coalescing:
+// a subscriber that is slow enough to miss the relist revision itself still
+// has to learn its delta chain broke. The epoch is carried by EVERY later
+// revision, so the newest one a level-triggered wakeup finds still announces it.
+func TestWatchHubRelistEpochSurvivesCoalescedRevisions(t *testing.T) {
+	hub, _, _ := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	sub, rev, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	t.Cleanup(sub.Close)
+	if rev.epoch != 0 {
+		t.Fatalf("initial revision epoch = %d, want 0", rev.epoch)
+	}
+	waitFor(t, "the source watch to open", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 1
+	})
+
+	up.setTable(hubTestTable("20", "alpha", "beta"))
+	up.failWatch(t, fmt.Errorf("%w: too old", kube.ErrWatchGone))
+	waitRevision(t, sub, 2)
+	// The subscriber never drains its wakeup; an ordinary event publishes on
+	// top of the relist revision, which is exactly what a one-slot notification
+	// coalesces away.
+	waitFor(t, "the watch to resume from the relist", func() bool {
+		return len(up.watchAttempts()) == 2
+	})
+	up.emit(t, hubTestEvent(kube.WatchModified, "21", "beta"))
+
+	rev = waitRevision(t, sub, 3)
+	if rev.epoch != 1 {
+		t.Fatalf("post-relist event revision epoch = %d, want the relist's 1: the discontinuity was lost", rev.epoch)
+	}
 }
 
 // An immediate-EOF storm ends the source once: every subscriber is closed with

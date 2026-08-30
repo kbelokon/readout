@@ -24,6 +24,7 @@ import {
     decodeLiveV2Envelope,
     type LiveV2Cursor,
     type LiveV2SnapshotEnvelope,
+    type LiveV2TerminalEnvelope,
 } from './live-protocol.js';
 import { type LiveSSEEvent, LiveSSEParser } from './live-sse.js';
 import { liveStreamBaseForURL, mintLiveGeneration } from './live-url.js';
@@ -362,6 +363,13 @@ function openConnection(base: string): void {
         return;
     }
     if (!window.navigator.onLine) {
+        // Park like every other offline path -- and publish the loss first.
+        // `offline` is the one deferred state nothing refreshes and nothing
+        // wakes up until connectivity returns, so without this the rows the
+        // user is looking at freeze with no `data-ro-stale` marker and no
+        // banner: an initial load, a toggle, or hidden -> visible while the
+        // browser is offline would all silently show last-known data as live.
+        noteDisconnected();
         enterDeferred('offline', base);
         return;
     }
@@ -564,6 +572,15 @@ function handleV2Frame(
         return;
     }
     if (!cursor) {
+        // A session can end BEFORE its first snapshot: a render or encode fault
+        // (an oversized list is the deterministic one) completes the handshake
+        // and writes the terminal as frame 1 precisely so the client stops.
+        // Treating that as an invalid frame would instead spend the whole
+        // resync budget re-running the identical failing render.
+        if (envelope.kind === 'terminal' && envelope.seq === 1) {
+            handleV2Terminal(connection, envelope);
+            return;
+        }
         if (envelope.kind !== 'snapshot' || envelope.seq !== 1) {
             rejectProtocol(connection);
             return;
@@ -608,12 +625,15 @@ function handleV2Frame(
         rejectProtocol(connection);
         return;
     }
+    handleV2Terminal(connection, envelope);
+}
+// Two terminals a retry cannot survive: `auth` (the session itself expired) and
+// `protocol` (the server could not render or encode this list, so the identical
+// next attempt fails identically). Every other reason -- a rolling pod, a failed
+// watch, a recycled 12h session -- is exactly what the reconnect ladder exists
+// for.
+function handleV2Terminal(connection: LiveConnection, envelope: LiveV2TerminalEnvelope): void {
     addCounter('terminals');
-    // Two terminals a retry cannot survive: `auth` (the session itself expired)
-    // and `protocol` (the server could not render or encode this list, so the
-    // identical next attempt fails identically). Every other reason -- a
-    // rolling pod, a failed watch, a recycled 12h session -- is exactly what
-    // the reconnect ladder exists for.
     if (envelope.reason === 'auth' || envelope.reason === 'protocol') {
         enterUnavailable();
         return;

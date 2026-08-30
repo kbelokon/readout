@@ -814,6 +814,59 @@ test('the protocol terminal stops for good instead of climbing the ladder', asyn
     expect(fetchMock).toHaveBeenCalledOnce();
 });
 
+// The handshake renders the first frame BEFORE the SSE headers, so a list the
+// server cannot render or encode ends the session with the terminal as frame 1.
+// The client has no cursor yet, and rejecting the frame as "not a snapshot"
+// would spend the whole resync budget re-running that identical failing render.
+test('a protocol terminal before the first snapshot stops without resyncing', async () => {
+    renderLivePage();
+    installHtmx();
+    const stream = controlledStream();
+    const fetchMock = installFetch(async () => stream.response);
+    const before = window.roLive.stats();
+
+    liveApply();
+    const generation = requestGeneration(fetchMock);
+    stream.enqueue(
+        sse('ro-live', { v: 2, kind: 'terminal', g: generation, seq: 1, reason: 'protocol' }),
+    );
+
+    await vi.waitFor(() => expect(window.roLive.stats().state).toBe('unavailable'));
+    expect(window.roLive.stats()).toMatchObject({
+        attempt: before.attempt,
+        terminals: before.terminals + 1,
+        resyncs: before.resyncs,
+        invalidFrames: before.invalidFrames,
+    });
+    expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+});
+
+// Every other reason stays a transport-class outcome even before the first
+// snapshot: the pod is going away, so the ladder -- not the resync budget -- is
+// what reopens the stream.
+test('a shutdown terminal before the first snapshot reconnects without a resync', async () => {
+    renderLivePage();
+    installHtmx();
+    const stream = controlledStream();
+    const fetchMock = installFetch(async () => stream.response);
+    const before = window.roLive.stats();
+
+    liveApply();
+    const generation = requestGeneration(fetchMock);
+    stream.enqueue(
+        sse('ro-live', { v: 2, kind: 'terminal', g: generation, seq: 1, reason: 'shutdown' }),
+    );
+
+    await vi.waitFor(() => expect(window.roLive.stats().state).toBe('reconnecting'));
+    expect(window.roLive.stats()).toMatchObject({
+        terminals: before.terminals + 1,
+        resyncs: before.resyncs,
+        invalidFrames: before.invalidFrames,
+    });
+    expect(dependencies.markLiveUnavailable).not.toHaveBeenCalled();
+});
+
 test('the auth terminal stops for good and asks for a reload', async () => {
     renderLivePage();
     installHtmx();
@@ -1508,7 +1561,11 @@ describe('reconnect schedule and recovery', () => {
     });
 
     // Turning Live on while already offline must park, not burn a ladder rung
-    // on a fetch that cannot succeed.
+    // on a fetch that cannot succeed -- and it must still say so. An offline
+    // park is the one deferred state nothing refreshes and nothing wakes up
+    // until connectivity returns, so the rows on screen are last-known from
+    // here: without the mark they would sit frozen with no `data-ro-stale` and
+    // no banner for as long as the browser stays offline.
     test('turning Live on while offline parks without issuing a request', async () => {
         vi.useFakeTimers();
         pinJitter();
@@ -1520,8 +1577,44 @@ describe('reconnect schedule and recovery', () => {
 
         expect(fetchMock).not.toHaveBeenCalled();
         expect(window.roLive.stats()).toMatchObject({ state: 'offline', attempt: 0 });
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
+        expect(dependencies.pauseLiveStaleGrace).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(300_000);
         expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    // Hidden -> visible while still offline is the same park by another door:
+    // the tab was parked with no warning (a hidden tab is a deliberate pause),
+    // so the reopen attempt is the first moment anyone is looking at rows that
+    // stopped moving.
+    test('becoming visible while offline marks the rows stale', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async () => stream.response);
+        const onLine = vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(true);
+        const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+
+        liveApply();
+        stream.enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock))));
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+        expect(window.roLive.stats().state).toBe('open');
+
+        hidden.mockReturnValue(true);
+        document.dispatchEvent(new Event('visibilitychange'));
+        expect(window.roLive.stats().state).toBe('hidden');
+        expect(dependencies.markLiveStale).not.toHaveBeenCalled();
+
+        onLine.mockReturnValue(false);
+        hidden.mockReturnValue(false);
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        expect(window.roLive.stats()).toMatchObject({ state: 'offline', attempt: 0 });
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
+        expect(fetchMock).toHaveBeenCalledOnce();
     });
 
     test('an online event does not reopen a stream the user turned off while parked', async () => {

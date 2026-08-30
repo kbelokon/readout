@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -525,6 +526,18 @@ func resolve(file *fileConfig) (Config, error) {
 		q, err := resource.ParseQuantity(strings.TrimSpace(*file.Live.MaxCacheAccountedBytes))
 		if err != nil {
 			return Config{}, fmt.Errorf("live.maxCacheAccountedBytes: %w", err)
+		}
+		// Quantity.Value() truncates a magnitude that does not fit an int64 to
+		// its low 64 bits, so an absurd quantity can WRAP into a small positive
+		// limit that silently refuses every source: 2^64+1 bytes reads back as
+		// 1, and so does -(2^64-1), which would otherwise sail through the
+		// non-positive check below. Both signs are rejected on the QUANTITY,
+		// before any conversion can wrap them.
+		if q.Sign() <= 0 {
+			return Config{}, fmt.Errorf("live.maxCacheAccountedBytes: %s must be a positive byte count", q.String())
+		}
+		if q.CmpInt64(math.MaxInt64) > 0 {
+			return Config{}, fmt.Errorf("live.maxCacheAccountedBytes: %s exceeds the largest supported byte count", q.String())
 		}
 		cfg.LiveMaxCacheAccountedBytes = q.Value()
 	}

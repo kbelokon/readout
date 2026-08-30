@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/kbelokon/readout/internal/config"
 	fakeapi "github.com/kbelokon/readout/internal/fakekube"
 	"github.com/kbelokon/readout/internal/kube"
+	"github.com/kbelokon/readout/internal/web/templates"
 )
 
 const streamPodsPath = "/api/v1/namespaces/default/pods"
@@ -1649,6 +1651,165 @@ func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
 		t.Fatalf("terminal reason = %q, want auth", reason)
 	}
 	s.requireClosed(t, 2*time.Second)
+}
+
+// TestStreamOIDCExpiryDuringHandshakeIsRefused pins that the session bound is
+// an ABSOLUTE instant and not a duration handed to the loop: the handshake
+// (discovery, the shared LIST, the join overlays) can outlive what is left of
+// the session, and a duration armed after it would both deliver a snapshot to
+// an expired identity and then grant it the whole expiry over again. Nothing
+// has been written at that point, so the refusal is a plain 401 -- the same
+// answer the browser turns into its no-retry Reload banner.
+func TestStreamOIDCExpiryDuringHandshakeIsRefused(t *testing.T) {
+	var once sync.Once
+	fake, err := fakeapi.New(fakeapi.WithListRecorder(func(r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/pods") {
+			// Hold the shared LIST past the session's own Expires. The cookie
+			// is still valid when the request arrives, so the middleware admits
+			// it and only the stream's own bound can catch this.
+			once.Do(func() { time.Sleep(1500 * time.Millisecond) })
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fake.Close)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:          8080,
+		Clusters:      []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:  "dark",
+		AuthMode:      config.AuthModeOIDC,
+		OIDCIssuerURL: "https://issuer.invalid",
+	})
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	value, err := app.auth.SealSession(&auth.Session{
+		AccessToken: "session-token",
+		Expires:     time.Now().Add(time.Second).Unix(),
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: value})
+	setTestLiveHeaders(req, "expired-handshake")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	assertStreamPreHandshakeResponse(t, resp)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("handshake status = %d, want 401 for a session that expired before the first frame", resp.StatusCode)
+	}
+	// The request was ADMITTED (it held a connection slot and a hub
+	// subscription), so it owes the census its one final outcome: a refusal
+	// that counts an admission and no terminal makes the two series disagree
+	// forever.
+	body := scrapeMetrics(t, app)
+	requireMetric(t, body, `readout_live_admissions_total{result="accepted"}`, 1)
+	requireMetric(t, body, `readout_stream_terminal_total{reason="auth"}`, 1)
+}
+
+// TestStreamOIDCExpiryDuringInitialRenderIsRefused pins the SECOND half of the
+// same bound: the session survives the shared LIST but dies while its first
+// snapshot is being BUILT. The render is where a large scope spends its time,
+// so an expiry check that ran only before it would hand a dead identity a full
+// picture of the cluster. The frame is therefore prepared before the handshake
+// headers and the bound is rechecked with it in hand -- nothing has been
+// written yet, so the refusal is still the plain no-retry 401.
+func TestStreamOIDCExpiryDuringInitialRenderIsRefused(t *testing.T) {
+	app, _, _ := newLiveMetricsFixture(t, nil)
+	cluster, ok := app.manager.Get("test")
+	if !ok {
+		t.Fatal("fixture is missing the test cluster")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods/_stream", nil)
+	rec := httptest.NewRecorder()
+	var rendered atomic.Bool
+	st := &streamSession{
+		srv:            app,
+		w:              rec,
+		rc:             http.NewResponseController(rec),
+		renderReq:      streamRenderRequest(req),
+		client:         app.kubeClient(req, cluster),
+		cluster:        "test",
+		gen:            "10",
+		deadline:       time.Now().Add(150 * time.Millisecond),
+		lifetimeReason: streamTerminalAuth,
+		tuning:         app.streamTuning,
+		startedAt:      time.Now(),
+		renderers: streamLiveRenderers{
+			full: func(context.Context, *templates.ListData) (string, error) {
+				// The session is still alive when the render starts and dead
+				// when it returns: only the recheck can catch this.
+				time.Sleep(400 * time.Millisecond)
+				rendered.Store(true)
+				return "<div>rows</div>", nil
+			},
+		},
+	}
+
+	st.run(context.Background(), context.Background(), hubRevisionFor(1, hubTestTable("101", "nginx")))
+
+	if !rendered.Load() {
+		t.Fatal("the initial snapshot was never rendered, so this pins the pre-render check and not the recheck")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("handshake status = %d, want 401 for a session that expired during the initial render", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("expired handshake opened an SSE stream (Content-Type %q)", ct)
+	}
+	if strings.Contains(rec.Body.String(), "ro-live") || strings.Contains(rec.Body.String(), "rows") {
+		t.Fatalf("expired handshake wrote cluster state: %q", rec.Body.String())
+	}
+	requireMetric(t, scrapeMetrics(t, app), `readout_stream_terminal_total{reason="auth"}`, 1)
+}
+
+// TestStreamDataFrameWriteIsBoundedByTheSessionExpiry pins that a frame of
+// cluster state never gets a write window that reaches past the session that
+// authorized it: a peer that stops reading must not still be receiving the
+// snapshot minutes after its identity expired. The terminal frame keeps the
+// full deadline -- it carries no cluster state and is written AT the expiry,
+// which is exactly when the browser needs it.
+func TestStreamDataFrameWriteIsBoundedByTheSessionExpiry(t *testing.T) {
+	tuning := defaultStreamTuning()
+	st := &streamSession{tuning: tuning, lifetimeReason: streamTerminalAuth, deadline: time.Now().Add(2 * time.Second)}
+	bound := st.dataWriteBound()
+	if bound <= 0 || bound > 2*time.Second {
+		t.Fatalf("data write bound = %v, want the remaining session (<= 2s)", bound)
+	}
+	if st.writeBound != 0 {
+		t.Fatalf("the terminal write bound must stay untouched, got %v", st.writeBound)
+	}
+
+	// Already expired: the frame gets a deadline in the past instead of a
+	// fresh write window.
+	st.deadline = time.Now().Add(-time.Second)
+	if bound := st.dataWriteBound(); bound != time.Nanosecond {
+		t.Fatalf("expired data write bound = %v, want a deadline already in the past", bound)
+	}
+
+	// The hard-lifetime bound is a resource cap, not an identity: it does not
+	// shorten writes.
+	st.lifetimeReason = streamTerminalLifetime
+	if bound := st.dataWriteBound(); bound != 0 {
+		t.Fatalf("lifetime-bounded data write bound = %v, want the plain deadline", bound)
+	}
+
+	// A shorter shutdown bound still wins over a distant expiry.
+	st.lifetimeReason = streamTerminalAuth
+	st.deadline = time.Now().Add(time.Hour)
+	st.writeBound = shutdownTerminalWriteBound
+	if bound := st.dataWriteBound(); bound != shutdownTerminalWriteBound {
+		t.Fatalf("data write bound = %v, want the shorter shutdown bound %v", bound, shutdownTerminalWriteBound)
+	}
 }
 
 // TestStreamMetricsJoinSubPoll pins the ?join=metrics plumbing: the initial
