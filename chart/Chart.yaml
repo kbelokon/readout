@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.12.0
-appVersion: 0.12.0
+version: 0.13.0
+appVersion: 0.13.0
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,11 +29,15 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.12.0
+      image: ghcr.io/kbelokon/readout:0.13.0
   artifacthub.io/changes: |
+    - kind: security
+      description: "Open the app port and the metrics port to separate NetworkPolicy peer lists (networkPolicy.ingress.from and the new networkPolicy.ingress.metricsFrom) so a metrics scraper never reaches the dashboard and the ingress controller never reaches metrics. Peers listed in `from` no longer receive the metrics port; move scrapers to `metricsFrom`."
+    - kind: fixed
+      description: "Default config.listenAddress to 0.0.0.0 so a default (auth.mode none) install becomes Ready in a pod instead of binding loopback."
+    - kind: fixed
+      description: "Keep the helm-test pod out of every chart selector and admit it through the NetworkPolicy so `helm test` works with networkPolicy.enabled."
     - kind: added
-      description: "Add opt-in Live updates backed by a pod-local WatchHub that shares Kubernetes LIST/watch state across matching viewers."
+      description: "Fail the render when metrics.port equals config.port or when metricsFrom is set without metrics.enabled; warn in NOTES when no peer can reach the metrics port; document the full egress destination list."
     - kind: changed
-      description: "Replace interval polling with a Live toggle and one-shot Refresh, with stable navigation and list updates that preserve interaction state."
-    - kind: added
-      description: "Add configurable per-pod Live capacity limits, metrics, reconnect handling, and graceful draining."
+      description: "Update the default readout image to v0.13.0 (released in lockstep with the chart; no application changes)."
