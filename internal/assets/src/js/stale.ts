@@ -122,7 +122,10 @@ function paintStaleState(): void {
     }
     paintBannerVariant(banner, liveUnavailable);
     banner.hidden = !(listStale || liveUnavailable);
-    if (banner.hidden) stopStaleCountdown();
+    // The terminal variant is visible but has no retry to count down to, so its
+    // ticker must never be installed -- otherwise a 1s interval would repaint
+    // the hidden recoverable copy forever.
+    if (banner.hidden || liveUnavailable) stopStaleCountdown();
     else startStaleCountdown();
 }
 
@@ -188,6 +191,16 @@ export function markLiveStale(): void {
         liveGraceTimerId = window.setTimeout(revealLiveStale, LIVE_STALE_GRACE_MS);
     }
     paintStaleState();
+}
+
+// pauseLiveStaleGrace disarms an UNELAPSED grace when the transport parks
+// deliberately (a user request takes over, the tab hides, the browser goes
+// offline). Nothing failed and nothing is retrying, so the delayed warning must
+// not land on top of rows the user's own request just refreshed. The next real
+// disconnect re-arms it through markLiveStale; an already-revealed warning is
+// left alone, because that one was earned by a failed attempt.
+export function pauseLiveStaleGrace(): void {
+    clearLiveGrace();
 }
 
 // revealLiveStale ends the grace early -- the first FAILED reconnect proves the

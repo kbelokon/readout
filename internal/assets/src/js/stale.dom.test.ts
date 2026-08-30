@@ -11,6 +11,7 @@ import {
     markLiveStale,
     markLiveUnavailable,
     noteStaleRetryAt,
+    pauseLiveStaleGrace,
     revealLiveStale,
     updateStaleCountdown,
 } from './stale.js';
@@ -259,6 +260,53 @@ describe('Live stale grace', () => {
         expect(vi.getTimerCount()).toBe(1);
     });
 
+    // The transport parks deliberately (a user request takes over, the tab
+    // hides, the browser goes offline) INSIDE the grace. Nothing failed and no
+    // retry is armed, so the delayed warning must not land on rows the user's
+    // own request just refreshed.
+    test('parking the transport inside the grace retires the pending warning', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS - 1);
+        pauseLiveStaleGrace();
+        noteStaleRetryAt(0);
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS * 2);
+
+        expect(content()).not.toHaveClass('ro-stale');
+        expect(banner()).not.toBeVisible();
+        expect(vi.getTimerCount()).toBe(0);
+        // The projection is still last-known: only the VISUAL half is retired.
+        expect(content().dataset.roStale).toBe('true');
+    });
+
+    // Pausing is not clearing: the next real disconnect must be able to arm a
+    // fresh grace, or a parked-then-dropped stream would warn never.
+    test('a disconnect after a pause arms a fresh grace', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+        pauseLiveStaleGrace();
+        markLiveStale();
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS - 1);
+        expect(banner()).not.toBeVisible();
+
+        vi.advanceTimersByTime(1);
+        expect(banner()).toBeVisible();
+    });
+
+    // A warning already revealed was EARNED by a failed attempt; parking must
+    // not erase it.
+    test('a pause cannot retire an already revealed warning', () => {
+        vi.useFakeTimers();
+
+        revealLiveStale();
+        pauseLiveStaleGrace();
+
+        expect(content()).toHaveClass('ro-stale');
+        expect(banner()).toBeVisible();
+    });
+
     test('the countdown follows the armed reconnect schedule', () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-08-25T00:00:00Z'));
@@ -285,6 +333,9 @@ describe('Live unavailable', () => {
         expect(part('.ro-stale-unavailable').hidden).toBe(false);
         expect(part('.ro-stale-retry').hidden).toBe(true);
         expect(part('.ro-stale-reload').hidden).toBe(false);
+        // Terminal: no retry to count down to, so no ticker is installed to
+        // repaint the hidden recoverable copy forever.
+        expect(vi.getTimerCount()).toBe(0);
     });
 
     test('a pending grace cannot repaint the terminal banner back to recoverable', () => {

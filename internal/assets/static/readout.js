@@ -1154,7 +1154,7 @@
     }
     paintBannerVariant(banner, liveUnavailable);
     banner.hidden = !(listStale || liveUnavailable);
-    if (banner.hidden) stopStaleCountdown();
+    if (banner.hidden || liveUnavailable) stopStaleCountdown();
     else startStaleCountdown();
   }
   function noteStaleRetryAt(atMs) {
@@ -1198,6 +1198,9 @@
       liveGraceTimerId = window.setTimeout(revealLiveStale, LIVE_STALE_GRACE_MS);
     }
     paintStaleState();
+  }
+  function pauseLiveStaleGrace() {
+    clearLiveGrace();
   }
   function revealLiveStale() {
     clearLiveGrace();
@@ -1369,6 +1372,7 @@
     resumeIntent = { base };
     setStatus(status);
     noteStaleRetryAt(0);
+    pauseLiveStaleGrace();
   }
   function noteDisconnected() {
     clearListValidator();

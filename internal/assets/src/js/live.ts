@@ -39,6 +39,7 @@ import {
     markLiveStale,
     markLiveUnavailable,
     noteStaleRetryAt,
+    pauseLiveStaleGrace,
     revealLiveStale,
 } from './stale.js';
 
@@ -281,6 +282,9 @@ function enterDeferred(status: 'hidden' | 'suspended' | 'offline', base: string)
     resumeIntent = { base };
     setStatus(status);
     noteStaleRetryAt(0);
+    // Retiring the retry is not enough: a grace armed by the drop that got us
+    // here would still fire and raise the warning this state does not own.
+    pauseLiveStaleGrace();
 }
 
 // noteDisconnected publishes the loss of a stream: the projection is last-known

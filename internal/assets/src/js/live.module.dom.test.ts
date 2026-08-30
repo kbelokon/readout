@@ -9,6 +9,7 @@ const dependencies = vi.hoisted(() => ({
     markLiveStale: vi.fn(),
     markLiveUnavailable: vi.fn(),
     noteStaleRetryAt: vi.fn(),
+    pauseLiveStaleGrace: vi.fn(),
     revealLiveStale: vi.fn(),
     isLiveEnabled: vi.fn(() => true),
     resetListRequestTracker: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('./stale.js', () => ({
     markLiveStale: dependencies.markLiveStale,
     markLiveUnavailable: dependencies.markLiveUnavailable,
     noteStaleRetryAt: dependencies.noteStaleRetryAt,
+    pauseLiveStaleGrace: dependencies.pauseLiveStaleGrace,
     revealLiveStale: dependencies.revealLiveStale,
 }));
 

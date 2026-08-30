@@ -14,6 +14,7 @@ const dependencies = vi.hoisted(() => {
         markLiveStale: vi.fn(),
         markLiveUnavailable: vi.fn(),
         noteStaleRetryAt: vi.fn(),
+        pauseLiveStaleGrace: vi.fn(),
         revealLiveStale: vi.fn(),
         isLiveEnabled: vi.fn(() => true),
         resetListRequestTracker: vi.fn(() => {
@@ -43,6 +44,7 @@ vi.mock('./stale.js', () => ({
     markLiveStale: dependencies.markLiveStale,
     markLiveUnavailable: dependencies.markLiveUnavailable,
     noteStaleRetryAt: dependencies.noteStaleRetryAt,
+    pauseLiveStaleGrace: dependencies.pauseLiveStaleGrace,
     revealLiveStale: dependencies.revealLiveStale,
 }));
 
@@ -1828,6 +1830,28 @@ describe('one refresh request tracker subscription', () => {
 
         settleListRequest();
         expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    // A drop parks a three second grace before the warning shows. When the
+    // user's own request takes the transport over inside that window, the
+    // deferred state owns no warning -- so the pending grace must be retired
+    // with the retry, or it would dim rows the request just refreshed.
+    test('deferring for a user request retires the pending stale grace', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(1);
+        renderLivePage();
+        const fetchMock = installFetch(async () =>
+            fetchMock.mock.calls.length === 1 ? Promise.reject(new Error('down')) : pendingFetch(),
+        );
+        liveApply();
+        await flush();
+        expect(window.roLive.stats().state).toBe('reconnecting');
+        expect(dependencies.markLiveStale).toHaveBeenCalled();
+
+        startListRequest();
+
+        expect(window.roLive.stats().state).toBe('suspended');
+        expect(dependencies.pauseLiveStaleGrace).toHaveBeenCalled();
     });
 
     test('a recovered reconnect after a swap retires the old schedule', async () => {
