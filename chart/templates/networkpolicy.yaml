@@ -32,7 +32,7 @@ spec:
         - protocol: TCP
           port: {{ $.Values.config.port | default 8080 }}
     {{- end }}
-    {{- if .Values.metrics.enabled }}
+    {{- if $.Values.metrics.enabled }}
     {{- with $np.ingress.metricsFrom }}
     # Metrics port (metrics.port).
     - from:
@@ -41,6 +41,20 @@ spec:
         - protocol: TCP
           port: {{ $.Values.metrics.port }}
     {{- end }}
+    {{- end }}
+    {{- if (.Values.testFramework).enabled }}
+    # The `helm test` pod (tests/test-connection.yaml) curls /readyz through the
+    # Service. It carries instance + component but no app.kubernetes.io/name, so
+    # it is outside this policy's podSelector; this rule admits it to the app
+    # port from this namespace only (no namespaceSelector).
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: test-connection
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.port | default 8080 }}
     {{- end }}
   egress:
     {{- if $np.egress.dns }}

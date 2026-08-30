@@ -29,8 +29,14 @@ for values in "$GOLDEN_DIR"/*.values.yaml; do
   case="$(basename "$values" .values.yaml)"
   expected="$GOLDEN_DIR/$case.yaml"
   if [ "${UPDATE:-0}" = "1" ]; then
-    render "$values" > "$expected"
-    echo "updated: $case"
+    if render "$values" > "$expected.tmp"; then
+      mv "$expected.tmp" "$expected"
+      echo "updated: $case"
+    else
+      rm -f "$expected.tmp"
+      echo "FAIL (render failed, expected file left untouched): $case"
+      fail=1
+    fi
     continue
   fi
   if [ ! -f "$expected" ]; then

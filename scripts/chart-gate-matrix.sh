@@ -111,6 +111,22 @@ expect_pass "networkPolicy.ingress.metricsFrom with metrics.enabled renders" \
   --set networkPolicy.enabled=true --set metrics.enabled=true \
   --set 'networkPolicy.ingress.metricsFrom[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring'
 
+# Rendered value: the helm-test pod must carry the component label the
+# NetworkPolicy's helm-test rule selects...
+expect_grep "helm-test pod carries app.kubernetes.io/component: test-connection" \
+  '^\s*app\.kubernetes\.io/component: test-connection$' \
+  --set testFramework.enabled=true -s templates/tests/test-connection.yaml
+# ...and must NOT carry app.kubernetes.io/name: every chart selector matches
+# name AND instance, so omitting name keeps the test pod out of the Deployment,
+# Service, PDB and NetworkPolicy podSelectors (it is a client, not a replica).
+if helm template readout "$CHART_DIR" --set testFramework.enabled=true -s templates/tests/test-connection.yaml 2>/dev/null \
+    | grep -q -E '^\s*app\.kubernetes\.io/name:'; then
+  echo "FAIL (helm-test pod must not carry app.kubernetes.io/name): test pod outside selectors"
+  fail=1
+else
+  echo "ok (absent): helm-test pod carries no app.kubernetes.io/name"
+fi
+
 # Rendered value: the app binds LOOPBACK when listenAddress is empty under
 # auth.mode none (its safe default for a bare binary). Inside a pod that means
 # kubelet probes and the Service cannot reach it, so the chart must render an

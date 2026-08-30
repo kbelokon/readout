@@ -58,6 +58,28 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
+Labels for the helm-test pod. Deliberately NOT readout.labels: every selector
+in this chart (Deployment, Services, PDB, NetworkPolicy podSelector) matches
+app.kubernetes.io/name AND app.kubernetes.io/instance, so omitting `name`
+keeps the test pod out of all of them -- it is a client of readout, not a
+readout replica. instance + component is the pair the NetworkPolicy's
+helm-test ingress rule selects; component is emitted last and commonLabels
+cannot override it (a same-key entry is dropped), so that pair is stable.
+*/}}
+{{- define "readout.testLabels" -}}
+helm.sh/chart: {{ include "readout.chart" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- with (omit (.Values.commonLabels | default dict) "app.kubernetes.io/component") }}
+{{ toYaml . }}
+{{- end }}
+app.kubernetes.io/component: test-connection
+{{- end -}}
+
+{{/*
 Common annotations applied to every resource. Emits only the merged key/value
 lines (no annotations: header) so call sites can guard an empty result and keep
 the default render free of stray annotation blocks. Call as:
