@@ -238,6 +238,27 @@ Prometheus metrics exposed at `/metrics`:
 
 When `metricsPort` is set, `/metrics` moves to its own listener and is disabled on the main port; otherwise it is served on the main port.
 
+### Live capacity profile
+
+The `live` limits are set against a measured in-repo capacity run, not a guess. `RO_LOAD=1 go test ./internal/web -run TestWatchHubLoad` drives real SSE streams against the fake apiserver fixture at three anchors and reports what one process actually spends; the same run asserts that each limit refuses a stream before the resource it bounds is over its configured value, that replace/delete churn does not grow the accounted total, and that every `_active` gauge returns to zero after disconnect and the 30-second source retention.
+
+Measured on a darwin/arm64 8-CPU host. Read the ratios as portable and the absolute CPU and latency figures as machine-specific — this is a laptop, not the 500m CPU / 512 MiB container the chart ships.
+
+| Anchor                        | Subscribers | Upstream LIST + watch | Snapshot (accounted) | Heap delta | Heap per subscriber | CPU    | event→flush p50 / p99 |
+| ----------------------------- | ----------- | --------------------- | -------------------- | ---------- | ------------------- | ------ | --------------------- |
+| small scope (a few rows)      | 1           | 1 + 1                 | 1.5 KiB              | 0.1 MiB    | 102 KiB             | 0.03 s | 292 ms / 496 ms       |
+| 600-row namespace             | 100         | 1 + 1                 | 172 KiB              | 13.5 MiB   | 138 KiB             | 8.2 s  | 271 ms / 2.2 s        |
+| same scope at the cache bound | 512         | 1 + 1                 | 172 KiB              | 62.7 MiB   | 125 KiB             | 40 s   | 1.1 s / 9.0 s         |
+
+What the numbers say:
+
+- **Sharing holds at every anchor.** One LIST and one watch upstream whether one browser or 512 are attached to the scope; only the per-connection render pipeline multiplies. Goroutine and descriptor counts scale with subscribers (520 goroutines / 218 descriptors at 100, 2585 / 1046 at 512) but count *both* ends — the run's own SSE readers live in the same process as the server.
+- **Retained state costs just under 9x its accounted estimate.** Accounting measures encoded bytes; the heap holds the decoded maps and strings those bytes become. Admission therefore charges a rounded-up 10x, which makes `live.maxCacheAccountedBytes` read as roughly "bytes of process memory this pod will hold in shared Live state" rather than as an encoding estimate.
+- **Per-subscriber state is ~100–140 KiB** and is bounded by `live.maxConnections`, independently of the cache bound: 512 connections on a 600-row scope is ~65 MiB of render state.
+- **event→flush p50 tracks the 300 ms push floor**, which is the coalescing policy doing its job rather than latency. The p99 is fan-out cost: 512 renders of the same 600-row scope across 8 cores.
+
+The three defaults were kept as shipped after the run: `maxConnections: 512` (~65 MiB of render state), `maxSources: 128` (the cache bound binds first at any realistic scope size), and `maxCacheAccountedBytes: 128Mi` (~128 MiB of real retained state, leaving headroom under a 512 MiB container).
+
 ## Install & build
 
 [Quick start](#quick-start) covers running readout as a binary, a Docker image, and a Helm release. This section covers the rest.

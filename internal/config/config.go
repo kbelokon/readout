@@ -437,9 +437,11 @@ func Parse(args []string) (Config, error) {
 
 // Live limit defaults. They describe ONE pod, not a deployment: the connection
 // and source ceilings scale with replicas, and the cache bound is what a single
-// process is willing to retain across every shared watch it owns. 128Mi leaves
-// room under a 512Mi container once the accounting headroom multiplier is
-// applied to the estimate. They are exported because internal/web needs the
+// process is willing to retain across every shared watch it owns. The bound is
+// compared against the accounted estimate multiplied by an internal headroom
+// factor, so 128Mi means about 128Mi of real retained state, which leaves room
+// under a 512Mi container alongside the per-connection render state that
+// maxConnections bounds separately. They are exported because internal/web needs the
 // same numbers as the zero-value fallback for a Server built in a test (which
 // skips resolve() and therefore its validation), and one source beats two that
 // can drift.

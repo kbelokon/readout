@@ -61,12 +61,15 @@ const hubAttachAttempts = 8
 const streamMaxImmediateEOFs = 5
 
 // cacheAccountingHeadroom multiplies a source's accounted bytes before they
-// are compared against live.maxCacheAccountedBytes. Accounting measures
-// encoded Table metadata and row/object sizes; the Go heap additionally holds
-// the decoded maps, slices and per-row indexes those bytes turn into, so the
-// bound is applied to a deliberately pessimistic multiple of the measured
-// size rather than to the measurement itself.
-const cacheAccountingHeadroom = 3
+// are compared against live.maxCacheAccountedBytes. Accounting measures the
+// ENCODED size of the Table metadata and rows; the Go heap holds the decoded
+// maps, slices and strings those bytes turn into, and a map[string]any costs
+// several times what its JSON does. Measuring one retained 600-row scope in
+// isolation (heap with the source retained minus heap after it is dropped)
+// puts the real ratio just under 9x, so the configured bound is compared
+// against a rounded-up 10x of the estimate and therefore reads as roughly
+// "bytes of process memory this pod will hold in shared Live state".
+const cacheAccountingHeadroom = 10
 
 // Results reported to the metrics sink for one source lookup.
 const (
