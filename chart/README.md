@@ -52,11 +52,11 @@ Fresh installs of 0.7 are unaffected.
 ## Upgrading from ≤ 0.12 with a NetworkPolicy (behaviour change)
 
 `networkPolicy.ingress.from` now opens **only the app port** (`config.port`).
-Earlier charts also opened the metrics port to every `from` peer, which handed
-the (possibly unauthenticated) dashboard to your scraper and the metrics port
-to your ingress controller. Move scraper peers to the new
-`networkPolicy.ingress.metricsFrom`; until you do, Prometheus loses the scrape
-on an enforcing CNI. See [NetworkPolicy](#networkpolicy).
+Earlier charts also opened the metrics port (when `metrics.enabled`) to every
+`from` peer, which handed the (possibly unauthenticated) dashboard to your
+scraper and the metrics port to your ingress controller. Move scraper peers to
+the new `networkPolicy.ingress.metricsFrom`; until you do, Prometheus loses the
+scrape on an enforcing CNI. See [NetworkPolicy](#networkpolicy).
 
 Unrelated to the policy but in the same release: `config.listenAddress` now
 defaults to `"0.0.0.0"`. Installs on `config.auth.mode: none` that never became
@@ -221,9 +221,9 @@ be silently broken):
   vanishes); a `serviceMonitor` enabled without `metrics.enabled` does not render
   a useful object. Drive the metrics port through `metrics.port` only.
 - **NetworkPolicy guard** — `networkPolicy.ingress.metricsFrom` set while
-  `metrics.enabled` is false is an error: there is no metrics port to open, and
-  a silently missing rule would leave the operator believing the scraper is
-  admitted.
+  `networkPolicy.enabled` is true and `metrics.enabled` is false is an error:
+  there is no metrics port to open, and a silently missing rule would leave the
+  operator believing the scraper is admitted.
 - **Live capacity is not a render gate** — the `config.live` bounds are enforced
   at runtime by each pod, not by the chart; watch the per-pod `readout_live_*` /
   `readout_watchhub_*` families on the metrics listener for utilization and
@@ -282,7 +282,8 @@ only the ingress/egress you explicitly allow.
   proxy; `networkPolicy.ingress.metricsFrom` reaches the metrics port
   `metrics.port` **only** — your Prometheus / vmagent (requires
   `metrics.enabled`; the chart fails the render otherwise). **Both left empty,
-  ingress is default-deny** — nothing reaches readout.
+  ingress is default-deny** — nothing reaches readout (apart from the
+  `helm test` rule below).
 - **`helm test` under the policy** — with `testFramework.enabled` the policy adds
   one more rule admitting the test pod (by `app.kubernetes.io/instance` +
   `app.kubernetes.io/component: test-connection`, this namespace only) to the

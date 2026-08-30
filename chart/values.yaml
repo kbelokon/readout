@@ -291,8 +291,8 @@ networkPolicy:
       #     matchLabels:
       #       kubernetes.io/metadata.name: ingress-nginx
     # Peers allowed to reach the metrics port (metrics.port) ONLY: your
-    # Prometheus / vmagent. Requires metrics.enabled: with the policy enabled, peers
-    # here without a metrics port fail the render.
+    # Prometheus / vmagent. Requires metrics.enabled: with the policy enabled,
+    # peers here without a metrics port fail the render.
     metricsFrom: []
       # - namespaceSelector:
       #     matchLabels:
