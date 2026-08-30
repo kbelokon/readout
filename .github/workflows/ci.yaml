@@ -193,18 +193,19 @@ jobs:
             --wait --timeout 120s
           helm test readout --timeout 60s
           kubectl get networkpolicy readout -o yaml
-          kubectl port-forward svc/readout-metrics 19090:9090 >/dev/null 2>&1 &
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            if curl -fsS http://127.0.0.1:19090/metrics | grep -q '^readout_up'; then
-              echo "metrics listener answers"; kill %1; exit 0
+          kubectl port-forward svc/readout-metrics 19090:9090 >port-forward.log 2>&1 &
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if body="$(curl -fsS http://127.0.0.1:19090/metrics)" && grep -q '^readout_up' <<<"$body"; then
+              echo "metrics listener answers"; kill %1 || true; exit 0
             fi
             sleep 2
           done
-          echo "metrics listener did not answer on the metrics Service"; kill %1; exit 1
+          echo "metrics listener did not answer on the metrics Service"; cat port-forward.log || true; kill %1 || true; exit 1
       - name: Dump cluster state on failure
         if: failure()
         run: |
           kubectl get all,networkpolicy -o wide || true
           kubectl describe pod -l app.kubernetes.io/instance=readout || true
           kubectl logs -l app.kubernetes.io/name=readout --tail=200 || true
+          kubectl logs -l app.kubernetes.io/name=readout --tail=200 --previous || true
           kubectl logs readout-test-connection || true
