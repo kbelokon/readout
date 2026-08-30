@@ -299,12 +299,20 @@ test('the livedot pulses brand while Live is on and is static ghost when off', a
   await expect(dot).toHaveCSS('animation-name', 'none');
   await expect(dot).toHaveCSS('background-color', ghost);
 
-  // Live on: brand colour + the pulse, both hanging off the ONE state owner
-  // (aria-pressed, rendered at SSR and flipped by the toggle handler).
+  // Live on: aria-pressed answers the click immediately, but the dot is a
+  // live-HEALTH signal and waits for the transport to commit a full snapshot --
+  // green hangs off data-ro-live-state="open", which only readout.js writes.
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(toggle).toHaveAttribute('data-ro-live-state', 'open');
   await expect(dot).toHaveCSS('animation-name', 'ro-pulse');
   await expect(dot).toHaveCSS('background-color', brand);
+
+  // The preference alone is never enough: with the transport reading stripped,
+  // the very same pressed button is back to the neutral ghost dot.
+  await toggle.evaluate((el) => el.removeAttribute('data-ro-live-state'));
+  await expect(dot).toHaveCSS('animation-name', 'none');
+  await expect(dot).toHaveCSS('background-color', ghost);
 
   // Back off: the dot drops the pulse AND the green.
   await toggle.click();

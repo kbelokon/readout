@@ -249,6 +249,12 @@ type watchHub struct {
 	// perSource is each live source's contribution to accounted, so a reclaim
 	// can return one source's bytes without waiting for its actor to stop.
 	perSource map[*hubSource]int64
+	// refused remembers, per key, that a scope's own LIST measured over the
+	// retained-state bound. The bound is only knowable AFTER a full LIST, and a
+	// refused source is dropped from the map, so without this memory every
+	// browser retry of the 429 would pay another full Table LIST of the very
+	// scope that just exhausted the pod's cache budget.
+	refused map[watchHubKey]hubRefusal
 	// connections counts open Live SSE handlers on this pod. It is the first
 	// admission gate: a rejected connection never reaches a source, so an
 	// over-capacity pod does no upstream work at all.
@@ -305,6 +311,58 @@ func newWatchHub(ctx context.Context, limits liveLimits, tuning *streamTuning, c
 		sources:   map[watchHubKey]*hubSource{},
 		idle:      map[*hubSource]uint64{},
 		perSource: map[*hubSource]int64{},
+		refused:   map[watchHubKey]hubRefusal{},
+	}
+}
+
+// hubCacheRefusalTTL is how long a key that measured over the retained-state
+// bound is refused WITHOUT re-listing. It is deliberately several times the
+// `Retry-After` a refused browser waits, so the repeated handshakes an
+// unstreamable scope produces cost a map lookup rather than a full LIST of the
+// largest scope the pod knows about.
+const hubCacheRefusalTTL = 60 * time.Second
+
+// hubRefusal is one remembered cache-bound verdict, together with the budget it
+// was measured against: `others` is what the REST of the hub held at the time,
+// deliberately excluding the refused source's own bytes (those come back with
+// its teardown, which is not the pod making room).
+type hubRefusal struct {
+	until  time.Time
+	others int64
+}
+
+// refusedLocked reports whether this key may still be refused without listing
+// it again, dropping the entry when it may not. A verdict is only as good as
+// the budget behind it: once the window is out, once other sources have given
+// bytes back, or once there is anything idle this subscriber could reclaim, the
+// scope has to be measured again rather than blacklisted.
+func (h *watchHub) refusedLocked(key *watchHubKey) bool {
+	refusal, ok := h.refused[*key]
+	if !ok {
+		return false
+	}
+	if h.clock.Now().Before(refusal.until) && h.accounted >= refusal.others && len(h.idle) == 0 {
+		return true
+	}
+	delete(h.refused, *key)
+	return false
+}
+
+// noteCacheRefused records that this source's own LIST crossed the
+// retained-state bound. Expired entries are swept on the way in, so the map
+// stays bounded by the distinct scopes refused within one window.
+func (h *watchHub) noteCacheRefused(src *hubSource) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := h.clock.Now()
+	for existing, refusal := range h.refused {
+		if !now.Before(refusal.until) {
+			delete(h.refused, existing)
+		}
+	}
+	h.refused[src.spec.key] = hubRefusal{
+		until:  now.Add(hubCacheRefusalTTL),
+		others: h.accounted - h.perSource[src],
 	}
 }
 
@@ -342,26 +400,48 @@ func (h *watchHub) Subscribe(ctx context.Context, spec *hubSourceSpec, demand hu
 // into the map BEFORE any upstream I/O starts, so every concurrent attach for
 // the same key joins one initialization instead of racing to start its own.
 func (h *watchHub) source(spec *hubSourceSpec) (*hubSource, error) {
+	src, reclaimed, err := h.sourceLocked(spec)
+	if reclaimed {
+		// A reclaim returned another source's bytes under the lock; publish the
+		// new total outside it, exactly as noteAccounted does.
+		h.metrics.observeHubCache(h.accountedBytes())
+	}
+	return src, err
+}
+
+// sourceLocked is source's critical section. It also reports whether it
+// reclaimed, because the caller owes the cache gauge an update in that case.
+func (h *watchHub) sourceLocked(spec *hubSourceSpec) (*hubSource, bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if src, ok := h.sources[spec.key]; ok {
 		h.metrics.observeHubSource(hubSourceReused)
-		return src, nil
+		return src, false, nil
 	}
+	// A scope that already measured over the cache bound is refused here,
+	// before any upstream I/O, for the rest of its refusal window: re-listing it
+	// on every retry would put the pod's heaviest LIST on a ten-second loop at
+	// exactly the moment its retained state is at capacity.
+	if h.refusedLocked(&spec.key) {
+		h.metrics.observeHubSource(hubSourceFailed)
+		return nil, false, errHubCacheLimit
+	}
+	reclaimed := false
 	if len(h.sources) >= h.limits.maxSources {
 		// Retention is an optimization for the next visitor, not a reservation.
 		// Give the slot to the subscriber in front of us rather than answering
 		// 429 while a source nobody is watching sits out its window.
 		if !h.reclaimIdleLocked(1) {
-			return nil, errHubSourceLimit
+			return nil, false, errHubSourceLimit
 		}
+		reclaimed = true
 	}
 	src := newHubSource(h, spec)
 	h.sources[spec.key] = src
 	h.metrics.observeHubSource(hubSourceCreated)
 	h.observeCountsLocked()
 	go src.run()
-	return src, nil
+	return src, reclaimed, nil
 }
 
 // noteIdle tracks whether a source currently has anybody attached. Sources call
@@ -417,8 +497,13 @@ func (h *watchHub) reclaimIdleLocked(n int) bool {
 // not worth a 429.
 func (h *watchHub) reclaimIdle() bool {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.reclaimIdleLocked(len(h.idle))
+	released := h.reclaimIdleLocked(len(h.idle))
+	sum := h.accounted
+	h.mu.Unlock()
+	if released {
+		h.metrics.observeHubCache(sum)
+	}
+	return released
 }
 
 // remove drops a source from the map, but only if it is still the source
@@ -671,6 +756,7 @@ func (s *hubSource) listed(table *kube.Table, err error) {
 	// their retention window are, because holding bytes for a viewer who left
 	// is worth less than serving the one who is here.
 	if s.hub.overCacheLimit() && (!s.hub.reclaimIdle() || s.hub.overCacheLimit()) {
+		s.hub.noteCacheRefused(s)
 		s.failTerminal(hubTerminalWatchFailed, errHubCacheLimit)
 		return
 	}

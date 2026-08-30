@@ -1682,6 +1682,85 @@ func TestWatchHubCacheLimitReclaimsAnIdleSource(t *testing.T) {
 	replacement.Close()
 }
 
+// A scope whose own retained state does not fit is refused for a window WITHOUT
+// re-listing it. The bound is only knowable after a full LIST and the refused
+// source is dropped from the map, so without the memory every retry of the
+// `Retry-After: 10` a refused browser honours would pay another full Table LIST
+// of the pod's single largest scope -- an unbounded LIST loop, running at the
+// exact moment the pod's retained state is at its ceiling.
+func TestWatchHubCacheLimitRefusalDoesNotRelist(t *testing.T) {
+	limits := testHubLimits()
+	// Half of what this one scope charges: nothing can make it fit.
+	limits.maxCacheAccountedBytes = hubTableBytes(hubTestTable("10", "alpha")) * cacheAccountingHeadroom / 2
+	hub, clock, _ := newTestWatchHub(t, limits)
+	upstream := newHubTestUpstream(hubTestTable("10", "alpha"))
+	upstream.openGate()
+	key := hubTestKey("oversized")
+
+	refuse := func(attempt int) {
+		t.Helper()
+		if _, _, err := hub.Subscribe(context.Background(), upstream.spec(key), hubDemand{}); !errors.Is(err, errHubCacheLimit) {
+			t.Fatalf("Subscribe attempt %d = %v, want errHubCacheLimit", attempt, err)
+		}
+		// The failed source leaves the hub asynchronously; waiting for that is
+		// what makes the NEXT attempt go through source() rather than being
+		// answered by the still-registered failed source.
+		waitFor(t, "the refused source to leave the hub", func() bool { return hub.sourceCount() == 0 })
+	}
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		refuse(attempt)
+	}
+	if lists, _, _ := upstream.counts(); lists != 1 {
+		t.Fatalf("LISTs across three refused attempts = %d, want exactly one", lists)
+	}
+
+	// The memory expires on its own: a scope that shrank, or a pod that has
+	// since lost another source, is measured again rather than blacklisted.
+	clock.Advance(hubCacheRefusalTTL)
+	refuse(4)
+	if lists, _, _ := upstream.counts(); lists != 2 {
+		t.Fatalf("LISTs after the refusal window expired = %d, want a second measurement", lists)
+	}
+}
+
+// A reclaim that actually returns bytes retires every refusal: those verdicts
+// were measured against a budget that no longer holds, so the next subscriber
+// must be re-measured immediately rather than waiting out the window.
+func TestWatchHubCacheRefusalClearsOnReclaim(t *testing.T) {
+	limits := testHubLimits()
+	limits.maxCacheAccountedBytes = hubTableBytes(hubTestTable("10", "alpha")) * cacheAccountingHeadroom * 3 / 2
+	hub, _, _ := newTestWatchHub(t, limits)
+	first := newHubTestUpstream(hubTestTable("10", "alpha"))
+	first.openGate()
+	firstKey := hubTestKey("resident")
+	sub, _, err := hub.Subscribe(context.Background(), first.spec(firstKey), hubDemand{})
+	if err != nil {
+		t.Fatalf("first Subscribe failed: %v", err)
+	}
+
+	second := newHubTestUpstream(hubTestTable("20", "beta"))
+	second.openGate()
+	secondKey := hubTestKey("refused")
+	if _, _, err := hub.Subscribe(context.Background(), second.spec(secondKey), hubDemand{}); !errors.Is(err, errHubCacheLimit) {
+		t.Fatalf("Subscribe past the cache bound = %v, want errHubCacheLimit", err)
+	}
+	waitFor(t, "the refused source to leave the hub", func() bool { return hub.sourceCount() == 1 })
+
+	// The resident source goes idle, so the second scope's bytes now fit.
+	sub.Close()
+	waitFor(t, "the resident source to go idle", func() bool {
+		stats, ok := hub.sourceStats(firstKey)
+		return ok && stats.subscribers == 0
+	})
+
+	admitted, _, err := hub.Subscribe(context.Background(), second.spec(secondKey), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe after the idle source was reclaimed = %v, want success", err)
+	}
+	admitted.Close()
+}
+
 // The accounted-bytes estimate is what live.maxCacheAccountedBytes is measured
 // in, so it has to track a real encode -- not just agree with itself. Every
 // other accounting assertion computes its expectation with the function under

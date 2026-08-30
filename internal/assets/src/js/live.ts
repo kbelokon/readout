@@ -143,7 +143,11 @@ function currentStats(): LiveDebugStats {
     };
 }
 
-function liveSupported(): boolean {
+// liveCanStreamHere is the ONE answer to "would turning Live on do anything on
+// this page?". The stored preference is global; whether the stream applies is a
+// property of the page, and callers that confuse the two silently do nothing
+// (a multi-cluster or watchless list keeps the cookie but has no `_stream`).
+export function liveCanStreamHere(): boolean {
     const content = document.getElementById('resource-list-content') as HTMLElement | null;
     if (content?.dataset.liveUrl !== 'location') return false;
     // The server renders the toggle only where `_stream` answers; a page that
@@ -153,6 +157,59 @@ function liveSupported(): boolean {
 
 function liveStreamBase(): string {
     return liveStreamBaseForURL(new URL(window.location.href));
+}
+
+// --- the toggle's transport paint -------------------------------------------
+//
+// The toggle carries TWO independent readings and they must not be conflated.
+// `aria-pressed` is the stored PREFERENCE (the server renders it at SSR from
+// the cookie, refresh.ts re-derives it on every click) -- it answers "did the
+// user ask for Live?". `data-ro-live-state` is what the TRANSPORT actually
+// holds, and it is the only thing the green pulsing dot may hang off: green is
+// a live-health signal, so it must be impossible before a committed full
+// snapshot. A stream that is retrying or has stopped paints `problem`; every
+// other state (connecting, and the deliberate hidden/suspended pauses) stays
+// the neutral ghost dot, which is also what an absent attribute renders as --
+// so the SSR markup, which carries no transport reading at all, is never green.
+type LiveToggleState = 'open' | 'problem' | 'connecting';
+
+function liveToggleState(status: LiveStatus): LiveToggleState {
+    switch (status) {
+        case 'open':
+            return 'open';
+        case 'reconnecting':
+        case 'offline':
+        case 'unavailable':
+            return 'problem';
+        default:
+            return 'connecting';
+    }
+}
+
+// paintLiveToggleState repaints the current transport reading onto whatever
+// toggle is in the DOM now. Transitions paint themselves; this is for the other
+// direction -- a boosted body swap installs a fresh, SSR-painted button while
+// the transport state machine carries on untouched, so refresh.ts repaints it
+// alongside aria-pressed rather than leaving the new button unstyled.
+export function paintLiveToggleState(): void {
+    paintLiveToggle(runtime.status);
+}
+
+function paintLiveToggle(status: LiveStatus): void {
+    const toggle = document.querySelector('[data-ro-action="toggle-live"]');
+    if (!toggle) return;
+    if (status === 'off') {
+        toggle.removeAttribute('data-ro-live-state');
+        return;
+    }
+    toggle.setAttribute('data-ro-live-state', liveToggleState(status));
+}
+
+// setStatus is the ONE writer of runtime.status, so no transition can reach the
+// state machine without also reaching the chrome.
+function setStatus(next: LiveStatus): void {
+    runtime.status = next;
+    paintLiveToggle(next);
 }
 function isActive(connection: LiveConnection): boolean {
     return runtime.connection === connection;
@@ -194,7 +251,7 @@ export function liveSetOff(): void {
     resumeIntent = null;
     reconnectAttempt = 0;
     snapshotAt = 0;
-    runtime.status = 'off';
+    setStatus('off');
     noteStaleRetryAt(0);
     clearLiveStale();
 }
@@ -212,7 +269,7 @@ function enterUnavailable(): void {
     abortActiveConnection();
     clearReconnectTimer();
     resumeIntent = null;
-    runtime.status = 'unavailable';
+    setStatus('unavailable');
     noteStaleRetryAt(0);
     markLiveUnavailable();
 }
@@ -222,7 +279,7 @@ function enterUnavailable(): void {
 // page is not stale-by-failure, so no warning is raised.
 function enterDeferred(status: 'hidden' | 'suspended' | 'offline', base: string): void {
     resumeIntent = { base };
-    runtime.status = status;
+    setStatus(status);
     noteStaleRetryAt(0);
 }
 
@@ -258,7 +315,7 @@ function scheduleReconnect(base: string, delayMs: number | null = null): void {
     }
     reconnectAttempt += 1;
     const delay = delayMs ?? reconnectDelayMs(reconnectAttempt);
-    runtime.status = 'reconnecting';
+    setStatus('reconnecting');
     addCounter('reconnects');
     noteStaleRetryAt(Date.now() + delay);
     reconnectTimerId = window.setTimeout(() => {
@@ -268,7 +325,7 @@ function scheduleReconnect(base: string, delayMs: number | null = null): void {
             return;
         }
         // Re-derive the target: the page may have moved while the retry waited.
-        openConnection(liveSupported() ? liveStreamBase() : '');
+        openConnection(liveCanStreamHere() ? liveStreamBase() : '');
     }, delay);
 }
 
@@ -310,7 +367,7 @@ function openConnection(base: string): void {
         cursor: null,
     });
     runtime.connection = connection;
-    runtime.status = 'connecting';
+    setStatus('connecting');
     addCounter('connections');
     void liveConnect(connection);
 }
@@ -498,7 +555,7 @@ function handleV2Frame(
         addCounter('updated', applied.summary.updated);
         addCounter('deleted', applied.summary.deleted);
         addCounter('projected', applied.summary.projected);
-        runtime.status = 'open';
+        setStatus('open');
         return;
     }
     if (envelope.seq !== cursor.seq + 1) {
@@ -544,7 +601,7 @@ function commitV2Snapshot(
     replaceConnection(connection, cursor);
     addCounter('v2Snapshots');
     addCounter('snapshotBytes', payloadBytes);
-    runtime.status = 'open';
+    setStatus('open');
     // The ladder is NOT reset here: a snapshot alone does not prove the stream
     // is healthy, only that it started. shouldResetBackoff reads this timestamp
     // at the next drop and asks for continuity on top of it.
@@ -624,7 +681,7 @@ export function liveOnListSwap(event: Event): void {
     const detail = Object((event as CustomEvent).detail) as Record<string, unknown>;
     if (detail.roLivePush !== true) {
         if (resumeIntent) {
-            const base = liveSupported() ? liveStreamBase() : '';
+            const base = liveCanStreamHere() ? liveStreamBase() : '';
             resumeIntent = { base };
             runtime.streamPath = base;
         }
@@ -645,7 +702,7 @@ export function liveApply(force?: boolean): void {
         liveSetOff();
         return;
     }
-    const base = liveSupported() ? liveStreamBase() : '';
+    const base = liveCanStreamHere() ? liveStreamBase() : '';
     if (force) {
         // An explicit user action (the toggle, the banner's Retry) starts from
         // a clean slate: full resync budget, ladder rung 1, no warning.

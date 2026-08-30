@@ -55,13 +55,15 @@ func TestShellTopbarChrome(t *testing.T) {
 	p.wantHas(".tb-group .tb-btn.live-toggle .ro-livedot")
 	p.wantText(".tb-group .tb-btn.live-toggle .live-label", "Live")
 	p.wantAttr(`.tb-group [data-ro-action="refresh-now"]`, "aria-label", "Refresh now")
-	// The livedot's live state has exactly ONE owner: aria-pressed on the
-	// toggle (rendered at SSR from the cookie, flipped by the toggle handler).
+	// The livedot needs BOTH the preference (aria-pressed, rendered here from
+	// the cookie) and the transport's own data-ro-live-state, which only
+	// readout.js writes -- so this server-rendered markup can never paint green.
 	// The old static `refresh-live` class painted the dot brand-green even at
 	// Off -- a false live-health signal (the colour law: green only for live
 	// signals; the ctx-dot.none precedent) -- so it must never come back, and
 	// neither may the interval picker it replaced.
 	p.wantAbsent(".refresh-live")
+	p.wantAbsent(`[data-ro-action="toggle-live"][data-ro-live-state]`)
 	p.wantAbsent("#refresh-dropdown")
 	p.wantAbsent(".refresh-option")
 	p.wantAbsent("[data-ro-interval]")

@@ -1896,9 +1896,13 @@
     height: 6px;
   }
 
-  .tb-btn.live-toggle[aria-pressed="true"] .ro-livedot {
+  .tb-btn.live-toggle[aria-pressed="true"][data-ro-live-state="open"] .ro-livedot {
     background: var(--brand);
     animation: 1.8s ease-out infinite ro-pulse;
+  }
+
+  .tb-btn.live-toggle[aria-pressed="true"][data-ro-live-state="problem"] .ro-livedot {
+    background: var(--st-warn);
   }
 
   @keyframes ro-pulse {

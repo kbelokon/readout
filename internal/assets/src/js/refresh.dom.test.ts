@@ -4,14 +4,18 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 const dependencies = vi.hoisted(() => ({
     liveApply: vi.fn(),
+    liveCanStreamHere: vi.fn(() => true),
     liveSetOff: vi.fn(),
+    paintLiveToggleState: vi.fn(),
     readPrefs: vi.fn(() => ({ kinds: [], refresh: '', ns: {} })),
     roPrefsSetRefresh: vi.fn(),
 }));
 
 vi.mock('./live.js', () => ({
     liveApply: dependencies.liveApply,
+    liveCanStreamHere: dependencies.liveCanStreamHere,
     liveSetOff: dependencies.liveSetOff,
+    paintLiveToggleState: dependencies.paintLiveToggleState,
 }));
 vi.mock('./prefs.js', () => ({
     readPrefs: dependencies.readPrefs,
@@ -588,6 +592,44 @@ describe('refresh requests', () => {
         expect(htmx.trigger).toHaveBeenCalledExactlyOnceWith(content, 'htmx:abort');
         expect(dependencies.liveApply).toHaveBeenCalledExactlyOnceWith(true);
         expect(htmx.ajax).not.toHaveBeenCalled();
+    });
+
+    test('retry falls back to the one-shot list GET where Live cannot stream', () => {
+        // The preference is global, the stream is per page. On a multi-cluster,
+        // multi-type or watchless list the server renders no toggle, so handing
+        // the click to Live would abort the connection and stop -- leaving the
+        // banner up with no request in flight and no way to clear it.
+        dependencies.readPrefs.mockReturnValue({ kinds: [], refresh: 'Live', ns: {} });
+        dependencies.liveCanStreamHere.mockReturnValue(false);
+        const content = renderContent('location');
+        const htmx = installHtmx();
+        const retry = refreshBinding('[data-ro-action="retry"]');
+
+        expect(retry.handler(new Event('click', { cancelable: true }), null)).toBe(true);
+
+        expect(dependencies.liveApply).not.toHaveBeenCalled();
+        expect(htmx.trigger).toHaveBeenCalledExactlyOnceWith(content, 'htmx:abort');
+        expect(htmx.ajax).toHaveBeenCalledOnce();
+    });
+
+    test('retry reclaims a stranded tracker entry so Live is not deferred instead', () => {
+        // A settled xhr whose issuing element detached mid-request never settles
+        // through htmx:afterRequest. Left in the tracker it sends liveApply
+        // straight to `suspended`, which swallows the click entirely.
+        dependencies.readPrefs.mockReturnValue({ kinds: [], refresh: 'Live', ns: {} });
+        dependencies.liveCanStreamHere.mockReturnValue(true);
+        const content = renderContent('location');
+        installHtmx();
+        const wedged = xhrAt(1);
+        dispatchHtmx('htmx:beforeRequest', { elt: content, target: content, xhr: wedged });
+        Object.defineProperty(wedged, 'readyState', { value: 4 });
+        expect(listRequestTrackerSnapshot().count).toBe(1);
+
+        const retry = refreshBinding('[data-ro-action="retry"]');
+        expect(retry.handler(new Event('click', { cancelable: true }), null)).toBe(true);
+
+        expect(listRequestTrackerSnapshot().count).toBe(0);
+        expect(dependencies.liveApply).toHaveBeenCalledExactlyOnceWith(true);
     });
 
     test('retry remains a handled, prevented no-op when no refresh surface exists', () => {

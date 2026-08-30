@@ -57,6 +57,7 @@ import {
     liveApply,
     liveOnListSwap,
     liveResetPage,
+    liveSetOff,
 } from './live.js';
 import { RECONNECT_DELAY_LADDER_MS } from './live-policy.js';
 import { LIST_DELTA_APPLIED_EVENT } from './live-protocol.js';
@@ -1968,4 +1969,70 @@ test('becoming visible after Live is turned Off clears the hidden intent', () =>
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(window.roLive.stats().state).toBe('off');
+});
+
+// The toggle's dot is the product's one live-health claim, and the design's
+// state table is explicit that it may go green ONLY after a committed full
+// snapshot. aria-pressed cannot carry that: it is the stored preference, true
+// from the click (and from SSR on every page load) regardless of whether any
+// stream ever answered. The transport publishes its own reading instead.
+describe('the toggle transport paint', () => {
+    function toggleState(): string | null {
+        return document
+            .querySelector('[data-ro-action="toggle-live"]')
+            ?.getAttribute('data-ro-live-state') as string | null;
+    }
+
+    test('green waits for the committed snapshot, not for the click', async () => {
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async () => stream.response);
+
+        liveApply();
+        expect(window.roLive.stats().state).toBe('connecting');
+        expect(toggleState()).toBe('connecting');
+
+        // Headers and an accepted body are not enough either.
+        stream.enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock))));
+        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('open'));
+        expect(toggleState()).toBe('open');
+    });
+
+    test('a retrying stream reads as a problem rather than as live', async () => {
+        vi.useFakeTimers();
+        renderLivePage();
+        installFetch(async () => response(429, null, { 'Retry-After': '7' }));
+
+        liveApply();
+        await flush();
+
+        expect(window.roLive.stats().state).toBe('reconnecting');
+        expect(toggleState()).toBe('problem');
+    });
+
+    test('a terminal 401 reads as a problem', async () => {
+        renderLivePage();
+        installFetch(async () => response(401, null));
+
+        liveApply();
+        await flush();
+
+        expect(window.roLive.stats().state).toBe('unavailable');
+        expect(toggleState()).toBe('problem');
+    });
+
+    test('turning Live off drops the transport reading entirely', async () => {
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async () => stream.response);
+
+        liveApply();
+        stream.enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock))));
+        await vi.waitFor(() => expect(toggleState()).toBe('open'));
+
+        liveSetOff();
+        expect(toggleState()).toBeNull();
+    });
 });

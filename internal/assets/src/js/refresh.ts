@@ -21,7 +21,7 @@
 
 import type { Binding } from './events.js';
 import { configureListValidatorRequest } from './list-etag.js';
-import { liveApply, liveSetOff } from './live.js';
+import { liveApply, liveCanStreamHere, liveSetOff, paintLiveToggleState } from './live.js';
 import { readPrefs, roPrefsSetRefresh } from './prefs.js';
 
 // htmx is a classic-script global loaded before this bundle; reach it through a
@@ -248,13 +248,15 @@ function liveToggleButton(): HTMLElement | null {
     return document.querySelector('[data-ro-action="toggle-live"]');
 }
 
-// syncLiveToggle reflects the stored preference in the toggle's aria-pressed --
-// the single attribute the .ro-livedot styling and the e2e suite both read. The
-// server renders it from the same cookie; this re-derives it after a boosted
-// body swap and after every toggle click. The toggle is absent on pages the
-// server says cannot stream (Navbar.LiveAvailable), which is not an error.
+// syncLiveToggle reflects the stored preference in the toggle's aria-pressed.
+// The server renders it from the same cookie; this re-derives it after a boosted
+// body swap and after every toggle click. The dot's colour is NOT this reading:
+// it also needs the transport state live.ts owns, which a freshly swapped-in
+// button does not carry, so repaint that here too. The toggle is absent on pages
+// the server says cannot stream (Navbar.LiveAvailable), which is not an error.
 export function syncLiveToggle(): void {
     liveToggleButton()?.setAttribute('aria-pressed', isLiveEnabled() ? 'true' : 'false');
+    paintLiveToggleState();
 }
 
 // The Refresh button is disabled exactly while a `_table` request is in flight
@@ -296,7 +298,16 @@ export const refreshBindings: Binding[] = [
             if (content && htmx) {
                 htmx.trigger(content, 'htmx:abort');
             }
-            if (isLiveEnabled()) {
+            // Prune first, for the same reason refresh-now does: a tracker entry
+            // stranded by an element that detached mid-request would otherwise
+            // send liveApply straight to `suspended` and swallow this click.
+            pruneSettledListRequests();
+            // Live is the retry ONLY where Live can actually stream. The
+            // preference is global but the stream is per page, so on a
+            // multi-cluster, multi-type or watchless list -- which still shows
+            // this banner -- the one-shot list GET is the only thing that can
+            // clear it, and routing on the cookie alone made Retry a no-op there.
+            if (isLiveEnabled() && liveCanStreamHere()) {
                 liveApply(true);
             } else {
                 requestListRefresh();

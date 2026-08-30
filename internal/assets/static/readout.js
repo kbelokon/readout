@@ -1282,13 +1282,41 @@
       resyncsInWindow: resyncTimestamps.length
     };
   }
-  function liveSupported() {
+  function liveCanStreamHere() {
     const content = document.getElementById("resource-list-content");
     if (content?.dataset.liveUrl !== "location") return false;
     return document.querySelector('[data-ro-action="toggle-live"]') !== null;
   }
   function liveStreamBase() {
     return liveStreamBaseForURL(new URL(window.location.href));
+  }
+  function liveToggleState(status) {
+    switch (status) {
+      case "open":
+        return "open";
+      case "reconnecting":
+      case "offline":
+      case "unavailable":
+        return "problem";
+      default:
+        return "connecting";
+    }
+  }
+  function paintLiveToggleState() {
+    paintLiveToggle(runtime.status);
+  }
+  function paintLiveToggle(status) {
+    const toggle = document.querySelector('[data-ro-action="toggle-live"]');
+    if (!toggle) return;
+    if (status === "off") {
+      toggle.removeAttribute("data-ro-live-state");
+      return;
+    }
+    toggle.setAttribute("data-ro-live-state", liveToggleState(status));
+  }
+  function setStatus(next) {
+    runtime.status = next;
+    paintLiveToggle(next);
   }
   function isActive(connection) {
     return runtime.connection === connection;
@@ -1320,7 +1348,7 @@
     resumeIntent = null;
     reconnectAttempt = 0;
     snapshotAt = 0;
-    runtime.status = "off";
+    setStatus("off");
     noteStaleRetryAt(0);
     clearLiveStale();
   }
@@ -1333,13 +1361,13 @@
     abortActiveConnection();
     clearReconnectTimer();
     resumeIntent = null;
-    runtime.status = "unavailable";
+    setStatus("unavailable");
     noteStaleRetryAt(0);
     markLiveUnavailable();
   }
   function enterDeferred(status, base) {
     resumeIntent = { base };
-    runtime.status = status;
+    setStatus(status);
     noteStaleRetryAt(0);
   }
   function noteDisconnected() {
@@ -1362,7 +1390,7 @@
     }
     reconnectAttempt += 1;
     const delay = delayMs ?? reconnectDelayMs(reconnectAttempt);
-    runtime.status = "reconnecting";
+    setStatus("reconnecting");
     addCounter("reconnects");
     noteStaleRetryAt(Date.now() + delay);
     reconnectTimerId = window.setTimeout(() => {
@@ -1371,7 +1399,7 @@
         liveSetOff();
         return;
       }
-      openConnection(liveSupported() ? liveStreamBase() : "");
+      openConnection(liveCanStreamHere() ? liveStreamBase() : "");
     }, delay);
   }
   function openConnection(base) {
@@ -1410,7 +1438,7 @@
       cursor: null
     });
     runtime.connection = connection;
-    runtime.status = "connecting";
+    setStatus("connecting");
     addCounter("connections");
     void liveConnect(connection);
   }
@@ -1571,7 +1599,7 @@
       addCounter("updated", applied.summary.updated);
       addCounter("deleted", applied.summary.deleted);
       addCounter("projected", applied.summary.projected);
-      runtime.status = "open";
+      setStatus("open");
       return;
     }
     if (envelope.seq !== cursor.seq + 1) {
@@ -1610,7 +1638,7 @@
     replaceConnection(connection, cursor);
     addCounter("v2Snapshots");
     addCounter("snapshotBytes", payloadBytes);
-    runtime.status = "open";
+    setStatus("open");
     if (snapshotAt === 0) snapshotAt = Date.now();
     noteStaleRetryAt(0);
     clearLiveStale();
@@ -1674,7 +1702,7 @@
     const detail = Object(event.detail);
     if (detail.roLivePush !== true) {
       if (resumeIntent) {
-        const base = liveSupported() ? liveStreamBase() : "";
+        const base = liveCanStreamHere() ? liveStreamBase() : "";
         resumeIntent = { base };
         runtime.streamPath = base;
       }
@@ -1694,7 +1722,7 @@
       liveSetOff();
       return;
     }
-    const base = liveSupported() ? liveStreamBase() : "";
+    const base = liveCanStreamHere() ? liveStreamBase() : "";
     if (force) {
       resyncTimestamps = [];
       resumeIntent = null;
@@ -2052,6 +2080,7 @@
   }
   function syncLiveToggle() {
     liveToggleButton()?.setAttribute("aria-pressed", isLiveEnabled() ? "true" : "false");
+    paintLiveToggleState();
   }
   function syncRefreshNowButton() {
     const button = document.querySelector(
@@ -2082,7 +2111,8 @@
         if (content && htmx2) {
           htmx2.trigger(content, "htmx:abort");
         }
-        if (isLiveEnabled()) {
+        pruneSettledListRequests();
+        if (isLiveEnabled() && liveCanStreamHere()) {
           liveApply(true);
         } else {
           requestListRefresh();
