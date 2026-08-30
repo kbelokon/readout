@@ -163,6 +163,13 @@ gateway:
 # (see env / envFrom below), which override the file at startup.
 config:
   port: 8080
+  # Bind host for BOTH the app and metrics listeners. The app's own default for
+  # an EMPTY value under auth.mode "none" is loopback (127.0.0.1) -- a safe
+  # default for a bare binary, but inside a pod it means kubelet probes and the
+  # Service cannot reach readout at all: the pod never becomes Ready. 0.0.0.0
+  # is Go's "all interfaces" (dual-stack). Set 127.0.0.1 explicitly ONLY when an
+  # in-pod sidecar proxy (auth proxy etc.) is the sole client of readout.
+  listenAddress: "0.0.0.0"
   excludeNamespaces:
     - kube-.*
   showContainerLogs: false

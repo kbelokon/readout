@@ -31,6 +31,19 @@ expect_pass() {
   fi
 }
 
+# expect_grep <description> <extended-regex> -- the remaining args form a
+# `helm template` call whose rendered output MUST contain a line matching the
+# regex. Use it to pin a rendered VALUE, not just an exit code.
+expect_grep() {
+  local desc="$1" pattern="$2"; shift 2
+  if helm template readout "$CHART_DIR" "$@" 2>/dev/null | grep -q -E "$pattern"; then
+    echo "ok (rendered): $desc"
+  else
+    echo "FAIL (pattern not rendered: $pattern): $desc"
+    fail=1
+  fi
+}
+
 # Multi-replica OIDC with no chart-visible session secret is NEVER render-blocked:
 # it renders and warns via NOTES (each replica would otherwise sign with its own
 # ephemeral key; the operator is warned, not stopped).
@@ -80,5 +93,12 @@ expect_fail "schema rejects ingress.enabled with zero hosts" \
   --set ingress.enabled=true
 expect_fail "schema rejects existingSecret with empty key" \
   --set auth.oidc.existingSecret=s --set auth.oidc.clientIdKey=""
+
+# Rendered value: the app binds LOOPBACK when listenAddress is empty under
+# auth.mode none (its safe default for a bare binary). Inside a pod that means
+# kubelet probes and the Service cannot reach it, so the chart must render an
+# explicit all-interfaces bind by default.
+expect_grep "default config binds all interfaces (loopback is unreachable in a pod)" \
+  '^\s*listenAddress: "?0\.0\.0\.0"?$' -s templates/configmap.yaml
 
 exit "$fail"

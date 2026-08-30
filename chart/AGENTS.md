@@ -70,6 +70,10 @@ Auth posture rules:
   have sticky sessions.
 - For anything the typed surface misses, use `env` (literal `valueFrom`) or
   `envFrom` (whole-Secret reference).
+- Leave `config.listenAddress` at the chart default `0.0.0.0`. An empty value
+  makes the app bind loopback under `auth.mode: none`, which inside a pod means
+  probes and the Service cannot reach it and the pod never becomes Ready. Set it
+  to `127.0.0.1` only when an in-pod sidecar proxy is readout's sole client.
 
 ## 4. Validate
 
