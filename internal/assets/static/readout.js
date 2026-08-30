@@ -249,12 +249,10 @@
   function prepareListProjectionSwap(root) {
     if (prepared?.root !== root) {
       const snapshot = snapshotFrom(root);
-      const previousRevision = projectionRevision;
       projectionRevision += 1;
       prepared = {
         root,
         snapshot,
-        previousRevision,
         // Snapshot maps are created once and never mutated or exposed. Keep
         // the immutable prior index by reference for the windowed cell diff.
         previousByKey: projection.byKey
@@ -265,13 +263,6 @@
       rows: prepared.snapshot.rows,
       windowed: prepared.snapshot.windowed
     };
-  }
-  function cancelListProjectionSwap(root) {
-    const incoming = prepared;
-    if (!incoming || incoming.root !== root) return;
-    prepared = null;
-    projectionRevision = incoming.previousRevision;
-    publishModel(projection);
   }
   function commitListProjectionSwap() {
     if (!prepared) {
@@ -541,6 +532,7 @@
       return { ok: true, focusKey: focus?.key || null, previousByKey, summary, restoreFocus };
     } catch {
       restoreFocus();
+      resetListProjection();
       return { ok: false };
     }
   }
@@ -697,6 +689,38 @@
     return true;
   }
 
+  // internal/assets/src/js/live-policy.ts
+  var RECONNECT_DELAY_LADDER_MS = [1e3, 2e3, 5e3, 1e4, 3e4];
+  function reconnectDelayMs(attempt, random = Math.random) {
+    const rung = Number.isInteger(attempt) && attempt >= 1 ? attempt : 1;
+    const cap = RECONNECT_DELAY_LADDER_MS[Math.min(rung, RECONNECT_DELAY_LADDER_MS.length) - 1];
+    const roll = random();
+    const fraction = Number.isFinite(roll) ? Math.min(Math.max(roll, 0), 1) : 1;
+    return Math.round(cap * fraction);
+  }
+  var RETRY_AFTER_MAX_MS = 3e5;
+  var RETRY_AFTER_MIN_MS = 1e3;
+  function retryAfterMs(header, now = Date.now()) {
+    if (header === null) return null;
+    const value = header.trim();
+    if (value === "") return null;
+    if (/^\d+$/.test(value)) {
+      return clampRetryAfter(Number(value) * 1e3);
+    }
+    if (!/^[a-z]{3}/i.test(value)) return null;
+    const at = Date.parse(value);
+    if (Number.isNaN(at)) return null;
+    return clampRetryAfter(at - now);
+  }
+  function clampRetryAfter(ms) {
+    return Math.min(Math.max(ms, RETRY_AFTER_MIN_MS), RETRY_AFTER_MAX_MS);
+  }
+  var HEALTHY_CONTINUITY_MS = 3e4;
+  function shouldResetBackoff(snapshotAt2, now) {
+    if (snapshotAt2 <= 0) return false;
+    return now - snapshotAt2 >= HEALTHY_CONTINUITY_MS;
+  }
+
   // internal/assets/src/js/live-protocol.ts
   var LIST_DELTA_APPLIED_EVENT = "ro:list-delta-applied";
   var BASE_FIELDS = /* @__PURE__ */ new Set(["v", "kind", "g", "seq", "rev", "rv", "schema"]);
@@ -815,7 +839,7 @@
     };
   }
   function decodeTerminal(record) {
-    if (!exactFields(record, /* @__PURE__ */ new Set([...BASE_FIELDS, "reason"])) || record.reason !== "idle" && record.reason !== "auth" && record.reason !== "watch-failed" && record.reason !== "shutdown") {
+    if (!exactFields(record, /* @__PURE__ */ new Set([...BASE_FIELDS, "reason"])) || record.reason !== "auth" && record.reason !== "lifetime" && record.reason !== "protocol" && record.reason !== "shutdown" && record.reason !== "watch-failed") {
       return { ok: false };
     }
     return { ok: true, value: seal(record) };
@@ -1064,53 +1088,39 @@
     return rawQuery === "" ? pathname : `${pathname}?${rawQuery}`;
   }
   function liveStreamBaseForURL(url) {
+    if (url.origin !== window.location.origin) return "";
     const pathname = `${url.pathname.replace(/\/+$/, "")}/_stream`;
+    if (!pathname.startsWith("/") || pathname.startsWith("//")) return "";
     return withRawQuery(pathname, url.search.slice(1));
   }
 
   // internal/assets/src/js/stale.ts
   var staleCountdownId = null;
+  var staleRetryAt = 0;
   var listStaleOwner = /* @__PURE__ */ Symbol();
+  var liveStaleOwner = /* @__PURE__ */ Symbol();
   var liveUnavailableOwner = /* @__PURE__ */ Symbol();
   var staleOwners = /* @__PURE__ */ new Set();
+  var liveSemanticStale = false;
+  var liveGraceTimerId;
+  var LIVE_STALE_GRACE_MS = 3e3;
   function bannerElement() {
     return document.querySelector(".ro-stale-banner");
   }
   function bannerParts(banner) {
     return {
-      button: banner.querySelector('[data-ro-action="retry"]'),
-      message: banner.querySelector(".bn-text"),
-      title: banner.querySelector(".bn-title")
+      recoverable: banner.querySelector(".bn-body:not(.ro-stale-unavailable)"),
+      reload: banner.querySelector(".ro-stale-reload"),
+      retry: banner.querySelector(".ro-stale-retry"),
+      unavailable: banner.querySelector(".bn-body.ro-stale-unavailable")
     };
   }
-  function rememberBannerCopy(banner) {
-    const serialized = banner.dataset.roStaleOriginalCopy;
-    if (serialized) {
-      try {
-        return JSON.parse(serialized);
-      } catch {
-      }
-    }
-    const { button, message, title } = bannerParts(banner);
-    const copy = {
-      ariaLabel: banner.getAttribute("aria-label"),
-      buttonText: button.textContent,
-      messageHTML: message.innerHTML,
-      messageHidden: message.hidden,
-      titleText: title.textContent
-    };
-    banner.dataset.roStaleOriginalCopy = JSON.stringify(copy);
-    return copy;
-  }
-  function restoreBannerCopy(banner) {
-    const copy = rememberBannerCopy(banner);
-    const { button, message, title } = bannerParts(banner);
-    title.textContent = copy.titleText;
-    message.innerHTML = copy.messageHTML;
-    message.hidden = copy.messageHidden;
-    button.textContent = copy.buttonText;
-    if (copy.ariaLabel === null) banner.removeAttribute("aria-label");
-    else banner.setAttribute("aria-label", copy.ariaLabel);
+  function paintBannerVariant(banner, unavailable) {
+    const parts = bannerParts(banner);
+    if (parts.recoverable) parts.recoverable.hidden = unavailable;
+    if (parts.unavailable) parts.unavailable.hidden = !unavailable;
+    if (parts.retry) parts.retry.hidden = unavailable;
+    if (parts.reload) parts.reload.hidden = !unavailable;
   }
   function stopStaleCountdown() {
     if (staleCountdownId !== null) {
@@ -1124,25 +1134,32 @@
     }
     updateStaleCountdown();
   }
+  function clearLiveGrace() {
+    window.clearTimeout(liveGraceTimerId);
+    liveGraceTimerId = void 0;
+  }
   function paintStaleState() {
-    const listStale = staleOwners.has(listStaleOwner);
+    const listStale = staleOwners.has(listStaleOwner) || staleOwners.has(liveStaleOwner);
     const liveUnavailable = staleOwners.has(liveUnavailableOwner);
-    document.getElementById("resource-list-content")?.classList.toggle("ro-stale", listStale);
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.toggle("ro-stale", listStale || liveUnavailable);
+      if (liveSemanticStale) content.dataset.roStale = "true";
+      else delete content.dataset.roStale;
+    }
     const banner = bannerElement();
     if (!banner) {
       stopStaleCountdown();
       return;
     }
-    restoreBannerCopy(banner);
-    if (liveUnavailable) {
-      const { button, message, title } = bannerParts(banner);
-      title.textContent = "Live unavailable, polling ·";
-      message.hidden = false;
-      button.textContent = "Retry";
-    }
+    paintBannerVariant(banner, liveUnavailable);
     banner.hidden = !(listStale || liveUnavailable);
-    if (banner.hidden) stopStaleCountdown();
+    if (banner.hidden || liveUnavailable) stopStaleCountdown();
     else startStaleCountdown();
+  }
+  function noteStaleRetryAt(atMs) {
+    staleRetryAt = atMs;
+    updateStaleCountdown();
   }
   function updateStaleCountdown() {
     const banner = bannerElement();
@@ -1151,19 +1168,13 @@
     if (!span) {
       return;
     }
-    const nextAt = refreshNextAtMs();
+    const nextAt = staleRetryAt;
     if (!nextAt) {
       span.textContent = "…";
-    } else {
-      const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
-      span.textContent = `${remaining}s`;
+      return;
     }
-    if (staleOwners.has(liveUnavailableOwner)) {
-      banner.setAttribute(
-        "aria-label",
-        `Live unavailable, polling. Retrying in ${span.textContent}. Retry`
-      );
-    }
+    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
+    span.textContent = `${remaining}s`;
   }
   function isListRefreshEvent(event) {
     const detail = event.detail;
@@ -1181,11 +1192,31 @@
     staleOwners.add(listStaleOwner);
     paintStaleState();
   }
+  function markLiveStale() {
+    liveSemanticStale = true;
+    if (!staleOwners.has(liveStaleOwner) && liveGraceTimerId === void 0) {
+      liveGraceTimerId = window.setTimeout(revealLiveStale, LIVE_STALE_GRACE_MS);
+    }
+    paintStaleState();
+  }
+  function pauseLiveStaleGrace() {
+    clearLiveGrace();
+  }
+  function revealLiveStale() {
+    clearLiveGrace();
+    staleOwners.add(liveStaleOwner);
+    paintStaleState();
+  }
   function markLiveUnavailable() {
+    clearLiveGrace();
+    liveSemanticStale = true;
     staleOwners.add(liveUnavailableOwner);
     paintStaleState();
   }
-  function clearLiveUnavailable() {
+  function clearLiveStale() {
+    clearLiveGrace();
+    liveSemanticStale = false;
+    staleOwners.delete(liveStaleOwner);
     staleOwners.delete(liveUnavailableOwner);
     paintStaleState();
   }
@@ -1195,13 +1226,11 @@
   }
   document.addEventListener("htmx:responseError", (event) => {
     if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
       markListStale();
     }
   });
   document.addEventListener("htmx:sendError", (event) => {
     if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
       markListStale();
     }
   });
@@ -1214,7 +1243,7 @@
   var counters = {
     connections: 0,
     resyncs: 0,
-    fallbacks: 0,
+    reconnects: 0,
     v2Snapshots: 0,
     deltas: 0,
     terminals: 0,
@@ -1230,16 +1259,15 @@
   };
   var RESYNC_WINDOW_MS = 3e4;
   var MAX_RESYNCS_PER_WINDOW = 2;
-  var FALLBACK_RETRY_INITIAL_MS = 6e4;
-  var FALLBACK_RETRY_MAX_MS = 3e5;
   var LIVE_FIRST_FRAME_TIMEOUT_MS = 3e4;
+  var LIVE_READ_IDLE_TIMEOUT_MS = 5e4;
   var completedSnapshotTxns = /* @__PURE__ */ new WeakSet();
-  var liveFallbackSecs = 0;
   var resyncTimestamps = [];
   var resumeIntent = null;
   var requestSubscribed = false;
-  var fallbackRetryTimerId;
-  var fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
+  var reconnectTimerId;
+  var reconnectAttempt = 0;
+  var snapshotAt = 0;
   function addCounter(name, amount = 1) {
     counters[name] += amount;
   }
@@ -1252,23 +1280,46 @@
       ...counters,
       state: runtime.status,
       seq: runtime.connection?.cursor?.seq || 0,
+      attempt: reconnectAttempt,
       inFlightRequests: listRequestTrackerSnapshot().count,
       resyncsInWindow: resyncTimestamps.length
     };
   }
-  function liveFallbackSeconds() {
-    return liveFallbackSecs;
-  }
-  function liveSupported() {
+  function liveCanStreamHere() {
     const content = document.getElementById("resource-list-content");
     if (content?.dataset.liveUrl !== "location") return false;
-    const option = document.querySelector(
-      '[data-ro-action="set-refresh"][data-ro-interval="Live"]'
-    );
-    return !!option && !option.disabled;
+    return document.querySelector('[data-ro-action="toggle-live"]') !== null;
   }
   function liveStreamBase() {
     return liveStreamBaseForURL(new URL(window.location.href));
+  }
+  function liveToggleState(status) {
+    switch (status) {
+      case "open":
+        return "open";
+      case "reconnecting":
+      case "offline":
+      case "unavailable":
+        return "problem";
+      default:
+        return "connecting";
+    }
+  }
+  function paintLiveToggleState() {
+    paintLiveToggle(runtime.status);
+  }
+  function paintLiveToggle(status) {
+    const toggle = document.querySelector('[data-ro-action="toggle-live"]');
+    if (!toggle) return;
+    if (status === "off") {
+      toggle.removeAttribute("data-ro-live-state");
+      return;
+    }
+    toggle.setAttribute("data-ro-live-state", liveToggleState(status));
+  }
+  function setStatus(next) {
+    runtime.status = next;
+    paintLiveToggle(next);
   }
   function isActive(connection) {
     return runtime.connection === connection;
@@ -1290,67 +1341,98 @@
     runtime.connection = null;
     connection?.ctrl.abort();
   }
-  function clearFallbackRetry() {
-    window.clearTimeout(fallbackRetryTimerId);
-    fallbackRetryTimerId = void 0;
+  function clearReconnectTimer() {
+    window.clearTimeout(reconnectTimerId);
+    reconnectTimerId = void 0;
   }
-  function resetFallbackRetry() {
-    clearFallbackRetry();
-    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
-  }
-  function setOff() {
+  function liveSetOff() {
     abortActiveConnection();
-    resetFallbackRetry();
+    clearReconnectTimer();
     resumeIntent = null;
-    liveFallbackSecs = 0;
-    runtime.status = "off";
-    clearLiveUnavailable();
+    reconnectAttempt = 0;
+    snapshotAt = 0;
+    setStatus("off");
+    noteStaleRetryAt(0);
+    clearLiveStale();
   }
   function liveResetPage() {
-    setOff();
+    liveSetOff();
     resetListRequestTracker();
     resyncTimestamps = [];
   }
-  function scheduleFallbackRetry() {
-    fallbackRetryTimerId = window.setTimeout(() => {
-      fallbackRetryTimerId = void 0;
-      if (refreshMode() !== "Live") return;
-      const base = liveSupported() ? liveStreamBase() : "";
-      fallbackRetryDelayMs = Math.min(fallbackRetryDelayMs * 2, FALLBACK_RETRY_MAX_MS);
-      openConnection(base);
-    }, fallbackRetryDelayMs);
-  }
-  function liveEngageFallback() {
+  function enterUnavailable() {
     abortActiveConnection();
+    clearReconnectTimer();
     resumeIntent = null;
-    runtime.status = "fallback";
-    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
-    addCounter("fallbacks");
-    scheduleRefreshTick();
-    scheduleFallbackRetry();
+    setStatus("unavailable");
+    noteStaleRetryAt(0);
     markLiveUnavailable();
+  }
+  function enterDeferred(status, base) {
+    resumeIntent = { base };
+    setStatus(status);
+    noteStaleRetryAt(0);
+    if (status !== "offline") pauseLiveStaleGrace();
+  }
+  function noteDisconnected() {
+    clearListValidator();
+    markLiveStale();
+    if (reconnectAttempt >= 1) revealLiveStale();
+  }
+  function scheduleReconnect(base, delayMs = null) {
+    abortActiveConnection();
+    clearReconnectTimer();
+    if (!isLiveEnabled()) {
+      liveSetOff();
+      return;
+    }
+    if (shouldResetBackoff(snapshotAt, Date.now())) reconnectAttempt = 0;
+    noteDisconnected();
+    if (!window.navigator.onLine) {
+      enterDeferred("offline", base);
+      return;
+    }
+    reconnectAttempt += 1;
+    const delay = delayMs ?? reconnectDelayMs(reconnectAttempt);
+    setStatus("reconnecting");
+    addCounter("reconnects");
+    noteStaleRetryAt(Date.now() + delay);
+    reconnectTimerId = window.setTimeout(() => {
+      reconnectTimerId = void 0;
+      if (!isLiveEnabled()) {
+        liveSetOff();
+        return;
+      }
+      openConnection(liveCanStreamHere() ? liveStreamBase() : "");
+    }, delay);
   }
   function openConnection(base) {
     abortActiveConnection();
-    clearFallbackRetry();
-    liveFallbackSecs = 0;
+    clearReconnectTimer();
     runtime.streamPath = base;
+    snapshotAt = 0;
     if (!base) {
-      liveEngageFallback();
+      liveSetOff();
       return;
     }
-    const deferredStatus = document.hidden ? "hidden" : listRequestTrackerSnapshot().count > 0 ? "suspended" : null;
-    if (deferredStatus) {
-      resumeIntent = { base };
-      runtime.status = deferredStatus;
-      scheduleRefreshTick();
+    if (document.hidden) {
+      enterDeferred("hidden", base);
+      return;
+    }
+    if (listRequestTrackerSnapshot().count > 0) {
+      enterDeferred("suspended", base);
+      return;
+    }
+    if (!window.navigator.onLine) {
+      noteDisconnected();
+      enterDeferred("offline", base);
       return;
     }
     let generation;
     try {
       generation = mintLiveGeneration();
     } catch {
-      liveEngageFallback();
+      enterUnavailable();
       return;
     }
     const ctrl = new AbortController();
@@ -1361,9 +1443,8 @@
       cursor: null
     });
     runtime.connection = connection;
-    runtime.status = "connecting";
+    setStatus("connecting");
     addCounter("connections");
-    scheduleRefreshTick();
     void liveConnect(connection);
   }
   function responseHeader2(response, name) {
@@ -1384,43 +1465,75 @@
     return generation === null || generation === connection.generation;
   }
   async function liveConnect(initial) {
-    let firstFrameTimer = window.setTimeout(() => {
-      firstFrameTimer = null;
-      if (runtime.connection?.ctrl === initial.ctrl) {
-        liveEngageFallback();
-      }
-    }, LIVE_FIRST_FRAME_TIMEOUT_MS);
-    const clearFirstFrameTimer = () => {
-      if (firstFrameTimer !== null) {
-        window.clearTimeout(firstFrameTimer);
-        firstFrameTimer = null;
+    let deadlineTimer = null;
+    const clearDeadline = () => {
+      if (deadlineTimer !== null) {
+        window.clearTimeout(deadlineTimer);
+        deadlineTimer = null;
       }
     };
+    const armDeadline = (ms) => {
+      clearDeadline();
+      deadlineTimer = window.setTimeout(() => {
+        deadlineTimer = null;
+        if (runtime.connection?.ctrl === initial.ctrl) {
+          scheduleReconnect(initial.base);
+        }
+      }, ms);
+    };
+    armDeadline(LIVE_FIRST_FRAME_TIMEOUT_MS);
     try {
-      await runLiveConnection(initial, clearFirstFrameTimer);
+      await runLiveConnection(initial, () => armDeadline(LIVE_READ_IDLE_TIMEOUT_MS));
     } finally {
-      clearFirstFrameTimer();
+      clearDeadline();
     }
   }
-  async function runLiveConnection(initial, clearFirstFrameTimer) {
+  function acceptResponse(response, connection) {
+    if (response.type === "opaqueredirect" || response.redirected) {
+      enterUnavailable();
+      return null;
+    }
+    const status = response.status;
+    if (status === 429) {
+      scheduleReconnect(connection.base, retryAfterMs(responseHeader2(response, "Retry-After")));
+      return null;
+    }
+    if (status === 408) {
+      scheduleReconnect(connection.base);
+      return null;
+    }
+    if (status === 204 || status >= 400 && status < 500) {
+      enterUnavailable();
+      return null;
+    }
+    if (status !== 200 || !response.body) {
+      scheduleReconnect(connection.base);
+      return null;
+    }
+    return response.body;
+  }
+  async function runLiveConnection(initial, noteLiveProgress) {
     let response;
     try {
       response = await fetch(initial.base, {
         signal: initial.ctrl.signal,
+        // The stream target is same-origin by construction (live-url.ts)
+        // and must stay that way: an auth redirect is a terminal, not a
+        // hop. acceptResponse turns the resulting opaque redirect into the
+        // Reload banner.
+        redirect: "manual",
         headers: {
           "RO-Live-Version": "2",
           "RO-Live-Generation": initial.generation
         }
       });
     } catch {
-      if (isActive(initial)) liveEngageFallback();
+      if (isActive(initial)) scheduleReconnect(initial.base);
       return;
     }
     if (!isActive(initial)) return;
-    if (response.status !== 200 || !response.body) {
-      liveEngageFallback();
-      return;
-    }
+    const body = acceptResponse(response, initial);
+    if (!body) return;
     if (!acceptsV2Response(response, initial)) {
       rejectProtocol(initial);
       return;
@@ -1429,11 +1542,13 @@
     if (!accepted) return;
     let connection = accepted;
     try {
-      const reader = response.body.getReader();
+      const reader = body.getReader();
       const parser = new LiveSSEParser();
+      let sawFrame = false;
       const readNext = async () => {
         const result = await reader.read();
         if (!isActive(connection) || result.done) return;
+        if (sawFrame) noteLiveProgress();
         addCounter("rawBytes", result.value.byteLength);
         let events;
         try {
@@ -1449,7 +1564,8 @@
           const current = runtime.connection;
           if (!current || current.ctrl !== connection.ctrl) return;
           connection = current;
-          clearFirstFrameTimer();
+          sawFrame = true;
+          noteLiveProgress();
         }
         return connection;
       };
@@ -1457,7 +1573,7 @@
       }
     } catch {
     }
-    if (isActive(connection)) liveEngageFallback();
+    if (isActive(connection)) scheduleReconnect(connection.base);
   }
   function handleV2Frame(connection, name, text, payloadBytes) {
     if (name !== "ro-live") {
@@ -1476,6 +1592,10 @@
       return;
     }
     if (!cursor) {
+      if (envelope.kind === "terminal" && envelope.seq === 1) {
+        handleV2Terminal(connection, envelope);
+        return;
+      }
       if (envelope.kind !== "snapshot" || envelope.seq !== 1) {
         rejectProtocol(connection);
         return;
@@ -1486,18 +1606,20 @@
     if (envelope.kind === "delta") {
       const applied = applyLiveV2Delta(envelope, cursor);
       if (!applied.ok) {
+        virtualizeReset();
+        clearListValidator();
         rejectProtocol(connection);
         return;
       }
-      if (!replaceConnection(connection, applied.cursor)) return;
       clearListValidator();
+      if (!replaceConnection(connection, applied.cursor)) return;
       addCounter("deltas");
       addCounter("deltaBytes", payloadBytes);
       addCounter("inserted", applied.summary.inserted);
       addCounter("updated", applied.summary.updated);
       addCounter("deleted", applied.summary.deleted);
       addCounter("projected", applied.summary.projected);
-      runtime.status = "open";
+      setStatus("open");
       return;
     }
     if (envelope.seq !== cursor.seq + 1) {
@@ -1512,8 +1634,15 @@
       rejectProtocol(connection);
       return;
     }
+    handleV2Terminal(connection, envelope);
+  }
+  function handleV2Terminal(connection, envelope) {
     addCounter("terminals");
-    liveEngageFallback();
+    if (envelope.reason === "auth" || envelope.reason === "protocol") {
+      enterUnavailable();
+      return;
+    }
+    scheduleReconnect(connection.base);
   }
   function commitV2Snapshot(connection, envelope, payloadBytes) {
     const txn = Object.freeze({});
@@ -1532,9 +1661,10 @@
     replaceConnection(connection, cursor);
     addCounter("v2Snapshots");
     addCounter("snapshotBytes", payloadBytes);
-    runtime.status = "open";
-    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
-    clearLiveUnavailable();
+    setStatus("open");
+    if (snapshotAt === 0) snapshotAt = Date.now();
+    noteStaleRetryAt(0);
+    clearLiveStale();
   }
   function swapSnapshot(html, connection, txn) {
     const content = document.getElementById("resource-list-content");
@@ -1560,7 +1690,7 @@
   function requestResync(base) {
     pruneResyncWindow();
     if (resyncTimestamps.length >= MAX_RESYNCS_PER_WINDOW) {
-      liveEngageFallback();
+      enterUnavailable();
       return;
     }
     resyncTimestamps.push(Date.now());
@@ -1571,35 +1701,32 @@
     if (activity.phase === "start") {
       const connection = runtime.connection;
       if (connection) {
-        resumeIntent = { base: connection.base };
         abortActiveConnection();
-        runtime.status = document.hidden ? "hidden" : "suspended";
-      } else if (runtime.status === "fallback" && !resumeIntent) {
-        resumeIntent = { base: runtime.streamPath, waitForChangedBase: true };
+        enterDeferred(document.hidden ? "hidden" : "suspended", connection.base);
+      } else if (runtime.status === "reconnecting" || runtime.status === "offline") {
+        clearReconnectTimer();
+        enterDeferred(
+          document.hidden ? "hidden" : "suspended",
+          resumeIntent?.base ?? runtime.streamPath
+        );
       }
       return;
     }
     if (!resumeIntent || activity.inFlight !== 0) return;
-    if (refreshMode() !== "Live") {
-      setOff();
+    if (!isLiveEnabled()) {
+      liveSetOff();
       return;
     }
-    const { base, waitForChangedBase } = resumeIntent;
+    const { base } = resumeIntent;
     resumeIntent = null;
-    if (waitForChangedBase) {
-      runtime.status = "fallback";
-      return;
-    }
     openConnection(base);
   }
   function liveOnListSwap(event) {
     const detail = Object(event.detail);
     if (detail.roLivePush !== true) {
       if (resumeIntent) {
-        const base = liveSupported() ? liveStreamBase() : "";
-        if (!resumeIntent.waitForChangedBase || base !== resumeIntent.base) {
-          resumeIntent = { base };
-        }
+        const base = liveCanStreamHere() ? liveStreamBase() : "";
+        resumeIntent = { base };
         runtime.streamPath = base;
       }
       return;
@@ -1614,15 +1741,17 @@
       subscribeListRequests(requestActivity);
       requestSubscribed = true;
     }
-    if (refreshMode() !== "Live") {
-      setOff();
+    if (!isLiveEnabled()) {
+      liveSetOff();
       return;
     }
-    const base = liveSupported() ? liveStreamBase() : "";
+    const base = liveCanStreamHere() ? liveStreamBase() : "";
     if (force) {
       resyncTimestamps = [];
       resumeIntent = null;
-      resetFallbackRetry();
+      reconnectAttempt = 0;
+      clearReconnectTimer();
+      clearLiveStale();
     }
     if (!force && base === runtime.streamPath && runtime.status !== "off") return;
     openConnection(base);
@@ -1630,16 +1759,17 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       const connection = runtime.connection;
-      if (connection) resumeIntent = { base: connection.base };
-      const intent = resumeIntent;
-      if (!intent || intent.waitForChangedBase) return;
+      const armed = runtime.status === "reconnecting" || runtime.status === "offline";
+      const base = connection?.base ?? (armed ? runtime.streamPath : resumeIntent?.base);
+      if (base === void 0) return;
       abortActiveConnection();
-      runtime.status = "hidden";
+      clearReconnectTimer();
+      enterDeferred("hidden", base);
       return;
     }
     if (runtime.status === "hidden" && resumeIntent) {
-      if (refreshMode() !== "Live") {
-        setOff();
+      if (!isLiveEnabled()) {
+        liveSetOff();
         return;
       }
       const { base } = resumeIntent;
@@ -1647,26 +1777,26 @@
       openConnection(base);
     }
   });
+  window.addEventListener("offline", () => {
+    const holding = runtime.status === "connecting" || runtime.status === "open" || runtime.status === "reconnecting";
+    const base = runtime.connection?.base ?? runtime.streamPath;
+    if (!holding || !base) return;
+    abortActiveConnection();
+    clearReconnectTimer();
+    noteDisconnected();
+    enterDeferred("offline", base);
+  });
+  window.addEventListener("online", () => {
+    if (runtime.status !== "offline" || !resumeIntent) return;
+    if (!isLiveEnabled()) {
+      liveSetOff();
+      return;
+    }
+    const { base } = resumeIntent;
+    resumeIntent = null;
+    openConnection(base);
+  });
   window.roLive = { stats: currentStats };
-
-  // internal/assets/src/js/live-policy.ts
-  function effectivePollSeconds(mode, intervalSeconds, liveFallbackSeconds2) {
-    if (intervalSeconds > 0) {
-      return intervalSeconds;
-    }
-    return mode === "Live" ? liveFallbackSeconds2 : 0;
-  }
-  function refreshDelaySeconds(effectiveSeconds, failureStage) {
-    const baseSeconds = Math.max(effectiveSeconds, 0);
-    if (failureStage <= 1) {
-      return baseSeconds;
-    }
-    const factor = failureStage === 2 ? 2 : 4;
-    return Math.min(baseSeconds * factor, 60);
-  }
-  function nextFailureStage(stage) {
-    return Math.min(stage + 1, 3);
-  }
 
   // internal/assets/src/js/prefs.ts
   var PREFS_MAX_ENCODED = 3072;
@@ -1853,12 +1983,6 @@
   function getHtmx() {
     return window.htmx;
   }
-  var refreshTimerId = null;
-  var refreshNextAt = 0;
-  var refreshFailureStage = 0;
-  function refreshNextAtMs() {
-    return refreshNextAt;
-  }
   var listRequestEpoch = 0;
   var listRequestsInFlight = /* @__PURE__ */ new Map();
   var listRequestSubscribers = /* @__PURE__ */ new Set();
@@ -1947,35 +2071,6 @@
     if (xhr instanceof XMLHttpRequest) settleListRequest(xhr);
   }
   document.addEventListener("htmx:afterRequest", handleRefreshAfterRequest);
-  function parseRefreshSeconds(mode) {
-    if (typeof mode !== "string") {
-      return 0;
-    }
-    const unsigned = mode.startsWith("+") ? mode.slice(1) : mode;
-    const seconds = Array.from(unsigned).reduce((value, char) => {
-      const digit = char.charCodeAt(0) - 48;
-      return digit >= 0 && digit <= 9 ? value * 10 + digit : Number.NaN;
-    }, 0);
-    return Number.isSafeInteger(seconds) ? seconds : 0;
-  }
-  function refreshMode() {
-    const stored = readPrefs().refresh;
-    if (stored) {
-      return stored;
-    }
-    let legacy = null;
-    try {
-      legacy = window.localStorage.getItem("roRefresh");
-    } catch {
-    }
-    if (!legacy) {
-      return "";
-    }
-    const secs = parseRefreshSeconds(legacy);
-    const mode = secs > 0 ? String(secs) : "Off";
-    roPrefsSetRefresh(mode);
-    return mode;
-  }
   function listTableURL() {
     const u = new URL(window.location.href);
     return `${u.pathname.replace(/\/+$/, "")}/_table${u.search}`;
@@ -1997,114 +2092,37 @@
     }
   }
   window.requestListRefresh = requestListRefresh;
-  function fireRefresh() {
-    if (document.hidden) {
-      return;
-    }
-    pruneSettledListRequests();
-    if (listRequestsInFlight.size > 0) {
-      return;
-    }
-    requestListRefresh();
+  function isLiveEnabled() {
+    return readPrefs().refresh === "Live";
   }
-  function effectivePollSeconds2() {
-    const mode = refreshMode();
-    return effectivePollSeconds(mode, parseRefreshSeconds(mode), liveFallbackSeconds());
+  function setLivePreference(on) {
+    roPrefsSetRefresh(on ? "Live" : "Off");
   }
-  function refreshDelaySeconds2() {
-    return refreshDelaySeconds(effectivePollSeconds2(), refreshFailureStage);
+  function liveToggleButton() {
+    return document.querySelector('[data-ro-action="toggle-live"]');
   }
-  function scheduleRefreshTick() {
-    if (refreshTimerId !== null) {
-      window.clearTimeout(refreshTimerId);
-      refreshTimerId = null;
-    }
-    const delay = refreshDelaySeconds2();
-    if (delay <= 0) {
-      refreshNextAt = 0;
-      updateStaleCountdown();
-      return;
-    }
-    const delayMs = delay * 1e3;
-    refreshNextAt = Date.now() + delayMs;
-    refreshTimerId = window.setTimeout(() => {
-      refreshTimerId = null;
-      scheduleRefreshTick();
-      fireRefresh();
-    }, delayMs);
-    updateStaleCountdown();
+  function syncLiveToggle() {
+    liveToggleButton()?.setAttribute("aria-pressed", isLiveEnabled() ? "true" : "false");
+    paintLiveToggleState();
   }
-  function pauseRefresh() {
-    if (refreshTimerId !== null) {
-      window.clearTimeout(refreshTimerId);
-      refreshTimerId = null;
-    }
-    refreshNextAt = 0;
-    updateStaleCountdown();
+  function syncRefreshNowButton() {
+    const button = document.querySelector(
+      '[data-ro-action="refresh-now"]'
+    );
+    if (button) button.disabled = listRequestsInFlight.size > 0;
   }
-  function applyRefresh() {
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-  }
-  function syncRefreshUI() {
-    const mode = refreshMode();
-    const live = mode === "Live";
-    const secs = parseRefreshSeconds(mode);
-    const label = document.getElementById("refresh-label");
-    if (label) {
-      if (live) {
-        label.textContent = "Live";
-      } else if (secs > 0) {
-        label.textContent = `${secs}s`;
-      } else {
-        label.textContent = "Off";
-      }
-    }
-    document.querySelectorAll('[data-ro-action="set-refresh"]').forEach((opt) => {
-      const value = opt.dataset.roInterval;
-      opt.classList.toggle(
-        "is-active",
-        value !== void 0 && (live ? value === "Live" : value !== "Live" && parseRefreshSeconds(value) === secs)
-      );
-    });
-    const dropdown = document.getElementById("refresh-dropdown");
-    if (dropdown) {
-      dropdown.classList.toggle("refresh-on", live || secs > 0);
-    }
-  }
-  function noteRefreshFailure() {
-    refreshFailureStage = nextFailureStage(refreshFailureStage);
-    scheduleRefreshTick();
-  }
-  function noteRefreshRecovery() {
-    if (refreshFailureStage === 0) {
-      return;
-    }
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-    const toast = window.roToast;
-    if (typeof toast === "function") {
-      toast("Refresh resumed");
-    }
-  }
-  function handleRefreshVisibilityChange() {
-    if (!document.hidden && effectivePollSeconds2() > 0) {
-      fireRefresh();
-    }
-  }
-  document.addEventListener("visibilitychange", handleRefreshVisibilityChange);
+  subscribeListRequests(syncRefreshNowButton);
   var refreshBindings = [
-    // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
+    // Stale-banner retry: re-fire the (read-only) list GET on
     // #resource-list-content through the shared refresh path (location-backed
     // lists derive `_table` from location.href; multi-type containers trigger
-    // their baked ro:refresh). On success the morph swaps fresh
-    // rows and the afterSwap handler clears the stale dim + re-hides the banner;
-    // on another failure the responseError handler keeps it stale. An in-flight
-    // container request (a HUNG tick is exactly the state this button exists for)
-    // is aborted first -- issuing a second container request would make htmx
-    // QUEUE it, and a queued request replays on the next htmx:abort with its stale
-    // queue-time URL (no queue may ever form). Pure DOM, GET-only -- the
-    // read-only floor is untouched.
+    // their baked ro:refresh). On success the morph swaps fresh rows and the
+    // afterSwap handler clears the stale dim + re-hides the banner; on another
+    // failure the responseError handler keeps it stale. An in-flight container
+    // request is aborted first -- issuing a second container request would make
+    // htmx QUEUE it, and a queued request replays on the next htmx:abort with
+    // its stale queue-time URL (no queue may ever form). Pure DOM, GET-only --
+    // the read-only floor is untouched.
     {
       event: "click",
       selector: '[data-ro-action="retry"]',
@@ -2116,7 +2134,8 @@
         if (content && htmx2) {
           htmx2.trigger(content, "htmx:abort");
         }
-        if (refreshMode() === "Live") {
+        pruneSettledListRequests();
+        if (isLiveEnabled() && liveCanStreamHere()) {
           liveApply(true);
         } else {
           requestListRefresh();
@@ -2124,32 +2143,60 @@
         return true;
       }
     },
-    // Auto-refresh interval option (navbar #refresh-dropdown): persist the chosen
-    // mode in the ro_prefs cookie, re-arm the poll, and reflect it in the
-    // control. The Live option persists the literal 'Live' and rides
-    // the same path: liveApply opens/tears down the stream, applyRefresh then arms
-    // the poll chain per the EFFECTIVE seconds (0 while a stream is riding). A
-    // disabled Live option (multi-type/multi-cluster page) never fires (the
-    // browser suppresses clicks on disabled buttons). The dropdown opens through
-    // CSS hover/focus, so there is no open/close handler here -- only the
-    // selection. Kept its early-return (stop:true).
+    // The Live toggle: the whole update mode is this one boolean. Persist it
+    // first (the cookie is what a reload, and the server-rendered aria-pressed,
+    // read), then hand the transport its instruction -- liveApply(true) forces
+    // a fresh attempt even from a previously failed state, liveSetOff aborts
+    // and clears the warning surface without issuing any request. The toggle
+    // renders only where the server said `_stream` answers.
     {
       event: "click",
-      selector: '[data-ro-action="set-refresh"]',
+      selector: '[data-ro-action="toggle-live"]',
       stop: true,
-      handler: (event, matched) => {
-        const option = matched;
-        if (option.dataset.roInterval === "Live") {
-          roPrefsSetRefresh("Live");
-        } else {
-          const interval = parseRefreshSeconds(option.dataset.roInterval);
-          roPrefsSetRefresh(interval > 0 ? String(interval) : "Off");
-        }
-        liveApply(true);
-        syncRefreshUI();
-        applyRefresh();
-        option.blur();
+      handler: (event) => {
         event.preventDefault();
+        const on = !isLiveEnabled();
+        setLivePreference(on);
+        syncLiveToggle();
+        if (on) {
+          liveApply(true);
+        } else {
+          liveSetOff();
+        }
+        return true;
+      }
+    },
+    // Refresh now: EXACTLY one `_table` request per click, no timer armed, no
+    // preference written. The disabled paint is defence in depth -- a click
+    // arriving while the tracker is occupied (a queued keyboard repeat, a
+    // synthetic click) must not stack a second container request. Prune first:
+    // this click is the one gate that can rescue a tracker entry whose issuing
+    // element detached mid-request (its htmx:afterRequest never bubbled), so a
+    // swallowed terminal event cannot disable Refresh until a hard reload.
+    {
+      event: "click",
+      selector: '[data-ro-action="refresh-now"]',
+      stop: true,
+      handler: (event) => {
+        event.preventDefault();
+        pruneSettledListRequests();
+        if (listRequestsInFlight.size === 0) {
+          requestListRefresh();
+        }
+        syncRefreshNowButton();
+        return true;
+      }
+    },
+    // The Unavailable banner's Reload: this session can no longer stream (an
+    // auth terminal or a rejected admission), and no in-page retry can fix it.
+    // A full document load is the only recovery, so it is the only action.
+    {
+      event: "click",
+      selector: '[data-ro-action="reload"]',
+      stop: true,
+      handler: (event) => {
+        event.preventDefault();
+        window.location.reload();
         return true;
       }
     }
@@ -2627,6 +2674,9 @@
     virtComputeVisible();
     virtRenderWindow();
   }
+  function virtualizeReset() {
+    virtReset();
+  }
   function virtualizeAfterDelta(previousByKey, focusKey = null) {
     if (!virtualizerActive()) return;
     if (focusKey) virtualizeRevealKey(focusKey);
@@ -2766,19 +2816,14 @@
           return false;
         }
         const listTarget = target.id === "resource-list-content";
-        try {
-          if (listTarget) {
-            prepareListProjectionSwap(fragment);
-            virtualizePrepareSwap(fragment);
-          }
-          return idiomorph.morph(target, fragment.children, {
-            morphStyle: "innerHTML",
-            ignoreActiveValue: true
-          });
-        } catch (error) {
-          cancelListProjectionSwap(fragment);
-          throw error;
+        if (listTarget) {
+          prepareListProjectionSwap(fragment);
+          virtualizePrepareSwap(fragment);
         }
+        return idiomorph.morph(target, fragment.children, {
+          morphStyle: "innerHTML",
+          ignoreActiveValue: true
+        });
       }
     });
   }
@@ -2877,7 +2922,7 @@
     if (appliedLiveFilter?.content === content && appliedLiveFilter.draft === draft && appliedLiveFilter.revision === revision) {
       return;
     }
-    const visible = liveNameMatchKeys(roRowModel.rows, draft);
+    const visible = roRowModel.rows.length ? liveNameMatchKeys(roRowModel.rows, draft) : null;
     setListProjectionVisibleKeys(visible);
     content.querySelectorAll("tbody tr[data-key], .ro-cardlist > .ro-pcard[data-key]").forEach((item) => {
       item.classList.toggle(
@@ -4637,12 +4682,13 @@
     // [data-ro-action="toggle-tools"]) and the v1 form glue (the data-ro-toggle-button
     // change + the tools-form submit) lifted out of the dismantled legacy.js.
     ...miscBindings,
-    // refresh-domain tails LAST: the retry + set-refresh hooks were
-    // the monolith big click listener's own trailing branches, so registering
-    // them after the migrated leaves preserves the C1 order -- every leaf
-    // front-ran the monolith, and these ran at its end. Neither co-matches any
-    // selector above, so the position is observationally free; LAST documents
-    // their monolith origin.
+    // refresh-domain tails LAST: the retry hook and the navbar update controls
+    // (toggle-live / refresh-now / the Unavailable banner's reload) were the
+    // monolith big click listener's own trailing branches, so registering them
+    // after the migrated leaves preserves the C1 order -- every leaf front-ran
+    // the monolith, and these ran at its end. None co-matches any selector
+    // above, so the position is observationally free; LAST documents their
+    // monolith origin.
     ...refreshBindings
   ];
 
@@ -4848,7 +4894,6 @@
       runInitStep(() => applyLiveRowDeletions(update.deletedKeys));
     }
     [
-      noteRefreshRecovery,
       clearListStale,
       reapplyRowState,
       applyLiveNameFilter,
@@ -4887,7 +4932,6 @@
   document.addEventListener("htmx:beforeSwap", (event) => {
     const detail = event.detail;
     if (suppressListNotModified(event)) {
-      noteRefreshRecovery();
       clearListStale();
       return;
     }
@@ -4905,7 +4949,6 @@
       closeRowMenu();
       clearRowState();
       clearListStale();
-      pauseRefresh();
       liveResetPage();
       queueMicrotask(() => {
         if (!event.defaultPrevented && detail.shouldSwap !== false) return;
@@ -4925,7 +4968,6 @@
   }
   function retireCurrentScreenForBodySwap() {
     clearListStale();
-    pauseRefresh();
     liveResetPage();
   }
   function reloadCurrentHistoryEntry() {
@@ -5020,7 +5062,7 @@
   function runInit(yamlFoldsBuilt = false) {
     if (bodySwapTicket || bodyReloading) return;
     const steps = [
-      syncRefreshUI,
+      syncLiveToggle,
       collapseSectionsFromHash,
       highlightYamlLine,
       initLogsFollow,
@@ -5049,15 +5091,12 @@
       // same store right after.
       reapplyRowState,
       updateBulkBar,
-      // Live opens only after every synchronous body/model repair. In
-      // particular, virtualizeInit may detect a history-restored viewport
-      // slice and synchronously issue the mandatory full `_table` rebuild;
-      // its beforeRequest ownership must exist before liveApply decides
-      // whether to open or suspend. Keep liveApply immediately BEFORE
-      // applyRefresh so the poll chain still arms against the resulting Live
-      // state: a riding stream disarms it, a fallback selects 5s.
-      liveApply,
-      applyRefresh
+      // Live opens only after every synchronous body/model repair, and is the
+      // LAST step for that reason. In particular, virtualizeInit may detect a
+      // history-restored viewport slice and synchronously issue the mandatory
+      // full `_table` rebuild; its beforeRequest ownership must exist before
+      // liveApply decides whether to open or suspend.
+      liveApply
     ];
     if (!yamlFoldsBuilt) steps.splice(1, 0, buildYamlFolds);
     steps.forEach(runInitStep);

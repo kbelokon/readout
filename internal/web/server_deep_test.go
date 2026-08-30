@@ -555,11 +555,6 @@ func TestObjectLinkOwnerLinkAndSelectorPodsHelpers(t *testing.T) {
 }
 
 func TestJoinCustomColumnsErrorAndEmptyExpressionBranches(t *testing.T) {
-	app := newTestServer(t)
-	cluster, ok := app.manager.Get("test")
-	if !ok {
-		t.Fatal("test cluster missing")
-	}
 	table := kube.Table{
 		Resource: kube.ResourceType{Group: "", Version: "v1", APIVersion: "v1", Plural: "pods", Kind: "Pod", Namespaced: true},
 		Columns:  []kube.Column{{Name: "Name"}},
@@ -568,13 +563,21 @@ func TestJoinCustomColumnsErrorAndEmptyExpressionBranches(t *testing.T) {
 			Object: map[string]any{"metadata": map[string]any{"name": "nginx", "namespace": "missing"}},
 		}},
 	}
-	app.joinCustomColumns(httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/missing/pods", nil).Context(), cluster.Client, &table, "missing", false, "Bad=[", nil)
+	// An unparsable expression is skipped whole: no column, no cell, no panic.
+	joinCustomColumns(&table, "Bad=[", nil)
 	if len(table.Columns) != 1 || len(table.Rows[0].Cells) != 1 {
 		t.Fatalf("invalid expression should leave table untouched: %#v", table)
 	}
-	app.joinCustomColumns(httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/missing/pods", nil).Context(), cluster.Client, &table, "missing", false, "Image=spec.containers[0].image", nil)
-	if len(table.Rows[0].Cells) != 2 || table.Rows[0].Cells[1] != nil {
-		t.Fatalf("list error should append nil custom cell: %#v", table.Rows[0].Cells)
+	// An empty spec (every part unparsable or blank) is the same no-op.
+	joinCustomColumns(&table, ";", nil)
+	if len(table.Columns) != 1 || len(table.Rows[0].Cells) != 1 {
+		t.Fatalf("empty expression list should leave table untouched: %#v", table)
+	}
+	// An object that simply lacks the path yields an EMPTY cell (the engine is
+	// AllowMissingKeys); the cell count still matches the columns.
+	joinCustomColumns(&table, "Image=spec.containers[0].image", nil)
+	if len(table.Rows[0].Cells) != 2 || table.Rows[0].Cells[1] != "" {
+		t.Fatalf("missing path should append an empty custom cell: %#v", table.Rows[0].Cells)
 	}
 }
 

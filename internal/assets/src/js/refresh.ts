@@ -1,36 +1,28 @@
-// refresh.ts -- the auto-refresh tick chain, migrated
-// from legacy.js. OFF by default; the user picks an interval (or Live) in the
-// navbar #refresh-dropdown and the choice persists in the ro_prefs cookie.
-// When an interval is set and a resource-list page is showing, the tick
-// re-fetches the `_table` fragment so it morphs in place.
+// refresh.ts -- the list `_table` request path and the two update controls in
+// the navbar (the Live toggle and the one-shot Refresh button). There is NO
+// timer here: readout never re-fetches a list on a schedule. Either the user
+// holds Live open (live.ts owns that transport) or the user asks for exactly one
+// refresh; a stored preference of exactly "Live" is the only thing that turns
+// the stream on, and it persists in the ro_prefs cookie.
 //
-// This module owns the refresh STATE machine: the single pending tick timer
-// (a setTimeout chain, not setInterval -- the backoff wait re-derives every
-// tick), the failure-stage backoff, and the one in-flight request tracker that
-// keep ticks from stomping user requests or queueing inside htmx. The pure
-// cadence/backoff math lives in live-policy.ts (unit-tested); this module is
-// the DOM/htmx glue around it. The request-lifecycle listeners
+// This module owns the ONE in-flight `_table` request tracker: the identity-keyed
+// map that keeps a user gesture from being stomped by a programmatic re-fetch,
+// tells live.ts when to suspend/resume the stream, and drives the Refresh
+// button's in-flight disabled state. The request-lifecycle listeners
 // (configRequest/beforeRequest/afterRequest) are attached at module load.
 //
 // Cross-module seams (call-time, so the bundle's eval order is irrelevant):
-//   - live.ts contributes liveFallbackSeconds() (the 5s degraded cadence) and
-//     subscribes to this module's one `_table` request tracker;
-//   - stale.ts reads refreshNextAt() for the banner countdown and owns
-//     updateStaleCountdown (called here whenever the armed time changes).
+//   - live.ts subscribes to this module's one `_table` request tracker and
+//     exposes liveApply/liveSetOff for the toggle;
+//   - the pure reconnect math lives in live-policy.ts (unit-tested).
 // The Go needle contract (internal/web/list_redesign_test.go) pins RO-No-Push /
 // 'dataset.liveUrl === 'location'' / '/_table' / 'xhr.readyState === 4 || 0' /
 // htmx:abort surviving in the bundle.
 
 import type { Binding } from './events.js';
 import { configureListValidatorRequest } from './list-etag.js';
-import { liveApply, liveFallbackSeconds } from './live.js';
-import {
-    nextFailureStage,
-    effectivePollSeconds as policyEffectivePollSeconds,
-    refreshDelaySeconds as policyRefreshDelaySeconds,
-} from './live-policy.js';
+import { liveApply, liveCanStreamHere, liveSetOff, paintLiveToggleState } from './live.js';
 import { readPrefs, roPrefsSetRefresh } from './prefs.js';
-import { updateStaleCountdown } from './stale.js';
 
 // htmx is a classic-script global loaded before this bundle; reach it through a
 // typed accessor (the modules are vendor-agnostic otherwise). Only the surfaces
@@ -45,21 +37,6 @@ interface Htmx {
 }
 function getHtmx(): Htmx | undefined {
     return (window as unknown as { htmx?: Htmx }).htmx;
-}
-
-// THE pending tick timer -- a setTimeout CHAIN, not setInterval: the wait
-// before the next tick depends on the failure backoff stage, so
-// every tick / failure / recovery re-derives it.
-let refreshTimerId: number | null = null;
-// Epoch ms of the next armed tick (0 = none) -- the stale banner's live
-// "Retrying in Ns" countdown reads it through refreshNextAt().
-let refreshNextAt = 0;
-// Consecutive failed list-refresh attempts since the last success; 0 = healthy.
-let refreshFailureStage = 0;
-
-// refreshNextAt() -- the armed-time getter for stale.ts's banner countdown.
-export function refreshNextAtMs(): number {
-    return refreshNextAt;
 }
 
 interface HtmxRequestDetail {
@@ -214,53 +191,6 @@ export function handleRefreshAfterRequest(event: Event): void {
 
 document.addEventListener('htmx:afterRequest', handleRefreshAfterRequest);
 
-// Persisted numeric modes share one strict parser across migration, polling,
-// UI paint, and explicit picks. Number.parseInt accepts a numeric prefix
-// ("5junk" -> 5), which disagrees with the Go SSR reader and can silently turn a
-// corrupt preference into polling. Fold a finite array of ASCII digits instead
-// of using a mutable regular expression; this accepts the integer spellings
-// strconv.Atoi accepts for a positive cadence and rejects every partial parse.
-function parseRefreshSeconds(mode: unknown): number {
-    if (typeof mode !== 'string') {
-        return 0;
-    }
-    const unsigned = mode.startsWith('+') ? mode.slice(1) : mode;
-    const seconds = Array.from(unsigned).reduce((value, char) => {
-        const digit = char.charCodeAt(0) - 48;
-        return digit >= 0 && digit <= 9 ? value * 10 + digit : Number.NaN;
-    }, 0);
-    return Number.isSafeInteger(seconds) ? seconds : 0;
-}
-
-// refreshMode returns the persisted auto-refresh mode ('Off', an interval in
-// seconds as a string, 'Live'; '' = no preference) from the ro_prefs cookie.
-// The legacy `roRefresh` localStorage key migrates here ONCE (the cookie is
-// canonical afterwards): a read-once fallback consulted only while the cookie carries no
-// refresh value, written through to the cookie immediately.
-export function refreshMode(): string {
-    const stored = readPrefs().refresh;
-    if (stored) {
-        return stored;
-    }
-    let legacy: string | null = null;
-    try {
-        legacy = window.localStorage.getItem('roRefresh');
-    } catch {
-        // localStorage unavailable (e.g. privacy mode): keep the absent value.
-    }
-    if (!legacy) {
-        return '';
-    }
-    const secs = parseRefreshSeconds(legacy);
-    const mode = secs > 0 ? String(secs) : 'Off';
-    roPrefsSetRefresh(mode); // write-through: the cookie is canonical from here
-    return mode;
-}
-
-export function refreshInterval(): number {
-    return parseRefreshSeconds(refreshMode()); // 'Off'/'Live'/junk -> 0
-}
-
 // listTableURL derives the `_table` partial URL from the LIVE document URL at
 // fire time (path + "/_table" + the current query) -- the replacement for
 // the render-time-baked PartialURL contract, so a tick keeps the user's sort/filter.
@@ -296,174 +226,67 @@ export function requestListRefresh(): void {
 (window as unknown as { requestListRefresh: typeof requestListRefresh }).requestListRefresh =
     requestListRefresh;
 
-export function fireRefresh(): void {
-    if (document.hidden) {
-        return; // paused while the tab is in the background
-    }
-    pruneSettledListRequests();
-    if (listRequestsInFlight.size > 0) {
-        // Never stomp a user request or queue behind an unsettled container
-        // request. The next tick re-checks the same identity-owned tracker.
-        return;
-    }
-    requestListRefresh();
+// --- the Live preference ----------------------------------------------------
+
+// isLiveEnabled is THE stored-preference read: Live is on only when the
+// ro_prefs cookie carries exactly "Live". Everything else -- absent, "Off", a
+// numeric cadence written by an older build, junk -- is off, so a profile that
+// predates this version renders an unpressed toggle and issues no request. The
+// legacy `roRefresh` localStorage key is no longer consulted at all.
+export function isLiveEnabled(): boolean {
+    return readPrefs().refresh === 'Live';
 }
 
-// effectivePollSeconds is the poll cadence the tick chain actually arms: the
-// chosen interval, or Live's 5s FALLBACK while the stream is degraded. Plain
-// 'Live' with a riding stream stays 0 (the chain self-disarms). The fold lives
-// in live-policy.ts; this reads the live facts.
-export function effectivePollSeconds(): number {
-    const mode = refreshMode();
-    return policyEffectivePollSeconds(mode, parseRefreshSeconds(mode), liveFallbackSeconds());
+// setLivePreference persists the ONLY two values this build writes.
+function setLivePreference(on: boolean): void {
+    roPrefsSetRefresh(on ? 'Live' : 'Off');
 }
 
-// refreshDelaySeconds is the wait until the NEXT tick: the backoff over
-// the effective cadence and the failure stage (live-policy.ts).
-function refreshDelaySeconds(): number {
-    return policyRefreshDelaySeconds(effectivePollSeconds(), refreshFailureStage);
+// --- the navbar update controls ---------------------------------------------
+
+function liveToggleButton(): HTMLElement | null {
+    return document.querySelector('[data-ro-action="toggle-live"]');
 }
 
-// scheduleRefreshTick (re)arms THE single pending tick refreshDelaySeconds()
-// from NOW. Idempotent: any prior timer is cleared first, so init passes,
-// interval picks, failures, and recoveries all converge on one armed timer
-// (hx-boost body swaps can never stack timers). A fired tick re-schedules
-// BEFORE issuing its request so a skipped fire never kills the chain.
-export function scheduleRefreshTick(): void {
-    if (refreshTimerId !== null) {
-        window.clearTimeout(refreshTimerId);
-        refreshTimerId = null;
-    }
-    const delay = refreshDelaySeconds();
-    if (delay <= 0) {
-        refreshNextAt = 0;
-        updateStaleCountdown();
-        return;
-    }
-    // Derive milliseconds once. Besides keeping the countdown and timeout on the
-    // exact same clock, this makes a bad unit conversion immediately observable
-    // without executing a recursively short timer chain.
-    const delayMs = delay * 1000;
-    refreshNextAt = Date.now() + delayMs;
-    refreshTimerId = window.setTimeout(() => {
-        refreshTimerId = null;
-        scheduleRefreshTick();
-        fireRefresh();
-    }, delayMs);
-    updateStaleCountdown();
+// syncLiveToggle reflects the stored preference in the toggle's aria-pressed.
+// The server renders it from the same cookie; this re-derives it after a boosted
+// body swap and after every toggle click. The dot's colour is NOT this reading:
+// it also needs the transport state live.ts owns, which a freshly swapped-in
+// button does not carry, so repaint that here too. The toggle is absent on pages
+// the server says cannot stream (Navbar.LiveAvailable), which is not an error.
+export function syncLiveToggle(): void {
+    liveToggleButton()?.setAttribute('aria-pressed', isLiveEnabled() ? 'true' : 'false');
+    paintLiveToggleState();
 }
 
-// A history popstate publishes its destination URL before HTMX installs the
-// cached body. Pause the old screen's chain across that ownership gap; the
-// restored body's runInit/applyRefresh re-arms it after a successful swap. A
-// failed/cancelled swap deliberately leaves it paused until the hard reload.
-export function pauseRefresh(): void {
-    if (refreshTimerId !== null) {
-        window.clearTimeout(refreshTimerId);
-        refreshTimerId = null;
-    }
-    refreshNextAt = 0;
-    updateStaleCountdown();
+// The Refresh button is disabled exactly while a `_table` request is in flight
+// (its own, or a user sort/filter), so a second click cannot queue a request
+// inside htmx. The tracker is the authority; this is its paint.
+function syncRefreshNowButton(): void {
+    const button = document.querySelector(
+        '[data-ro-action="refresh-now"]',
+    ) as HTMLButtonElement | null;
+    if (button) button.disabled = listRequestsInFlight.size > 0;
 }
 
-// (Re)arm the poll from the stored preference. Runs on every init pass (a fresh
-// full-page render is by definition not stale) and on an interval pick -- both
-// end any failure backoff: the next failure escalates from scratch.
-export function applyRefresh(): void {
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-}
-
-// Reflect the stored preference in the navbar control (label + active option +
-// an "on" class for the livedot styling). Live labels "Live", activates ONLY
-// the Live option, and pulses the livedot through the refresh-on hook in EVERY
-// Live substate. Re-run on every init pass because an hx-boost swap re-renders
-// the navbar.
-export function syncRefreshUI(): void {
-    const mode = refreshMode();
-    const live = mode === 'Live';
-    const secs = parseRefreshSeconds(mode);
-    const label = document.getElementById('refresh-label');
-    if (label) {
-        if (live) {
-            label.textContent = 'Live';
-        } else if (secs > 0) {
-            label.textContent = `${secs}s`;
-        } else {
-            label.textContent = 'Off';
-        }
-    }
-    document.querySelectorAll('[data-ro-action="set-refresh"]').forEach((opt) => {
-        const value = (opt as HTMLElement).dataset.roInterval;
-        opt.classList.toggle(
-            'is-active',
-            value !== undefined &&
-                (live ? value === 'Live' : value !== 'Live' && parseRefreshSeconds(value) === secs),
-        );
-    });
-    const dropdown = document.getElementById('refresh-dropdown');
-    if (dropdown) {
-        dropdown.classList.toggle('refresh-on', live || secs > 0);
-    }
-}
-
-// noteRefreshFailure escalates the backoff one stage and re-arms the pending
-// tick at the escalated wait, measured from the failure itself -- so the
-// banner's countdown always aims at the real next attempt.
-export function noteRefreshFailure(): void {
-    refreshFailureStage = nextFailureStage(refreshFailureStage);
-    scheduleRefreshTick();
-}
-
-// noteRefreshRecovery: the FIRST successful swap after >=1 failures resets the
-// backoff and announces it -- "refresh resumed" is the SECOND sanctioned toast
-// trigger. Plain successes (stage 0) stay silent.
-export function noteRefreshRecovery(): void {
-    if (refreshFailureStage === 0) {
-        return;
-    }
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-    const toast = window.roToast; // the typed roToast seam (types.ts global)
-    if (typeof toast === 'function') {
-        toast('Refresh resumed');
-    }
-}
-
-// Refresh once immediately when returning to a backgrounded tab, so stale data
-// updates right away instead of waiting up to a full poll cadence (the Live
-// fallback's 5s counts -- effectivePollSeconds; a RIDING stream needs no
-// catch-up poll: its reopen pushes a fresh full frame).
-export function handleRefreshVisibilityChange(): void {
-    if (!document.hidden && effectivePollSeconds() > 0) {
-        fireRefresh();
-    }
-}
-
-document.addEventListener('visibilitychange', handleRefreshVisibilityChange);
+subscribeListRequests(syncRefreshNowButton);
 
 // --- dispatcher bindings ----------------------------------------------------
-// The two refresh-domain click branches that were the LAST resident tails of the
-// monolith's big click listener (C1). Both early-returned in the monolith ->
-// stop:true. They never co-match (one is .ro-stale-retry, the other
-// .refresh-option), and neither co-matches a row/palette/columns selector, so
-// their position at the END of the dispatcher's leaf list (after the migrated
-// clusters) preserves the C1 contract: every migrated leaf still front-ran the
-// monolith, and these were the monolith's own trailing branches. Both now route
-// on data-ro-action ("retry" / "set-refresh") instead of the presentational
-// .ro-stale-retry / .refresh-option classes -- the interval rides data-ro-interval.
+// The refresh-domain click branches. All four early-returned in the monolith's
+// one big click listener -> stop:true, and none co-matches another leaf's
+// selector (or each other's), so their position at the END of the dispatcher's
+// leaf list preserves the C1 contract.
 export const refreshBindings: Binding[] = [
-    // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
+    // Stale-banner retry: re-fire the (read-only) list GET on
     // #resource-list-content through the shared refresh path (location-backed
     // lists derive `_table` from location.href; multi-type containers trigger
-    // their baked ro:refresh). On success the morph swaps fresh
-    // rows and the afterSwap handler clears the stale dim + re-hides the banner;
-    // on another failure the responseError handler keeps it stale. An in-flight
-    // container request (a HUNG tick is exactly the state this button exists for)
-    // is aborted first -- issuing a second container request would make htmx
-    // QUEUE it, and a queued request replays on the next htmx:abort with its stale
-    // queue-time URL (no queue may ever form). Pure DOM, GET-only -- the
-    // read-only floor is untouched.
+    // their baked ro:refresh). On success the morph swaps fresh rows and the
+    // afterSwap handler clears the stale dim + re-hides the banner; on another
+    // failure the responseError handler keeps it stale. An in-flight container
+    // request is aborted first -- issuing a second container request would make
+    // htmx QUEUE it, and a queued request replays on the next htmx:abort with
+    // its stale queue-time URL (no queue may ever form). Pure DOM, GET-only --
+    // the read-only floor is untouched.
     {
         event: 'click',
         selector: '[data-ro-action="retry"]',
@@ -475,7 +298,16 @@ export const refreshBindings: Binding[] = [
             if (content && htmx) {
                 htmx.trigger(content, 'htmx:abort');
             }
-            if (refreshMode() === 'Live') {
+            // Prune first, for the same reason refresh-now does: a tracker entry
+            // stranded by an element that detached mid-request would otherwise
+            // send liveApply straight to `suspended` and swallow this click.
+            pruneSettledListRequests();
+            // Live is the retry ONLY where Live can actually stream. The
+            // preference is global but the stream is per page, so on a
+            // multi-cluster, multi-type or watchless list -- which still shows
+            // this banner -- the one-shot list GET is the only thing that can
+            // clear it, and routing on the cookie alone made Retry a no-op there.
+            if (isLiveEnabled() && liveCanStreamHere()) {
                 liveApply(true);
             } else {
                 requestListRefresh();
@@ -483,32 +315,60 @@ export const refreshBindings: Binding[] = [
             return true;
         },
     },
-    // Auto-refresh interval option (navbar #refresh-dropdown): persist the chosen
-    // mode in the ro_prefs cookie, re-arm the poll, and reflect it in the
-    // control. The Live option persists the literal 'Live' and rides
-    // the same path: liveApply opens/tears down the stream, applyRefresh then arms
-    // the poll chain per the EFFECTIVE seconds (0 while a stream is riding). A
-    // disabled Live option (multi-type/multi-cluster page) never fires (the
-    // browser suppresses clicks on disabled buttons). The dropdown opens through
-    // CSS hover/focus, so there is no open/close handler here -- only the
-    // selection. Kept its early-return (stop:true).
+    // The Live toggle: the whole update mode is this one boolean. Persist it
+    // first (the cookie is what a reload, and the server-rendered aria-pressed,
+    // read), then hand the transport its instruction -- liveApply(true) forces
+    // a fresh attempt even from a previously failed state, liveSetOff aborts
+    // and clears the warning surface without issuing any request. The toggle
+    // renders only where the server said `_stream` answers.
     {
         event: 'click',
-        selector: '[data-ro-action="set-refresh"]',
+        selector: '[data-ro-action="toggle-live"]',
         stop: true,
-        handler: (event, matched) => {
-            const option = matched as HTMLElement;
-            if (option.dataset.roInterval === 'Live') {
-                roPrefsSetRefresh('Live');
-            } else {
-                const interval = parseRefreshSeconds(option.dataset.roInterval as string);
-                roPrefsSetRefresh(interval > 0 ? String(interval) : 'Off');
-            }
-            liveApply(true); // force: an explicit pick re-attempts even after a fallback
-            syncRefreshUI();
-            applyRefresh();
-            option.blur(); // close the hover-dropdown after a keyboard/touch pick
+        handler: (event) => {
             event.preventDefault();
+            const on = !isLiveEnabled();
+            setLivePreference(on);
+            syncLiveToggle();
+            if (on) {
+                liveApply(true);
+            } else {
+                liveSetOff();
+            }
+            return true;
+        },
+    },
+    // Refresh now: EXACTLY one `_table` request per click, no timer armed, no
+    // preference written. The disabled paint is defence in depth -- a click
+    // arriving while the tracker is occupied (a queued keyboard repeat, a
+    // synthetic click) must not stack a second container request. Prune first:
+    // this click is the one gate that can rescue a tracker entry whose issuing
+    // element detached mid-request (its htmx:afterRequest never bubbled), so a
+    // swallowed terminal event cannot disable Refresh until a hard reload.
+    {
+        event: 'click',
+        selector: '[data-ro-action="refresh-now"]',
+        stop: true,
+        handler: (event) => {
+            event.preventDefault();
+            pruneSettledListRequests();
+            if (listRequestsInFlight.size === 0) {
+                requestListRefresh();
+            }
+            syncRefreshNowButton();
+            return true;
+        },
+    },
+    // The Unavailable banner's Reload: this session can no longer stream (an
+    // auth terminal or a rejected admission), and no in-page retry can fix it.
+    // A full document load is the only recovery, so it is the only action.
+    {
+        event: 'click',
+        selector: '[data-ro-action="reload"]',
+        stop: true,
+        handler: (event) => {
+            event.preventDefault();
+            window.location.reload();
             return true;
         },
     },

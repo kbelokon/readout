@@ -7,6 +7,7 @@ import {
   type Route,
 } from '@playwright/test';
 import { controlURL } from './playwright.config';
+import { resetFixture } from './hub';
 
 // Negotiated Live v2, end to end.
 //
@@ -111,20 +112,13 @@ interface LiveStatsSnapshot {
   seq: number;
   connections: number;
   resyncs: number;
-  fallbacks: number;
+  reconnects: number;
   v2Snapshots: number;
   deltas: number;
   invalidFrames: number;
   deltaBytes: number;
   inFlightRequests: number;
   resyncsInWindow: number;
-}
-
-async function control(path: string): Promise<void> {
-  const response = await fetch(controlURL + path);
-  if (!response.ok) {
-    throw new Error(`control ${path}: ${response.status} ${await response.text()}`);
-  }
 }
 
 async function scriptEvents(events: object[]): Promise<void> {
@@ -138,6 +132,11 @@ async function scriptEvents(events: object[]): Promise<void> {
   }
 }
 
+// openWatchCount names every open ?watch=true connection on the fake
+// apiserver. It answers "is the POD watching this collection" and nothing
+// finer (see hub.ts): a zero here is never evidence that a browser stopped
+// streaming -- that is asserted through the transport probe
+// (requests/generations) and roLive.stats instead.
 async function openWatchCount(): Promise<number> {
   const response = await fetch(`${controlURL}/__control/watch-script`);
   if (!response.ok) throw new Error(`watch snapshot: ${response.status}`);
@@ -190,6 +189,14 @@ function liveStats(page: Page): Promise<LiveStatsSnapshot> {
 
 function selectedKeys(page: Page): Promise<string[]> {
   return page.evaluate(() => window.roRowState.selectedKeys());
+}
+
+// The semantic half of Live staleness: the marker stale.ts sets the instant a
+// stream drops, independent of the delayed visual dim.
+function semanticallyStale(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () => document.getElementById('resource-list-content')?.dataset.roStale === 'true'
+  );
 }
 
 async function installLiveTransportProbe(
@@ -624,18 +631,30 @@ async function installLiveTransportProbe(
   });
 }
 
-async function pickLive(page: Page): Promise<void> {
-  await page.locator('#refresh-dropdown').hover();
-  await page.locator('.refresh-option[data-ro-interval="Live"]').click();
-  await page.mouse.move(200, 400);
+// enableLive turns Live on through the topbar toggle. There is no interval
+// menu any more: the whole update mode is this one boolean.
+async function enableLive(page: Page): Promise<void> {
+  await page.locator('[data-ro-action="toggle-live"]').click();
+  await expect(page.locator('[data-ro-action="toggle-live"]')).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
 }
 
-async function expectLiveFallbackBanner(page: Page): Promise<void> {
+// The RECOVERABLE stale banner: a retry is still coming, so the copy is the
+// last-good-data variant and the action is Retry, never the terminal Reload.
+// The visual half is delayed by a three second grace (stale.ts), so callers
+// reach here only once that grace has expired or a reconnect has already
+// failed.
+async function expectRecoverableStaleBanner(page: Page): Promise<void> {
   const banner = page.locator('.ro-stale-banner');
   await expect(banner).toBeVisible();
-  await expect(banner.locator('.bn-title')).toHaveText('Live unavailable, polling ·');
-  await expect(banner.locator('[data-stale-countdown]')).toHaveText(/^[0-5]s$/u);
-  await expect(banner.locator('[data-ro-action="retry"]')).toHaveText('Retry');
+  await expect(banner.locator('.bn-body:not(.ro-stale-unavailable) .bn-title')).toHaveText(
+    'Auto-refresh failed — showing the last good data'
+  );
+  await expect(banner.locator('.bn-body.ro-stale-unavailable')).toBeHidden();
+  await expect(banner.locator('[data-ro-action="retry"]')).toHaveText('Retry now');
+  await expect(banner.locator('[data-ro-action="reload"]')).toBeHidden();
 }
 
 async function setHidden(page: Page, hidden: boolean): Promise<void> {
@@ -716,7 +735,7 @@ async function openLiveV2(page: Page): Promise<{
 }> {
   const before = await probeSnapshot(page);
   const requestPromise = page.waitForRequest(isStreamRequest, { timeout: 10_000 });
-  await pickLive(page);
+  await enableLive(page);
   const networkRequest = await requestPromise;
   const generation = networkRequest.headers()['ro-live-generation'];
   expect(generation).toBeTruthy();
@@ -767,19 +786,21 @@ async function holdNextStreamRequest(page: Page): Promise<HeldTableRequest> {
   const released = new Promise<void>((resolve) => {
     releaseResolve = resolve;
   });
-  await page.route(
-    '**/_stream*',
-    async (route) => {
-      startedResolve(route.request());
-      await released;
-      try {
-        await route.continue();
-      } catch {
-        // Some tests intentionally let the browser abort this held request.
-      }
-    },
-    { times: 1 }
-  );
+  let used = false;
+  await page.route('**/_stream*', async (route) => {
+    if (used) {
+      await route.fallback();
+      return;
+    }
+    used = true;
+    startedResolve(route.request());
+    await released;
+    try {
+      await route.continue();
+    } catch {
+      // Some tests intentionally let the browser abort this held request.
+    }
+  });
   return { started, release: releaseResolve };
 }
 
@@ -795,25 +816,32 @@ async function holdNextTableRequest(
   const released = new Promise<void>((resolve) => {
     releaseResolve = resolve;
   });
-  await page.route(
-    '**/_table*',
-    async (route) => {
-      startedResolve(route.request());
-      await released;
-      if (outcome === 'continue') {
-        await route.continue();
-      } else if (outcome === 304) {
-        await route.fulfill({ status: 304 });
-      } else {
-        await route.fulfill({
-          status: 500,
-          contentType: 'text/html; charset=utf-8',
-          body: '<p>injected list failure</p>',
-        });
-      }
-    },
-    { times: 1 }
-  );
+  let used = false;
+  // Self-retiring rather than `{ times: 1 }`: an exhausted times-limited route
+  // is torn down at the instant its last request resolves, and a request the
+  // page issues in that same turn -- which is exactly what the settling list
+  // request causes Live to do -- can be dropped as interception unwinds. A
+  // handler that stays registered and falls through never toggles interception.
+  await page.route('**/_table*', async (route) => {
+    if (used) {
+      await route.fallback();
+      return;
+    }
+    used = true;
+    startedResolve(route.request());
+    await released;
+    if (outcome === 'continue') {
+      await route.continue();
+    } else if (outcome === 304) {
+      await route.fulfill({ status: 304 });
+    } else {
+      await route.fulfill({
+        status: 500,
+        contentType: 'text/html; charset=utf-8',
+        body: '<p>injected list failure</p>',
+      });
+    }
+  });
   return { started, release: releaseResolve };
 }
 
@@ -834,8 +862,12 @@ async function heldContainerRefresh(
     ).requestListRefresh()
   );
   await held.started;
-  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
   await expect.poll(async () => (await liveStats(page)).inFlightRequests).toBe(1);
+  // The user's request owns the container: Live has already aborted its stream
+  // and parked, so no replacement generation can be minted while the request is
+  // held. (The upstream watch is NOT the oracle for this -- the WatchHub keeps
+  // the source for everyone else.)
+  await expect.poll(async () => (await liveStats(page)).state).toBe('suspended');
   expect(uniqueGenerations(await probeSnapshot(page))).toHaveLength(generationsBefore);
   held.release();
   const response = await responsePromise;
@@ -853,7 +885,7 @@ async function heldContainerRefresh(
 }
 
 test.beforeEach(async () => {
-  await control('/__control/reset');
+  await resetFixture();
 });
 
 test('negotiates v2 with one unreserved generation and commits an echoed initial snapshot', async ({
@@ -906,7 +938,7 @@ test('an ro-live frame completes v2 negotiation when a proxy strips response hea
   expect(await liveStats(page)).toMatchObject({ state: 'open', seq: 1 });
 });
 
-test('a stream fetch held before response headers enters visible fallback without opening a watch', async ({
+test('a stream fetch held past the first-frame deadline reconnects and marks the rows stale', async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'desktop Live controls');
@@ -914,41 +946,56 @@ test('a stream fetch held before response headers enters visible fallback withou
   await page.goto(PODS);
   await page.clock.install();
   const held = await holdNextStreamRequest(page);
-  const failed = page.waitForEvent('requestfailed', {
-    predicate: isStreamRequest,
-    timeout: 10_000,
-  });
 
-  await pickLive(page);
+  await enableLive(page);
   await held.started;
   expect(await liveStats(page)).toMatchObject({
     state: 'connecting',
     connections: 1,
     v2Snapshots: 0,
-    fallbacks: 0,
+    reconnects: 0,
   });
   expect((await probeSnapshot(page)).responses).toHaveLength(0);
-  expect(await openWatchCount()).toBe(0);
 
+  // Armed here, immediately before the deadline that causes it: the client
+  // aborts the held fetch when the first-frame timer expires, and the browser
+  // reports that as a failed request whether the route is released before or
+  // after. Registering it earlier would burn the waiter's budget on setup.
+  const failed = page.waitForEvent('requestfailed', {
+    predicate: isStreamRequest,
+    timeout: 15_000,
+  });
   await page.clock.fastForward(30_001);
   await expect
     .poll(async () => (await liveStats(page)).state, { timeout: 5_000 })
-    .toBe('fallback');
+    .toBe('reconnecting');
   held.release();
   await failed;
   expect(await liveStats(page)).toMatchObject({
     connections: 1,
     v2Snapshots: 0,
-    fallbacks: 1,
+    reconnects: 1,
   });
   const probe = await probeSnapshot(page);
   expect(probe.responses).toHaveLength(0);
   expect(probe.frames).toHaveLength(0);
-  await expectLiveFallbackBanner(page);
-  expect(await openWatchCount()).toBe(0);
+
+  // The projection is last-known from the instant the deadline expired, but
+  // the VISUAL half waits out the three second grace -- a stream that dies
+  // during a pod rollout must not flash a warning at the user. With the clock
+  // frozen no timer can fire, so this is observed, not raced.
+  expect(await semanticallyStale(page)).toBe(true);
+  await expect(page.locator('.ro-stale-banner')).toBeHidden();
+
+  // Fail every retry from here, then release rung 1 of the ladder: the FIRST
+  // failed reconnect ends the grace early, so the banner is up well short of
+  // the three seconds it would otherwise have waited.
+  await page.route('**/_stream*', (route) => route.abort());
+  await page.clock.fastForward(1_000);
+  await expectRecoverableStaleBanner(page);
 });
 
-test('a negotiated 200 stream without a first frame enters visible fallback and releases its watch', async ({
+test('a negotiated 200 stream without a first frame reconnects rather than falling back', async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'desktop Live controls');
@@ -957,7 +1004,7 @@ test('a negotiated 200 stream without a first frame enters visible fallback and 
   await page.clock.install();
 
   const requestPromise = page.waitForRequest(isStreamRequest, { timeout: 10_000 });
-  await pickLive(page);
+  await enableLive(page);
   await requestPromise;
   await expect
     .poll(async () => (await probeSnapshot(page)).responses.length, { timeout: 5_000 })
@@ -970,7 +1017,7 @@ test('a negotiated 200 stream without a first frame enters visible fallback and 
     state: 'connecting',
     connections: 1,
     v2Snapshots: 0,
-    fallbacks: 0,
+    reconnects: 0,
   });
 
   // Advance the browser-owned first-frame deadline, not wall time. The server
@@ -979,14 +1026,19 @@ test('a negotiated 200 stream without a first frame enters visible fallback and 
   await page.clock.fastForward(30_001);
   await expect
     .poll(async () => (await liveStats(page)).state, { timeout: 5_000 })
-    .toBe('fallback');
+    .toBe('reconnecting');
   expect(await liveStats(page)).toMatchObject({
     connections: 1,
     v2Snapshots: 0,
-    fallbacks: 1,
+    reconnects: 1,
   });
-  await expectLiveFallbackBanner(page);
-  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
+  // Same split as above: the marker lands at once, the dim and the banner only
+  // after a failed retry (or the full grace).
+  expect(await semanticallyStale(page)).toBe(true);
+  await expect(page.locator('.ro-stale-banner')).toBeHidden();
+  await page.route('**/_stream*', (route) => route.abort());
+  await page.clock.fastForward(1_000);
+  await expectRecoverableStaleBanner(page);
 });
 
 test('a later canceler of htmx:beforeRequest cannot strand Live suspended', async ({
@@ -1080,7 +1132,7 @@ test('an Off-mode table request already in flight makes an explicit Live pick wa
   await expect.poll(async () => (await liveStats(page)).inFlightRequests).toBe(1);
   expect((await probeSnapshot(page)).requests).toHaveLength(0);
 
-  await pickLive(page);
+  await enableLive(page);
   expect(await liveStats(page)).toMatchObject({
     state: 'suspended',
     connections: 0,
@@ -1481,7 +1533,7 @@ test('an Event with an unknown involved kind applies as a Live delta without res
   await expect(row.locator('.kind-tile')).toHaveAttribute('style', /--kh:/u);
   expect(await liveStats(page)).toMatchObject({
     resyncs: before.resyncs,
-    fallbacks: before.fallbacks,
+    reconnects: before.reconnects,
     invalidFrames: before.invalidFrames,
   });
   expect(uniqueGenerations(await probeSnapshot(page))).toEqual([generation]);
@@ -1497,21 +1549,23 @@ test('mid-stream EOF reopens once with a fresh generation and one snapshot', asy
   await page.clock.install();
   const statsBefore = await liveStats(page);
   const beforeEOF = await probeSnapshot(page);
+  const listTraffic: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.endsWith('/_table')) listTraffic.push(request.url());
+  });
 
   await closeCurrentStream(page);
-  await expect.poll(async () => (await liveStats(page)).state, { timeout: 5_000 }).toBe('fallback');
-  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
+  await expect.poll(async () => (await liveStats(page)).state, { timeout: 5_000 }).toBe('reconnecting');
   expect((await probeSnapshot(page)).forcedEOFs).toBe(1);
 
-  // Drive the browser-owned retry horizon in two steps and settle the first
-  // fallback poll between them, so request ownership cannot make the retry
-  // outcome ambiguous.
-  await page.clock.fastForward(59_999);
-  await expect
-    .poll(async () => (await probeSnapshot(page)).lifecycle.afterRequests, { timeout: 5_000 })
-    .toBeGreaterThan(beforeEOF.lifecycle.afterRequests);
-  await expect.poll(async () => (await liveStats(page)).inFlightRequests).toBe(0);
-  await page.clock.fastForward(1);
+  // NOTHING polls in the gap: the stream is the only automatic update path, so
+  // the browser is simply holding last-known rows until its retry lands.
+  expect(listTraffic).toEqual([]);
+  expect(await semanticallyStale(page)).toBe(true);
+
+  // Rung 1 of the reconnect ladder is full jitter over [0, 1s], so one second
+  // of browser-owned time fires exactly one retry.
+  await page.clock.fastForward(1_000);
 
   await waitForGenerationCount(page, 2);
   const secondGeneration = uniqueGenerations(await probeSnapshot(page)).at(-1);
@@ -1529,7 +1583,7 @@ test('mid-stream EOF reopens once with a fresh generation and one snapshot', asy
   await expect
     .poll(async () => (await liveStats(page)).v2Snapshots, { timeout: 5_000 })
     .toBe(statsBefore.v2Snapshots + 1);
-  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(1);
+  await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
   const after = await probeSnapshot(page);
   const reopened = after.requests.slice(beforeEOF.requests.length);
   expect(reopened).toHaveLength(1);
@@ -1540,12 +1594,16 @@ test('mid-stream EOF reopens once with a fresh generation and one snapshot', asy
       .filter((frame) => frame.kind === 'snapshot' && frame.g === secondGeneration)
   ).toHaveLength(1);
   expect(uniqueGenerations(after)).toEqual([first.generation, secondGeneration]);
+  expect(listTraffic).toEqual([]);
   expect(await liveStats(page)).toMatchObject({
     state: 'open',
     connections: statsBefore.connections + 1,
-    fallbacks: statsBefore.fallbacks + 1,
+    reconnects: statsBefore.reconnects + 1,
     v2Snapshots: statsBefore.v2Snapshots + 1,
   });
+  // The recovered snapshot retires the staleness it caused.
+  expect(await semanticallyStale(page)).toBe(false);
+  await expect(page.locator('.ro-stale-banner')).toBeHidden();
 });
 
 test('all-namespaces Pods opens and applies Live v2', async ({ page }, testInfo) => {
@@ -1665,7 +1723,6 @@ test('an aborted container refresh plus a concurrent user sort reopens only afte
     ).requestListRefresh()
   );
   await firstStarted;
-  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
 
   const sortResponse = page.waitForResponse(
     (response) =>
@@ -1778,7 +1835,7 @@ for (const fault of ['corrupt', 'gap', 'schema'] as const) {
     expect(statsAfter.invalidFrames).toBe(statsBefore.invalidFrames + 1);
     expect(statsAfter.resyncs).toBe(statsBefore.resyncs + 1);
     expect(statsAfter.connections).toBe(statsBefore.connections + 1);
-    expect(statsAfter.fallbacks).toBe(statsBefore.fallbacks);
+    expect(statsAfter.reconnects).toBe(statsBefore.reconnects);
     expect(statsAfter.resyncsInWindow).toBe(1);
     expect(statsAfter).toMatchObject({ state: 'open', seq: 1 });
   });
@@ -1794,7 +1851,6 @@ test('hidden close reopens v2 with a fresh seq-1 snapshot, and only snapshots di
   const afterFirst = await probeSnapshot(page);
 
   await setHidden(page, true);
-  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
   await setHidden(page, false);
   await waitForGenerationCount(page, 2);
   const secondGeneration = uniqueGenerations(await probeSnapshot(page)).at(-1);
@@ -2266,7 +2322,6 @@ test('a held cache-miss response stays inert when a second Back wins through one
     await expect.poll(() => new URL(page.url()).pathname).toBe(BIG_EVENTS);
     const missRequest = await missRequestStarted;
     expect(missRequest.headers()['hx-history-restore-request']).toBe('true');
-    await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
     expect(listTraffic).toEqual([]);
     expect(
       (await probeSnapshot(page)).lifecycle.events.filter(
@@ -2314,7 +2369,6 @@ test('a held cache-miss response stays inert when a second Back wins through one
     expect((await probeSnapshot(page)).historyReloadBlocked).toBe(true);
     expect(listTraffic).toEqual([]);
     expect((await probeSnapshot(page)).requests).toHaveLength(beforeBacks.requests.length);
-    await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
 
     await page.unroute('**/*', holdHistoryMiss);
     const reloaded = page.waitForEvent('domcontentloaded', { timeout: 15_000 });

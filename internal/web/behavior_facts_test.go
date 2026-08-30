@@ -87,14 +87,13 @@ func TestBehaviorAppChromeAndJSContract(t *testing.T) {
 	p.wantHas("#ro-cols-pop .col-toggle")
 	p.wantAbsent("a.toggle-tools")
 
-	// Auto-refresh dropdown: each option carries data-ro-interval (the intervals
-	// are Off/5/10/30/60s, with 10s replacing the old 15s, plus a Live mode); the
-	// handler stores that value and re-arms the poll (or opens the SSE stream for
-	// Live).
-	if got := p.attrs("#refresh-dropdown .refresh-option", "data-ro-interval"); strings.Join(got, ",") != "0,5,10,30,60,Live" {
-		t.Fatalf("refresh-option data-ro-interval set = %v, want [0 5 10 30 60 Live]", got)
-	}
-	p.wantHas("#refresh-label")
+	// Update controls: a Live toggle whose aria-pressed carries the whole state
+	// (the handler persists it and opens/closes the SSE stream) and a one-shot
+	// Refresh button that makes exactly one request and arms no timer. There is
+	// no interval picker: nothing in the app polls on a timer any more.
+	p.wantAttr(`[data-ro-action="toggle-live"]`, "aria-pressed", "false")
+	p.wantHas(`[data-ro-action="refresh-now"]`)
+	p.wantAbsent("[data-ro-interval]")
 
 	// Theme toggle: cookieless render is data-theme-explicit="false" (readout.js
 	// then derives the POST target from prefers-color-scheme). The toggle lives

@@ -9,7 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
@@ -69,8 +68,8 @@ const (
 )
 
 func (st *streamSession) currentListData() templates.ListData {
-	clone := cloneTableForRender(&st.snapshot)
-	lc := st.srv.streamListContext(st.renderReq, st.client, st.cluster, &clone, st.metrics)
+	clone := cloneTableForRender(st.rev.table)
+	lc := st.srv.streamListContext(st.renderReq, st.client, st.cluster, &clone, st.overlaysForRender())
 	view := st.srv.buildListView(st.renderReq, &lc)
 	return toListData(&view)
 }
@@ -93,14 +92,6 @@ func (st *streamSession) liveRenderers() streamLiveRenderers {
 	return renderers
 }
 
-func (st *streamSession) pushLiveV2(ctx context.Context) error {
-	prepared, err := st.prepareLiveV2(ctx, time.Now())
-	if err != nil {
-		return err
-	}
-	return st.pushPreparedLiveV2(&prepared)
-}
-
 // pushPreparedLiveV2 is the transactional write boundary: a prepared state is
 // committed only after the complete SSE frame has been written and flushed.
 func (st *streamSession) pushPreparedLiveV2(prepared *livePreparedPush) error {
@@ -108,7 +99,7 @@ func (st *streamSession) pushPreparedLiveV2(prepared *livePreparedPush) error {
 		st.commitLivePush(prepared, time.Now())
 		return nil
 	}
-	if err := st.writeEncodedEvent("ro-live", prepared.payload); err != nil {
+	if err := st.writeEncodedEvent("ro-live", prepared.payload, st.dataWriteBound()); err != nil {
 		return err
 	}
 	st.commitLivePush(prepared, time.Now())
@@ -231,11 +222,24 @@ func (st *streamSession) commitLivePush(prepared *livePreparedPush, now time.Tim
 	st.dirty = false
 	st.deletedKeys = nil
 	st.forceSnapshot = false
+	// The rendered revision is now the client-visible base, so the next push
+	// classifies deletions against exactly what the browser holds.
+	st.base = st.rev
 	st.lastPush = now
 	if prepared.kind == livePreparedNoop {
+		// Nothing this client can see changed, so there is no delivery to
+		// sample -- but the revision is consumed all the same. Leaving it
+		// unsampled would let the NEXT frame measure itself against this
+		// revision's event timestamp: on an otherwise quiet stream that next
+		// frame is a recovery checkpoint, and the histogram would fill with
+		// samples of the checkpoint period.
+		st.consumeFlushRevision()
 		return
 	}
 	st.seq++
+	// The frame is on the wire, so this is the moment the source's change
+	// became visible to this browser.
+	st.observeFlush(now)
 	if prepared.kind == livePreparedSnapshot {
 		st.lastSnapshotAt = now
 		st.lastSnapshotBytes = len(prepared.payload)
@@ -348,56 +352,6 @@ func liveHasControls(value string) bool {
 		}
 	}
 	return false
-}
-
-// noteWatchMutation records actual apiserver deletes independently from rows
-// that merely leave the current filter projection. The set is bounded; once it
-// cannot classify safely, the next v2 push is forced to a full snapshot.
-func (st *streamSession) noteWatchMutation(ev *kube.WatchEvent) {
-	if ev == nil || (ev.Type != kube.WatchDeleted && ev.Type != kube.WatchAdded) {
-		return
-	}
-	// Kubernetes watch predicate semantics map old-match/new-no-match to a
-	// synthetic DELETED. A label-filtered watch therefore has no wire-level
-	// distinction between selector exit and an actual delete, so never prune
-	// client selection from that ambiguous lane. With no selector, namespace and
-	// resource identity cannot transition; DELETED is an actual object deletion
-	// and is safe to classify as such.
-	// Consequently an actual deletion already outside the rendered projection
-	// (whether excluded by this selector or by readout-side f/filter) may leave
-	// latent cross-filter selection until a normal action/reload reconciles it.
-	// The v2 remove operation cannot fix that safely: it is a projection
-	// operation and the client rejects absent-key tombstones by contract.
-	if ev.Type == kube.WatchDeleted && st.selector != "" {
-		return
-	}
-	for i := range ev.Table.Rows {
-		row := &ev.Table.Rows[i]
-		name := nestedString(row.Object, "metadata", "name")
-		if name == "" {
-			continue
-		}
-		key := rowKey(st.cluster, nestedString(row.Object, "metadata", "namespace"), name)
-		if ev.Type == kube.WatchAdded {
-			delete(st.deletedKeys, key)
-			continue
-		}
-		if st.forceSnapshot {
-			continue
-		}
-		if _, exists := st.deletedKeys[key]; exists {
-			continue
-		}
-		if len(st.deletedKeys) >= streamMaxDeletedKeys {
-			st.deletedKeys = nil
-			st.forceSnapshot = true
-			continue
-		}
-		if st.deletedKeys == nil {
-			st.deletedKeys = make(map[string]struct{})
-		}
-		st.deletedKeys[key] = struct{}{}
-	}
 }
 
 func (st *streamSession) terminalLiveV2(reason string) {

@@ -59,9 +59,14 @@ export interface LiveV2DeltaEnvelope extends LiveV2EnvelopeBase {
     delta: LiveV2Delta;
 }
 
+// The server's own terminal vocabulary (internal/web/handlers_stream.go): the
+// session either lost its authorization, hit the pod's drain, exceeded the hard
+// 12h lifetime, its shared watch failed, or the server could not put this list
+// on the wire at all. `auth` and `protocol` are the two the client cannot retry
+// through -- replaying the request reproduces them.
 export interface LiveV2TerminalEnvelope extends LiveV2EnvelopeBase {
     kind: 'terminal';
-    reason: 'idle' | 'auth' | 'watch-failed' | 'shutdown';
+    reason: 'auth' | 'lifetime' | 'protocol' | 'shutdown' | 'watch-failed';
 }
 
 export type LiveV2Envelope = LiveV2SnapshotEnvelope | LiveV2DeltaEnvelope | LiveV2TerminalEnvelope;
@@ -261,10 +266,11 @@ function decodeDelta(record: JSONRecord): DecodeLiveV2Result {
 function decodeTerminal(record: JSONRecord): DecodeLiveV2Result {
     if (
         !exactFields(record, new Set([...BASE_FIELDS, 'reason'])) ||
-        (record.reason !== 'idle' &&
-            record.reason !== 'auth' &&
-            record.reason !== 'watch-failed' &&
-            record.reason !== 'shutdown')
+        (record.reason !== 'auth' &&
+            record.reason !== 'lifetime' &&
+            record.reason !== 'protocol' &&
+            record.reason !== 'shutdown' &&
+            record.reason !== 'watch-failed')
     ) {
         return { ok: false };
     }

@@ -1,35 +1,37 @@
 import { test, expect, type Page, type Response } from '@playwright/test';
 import { controlURL } from './playwright.config';
+import { resetFixture } from './hub';
 
-// Auto-refresh v2, made deterministic by the fakeapi
-// control surface:
+// The two update controls, end to end. readout has exactly ONE automatic update
+// path (the Live SSE stream) and exactly ONE manual one (the Refresh button).
+// There is no interval picker, no countdown, no polling timer anywhere -- so
+// the load-bearing claims here are as much about what does NOT happen:
 //
-//   - a failed tick keeps the last-good rows (dimmed), reveals the warn
-//     banner, and COUNTS DOWN live to the next retry;
-//   - repeated failures back off 1x -> 2x (-> 4x, capped 60s) of the chosen
-//     interval: the second failure visibly doubles the wait;
-//   - Retry now fires immediately -- it never waits out the backoff;
-//   - the first success after failures clears the banner + dim and fires the
-//     second sanctioned toast, "Refresh resumed";
-//   - a scripted LIST mutation flashes the changed cell on the next tick: the
-//     polling-mode flash net, so severing Live mode can never sever the
+//   - a fresh profile renders the Live toggle OFF and issues no automatic
+//     request at all, however long the page sits there (a fake clock advances
+//     an hour and nothing leaves the browser);
+//   - ONE toggle click opens exactly one `_stream`; a second click closes it
+//     and, again, nothing follows -- neither a stream nor a `_table`;
+//   - ONE Refresh click makes exactly one `_table` request and disables the
+//     button for the flight, so a double click cannot stack two;
+//   - a cookie written by an older build (a numeric polling interval) renders
+//     OFF and never polls -- the whole migration is "anything but the literal
+//     Live is off";
+//   - Refresh is available on pages the Live toggle is not (a multi-cluster
+//     union), because a manual re-fetch always applies;
+//   - a scripted LIST mutation flashes the changed cell on the next Refresh
+//     morph: the non-stream flash net, so severing Live can never sever the
 //     only flash coverage;
-//   - the interval choice persists via the ro_prefs cookie (asserted on the
-//     NEW 10s option that replaced the old 15s default);
-//   - the topbar livedot pulses while any non-Off interval is active and is
-//     static GHOST-GREY at Off (the brand dot pulses only when live; and per
-//     the colour law brand-green is a live-health signal, so a dot that
-//     stays green at Off would be a false signal).
+//   - the topbar livedot pulses brand only while Live is on and is static
+//     GHOST-GREY otherwise (per the colour law, brand-green is a live-health
+//     signal -- a green dot with no stream would be a false one).
 
 const PODS = '/clusters/e2e/namespaces/default/pods';
 const PODS_LIST_PATH = '/api/v1/namespaces/default/pods';
+const ALL_CLUSTERS_PODS = '/clusters/_all/namespaces/default/pods';
 
-async function control(path: string): Promise<void> {
-  const res = await fetch(controlURL + path);
-  if (!res.ok) {
-    throw new Error(`control ${path}: ${res.status} ${await res.text()}`);
-  }
-}
+const LIVE_TOGGLE = '[data-ro-action="toggle-live"]';
+const REFRESH_NOW = '[data-ro-action="refresh-now"]';
 
 async function scriptEvents(events: object[]): Promise<void> {
   const res = await fetch(`${controlURL}/__control/watch-script`, {
@@ -42,29 +44,52 @@ async function scriptEvents(events: object[]): Promise<void> {
   }
 }
 
-// A tick (or any programmatic re-fetch, the Retry-now click included) marks
-// itself RO-No-Push; matching on the request header keeps it awaitable apart
-// from user sorts (the list-loop.spec.ts pattern).
+// A Refresh click (or any programmatic re-fetch) marks itself RO-No-Push;
+// matching on the request header keeps it awaitable apart from user sorts (the
+// list-loop.spec.ts pattern).
 function isTickResponse(r: Response): boolean {
   return r.url().includes('/_table') && r.request().headers()['ro-no-push'] === 'true';
-}
-
-function waitForTick(page: Page): Promise<Response> {
-  return page.waitForResponse(isTickResponse, { timeout: 15_000 });
-}
-
-function waitForFailedTick(page: Page): Promise<Response> {
-  return page.waitForResponse((r) => isTickResponse(r) && !r.ok(), { timeout: 15_000 });
 }
 
 function rowNames(page: Page) {
   return page.locator('#resource-list-content table.ro-table tbody td.cell-name');
 }
 
-// The navbar interval menu opens on hover (CSS :hover/:focus-within).
-async function pickInterval(page: Page, secs: number): Promise<void> {
-  await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
+// clickRefresh performs the one-shot re-fetch and resolves on its response.
+async function clickRefresh(page: Page): Promise<Response> {
+  const tick = page.waitForResponse(isTickResponse, { timeout: 15_000 });
+  await page.locator(REFRESH_NOW).click();
+  return tick;
+}
+
+// liveState reads the transport's own state name off the roLive debug seam --
+// the client-side truth about whether a stream is held. The server-side watch
+// is NOT a proxy for it any more: the pod-local WatchHub retains a source for
+// 30s after its last subscriber leaves, so an upstream watch can outlive the
+// browser that opened it.
+function liveState(page: Page): Promise<string> {
+  return page.evaluate(
+    () => (window as unknown as { roLive: { stats(): { state: string } } }).roLive.stats().state
+  );
+}
+
+// updateTraffic records every request that could only come from an update path:
+// the list partial and the Live stream. The returned reader is what the
+// "nothing happens" assertions read.
+function updateTraffic(page: Page): { table: string[]; stream: string[] } {
+  const seen = { table: [] as string[], stream: [] as string[] };
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/_table')) seen.table.push(request.url());
+    if (path.endsWith('/_stream')) seen.stream.push(request.url());
+  });
+  return seen;
+}
+
+// The ro_prefs wire format is `v1.<base64url(JSON)>` (internal/web/prefs.go).
+// Writing one directly is how a profile from an older build is reproduced.
+function prefsCookieValue(payload: object): string {
+  return `v1.${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}`;
 }
 
 // Resolve a CSS custom property to the computed rgb() serialization toHaveCSS
@@ -84,69 +109,152 @@ function resolvedToken(page: Page, token: string): Promise<string> {
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
-    'the auto-refresh chrome is a desktop surface (below 760px the card layer replaces the table)'
+    'the update controls are a desktop surface (below 760px the card layer replaces the table)'
   );
-  await control('/__control/reset');
+  await resetFixture();
 });
 
-test('failure backs off with a live countdown, Retry now is immediate, recovery toasts', async ({
+test('a fresh profile renders Live off and issues no automatic request for an hour', async ({
   page,
 }) => {
+  const traffic = updateTraffic(page);
   await page.goto(PODS);
   await expect(rowNames(page)).toHaveText(['nginx', 'my-app']);
-  await pickInterval(page, 5);
-  // Park the cursor mid-page: the hover-opened refresh menu would otherwise
-  // stay open over the banner and intercept the Retry-now click below.
-  await page.mouse.move(200, 400);
-  await control('/__control/fail-lists?mode=500');
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator(REFRESH_NOW)).toBeEnabled();
 
-  // FIRST failed tick: rows dim but never disappear; the banner reveals with
-  // a live countdown aimed at the 1x retry (<= the 5s base interval). The
-  // SECOND failed-tick waiter is armed IMMEDIATELY: the 1x retry fires ~5s
-  // out, and registering the waiter only after the assertion block below
-  // could miss tick 2 under load and resolve on tick 3 instead -- whose
-  // countdown re-arms at 4x = 20s, where a 10s-shaped doubling check can
-  // never match.
-  await waitForFailedTick(page);
-  const secondFailed = waitForFailedTick(page);
-  const banner = page.locator('.ro-stale-banner');
-  await expect(banner).toBeVisible();
-  await expect(page.locator('#resource-list-content')).toHaveClass(/ro-stale/);
+  // An hour of page-owned time. Every timer this build can arm would have
+  // fired many times over; there is no timer to arm, so nothing leaves the
+  // browser. (The clock is installed after load so the document's own
+  // fetches are already settled.)
+  await page.clock.install();
+  await page.clock.fastForward(3_600_000);
+  await page.waitForTimeout(250);
+  expect(traffic).toEqual({ table: [], stream: [] });
   await expect(rowNames(page)).toHaveText(['nginx', 'my-app']);
-  const countdown = banner.locator('[data-stale-countdown]');
-  await expect(countdown).toHaveText(/^[1-5]s$/);
-
-  // SECOND failed tick (the 1x retry): the wait DOUBLES to 2x = 10s. The
-  // countdown is a DECREASING counter, so the doubling is proven with a
-  // floor -- anything above 5s is impossible at the 1x cadence -- instead of
-  // pinning exact text whose match window is 3 wall-clock seconds.
-  await secondFailed;
-  await expect
-    .poll(async () => parseInt((await countdown.textContent()) ?? '0', 10), { timeout: 4_000 })
-    .toBeGreaterThan(5);
-  // ... and the countdown is LIVE: it decrements on the banner.
-  const first = parseInt((await countdown.textContent()) ?? '0', 10);
-  await expect
-    .poll(async () => parseInt((await countdown.textContent()) ?? '0', 10), { timeout: 4_000 })
-    .toBeLessThan(first);
-
-  // Retry now fires IMMEDIATELY -- most of the doubled backoff wait still
-  // remains, but the re-fetch (a programmatic RO-No-Push request) lands
-  // within moments.
-  await control('/__control/fail-lists?mode=off');
-  const retried = page.waitForResponse(isTickResponse, { timeout: 3_000 });
-  await banner.locator('.ro-stale-retry').click();
-  await retried;
-
-  // Recovery: banner clears, dim lifts, rows intact -- and the SECOND
-  // sanctioned toast announces it (recovery-only, never per-tick).
-  await expect(banner).toBeHidden();
-  await expect(page.locator('#resource-list-content')).not.toHaveClass(/ro-stale/);
-  await expect(rowNames(page)).toHaveText(['nginx', 'my-app']);
-  await expect(page.locator('#ro-toasts .ro-toast')).toHaveText('Refresh resumed');
 });
 
-test('a scripted status change flashes the changed cell on the next polling tick', async ({
+test('one toggle click opens exactly one stream; a second closes it and nothing follows', async ({
+  page,
+}) => {
+  const traffic = updateTraffic(page);
+  await page.goto(PODS);
+  const toggle = page.locator(LIVE_TOGGLE);
+
+  const opened = page.waitForRequest(
+    (r) => new URL(r.url()).pathname.endsWith('/_stream'),
+    { timeout: 10_000 }
+  );
+  await toggle.click();
+  const request = await opened;
+  // The v2 negotiation headers the server keys the stream on.
+  expect(request.headers()['ro-live-version']).toBe('2');
+  expect(request.headers()['ro-live-generation']).toBeTruthy();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  // `open` is reached only once a full snapshot has been committed, so this is
+  // the causal barrier for "the stream is carrying data", not just "a request
+  // left the browser".
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe('open');
+  expect(traffic.stream).toHaveLength(1);
+
+  // Off: the transport tears down with no request of its own, and the stored
+  // preference flips back.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  expect(await liveState(page)).toBe('off');
+
+  // ... and it STAYS torn down. An hour of page time arms nothing.
+  await page.clock.install();
+  await page.clock.fastForward(3_600_000);
+  await page.waitForTimeout(250);
+  expect(traffic.stream).toHaveLength(1);
+  expect(traffic.table).toEqual([]);
+});
+
+test('one Refresh click makes exactly one request and disables the button in flight', async ({
+  page,
+}) => {
+  const traffic = updateTraffic(page);
+  await page.goto(PODS);
+  const refresh = page.locator(REFRESH_NOW);
+
+  // Hold the request at the browser boundary so the in-flight window is a
+  // state to assert against rather than a race to catch.
+  let markStarted!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Self-retiring rather than `{ times: 1 }`: an exhausted times-limited route
+  // is torn down at the instant its last request resolves, and a request the
+  // page issues in that same turn can be dropped as interception unwinds.
+  let held = false;
+  await page.route('**/_table*', async (route) => {
+    if (held) {
+      await route.fallback();
+      return;
+    }
+    held = true;
+    markStarted();
+    await released;
+    await route.continue();
+  });
+
+  const settled = page.waitForResponse(isTickResponse, { timeout: 15_000 });
+  await refresh.click();
+  await started;
+  await expect(refresh).toBeDisabled();
+
+  // A second click while the tracker is occupied cannot stack a request: the
+  // button is disabled, and the handler re-checks the tracker anyway.
+  await refresh.click({ force: true });
+  expect(traffic.table).toHaveLength(1);
+
+  release();
+  expect((await settled).status()).toBe(200);
+  await expect(refresh).toBeEnabled();
+  expect(traffic.table).toHaveLength(1);
+  expect(traffic.stream).toEqual([]);
+  await expect(rowNames(page)).toHaveText(['nginx', 'my-app']);
+});
+
+test('a legacy numeric refresh preference renders off and never polls', async ({ page, context }) => {
+  await context.addCookies([
+    { name: 'ro_prefs', value: prefsCookieValue({ refresh: '5' }), domain: '127.0.0.1', path: '/' },
+  ]);
+  const traffic = updateTraffic(page);
+  await page.goto(PODS);
+
+  // The server renders it off (only the literal "Live" presses the toggle) and
+  // the client agrees -- no migration, no resurrected poll loop.
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute('aria-pressed', 'false');
+  expect(await liveState(page)).toBe('off');
+  await page.clock.install();
+  await page.clock.fastForward(3_600_000);
+  await page.waitForTimeout(250);
+  expect(traffic).toEqual({ table: [], stream: [] });
+});
+
+test('Refresh works on a multi-cluster page, which offers no Live toggle', async ({ page }) => {
+  const traffic = updateTraffic(page);
+  await page.goto(ALL_CLUSTERS_PODS);
+
+  // `_stream` does not serve the cluster union, so the server renders no
+  // toggle there -- but a manual re-fetch always applies.
+  await expect(page.locator(LIVE_TOGGLE)).toHaveCount(0);
+  await expect(page.locator(REFRESH_NOW)).toBeEnabled();
+
+  const response = await clickRefresh(page);
+  expect(response.status()).toBe(200);
+  expect(traffic.table).toHaveLength(1);
+  expect(traffic.stream).toEqual([]);
+  await expect(rowNames(page)).toHaveText(['nginx', 'my-app']);
+});
+
+test('a scripted status change flashes the changed cell on the next Refresh morph', async ({
   page,
 }) => {
   await page.goto(PODS);
@@ -168,8 +276,7 @@ test('a scripted status change flashes the changed cell on the next polling tick
       cells: ['nginx', '0/1', 'CrashLoopBackOff', '3', '10m'],
     },
   ]);
-  await pickInterval(page, 5);
-  await waitForTick(page);
+  await clickRefresh(page);
 
   // The morph surfaced the change honestly: the STATUS cell flashes
   // ro-cell-changed, the unchanged NAME cell does not, and the untouched
@@ -180,82 +287,36 @@ test('a scripted status change flashes the changed cell on the next polling tick
   await expect(page.locator('tr[data-key="e2e/default/my-app"] td.ro-cell-changed')).toHaveCount(0);
 });
 
-test('the interval choice (the new 10s option) survives reload via the prefs cookie', async ({
-  page,
-}) => {
+test('the livedot pulses brand while Live is on and is static ghost when off', async ({ page }) => {
   await page.goto(PODS);
-  // 10s replaced the old 15s -- the dropdown offers exactly Off/5/10/30/60, plus
-  // the Live stream mode.
-  await expect(page.locator('.refresh-menu .refresh-option')).toHaveText([
-    'Off',
-    'Every 5s',
-    'Every 10s',
-    'Every 30s',
-    'Every 60s',
-    'Live',
-  ]);
-  await expect(page.locator('.refresh-option[data-ro-interval="15"]')).toHaveCount(0);
-
-  await pickInterval(page, 10);
-  await expect(page.locator('#refresh-label')).toHaveText('10s');
-
-  // A fresh server render carries the persisted mode at SSR (the ro_prefs
-  // cookie is the only carrier across this reload).
-  await page.reload();
-  await expect(page.locator('#refresh-label')).toHaveText('10s');
-  await expect(page.locator('.refresh-option[data-ro-interval="10"]')).toHaveClass(/is-active/);
-});
-
-test('the refresh menu opens on hover and survives the pointer travelling into it', async ({
-  page,
-}) => {
-  await page.goto(PODS);
-  const trigger = page.locator('#refresh-dropdown .refresh-trigger');
-  const menu = page.locator('.refresh-menu');
-  const option = page.locator('.refresh-option[data-ro-interval="30"]');
-
-  // Hover alone reveals the menu -- no click required.
-  await trigger.hover();
-  await expect(menu).toBeVisible();
-
-  // The pointer must be able to TRAVEL from the trigger into the menu: walk
-  // the real path in small steps (crossing the visual gap under the trigger).
-  // Without a hover bridge over that gap the menu closes mid-travel.
-  const from = (await trigger.boundingBox())!;
-  const to = (await option.boundingBox())!;
-  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 25 });
-  await expect(menu).toBeVisible();
-  await expect(option).toBeVisible();
-
-  // And the option is directly clickable from the hover-opened state.
-  await option.click();
-  await expect(page.locator('#refresh-label')).toHaveText('30s');
-});
-
-test('the livedot pulses brand while an interval is active and is static ghost at Off', async ({
-  page,
-}) => {
-  await page.goto(PODS);
-  const dot = page.locator('#refresh-dropdown .ro-livedot');
+  const toggle = page.locator(LIVE_TOGGLE);
+  const dot = toggle.locator('.ro-livedot');
   const ghost = await resolvedToken(page, '--text-ghost');
   const brand = await resolvedToken(page, '--brand');
-  expect(ghost).not.toBe(brand); // the colour assertions below must be able to tell them apart
+  expect(ghost).not.toBe(brand); // the colour assertions below must tell them apart
 
-  // Off (the default): a static GHOST dot -- no pulse AND no brand green
-  // (the colour law: green means live health; a green dot at Off is a false
-  // signal -- the prototype defaults the dot to --text-ghost, chrome.css:110).
+  // Off (the default): a static GHOST dot -- no pulse AND no brand green.
   await expect(dot).toHaveCSS('animation-name', 'none');
   await expect(dot).toHaveCSS('background-color', ghost);
 
-  // An active interval: brand colour + the pulse, both under the one
-  // refresh-on state owner (SSR refreshDropdownClass / JS syncRefreshUI).
-  await pickInterval(page, 5);
+  // Live on: aria-pressed answers the click immediately, but the dot is a
+  // live-HEALTH signal and waits for the transport to commit a full snapshot --
+  // green hangs off data-ro-live-state="open", which only readout.js writes.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(toggle).toHaveAttribute('data-ro-live-state', 'open');
   await expect(dot).toHaveCSS('animation-name', 'ro-pulse');
   await expect(dot).toHaveCSS('background-color', brand);
 
-  // Back to Off: the dot drops the pulse AND the green.
-  await pickInterval(page, 0);
+  // The preference alone is never enough: with the transport reading stripped,
+  // the very same pressed button is back to the neutral ghost dot.
+  await toggle.evaluate((el) => el.removeAttribute('data-ro-live-state'));
+  await expect(dot).toHaveCSS('animation-name', 'none');
+  await expect(dot).toHaveCSS('background-color', ghost);
+
+  // Back off: the dot drops the pulse AND the green.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await expect(dot).toHaveCSS('animation-name', 'none');
   await expect(dot).toHaveCSS('background-color', ghost);
 });

@@ -452,10 +452,42 @@ func TestWatchPendingAdmissionIsAtomic(t *testing.T) {
 		t.Fatalf("rejected batch partially queued state: %v", snap)
 	}
 
+	// Trailing padding after a complete 13-byte document: the FIRST decode
+	// succeeds and the 413 comes from the trailing-token pass.
 	oversizedBody := `{"events":[]}` + strings.Repeat(" ", (4<<20)+1)
 	code, response = postScript(t, srv, oversizedBody)
 	if code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("oversized script body status = %d body=%v, want 413", code, response)
+		t.Fatalf("oversized trailing body status = %d body=%v, want 413", code, response)
+	}
+
+	// A genuinely oversized FIRST document: the reader trips before the decode
+	// can finish, which is the branch the padding case never reaches.
+	oversizedDocument := `{"events":[{"path":"` + podsPath + `","type":"MODIFIED","note":"` +
+		strings.Repeat("x", (4<<20)+1) + `"}]}`
+	code, response = postScript(t, srv, oversizedDocument)
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized script document status = %d body=%v, want 413", code, response)
+	}
+
+	for _, tc := range []struct{ name, body, want string }{
+		{"truncated JSON", `{"events":`, "parse script"},
+		{"wrong element type", `{"events":7}`, "parse script"},
+		{"two documents", `{"events":[]}{"events":[]}`, "one JSON document"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, response := postScript(t, srv, tc.body)
+			if code != http.StatusBadRequest {
+				t.Fatalf("%s status = %d body=%v, want 400", tc.name, code, response)
+			}
+			if message, _ := response["error"].(string); !strings.Contains(message, tc.want) {
+				t.Fatalf("%s error = %q, want it to mention %q", tc.name, message, tc.want)
+			}
+		})
+	}
+
+	_, snap = get(t, srv.URL+"/__control/watch-script", "")
+	if snap["pendingEvents"] != float64(0) || len(snap["events"].([]any)) != 0 {
+		t.Fatalf("a rejected body mutated watch state: %v", snap)
 	}
 }
 
@@ -517,6 +549,46 @@ func TestFailListsModes(t *testing.T) {
 // TestWatch401IsOneShot pins the one-shot 401: the armed flag fails exactly
 // the next watch request, then CLEARS — a second watch request streams 200 —
 // and leaves plain lists untouched.
+// TestWatch401PathScopeIsHonoured pins the ?path= scope: an arm naming one
+// collection route is consumed ONLY by a watch on that exact route, so a spec
+// can aim the 401 at the consumer it means to break. Path aliases
+// (/api/v1/pods and its namespaced spelling) share one list state and are woken
+// by the same events, so an unscoped arm would be a race between their
+// reconnects.
+func TestWatch401PathScopeIsHonoured(t *testing.T) {
+	srv := newServer(t)
+	const aliasPath = "/api/v1/pods"
+
+	if code, _ := get(t, srv.URL+"/__control/watch-401?path="+podsPath, ""); code != http.StatusOK {
+		t.Fatal("arming scoped watch-401 failed")
+	}
+
+	// The alias route shares the list state but is a different route: it must
+	// NOT consume an arm aimed at the namespaced spelling.
+	res, err := http.Get(srv.URL + aliasPath + "?watch=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("alias watch status = %d, want 200 (it consumed another route's arm)", res.StatusCode)
+	}
+
+	// The named route still gets it, and the one-shot then clears.
+	code, status := get(t, srv.URL+podsPath+"?watch=true", "")
+	if code != http.StatusUnauthorized || status["reason"] != "Unauthorized" {
+		t.Fatalf("scoped watch response = %d %v, want 401 Unauthorized Status", code, status)
+	}
+	res, err = http.Get(srv.URL + podsPath + "?watch=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("second watch status = %d, want 200 (scoped one-shot did not clear)", res.StatusCode)
+	}
+}
+
 func TestWatch401IsOneShot(t *testing.T) {
 	srv := newServer(t)
 
@@ -601,6 +673,74 @@ func TestResetRestoresSeededState(t *testing.T) {
 	}
 	if cells := podRow(t, table, "nginx"); cells[2] != "Running" {
 		t.Fatalf("nginx row after reset = %v, want seeded Running", cells)
+	}
+}
+
+// TestResetExpiresPreResetWatchCursors pins the other half of /__control/reset:
+// the fresh collections restart ABOVE every resourceVersion the old ones
+// issued, so a consumer that reconnects across the reset with its old cursor is
+// answered 410 Expired and relists rather than silently resuming against a
+// collection it no longer describes. This is what a real apiserver does once
+// its watch cache no longer covers the cursor, and it is what makes `reset`
+// mean isolation for a consumer (readout's WatchHub) whose watches outlive the
+// browser that opened them. A watch taken at the POST-reset collection RV is
+// still served: the floor expires stale cursors, not fresh ones.
+func TestResetExpiresPreResetWatchCursors(t *testing.T) {
+	srv := newServer(t)
+	_, seed := get(t, srv.URL+podsPath, tableAccept)
+	staleRV, _ := seed["metadata"].(map[string]any)["resourceVersion"].(string)
+	if staleRV == "" {
+		t.Fatal("seed table has no resourceVersion")
+	}
+	// Advance the collection so the pre-reset cursor is above the seeded value
+	// -- a floor that only compared against the seed would not catch it.
+	if err := srv.Apply(fakeapi.ScriptEvent{
+		Path:  podsPath,
+		Type:  "MODIFIED",
+		Cells: []any{"nginx", "0/1", "Error", "3", "10m"},
+		Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata":   map[string]any{"name": "nginx", "namespace": "default"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, advanced := get(t, srv.URL+podsPath, tableAccept)
+	advancedRV, _ := advanced["metadata"].(map[string]any)["resourceVersion"].(string)
+	if advancedRV == staleRV {
+		t.Fatal("applied event did not advance the collection resourceVersion")
+	}
+
+	if code, _ := get(t, srv.URL+"/__control/reset", ""); code != http.StatusOK {
+		t.Fatal("reset failed")
+	}
+
+	for _, rv := range []string{staleRV, advancedRV} {
+		res, err := http.Get(srv.URL + podsPath + "?watch=true&resourceVersion=" + rv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusGone {
+			t.Fatalf("watch from pre-reset cursor %s = %d, want 410", rv, res.StatusCode)
+		}
+	}
+
+	// The relisting consumer's own cursor is honoured: the fresh collection
+	// reports the new baseline, and a watch from it is served.
+	_, fresh := get(t, srv.URL+podsPath, tableAccept)
+	freshRV, _ := fresh["metadata"].(map[string]any)["resourceVersion"].(string)
+	if freshRV == staleRV || freshRV == advancedRV {
+		t.Fatalf("post-reset collection resourceVersion = %s, want a fresh baseline", freshRV)
+	}
+	res, err := http.Get(srv.URL + podsPath + "?watch=true&resourceVersion=" + freshRV)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("watch from the post-reset cursor = %d, want 200", res.StatusCode)
 	}
 }
 

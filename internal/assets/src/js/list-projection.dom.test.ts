@@ -5,7 +5,6 @@ import type { ListProjectionDeltaPlan } from './list-projection.js';
 import {
     adoptListProjection,
     applyListProjectionDelta,
-    cancelListProjectionSwap,
     ensureListProjection,
     listProjectionCardByKey,
     listProjectionOrder,
@@ -130,33 +129,7 @@ describe('canonical projection', () => {
         });
     });
 
-    test('cancels a failed prepared snapshot and keeps the old projection usable', () => {
-        const content = mount(['dev/a']);
-        const revision = listProjectionRevision();
-        const incoming = document.createDocumentFragment();
-        incoming.append(buildList(['dev/b']));
-
-        prepareListProjectionSwap(incoming);
-        expect(listProjectionSwapPending()).toBe(true);
-        expect(listProjectionRevision()).toBe(revision + 1);
-        expect(listProjectionRowModel().rows.map((model) => model.key)).toStrictEqual(['dev/b']);
-
-        cancelListProjectionSwap(incoming);
-
-        expect(listProjectionSwapPending()).toBe(false);
-        expect(listProjectionRevision()).toBe(revision);
-        expect(listProjectionOrder()).toStrictEqual(['dev/a']);
-        expect(listProjectionRowModel().rows.map((model) => model.key)).toStrictEqual(['dev/a']);
-        expect(content.querySelector('[data-key="dev/a"]')).toHaveTextContent('Name dev/a');
-
-        const delta = apply({
-            upsert: [{ key: 'dev/a', row: row('dev/a', 'After recovery') }],
-        });
-        expect(delta.ok).toBe(true);
-        expect(listProjectionRowByKey('dev/a')).toHaveTextContent('After recovery');
-    });
-
-    test('does not let an older failure cancel a reentrant replacement snapshot', () => {
+    test('keeps the last prepared snapshot when a reentrant preparation replaces it', () => {
         mount(['dev/a']);
         const revision = listProjectionRevision();
         const older = document.createDocumentFragment();
@@ -166,10 +139,6 @@ describe('canonical projection', () => {
 
         prepareListProjectionSwap(older);
         prepareListProjectionSwap(replacement);
-        expect(listProjectionRevision()).toBe(revision + 2);
-        expect(listProjectionRowModel().rows.map((model) => model.key)).toStrictEqual(['dev/c']);
-
-        cancelListProjectionSwap(older);
 
         expect(listProjectionSwapPending()).toBe(true);
         expect(listProjectionRevision()).toBe(revision + 2);
@@ -426,6 +395,30 @@ describe('server-trusting delta apply', () => {
             apply({ upsert: [{ key: 'dev/a', row: row('dev/a', 'Replacement') }] }),
         ).toStrictEqual({ ok: false });
         expect(document.activeElement).toBe(link);
+    });
+
+    test('drops the projection when a morph throws after rows were already removed', () => {
+        const content = mount(['dev/a', 'dev/b']);
+        vi.stubGlobal('Idiomorph', {
+            morph: vi.fn(() => {
+                throw new Error('morph failed');
+            }),
+        });
+
+        expect(
+            apply({
+                remove: [{ key: 'dev/a', cause: 'delete' }],
+                upsert: [{ key: 'dev/b', row: row('dev/b', 'Replacement') }],
+            }),
+        ).toStrictEqual({ ok: false });
+
+        // The remove already hit the DOM. The index must not keep claiming the
+        // row exists -- the caller's answer to !ok is a full resync, and a stale
+        // index would decide what that resync morphs against.
+        expect(content.querySelector('[data-key="dev/a"]')).toBeNull();
+        expect(listProjectionOrder()).toStrictEqual([]);
+        expect(listProjectionRowByKey('dev/a')).toBeNull();
+        expect(listProjectionRowByKey('dev/b')).toBeNull();
     });
 
     test('rejects an invalid explicit order before any valid upsert can morph the DOM', () => {

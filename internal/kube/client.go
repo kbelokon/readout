@@ -2,6 +2,8 @@ package kube
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -21,12 +24,14 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
+	"k8s.io/client-go/util/flowcontrol"
 )
 
 const discoveryTTL = 60 * time.Second
@@ -101,11 +106,20 @@ type Client struct {
 	// serving the request as anonymous (a silent identity downgrade) is refused.
 	denied error
 
-	mu              sync.Mutex
-	discoveredAt    time.Time
-	namespacedTypes []ResourceType
-	clusterTypes    []ResourceType
-	preferred       map[string]string
+	mu sync.Mutex
+	// identity is the process-local key of the CREDENTIAL this client makes
+	// requests with -- see IdentityKey for the contract. It is guarded by mu
+	// because a client built as a struct literal fills it in on first use.
+	identity string
+	// discoveryLimiter is the one client-side token bucket every discovery call
+	// on this client shares (client-go would otherwise mint a fresh one per
+	// discovery client). Built on first use because a struct-literal client has
+	// no config to size it from until then.
+	discoveryLimiter flowcontrol.RateLimiter
+	discoveredAt     time.Time
+	namespacedTypes  []ResourceType
+	clusterTypes     []ResourceType
+	preferred        map[string]string
 }
 
 // errAnonymousDenied is a Forbidden apiserver Status, so kube.IsForbidden
@@ -156,7 +170,75 @@ func NewClient(cfg *rest.Config, preferred map[string]string, includeSecrets boo
 		core:           core,
 		includeSecrets: includeSecrets,
 		preferred:      pref,
+		identity:       newClientIdentity("", cfg.Host),
 	}, nil
+}
+
+// clientIdentitySeq numbers base clients. Two connections to the SAME apiserver
+// host are not the same credential -- a reloaded cluster, or two Managers in one
+// process -- so the sequence, not the host, is what makes a base identity
+// unique; the cluster name and host ride along only to keep the value readable
+// while debugging.
+var clientIdentitySeq atomic.Uint64
+
+func newClientIdentity(cluster, host string) string {
+	return fmt.Sprintf("%d|%s|%s", clientIdentitySeq.Add(1), cluster, host)
+}
+
+// IdentityKey returns the process-local key of the credential this client makes
+// requests with. It is the sharing decision for everything that pools upstream
+// work per viewer (the passthrough client cache, the shared list/watch sources):
+// two clients share a key only when the apiserver would evaluate their requests
+// as the same identity against the same connection. Base clients get a unique
+// opaque key when they are built; WithBearer clones derive theirs from the base
+// key plus a digest of the exact token, so one viewer token against one cluster
+// always yields the same key -- including after the passthrough cache evicts the
+// client and rebuilds it.
+//
+// The key is a map key, never a log line, a metric label, or a rendered value:
+// for a passthrough client it commits to the viewer's bearer token.
+func (c *Client) IdentityKey() string {
+	if c == nil {
+		return "|nil"
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.identity == "" {
+		// Clients assembled as struct literals rather than through NewClient
+		// still need a unique key; filling it in on first use keeps that
+		// guarantee without a second constructor.
+		c.identity = newClientIdentity("", c.host())
+	}
+	return c.identity
+}
+
+// setClusterIdentity names the cluster a base client belongs to. The Manager
+// calls it on a freshly built client before the Cluster is published, so the
+// identity is settled before anything can read it and nothing rewrites it after.
+func (c *Client) setClusterIdentity(cluster string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.identity = newClientIdentity(cluster, c.host())
+}
+
+// host reads the connection host. config is written once at construction and
+// never reassigned (clones copy it), so this needs no lock.
+func (c *Client) host() string {
+	if c.config == nil {
+		return ""
+	}
+	return c.config.Host
+}
+
+// bearerIdentity derives the identity of the passthrough client for base+token.
+// WithBearer stamps the result on the clone it builds and PassthroughClientCache
+// keys its entries on it, so both consumers decide "same viewer credential"
+// through this ONE derivation and cannot drift apart. The token enters only as a
+// SHA-256 digest: the identity is not reversible to the token and is never
+// logged or exported.
+func bearerIdentity(base *Client, token string) string {
+	digest := sha256.Sum256([]byte(strings.TrimPrefix(token, "Bearer ")))
+	return base.IdentityKey() + ":" + hex.EncodeToString(digest[:])
 }
 
 // SetObserver installs the per-request metrics callback. The web layer calls it
@@ -209,6 +291,10 @@ func (c *Client) WithBearer(token string) (*Client, error) {
 	// observer closes over the cluster name, so copying the field keeps
 	// passthrough requests attributed to the right cluster.
 	client.observe = c.observe
+	// Replace the fresh per-client identity NewClient assigned with the derived
+	// one: a rebuilt clone for the same viewer token must key the same as the
+	// one it replaces, or every cache eviction would fork the work pooled on it.
+	client.identity = bearerIdentity(c, token)
 	return client, nil
 }
 
@@ -238,6 +324,10 @@ func (c *Client) IsAnonymous() bool {
 // since the request methods short-circuit) and takes a fresh mutex, so it copies
 // no lock value.
 func (c *Client) Denied() *Client {
+	// Read the base identity before taking the lock: IdentityKey takes it too.
+	// A denied clone refuses every request, so it is NOT interchangeable with
+	// the client it was cloned from and gets its own identity.
+	identity := c.IdentityKey() + "|denied"
 	c.mu.Lock()
 	preferred := make(map[string]string, len(c.preferred))
 	for k, v := range c.preferred {
@@ -253,6 +343,7 @@ func (c *Client) Denied() *Client {
 		includeSecrets: c.includeSecrets,
 		denied:         errAnonymousDenied,
 		preferred:      preferred,
+		identity:       identity,
 		// A denied clone is still observed: its short-circuit Forbidden counts as
 		// a request with a forbidden result under the same cluster.
 		observe: c.observe,
@@ -275,6 +366,11 @@ func (rt contextRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	if err := rt.ctx.Err(); err != nil {
 		stop()
 		cancel()
+		// RoundTrip owns the request body once it is called, including on the
+		// paths where it never reaches the wire.
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
 		return nil, err
 	}
 	resp, err := rt.base.RoundTrip(req.Clone(requestCtx))
@@ -358,7 +454,12 @@ func (c *Client) discoverResources(ctx context.Context) ([]*metav1.APIResourceLi
 		base = http.DefaultTransport
 	}
 	httpClient.Transport = contextRoundTripper{ctx: ctx, base: base}
-	disco, err := discovery.NewDiscoveryClientForConfigAndClient(c.config, &httpClient)
+	// client-go builds a fresh token bucket for every discovery client it
+	// constructs, so a per-call client means a per-call full bucket and the
+	// configured QPS bounds nothing. Hand it the one bucket this Client shares.
+	cfg := *c.config
+	cfg.RateLimiter = c.discoveryRateLimiter()
+	disco, err := discovery.NewDiscoveryClientForConfigAndClient(&cfg, &httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -366,10 +467,42 @@ func (c *Client) discoverResources(ctx context.Context) ([]*metav1.APIResourceLi
 		_, lists, discoverErr := disco.ServerGroupsAndResources()
 		return lists, discoverErr
 	})
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	return discoveryOutcome(ctx.Err(), lists, err)
+}
+
+// discoveryOutcome decides what a finished discovery call reports. A completed
+// discovery is a completed discovery: the deadline is only reported when the
+// call itself came back empty-handed. Reporting it over a full result throws
+// the result away AND leaves the TTL cache empty, so the next request pays for
+// discovery all over again.
+func discoveryOutcome(ctxErr error, lists []*metav1.APIResourceList, err error) ([]*metav1.APIResourceList, error) {
+	if ctxErr != nil && (err != nil || len(lists) == 0) {
 		return nil, fmt.Errorf("kube discovery: %w", ctxErr)
 	}
 	return lists, err
+}
+
+// discoveryBurst matches client-go's own discovery burst: resolving every API
+// group in one pass is expected to be bursty.
+const discoveryBurst = 300
+
+// discoveryRateLimiter memoizes the token bucket every discovery call on this
+// client shares.
+func (c *Client) discoveryRateLimiter() flowcontrol.RateLimiter {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.discoveryLimiter == nil {
+		qps := c.config.QPS
+		if qps == 0 {
+			qps = rest.DefaultQPS
+		}
+		burst := c.config.Burst
+		if burst == 0 {
+			burst = discoveryBurst
+		}
+		c.discoveryLimiter = flowcontrol.NewTokenBucketRateLimiter(qps, burst)
+	}
+	return c.discoveryLimiter
 }
 
 func (c *Client) ResourceTypes(ctx context.Context) ([]ResourceType, []ResourceType, error) {
@@ -800,6 +933,16 @@ func (c *Client) tableURL(rt *ResourceType, namespace string) (*url.URL, error) 
 		parts = append(parts, "apis", rt.Group, rt.Version)
 	}
 	if rt.Namespaced && namespace != "" && namespace != AllNamespaces {
+		// The namespace arrives from a {namespace} path segment, which may carry
+		// an encoded separator or dot segment ("..", "a%2F..%2F.."). path.Join
+		// CLEANS what it joins, so an unchecked value rewrites the upstream URL
+		// into an arbitrary apiserver path -- past the include/exclude gate that
+		// was applied to the string, and into a distinct WatchHub source key for
+		// a request that is not the one the key describes. A real namespace is a
+		// DNS-1123 label, which admits neither.
+		if errs := validation.IsDNS1123Label(namespace); len(errs) > 0 {
+			return nil, errors.New("namespace is not a valid DNS-1123 label")
+		}
 		parts = append(parts, "namespaces", namespace)
 	}
 	parts = append(parts, rt.Plural)

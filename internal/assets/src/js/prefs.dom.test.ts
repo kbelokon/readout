@@ -138,7 +138,9 @@ test('roPrefsSetHiddenColumns persists an explicit empty hidden set', () => {
     });
 });
 
-test('roPrefsSetRefresh changes only the refresh preference', () => {
+// A cadence written by an older build is overwritten by whichever of the two
+// values this build persists; nothing else in the envelope moves.
+test.each(['Live', 'Off'] as const)('roPrefsSetRefresh(%j) changes only that field', (mode) => {
     const original: Prefs = {
         kinds: [{ k: 'pods', sort: 'Name' }],
         refresh: '5',
@@ -146,9 +148,9 @@ test('roPrefsSetRefresh changes only the refresh preference', () => {
     };
     writePrefs(original);
 
-    roPrefsSetRefresh('Live');
+    roPrefsSetRefresh(mode);
 
-    expect(readPrefs()).toStrictEqual({ ...original, refresh: 'Live' });
+    expect(readPrefs()).toStrictEqual({ ...original, refresh: mode });
 });
 
 test('roPrefsSetNamespace records a namespace while preserving existing preferences', () => {

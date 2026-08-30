@@ -114,7 +114,15 @@ export function applyLiveNameFilter(): void {
     ) {
         return;
     }
-    const visible = liveNameMatchKeys(roRowModel.rows, draft);
+    // An EMPTY model is "we know nothing", not "zero matches". Two paths empty
+    // it while rendered rows survive: the fail-closed delta reset (its removes
+    // already ran, so the projection is dropped) and a history-restored
+    // windowed slice awaiting its rebuild. Matching against no rows returns an
+    // empty set, which would hide every surviving row (display: none) with no
+    // banner and no way back -- the same blanking virtualizeReset already
+    // guards on the geometry side. No model -> no narrowing, and the toggle
+    // below clears any hide class the rows carried in.
+    const visible = roRowModel.rows.length ? liveNameMatchKeys(roRowModel.rows, draft) : null;
     setListProjectionVisibleKeys(visible);
     content
         .querySelectorAll<HTMLElement>('tbody tr[data-key], .ro-cardlist > .ro-pcard[data-key]')

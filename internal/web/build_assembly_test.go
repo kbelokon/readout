@@ -171,25 +171,25 @@ func TestJoinMetricsJoinsCPUAndMemoryByObjectKey(t *testing.T) {
 
 // TestJoinCustomColumnsEvaluatesJSONPath proves the kubectl-style JSONPath
 // custom-columns join happy path: a parsed expression is evaluated against the
-// live object fetched for each row, and the result is appended as a new cell.
-// The fake API pod list fixture has default/nginx with spec.containers[0].image
-// set. Both a "Name=expr" spelling and a bare expression (column name derived via
+// row's OWN retained object -- the Table list already carries it, so the join
+// makes NO upstream request at all (a nil client here would panic if it did).
+// Both a "Name=expr" spelling and a bare expression (column name derived via
 // humanTitle, exercising the relaxer's {.expr} auto-wrap) are covered.
 func TestJoinCustomColumnsEvaluatesJSONPath(t *testing.T) {
-	app := newTestServer(t)
-	cluster, ok := app.manager.Get("test")
-	if !ok {
-		t.Fatal("test cluster missing")
+	podObject := func() map[string]any {
+		return map[string]any{
+			"metadata": map[string]any{"name": "nginx", "namespace": "default"},
+			"spec":     map[string]any{"containers": []any{map[string]any{"image": "nginx:1.27"}}},
+		}
 	}
 	table := kube.Table{
 		Resource: kube.ResourceType{Group: "", Version: "v1", APIVersion: "v1", Plural: "pods", Kind: "Pod", Namespaced: true},
 		Columns:  []kube.Column{{Name: "Name"}},
 		Rows: []kube.Row{
-			{Cells: []any{"nginx"}, Object: map[string]any{"metadata": map[string]any{"name": "nginx", "namespace": "default"}}},
+			{Cells: []any{"nginx"}, Object: podObject()},
 		},
 	}
-	ctx := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/pods", nil).Context()
-	app.joinCustomColumns(ctx, cluster.Client, &table, "default", false, "Image=spec.containers[0].image", nil)
+	joinCustomColumns(&table, "Image=spec.containers[0].image", nil)
 
 	if len(table.Columns) != 2 || table.Columns[1].Name != "Image" {
 		t.Fatalf("custom column not appended: %#v", table.Columns)
@@ -208,10 +208,10 @@ func TestJoinCustomColumnsEvaluatesJSONPath(t *testing.T) {
 		Resource: table.Resource,
 		Columns:  []kube.Column{{Name: "Name"}},
 		Rows: []kube.Row{
-			{Cells: []any{"nginx"}, Object: map[string]any{"metadata": map[string]any{"name": "nginx", "namespace": "default"}}},
+			{Cells: []any{"nginx"}, Object: podObject()},
 		},
 	}
-	app.joinCustomColumns(ctx, cluster.Client, &bare, "default", false, "metadata.name", nil)
+	joinCustomColumns(&bare, "metadata.name", nil)
 	if len(bare.Columns) != 2 || bare.Columns[1].Name != "Metadata Name" {
 		t.Fatalf("humanTitle column name = %#v want 'Metadata Name'", bare.Columns)
 	}
@@ -227,12 +227,50 @@ func TestJoinCustomColumnsEvaluatesJSONPath(t *testing.T) {
 		Resource: table.Resource,
 		Columns:  []kube.Column{{Name: "Name"}},
 		Rows: []kube.Row{
-			{Cells: []any{"nginx"}, Object: map[string]any{"metadata": map[string]any{"name": "nginx", "namespace": "default"}}},
+			{Cells: []any{"nginx"}, Object: podObject()},
 		},
 	}
-	app.joinCustomColumns(ctx, cluster.Client, &missing, "default", false, "Absent=metadata.labels.absent", nil)
+	joinCustomColumns(&missing, "Absent=metadata.labels.absent", nil)
 	if missing.Rows[0].Cells[1] != "" {
 		t.Fatalf("missing custom-column path = %#v want empty string (not <none>/error)", missing.Rows[0].Cells[1])
+	}
+
+	// A row the Table returned WITHOUT an embedded object still gets one empty
+	// cell per expression, so the row never renders ragged against the columns.
+	objectless := kube.Table{
+		Resource: table.Resource,
+		Columns:  []kube.Column{{Name: "Name"}},
+		Rows:     []kube.Row{{Cells: []any{"nginx"}}},
+	}
+	joinCustomColumns(&objectless, "Image=spec.containers[0].image;Name=metadata.name", nil)
+	if len(objectless.Rows[0].Cells) != 3 || objectless.Rows[0].Cells[1] != nil || objectless.Rows[0].Cells[2] != nil {
+		t.Fatalf("objectless row cells = %#v want two nil pads", objectless.Rows[0].Cells)
+	}
+
+	// The nodes overlay is consumed as-is (no Nodes LIST here either): the
+	// synthetic `node` key resolves from the row's spec.nodeName.
+	joined := kube.Table{
+		Resource: table.Resource,
+		Columns:  []kube.Column{{Name: "Name"}},
+		Rows: []kube.Row{
+			{Cells: []any{"nginx"}, Object: map[string]any{
+				"metadata": map[string]any{"name": "nginx", "namespace": "default"},
+				"spec":     map[string]any{"nodeName": "worker-1"},
+			}},
+			{Cells: []any{"other"}, Object: map[string]any{
+				"metadata": map[string]any{"name": "other", "namespace": "default"},
+				"spec":     map[string]any{"nodeName": "gone"},
+			}},
+		},
+	}
+	joinCustomColumns(&joined, "NodeArch=node.metadata.labels.arch", map[string]map[string]any{
+		"worker-1": {"metadata": map[string]any{"name": "worker-1", "labels": map[string]any{"arch": "arm64"}}},
+	})
+	if joined.Rows[0].Cells[1] != "arm64" {
+		t.Fatalf("node join cell = %#v want arm64", joined.Rows[0].Cells[1])
+	}
+	if joined.Rows[1].Cells[1] != "" {
+		t.Fatalf("unmatched node join cell = %#v want empty string", joined.Rows[1].Cells[1])
 	}
 }
 

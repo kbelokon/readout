@@ -267,6 +267,31 @@ search:
     - configmaps
   maxConcurrency: 100
 
+# Live updates. These are PER-POD limits on the Live (SSE) surface, not
+# deployment-wide totals -- with N replicas the cluster-wide ceiling is N times
+# each value. All three are checked independently before a Live subscriber is
+# admitted; a rejected subscriber gets 429 with Retry-After and the page still
+# works through the Refresh button.
+#   maxConnections:         open Live streams this pod will serve.
+#   maxSources:             distinct upstream LIST+watch streams this pod owns.
+#                           Subscribers watching the same cluster/resource/
+#                           namespace/selector with the same credentials share
+#                           ONE source, so this is usually far below
+#                           maxConnections.
+#                           With clusterAuthUseSessionToken, each viewer's own
+#                           token is its own source, so sources then scale with
+#                           viewers x scopes rather than with scopes.
+#   maxCacheAccountedBytes: retained object state summed across those sources,
+#                           as a Kubernetes quantity. Admission charges the
+#                           encoded estimate a fixed 10x headroom, so this reads
+#                           as roughly the process memory held in shared Live
+#                           state. It is checked when a source is admitted, not
+#                           as an admitted scope grows.
+live:
+  maxConnections: 512
+  maxSources: 128
+  maxCacheAccountedBytes: 128Mi
+
 # Session-signing secret read from a mounted file (an alternative to the
 # READOUT_SESSION_SECRET env var; the env var wins when both are set). The secret
 # itself is never written inline in this file -- only a path to it. Leave empty

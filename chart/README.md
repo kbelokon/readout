@@ -68,6 +68,7 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | `ingress` | `{enabled: false, className: "", annotations: {}, hosts: [], tls: []}` | Expose readout through a `networking.k8s.io/v1` Ingress. At least one `hosts` entry is required when enabled; `tls` passes through verbatim. |
 | `gateway` | `{enabled: false, apiVersion: gateway.networking.k8s.io/v1, parentRefs: [], hostnames: [], annotations: {}, rules: []}` | Expose readout by attaching an HTTPRoute to an existing Gateway. `parentRefs` is required when enabled. The chart never creates a Gateway or GatewayClass. |
 | `config` | `{port: 8080, excludeNamespaces: [kube-.*], showContainerLogs: false, includeSecrets: false, auth: {mode: none}}` | The readout app config, serialized verbatim into a ConfigMap as `readout.yaml` and mounted at `/etc/readout/readout.yaml`. Holds no secrets — those come from `env`/`envFrom`. Optional `argoCD` and `auth.trustedHeaders`/`auth.oidc` blocks live here too. |
+| `config.live` | app defaults `{maxConnections: 512, maxSources: 128, maxCacheAccountedBytes: 128Mi}` (commented out in `values.yaml`) | Per-pod bounds on the Live (SSE) surface: open Live streams, distinct upstream LIST+watch sources, and accounted retained object bytes. Browsers on the same scope and credentials share one source, so `maxSources` sits far below `maxConnections` — but under `config.clusterAuthUseSessionToken` each viewer's token is its own source, so size `maxSources` against concurrent viewers instead. Each pod enforces its own copy, so with `replicaCount > 1` the deployment-wide ceiling is that many times each value; a refused subscriber gets `429` with `Retry-After` and the page keeps working through Refresh. Lower `maxCacheAccountedBytes` when `resources.limits.memory` is below the chart default. |
 | `auth` | `{sessionSecret: {existingSecret: "", key: session-secret}, oidc: {existingSecret: "", clientIdKey: client-id, clientSecretKey: client-secret}}` | Typed secret wiring. Point at Secrets you already created; the chart renders matching `READOUT_*` env via `secretKeyRef`. Empty `existingSecret` disables a wiring. See [Secret wiring](#secret-wiring). |
 | `env` | `[]` | Literal extra `READOUT_*` env entries. Rendered after the typed `auth` entries, so an `env` entry of the same name wins. |
 | `envFrom` | `[]` | `envFrom` references to existing Secrets/ConfigMaps (e.g. a Secret holding `READOUT_SESSION_SECRET`). Opaque to the chart's gates. |
@@ -201,6 +202,10 @@ Render-time `fail`s (the cluster would reject these anyway):
   `metrics.port` is an error; `config.metricsPort` set while `metrics.enabled` is
   false is an error; a `serviceMonitor` enabled without `metrics.enabled` does not
   render a useful object. Drive the metrics port through `metrics.port` only.
+- **Live capacity is not a render gate** — the `config.live` bounds are enforced
+  at runtime by each pod, not by the chart; watch the per-pod `readout_live_*` /
+  `readout_watchhub_*` families on the metrics listener for utilization and
+  admission rejects.
 
 ## Secret wiring
 

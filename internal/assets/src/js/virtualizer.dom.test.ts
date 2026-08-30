@@ -15,7 +15,11 @@ vi.mock('./row-selection.js', () => ({
     reapplyRowState: dependencies.reapplyRowState,
 }));
 
-import { applyListProjectionDelta, listProjectionOrder } from './list-projection.js';
+import {
+    applyListProjectionDelta,
+    listProjectionOrder,
+    resetListProjection,
+} from './list-projection.js';
 import {
     virtMoveFocus,
     virtRowByKey,
@@ -25,6 +29,7 @@ import {
     virtualizeInit,
     virtualizeOnFilterChange,
     virtualizePrepareSwap,
+    virtualizeReset,
     virtualizeRevealKey,
     virtualizerActive,
     virtVisible,
@@ -787,6 +792,25 @@ describe('swap adoption', () => {
 });
 
 describe('full-set filtering and focus', () => {
+    // The delta transaction's fail-closed path drops the projection model. The
+    // window geometry maps the same DOM, so it has to go with it: left engaged,
+    // the next filter keystroke re-windows over an empty model and
+    // replaceChildren wipes the rows the resync still has to repair.
+    test('a dropped projection disengages the window instead of blanking the rows', () => {
+        const tbody = renderList(rowKeys(40));
+        virtualizeInit();
+        expect(virtualizerActive()).toBe(true);
+        const rendered = directRowKeys(tbody);
+        expect(rendered.length).toBeGreaterThan(0);
+
+        resetListProjection();
+        virtualizeReset();
+
+        expect(virtualizerActive()).toBe(false);
+        virtualizeOnFilterChange();
+        expect(directRowKeys(tbody)).toStrictEqual(rendered);
+    });
+
     test('keeps inactive delta repair inert', () => {
         const prior = new Map<string, HTMLElement>([['detached', document.createElement('tr')]]);
 

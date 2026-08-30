@@ -19,6 +19,8 @@ const leaves = vi.hoisted(() => ({
     refresh: [
         { event: 'refresh:first', handler: vi.fn() },
         { event: 'refresh:second', handler: vi.fn() },
+        { event: 'refresh:third', handler: vi.fn() },
+        { event: 'refresh:fourth', handler: vi.fn() },
     ],
     rowSelection: [{ event: 'row-selection:first', handler: vi.fn() }],
 }));

@@ -26,8 +26,10 @@ var listenAndServe = func(srv *http.Server) error {
 
 // shutdownGrace bounds the graceful drain after SIGINT/SIGTERM: long enough
 // for open Live streams to flush their `ro-live` terminal "shutdown" frames (the
-// app's shutdownCh is the same signal context) before the listener dies.
-const shutdownGrace = 5 * time.Second
+// app's shutdownCh is the same signal context) before the listener dies. The
+// app bounds each of those terminal writes by the same value, so a peer that
+// stopped reading cannot consume the whole drain.
+const shutdownGrace = web.ShutdownGrace
 
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{

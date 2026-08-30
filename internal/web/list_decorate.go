@@ -24,17 +24,24 @@ import (
 // reconstruct printer-column values live here alongside the decorators that
 // add them.
 
-func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool) []columnVis {
-	return s.applyTableOptionsWithUsage(r, client, table, namespace, allNamespaces, nil)
+// renderOverlays carries the upstream reads the decoration pass would
+// otherwise perform itself: the metrics.k8s.io usage map behind ?join=metrics
+// and the Nodes objects behind the ?join=nodes custom-column join. A nil field
+// means "fetch it now" (the per-request `/_table` path); a non-nil field is
+// used as-is. The Live stream renders pushes at up to ~3/s and refreshes both
+// overlays on its own 30s sub-poll, so a push never re-lists upstream.
+type renderOverlays struct {
+	metrics map[string][2]float64
+	nodes   map[string]map[string]any
 }
 
-// applyTableOptionsWithUsage is applyTableOptions with an optional pre-fetched
-// metrics overlay: a non-nil metricsUsage feeds the ?join=metrics columns
-// instead of a live metrics fetch. The Live stream renders pushes at up
-// to ~3/s and refreshes usage on its own 30s sub-poll, so its renders must
-// never re-list the metrics API; everything else passes nil and keeps the
-// per-request fetch.
-func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, metricsUsage map[string][2]float64) []columnVis {
+func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool) []columnVis {
+	return s.applyTableOptionsWithOverlays(r, client, table, namespace, allNamespaces, renderOverlays{})
+}
+
+// applyTableOptionsWithOverlays is applyTableOptions with the pre-fetched
+// join overlays described by renderOverlays.
+func (s *Server) applyTableOptionsWithOverlays(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, overlays renderOverlays) []columnVis {
 	q := r.URL.Query()
 	// Cookie fill: the ro_prefs colvis/sort prefs stand in for ABSENT URL
 	// params (URL always wins; single-type pages only; render-only -- r.URL is
@@ -101,7 +108,7 @@ func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client
 		decorateEventColumns(table)
 	}
 	if q.Get("join") == "metrics" && (table.Resource.Plural == "pods" || table.Resource.Plural == "nodes") {
-		usage := metricsUsage
+		usage := overlays.metrics
 		if usage == nil {
 			usage = s.fetchMetricsUsage(r.Context(), client, table.Resource.Namespaced, namespace, allNamespaces, q.Get("selector"))
 		}
@@ -109,7 +116,14 @@ func (s *Server) applyTableOptionsWithUsage(r *http.Request, client *kube.Client
 	}
 	custom := first(q.Get("customcols"), q.Get("custom-columns"), s.cfg.DefaultCustomColumns[table.Resource.Plural])
 	if custom != "" {
-		s.joinCustomColumns(r.Context(), client, table, namespace, allNamespaces, custom, q)
+		var nodes map[string]map[string]any
+		if wantsNodeJoin(q, table) {
+			nodes = overlays.nodes
+			if nodes == nil {
+				nodes = s.fetchNodeObjects(r.Context(), client)
+			}
+		}
+		joinCustomColumns(table, custom, nodes)
 	}
 	// Column visibility: applied AFTER the label / synthetic / joined
 	// columns land, so the hide spec can remove synthetic columns too (until v2
@@ -761,7 +775,42 @@ func nodeConditionsText(obj map[string]any) string {
 	return strings.Join(names, ", ")
 }
 
-func (s *Server) joinCustomColumns(ctx context.Context, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, spec string, query url.Values) {
+// wantsNodeJoin reports whether the render asks for the ?join=nodes
+// custom-column overlay: Pod tables only (the join exposes each row's own Node
+// object under the synthetic `node` key, keyed off spec.nodeName).
+func wantsNodeJoin(q url.Values, table *kube.Table) bool {
+	return q.Get("join") == "nodes" && table.Resource.Kind == "Pod"
+}
+
+// fetchNodeObjects resolves the ?join=nodes overlay: node name → Node object.
+// nil when discovery or the Nodes LIST fails, which leaves the synthetic
+// `node` key absent and every node expression empty — never a ragged table.
+// Split from the column apply (exactly like fetchMetricsUsage) so the Live
+// stream can refresh it on its own 30s sub-poll instead of re-listing Nodes
+// on every push.
+func (s *Server) fetchNodeObjects(ctx context.Context, client *kube.Client) map[string]map[string]any {
+	nodeRT, err := client.FindResource(ctx, "nodes", false, "")
+	if err != nil {
+		return nil
+	}
+	list, err := client.List(ctx, &nodeRT, kube.ListOptions{})
+	if err != nil {
+		return nil
+	}
+	nodes := map[string]map[string]any{}
+	for _, item := range list.Items {
+		nodes[nestedString(item.Object, "metadata", "name")] = item.Object
+	}
+	return nodes
+}
+
+// joinCustomColumns appends one column per kubectl-style custom-column
+// expression and evaluates it against the row's OWN retained object -- the
+// Table list already carries every object (includeObject=Object), so there is
+// no second upstream LIST here and a Live push costs nothing upstream. A
+// non-nil nodes overlay adds the synthetic `node` key (the row's Node object)
+// to the search document so `node.metadata.name` style expressions resolve.
+func joinCustomColumns(table *kube.Table, spec string, nodes map[string]map[string]any) {
 	parts := strings.Split(spec, ";")
 	type compiled struct {
 		name string
@@ -787,65 +836,31 @@ func (s *Server) joinCustomColumns(ctx context.Context, client *kube.Client, tab
 	if len(expressions) == 0 {
 		return
 	}
-	var nodes map[string]map[string]any
-	if query.Get("join") == "nodes" && table.Resource.Kind == "Pod" {
-		if nodeRT, err := client.FindResource(ctx, "nodes", false, ""); err == nil {
-			if nodeList, err := client.List(ctx, &nodeRT, kube.ListOptions{}); err == nil {
-				nodes = map[string]map[string]any{}
-				for _, item := range nodeList.Items {
-					nodes[nestedString(item.Object, "metadata", "name")] = item.Object
-				}
-			}
-		}
-	}
-	listNS := namespace
-	if allNamespaces {
-		listNS = ""
-	}
-	list, err := client.List(ctx, &table.Resource, kube.ListOptions{Namespace: listNS, LabelSelector: query.Get("selector")})
-	if err != nil {
-		for i := range table.Rows {
+	for i := range table.Rows {
+		obj := table.Rows[i].Object
+		if len(obj) == 0 {
+			// A row without an embedded object (a Table the apiserver returned
+			// without includeObject) still needs its cell count to match the
+			// columns, so it gets one empty cell per expression.
 			for range expressions {
 				table.Rows[i].Cells = append(table.Rows[i].Cells, nil)
 			}
-		}
-		return
-	}
-	objects := map[string]map[string]any{}
-	for _, item := range list.Items {
-		key := nestedString(item.Object, "metadata", "namespace") + "/" + nestedString(item.Object, "metadata", "name")
-		objects[key] = item.Object
-	}
-	joined := map[int]bool{}
-	for i := range table.Rows {
-		key := nestedString(table.Rows[i].Object, "metadata", "namespace") + "/" + nestedString(table.Rows[i].Object, "metadata", "name")
-		obj := objects[key]
-		if obj == nil {
 			continue
+		}
+		searchObj := obj
+		if nodes != nil {
+			searchObj = make(map[string]any, len(obj)+1)
+			for k, v := range obj {
+				searchObj[k] = v
+			}
+			searchObj["node"] = nodes[nestedString(obj, "spec", "nodeName")]
 		}
 		for _, expr := range expressions {
 			if table.Resource.Kind == "Secret" {
 				table.Rows[i].Cells = append(table.Rows[i].Cells, kube.SecretContentHidden)
 				continue
 			}
-			searchObj := obj
-			if nodes != nil {
-				searchObj = map[string]any{}
-				for k, v := range obj {
-					searchObj[k] = v
-				}
-				searchObj["node"] = nodes[nestedString(obj, "spec", "nodeName")]
-			}
 			table.Rows[i].Cells = append(table.Rows[i].Cells, evalJSONPath(expr.expr, searchObj))
-		}
-		joined[i] = true
-	}
-	for i := range table.Rows {
-		if joined[i] {
-			continue
-		}
-		for range expressions {
-			table.Rows[i].Cells = append(table.Rows[i].Cells, nil)
 		}
 	}
 }

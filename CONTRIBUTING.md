@@ -30,6 +30,18 @@ It lints and typechecks both production and test TypeScript, runs Vitest with
 the enforced V8 coverage floor, rebuilds the embedded assets, and fails if the
 committed bundle is stale. Use `npm run test:watch` for the local Vitest loop.
 
+Runtime-vendored JavaScript (`htmx.min.js`, `idiomorph-ext.min.js`) is pinned in
+`internal/assets/vendor-manifest.json` by npm tarball URL, sha512 SRI, and the
+SHA-256 of both the committed artifact and its license text. `npm run build`
+runs the offline gate (`npm run verify:vendor`) first, so every asset build
+proves the committed bytes match the manifest — a hand-edited vendor file or an
+out-of-sync `LICENSES/*.txt` fails the build. The *set* of vendors is code-owned
+in `scripts/vendor-assets.mjs`, so editing the manifest alone cannot add or drop
+one. To upgrade a vendored library: bump its version, URL and SRI in the
+manifest, run `npm run verify:vendor:upstream` (the only networked step — it
+downloads the pinned tarballs and checks their SRI), refresh the artifact and
+`LICENSES/*.txt` bytes, and update `NOTICE`.
+
 For a slower test-strength audit, first validate the Stryker sandbox and then
 run the complete mutation gate:
 

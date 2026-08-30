@@ -95,6 +95,10 @@ func (m *Manager) Reload(ctx context.Context) error {
 			broken = append(broken, BrokenCluster{Name: item.Name, Source: item.Source, Err: err})
 			continue
 		}
+		// Name the credential before the Cluster is published: the identity is
+		// what everything pooling upstream work per viewer keys on, and it must
+		// be settled before the first reader can see this client.
+		client.setClusterIdentity(name)
 		origin[name] = item.Name
 		next[name] = &Cluster{
 			Name:   name,

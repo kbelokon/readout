@@ -58,6 +58,10 @@ func compressResponses(next http.Handler) http.Handler {
 			get := r.Clone(r.Context())
 			get.Method = http.MethodGet
 			compressed(&weakETagResponseWriter{ResponseWriter: head}, get)
+			// ServeMux records the matched route on the request IT was handed,
+			// which is the clone. Copy it back so the outer metrics/access-log
+			// middleware labels a HEAD with its route instead of __unmatched__.
+			r.Pattern = get.Pattern
 			head.finish()
 			return
 		}
@@ -89,6 +93,12 @@ type headMetadataResponseWriter struct {
 	http.ResponseWriter
 	status int
 	bytes  int64
+}
+
+// Unwrap keeps http.ResponseController able to reach the real connection from
+// behind the HEAD metadata writer.
+func (w *headMetadataResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 func (w *headMetadataResponseWriter) WriteHeader(status int) {

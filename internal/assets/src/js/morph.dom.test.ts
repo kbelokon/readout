@@ -3,13 +3,11 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const dependencies = vi.hoisted(() => ({
-    cancelListProjectionSwap: vi.fn(),
     prepareListProjectionSwap: vi.fn(),
     virtualizePrepareSwap: vi.fn(),
 }));
 
 vi.mock('./list-projection.js', () => ({
-    cancelListProjectionSwap: dependencies.cancelListProjectionSwap,
     prepareListProjectionSwap: dependencies.prepareListProjectionSwap,
 }));
 
@@ -215,10 +213,14 @@ describe('ro-morph vendor guards and extension', () => {
             morphStyle: 'innerHTML',
             ignoreActiveValue: true,
         });
-        expect(dependencies.cancelListProjectionSwap).not.toHaveBeenCalled();
     });
 
-    test('cancels the matching list preparation when Idiomorph throws synchronously', async () => {
+    // htmx catches a handleSwap throw and falls back to its default innerHTML
+    // swap of the SAME fragment -- whose rows virtualizePrepareSwap has already
+    // detached. The prepared snapshot is the only thing left holding them, so a
+    // synchronous morph failure must leave it standing for virtualizeAfterSwap
+    // to adopt.
+    test('leaves the prepared snapshot intact when Idiomorph throws synchronously', async () => {
         const failure = new Error('synchronous morph failure');
         const vendor = installVendors();
         vendor.morph.mockImplementationOnce(() => {
@@ -232,12 +234,9 @@ describe('ro-morph vendor guards and extension', () => {
 
         expect(() => vendor.extension().handleSwap('morph', target, fragment)).toThrow(failure);
 
-        expect(dependencies.cancelListProjectionSwap).toHaveBeenCalledExactlyOnceWith(fragment);
+        expect(dependencies.prepareListProjectionSwap).toHaveBeenCalledExactlyOnceWith(fragment);
         expect(dependencies.virtualizePrepareSwap.mock.invocationCallOrder[0]).toBeLessThan(
             vendor.morph.mock.invocationCallOrder[0] as number,
-        );
-        expect(vendor.morph.mock.invocationCallOrder[0]).toBeLessThan(
-            dependencies.cancelListProjectionSwap.mock.invocationCallOrder[0] as number,
         );
     });
 });

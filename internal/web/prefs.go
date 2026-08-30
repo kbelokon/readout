@@ -39,6 +39,11 @@ const (
 	// worst-case payload is ~1.2KB encoded (scan-log accepted-risk-probe
 	// prefs-cookie-size), so 3KB leaves headroom under the 4KB browser limit.
 	prefsMaxEncoded = 3072
+	// livePrefValue is the ONE stored Refresh value that means "Live is on",
+	// compared exactly. It is shared by the SSR toggle state and the client
+	// writer so the rendered aria-pressed and the JS-derived state can never
+	// disagree about what the cookie said.
+	livePrefValue = "Live"
 )
 
 // prefs is the decoded ro_prefs payload. The json tags ARE the pinned wire
@@ -48,9 +53,13 @@ type prefs struct {
 	// writer moves an entry to the front on every write, so tail eviction drops
 	// the least recently used kind.
 	Kinds []kindPrefs `json:"kinds,omitempty"`
-	// Refresh is the auto-refresh mode as a STRING: "Off", an interval in
-	// seconds ("5"/"10"/"30"/"60"...), or the "Live" SSE refresh option. Stored
-	// stringly so Live needs no schema change. "" means no preference.
+	// Refresh is the update mode as a STRING with exactly two values the
+	// client writes: livePrefValue ("Live", the SSE stream is on) and "Off".
+	// "" means no preference, and so does anything else -- cookies persisted by
+	// older builds hold a polling interval in seconds ("5"/"30"/...), and those
+	// must read as OFF rather than resurrect a poll loop that no longer exists.
+	// Only an exact livePrefValue match turns Live on, so no migration is
+	// needed: a stale value simply decays to off on the next write.
 	Refresh string `json:"refresh,omitempty"`
 	// Namespaces maps cluster name -> last-used namespace ("_all" is a valid
 	// persistable value). Consumed ONLY for cluster-entry href construction

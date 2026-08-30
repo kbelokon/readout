@@ -451,6 +451,16 @@ export function virtualizeOnFilterChange(): void {
     virtRenderWindow();
 }
 
+// virtualizeReset disengages the window when the delta transaction fails
+// closed. That path drops the projection model, and this geometry -- visible
+// set, row height, spacer sizes -- describes exactly the DOM the model no
+// longer maps. Left engaged, the next filter keystroke would re-window over an
+// empty model and `replaceChildren` the surviving rows out of the table; the
+// rows must stay put and last-known until the resync snapshot lands.
+export function virtualizeReset(): void {
+    virtReset();
+}
+
 // The shared post-update pipeline has already re-rendered the current window.
 // Diff only upserted pre-morph rows; no second re-window is needed.
 export function virtualizeAfterDelta(

@@ -36,21 +36,12 @@ function withRawQuery(pathname: string, rawQuery: string): string {
     return rawQuery === '' ? pathname : `${pathname}?${rawQuery}`;
 }
 
+// The stream target is always same-origin. Asserting it here (rather than
+// trusting that a pathname can never start with `//`) keeps a protocol-relative
+// path from turning into a cross-origin fetch of the viewer's live data.
 export function liveStreamBaseForURL(url: URL): string {
+    if (url.origin !== window.location.origin) return '';
     const pathname = `${url.pathname.replace(/\/+$/, '')}/_stream`;
+    if (!pathname.startsWith('/') || pathname.startsWith('//')) return '';
     return withRawQuery(pathname, url.search.slice(1));
-}
-
-export function liveStreamBaseFromTableRequest(requestPath: unknown): string | null {
-    if (typeof requestPath !== 'string') return null;
-    try {
-        const url = new URL(requestPath, window.location.href);
-        if (url.origin !== window.location.origin || !url.pathname.endsWith('/_table')) return null;
-        return withRawQuery(
-            `${url.pathname.slice(0, -'/_table'.length)}/_stream`,
-            url.search.slice(1),
-        );
-    } catch {
-        return null;
-    }
 }

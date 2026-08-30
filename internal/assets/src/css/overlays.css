@@ -215,7 +215,7 @@
         header.ro-topbar { gap: 10px; padding: 0 11px; }
         .ctx-dd { max-width: 32vw; }
         .topnav,
-        .refresh-label { display: none; }
+        .live-label { display: none; }
         .ro-search { display: none; }
         .ro-title { font-size: 21px; }
         .ro-mobile-hide { display: none !important; }
@@ -244,10 +244,12 @@
        animations (D-reduced-motion). The static look is kept; only the looping /
        sweeping / pulsing motion is dropped. */
     @media (prefers-reduced-motion: reduce) {
-        /* Matches the active-state pulse selector above (the id-weighted rule
-           would out-rank a bare .ro-livedot override). Only the motion drops:
-           the brand colour keeps carrying the live signal. */
-        #refresh-dropdown.refresh-on .ro-livedot { animation: none; }
+        /* Must repeat EVERY attribute of the pulse selector in shell.css
+           (`.tb-btn.live-toggle[aria-pressed="true"][data-ro-live-state="open"]
+           .ro-livedot`). Both rules sit in @layer app, so a shorter selector
+           loses on specificity no matter how late it is imported. Only the
+           motion drops: the brand colour keeps carrying the live signal. */
+        .tb-btn.live-toggle[aria-pressed="true"][data-ro-live-state="open"] .ro-livedot { animation: none; }
         .ro-dot.pulse { animation: none; }
         .rep .rep-track i.updating { animation: none; }
         .ro-rd .ro-palette { transition: none; }

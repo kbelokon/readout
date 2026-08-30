@@ -6,9 +6,11 @@ import (
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
-// resourceStateTableRow removes presentation derived only from the server
-// clock while retaining object ResourceVersion. The result is safe to hash for
-// both conditional list refreshes and Live projection revisions.
+// resourceStateTableRow removes presentation derived only from the server clock
+// while retaining object ResourceVersion. It backs the Live projection's row
+// digest: a cell whose text is a function of "now" would otherwise push a row
+// upsert every poll for a row nothing happened to. The conditional-refresh
+// validator deliberately does NOT use it -- see resourceListETag.
 func resourceStateTableRow(row *templates.TableRow) templates.TableRow {
 	semantic := *row
 	semantic.Cells = slices.Clone(row.Cells)
@@ -21,19 +23,6 @@ func resourceStateTableRow(row *templates.TableRow) templates.TableRow {
 			Kind:     cell.Kind,
 			ColClass: cell.ColClass,
 			Volatile: true,
-		}
-	}
-	return semantic
-}
-
-func resourceStateListData(data *templates.ListData) templates.ListData {
-	semantic := *data
-	semantic.Tables = slices.Clone(data.Tables)
-	for tableIndex := range semantic.Tables {
-		table := &semantic.Tables[tableIndex]
-		table.Rows = slices.Clone(table.Rows)
-		for rowIndex := range table.Rows {
-			table.Rows[rowIndex] = resourceStateTableRow(&table.Rows[rowIndex])
 		}
 	}
 	return semantic

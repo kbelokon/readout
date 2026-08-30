@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/kbelokon/readout/internal/assets"
@@ -83,16 +84,55 @@ type Server struct {
 	// mutable timing state; tests may adjust it before serving begins.
 	streamTuning streamTuning
 
-	// streamSlots caps concurrent Live streams: every open `_stream`
-	// handler holds one slot for its whole lifetime; when the channel is full
-	// the next stream gets 429 BEFORE any SSE headers. The slot releases on
-	// every handler exit path (deferred at acquisition).
-	streamSlots chan struct{}
+	// limits is the immutable per-pod Live admission policy resolved from
+	// config. It is copied into this Server so independently constructed
+	// servers share no limit state; tests build a Server whose config carries
+	// small limits rather than mutating a global.
+	limits liveLimits
+
+	// hub owns every upstream list+watch a Live stream reads from, so N
+	// subscribers on one scope cost the apiserver one LIST and one watch. It
+	// is built on first use rather than in New because streamTuning (which the
+	// hub copies) is still settable until the server starts serving; hubCtx is
+	// the New() context, so hub sources are bounded by process lifetime and
+	// never by one subscriber's request.
+	hubCtx   context.Context
+	hubOnce  sync.Once
+	hub      *watchHub
+	hubClock hubClock
 
 	// shutdownCh mirrors the New() context's Done channel: when the process
-	// is shutting down, open Live streams emit a terminal `event: ro-live`
-	// envelope (reason "shutdown") and close instead of dying mid-frame.
+	// is shutting down, /readyz and new Live admissions answer 503 and open
+	// Live streams emit a terminal `event: ro-live` envelope (reason
+	// "shutdown") and close instead of dying mid-frame.
 	shutdownCh <-chan struct{}
+}
+
+// ShutdownGrace bounds the graceful drain after SIGINT/SIGTERM: long enough
+// for open Live streams to flush their `ro-live` terminal "shutdown" frames
+// before the listener dies. The stream's own shutdown write is bounded by a
+// strict fraction of it (shutdownTerminalWriteBound), so a non-reading peer
+// cannot consume the whole drain and leave nothing for the unwind.
+const ShutdownGrace = 5 * time.Second
+
+// liveHub returns the process-local WatchHub, building it on first use.
+func (s *Server) liveHub() *watchHub {
+	s.hubOnce.Do(func() {
+		s.hub = newWatchHub(s.hubCtx, s.limits, &s.streamTuning, s.hubClock, s.metrics)
+	})
+	return s.hub
+}
+
+// shuttingDown reports whether the process has begun its graceful drain.
+// Readiness and new Live admissions both answer 503 from that instant, so a
+// draining pod stops receiving work while its open streams finish.
+func (s *Server) shuttingDown() bool {
+	select {
+	case <-s.shutdownCh:
+		return true
+	default:
+		return false
+	}
 }
 
 var withBearerClient = func(client *kube.Client, token string) (*kube.Client, error) {
@@ -135,7 +175,8 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		listBudget:         listFanoutBudget,
 		searchBudget:       searchFanoutBudget,
 		streamTuning:       defaultStreamTuning(),
-		streamSlots:        make(chan struct{}, liveStreamCapacity(cfg.Demo)),
+		limits:             liveLimitsFromConfig(cfg),
+		hubCtx:             ctx,
 		shutdownCh:         ctx.Done(),
 	}
 	// Wire domain metrics: the kube Manager bakes the per-cluster request
@@ -144,6 +185,10 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// their own packages — the closures here own the metric types.
 	manager.SetRequestObserverFactory(s.metrics.kubeObserverFactory())
 	hooksClient.SetObserver(s.metrics.hookObserver())
+	// The resolved Live bounds are published as capacity gauges here, not when
+	// the hub is first used: a pod that has never served a Live stream still
+	// has to report what it would admit.
+	s.metrics.setLiveCapacity(s.limits)
 	s.routes()
 	s.warnMissingSessionSecret()
 	warnUnauthenticatedExposure(&s.cfg, manager.Clusters())
@@ -152,11 +197,37 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	return s, nil
 }
 
-func liveStreamCapacity(demo bool) int {
-	if demo {
-		return demoStreamCapMax
+// liveLimits is the resolved per-pod Live admission policy: the three bounds
+// that are checked independently before a Live subscriber is admitted. Demo
+// mode is NOT special-cased — the public demo runs on the same defaults as
+// every other deployment, and an operator who wants a different ceiling sets
+// the `live:` config block.
+type liveLimits struct {
+	maxConnections         int
+	maxSources             int
+	maxCacheAccountedBytes int64
+}
+
+// liveLimitsFromConfig copies the resolved limits off the config. resolve()
+// already rejects non-positive values, so the guards here only cover a Server
+// built directly in a test from a hand-written config.Config, which never runs
+// through that validation: without them a zero limit would reject every stream.
+func liveLimitsFromConfig(cfg *config.Config) liveLimits {
+	limits := liveLimits{
+		maxConnections:         cfg.LiveMaxConnections,
+		maxSources:             cfg.LiveMaxSources,
+		maxCacheAccountedBytes: cfg.LiveMaxCacheAccountedBytes,
 	}
-	return streamCapMax
+	if limits.maxConnections <= 0 {
+		limits.maxConnections = config.DefaultLiveMaxConnections
+	}
+	if limits.maxSources <= 0 {
+		limits.maxSources = config.DefaultLiveMaxSources
+	}
+	if limits.maxCacheAccountedBytes <= 0 {
+		limits.maxCacheAccountedBytes = config.DefaultLiveMaxCacheAccountedBytes
+	}
+	return limits
 }
 
 // warnUntrustedHeaderProxy warns at startup when headers auth mode is on but no
@@ -294,11 +365,22 @@ func (s *Server) Handler() http.Handler {
 	return s.hostAllowlist(s.readOnly(s.sameOrigin(s.securityHeaders(s.observeMetrics(compressResponses(s.auth.Middleware(s.mux)))))))
 }
 
+// readyz reports whether this pod should receive new work. It answers 503
+// from the instant the graceful drain begins, so the Service takes the pod out
+// of rotation while its open Live streams flush their shutdown terminals.
+func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
+	if s.shuttingDown() {
+		http.Error(w, "shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	_, _ = io.WriteString(w, "OK")
+}
+
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /assets/{name...}", s.assetsHandler)
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
-	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
+	s.mux.HandleFunc("GET /readyz", s.readyz)
 	if s.cfg.MetricsPort == 0 {
 		s.mux.HandleFunc("GET /metrics", s.metricsHandler)
 	} else {

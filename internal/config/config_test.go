@@ -907,3 +907,99 @@ func TestStaticLinkBadSchemeDropped(t *testing.T) {
 		t.Fatalf("valid links should survive: %+v %+v", cfg.ObjectLinks, cfg.LabelLinks)
 	}
 }
+
+// TestLiveLimitsDefaultsAndOverrides pins the `live:` block end to end: an
+// omitted block resolves to the shipped per-pod defaults, each key overrides
+// independently, and maxCacheAccountedBytes accepts a Kubernetes quantity
+// (so "128Mi" in a values.yaml means the same thing it does in a resource
+// limit) rather than a raw byte count only.
+func TestLiveLimitsDefaultsAndOverrides(t *testing.T) {
+	cfg, err := Parse([]string{"--config", writeConfig(t, "port: 8080\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LiveMaxConnections != DefaultLiveMaxConnections || cfg.LiveMaxSources != DefaultLiveMaxSources {
+		t.Fatalf("live defaults wrong: connections=%d sources=%d", cfg.LiveMaxConnections, cfg.LiveMaxSources)
+	}
+	if cfg.LiveMaxCacheAccountedBytes != 128<<20 {
+		t.Fatalf("live maxCacheAccountedBytes default = %d, want 128Mi", cfg.LiveMaxCacheAccountedBytes)
+	}
+
+	const content = `
+live:
+  maxConnections: 64
+  maxSources: 16
+  maxCacheAccountedBytes: 32Mi
+`
+	cfg, err = Parse([]string{"--config", writeConfig(t, content)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LiveMaxConnections != 64 || cfg.LiveMaxSources != 16 || cfg.LiveMaxCacheAccountedBytes != 32<<20 {
+		t.Fatalf("live overrides wrong: %d %d %d", cfg.LiveMaxConnections, cfg.LiveMaxSources, cfg.LiveMaxCacheAccountedBytes)
+	}
+
+	// A partial block leaves the untouched keys at their defaults: the pointer
+	// fields make "absent" distinguishable from an explicit value.
+	cfg, err = Parse([]string{"--config", writeConfig(t, "live:\n  maxSources: 1\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LiveMaxSources != 1 || cfg.LiveMaxConnections != DefaultLiveMaxConnections {
+		t.Fatalf("partial live block wrong: sources=%d connections=%d", cfg.LiveMaxSources, cfg.LiveMaxConnections)
+	}
+}
+
+// TestLiveLimitsRejectNonPositiveAndUnparsable pins that every limit is a hard
+// startup error when it cannot bound anything: an explicit 0 or a negative
+// number never silently falls back to the default, and an unparsable quantity
+// names the key it came from. Strict parse still rejects a typo'd key.
+func TestLiveLimitsRejectNonPositiveAndUnparsable(t *testing.T) {
+	for _, content := range []string{
+		"live:\n  maxConnections: 0\n",
+		"live:\n  maxConnections: -1\n",
+		"live:\n  maxSources: 0\n",
+		"live:\n  maxSources: -8\n",
+		"live:\n  maxCacheAccountedBytes: \"0\"\n",
+		"live:\n  maxCacheAccountedBytes: \"-1Mi\"\n",
+	} {
+		if _, err := Parse([]string{"--config", writeConfig(t, content)}); err == nil {
+			t.Fatalf("Parse(%q) unexpectedly succeeded", content)
+		}
+	}
+
+	_, err := Parse([]string{"--config", writeConfig(t, "live:\n  maxCacheAccountedBytes: \"lots\"\n")})
+	if err == nil {
+		t.Fatal("unparsable quantity should be rejected")
+	}
+	if !strings.Contains(err.Error(), "maxCacheAccountedBytes") {
+		t.Fatalf("error should name the key: %v", err)
+	}
+
+	// A decimal quantity too large for an int64 must be an error, NOT a wrap:
+	// Quantity.Value() truncates the big.Int form to its low 64 bits, so
+	// 2^64+1 bytes would otherwise read back as a 1-byte limit that passes the
+	// positive check and then refuses every Live source. The same truncation
+	// turns an oversized NEGATIVE quantity positive (-(2^64-1) reads back as
+	// 1), which the non-positive check downstream can no longer see, so both
+	// signs are rejected on the quantity itself.
+	for _, huge := range []string{
+		"18446744073709551617",
+		"9223372036854775808",
+		"-18446744073709551615",
+		"-9223372036854775809",
+	} {
+		content := "live:\n  maxCacheAccountedBytes: \"" + huge + "\"\n"
+		cfg, err := Parse([]string{"--config", writeConfig(t, content)})
+		if err == nil {
+			t.Fatalf("Parse(%q) = %d bytes, want an error instead of a wrapped limit", huge, cfg.LiveMaxCacheAccountedBytes)
+		}
+		if !strings.Contains(err.Error(), "maxCacheAccountedBytes") {
+			t.Fatalf("error should name the key: %v", err)
+		}
+	}
+
+	if _, err := Parse([]string{"--config", writeConfig(t, "live:\n  bogusKey: 1\n")}); err == nil {
+		t.Fatal("unknown key under live: should be rejected by strict parse")
+	}
+}

@@ -182,6 +182,15 @@ config:
   # argoCD:
   #   hostCluster: ""
   #   namespace: argocd
+  # Per-pod limits on the Live (SSE) surface. Defaults shown; they scale with
+  # replicas (each pod enforces its own), and a rejected subscriber gets 429
+  # with Retry-After while the page keeps working through Refresh. Uncomment to
+  # tune -- e.g. lower maxCacheAccountedBytes when resources.limits.memory is
+  # below the chart default.
+  # live:
+  #   maxConnections: 512
+  #   maxSources: 128
+  #   maxCacheAccountedBytes: 128Mi
   auth:
     mode: none   # safe default: no identity trusted. Set behind a real auth layer.
     # mode: headers

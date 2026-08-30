@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,6 +53,12 @@ func newLiveV2TestSession(renderers streamLiveRenderers) *streamSession {
 	}
 }
 
+// hubRevisionFor wraps a Table as one published revision, so a session test
+// can exercise the render/classification path without a running source.
+func hubRevisionFor(num uint64, table *kube.Table) *hubRevision {
+	return &hubRevision{num: num, table: table, rv: "101"}
+}
+
 func decodePreparedEnvelope(t testing.TB, payload []byte) testLiveEnvelope {
 	t.Helper()
 	var envelope testLiveEnvelope
@@ -75,12 +82,15 @@ func prepareInitialLiveSnapshot(t testing.TB, st *streamSession, data *templates
 
 // newStreamInterceptFixture places a deterministic fault-injection proxy in
 // front of fakekube while preserving its real discovery/list/watch behavior for
-// every request the interceptor does not consume.
+// every request the interceptor does not consume. It returns a drain function
+// that cancels the app context: upstream list/watch work belongs to the shared
+// WatchHub source, not to any one subscriber's request, so cancelling the pod
+// -- not closing a browser -- is what releases a stalled upstream call.
 func newStreamInterceptFixture(
 	t *testing.T,
 	intercept func(http.ResponseWriter, *http.Request) bool,
 	tune ...func(*streamTuning),
-) (*httptest.Server, *Server, *fakeapi.Server) {
+) (*httptest.Server, *Server, *fakeapi.Server, func()) {
 	t.Helper()
 	fake, err := fakeapi.New()
 	if err != nil {
@@ -99,13 +109,18 @@ func newStreamInterceptFixture(
 		proxy.ServeHTTP(w, r)
 	}))
 	t.Cleanup(upstream.Close)
-	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: upstream.URL}}, DefaultTheme: "dark"})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	app, err := New(ctx, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: upstream.URL}}, DefaultTheme: "dark", NoAccessLogs: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, apply := range tune {
 		apply(&app.streamTuning)
 	}
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
-	return ts, app, fake
+	return ts, app, fake, cancel
 }
 
 func openRawLiveV2(t *testing.T, ctx context.Context, baseURL, generation, query string) *http.Response {
@@ -162,9 +177,9 @@ func readHeartbeatAndTerminal(t *testing.T, resp *http.Response) (bool, int, tes
 func waitStreamSlotRelease(t *testing.T, app *Server) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
-	for len(app.streamSlots) != 0 {
+	for app.liveHub().connectionCount() != 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("stream cap slot remained held: %d", len(app.streamSlots))
+			t.Fatalf("live connection slot remained held: %d", app.liveHub().connectionCount())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -397,40 +412,96 @@ func TestStreamLiveV2DeleteProjectAndDeleteAddClassification(t *testing.T) {
 		t.Fatalf("untracked removal cause = %q, want project", cause)
 	}
 
-	row := kube.Row{Object: map[string]any{"metadata": map[string]any{"name": "pod-001", "namespace": "default"}}}
-	deleted := kube.WatchEvent{Type: kube.WatchDeleted, Table: kube.Table{Rows: []kube.Row{row}}}
-	added := kube.WatchEvent{Type: kube.WatchAdded, Table: kube.Table{Rows: []kube.Row{row}}}
-	key := "test/default/pod-001"
+	// The delete/project distinction itself is derived from the shared
+	// source's revisions: a row present in the committed base revision and
+	// absent from the one being rendered really left the apiserver scope.
+	base := hubRevisionFor(1, &kube.Table{Rows: []kube.Row{
+		hubTestRow("pod-001"), hubTestRow("pod-002"),
+	}})
+	next := hubRevisionFor(2, &kube.Table{Rows: []kube.Row{hubTestRow("pod-002")}})
+
 	unfiltered := newLiveV2TestSession(streamLiveRenderers{})
 	unfiltered.cluster = "test"
-	unfiltered.noteWatchMutation(&deleted)
-	if _, present := unfiltered.deletedKeys[key]; !present {
-		t.Fatal("selector-free DELETED was not classified as an actual delete")
+	unfiltered.base, unfiltered.rev = base, next
+	if _, present := unfiltered.watchDeletions()["test/ns/pod-001"]; !present {
+		t.Fatal("a row that left the selector-free scope was not classified as an actual delete")
 	}
-	unfiltered.noteWatchMutation(&added)
-	if _, present := unfiltered.deletedKeys[key]; present {
-		t.Fatal("delete→add did not clear the pending delete classification")
+
+	// A row that is back in the newer revision was never deleted as far as the
+	// client's committed base is concerned.
+	readded := newLiveV2TestSession(streamLiveRenderers{})
+	readded.cluster = "test"
+	readded.base, readded.rev = base, hubRevisionFor(3, base.table)
+	if len(readded.watchDeletions()) != 0 {
+		t.Fatal("delete then re-add was still reported as a pending delete")
 	}
+
+	// With a label selector the wire cannot distinguish selector exit from an
+	// actual delete, so nothing is classified.
 	filtered := newLiveV2TestSession(streamLiveRenderers{})
 	filtered.cluster = "test"
 	filtered.selector = "app=web"
-	filtered.noteWatchMutation(&deleted)
-	if len(filtered.deletedKeys) != 0 {
-		t.Fatal("selector-bearing ambiguous DELETED was misclassified as actual delete")
+	filtered.base, filtered.rev = base, next
+	if len(filtered.watchDeletions()) != 0 {
+		t.Fatal("selector-bearing ambiguous removal was misclassified as an actual delete")
+	}
+
+	// A forced snapshot re-establishes the whole projection, so classification
+	// is skipped entirely.
+	forced := newLiveV2TestSession(streamLiveRenderers{})
+	forced.cluster = "test"
+	forced.base, forced.rev, forced.forceSnapshot = base, next, true
+	if len(forced.watchDeletions()) != 0 {
+		t.Fatal("a forced-snapshot push still classified removals")
 	}
 }
 
+// A session's wakeup is level-triggered and its notification slot holds one
+// entry, so the revision it adopts after a relist is often NOT the revision the
+// relist published. The discontinuity is therefore read from the source's
+// monotonic epoch: skipping straight from an epoch-0 revision to an epoch-1 one
+// still owes the client a full snapshot.
+func TestStreamLiveV2AdoptForcesSnapshotOnACoalescedRelist(t *testing.T) {
+	st := newLiveV2TestSession(streamLiveRenderers{})
+	first := hubRevisionFor(1, &kube.Table{Rows: []kube.Row{hubTestRow("alpha")}})
+	if !st.adopt(first) || st.forceSnapshot {
+		t.Fatalf("initial adopt force=%t, want the first revision adopted without a forced snapshot", st.forceSnapshot)
+	}
+	st.forceSnapshot = false
+
+	// Revision 2 was the relist; this session only ever sees revision 3, the
+	// event published on top of it before the wakeup was drained.
+	afterRelist := hubRevisionFor(3, &kube.Table{Rows: []kube.Row{hubTestRow("beta")}})
+	afterRelist.epoch = 1
+	if !st.adopt(afterRelist) || !st.forceSnapshot {
+		t.Fatalf("post-relist adopt force=%t, want a forced snapshot for the epoch this session skipped", st.forceSnapshot)
+	}
+
+	// The epoch is level, not an edge: every later revision carries the same 1
+	// and must not force a second snapshot.
+	next := hubRevisionFor(4, &kube.Table{Rows: []kube.Row{hubTestRow("beta")}})
+	next.epoch = 1
+	st.forceSnapshot = false
+	if !st.adopt(next) || st.forceSnapshot {
+		t.Fatalf("steady-state adopt force=%t, want no forced snapshot without a new discontinuity", st.forceSnapshot)
+	}
+}
+
+// TestStreamLiveV2DeleteTrackingCapForcesSnapshot pins the bound on the
+// classification set: a base revision that lost more rows than the wire
+// contract can tombstone falls back to a full snapshot instead of carrying a
+// partial delete set.
 func TestStreamLiveV2DeleteTrackingCapForcesSnapshot(t *testing.T) {
+	rows := make([]kube.Row, 0, streamMaxDeletedKeys+1)
+	for i := 0; i <= streamMaxDeletedKeys; i++ {
+		rows = append(rows, hubTestRow("pod-"+strconv.Itoa(i)))
+	}
 	st := newLiveV2TestSession(streamLiveRenderers{})
 	st.cluster = "test"
-	st.deletedKeys = make(map[string]struct{}, streamMaxDeletedKeys)
-	for i := 0; i < streamMaxDeletedKeys; i++ {
-		st.deletedKeys["existing/"+strconv.Itoa(i)] = struct{}{}
-	}
-	event := kube.WatchEvent{Type: kube.WatchDeleted, Table: kube.Table{Rows: []kube.Row{{Object: map[string]any{"metadata": map[string]any{"name": "overflow", "namespace": "default"}}}}}}
-	st.noteWatchMutation(&event)
-	if !st.forceSnapshot || st.deletedKeys != nil {
-		t.Fatalf("delete cap state force=%t keys=%d, want forced snapshot and cleared set", st.forceSnapshot, len(st.deletedKeys))
+	st.base = hubRevisionFor(1, &kube.Table{Rows: rows})
+	st.rev = hubRevisionFor(2, &kube.Table{})
+	if deleted := st.watchDeletions(); deleted != nil || !st.forceSnapshot {
+		t.Fatalf("delete cap state force=%t keys=%d, want forced snapshot and no classification", st.forceSnapshot, len(deleted))
 	}
 }
 
@@ -697,6 +768,53 @@ func TestStreamLiveV2EncodedDeltaOver256KiBFallsBackWithoutConsumingSequence(t *
 	}
 }
 
+// The diff must stop at the wire budget rather than render the whole table and
+// have the handler throw it away: an over-budget delta is always replaced by a
+// full snapshot, so any fragment rendered past the limit is paid for twice.
+func TestStreamLiveV2OverBudgetDeltaStopsRenderingAtTheLimit(t *testing.T) {
+	const rowCount = 40
+	defaults := defaultStreamLiveRenderers()
+	rowRenders, cardRenders := 0, 0
+	renderers := streamLiveRenderers{
+		full: defaults.full,
+		projection: liveProjectionRenderers{
+			row: func(context.Context, *templates.ListData, *templates.TableData, *templates.TableRow) (string, error) {
+				rowRenders++
+				return "<tr>" + strings.Repeat("x", 40_000) + "</tr>", nil
+			},
+			card: func(context.Context, *templates.ListData, *templates.TableData, *templates.TableRow) (string, error) {
+				cardRenders++
+				return "<div>card</div>", nil
+			},
+			region: defaults.projection.region,
+		},
+	}
+	st := newLiveV2TestSession(renderers)
+	before := liveProjectionFixture(rowCount)
+	now := time.Unix(1_800_000_950, 0)
+	initial := prepareInitialLiveSnapshot(t, st, &before, now)
+	st.commitLivePush(&initial, now)
+	st.lastSnapshotBytes = streamMaxEventBytes
+	after := cloneLiveProjectionFixture(&before)
+	for i := range after.Tables[0].Rows {
+		after.Tables[0].Rows[i].StatusClass = "warn"
+	}
+
+	rowRenders, cardRenders = 0, 0
+	prepared, err := st.prepareLiveV2Data(context.Background(), &after, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.kind != livePreparedSnapshot || prepared.reason != liveSnapshotDeltaLimit {
+		t.Fatalf("over-budget delta = %d/%s, want snapshot/delta-limit", prepared.kind, prepared.reason)
+	}
+	// 40 KiB-ish per row crosses the 256 KiB delta budget on the seventh row.
+	const wantRenders = 7
+	if rowRenders != wantRenders || cardRenders != wantRenders {
+		t.Fatalf("renders = %d rows/%d cards, want %d each (of %d changed rows)", rowRenders, cardRenders, wantRenders, rowCount)
+	}
+}
+
 func TestStreamLiveV2CheckpointCountAndTime(t *testing.T) {
 	base := liveProjectionFixture(3)
 	now := time.Unix(1_800_000_900, 0)
@@ -728,10 +846,13 @@ func TestStreamLiveV2CheckpointCountAndTime(t *testing.T) {
 	}
 }
 
-func TestStreamLiveV2QuietCheckpointDoesNotResetIdle(t *testing.T) {
+// TestStreamLiveV2QuietCheckpointDoesNotExtendLifetime pins that recovery
+// checkpoints are transport maintenance: they emit full snapshots on a quiet
+// stream without pushing back the one timer that still ends it.
+func TestStreamLiveV2QuietCheckpointDoesNotExtendLifetime(t *testing.T) {
 	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
 		tuning.checkpointInterval = 50 * time.Millisecond
-		tuning.idleCap = 850 * time.Millisecond
+		tuning.maxLifetime = 850 * time.Millisecond
 		tuning.heartbeat = 0
 	})
 	req, err := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream", nil)
@@ -752,19 +873,23 @@ func TestStreamLiveV2QuietCheckpointDoesNotResetIdle(t *testing.T) {
 		if frame.Kind != "terminal" {
 			continue
 		}
-		if frame.Reason != "idle" || time.Since(started) > 1400*time.Millisecond {
-			t.Fatalf("idle after checkpoints reason=%q elapsed=%s", frame.Reason, time.Since(started))
+		if frame.Reason != streamTerminalLifetime || time.Since(started) > 1400*time.Millisecond {
+			t.Fatalf("lifetime after checkpoints reason=%q elapsed=%s", frame.Reason, time.Since(started))
 		}
 		break
 	}
 }
 
+// TestStreamHangingWatchOpenKeepsHeartbeatLifetimeAndCapLive pins that a watch
+// whose response headers never arrive cannot freeze a subscriber: heartbeats,
+// checkpoints and the lifetime bound all stay live, exactly one open is
+// attempted, and the connection slot releases when the session ends.
 func TestStreamHangingWatchOpenKeepsHeartbeatLifetimeAndCapLive(t *testing.T) {
 	started := make(chan struct{})
 	canceled := make(chan struct{})
 	var startOnce, cancelOnce sync.Once
 	var opens atomic.Int32
-	ts, app, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
+	ts, app, _, drain := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Query().Get("watch") != "true" {
 			return false
 		}
@@ -776,7 +901,6 @@ func TestStreamHangingWatchOpenKeepsHeartbeatLifetimeAndCapLive(t *testing.T) {
 	}, func(tuning *streamTuning) {
 		tuning.heartbeat = 20 * time.Millisecond
 		tuning.maxLifetime = 550 * time.Millisecond
-		tuning.idleCap = 5 * time.Second
 		tuning.checkpointInterval = 50 * time.Millisecond
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -785,21 +909,28 @@ func TestStreamHangingWatchOpenKeepsHeartbeatLifetimeAndCapLive(t *testing.T) {
 	requireSignal(t, started, "hanging watch open")
 	startedAt := time.Now()
 	heartbeat, snapshots, terminal := readHeartbeatAndTerminal(t, resp)
-	if !heartbeat || snapshots < 2 || terminal.Reason != "idle" || time.Since(startedAt) > time.Second {
+	if !heartbeat || snapshots < 2 || terminal.Reason != streamTerminalLifetime || time.Since(startedAt) > time.Second {
 		t.Fatalf("hanging watch liveness heartbeat=%t snapshots=%d terminal=%+v elapsed=%s", heartbeat, snapshots, terminal, time.Since(startedAt))
 	}
-	requireSignal(t, canceled, "watch-open context cancellation")
 	waitStreamSlotRelease(t, app)
 	if got := opens.Load(); got != 1 {
 		t.Fatalf("concurrent/repeated watch opens = %d, want exactly 1", got)
 	}
+	// The stalled open belongs to the shared source, not to the subscriber
+	// that happened to create it: draining the pod is what releases it.
+	drain()
+	requireSignal(t, canceled, "watch-open context cancellation")
 }
 
+// TestStreamHangingWatchOpenClientCancelReleasesCap pins the ownership split:
+// a browser that goes away mid-connect releases its connection slot
+// immediately, while the stalled upstream open stays with the shared source
+// (other subscribers may still need it) until the pod drains.
 func TestStreamHangingWatchOpenClientCancelReleasesCap(t *testing.T) {
 	started := make(chan struct{})
 	canceled := make(chan struct{})
 	var startOnce, cancelOnce sync.Once
-	ts, app, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
+	ts, app, _, drain := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Query().Get("watch") != "true" {
 			return false
 		}
@@ -810,7 +941,6 @@ func TestStreamHangingWatchOpenClientCancelReleasesCap(t *testing.T) {
 	}, func(tuning *streamTuning) {
 		tuning.heartbeat = 0
 		tuning.maxLifetime = time.Hour
-		tuning.idleCap = time.Hour
 		tuning.checkpointInterval = 0
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -818,8 +948,9 @@ func TestStreamHangingWatchOpenClientCancelReleasesCap(t *testing.T) {
 	requireSignal(t, started, "hanging watch open")
 	cancel()
 	_ = resp.Body.Close()
-	requireSignal(t, canceled, "client-canceled watch open")
 	waitStreamSlotRelease(t, app)
+	drain()
+	requireSignal(t, canceled, "drained watch open")
 }
 
 func TestStreamHangingRelistKeepsHeartbeatLifetimeAndCapLive(t *testing.T) {
@@ -827,7 +958,7 @@ func TestStreamHangingRelistKeepsHeartbeatLifetimeAndCapLive(t *testing.T) {
 	relistCanceled := make(chan struct{})
 	var startOnce, cancelOnce sync.Once
 	var lists, watches atomic.Int32
-	ts, app, _ := newStreamInterceptFixture(t, func(w http.ResponseWriter, r *http.Request) bool {
+	ts, app, _, drain := newStreamInterceptFixture(t, func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path != streamPodsPath {
 			return false
 		}
@@ -845,8 +976,7 @@ func TestStreamHangingRelistKeepsHeartbeatLifetimeAndCapLive(t *testing.T) {
 		return true
 	}, func(tuning *streamTuning) {
 		tuning.heartbeat = 20 * time.Millisecond
-		tuning.maxLifetime = 5 * time.Second
-		tuning.idleCap = 250 * time.Millisecond
+		tuning.maxLifetime = 700 * time.Millisecond
 		tuning.checkpointInterval = 0
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -854,11 +984,12 @@ func TestStreamHangingRelistKeepsHeartbeatLifetimeAndCapLive(t *testing.T) {
 	resp := openRawLiveV2(t, ctx, ts.URL, "hang-relist", "")
 	requireSignal(t, relistStarted, "hanging 410 relist")
 	heartbeat, _, terminal := readHeartbeatAndTerminal(t, resp)
-	if !heartbeat || terminal.Reason != "idle" {
+	if !heartbeat || terminal.Reason != streamTerminalLifetime {
 		t.Fatalf("hanging relist liveness heartbeat=%t terminal=%+v", heartbeat, terminal)
 	}
-	requireSignal(t, relistCanceled, "relist context cancellation")
 	waitStreamSlotRelease(t, app)
+	drain()
+	requireSignal(t, relistCanceled, "relist context cancellation")
 	if got := watches.Load(); got != 1 {
 		t.Fatalf("watch opens during stalled relist = %d, want 1", got)
 	}
@@ -872,12 +1003,12 @@ func TestStreamHangingMetricsRefreshKeepsHeartbeatLifetimeAndCapLive(t *testing.
 	refreshCanceled := make(chan struct{})
 	var startOnce, cancelOnce sync.Once
 	var metricsCalls atomic.Int32
-	ts, app, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
+	ts, app, _, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path != "/apis/metrics.k8s.io/v1beta1/namespaces/default/pods" {
 			return false
 		}
 		if metricsCalls.Add(1) == 1 {
-			return false // bounded pre-handshake metrics fetch
+			return false // the shared source's first join poll
 		}
 		startOnce.Do(func() { close(refreshStarted) })
 		<-r.Context().Done()
@@ -888,7 +1019,6 @@ func TestStreamHangingMetricsRefreshKeepsHeartbeatLifetimeAndCapLive(t *testing.
 		tuning.metricsRequestTimeout = 50 * time.Millisecond
 		tuning.heartbeat = 20 * time.Millisecond
 		tuning.maxLifetime = 300 * time.Millisecond
-		tuning.idleCap = 5 * time.Second
 		tuning.checkpointInterval = 0
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -896,7 +1026,7 @@ func TestStreamHangingMetricsRefreshKeepsHeartbeatLifetimeAndCapLive(t *testing.
 	resp := openRawLiveV2(t, ctx, ts.URL, "hang-metrics", "?join=metrics")
 	requireSignal(t, refreshStarted, "hanging metrics refresh")
 	heartbeat, _, terminal := readHeartbeatAndTerminal(t, resp)
-	if !heartbeat || terminal.Reason != "idle" {
+	if !heartbeat || terminal.Reason != streamTerminalLifetime {
 		t.Fatalf("hanging metrics liveness heartbeat=%t terminal=%+v", heartbeat, terminal)
 	}
 	requireSignal(t, refreshCanceled, "metrics refresh context cancellation")
@@ -912,13 +1042,13 @@ func TestStreamMetricsRefreshTimeoutAllowsNextPollRecovery(t *testing.T) {
 	recoveryStarted := make(chan struct{})
 	var startOnce, cancelOnce, recoveryOnce sync.Once
 	var metricsCalls atomic.Int32
-	ts, _, fake := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
+	ts, _, fake, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path != "/apis/metrics.k8s.io/v1beta1/namespaces/default/pods" {
 			return false
 		}
 		switch call := metricsCalls.Add(1); call {
 		case 1:
-			return false // initial pre-handshake metrics fetch succeeds
+			return false // the shared source's first join poll succeeds
 		case 2:
 			startOnce.Do(func() { close(refreshStarted) })
 			<-r.Context().Done()
@@ -937,7 +1067,6 @@ func TestStreamMetricsRefreshTimeoutAllowsNextPollRecovery(t *testing.T) {
 		tuning.metricsRequestTimeout = 80 * time.Millisecond
 		tuning.heartbeat = 0
 		tuning.maxLifetime = 5 * time.Second
-		tuning.idleCap = 5 * time.Second
 		tuning.checkpointInterval = 0
 	})
 	req, err := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream?join=metrics", nil)
@@ -972,11 +1101,16 @@ func TestStreamMetricsRefreshTimeoutAllowsNextPollRecovery(t *testing.T) {
 	}
 }
 
+// TestStreamInitialMetricsFetchHasBoundedCapHold pins that a stalled join
+// cannot hold the handshake: the session waits at most initialMetricsTimeout
+// for the shared source to publish the overlay, then hands out a snapshot with
+// join placeholders. The stalled upstream read is separately bounded by the
+// source's own per-poll request budget.
 func TestStreamInitialMetricsFetchHasBoundedCapHold(t *testing.T) {
 	started := make(chan struct{})
 	canceled := make(chan struct{})
 	var startOnce, cancelOnce sync.Once
-	ts, app, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
+	ts, app, _, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path != "/apis/metrics.k8s.io/v1beta1/namespaces/default/pods" {
 			return false
 		}
@@ -986,6 +1120,7 @@ func TestStreamInitialMetricsFetchHasBoundedCapHold(t *testing.T) {
 		return true
 	}, func(tuning *streamTuning) {
 		tuning.initialMetricsTimeout = 50 * time.Millisecond
+		tuning.metricsRequestTimeout = 150 * time.Millisecond
 		tuning.heartbeat = 0
 		tuning.checkpointInterval = 0
 	})
@@ -994,10 +1129,10 @@ func TestStreamInitialMetricsFetchHasBoundedCapHold(t *testing.T) {
 	startedAt := time.Now()
 	resp := openRawLiveV2(t, ctx, ts.URL, "initial-metrics", "?join=metrics")
 	if elapsed := time.Since(startedAt); elapsed > time.Second {
-		t.Fatalf("initial metrics timeout held the cap/handshake for %s", elapsed)
+		t.Fatalf("stalled join held the handshake for %s", elapsed)
 	}
-	requireSignal(t, started, "initial metrics fetch")
-	requireSignal(t, canceled, "initial metrics timeout cancellation")
+	requireSignal(t, started, "shared join poll")
+	requireSignal(t, canceled, "join poll request-budget cancellation")
 	_ = resp.Body.Close()
 	waitStreamSlotRelease(t, app)
 }
@@ -1007,7 +1142,7 @@ func TestStreamHandshakeDiscoveryTimeoutReturns502AndReleasesCap(t *testing.T) {
 	canceled := make(chan struct{})
 	var startOnce, cancelOnce sync.Once
 	var requests atomic.Int32
-	ts, app, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
+	ts, app, _, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
 		// The first Kubernetes request belongs to FindResource discovery. Keep
 		// the assertion path-agnostic so client-go may change discovery ordering
 		// without weakening the response-header stall.
@@ -1040,7 +1175,7 @@ func TestStreamHandshakeInitialListTimeoutReturns502AndReleasesCap(t *testing.T)
 	started := make(chan struct{})
 	canceled := make(chan struct{})
 	var startOnce, cancelOnce sync.Once
-	ts, app, _ := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
+	ts, app, _, drain := newStreamInterceptFixture(t, func(_ http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path != streamPodsPath || r.URL.Query().Get("watch") == "true" {
 			return false
 		}
@@ -1062,93 +1197,11 @@ func TestStreamHandshakeInitialListTimeoutReturns502AndReleasesCap(t *testing.T)
 		t.Fatalf("initial LIST timeout status = %d, want 502", resp.StatusCode)
 	}
 	requireSignal(t, started, "stalled initial LIST")
-	requireSignal(t, canceled, "initial LIST timeout cancellation")
 	waitStreamSlotRelease(t, app)
-}
-
-type lateStreamWatch struct {
-	closed chan struct{}
-	once   sync.Once
-}
-
-func (w *lateStreamWatch) Next() (kube.WatchEvent, error) {
-	<-w.closed
-	return kube.WatchEvent{}, io.EOF
-}
-
-func (w *lateStreamWatch) Close() error {
-	w.once.Do(func() { close(w.closed) })
-	return nil
-}
-
-func TestStreamAsyncUpstreamLateResultsDoNotHandoffOrLeak(t *testing.T) {
-	t.Run("watch success closes", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		release := make(chan struct{})
-		result := make(chan watchOpenResult)
-		done := make(chan struct{})
-		watch := &lateStreamWatch{closed: make(chan struct{})}
-		go func() {
-			openWatchAsync(ctx, func(context.Context) (streamTableWatch, error) {
-				<-release // deliberately ignore cancellation and finish late
-				return watch, nil
-			}, result)
-			close(done)
-		}()
-		cancel()
-		close(release)
-		requireSignal(t, done, "late watch opener exit")
-		requireSignal(t, watch.closed, "late successful watch close")
-		select {
-		case <-result:
-			t.Fatal("late canceled watch was handed to an absent owner")
-		default:
-		}
-	})
-
-	t.Run("relist result drops", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		release := make(chan struct{})
-		result := make(chan streamRelistResult)
-		done := make(chan struct{})
-		go func() {
-			relistAsync(ctx, func(context.Context) (kube.Table, error) {
-				<-release
-				return kube.Table{ResourceVersion: "late"}, nil
-			}, result)
-			close(done)
-		}()
-		cancel()
-		close(release)
-		requireSignal(t, done, "late relist exit")
-		select {
-		case <-result:
-			t.Fatal("late canceled relist mutated the owner channel")
-		default:
-		}
-	})
-
-	t.Run("metrics result drops", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		release := make(chan struct{})
-		result := make(chan streamMetricsResult)
-		done := make(chan struct{})
-		go func() {
-			metricsAsync(ctx, func(context.Context) map[string][2]float64 {
-				<-release
-				return map[string][2]float64{"late": {1, 2}}
-			}, result)
-			close(done)
-		}()
-		cancel()
-		close(release)
-		requireSignal(t, done, "late metrics exit")
-		select {
-		case <-result:
-			t.Fatal("late canceled metrics refresh mutated the owner channel")
-		default:
-		}
-	})
+	// The LIST itself belongs to the shared source, which stays joinable for
+	// later subscribers; the pod drain is what finally releases it.
+	drain()
+	requireSignal(t, canceled, "initial LIST cancellation")
 }
 
 type liveFaultWriter struct {
@@ -1289,7 +1342,7 @@ func TestStreamLiveV2TerminalUsesCommittedSchemaAndSanitizesRV(t *testing.T) {
 	st.lastRV = strings.Repeat("r", streamMaxResourceVersionBytes+1)
 	st.w = w
 	st.rc = http.NewResponseController(w)
-	st.terminalLiveV2("idle")
+	st.terminalLiveV2(streamTerminalLifetime)
 	if st.seq != 2 {
 		t.Fatalf("terminal seq = %d, want 2", st.seq)
 	}
@@ -1303,7 +1356,7 @@ func TestStreamLiveV2TerminalUsesCommittedSchemaAndSanitizesRV(t *testing.T) {
 	if err := json.Unmarshal([]byte(dataLine), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Kind != "terminal" || envelope.Reason != "idle" || envelope.Rev != initial.projection.revision || envelope.Schema != liveProjectionSchemaToken(&initial.projection) || envelope.RV != "" || envelope.Snapshot != nil || envelope.Delta != nil {
+	if envelope.Kind != "terminal" || envelope.Reason != streamTerminalLifetime || envelope.Rev != initial.projection.revision || envelope.Schema != liveProjectionSchemaToken(&initial.projection) || envelope.RV != "" || envelope.Snapshot != nil || envelope.Delta != nil {
 		t.Fatalf("terminal envelope = %+v", envelope)
 	}
 
@@ -1313,6 +1366,148 @@ func TestStreamLiveV2TerminalUsesCommittedSchemaAndSanitizesRV(t *testing.T) {
 	st.terminalLiveV2("shutdown")
 	if st.seq != 2 {
 		t.Fatalf("failed terminal advanced seq to %d", st.seq)
+	}
+}
+
+// TestStreamNoopRevisionSpendsItsFlushSample pins the event-to-flush histogram
+// against the quiet-stream trap: a revision whose render changes nothing the
+// client can see (a filtered-out watch event, an unchanged overlay poll)
+// carries no delivery to sample -- but it is CONSUMED all the same. Leaving it
+// unsampled would let the next frame measure itself against that revision's
+// event timestamp, and on an otherwise quiet stream the next frame is a
+// recovery checkpoint: the histogram would fill with samples of the checkpoint
+// period and its p99 would alert on silence.
+func TestStreamNoopRevisionSpendsItsFlushSample(t *testing.T) {
+	app := &Server{metrics: newAppMetrics()}
+	st := newLiveV2TestSession(streamLiveRenderers{})
+	st.srv = app
+	data := liveProjectionFixture(2)
+	now := time.Unix(1_800_002_200, 0)
+
+	st.rev = &hubRevision{num: 7, rv: "101", eventAt: now.Add(-500 * time.Millisecond)}
+	initial := prepareInitialLiveSnapshot(t, st, &data, now)
+	st.commitLivePush(&initial, now)
+	requireMetric(t, scrapeMetrics(t, app), "readout_watchhub_event_to_flush_seconds_count", 1)
+
+	// A later revision that renders to exactly the same projection.
+	st.rev = &hubRevision{num: 8, rv: "102", eventAt: now.Add(time.Second)}
+	st.dirty = true
+	noop, err := st.prepareLiveV2Data(context.Background(), &data, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noop.kind != livePreparedNoop {
+		t.Fatalf("prepared kind = %d, want a no-op for an unchanged render", noop.kind)
+	}
+	st.commitLivePush(&noop, now.Add(time.Second))
+
+	// The recovery checkpoint that follows re-sends state the client already
+	// holds, a full interval after the no-op's event.
+	st.forceSnapshot = true
+	checkpoint, err := st.prepareLiveV2Data(context.Background(), &data, now.Add(31*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.commitLivePush(&checkpoint, now.Add(31*time.Second))
+
+	requireMetric(t, scrapeMetrics(t, app), "readout_watchhub_event_to_flush_seconds_count", 1)
+}
+
+// The handshake renders the first frame BEFORE writing the SSE headers, so a
+// list this pod cannot render or encode ends the session with the terminal as
+// FRAME 1: sequence 1, and no rev/schema, because no projection was ever
+// committed. The client accepts exactly that shape as a stop signal; a frame it
+// could not place would instead spend its whole resync budget re-running the
+// identical failing render.
+func TestStreamProtocolFailureBeforeTheFirstSnapshotIsFrameOne(t *testing.T) {
+	w := &liveFaultWriter{writeN: -1}
+	st := newLiveV2TestSession(streamLiveRenderers{})
+	st.srv = &Server{metrics: newAppMetrics()}
+	st.w = w
+	st.rc = http.NewResponseController(w)
+
+	st.failFrame(errStreamEventTooLarge)
+
+	wire := w.buffer.String()
+	start := strings.Index(wire, "data: ")
+	if start < 0 {
+		t.Fatalf("pre-snapshot protocol failure wrote no terminal frame: %q", wire)
+	}
+	var envelope testLiveEnvelope
+	if err := json.Unmarshal([]byte(strings.TrimSpace(wire[start+len("data: "):])), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Kind != "terminal" || envelope.Reason != streamTerminalProtocol {
+		t.Fatalf("pre-snapshot terminal envelope = %+v", envelope)
+	}
+	if envelope.Seq != 1 {
+		t.Fatalf("pre-snapshot terminal seq = %d, want 1 (the client accepts a terminal only as frame 1)", envelope.Seq)
+	}
+	if envelope.Rev != "" || envelope.Schema != "" {
+		t.Fatalf("pre-snapshot terminal carried a projection it never committed: rev=%q schema=%q", envelope.Rev, envelope.Schema)
+	}
+	requireMetric(t, scrapeMetrics(t, st.srv), `readout_stream_terminal_total{reason="`+streamTerminalProtocol+`"}`, 1)
+}
+
+// A render/encode fault is this server's own, and the connection under it is
+// still healthy -- so the session must SAY so. A bare EOF is indistinguishable
+// from a transport drop, and the browser's reconnect ladder would re-run the
+// same failing render every thirty seconds for the life of the tab. A write
+// failure is the opposite case: the peer cannot be told anything, so nothing
+// more goes on the wire.
+func TestStreamProtocolFailureTellsTheClientToStop(t *testing.T) {
+	data := liveProjectionFixture(2)
+	now := time.Unix(1_800_002_200, 0)
+
+	w := &liveFaultWriter{writeN: -1}
+	st := newLiveV2TestSession(streamLiveRenderers{})
+	st.srv = &Server{metrics: newAppMetrics()}
+	initial := prepareInitialLiveSnapshot(t, st, &data, now)
+	st.commitLivePush(&initial, now)
+	st.w = w
+	st.rc = http.NewResponseController(w)
+
+	st.failFrame(errStreamEventTooLarge)
+	wire := w.buffer.String()
+	start := strings.Index(wire, "data: ")
+	if start < 0 {
+		t.Fatalf("protocol failure wrote no terminal frame: %q", wire)
+	}
+	var envelope testLiveEnvelope
+	if err := json.Unmarshal([]byte(strings.TrimSpace(wire[start+len("data: "):])), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Kind != "terminal" || envelope.Reason != streamTerminalProtocol || envelope.Rev != initial.projection.revision {
+		t.Fatalf("protocol terminal envelope = %+v", envelope)
+	}
+	if !st.finished {
+		t.Fatal("protocol failure did not finish the session")
+	}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"peer went away", newStreamWriteError(errors.New("broken pipe"))},
+		{"peer stopped reading", newStreamWriteError(os.ErrDeadlineExceeded)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			silent := &liveFaultWriter{writeN: -1}
+			session := newLiveV2TestSession(streamLiveRenderers{})
+			session.srv = &Server{metrics: newAppMetrics()}
+			committed := prepareInitialLiveSnapshot(t, session, &data, now)
+			session.commitLivePush(&committed, now)
+			session.w = silent
+			session.rc = http.NewResponseController(silent)
+
+			session.failFrame(tc.err)
+			if silent.buffer.Len() != 0 {
+				t.Fatalf("write failure still wrote %q", silent.buffer.String())
+			}
+			if !session.finished {
+				t.Fatal("write failure did not finish the session")
+			}
+		})
 	}
 }
 

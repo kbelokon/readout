@@ -7,11 +7,11 @@ import { controlURL } from './playwright.config';
 //     persistent container, and the HISTORY entry it creates is the CANONICAL
 //     list URL (never the partial URL -- a reload of the pushed entry must
 //     render a full page);
-//   - the refresh tick derives its request URL from location.href at fire
+//   - a Refresh click derives its request URL from location.href at fire
 //     time, so it can never revert a pushed sort (the exact regression the
 //     old render-time-baked PartialURL contract produced);
-//   - ticks are programmatic (RO-No-Push): history.length stays flat no
-//     matter how many fire;
+//   - container-owned refreshes are programmatic (RO-No-Push): history.length
+//     stays flat no matter how many fire;
 //   - the morph path is CSP-safe (config delivered as a JS object inside the
 //     ro-morph extension -- no securitypolicyviolation, ever);
 //   - rows carry data-key/id object identity: idiomorph keeps the same DOM
@@ -67,7 +67,7 @@ async function seedAges(): Promise<void> {
   ]);
 }
 
-// A tick (or any programmatic re-fetch) marks itself RO-No-Push; a user sort
+// A container-owned re-fetch marks itself RO-No-Push; a user sort
 // click does not. Matching on the REQUEST header keeps the two awaitable
 // independently.
 function isTickResponse(r: Response): boolean {
@@ -84,19 +84,30 @@ function waitForTick(page: Page): Promise<Response> {
 }
 
 async function clickSort(page: Page, label: string): Promise<void> {
+  const header = page.locator('thead th a', { hasText: label }).first();
+  const before = await header.getAttribute('href');
   const swapped = page.waitForResponse(isUserTableResponse);
-  await page.locator('thead th a', { hasText: label }).first().click();
+  await header.click();
   await swapped;
+  // The response is not the swap. Wait for the morphed header to publish its
+  // NEXT sort target: a second click issued before the morph lands would just
+  // re-request the direction that is already applied.
+  await expect
+    .poll(() => page.locator('thead th a', { hasText: label }).first().getAttribute('href'))
+    .not.toBe(before);
 }
 
 function rowNames(page: Page) {
   return page.locator('#resource-list-content table.ro-table tbody td.cell-name');
 }
 
-// The navbar interval menu opens on hover (CSS :hover/:focus-within).
-async function pickInterval(page: Page, secs: number): Promise<void> {
-  await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
+// The topbar's one-shot Refresh button: one programmatic `_table` re-fetch per
+// click and no timer. It is the only way a spec provokes a container-owned
+// (RO-No-Push) request now that the interval picker is gone.
+async function refreshNow(page: Page): Promise<Response> {
+  const tick = waitForTick(page);
+  await page.locator('[data-ro-action="refresh-now"]').click();
+  return tick;
 }
 
 test.beforeEach(async ({}, testInfo) => {
@@ -127,7 +138,7 @@ test('sort click morphs the table and pushes the canonical URL', async ({ page }
   await expect(rowNames(page)).toHaveText(['my-app', 'nginx']);
 });
 
-test('refresh tick derives its URL from location and keeps the user sort', async ({ page }) => {
+test('a Refresh click derives its URL from location and keeps the user sort', async ({ page }) => {
   await seedAges();
   await page.goto(PODS);
   await expect(rowNames(page)).toHaveText(['nginx', 'my-app', 'zeta']);
@@ -139,10 +150,9 @@ test('refresh tick derives its URL from location and keeps the user sort', async
   await expect(page).toHaveURL(/sort=Age%3Adesc/);
   await expect(rowNames(page)).toHaveText(['zeta', 'nginx', 'my-app']);
 
-  // Arm a 5s interval, change cluster state, and await ONE tick. The tick must
-  // re-fetch the LIVE URL (sort=Age:desc): under the old baked-PartialURL
-  // contract it re-fetched the page's load-time query and reverted the sort.
-  await pickInterval(page, 5);
+  // Change cluster state and click Refresh once. The request must re-fetch the
+  // LIVE URL (sort=Age:desc): under the old baked-PartialURL contract it
+  // re-fetched the page's load-time query and reverted the sort.
   await scriptEvents([
     {
       path: PODS_LIST_PATH,
@@ -151,7 +161,7 @@ test('refresh tick derives its URL from location and keeps the user sort', async
       cells: ['omega', '1/1', 'Running', '0', '1y'],
     },
   ]);
-  await waitForTick(page);
+  await refreshNow(page);
 
   // Row order AND the URL still reflect age:desc; the new object landed in
   // its sorted position (the morph applied a server-sorted fragment).
@@ -159,13 +169,12 @@ test('refresh tick derives its URL from location and keeps the user sort', async
   await expect(page).toHaveURL(/sort=Age%3Adesc/);
 });
 
-test('history.length is unchanged across two awaited ticks', async ({ page }) => {
+test('history.length is unchanged across two awaited Refresh clicks', async ({ page }) => {
   await page.goto(PODS);
-  await pickInterval(page, 5);
 
   const before = await page.evaluate(() => window.history.length);
-  await waitForTick(page);
-  await waitForTick(page);
+  await refreshNow(page);
+  await refreshNow(page);
   const after = await page.evaluate(() => window.history.length);
 
   expect(after).toBe(before);
@@ -173,7 +182,7 @@ test('history.length is unchanged across two awaited ticks', async ({ page }) =>
   expect(new URL(page.url()).pathname).not.toContain('_table');
 });
 
-test('no securitypolicyviolation fires during user and tick morphs', async ({ page }) => {
+test('no securitypolicyviolation fires during user and Refresh morphs', async ({ page }) => {
   await page.addInitScript(() => {
     (window as unknown as { __cspViolations: string[] }).__cspViolations = [];
     document.addEventListener('securitypolicyviolation', (e) => {
@@ -188,9 +197,8 @@ test('no securitypolicyviolation fires during user and tick morphs', async ({ pa
   // One user-initiated morph (sort click) ...
   await clickSort(page, 'Name');
   await expect(rowNames(page)).toHaveText(['my-app', 'nginx']);
-  // ... and one programmatic tick morph.
-  await pickInterval(page, 5);
-  await waitForTick(page);
+  // ... and one programmatic Refresh morph.
+  await refreshNow(page);
 
   // Both morphs ran through the JS-config path; an attribute-spec morph config
   // would have tripped script-src 'self' (Function() eval) right here.
@@ -219,8 +227,7 @@ test('row identity is stable across morphs and selection state re-keys onto it',
   }, key);
   await expect(row).toHaveClass(/is-selected/);
 
-  // Change cluster state and let a tick morph the fragment.
-  await pickInterval(page, 5);
+  // Change cluster state and let a Refresh morph the fragment.
   await scriptEvents([
     {
       path: PODS_LIST_PATH,
@@ -229,7 +236,7 @@ test('row identity is stable across morphs and selection state re-keys onto it',
       cells: ['omega', '1/1', 'Running', '0', '1y'],
     },
   ]);
-  await waitForTick(page);
+  await refreshNow(page);
   await expect(page.locator('tr[data-key="e2e/default/omega"]')).toBeVisible();
 
   // idiomorph matched the row by id: the SAME DOM node survived the morph, and

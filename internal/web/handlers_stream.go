@@ -1,24 +1,28 @@
 package web
 
 // handlers_stream.go is the server half of Live mode: the read-only
-// `GET …/{plural}/_stream` SSE endpoint. It keeps one UNFILTERED per-cluster
-// Table snapshot in memory, feeds it from a Table watch (kube.WatchTable), and
-// projects render-time list state from it. Clients receive JSON
-// snapshot/delta/terminal envelopes in `event: ro-live`. `f`/`sort`/columns
-// apply at render time, never to the kube snapshot,
-// so an object that starts (or stops) matching the active filter appears (or
-// disappears) on the next push.
+// `GET …/{plural}/_stream` SSE endpoint. A session owns no upstream
+// Kubernetes state of its own: it subscribes to the process-local WatchHub
+// (watchhub.go), which keeps one LIST+watch per credential/cluster/resource/
+// namespace/selector key and publishes immutable Table revisions. The session
+// renders those revisions — `f`/`sort`/columns apply at render time on a
+// clone, never to the shared snapshot — and ships JSON snapshot/delta/terminal
+// envelopes in `event: ro-live`.
 //
-// The lifecycle is complete by contract: clean watch EOF / non-410 errors
-// re-watch from the last seen resourceVersion with capped backoff (an EOF
-// storm terminates instead of spinning); 410 relists silently and pushes the
-// fresh table; auth expiry, the idle cap, a re-watch failure, and server
-// shutdown all emit a terminal `event: ro-live` envelope before closing. New
-// streams beyond the cap get 429 BEFORE any SSE headers; watch-less kinds get
-// 204 (the client falls back to polling). Cleanup is part of the contract:
-// the watch reader goroutine and every timer are bound to the request
-// context, upstream watch bodies close on every attempt end, and the cap slot
-// releases on every handler exit path (deferred at acquisition).
+// The session therefore owns only what is genuinely per-browser: the v2
+// sequence and committed projection, push coalescing, heartbeats, the write
+// deadline, recovery checkpoints, and the connect-time lifetime bound (the
+// OIDC session's expiry, or the hard 12-hour cap otherwise). Watch recovery
+// — re-watch backoff, the 410 relist, the EOF-storm terminal — belongs to the
+// shared source, so a hundred browsers on one list recover once, together.
+//
+// Admission is staged and complete before any SSE header is written: a
+// connection slot, then the source (joined when it already exists, created and
+// measured against the retained-state bound otherwise). Every rejection is a
+// 429 with Retry-After and no `text/event-stream`; a draining pod answers 503;
+// watch-less kinds get 204. After the handshake every failure is an in-stream
+// terminal `ro-live` envelope, and exactly one terminal outcome is counted per
+// session.
 
 import (
 	"bytes"
@@ -26,8 +30,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"maps"
+	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -36,13 +41,13 @@ import (
 	"github.com/kbelokon/readout/internal/kube"
 )
 
-// streamTuning is the immutable timing policy copied from a Server into each
-// Live stream at connect time. Keeping it server-local avoids hidden mutable
-// package state: independently constructed servers cannot change one another's
-// backoff, lifetime, polling, idle, or write-deadline behavior. Production uses
-// defaultStreamTuning; tests can adjust a server before it starts serving.
+// streamTuning is the immutable timing policy a Server hands to its WatchHub
+// and copies into each Live stream at connect time. Keeping it server-local
+// avoids hidden mutable package state: independently constructed servers
+// cannot change one another's backoff, lifetime, polling, or write-deadline
+// behavior. Production uses defaultStreamTuning; tests can adjust a server
+// before it starts serving.
 type streamTuning struct {
-	idleCap               time.Duration
 	backoffBase           time.Duration
 	backoffCap            time.Duration
 	healthyReset          time.Duration
@@ -60,8 +65,6 @@ type streamTuning struct {
 
 func defaultStreamTuning() streamTuning {
 	return streamTuning{
-		// A stream with no watch data ends as idle after 30 minutes.
-		idleCap: 30 * time.Minute,
 		// Re-watch delay doubles from 250ms to a 10s cap. A watch that lives for
 		// one minute resets the schedule to its base.
 		backoffBase:  250 * time.Millisecond,
@@ -73,10 +76,12 @@ func defaultStreamTuning() streamTuning {
 		// Joined metrics are refreshed independently every 30 seconds.
 		metricsPoll: 30 * time.Second,
 		// Trusted-headers / none streams have no session expiry, so bound their
-		// total lifetime to 12 hours.
+		// total lifetime to 12 hours. A quiet stream is NOT capped: an idle
+		// namespace is healthy, and heartbeats plus the write deadline already
+		// detect a dead peer.
 		maxLifetime: 12 * time.Hour,
-		// Bound every SSE frame write so a non-reading peer cannot retain a
-		// stream-cap slot indefinitely.
+		// Bound every SSE frame write so a peer that stops reading is closed as
+		// a slow writer instead of retaining a connection slot indefinitely.
 		writeTimeout: 30 * time.Second,
 		// Application-level comments keep otherwise quiet streams alive through
 		// ingress/LB idle timeouts. They carry no domain sequence or state.
@@ -85,29 +90,20 @@ func defaultStreamTuning() streamTuning {
 		// recovery checkpoint even on otherwise delta-only v2 sessions.
 		checkpointInterval: 10 * time.Minute,
 		checkpointDeltas:   2048,
-		// Discovery plus the initial LIST share one pre-handshake budget while
-		// already holding a stream-cap slot.
+		// Discovery plus the shared source's initial LIST share one
+		// pre-handshake budget while already holding a connection slot.
 		handshakeTimeout: 15 * time.Second,
-		// The optional pre-handshake metrics join still owns a stream-cap slot.
-		// Bound it even though the post-handshake loop has not started yet.
+		// How long the handshake waits for the shared source to publish the
+		// join overlays this render needs. Giving up renders join placeholders
+		// and the next published revision fills them in.
 		initialMetricsTimeout: 10 * time.Second,
-		// Every post-handshake metrics poll gets its own shorter-lived request
-		// budget. A stalled poll must not suppress every later refresh.
+		// Every join poll gets its own shorter-lived request budget. A stalled
+		// poll must not suppress every later refresh.
 		metricsRequestTimeout: 10 * time.Second,
 	}
 }
 
 const (
-	// streamCapMax bounds ordinary deployments. The in-process public demo gets
-	// a larger fixed cap so fakekube's expanded watch budget is reachable.
-	streamCapMax     = 32
-	demoStreamCapMax = 256
-
-	// streamMaxImmediateEOFs consecutive immediate EOFs are a re-watch
-	// failure (terminal reason "watch-failed") — an EOF storm must not
-	// spin re-watch attempts forever.
-	streamMaxImmediateEOFs = 5
-
 	// streamMinPushGap / streamMaxPushLatency are the pacing bounds: pushes
 	// are at least 300ms apart, and while events pend a push happens at most
 	// 2s after the previous one.
@@ -122,8 +118,9 @@ const (
 	streamChurnEvents = 10
 
 	// streamMaxEventBytes bounds one JSON payload before anything is written to
-	// the response. Live is optional, so an abnormally large rendered table can
-	// close the stream and fall back to the ordinary bounded polling path.
+	// the response. Live is optional, so an abnormally large rendered table
+	// closes the stream with the `protocol` terminal and the browser stops
+	// retrying it -- the one-shot Refresh button is still the way to re-read.
 	streamMaxEventBytes = 16 << 20
 
 	// A generation is reflected in every stream frame. Bound the v2 header
@@ -132,6 +129,25 @@ const (
 
 	streamVersionHeader    = "RO-Live-Version"
 	streamGenerationHeader = "RO-Live-Generation"
+)
+
+// The closed terminal vocabulary. Exactly one of these is counted per session
+// (streamSession.finish), and every reason EXCEPT the two write failures is
+// also written to the client as a terminal `ro-live` envelope. The browser's
+// reconnect taxonomy reads them: "watch-failed"/"shutdown"/"lifetime" are what
+// the reconnect ladder exists for, while "auth" and "protocol" must never be
+// retried -- replaying the same request byte for byte reproduces the same
+// failure, so the browser stops instead of re-rendering an unencodable table
+// every thirty seconds forever. Only "client-close" and "slow-writer" go
+// unannounced: they describe a peer that cannot be told anything.
+const (
+	streamTerminalAuth        = "auth"
+	streamTerminalWatchFailed = "watch-failed"
+	streamTerminalShutdown    = "shutdown"
+	streamTerminalLifetime    = "lifetime"
+	streamTerminalClientClose = "client-close"
+	streamTerminalSlowWriter  = "slow-writer"
+	streamTerminalProtocol    = "protocol"
 )
 
 // streamLiveEnvelope is the v2 snapshot/delta/terminal envelope.
@@ -215,209 +231,52 @@ func validLiveGeneration(gen string) bool {
 	return true
 }
 
-// streamEventWindow is a fixed-size trailing-event ring. High-churn detection
-// only needs the threshold's most recent timestamps; retaining every event in
-// a pathological two-second burst would make an otherwise bounded stream grow.
-type streamEventWindow struct {
-	times [streamChurnEvents]time.Time
-	next  int
-	count int
-}
-
-func (w *streamEventWindow) note(now time.Time) {
-	w.times[w.next] = now
-	w.next = (w.next + 1) % len(w.times)
-	if w.count < len(w.times) {
-		w.count++
-	}
-}
-
-func (w *streamEventWindow) high(now time.Time) bool {
-	if w.count < streamChurnEvents {
-		return false
-	}
-	cutoff := now.Add(-streamChurnWindow)
-	for i := range w.count {
-		if !w.times[i].After(cutoff) {
-			return false
-		}
-	}
-	return true
-}
-
-// streamBackoff is the re-watch delay schedule: the server's base doubles per
-// attempt up to its cap. noteAttempt resets the schedule after a healthy watch.
-type streamBackoff struct {
-	tuning  streamTuning
-	attempt int
-}
-
-// next returns the delay before the upcoming re-watch attempt and advances
-// the schedule.
-func (b *streamBackoff) next() time.Duration {
-	d := b.tuning.backoffBase
-	for i := 0; i < b.attempt && d < b.tuning.backoffCap; i++ {
-		d *= 2
-	}
-	if d > b.tuning.backoffCap {
-		d = b.tuning.backoffCap
-	}
-	if b.attempt < 63 {
-		b.attempt++
-	}
-	return d
-}
-
-// noteAttempt records a finished watch attempt's lifetime: a healthy attempt
-// resets the schedule so the next re-watch waits only the base delay again.
-func (b *streamBackoff) noteAttempt(lived time.Duration) {
-	if lived >= b.tuning.healthyReset {
-		b.attempt = 0
-	}
-}
-
-// watchResult is one delivery from the watch reader goroutine: a decoded
-// event, or the error that ended the attempt (io.EOF for a clean upstream
-// close — the error taxonomy is kube.TableWatch's).
-type watchResult struct {
-	ev  kube.WatchEvent
-	err error
-}
-
-// streamTableWatch is the narrow lifecycle surface the session owns. The
-// concrete kube.TableWatch implements it; the interface also makes late-open
-// cleanup deterministic to test without exposing kube's response body.
+// streamTableWatch is the narrow watch lifecycle surface the WatchHub source
+// owns. The concrete kube.TableWatch implements it; the interface also makes
+// late-open cleanup deterministic to test without exposing kube's response
+// body.
 type streamTableWatch interface {
 	Next() (kube.WatchEvent, error)
 	Close() error
 }
 
-type watchOpenResult struct {
-	watch streamTableWatch
-	err   error
-}
-
-type streamRelistResult struct {
-	table kube.Table
-	err   error
-}
-
-type streamMetricsResult struct {
-	usage map[string][2]float64
-}
-
-// newStreamChildContext transfers cancellation ownership to the session loop.
-// The loop stores each returned cancel function in its lane and invokes it on
-// completion or in the common exit defer.
-func newStreamChildContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return context.WithCancel(parent)
-}
-
-func newStreamTimeoutContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, timeout)
-}
-
-// openWatchAsync performs only the potentially blocking response-header phase.
-// Handoff is unbuffered: if the session has already canceled/superseded this
-// attempt, nobody can retain an unowned successful watch and this goroutine
-// closes it before returning.
-func openWatchAsync(
-	ctx context.Context,
-	open func(context.Context) (streamTableWatch, error),
-	out chan<- watchOpenResult,
-) {
-	watch, err := open(ctx)
-	if err != nil && watch != nil {
-		_ = watch.Close()
-		watch = nil
-	}
-	if ctx.Err() != nil {
-		if watch != nil {
-			_ = watch.Close()
-		}
-		return
-	}
-	result := watchOpenResult{watch: watch, err: err}
-	select {
-	case out <- result:
-		// The session goroutine now owns a successful watch.
-	case <-ctx.Done():
-		if watch != nil {
-			_ = watch.Close()
-		}
-	}
-}
-
-func relistAsync(
-	ctx context.Context,
-	list func(context.Context) (kube.Table, error),
-	out chan<- streamRelistResult,
-) {
-	table, err := list(ctx)
-	if ctx.Err() != nil {
-		return
-	}
-	select {
-	case out <- streamRelistResult{table: table, err: err}:
-	case <-ctx.Done():
-	}
-}
-
-func metricsAsync(
-	ctx context.Context,
-	fetch func(context.Context) map[string][2]float64,
-	out chan<- streamMetricsResult,
-) {
-	usage := fetch(ctx)
-	if ctx.Err() != nil {
-		return
-	}
-	select {
-	case out <- streamMetricsResult{usage: usage}:
-	case <-ctx.Done():
-	}
-}
-
-// watchReader pumps TableWatch.Next into out until the attempt ends. It is
-// bound to the request context twice over: a canceled request closes the
-// watch body (unblocking Next), and the send select frees the goroutine if
-// the session stopped draining.
-func watchReader(ctx context.Context, w streamTableWatch, out chan<- watchResult) {
-	for {
-		ev, err := w.Next()
-		select {
-		case out <- watchResult{ev: ev, err: err}:
-		case <-ctx.Done():
-			return
-		}
-		if err != nil {
-			return
-		}
-	}
-}
-
-// resourceStream serves `GET …/{plural}/_stream` for Live mode. Order is load-
-// bearing: the scope/namespace checks are free and run first; the cap slot is
-// acquired before any upstream work and before SSE headers (a cap-exceeded
-// stream 429s without ever connecting); discovery then classifies watch-less
-// kinds (204). Only after the initial list succeeds do the SSE headers go
-// out — every failure before that point is a plain HTTP status, every
-// failure after it is an in-stream terminal `ro-live` envelope.
+// resourceStream serves `GET …/{plural}/_stream` for Live mode. Order is
+// load-bearing: the scope/namespace checks are free and run first; a draining
+// pod stops here with 503; the connection slot is taken before any upstream
+// work; discovery then classifies watch-less kinds (204). Only after the
+// shared source has published its first revision do the SSE headers go out —
+// every failure before that point is a plain HTTP status, every failure after
+// it is an in-stream terminal `ro-live` envelope.
 func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 	// Negotiation and every pre-handshake failure are explicitly non-cacheable.
-	// Vary is set before any scope/auth/cap/discovery branch; Content-Type stays
-	// unset here so only a successful initial snapshot commits SSE semantics.
+	// Vary is set before any scope/auth/admission/discovery branch; Content-Type
+	// stays unset here so only a successful initial snapshot commits SSE
+	// semantics.
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
 	addVary(h, streamVersionHeader)
 	addVary(h, streamGenerationHeader)
+	// ServeMux routes HEAD to a GET pattern, and net/http silently discards
+	// every body byte written to a HEAD response. A HEAD stream would therefore
+	// never fail a write, never trip the write deadline, and never reach the
+	// slow-writer terminal -- it would hold a connection slot and a hub
+	// subscription until the 12h lifetime cap. Live is GET only.
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Time-to-snapshot and session duration are both measured from here: what
+	// an operator cares about is how long the BROWSER waited, which includes
+	// discovery and the shared source's LIST, not just the render.
+	started := time.Now()
 
 	clusterName := r.PathValue("cluster")
 	namespace := r.PathValue("namespace")
 	plural := r.PathValue("plural")
 	// Live scope cut: Live covers single-type AND single-cluster lists only.
 	// Multi-type pages (plural "all"/"_all"/CSV) and multi-cluster scope
-	// (cluster "_all"/CSV) get 404 — the dropdown renders the option disabled.
+	// (cluster "_all"/CSV) get 404 — the toolbar renders no Live toggle.
 	if !isSingleListType(plural) || clusterName == kube.AllClusters || strings.Contains(clusterName, ",") {
 		http.Error(w, "live streams cover single-type, single-cluster lists only", http.StatusNotFound)
 		return
@@ -441,23 +300,24 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cluster not found", http.StatusNotFound)
 		return
 	}
-	// Stream cap: acquire before SSE headers and any upstream call; release
-	// on EVERY exit path. The deferred receive is the single release point —
-	// 204/initial-list-failure/terminal/client-gone all pass through it.
-	select {
-	case s.streamSlots <- struct{}{}:
-	default:
-		http.Error(w, "too many live streams", http.StatusTooManyRequests)
+	// A draining pod admits no new Live stream: readiness already reports 503,
+	// and a stream started now would only receive the shutdown terminal.
+	if s.shuttingDown() {
+		http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
 		return
 	}
-	defer func() { <-s.streamSlots }()
+	// Admission stage one: the connection slot, taken before any upstream call
+	// and before SSE headers, released on EVERY exit path.
+	hub := s.liveHub()
+	if !hub.acquireConnection() {
+		s.observeLiveAdmission(liveAdmissionConnectionLimit)
+		streamOverCapacity(w, "too many live connections")
+		return
+	}
+	defer hub.releaseConnection()
 
 	ctx := r.Context()
-	handshakeTimeout := s.streamTuning.handshakeTimeout
-	if handshakeTimeout <= 0 {
-		handshakeTimeout = defaultStreamTuning().handshakeTimeout
-	}
-	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshakeTimeout)
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, s.streamTuning.handshakeTimeout)
 	defer cancelHandshake()
 	client := s.kubeClient(r, cluster)
 	rt, err := client.FindResource(handshakeCtx, plural, namespace != "", apiVersionParam(r))
@@ -470,8 +330,8 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Watch-less kinds (no watch verb — componentstatuses, the metrics
-	// pseudo-types) cannot stream: 204 tells the client to fall back to
-	// polling silently.
+	// pseudo-types) cannot stream: 204 tells the client to stop without
+	// retrying. The toolbar already hides the Live toggle for them.
 	if !slices.Contains(rt.Verbs, "watch") {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -481,80 +341,199 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 	if namespace == kube.AllNamespaces {
 		listNS = ""
 	}
-	lifetime, lifetimeReason := s.streamLifetime(r)
+	selector := r.URL.Query().Get("selector")
+	key, err := newWatchHubKey(client, clusterName, &rt, namespace, selector)
+	if err != nil {
+		// The apiserver would reject the list anyway; failing here also keeps
+		// one broken selector from creating a source per spelling of it.
+		http.Error(w, "invalid label selector", http.StatusBadRequest)
+		return
+	}
+
+	deadline, lifetimeReason := s.streamDeadline(r, started)
 	sess := &streamSession{
 		srv:            s,
 		w:              w,
 		rc:             http.NewResponseController(w),
 		renderReq:      renderReq,
 		client:         client,
-		rt:             rt,
 		cluster:        clusterName,
-		listNS:         listNS,
-		selector:       r.URL.Query().Get("selector"),
+		selector:       selector,
 		gen:            negotiation.gen,
 		wantMetrics:    r.URL.Query().Get("join") == "metrics" && (plural == "pods" || plural == "nodes"),
-		lifetime:       lifetime,
+		wantNodes:      streamWantsNodeJoin(r, s.cfg.DefaultCustomColumns[plural], rt.Kind),
+		deadline:       deadline,
 		lifetimeReason: lifetimeReason,
 		tuning:         s.streamTuning,
+		startedAt:      started,
 	}
-	sess.run(ctx, handshakeCtx)
+	// Admission stages two and three live inside the hub: joining an existing
+	// source costs nothing, creating one is bounded by live.maxSources and then
+	// -- once its own LIST is measured -- by live.maxCacheAccountedBytes.
+	sub, rev, err := hub.Subscribe(handshakeCtx, s.streamSourceSpec(&key, client, &rt, listNS, selector), sess.demand())
+	if err != nil {
+		s.streamSubscribeFailure(w, err)
+		return
+	}
+	s.observeLiveAdmission(liveAdmissionAccepted)
+	defer sub.Close()
+	sess.sub = sub
+	sess.run(ctx, handshakeCtx, rev)
 }
 
-// streamLifetime resolves the stream's total-lifetime bound at connect time
-// (the only auth check an SSE stream ever gets — the idle cap resets on watch
-// data, so without this a revoked/expired session keeps receiving cluster
-// state indefinitely). OIDC mode: the session cookie's own Expires, terminal
-// reason "auth" (the client's no-reconnect taxonomy). Trusted-headers / none
-// modes have no per-session expiry: the server's hard max-lifetime cap applies,
-// terminal reason "idle".
-func (s *Server) streamLifetime(r *http.Request) (time.Duration, string) {
+// streamOverCapacity is the shared shape of every Live admission rejection: a
+// 429 with a retry hint and NO SSE content type, so a refused browser waits
+// instead of reconnecting immediately or mistaking the body for a stream.
+func streamOverCapacity(w http.ResponseWriter, message string) {
+	w.Header().Set("Retry-After", "10")
+	http.Error(w, message, http.StatusTooManyRequests)
+}
+
+// streamSubscribeFailure maps a failed hub attach to the plain HTTP status the
+// handshake fails with: the two capacity bounds are 429s the client retries
+// later, a timed-out shared LIST is a 502, and an upstream denial keeps the
+// classifier's own status.
+func (s *Server) streamSubscribeFailure(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errHubSourceLimit):
+		s.observeLiveAdmission(liveAdmissionSourceLimit)
+		streamOverCapacity(w, "too many live sources")
+	case errors.Is(err, errHubCacheLimit):
+		s.observeLiveAdmission(liveAdmissionCacheLimit)
+		streamOverCapacity(w, "live cache is at capacity")
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		// The shared initialization outlived this subscriber's handshake budget
+		// (or the browser gave up). The source keeps initializing for whoever
+		// asks next; this request just cannot be served a snapshot.
+		http.Error(w, "initial list timed out", http.StatusBadGateway)
+	default:
+		http.Error(w, "initial list failed", streamHandshakeStatus(err))
+	}
+}
+
+// streamSourceSpec describes ONE shared upstream list+watch: the credentials
+// and scope behind the key, plus the demand-driven join reads. Only the key
+// decides sharing, so these closures belong to whichever subscriber happened
+// to create the source -- every other subscriber for the same key resolves to
+// the same upstream request under the same identity.
+func (s *Server) streamSourceSpec(key *watchHubKey, client *kube.Client, rt *kube.ResourceType, listNS, selector string) *hubSourceSpec {
+	resource := *rt
+	return &hubSourceSpec{
+		key: *key,
+		list: func(ctx context.Context) (kube.Table, error) {
+			// The pristine scope Table: namespace + label selector apply
+			// (apiserver-level), readout-side filters and sort do NOT.
+			return client.Table(ctx, &resource, kube.ListOptions{Namespace: listNS, LabelSelector: selector})
+		},
+		watch: func(ctx context.Context, resourceVersion string) (streamTableWatch, error) {
+			watch, err := client.WatchTable(ctx, &resource, kube.WatchOptions{
+				Namespace:       listNS,
+				LabelSelector:   selector,
+				ResourceVersion: resourceVersion,
+			})
+			if watch == nil {
+				return nil, err
+			}
+			return watch, err
+		},
+		overlay: func(ctx context.Context, demand hubDemand) renderOverlays {
+			// A failed fetch normalizes to an empty non-nil map: nil means
+			// "fetch it now" on the render path, which is exactly the per-push
+			// upstream LIST the shared poll exists to avoid.
+			var overlays renderOverlays
+			if demand.metrics {
+				overlays.metrics = s.fetchMetricsUsage(ctx, client, resource.Namespaced, listNS, false, selector)
+				if overlays.metrics == nil {
+					overlays.metrics = map[string][2]float64{}
+				}
+			}
+			if demand.nodes {
+				overlays.nodes = s.fetchNodeObjects(ctx, client)
+				if overlays.nodes == nil {
+					overlays.nodes = map[string]map[string]any{}
+				}
+			}
+			return overlays
+		},
+	}
+}
+
+// streamDeadline resolves the stream's total-lifetime bound at connect time
+// (the only auth check an SSE stream ever gets — without this a revoked or
+// expired session keeps receiving cluster state indefinitely). OIDC mode: the
+// session cookie's own Expires, terminal reason "auth" (the client's
+// no-reconnect taxonomy). Trusted-headers / none modes have no per-session
+// expiry: the server's hard max-lifetime cap applies, terminal reason
+// "lifetime".
+//
+// The bound is ABSOLUTE, not a duration handed to the loop: the handshake
+// (discovery, the shared LIST, the join overlays) can spend tens of seconds
+// between this call and the first frame, and a duration re-armed after it
+// would grant the session its whole expiry again on top of that wait.
+func (s *Server) streamDeadline(r *http.Request, now time.Time) (time.Time, string) {
 	if s.cfg.AuthMode == config.AuthModeOIDC {
 		if session, ok := s.auth.Session(r); ok {
-			return time.Until(time.Unix(session.Expires, 0)), "auth"
+			return time.Unix(session.Expires, 0), streamTerminalAuth
 		}
 	}
-	return s.streamTuning.maxLifetime, "idle"
+	return now.Add(s.streamTuning.maxLifetime), streamTerminalLifetime
 }
 
-// streamSession is one open Live stream: the unfiltered snapshot, the cached
-// metrics overlay, and the pacing state. All fields are owned by the handler
-// goroutine — the only other goroutine (the watch reader) communicates
-// exclusively over its channel.
+// streamSession is one open Live stream: the hub subscription it renders from
+// and the per-browser projection, pacing and sequence state. Every field is
+// owned by the handler goroutine; the shared source communicates only through
+// the subscription's channels and its immutable revisions.
 type streamSession struct {
 	srv       *Server
 	w         http.ResponseWriter
 	rc        *http.ResponseController
 	renderReq *http.Request
 	client    *kube.Client
-	rt        kube.ResourceType
 	cluster   string
-	listNS    string
 	selector  string
 	gen       string
 	seq       uint64
 
-	// snapshot is the per-cluster UNFILTERED Table for the stream's scope
-	// (namespace + label selector — apiserver-level params). The readout-side
-	// `f`/`filter`/`sort` params apply at render time on a clone, never here,
-	// so filter-transition pushes work by construction.
-	snapshot kube.Table
-	// lastRV is the last seen resourceVersion — the re-watch point after a
-	// clean EOF (and the replay floor, so already-seen events never repeat).
+	// sub is this session's handle on the shared source: level-triggered
+	// wakeups, the latest immutable revision, and the terminal reason the
+	// source was released with.
+	sub *hubSubscription
+
+	// rev is the newest revision adopted for rendering; base is the revision
+	// the COMMITTED projection describes. Rows present in base and absent from
+	// rev are the actual apiserver deletions this push must classify as such.
+	rev  *hubRevision
+	base *hubRevision
+
+	// lastRV mirrors the adopted revision's resourceVersion for the wire, and
+	// epoch the adopted revision's source discontinuity count: a change in it
+	// is a relist whose delta chain this session cannot bridge.
 	lastRV string
+	epoch  uint64
 
+	// wantMetrics / wantNodes record which join overlays this render asks for.
+	// They become the subscription's demand, so the shared source polls a join
+	// only while somebody needs it.
 	wantMetrics bool
-	metrics     map[string][2]float64
+	wantNodes   bool
 
-	// lifetime / lifetimeReason bound the stream's TOTAL lifetime (resolved
-	// at connect by streamLifetime; the loop arms a single never-reset timer).
-	lifetime       time.Duration
+	// deadline / lifetimeReason bound the stream's TOTAL lifetime (resolved at
+	// connect by streamDeadline as an ABSOLUTE instant; the loop arms a single
+	// never-reset timer for whatever is left of it once the handshake is done).
+	deadline       time.Time
 	lifetimeReason string
 	tuning         streamTuning
 
-	dirty       bool
-	lastPush    time.Time
-	eventWindow streamEventWindow
+	// startedAt is when the request arrived. It is the origin of both Live
+	// latency metrics: time-to-snapshot ends at the first flushed frame,
+	// session duration at the single terminal outcome.
+	startedAt time.Time
+
+	dirty    bool
+	lastPush time.Time
+	// churn carries the SOURCE's sustained-event-rate verdict: only the source
+	// sees the raw events, so it is the only place pacing can learn the rate.
+	churn bool
 
 	// Live v2 commits only after an encoded frame has been written and
 	// flushed. These fields therefore describe the exact client-visible base,
@@ -566,22 +545,23 @@ type streamSession struct {
 	lastSnapshotAt      time.Time
 	lastSnapshotBytes   int
 	renderers           streamLiveRenderers
-	watchOpener         func(context.Context) (streamTableWatch, error)
+
+	// writeBound shortens the frame write deadline for the shutdown terminal,
+	// so a non-reading peer cannot consume the whole graceful drain.
+	writeBound time.Duration
+
+	// flushedRev is the revision the last event-to-flush sample was taken for,
+	// so a re-send of state the client already holds is not counted again.
+	flushedRev uint64
+
+	// finished guards the single terminal outcome counted per session.
+	finished bool
 }
 
-func (st *streamSession) openTableWatch(ctx context.Context) (streamTableWatch, error) {
-	if st.watchOpener != nil {
-		return st.watchOpener(ctx)
-	}
-	watch, err := st.client.WatchTable(ctx, &st.rt, kube.WatchOptions{
-		Namespace:       st.listNS,
-		LabelSelector:   st.selector,
-		ResourceVersion: st.lastRV,
-	})
-	if watch == nil {
-		return nil, err
-	}
-	return watch, err
+// demand is this session's join requirement, handed to the source on attach
+// and released with the subscription.
+func (st *streamSession) demand() hubDemand {
+	return hubDemand{metrics: st.wantMetrics, nodes: st.wantNodes}
 }
 
 // streamHandshakeStatus maps an initial-list failure to the plain HTTP status
@@ -593,81 +573,245 @@ func streamHandshakeStatus(err error) int {
 	return failureHandshakeStatus(kube.ClassifyError(err))
 }
 
-// run fetches the initial snapshot, completes the SSE handshake with the initial
-// full push, and hands off to the event loop. A failure before the handshake
-// stays a plain HTTP status — the stream never half-connects.
-func (st *streamSession) run(ctx, handshakeCtx context.Context) {
-	table, err := st.list(handshakeCtx)
-	if err != nil {
-		http.Error(st.w, "initial list failed", streamHandshakeStatus(err))
+// run adopts the revision the attach returned, completes the SSE handshake
+// with the initial full push, and hands off to the event loop. A failure before
+// the handshake stays a plain HTTP status — the stream never half-connects.
+//
+// The initial frame is RENDERED BEFORE the handshake headers so the session
+// bound can be rechecked with the frame in hand: a first snapshot of a large
+// scope takes real time to build, and an expiry check that ran only before the
+// render would hand an identity that died during it a full picture of the
+// cluster.
+func (st *streamSession) run(ctx, handshakeCtx context.Context, rev *hubRevision) {
+	if !st.adopt(rev) {
+		// An admitted session that never reaches the wire still owes the
+		// census its one final outcome: this pod could not produce a frame,
+		// which is the same server-side fault class as a failed render.
+		st.finish(streamTerminalProtocol)
+		http.Error(st.w, "live source published no snapshot", http.StatusBadGateway)
 		return
 	}
-	st.snapshot = table
-	st.lastRV = table.ResourceVersion
-	if st.wantMetrics {
-		timeout := st.tuning.initialMetricsTimeout
-		if timeout <= 0 {
-			timeout = defaultStreamTuning().initialMetricsTimeout
-		}
-		metricsCtx, cancel := context.WithTimeout(handshakeCtx, timeout)
-		st.metrics = st.fetchMetrics(metricsCtx)
-		cancel()
+	st.awaitOverlays(handshakeCtx)
+	if st.rejectExpiredHandshake() {
+		return
 	}
+	prepared, err := st.prepareNextPush(ctx)
+	if err != nil {
+		// A render/encode fault is this SERVER's own and the peer is healthy,
+		// so it is told the same way a mid-stream fault is: complete the
+		// handshake and write the no-retry protocol terminal. A plain non-200
+		// here would put the browser on its reconnect ladder, re-running the
+		// same failing render for the life of the tab.
+		st.writeHandshakeHeaders()
+		st.failFrame(err)
+		return
+	}
+	if st.rejectExpiredHandshake() {
+		return
+	}
+	st.writeHandshakeHeaders()
+	if err := st.pushPreparedLiveV2(&prepared); err != nil {
+		st.failFrame(err)
+		return
+	}
+	st.srv.observeLiveTimeToSnapshot(time.Since(st.startedAt))
+	st.loop(ctx)
+}
 
+// writeHandshakeHeaders completes the SSE handshake. Nothing before this point
+// has touched the ResponseWriter, so every earlier exit is still free to answer
+// with a plain HTTP status.
+func (st *streamSession) writeHandshakeHeaders() {
 	h := st.w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("X-Accel-Buffering", "no")
 	h.Set(streamVersionHeader, "2")
 	h.Set(streamGenerationHeader, st.gen)
 	st.w.WriteHeader(http.StatusOK)
-	if err := st.push(ctx); err != nil {
+}
+
+// rejectExpiredHandshake answers an AUTH-bounded stream that ran out of session
+// before its first frame with a plain 401 -- the answer the browser turns into
+// the Reload banner without retrying -- and records the session's one terminal
+// outcome. Nothing has been written at either call site, so the plain status is
+// still available.
+func (st *streamSession) rejectExpiredHandshake() bool {
+	if !st.authExpired() {
+		return false
+	}
+	st.finish(streamTerminalAuth)
+	http.Error(st.w, "session expired", http.StatusUnauthorized)
+	return true
+}
+
+// authExpired reports that an AUTH-bounded stream has outlived its session.
+// Only that bound gates cluster data: the trusted-headers/none hard cap is a
+// resource bound on how long one pod holds a stream, so a stream whose cap
+// already elapsed still gets its snapshot and is then closed by the loop's
+// timer at zero.
+func (st *streamSession) authExpired() bool {
+	return st.lifetimeReason == streamTerminalAuth && !time.Now().Before(st.deadline)
+}
+
+// adopt takes a newly published revision as this session's render source.
+// Revisions are monotonically numbered, so an older or repeated one is
+// ignored; a discontinuity (a relist) latches forceSnapshot until the next
+// committed push, because the delta chain the client holds is broken.
+//
+// The discontinuity is read from the source's MONOTONIC epoch, not from a flag
+// on the revision that recovered it: wakeups are level-triggered, so this
+// session may only ever see a later revision. An epoch that differs from the
+// one this session last rendered is a relist it would otherwise have missed.
+func (st *streamSession) adopt(rev *hubRevision) bool {
+	if rev == nil || (st.rev != nil && rev.num <= st.rev.num) {
+		return false
+	}
+	if st.rev != nil && rev.epoch != st.epoch {
+		st.forceSnapshot = true
+	}
+	st.epoch = rev.epoch
+	st.rev = rev
+	st.lastRV = rev.rv
+	st.churn = rev.highChurn
+	st.dirty = true
+	return true
+}
+
+// awaitOverlays holds the handshake until the shared source has published the
+// joins this render needs. The source starts its poll the moment this
+// subscriber registers demand, so the wait is normally one upstream round trip;
+// giving up renders join placeholders and the next published revision fills
+// them in. Nothing here is per-subscriber upstream work.
+func (st *streamSession) awaitOverlays(ctx context.Context) {
+	if st.overlaysReady() {
 		return
 	}
-	st.loop(ctx)
-}
-
-// list fetches the stream's pristine scope Table: namespace + label selector
-// apply (apiserver-level), readout-side filters and sort do NOT — the
-// snapshot stays unfiltered by contract.
-func (st *streamSession) list(ctx context.Context) (kube.Table, error) {
-	return st.client.Table(ctx, &st.rt, kube.ListOptions{Namespace: st.listNS, LabelSelector: st.selector})
-}
-
-// fetchMetrics wraps the shared usage fetch, normalizing a failed fetch to an
-// empty non-nil map so renders never fall back to a live per-push fetch
-// inside applyTableOptionsWithUsage (nil there means "fetch now").
-func (st *streamSession) fetchMetrics(ctx context.Context) map[string][2]float64 {
-	usage := st.srv.fetchMetricsUsage(ctx, st.client, st.rt.Namespaced, st.listNS, false, st.selector)
-	if usage == nil {
-		usage = map[string][2]float64{}
+	timer := time.NewTimer(st.tuning.initialMetricsTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-st.sub.Notify():
+			if st.adopt(st.sub.Revision()) && st.overlaysReady() {
+				return
+			}
+		case <-st.sub.Done():
+			return
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		}
 	}
-	return usage
 }
 
-// loop is the stream's single event loop: watch lifecycle (connect, re-watch
-// with backoff, relist on 410, terminal taxonomy), push pacing, the metrics
-// sub-poll, and the idle cap all live in one select so no state needs locks.
+// overlaysReady reports whether the adopted revision already carries every
+// join this render asks for.
+func (st *streamSession) overlaysReady() bool {
+	if st.rev == nil {
+		return false
+	}
+	return (!st.wantMetrics || st.rev.overlays.metrics != nil) &&
+		(!st.wantNodes || st.rev.overlays.nodes != nil)
+}
+
+// overlaysForRender is the adopted revision's join state with every requested
+// join forced non-nil. A nil overlay means "fetch it now" to the decoration
+// pass, so this substitution is what keeps a push off the upstream path while
+// the shared poll is still in flight.
+func (st *streamSession) overlaysForRender() renderOverlays {
+	overlays := st.rev.overlays
+	if st.wantMetrics && overlays.metrics == nil {
+		overlays.metrics = map[string][2]float64{}
+	}
+	if st.wantNodes && overlays.nodes == nil {
+		overlays.nodes = map[string]map[string]any{}
+	}
+	return overlays
+}
+
+// streamWantsNodeJoin decides whether the stream must carry the ?join=nodes
+// overlay: Pod lists whose render actually has custom columns to evaluate it
+// in (the join only ever feeds a custom-column expression, so without one the
+// Nodes LIST would be pure waste). The Kind test is the same one wantsNodeJoin
+// applies at render time -- the two must agree, or a render whose overlay was
+// never demanded falls back to fetching Nodes on every push.
+func streamWantsNodeJoin(r *http.Request, defaultCustom, kind string) bool {
+	q := r.URL.Query()
+	if q.Get("join") != "nodes" || kind != "Pod" {
+		return false
+	}
+	return first(q.Get("customcols"), q.Get("custom-columns"), defaultCustom) != ""
+}
+
+// watchDeletions classifies the rows that left the shared scope between the
+// committed base revision and the one about to be rendered: those are actual
+// apiserver deletions, and the v2 delta reports them with the delete cause so
+// the client may prune its selection. Every other disappearance is a
+// projection change (a row that stopped matching the active filter).
+//
+// Kubernetes watch predicate semantics map old-match/new-no-match to a
+// synthetic DELETED, so a label-selected scope has no wire-level distinction
+// between selector exit and a real delete: that lane is never classified.
+// Consequently an actual deletion already outside the rendered projection may
+// leave latent cross-filter selection until a normal action/reload reconciles
+// it. The v2 remove operation cannot fix that safely -- it is a projection
+// operation and the client rejects absent-key tombstones by contract.
+func (st *streamSession) watchDeletions() map[string]struct{} {
+	if st.selector != "" || st.forceSnapshot || st.base == nil || st.rev == nil || st.base == st.rev {
+		return nil
+	}
+	present := make(map[string]struct{}, len(st.rev.table.Rows))
+	for i := range st.rev.table.Rows {
+		if key, ok := st.rowIdentity(st.rev.table.Rows[i].Object); ok {
+			present[key] = struct{}{}
+		}
+	}
+	var deleted map[string]struct{}
+	for i := range st.base.table.Rows {
+		key, ok := st.rowIdentity(st.base.table.Rows[i].Object)
+		if !ok {
+			continue
+		}
+		if _, still := present[key]; still {
+			continue
+		}
+		if len(deleted) >= streamMaxDeletedKeys {
+			// The set cannot be carried safely; a full snapshot re-establishes
+			// the client's state without classifying anything.
+			st.forceSnapshot = true
+			return nil
+		}
+		if deleted == nil {
+			deleted = make(map[string]struct{})
+		}
+		deleted[key] = struct{}{}
+	}
+	return deleted
+}
+
+// rowIdentity is the projection key for one retained row object. An object
+// without a name cannot be identified, and is not classified either way.
+func (st *streamSession) rowIdentity(obj map[string]any) (string, bool) {
+	name := nestedString(obj, "metadata", "name")
+	if name == "" {
+		return "", false
+	}
+	return rowKey(st.cluster, nestedString(obj, "metadata", "namespace"), name), true
+}
+
+// loop is the stream's single event loop: shared-source notifications and
+// release, push pacing, heartbeats, recovery checkpoints, the total-lifetime
+// bound and shutdown all live in one select so no session state needs locks.
+// There is no idle cap: a quiet namespace is healthy, and the heartbeat plus
+// the write deadline already detect a dead peer.
 func (st *streamSession) loop(ctx context.Context) {
-	idleTimer := time.NewTimer(st.tuning.idleCap)
-	defer idleTimer.Stop()
 	// The total-lifetime bound (session expiry in OIDC mode, the hard cap
-	// otherwise). NEVER reset — unlike the idle timer, watch data must not
-	// extend it.
-	lifetimeTimer := time.NewTimer(st.lifetime)
+	// otherwise). NEVER reset — watch data must not extend it.
+	lifetimeTimer := time.NewTimer(time.Until(st.deadline))
 	defer lifetimeTimer.Stop()
 	pushTimer := time.NewTimer(time.Hour)
 	pushTimer.Stop()
 	defer pushTimer.Stop()
-	// The zero-delay first fire connects the initial watch through the same
-	// path every re-watch takes.
-	rewatchTimer := time.NewTimer(0)
-	defer rewatchTimer.Stop()
-	var metricsCh <-chan time.Time
-	if st.wantMetrics {
-		ticker := time.NewTicker(st.tuning.metricsPoll)
-		defer ticker.Stop()
-		metricsCh = ticker.C
-	}
 	var heartbeatCh <-chan time.Time
 	if st.tuning.heartbeat > 0 {
 		ticker := time.NewTicker(st.tuning.heartbeat)
@@ -704,248 +848,59 @@ func (st *streamSession) loop(ctx context.Context) {
 		checkpointCh = checkpointTimer.C
 	}
 
-	var (
-		cur             streamTableWatch
-		events          chan watchResult
-		openResults     = make(chan watchOpenResult)
-		opening         bool
-		attemptCtx      context.Context
-		attemptCancel   context.CancelFunc
-		relistResults   = make(chan streamRelistResult)
-		relisting       bool
-		relistCancel    context.CancelFunc
-		metricsResults  <-chan streamMetricsResult
-		metricsDone     <-chan struct{}
-		metricsInFlight bool
-		metricsCancel   context.CancelFunc
-		attemptStart    time.Time
-		attemptSawEvent bool
-		backoff         = streamBackoff{tuning: st.tuning}
-		immediateEOFs   int
-	)
-	cancelAttempt := func() {
-		if attemptCancel != nil {
-			attemptCancel()
-			attemptCancel = nil
-			attemptCtx = nil
-		}
-	}
-	cancelRelist := func() {
-		if relistCancel != nil {
-			relistCancel()
-			relistCancel = nil
-		}
-	}
-	cancelMetrics := func() {
-		if metricsCancel != nil {
-			metricsCancel()
-		}
-		metricsCancel = nil
-		metricsResults = nil
-		metricsDone = nil
-		metricsInFlight = false
-	}
-	startRelist := func() {
-		if relisting {
-			return
-		}
-		relistCtx, cancel := newStreamChildContext(ctx)
-		relistCancel = cancel
-		relisting = true
-		go relistAsync(relistCtx, st.list, relistResults)
-	}
-	startMetrics := func() {
-		if metricsInFlight {
-			return
-		}
-		timeout := st.tuning.metricsRequestTimeout
-		if timeout <= 0 {
-			timeout = defaultStreamTuning().metricsRequestTimeout
-		}
-		metricsCtx, cancel := newStreamTimeoutContext(ctx, timeout)
-		results := make(chan streamMetricsResult)
-		metricsCancel = cancel
-		metricsResults = results
-		metricsDone = metricsCtx.Done()
-		metricsInFlight = true
-		go metricsAsync(metricsCtx, st.fetchMetrics, results)
-	}
-	defer func() {
-		cancelAttempt()
-		cancelRelist()
-		cancelMetrics()
-		if cur != nil {
-			_ = cur.Close()
-		}
-	}()
-
-	// endAttempt classifies a finished watch attempt: 410 relists and
-	// re-watches immediately; upstream 401/403 is terminal "auth"; everything
-	// else (clean EOF included) re-watches from lastRV with backoff — unless
-	// it is the streamMaxImmediateEOFs-th consecutive immediate end, which is
-	// the re-watch failure terminal. Returns false when the stream must end.
-	endAttempt := func(err error) bool {
-		cancelAttempt()
-		opening = false
-		if cur != nil {
-			_ = cur.Close()
-			cur = nil
-		}
-		events = nil
-		lived := time.Since(attemptStart)
-		switch {
-		case errors.Is(err, kube.ErrWatchGone):
-			// 410: the RV fell out of the apiserver history window. Silent
-			// relist + full push, then re-watch from the fresh RV. The LIST is
-			// asynchronous too: a stalled recovery must not freeze stream timers.
-			startRelist()
-			return true
-		case kube.IsForbidden(err):
-			// Upstream 401/403 — e.g. session token expiry in passthrough
-			// mode. The stream cannot recover by retrying.
-			st.terminal("auth")
-			return false
-		}
-		if !attemptSawEvent && lived < st.tuning.immediateWindow {
-			immediateEOFs++
-			if immediateEOFs >= streamMaxImmediateEOFs {
-				st.terminal("watch-failed")
-				return false
-			}
-		} else {
-			immediateEOFs = 0
-		}
-		backoff.noteAttempt(lived)
-		rewatchTimer.Reset(backoff.next())
-		return true
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
 			// The client went away (or the request ended): nobody is left to
-			// write a terminal to. Deferred cleanup releases everything.
+			// write a terminal to.
+			st.finish(streamTerminalClientClose)
 			return
 		case <-st.srv.shutdownCh:
-			st.terminal("shutdown")
+			st.terminal(streamTerminalShutdown)
 			return
-		case <-rewatchTimer.C:
-			// Opening an HTTP watch can block before response headers. Keep that
-			// phase outside this select so heartbeat/checkpoint/idle/lifetime and
-			// downstream cancellation remain live. Exactly one child attempt owns
-			// both setup and the resulting watch lifetime.
-			if opening || cur != nil || relisting {
-				continue
+		case <-st.sub.Notify():
+			if st.adopt(st.sub.Revision()) {
+				st.schedulePush(pushTimer)
 			}
-			attemptCtx, attemptCancel = newStreamChildContext(ctx)
-			opening = true
-			go openWatchAsync(attemptCtx, st.openTableWatch, openResults)
-		case opened := <-openResults:
-			opening = false
-			attemptStart = time.Now()
-			attemptSawEvent = false
-			if opened.err != nil || opened.watch == nil {
-				err := opened.err
-				if err == nil {
-					err = errors.New("watch open returned no watch")
-				}
-				if ctx.Err() != nil {
-					cancelAttempt()
-					return
-				}
-				if !endAttempt(err) {
-					return
-				}
-			} else {
-				cur = opened.watch
-				events = make(chan watchResult)
-				go watchReader(attemptCtx, cur, events)
+		case <-st.sub.Done():
+			// The shared source died. Every subscriber gets the same reason,
+			// once; recoverable watch failures never reach here.
+			reason := st.sub.Reason()
+			if reason == "" {
+				reason = streamTerminalWatchFailed
 			}
-		case relisted := <-relistResults:
-			relisting = false
-			cancelRelist()
-			if relisted.err != nil {
-				st.terminal("watch-failed")
+			st.terminal(reason)
+			return
+		case <-pushTimer.C:
+			if st.authExpired() {
+				// The session bound outranks pending watch data: an expired
+				// identity is told the stream is over, not shown one more
+				// frame that the lifetime timer would have cut off anyway.
+				st.terminal(st.lifetimeReason)
 				return
 			}
-			st.snapshot = relisted.table
-			st.lastRV = relisted.table.ResourceVersion
-			st.dirty = true
-			st.forceSnapshot = true
-			backoff = streamBackoff{tuning: st.tuning}
-			immediateEOFs = 0
-			st.schedulePush(pushTimer)
-			rewatchTimer.Reset(0)
-		case res := <-events:
-			if res.err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				if !endAttempt(res.err) {
-					return
-				}
-			} else {
-				attemptSawEvent = true
-				immediateEOFs = 0
-				if res.ev.ResourceVersion != "" {
-					st.lastRV = res.ev.ResourceVersion
-				}
-				switch res.ev.Type {
-				case kube.WatchBookmark:
-					// Bookmarks advance the re-watch point only; their rows are
-					// NEVER read (the real apiserver may attach one).
-				default:
-					st.noteWatchMutation(&res.ev)
-					mergeTableEvent(&st.snapshot, &res.ev)
-					st.dirty = true
-					st.noteEvent(time.Now())
-					idleTimer.Reset(st.tuning.idleCap)
-					st.schedulePush(pushTimer)
-				}
-			}
-		case <-pushTimer.C:
 			if st.dirty {
 				lastSnapshotAt := st.lastSnapshotAt
 				if err := st.push(ctx); err != nil {
+					st.failFrame(err)
 					return
 				}
 				if st.lastSnapshotAt != lastSnapshotAt {
 					resetCheckpoint()
 				}
 			}
-		case <-metricsCh:
-			startMetrics()
-		case result := <-metricsResults:
-			cancelMetrics()
-			if !maps.Equal(result.usage, st.metrics) {
-				st.metrics = result.usage
-				st.dirty = true
-				st.schedulePush(pushTimer)
-			}
-		case <-metricsDone:
-			// The owner clears the lane on deadline even though metricsAsync drops
-			// its canceled result. The next ticker edge can therefore recover with
-			// a fresh request; the old per-attempt channel can never feed it. A
-			// timed-out metrics source is not valid indefinitely: clear the stale
-			// overlay and publish the same empty usage state as an upstream failure.
-			cancelMetrics()
-			st.metrics = map[string][2]float64{}
-			st.dirty = true
-			st.schedulePush(pushTimer)
 		case <-heartbeatCh:
 			if err := st.writeHeartbeat(); err != nil {
+				st.failFrame(err)
 				return
 			}
 		case <-checkpointCh:
-			// Recovery checkpoints are transport maintenance, not user/watch
-			// activity: schedule a full snapshot without extending the idle cap.
+			// Recovery checkpoints are transport maintenance, not watch
+			// activity: they schedule a full snapshot and nothing else.
 			checkpointCh = nil
 			st.forceSnapshot = true
 			st.dirty = true
 			st.schedulePush(pushTimer)
-		case <-idleTimer.C:
-			st.terminal("idle")
-			return
 		case <-lifetimeTimer.C:
 			st.terminal(st.lifetimeReason)
 			return
@@ -953,31 +908,19 @@ func (st *streamSession) loop(ctx context.Context) {
 	}
 }
 
-// noteEvent records a data-event arrival for churn detection and prunes the
-// trailing window.
-func (st *streamSession) noteEvent(now time.Time) {
-	st.eventWindow.note(now)
-}
-
-// highChurn reports sustained churn: at least streamChurnEvents data events
-// inside the trailing streamChurnWindow (>~5 events/s sustained).
-func (st *streamSession) highChurn(now time.Time) bool {
-	return st.eventWindow.high(now)
-}
-
 // schedulePush arms the push timer for the pending changes: at least
 // streamMinPushGap after the previous push (immediately once that gap has
-// passed), degraded to the fixed streamMaxPushLatency interval under
-// sustained churn — so while events pend, a push is never further than
-// streamMaxPushLatency from the previous one and never closer than
-// streamMinPushGap.
+// passed), degraded to the fixed streamMaxPushLatency interval while the
+// source reports sustained churn — so while events pend, a push is never
+// further than streamMaxPushLatency from the previous one and never closer
+// than streamMinPushGap.
 func (st *streamSession) schedulePush(timer *time.Timer) {
 	if !st.dirty {
 		return
 	}
 	now := time.Now()
 	target := st.lastPush.Add(streamMinPushGap)
-	if st.highChurn(now) {
+	if st.churn {
 		target = st.lastPush.Add(streamMaxPushLatency)
 	}
 	if target.Before(now) {
@@ -986,16 +929,151 @@ func (st *streamSession) schedulePush(timer *time.Timer) {
 	timer.Reset(target.Sub(now))
 }
 
-// push runs the v2 projection/delta transaction.
-func (st *streamSession) push(ctx context.Context) error {
-	return st.pushLiveV2(ctx)
+// prepareNextPush classifies the deletions this frame must report and renders
+// the v2 frame -- WITHOUT writing anything. The handshake runs it before the
+// SSE headers, so a session that expired during the render can still be
+// refused with a plain status; the loop runs it inside push.
+func (st *streamSession) prepareNextPush(ctx context.Context) (livePreparedPush, error) {
+	st.deletedKeys = st.watchDeletions()
+	return st.prepareLiveV2(ctx, time.Now())
 }
 
-// terminal writes a v2 ro-live terminal frame.
+// push runs one complete v2 transaction: prepare the frame, write it, commit
+// the state it represents.
+func (st *streamSession) push(ctx context.Context) error {
+	prepared, err := st.prepareNextPush(ctx)
+	if err != nil {
+		return err
+	}
+	return st.pushPreparedLiveV2(&prepared)
+}
+
+// finish records this session's single final outcome. Every exit funnels
+// through it (terminal adds the client-visible frame), so the terminal counter
+// carries exactly one sample per session.
+func (st *streamSession) finish(reason string) {
+	if st.finished {
+		return
+	}
+	st.finished = true
+	st.srv.observeStreamTerminal(reason)
+	st.srv.observeLiveSessionDuration(time.Since(st.startedAt))
+}
+
+// observeFlush records how long the change this frame carries took to reach
+// the browser, measured from the SOURCE's own event timestamp — the only place
+// the pre-render half of the latency is visible. A session assembled directly
+// by a render unit test has no server and no published revision behind it, so
+// there is nothing to sample.
+//
+// Exactly one sample per revision: a frame that carries no revision the client
+// has not already been shown carries no change either. Recovery checkpoints on
+// a quiet stream are the case that matters -- they re-send the current state
+// every checkpointInterval, and measuring those against a source event that is
+// an interval or more old would fill the histogram with samples of the
+// checkpoint period and make its p99 an alert on silence.
+func (st *streamSession) observeFlush(now time.Time) {
+	if st.srv == nil || st.rev == nil || st.rev.eventAt.IsZero() || st.rev.num == st.flushedRev {
+		return
+	}
+	st.consumeFlushRevision()
+	st.srv.observeLiveEventToFlush(now.Sub(st.rev.eventAt))
+}
+
+// consumeFlushRevision marks the adopted revision as accounted for by the
+// event-to-flush histogram. Every committed push consumes its revision --
+// with a sample when the frame carried the change, without one when the
+// render turned out to be a semantic no-op -- so no later frame can be
+// measured against an event timestamp that is already spent.
+func (st *streamSession) consumeFlushRevision() {
+	if st.rev != nil {
+		st.flushedRev = st.rev.num
+	}
+}
+
+// terminal writes a v2 ro-live terminal frame and records the outcome.
 // Write errors are ignored — the stream is closing either way.
 func (st *streamSession) terminal(reason string) {
-	st.srv.observeStreamTerminal(reason)
+	if st.finished {
+		return
+	}
+	st.writeBound = terminalWriteBound(reason, st.writeBound)
+	st.finish(reason)
 	st.terminalLiveV2(reason)
+}
+
+// shutdownTerminalWriteBound is the slice of the drain that ONE non-reading
+// peer may spend on its terminal frame. It has to stay strictly under
+// ShutdownGrace: main arms srv.Shutdown with the same grace, and the handler
+// still has to flush, run its defers, and release its hub subscription before
+// Shutdown can see the connection go idle. A terminal allowed to spend the
+// whole grace therefore guarantees a DeadlineExceeded -- "graceful shutdown
+// failed" and exit code 1 on an ordinary rollout that happens to have a stalled
+// Live peer. Half leaves the drain as much room to finish as it gave away.
+const shutdownTerminalWriteBound = ShutdownGrace / 2
+
+// terminalWriteBound is the deadline the terminal frame is written under. The
+// drain bounds a shutdown terminal wherever it came from: shutdown cancels the
+// hub context too, so the reason arrives through the shared source's Done
+// channel as readily as through shutdownCh, and a peer that stopped reading
+// must not outlive the grace on either path.
+func terminalWriteBound(reason string, current time.Duration) time.Duration {
+	if reason == streamTerminalShutdown {
+		return shutdownTerminalWriteBound
+	}
+	return current
+}
+
+// streamWriteError marks a failure that happened while writing to the client,
+// so the session's final outcome can tell a peer that went away from one that
+// is connected but no longer reading. It wraps, so the underlying sentinel
+// (io.ErrShortWrite, the transport's own error) still matches errors.Is.
+type streamWriteError struct {
+	err     error
+	timeout bool
+}
+
+func (e *streamWriteError) Error() string { return "live stream write: " + e.err.Error() }
+
+func (e *streamWriteError) Unwrap() error { return e.err }
+
+func newStreamWriteError(err error) error {
+	timeout := errors.Is(err, os.ErrDeadlineExceeded)
+	if !timeout {
+		var netErr net.Error
+		timeout = errors.As(err, &netErr) && netErr.Timeout()
+	}
+	return &streamWriteError{err: err, timeout: timeout}
+}
+
+// failFrame ends the session on a frame that could not be delivered. A write
+// failure means the peer is already gone or has stopped reading, so nothing
+// more is sent. A render/encode fault is this SERVER's own and the connection
+// is still healthy, so the peer is told: a bare EOF is indistinguishable from a
+// transport drop, and the browser would climb its reconnect ladder and re-run
+// the same failing render every thirty seconds for the life of the tab.
+func (st *streamSession) failFrame(err error) {
+	reason := streamFailureReason(err)
+	if reason == streamTerminalProtocol {
+		st.terminal(reason)
+		return
+	}
+	st.finish(reason)
+}
+
+// streamFailureReason maps a failed frame to this session's terminal outcome:
+// a write that hit its deadline is a peer that stopped reading, any other
+// write failure is the ordinary client-gone exit, and a failure before the
+// wire is a render/protocol fault the v2 contract cannot carry.
+func streamFailureReason(err error) string {
+	var writeErr *streamWriteError
+	if errors.As(err, &writeErr) {
+		if writeErr.timeout {
+			return streamTerminalSlowWriter
+		}
+		return streamTerminalClientClose
+	}
+	return streamTerminalProtocol
 }
 
 var (
@@ -1048,31 +1126,31 @@ func encodeStreamPayload(payload any, maxBytes int) ([]byte, error) {
 // header set at the handshake keeps proxies honest). Every frame is bounded by a
 // write deadline (via statusWriter's Unwrap → http.ResponseController): a
 // connected-but-not-reading peer otherwise blocks the write forever once TCP
-// buffers fill, wedging the handler outside its select loop with the cap slot
-// held. A deadline error surfaces as the write/flush error — the normal
-// client-gone exit. The deadline disarms after a successful frame (pushes can
-// be arbitrarily far apart, and the next frame re-arms it anyway); deadline
-// (dis)arming itself is best-effort — an unsupported writer just keeps the
-// old unbounded behavior.
+// buffers fill, wedging the handler outside its select loop with its
+// connection slot held. A deadline error surfaces as the "slow-writer"
+// outcome; the shared source and every other subscriber are untouched. The
+// deadline disarms after a successful frame (pushes can be arbitrarily far
+// apart, and the next frame re-arms it anyway); deadline (dis)arming itself is
+// best-effort — an unsupported writer just keeps the old unbounded behavior.
 func (st *streamSession) writeEvent(event string, payload any) error {
 	data, err := encodeStreamPayload(payload, streamMaxEventBytes)
 	if err != nil {
 		return err
 	}
-	return st.writeEncodedEvent(event, data)
+	return st.writeEncodedEvent(event, data, st.writeBound)
 }
 
 // writeEncodedEvent frames a payload that has already passed its kind-specific
 // bound. v2 preparation calls this directly so the exact bytes used for the
 // delta-ratio decision and snapshot checkpoint accounting are the bytes sent.
-func (st *streamSession) writeEncodedEvent(event string, data []byte) error {
+func (st *streamSession) writeEncodedEvent(event string, data []byte, bound time.Duration) error {
 	frame := make([]byte, 0, len(event)+len(data)+16)
 	frame = append(frame, "event: "...)
 	frame = append(frame, event...)
 	frame = append(frame, "\ndata: "...)
 	frame = append(frame, data...)
 	frame = append(frame, '\n', '\n')
-	return st.writeSSE(frame)
+	return st.writeSSE(frame, bound)
 }
 
 // writeHeartbeat emits a transport-only SSE comment. Browsers ignore it, but
@@ -1080,35 +1158,70 @@ func (st *streamSession) writeEncodedEvent(event string, data []byte) error {
 // deliberately does not touch dirty, lastPush, resourceVersion, revision, or
 // sequence state.
 func (st *streamSession) writeHeartbeat() error {
-	return st.writeSSE([]byte(": heartbeat\n\n"))
+	return st.writeSSE([]byte(": heartbeat\n\n"), st.writeBound)
 }
 
-func (st *streamSession) writeSSE(frame []byte) error {
-	_ = st.rc.SetWriteDeadline(time.Now().Add(st.tuning.writeTimeout))
+// dataWriteBound is the write budget for a frame that carries CLUSTER STATE.
+// In OIDC mode it never reaches past the session's own expiry: the identity
+// that authorized the render stops being valid at the deadline, so a snapshot
+// must not still be draining into a slow socket after it. Terminal frames and
+// heartbeats keep the plain bound -- they carry no cluster state, and the
+// "auth" terminal in particular is written AT the deadline, where the browser
+// needs it to raise the Reload banner.
+//
+// The loop refuses to push at all once the deadline has passed, so a
+// non-positive remainder here is the microsecond race between that check and
+// this write: it becomes a deadline already in the past, and the frame fails
+// instead of going out.
+func (st *streamSession) dataWriteBound() time.Duration {
+	if st.lifetimeReason != streamTerminalAuth {
+		return st.writeBound
+	}
+	remaining := time.Until(st.deadline)
+	if remaining < time.Nanosecond {
+		remaining = time.Nanosecond
+	}
+	if st.writeBound > 0 && st.writeBound < remaining {
+		return st.writeBound
+	}
+	return remaining
+}
+
+func (st *streamSession) writeSSE(frame []byte, bound time.Duration) error {
+	deadline := st.tuning.writeTimeout
+	if bound > 0 && bound < deadline {
+		deadline = bound
+	}
+	_ = st.rc.SetWriteDeadline(time.Now().Add(deadline))
 	n, err := st.w.Write(frame)
 	if err != nil {
-		return err
+		return newStreamWriteError(err)
 	}
 	if n != len(frame) {
-		return io.ErrShortWrite
+		return newStreamWriteError(io.ErrShortWrite)
 	}
 	if err := st.rc.Flush(); err != nil {
-		return err
+		return newStreamWriteError(err)
 	}
 	_ = st.rc.SetWriteDeadline(time.Time{})
 	return nil
 }
 
-// mergeTableEvent folds one watch data event into the unfiltered snapshot:
+// mergeTableEvent folds one watch data event into an unfiltered scope Table and
+// returns the change in accounted retained bytes. The merge already locates the
+// row each event names, so measuring the replaced/deleted/added rows here costs
+// one size computation per NAMED row rather than a table scan per event.
+//
 // ADDED/MODIFIED upsert the row by object identity (namespace/name), DELETED
 // removes it. Watch frames carry columnDefinitions only in the stream's
 // first event; the snapshot keeps the initial list's columns and adopts event
 // columns only if the list somehow had none — cells align either way because
 // both come from the same printer.
-func mergeTableEvent(snapshot *kube.Table, ev *kube.WatchEvent) {
+func mergeTableEvent(snapshot *kube.Table, ev *kube.WatchEvent) int64 {
 	if len(snapshot.Columns) == 0 && len(ev.Table.Columns) > 0 {
 		snapshot.Columns = ev.Table.Columns
 	}
+	var accounted int64
 	for _, row := range ev.Table.Rows {
 		name := nestedString(row.Object, "metadata", "name")
 		if name == "" {
@@ -1126,6 +1239,7 @@ func mergeTableEvent(snapshot *kube.Table, ev *kube.WatchEvent) {
 		switch ev.Type {
 		case kube.WatchDeleted:
 			if idx >= 0 {
+				accounted -= hubRowBytes(&snapshot.Rows[idx])
 				// A Live snapshot can outlive many delete events. slices.Delete
 				// preserves row order and clears the obsolete backing-array slot,
 				// so deleted row cells and object maps are not retained until the
@@ -1134,20 +1248,24 @@ func mergeTableEvent(snapshot *kube.Table, ev *kube.WatchEvent) {
 			}
 		default: // ADDED / MODIFIED
 			if idx >= 0 {
+				accounted -= hubRowBytes(&snapshot.Rows[idx])
 				snapshot.Rows[idx] = row
 			} else {
 				snapshot.Rows = append(snapshot.Rows, row)
 			}
+			accounted += hubRowBytes(&row)
 		}
 	}
+	return accounted
 }
 
-// cloneTableForRender deep-copies the snapshot's table STRUCTURE (columns,
-// rows, cells slices) so the render pipeline's mutations — decorations,
-// hidecols removal, filters, sort — never touch the live snapshot. Row
-// objects are shared by reference: the render path reads them without
-// mutating, and the merge loop replaces objects wholesale rather than editing
-// in place, so a pushed frame can never see a half-merged object.
+// cloneTableForRender deep-copies a published revision's table STRUCTURE
+// (columns, rows, cells slices) so the render pipeline's mutations —
+// decorations, hidecols removal, filters, sort — never touch shared state a
+// hundred other subscribers are reading. Row objects are shared by reference:
+// the render path reads them without mutating, and the source replaces objects
+// wholesale rather than editing in place, so a pushed frame can never see a
+// half-merged object.
 func cloneTableForRender(t *kube.Table) kube.Table {
 	clone := *t
 	clone.Columns = append([]kube.Column(nil), t.Columns...)

@@ -139,11 +139,15 @@ func firstRunningPod(srv *fakekube.Server, listPath string) (string, []any, map[
 type BreathingDriver struct {
 	targets []breathTarget
 
-	mu      sync.Mutex
-	ticker  *time.Ticker
-	stop    chan struct{}
-	running bool
-	stopped bool
+	mu sync.Mutex
+	// interval is this driver's tick period. It is a field rather than the
+	// constant so a test can drive the loop itself instead of waiting out a
+	// real breath.
+	interval time.Duration
+	ticker   *time.Ticker
+	stop     chan struct{}
+	running  bool
+	stopped  bool
 	// beat counts ticks so the pulse alternates (restarts up on even beats,
 	// back down on odd beats) — a gentle two-state breath rather than an
 	// ever-climbing counter.
@@ -155,8 +159,9 @@ type BreathingDriver struct {
 // as StartEngines returns them). The driver does not tick until Start is called.
 func NewBreathingDriver(servers []*fakekube.Server, clusterNames []string) *BreathingDriver {
 	return &BreathingDriver{
-		targets: breathTargetsFor(servers, clusterNames),
-		stop:    make(chan struct{}),
+		interval: breathInterval,
+		targets:  breathTargetsFor(servers, clusterNames),
+		stop:     make(chan struct{}),
 	}
 }
 
@@ -169,7 +174,7 @@ func (d *BreathingDriver) Start() {
 		return
 	}
 	d.running = true
-	d.ticker = time.NewTicker(breathInterval)
+	d.ticker = time.NewTicker(d.interval)
 	ticker := d.ticker
 	// Capture this run's stop channel as a local so the goroutine never reads
 	// the d.stop field concurrently with a Pause/Stop that replaces it.

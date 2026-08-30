@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
 )
 
@@ -148,6 +150,16 @@ type Config struct {
 	SearchDefaultResourceTypes []string
 	SearchOfferedResourceTypes []string
 	SearchMaxConcurrency       int
+	// LiveMaxConnections, LiveMaxSources and LiveMaxCacheAccountedBytes are the
+	// three per-pod Live limits. Connections bound open `_stream` subscribers;
+	// sources bound the distinct LIST+watch streams the WatchHub owns on their
+	// behalf (many subscribers share one source); accounted bytes bound the
+	// retained Table state summed across those sources. Each is admission-checked
+	// independently, so the pod's Live footprint is bounded whichever dimension a
+	// workload leans on. All three are positive; resolve() rejects zero.
+	LiveMaxConnections         int
+	LiveMaxSources             int
+	LiveMaxCacheAccountedBytes int64
 	DefaultLabelColumns        map[string]string
 	DefaultHiddenColumns       map[string]string
 	DefaultCustomColumns       map[string]string
@@ -327,6 +339,17 @@ type fileConfig struct {
 		MaxConcurrency       *int     `json:"maxConcurrency"`
 	} `json:"search"`
 
+	// Live is the on-disk `live:` block: the three per-pod Live limits. Each
+	// field is a pointer so "absent" is distinguishable from an explicit 0 --
+	// an explicit 0 is a config error, not a silent fallback to the default.
+	// maxCacheAccountedBytes is a Kubernetes quantity string ("128Mi") so it
+	// reads like every other memory bound in a manifest.
+	Live struct {
+		MaxConnections         *int    `json:"maxConnections"`
+		MaxSources             *int    `json:"maxSources"`
+		MaxCacheAccountedBytes *string `json:"maxCacheAccountedBytes"`
+	} `json:"live"`
+
 	LabelColumns         map[string]string `json:"labelColumns"`
 	HiddenColumns        map[string]string `json:"hiddenColumns"`
 	CustomColumns        map[string]string `json:"customColumns"`
@@ -413,6 +436,22 @@ func Parse(args []string) (Config, error) {
 	return cfg, nil
 }
 
+// Live limit defaults. They describe ONE pod, not a deployment: the connection
+// and source ceilings scale with replicas, and the cache bound is what a single
+// process is willing to retain across every shared watch it owns. The bound is
+// compared against the accounted estimate multiplied by an internal headroom
+// factor, so 128Mi means about 128Mi of real retained state, which leaves room
+// under a 512Mi container alongside the per-connection render state that
+// maxConnections bounds separately. They are exported because internal/web needs the
+// same numbers as the zero-value fallback for a Server built in a test (which
+// skips resolve() and therefore its validation), and one source beats two that
+// can drift.
+const (
+	DefaultLiveMaxConnections         = 512
+	DefaultLiveMaxSources             = 128
+	DefaultLiveMaxCacheAccountedBytes = 128 << 20
+)
+
 // resolve folds the parsed file schema into the runtime Config: it compiles the
 // namespace regexps, builds the link/column/ordered-sidebar structures, applies
 // defaults, layers the READOUT_* secret env vars over the file (env wins), and
@@ -437,6 +476,9 @@ func resolve(file *fileConfig) (Config, error) {
 		SearchDefaultResourceTypes:     file.Search.DefaultResourceTypes,
 		SearchOfferedResourceTypes:     file.Search.OfferedResourceTypes,
 		SearchMaxConcurrency:           100,
+		LiveMaxConnections:             DefaultLiveMaxConnections,
+		LiveMaxSources:                 DefaultLiveMaxSources,
+		LiveMaxCacheAccountedBytes:     DefaultLiveMaxCacheAccountedBytes,
 		DefaultLabelColumns:            mapOrEmpty(file.LabelColumns),
 		DefaultHiddenColumns:           overlayMap(v2DefaultHiddenColumns, file.HiddenColumns),
 		DefaultCustomColumns:           mapOrEmpty(file.CustomColumns),
@@ -473,6 +515,31 @@ func resolve(file *fileConfig) (Config, error) {
 	}
 	if file.Search.MaxConcurrency != nil {
 		cfg.SearchMaxConcurrency = *file.Search.MaxConcurrency
+	}
+	if file.Live.MaxConnections != nil {
+		cfg.LiveMaxConnections = *file.Live.MaxConnections
+	}
+	if file.Live.MaxSources != nil {
+		cfg.LiveMaxSources = *file.Live.MaxSources
+	}
+	if file.Live.MaxCacheAccountedBytes != nil {
+		q, err := resource.ParseQuantity(strings.TrimSpace(*file.Live.MaxCacheAccountedBytes))
+		if err != nil {
+			return Config{}, fmt.Errorf("live.maxCacheAccountedBytes: %w", err)
+		}
+		// Quantity.Value() truncates a magnitude that does not fit an int64 to
+		// its low 64 bits, so an absurd quantity can WRAP into a small positive
+		// limit that silently refuses every source: 2^64+1 bytes reads back as
+		// 1, and so does -(2^64-1), which would otherwise sail through the
+		// non-positive check below. Both signs are rejected on the QUANTITY,
+		// before any conversion can wrap them.
+		if q.Sign() <= 0 {
+			return Config{}, fmt.Errorf("live.maxCacheAccountedBytes: %s must be a positive byte count", q.String())
+		}
+		if q.CmpInt64(math.MaxInt64) > 0 {
+			return Config{}, fmt.Errorf("live.maxCacheAccountedBytes: %s exceeds the largest supported byte count", q.String())
+		}
+		cfg.LiveMaxCacheAccountedBytes = q.Value()
 	}
 
 	if cfg.TrustedProxyCIDRs, err = parseCIDRs(file.Auth.TrustedHeaders.TrustedProxyCIDRs); err != nil {
@@ -599,6 +666,15 @@ func resolve(file *fileConfig) (Config, error) {
 	}
 	if cfg.SearchMaxConcurrency <= 0 {
 		return Config{}, errors.New("search maxConcurrency must be positive")
+	}
+	if cfg.LiveMaxConnections <= 0 {
+		return Config{}, errors.New("live maxConnections must be positive")
+	}
+	if cfg.LiveMaxSources <= 0 {
+		return Config{}, errors.New("live maxSources must be positive")
+	}
+	if cfg.LiveMaxCacheAccountedBytes <= 0 {
+		return Config{}, errors.New("live maxCacheAccountedBytes must be positive")
 	}
 	if cfg.MetricsPort < 0 {
 		return Config{}, errors.New("metricsPort must be non-negative")

@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 const steps = vi.hoisted(() => ({
     applyLiveNameFilter: vi.fn(),
     applyLiveRowDeletions: vi.fn(),
-    applyRefresh: vi.fn(),
     buildYamlFolds: vi.fn(),
     captureRowModelFromDocument: vi.fn(),
     clearListStale: vi.fn(),
@@ -19,15 +18,13 @@ const steps = vi.hoisted(() => ({
     liveApply: vi.fn(),
     liveOnListSwap: vi.fn(),
     liveResetPage: vi.fn(),
-    noteRefreshRecovery: vi.fn(),
-    pauseRefresh: vi.fn(),
     rememberListValidator: vi.fn(),
     reapplyRowState: vi.fn(),
     roPrefsSetSort: vi.fn(),
     setColsPopOpen: vi.fn(),
     showToast: vi.fn(),
     syncColsPopState: vi.fn(),
-    syncRefreshUI: vi.fn(),
+    syncLiveToggle: vi.fn(),
     syncThemeTogglePostTarget: vi.fn(),
     suppressListNotModified: vi.fn((_event: Event) => false),
     updateBulkBar: vi.fn(),
@@ -64,10 +61,7 @@ vi.mock('./logs.js', () => ({ initLogsFollow: steps.initLogsFollow }));
 vi.mock('./misc-ui.js', () => ({ collapseSectionsFromHash: steps.collapseSectionsFromHash }));
 vi.mock('./prefs.js', () => ({ roPrefsSetSort: steps.roPrefsSetSort }));
 vi.mock('./refresh.js', () => ({
-    applyRefresh: steps.applyRefresh,
-    noteRefreshRecovery: steps.noteRefreshRecovery,
-    pauseRefresh: steps.pauseRefresh,
-    syncRefreshUI: steps.syncRefreshUI,
+    syncLiveToggle: steps.syncLiveToggle,
 }));
 vi.mock('./row-selection.js', () => ({
     applyLiveRowDeletions: steps.applyLiveRowDeletions,
@@ -111,7 +105,7 @@ function expectCalledOnceInOrder(...calls: CallTracked[]): void {
 
 function expectInitOrder(): void {
     expectCalledOnceInOrder(
-        steps.syncRefreshUI,
+        steps.syncLiveToggle,
         steps.buildYamlFolds,
         steps.collapseSectionsFromHash,
         steps.highlightYamlLine,
@@ -124,14 +118,13 @@ function expectInitOrder(): void {
         steps.reapplyRowState,
         steps.updateBulkBar,
         steps.liveApply,
-        steps.applyRefresh,
     );
 }
 
 function expectBodyInitOrder(): void {
     expectCalledOnceInOrder(
         steps.buildYamlFolds,
-        steps.syncRefreshUI,
+        steps.syncLiveToggle,
         steps.collapseSectionsFromHash,
         steps.highlightYamlLine,
         steps.initLogsFollow,
@@ -143,7 +136,6 @@ function expectBodyInitOrder(): void {
         steps.reapplyRowState,
         steps.updateBulkBar,
         steps.liveApply,
-        steps.applyRefresh,
     );
 }
 
@@ -213,7 +205,7 @@ describe('runInit orchestration', () => {
         document.body.dispatchEvent(new CustomEvent('htmx:afterSwap', { bubbles: true }));
 
         expect(steps.buildYamlFolds).toHaveBeenCalledOnce();
-        expect(steps.syncRefreshUI).not.toHaveBeenCalled();
+        expect(steps.syncLiveToggle).not.toHaveBeenCalled();
         expect(steps.syncColsPopState).not.toHaveBeenCalled();
         expect(steps.liveApply).not.toHaveBeenCalled();
 
@@ -236,7 +228,7 @@ describe('runInit orchestration', () => {
             expect(steps.buildYamlFolds).not.toHaveBeenCalled();
             expect(steps.captureRowModelFromDocument).not.toHaveBeenCalled();
             expect(steps.liveApply).not.toHaveBeenCalled();
-            expect(steps.applyRefresh).not.toHaveBeenCalled();
+            expect(steps.liveApply).not.toHaveBeenCalled();
         },
     );
 
@@ -310,13 +302,12 @@ describe('runInit orchestration', () => {
         dispatchBodyAfterSwapAndSettle();
 
         expectCalledOnceInOrder(
-            steps.syncRefreshUI,
+            steps.syncLiveToggle,
             steps.captureRowModelFromDocument,
             steps.applyLiveNameFilter,
             steps.virtualizeInit,
             steps.updateBulkBar,
             steps.liveApply,
-            steps.applyRefresh,
         );
         expect(warn).toHaveBeenCalledExactlyOnceWith('readout init step failed', failure);
     });
@@ -412,11 +403,7 @@ describe('htmx swap lifecycle', () => {
 
         expect(detail.shouldSwap).toBe(false);
         expect(detail.isError).toBe(false);
-        expectCalledOnceInOrder(
-            steps.suppressListNotModified,
-            steps.noteRefreshRecovery,
-            steps.clearListStale,
-        );
+        expectCalledOnceInOrder(steps.suppressListNotModified, steps.clearListStale);
         expect(steps.rememberListValidator).not.toHaveBeenCalled();
         expect(steps.reapplyRowState).not.toHaveBeenCalled();
         expect(steps.applyLiveNameFilter).not.toHaveBeenCalled();
@@ -449,7 +436,6 @@ describe('htmx swap lifecycle', () => {
         expect(detail.shouldSwap).toBe(false);
         expect(detail.isError).toBe(true);
         expect(steps.suppressListNotModified).toHaveBeenCalledExactlyOnceWith(expect.any(Event));
-        expect(steps.noteRefreshRecovery).not.toHaveBeenCalled();
         expect(steps.clearListStale).not.toHaveBeenCalled();
         expect(steps.rememberListValidator).not.toHaveBeenCalled();
         expect(steps.reapplyRowState).not.toHaveBeenCalled();
@@ -473,7 +459,6 @@ describe('htmx swap lifecycle', () => {
             steps.closeRowMenu,
             steps.clearRowState,
             steps.clearListStale,
-            steps.pauseRefresh,
             steps.liveResetPage,
         );
     });
@@ -490,11 +475,10 @@ describe('htmx swap lifecycle', () => {
         expectCalledOnceInOrder(
             steps.closeRowMenu,
             steps.buildYamlFolds,
-            steps.syncRefreshUI,
+            steps.syncLiveToggle,
             steps.captureRowModelFromDocument,
             steps.virtualizeInit,
             steps.liveApply,
-            steps.applyRefresh,
         );
 
         document
@@ -502,7 +486,7 @@ describe('htmx swap lifecycle', () => {
             ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
         expect(steps.buildYamlFolds).toHaveBeenCalledOnce();
         expect(steps.liveApply).toHaveBeenCalledOnce();
-        expect(steps.applyRefresh).toHaveBeenCalledOnce();
+        expect(steps.liveApply).toHaveBeenCalledOnce();
     });
 
     test('repairs a list afterSwap in fixed order before handing it back to Live', () => {
@@ -524,7 +508,6 @@ describe('htmx swap lifecycle', () => {
 
         expectCalledOnceInOrder(
             steps.rememberListValidator,
-            steps.noteRefreshRecovery,
             steps.clearListStale,
             steps.reapplyRowState,
             steps.applyLiveNameFilter,
@@ -575,7 +558,6 @@ describe('htmx swap lifecycle', () => {
 
         expectCalledOnceInOrder(
             steps.applyLiveRowDeletions,
-            steps.noteRefreshRecovery,
             steps.clearListStale,
             steps.reapplyRowState,
             steps.applyLiveNameFilter,
@@ -632,7 +614,6 @@ describe('htmx swap lifecycle', () => {
         document.dispatchEvent(event);
 
         expect(steps.isListRefreshEvent).toHaveBeenCalledExactlyOnceWith(event);
-        expect(steps.noteRefreshRecovery).not.toHaveBeenCalled();
         expect(steps.rememberListValidator).not.toHaveBeenCalled();
         expect(steps.clearListStale).not.toHaveBeenCalled();
         expect(steps.reapplyRowState).not.toHaveBeenCalled();
@@ -669,7 +650,6 @@ describe('htmx swap lifecycle', () => {
 
         expectCalledOnceInOrder(
             steps.rememberListValidator,
-            steps.noteRefreshRecovery,
             steps.clearListStale,
             steps.reapplyRowState,
             steps.applyLiveNameFilter,
@@ -696,11 +676,7 @@ describe('htmx swap lifecycle', () => {
             try {
                 document.body.dispatchEvent(historyEvent(type, xhr));
 
-                expectCalledOnceInOrder(
-                    steps.clearListStale,
-                    steps.pauseRefresh,
-                    steps.liveResetPage,
-                );
+                expectCalledOnceInOrder(steps.clearListStale, steps.liveResetPage);
                 vi.advanceTimersByTime(1_000);
                 expect(staleTick).not.toHaveBeenCalled();
             } finally {
@@ -745,7 +721,6 @@ describe('htmx swap lifecycle', () => {
             expect(reload).not.toHaveBeenCalled();
             await Promise.resolve();
             expect(reload).toHaveBeenCalledExactlyOnceWith(0);
-            expect(steps.pauseRefresh).toHaveBeenCalledOnce();
 
             document.body.dispatchEvent(new Event('htmx:swapError', { bubbles: true }));
             document
@@ -755,7 +730,7 @@ describe('htmx swap lifecycle', () => {
             await Promise.resolve();
             expect(reload).toHaveBeenCalledOnce();
             expect(steps.liveApply).not.toHaveBeenCalled();
-            expect(steps.applyRefresh).not.toHaveBeenCalled();
+            expect(steps.liveApply).not.toHaveBeenCalled();
         },
     );
 
@@ -777,9 +752,8 @@ describe('htmx swap lifecycle', () => {
                 ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
 
             expect(reload).toHaveBeenCalledExactlyOnceWith(0);
-            expect(steps.pauseRefresh).toHaveBeenCalledOnce();
             expect(steps.liveApply).not.toHaveBeenCalled();
-            expect(steps.applyRefresh).not.toHaveBeenCalled();
+            expect(steps.liveApply).not.toHaveBeenCalled();
         },
     );
 
@@ -823,7 +797,7 @@ describe('htmx swap lifecycle', () => {
 
         expect(staleLoad.defaultPrevented).toBe(true);
         expect(reload).toHaveBeenCalledExactlyOnceWith(0);
-        expectCalledOnceInOrder(steps.pauseRefresh, steps.liveResetPage);
+        expect(steps.liveResetPage).toHaveBeenCalledOnce();
     });
 
     test('an unrelated swapError cannot reload an idle body', () => {
@@ -923,7 +897,7 @@ describe('htmx swap lifecycle', () => {
         expect(reload).toHaveBeenCalledExactlyOnceWith(0);
         document.dispatchEvent(new Event('htmx:load'));
         expect(steps.liveApply).not.toHaveBeenCalled();
-        expect(steps.applyRefresh).not.toHaveBeenCalled();
+        expect(steps.liveApply).not.toHaveBeenCalled();
     });
 
     test.each(['normal', 'hit', 'miss'] as const)(
@@ -983,13 +957,13 @@ describe('htmx swap lifecycle', () => {
         expect(cacheMissLoad.defaultPrevented).toBe(true);
         expect(reload).not.toHaveBeenCalled();
         expect(steps.liveApply).not.toHaveBeenCalled();
-        expect(steps.applyRefresh).not.toHaveBeenCalled();
+        expect(steps.liveApply).not.toHaveBeenCalled();
 
         dispatchBodyAfterSwapAndSettle();
         document.dispatchEvent(new Event('htmx:load'));
         expect(reload).not.toHaveBeenCalled();
         expect(steps.liveApply).toHaveBeenCalledOnce();
-        expect(steps.applyRefresh).toHaveBeenCalledOnce();
+        expect(steps.liveApply).toHaveBeenCalledOnce();
     });
 
     test.each([
@@ -1023,7 +997,6 @@ describe('htmx swap lifecycle', () => {
             expect(second.defaultPrevented).toBe(true);
             expect(reload).toHaveBeenCalledExactlyOnceWith(0);
             expect(steps.liveResetPage).toHaveBeenCalledOnce();
-            expect(steps.pauseRefresh).toHaveBeenCalledOnce();
 
             for (const completion of completionOrder) {
                 const xhr = completion === 'first' ? firstXHR : secondXHR;
@@ -1040,7 +1013,7 @@ describe('htmx swap lifecycle', () => {
 
             expect(reload).toHaveBeenCalledOnce();
             expect(steps.liveApply).not.toHaveBeenCalled();
-            expect(steps.applyRefresh).not.toHaveBeenCalled();
+            expect(steps.liveApply).not.toHaveBeenCalled();
         },
     );
 
@@ -1088,7 +1061,7 @@ describe('htmx swap lifecycle', () => {
                 .getElementById('late-normal-body')
                 ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
             expect(steps.liveApply).not.toHaveBeenCalled();
-            expect(steps.applyRefresh).not.toHaveBeenCalled();
+            expect(steps.liveApply).not.toHaveBeenCalled();
         },
     );
 
@@ -1116,7 +1089,7 @@ describe('htmx swap lifecycle', () => {
                 ?.dispatchEvent(new Event('htmx:load', { bubbles: true }));
             expect(reload).toHaveBeenCalledOnce();
             expect(steps.liveApply).not.toHaveBeenCalled();
-            expect(steps.applyRefresh).not.toHaveBeenCalled();
+            expect(steps.liveApply).not.toHaveBeenCalled();
         },
     );
 
@@ -1144,7 +1117,7 @@ describe('htmx swap lifecycle', () => {
             dispatchBodyAfterSwapAndSettle();
             document.dispatchEvent(new Event('htmx:load'));
             expect(steps.liveApply).not.toHaveBeenCalled();
-            expect(steps.applyRefresh).not.toHaveBeenCalled();
+            expect(steps.liveApply).not.toHaveBeenCalled();
         },
     );
 
@@ -1161,7 +1134,7 @@ describe('htmx swap lifecycle', () => {
 
         expect(reload).not.toHaveBeenCalled();
         expect(steps.liveApply).toHaveBeenCalledOnce();
-        expect(steps.applyRefresh).toHaveBeenCalledOnce();
+        expect(steps.liveApply).toHaveBeenCalledOnce();
     });
 
     test('a normal body swapError dispatched on its request source reloads immediately', () => {
@@ -1181,7 +1154,7 @@ describe('htmx swap lifecycle', () => {
         dispatchBodyAfterSwapAndSettle();
         source.dispatchEvent(new Event('htmx:load', { bubbles: true }));
         expect(steps.liveApply).not.toHaveBeenCalled();
-        expect(steps.applyRefresh).not.toHaveBeenCalled();
+        expect(steps.liveApply).not.toHaveBeenCalled();
     });
 
     test.each([

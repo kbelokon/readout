@@ -13,8 +13,8 @@ import { controlURL } from './playwright.config';
 //     active chips inline + Clear filters;
 //   - a cluster-scoped kind (nodes) shows no namespace breadcrumb segment and
 //     no "across all namespaces" link;
-//   - an auto-refresh failure dims the last-good rows and reveals the warn
-//     banner ("Auto-refresh failed — showing the last good data" + Retry now)
+//   - a failed Refresh dims the last-good rows and reveals the warn banner
+//     ("Auto-refresh failed — showing the last good data" + Retry now)
 //     WITHOUT blanking the table (the data-never-disappears law).
 
 const PODS = '/clusters/e2e/namespaces/default/pods';
@@ -258,25 +258,27 @@ test('the loading skeleton never covers a populated table and fires into a blank
   await expect(skel).toHaveCount(0);
 });
 
-test('a failed auto-refresh dims the last-good rows and reveals the stale banner', async ({ page }) => {
+test('a failed Refresh dims the last-good rows and reveals the stale banner', async ({ page }) => {
   await page.goto(PODS);
   const rows = page.locator('#resource-list-content table.ro-table tbody td.cell-name');
   await expect(rows).toHaveText(['nginx', 'my-app']);
 
-  // Arm a 5s refresh, then break every list: the next tick errors (non-2xx).
-  await page.locator('#refresh-dropdown').hover();
-  await page.locator('.refresh-option[data-ro-interval="5"]').click();
-  // Park the cursor mid-page: the hover-opened refresh menu would otherwise
-  // stay open over the banner and intercept the Retry-now click below.
-  await page.mouse.move(200, 400);
+  // Break every list, then ask for one refresh: it errors (non-2xx). Nothing
+  // is on a timer any more, so the failure is exactly one user-driven request.
   await control('/__control/fail-lists?mode=500');
+  await page.locator('[data-ro-action="refresh-now"]').click();
 
-  // The banner reveals with the stale-data copy; the rows DIM but never disappear.
+  // The banner reveals with the RECOVERABLE copy (both variants ship in the
+  // same banner; exactly one is unhidden). The rows DIM but never disappear,
+  // and the terminal Unavailable copy with its Reload action stays hidden --
+  // this failure is retryable.
   const banner = page.locator('.ro-stale-banner');
   await expect(banner).toBeVisible({ timeout: 15_000 });
-  await expect(banner.locator('.bn-title')).toHaveText(
+  await expect(banner.locator('.bn-body:not(.ro-stale-unavailable) .bn-title')).toHaveText(
     'Auto-refresh failed — showing the last good data'
   );
+  await expect(banner.locator('.bn-body.ro-stale-unavailable')).toBeHidden();
+  await expect(banner.locator('.ro-stale-reload')).toBeHidden();
   await expect(banner.locator('.ro-stale-retry')).toHaveText('Retry now');
   await expect(rows).toHaveText(['nginx', 'my-app']);
   await expect(page.locator('#resource-list-content')).toHaveClass(/ro-stale/);

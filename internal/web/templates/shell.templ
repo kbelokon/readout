@@ -18,13 +18,24 @@ package templates
 // cluster in scope) keeping the readout.js hooks (#namespace-dropdown /
 // #namespace-searchbox / .namespace-item / .context-name); a flexible spacer; the
 // read-only .ro-search box that OPENS ⌘K on click (data-ro-palette-open, consumed by
-// the palette controller) -- it is a plain box, NOT a submitting form; the live-refresh control
-// (.tb-btn.refresh-trigger with the .ro-livedot + #refresh-label; the dot is
-// ghost-grey and goes brand+pulse ONLY under #refresh-dropdown.refresh-on, the
-// one live-state owner -- green only for live signals) keeping the existing
-// #refresh-dropdown / .refresh-option[data-ro-interval] interval hooks; and
+// the palette controller) -- it is a plain box, NOT a submitting form; the two
+// update controls (the Live toggle and the one-shot Refresh button, below); and
 // the theme toggle, which stays a server POST /preferences that opts OUT of
 // hx-boost -- NOT a client-JS toggle (#btn-theme-toggle + .theme-icon-*).
+//
+// The update controls are a PAIR, not a menu. `[data-ro-action="toggle-live"]`
+// carries the stored PREFERENCE in aria-pressed: pressed means the user asked
+// for Live, which is the only half of the state the server knows (it reads the
+// same cookie). Whether a stream is actually held is the transport's own reading
+// and readout.js writes it separately as data-ro-live-state -- the .ro-livedot
+// goes brand+pulse only when BOTH say so, because green is a live-health signal
+// and must be impossible before a committed snapshot. The toggle renders only
+// when the server says Live is possible here (Navbar.LiveAvailable -- a
+// single-cluster, single-type list of a kind whose discovery verbs include
+// `watch`), so a page that offers the toggle is a page where `_stream` answers.
+// `[data-ro-action="refresh-now"]` is the always-available one-shot re-fetch;
+// it arms no timer and holds no state, so it renders on every page (inert where
+// there is no list region to refresh).
 //
 // The leading `.menu-toggle` hamburger is mobile chrome: hidden by the
 // readout.css media query above 760px, it reveals below 760px where the sidebar
@@ -41,13 +52,11 @@ templ topbarC(n Navbar) {
 		if n.ShowContext {
 			@namespaceDropdownC(n)
 		}
-		<span class="topbar-spacer"></span><div class="ro-search" data-ro-palette-open="true" role="button" tabindex="0" aria-label="Search Kubernetes objects (opens command palette)"><span class="s-ico ico sm" aria-hidden="true">@iconC("search")</span><input type="text" placeholder="Search Kubernetes objects…" aria-hidden="true" tabindex="-1" readonly><span class="kbd-hint" aria-hidden="true"><kbd class="ro-kbd">&#8984;K</kbd></span></div><div class="tb-group"><button type="button" class="tb-btn ro-search-mobile" data-ro-palette-open="true" title="Search" aria-label="Search Kubernetes objects"><span class="ico" aria-hidden="true">@iconC("search")</span></button><div id="refresh-dropdown" class={ refreshDropdownClass(n.RefreshMode) }><button type="button" class="tb-btn refresh-trigger" title="Auto-refresh interval" aria-label="Auto-refresh interval"><span class="ro-livedot" aria-hidden="true"></span><span class="ico refresh-icon" aria-hidden="true">@iconC("rotate-cw")</span><span id="refresh-label" class="refresh-label">{ refreshLabel(n.RefreshMode) }</span></button><div class="refresh-menu"><button type="button" class={ refreshOptionClass("0", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="0">Off</button><button type="button" class={ refreshOptionClass("5", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="5">Every 5s</button><button type="button" class={ refreshOptionClass("10", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="10">Every 10s</button><button type="button" class={ refreshOptionClass("30", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="30">Every 30s</button><button type="button" class={ refreshOptionClass("60", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="60">Every 60s</button>
-			if n.LiveDisabled {
-				<button type="button" class={ refreshOptionClass("Live", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="Live" disabled title="Live updates cover single-type, single-cluster lists">Live</button>
-			} else {
-				<button type="button" class={ refreshOptionClass("Live", n.RefreshMode) } data-ro-action="set-refresh" data-ro-interval="Live">Live</button>
-			}
-		</div></div><form method="post" action="/preferences" hx-boost="false"><input type="hidden" name="theme" value={ n.NextTheme }><input type="hidden" name="next" value={ n.ToggleNextURL }><button type="submit" class="tb-btn" title="Toggle light/dark theme" aria-label="Toggle light/dark theme" id="btn-theme-toggle" data-theme-explicit={ boolStr(n.ThemeExplicit) }><span class="ico theme-icon-dark" aria-hidden="true">@iconC("moon")</span><span class="ico theme-icon-light" aria-hidden="true">@iconC("sun")</span></button></form></div></header>
+		<span class="topbar-spacer"></span><div class="ro-search" data-ro-palette-open="true" role="button" tabindex="0" aria-label="Search Kubernetes objects (opens command palette)"><span class="s-ico ico sm" aria-hidden="true">@iconC("search")</span><input type="text" placeholder="Search Kubernetes objects…" aria-hidden="true" tabindex="-1" readonly><span class="kbd-hint" aria-hidden="true"><kbd class="ro-kbd">&#8984;K</kbd></span></div><div class="tb-group"><button type="button" class="tb-btn ro-search-mobile" data-ro-palette-open="true" title="Search" aria-label="Search Kubernetes objects"><span class="ico" aria-hidden="true">@iconC("search")</span></button>
+		if n.LiveAvailable {
+			<button type="button" class="tb-btn live-toggle" data-ro-action="toggle-live" aria-pressed={ boolStr(n.LiveOn) } title="Live updates" aria-label="Live updates"><span class="ro-livedot" aria-hidden="true"></span><span class="live-label">Live</span></button>
+		}
+		<button type="button" class="tb-btn refresh-now" data-ro-action="refresh-now" title="Refresh now" aria-label="Refresh now"><span class="ico refresh-icon" aria-hidden="true">@iconC("rotate-cw")</span></button><form method="post" action="/preferences" hx-boost="false"><input type="hidden" name="theme" value={ n.NextTheme }><input type="hidden" name="next" value={ n.ToggleNextURL }><button type="submit" class="tb-btn" title="Toggle light/dark theme" aria-label="Toggle light/dark theme" id="btn-theme-toggle" data-theme-explicit={ boolStr(n.ThemeExplicit) }><span class="ico theme-icon-dark" aria-hidden="true">@iconC("moon")</span><span class="ico theme-icon-light" aria-hidden="true">@iconC("sun")</span></button></form></div></header>
 }
 
 // namespaceDropdownC is the topbar namespace context switcher (#namespace-dropdown),

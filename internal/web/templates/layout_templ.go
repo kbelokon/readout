@@ -68,19 +68,19 @@ type Navbar struct {
 	ToggleNextURL string
 	ThemeExplicit bool
 
-	// RefreshMode is the persisted auto-refresh mode from the ro_prefs cookie
-	// from the cookie: "" / "Off" / seconds-as-string / "Live". The topbar
-	// renders the refresh label + the active interval option from it so the
+	// LiveOn is the persisted Live preference: true exactly when the ro_prefs
+	// cookie holds "Live". It renders as the toggle's aria-pressed so the
 	// persisted choice paints at SSR (readout.js re-derives the same state from
-	// the same cookie, so the init sync is a no-op rather than a flash).
-	RefreshMode string
+	// the same cookie, so the init sync is a no-op rather than a flash). Any
+	// other stored value -- "Off", a legacy interval, junk -- renders off.
+	LiveOn bool
 
-	// LiveDisabled renders the dropdown's Live option disabled with an
-	// explanatory title: true on multi-type and
-	// multi-cluster LIST pages, where the `_stream` endpoint answers 404.
-	// readout.js consults the rendered option (server truth) before opening a
-	// stream, so the gate has exactly one owner.
-	LiveDisabled bool
+	// LiveAvailable renders the Live toggle at all: true only on a
+	// single-cluster, single-type LIST page whose resolved ResourceType has the
+	// `watch` verb -- exactly the scope the `_stream` endpoint serves. The
+	// server is the only owner of that gate, so a rendered toggle is a promise
+	// the stream answers; where it is false the page shows Refresh alone.
+	LiveAvailable bool
 }
 
 type Sidebar struct {

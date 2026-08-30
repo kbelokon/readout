@@ -109,15 +109,22 @@ templ emptyPlain(d ListData, table TableData) {
 }
 
 // staleBanner is the hidden `.ro-banner.warn` the client-side stale path
-// reveals on an auto-refresh error. It is rendered HIDDEN on first paint;
-// on a refresh `htmx:responseError`/`htmx:sendError` readout.js removes the
-// `hidden` attribute and dims #resource-list-content (it never blanks the rows
-// -- HTMX keeps them on error). Copy: "Auto-refresh failed — showing
-// the last good data" / "Retrying in Ns" / Retry now. The countdown span
-// (data-stale-countdown) carries readout.js's live backoff countdown ("Ns",
-// repainted every second); the "…" placeholder shows only while no retry is
-// armed (interval Off). The Retry now button re-fires the read-only refresh
-// GET.
+// reveals when the live data stops being current. It is rendered HIDDEN on
+// first paint; readout.js removes the `hidden` attribute and dims
+// #resource-list-content (it never blanks the rows -- the last good data stays
+// on screen). Two copy variants ship in the same banner and the client shows
+// exactly one:
+//
+//   - the default RECOVERABLE variant ("showing the last good data" + the
+//     [data-stale-countdown] hook the reconnect schedule repaints) with the
+//     Retry now control, used while a retry is still coming;
+//   - the `.ro-stale-unavailable` variant, revealed instead when the server
+//     said the stream will not come back for this session (401/403 or the
+//     `auth` terminal). Its action is [data-ro-action="reload"], not retry:
+//     a fresh document is the only thing that can re-authenticate.
+//
+// Shipping both server-side keeps the copy in the template rather than in
+// JS string literals, and keeps the unavailable state one attribute flip away.
 templ staleBanner() {
-	<div class="ro-banner warn ro-stale-banner" role="alert" hidden><span class="bn-ico ico sm">@iconC("rotate-cw")</span><div class="bn-body"><p class="bn-title">Auto-refresh failed — showing the last good data</p><p class="bn-text">Retrying in <span class="mono" data-stale-countdown>…</span>. The rows below are the last good data.</p></div><div class="bn-actions"><button type="button" class="ro-btn quiet sm ro-stale-retry" data-ro-action="retry">Retry now</button></div></div>
+	<div class="ro-banner warn ro-stale-banner" role="alert" hidden><span class="bn-ico ico sm">@iconC("rotate-cw")</span><div class="bn-body"><p class="bn-title">Auto-refresh failed — showing the last good data</p><p class="bn-text">Retrying in <span class="mono" data-stale-countdown>…</span>. The rows below are the last good data.</p></div><div class="bn-body ro-stale-unavailable" hidden><p class="bn-title">Live updates unavailable — showing the last good data</p><p class="bn-text">This session can no longer stream updates. Reload the page to start a new one.</p></div><div class="bn-actions"><button type="button" class="ro-btn quiet sm ro-stale-retry" data-ro-action="retry">Retry now</button><button type="button" class="ro-btn quiet sm ro-stale-reload" data-ro-action="reload" hidden>Reload</button></div></div>
 }

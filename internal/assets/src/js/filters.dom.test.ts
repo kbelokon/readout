@@ -224,13 +224,6 @@ describe('complete row-model capture', () => {
         expect(window.roRowModel.rows[0]?.name).toBe('Web Alpha');
 
         virtualizer.virtualizerActive.mockReturnValue(false);
-        document.getElementById('ro-filter-input')?.remove();
-        filters.captureRowModelFromDocument();
-        expect(window.roRowModel.rows[0]?.name).toBe('Web Alpha');
-
-        const replacementInput = document.createElement('input');
-        replacementInput.id = 'ro-filter-input';
-        document.getElementById('ro-filter-field')?.appendChild(replacementInput);
         filters.captureRowModelFromDocument();
         expect(window.roRowModel.rows[0]?.name).toBe('Web Alpha');
 
@@ -291,6 +284,32 @@ describe('live filtering and autocomplete', () => {
 
         expect(webCard).not.toHaveClass('ro-row-filtered');
         expect(workerCard).not.toHaveClass('ro-row-filtered');
+    });
+
+    test('never hides surviving rows against an empty model', () => {
+        const { content, input } = renderEditor();
+        const rows = Array.from(content.querySelectorAll('tbody tr'));
+
+        // A narrowing draft applied against a live model, then the model goes
+        // away underneath it: a history-restored windowed tbody (spacers ->
+        // empty snapshot) and the fail-closed delta reset both land here with
+        // rendered rows still mounted.
+        filters.captureRowModel(content);
+        input.value = 'alpha';
+        filters.applyLiveNameFilter();
+        expect(rows[1]).toHaveClass('ro-row-filtered');
+
+        const tbody = content.querySelector('tbody') as HTMLElement;
+        tbody.prepend(document.createElement('tr'));
+        (tbody.firstElementChild as HTMLElement).className = 'ro-vspacer';
+        filters.captureRowModel(content);
+        expect(window.roRowModel.rows).toStrictEqual([]);
+
+        filters.applyLiveNameFilter();
+
+        expect(window.roRowModel.visibleKeys).toBe(null);
+        expect(rows[0]).not.toHaveClass('ro-row-filtered');
+        expect(rows[1]).not.toHaveClass('ro-row-filtered');
     });
 
     test('deduplicates descendant-load repairs by projection revision, root and draft', () => {

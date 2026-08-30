@@ -15,21 +15,27 @@ import (
 // Renderer changes are invalidated automatically by resourceListRendererFingerprint.
 const resourceListETagDomain = "readout.resource-list.partial\x00"
 
-// resourceListETag returns a weak validator for the semantic ResourceTable
-// representation. Request duration is intentionally excluded: it is diagnostic
-// timing, not resource state, so a 304 keeps the last rendered timing. The stale
-// banner flag is also excluded because ResourceTable never renders it (the full
-// page wrapper does).
+// resourceListETag returns a weak validator for the ResourceTable
+// representation this request would render. Request duration is intentionally
+// excluded: it is diagnostic timing, not resource state, so a 304 keeps the
+// last rendered timing. The stale banner flag is also excluded because
+// ResourceTable never renders it (the full page wrapper does).
+//
+// Clock-derived cell text is NOT excluded. Masking it (as the Live projection
+// digest does, to keep a ticking age off the wire as a row upsert) would make
+// the validator promise a representation the handler never renders: an Events
+// list whose only visible change is its Last Seen column would answer 304 to
+// its own Refresh button and freeze on screen.
 func resourceListETag(data *templates.ListData) (string, error) {
 	return resourceListETagWithRendererFingerprint(data, resourceListRendererFingerprint())
 }
 
 func resourceListETagWithRendererFingerprint(data *templates.ListData, renderer [sha256.Size]byte) (string, error) {
-	semantic := resourceStateListData(data)
-	semantic.DurationSeconds = 0
-	semantic.ShowStaleBanner = false
+	rendered := *data
+	rendered.DurationSeconds = 0
+	rendered.ShowStaleBanner = false
 
-	payload, err := json.Marshal(semantic)
+	payload, err := json.Marshal(rendered)
 	if err != nil {
 		return "", err
 	}

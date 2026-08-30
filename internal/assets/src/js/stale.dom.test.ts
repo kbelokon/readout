@@ -2,31 +2,53 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-const refresh = vi.hoisted(() => ({
-    noteRefreshFailure: vi.fn(),
-    refreshNextAtMs: vi.fn(() => 0),
-}));
-
-vi.mock('./refresh.js', () => refresh);
-
 import {
     clearListStale,
-    clearLiveUnavailable,
+    clearLiveStale,
     isListRefreshEvent,
+    LIVE_STALE_GRACE_MS,
     markListStale,
+    markLiveStale,
     markLiveUnavailable,
+    noteStaleRetryAt,
+    pauseLiveStaleGrace,
+    revealLiveStale,
     updateStaleCountdown,
 } from './stale.js';
 
+// The banner is a server template (templates/errors.templ): both copy variants
+// and both actions ship hidden in the same node, and this module unhides
+// exactly one of each.
 function renderStaleUI(): void {
     document.body.innerHTML = `
         <div id="resource-list-content"><table><tbody><tr><td>last good row</td></tr></tbody></table></div>
-        <aside class="ro-stale-banner" hidden>
-            <p class="bn-title">Auto-refresh failed</p>
-            <p class="bn-text">Retrying in <span data-stale-countdown>…</span>.</p>
-            <button data-ro-action="retry">Retry now</button>
-        </aside>
+        <div class="ro-banner warn ro-stale-banner" role="alert" hidden>
+            <div class="bn-body">
+                <p class="bn-title">Auto-refresh failed — showing the last good data</p>
+                <p class="bn-text">Retrying in <span class="mono" data-stale-countdown>…</span>.</p>
+            </div>
+            <div class="bn-body ro-stale-unavailable" hidden>
+                <p class="bn-title">Live updates unavailable — showing the last good data</p>
+                <p class="bn-text">This session can no longer stream updates.</p>
+            </div>
+            <div class="bn-actions">
+                <button type="button" class="ro-stale-retry" data-ro-action="retry">Retry now</button>
+                <button type="button" class="ro-stale-reload" data-ro-action="reload" hidden>Reload</button>
+            </div>
+        </div>
     `;
+}
+
+function content(): HTMLElement {
+    return document.getElementById('resource-list-content') as HTMLElement;
+}
+
+function banner(): HTMLElement {
+    return document.querySelector('.ro-stale-banner') as HTMLElement;
+}
+
+function part(selector: string): HTMLElement {
+    return banner().querySelector(selector) as HTMLElement;
 }
 
 function htmxEvent(
@@ -40,26 +62,24 @@ function htmxEvent(
 }
 
 beforeEach(() => {
-    clearLiveUnavailable();
+    clearLiveStale();
     clearListStale();
     renderStaleUI();
-    refresh.noteRefreshFailure.mockReset();
-    refresh.refreshNextAtMs.mockReturnValue(0);
+    noteStaleRetryAt(0);
 });
 
 afterEach(() => {
-    clearLiveUnavailable();
+    clearLiveStale();
     clearListStale();
     vi.useRealTimers();
 });
 
 describe('refresh-event classification', () => {
     test('accepts requests issued by or targeting the list container', () => {
-        const content = document.getElementById('resource-list-content');
         const userControl = document.createElement('button');
 
-        expect(isListRefreshEvent(htmxEvent('x', { elt: content }))).toBe(true);
-        expect(isListRefreshEvent(htmxEvent('x', { elt: userControl, target: content }))).toBe(
+        expect(isListRefreshEvent(htmxEvent('x', { elt: content() }))).toBe(true);
+        expect(isListRefreshEvent(htmxEvent('x', { elt: userControl, target: content() }))).toBe(
             true,
         );
     });
@@ -74,34 +94,59 @@ describe('refresh-event classification', () => {
     });
 });
 
-describe('stale UI lifecycle', () => {
+describe('list stale lifecycle', () => {
     test('dims without deleting data and starts only one countdown timer', () => {
         vi.useFakeTimers();
 
         markListStale();
         markListStale();
 
-        expect(document.getElementById('resource-list-content')).toHaveClass('ro-stale');
-        expect(document.querySelector('.ro-stale-banner')).toBeVisible();
+        expect(content()).toHaveClass('ro-stale');
+        expect(banner()).toBeVisible();
         expect(document.body).toHaveTextContent('last good row');
         expect(vi.getTimerCount()).toBe(1);
     });
 
-    test('paints a deterministic retry countdown and clamps at zero', () => {
+    test('a failed list request is not semantic Live staleness', () => {
+        markListStale();
+
+        expect(content().dataset.roStale).toBeUndefined();
+    });
+
+    test('paints the published reconnect time as a countdown and clamps at zero', () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-08-25T00:00:00Z'));
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 2501);
 
-        updateStaleCountdown();
-        expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('3s');
+        noteStaleRetryAt(Date.now() + 2501);
+        expect(part('[data-stale-countdown]').textContent).toBe('3s');
 
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() - 1);
-        updateStaleCountdown();
-        expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('0s');
+        noteStaleRetryAt(Date.now() - 1);
+        expect(part('[data-stale-countdown]').textContent).toBe('0s');
 
-        refresh.refreshNextAtMs.mockReturnValue(0);
-        updateStaleCountdown();
-        expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('…');
+        // 0 = nothing armed: the shipped placeholder comes back.
+        noteStaleRetryAt(0);
+        expect(part('[data-stale-countdown]').textContent).toBe('…');
+    });
+
+    // The banner is a closed server template, but a partial render (a template
+    // edit that drops one node, an older cached document) must degrade rather
+    // than take the whole stale path down with it.
+    test.each([
+        '.bn-body:not(.ro-stale-unavailable)',
+        '.bn-body.ro-stale-unavailable',
+        '.ro-stale-retry',
+        '.ro-stale-reload',
+        '[data-stale-countdown]',
+    ])('a banner missing %s still paints both variants without throwing', (selector) => {
+        vi.useFakeTimers();
+        part(selector).remove();
+
+        expect(() => markListStale()).not.toThrow();
+        expect(banner()).toBeVisible();
+        expect(() => markLiveUnavailable()).not.toThrow();
+        expect(banner()).toBeVisible();
+        expect(() => noteStaleRetryAt(Date.now() + 5000)).not.toThrow();
+        expect(() => clearListStale()).not.toThrow();
     });
 
     test('removing the stale UI stops its active countdown ticker', () => {
@@ -122,142 +167,23 @@ describe('stale UI lifecycle', () => {
 
         clearListStale();
 
-        expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
-        expect(document.querySelector('.ro-stale-banner')).not.toBeVisible();
+        expect(content()).not.toHaveClass('ro-stale');
+        expect(banner()).not.toBeVisible();
         expect(vi.getTimerCount()).toBe(0);
-    });
-
-    test('Live fallback copy follows the actual 5/10/20 second retry schedule', () => {
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date('2026-08-25T00:00:00Z'));
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 5_000);
-
-        markLiveUnavailable();
-
-        const banner = document.querySelector('.ro-stale-banner');
-        expect(banner).toBeVisible();
-        expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
-        expect(banner?.querySelector('.bn-title')).toHaveTextContent('Live unavailable, polling ·');
-        expect(banner?.querySelector('[data-ro-action="retry"]')).toHaveTextContent('Retry');
-        expect(banner?.querySelector('[data-stale-countdown]')).toHaveTextContent('5s');
-        expect(banner).toHaveAttribute(
-            'aria-label',
-            'Live unavailable, polling. Retrying in 5s. Retry',
-        );
-        expect(vi.getTimerCount()).toBe(1);
-
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 10_000);
-        updateStaleCountdown();
-        expect(banner?.querySelector('[data-stale-countdown]')).toHaveTextContent('10s');
-
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 20_000);
-        updateStaleCountdown();
-        expect(banner?.querySelector('[data-stale-countdown]')).toHaveTextContent('20s');
-        expect(banner).toHaveAttribute(
-            'aria-label',
-            'Live unavailable, polling. Retrying in 20s. Retry',
-        );
-    });
-
-    test('clearing Live mode cannot hide independently stale list data', () => {
-        vi.useFakeTimers();
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 5_000);
-        const banner = document.querySelector('.ro-stale-banner');
-
-        markLiveUnavailable();
-
-        clearListStale();
-        expect(banner).toBeVisible();
-        expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
-
-        markListStale();
-        clearLiveUnavailable();
-        expect(banner).toBeVisible();
-        expect(banner).not.toHaveAttribute('aria-label');
-        expect(document.getElementById('resource-list-content')).toHaveClass('ro-stale');
-        expect(banner?.querySelector('.bn-title')).toHaveTextContent('Auto-refresh failed');
-        expect(banner?.querySelector('[data-ro-action="retry"]')).toHaveTextContent('Retry now');
-        expect(banner?.querySelector('[data-stale-countdown]')).toBeInTheDocument();
-
-        clearListStale();
-        expect(banner).not.toBeVisible();
-        expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
-        expect(vi.getTimerCount()).toBe(0);
-    });
-
-    test('a successful polling morph cannot erase Live-unavailable ownership', () => {
-        vi.useFakeTimers();
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 5_000);
-        markLiveUnavailable();
-
-        const oldBanner = document.querySelector('.ro-stale-banner') as HTMLElement;
-        oldBanner.outerHTML = `
-            <aside class="ro-stale-banner" hidden>
-                <p class="bn-title">Fresh server copy</p>
-                <p class="bn-text">Next poll in <span data-stale-countdown>…</span>.</p>
-                <button data-ro-action="retry">Try server</button>
-            </aside>`;
-        clearListStale();
-
-        const banner = document.querySelector('.ro-stale-banner');
-        expect(banner).toBeVisible();
-        expect(banner?.querySelector('.bn-title')).toHaveTextContent('Live unavailable, polling ·');
-        expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
-
-        clearLiveUnavailable();
-        expect(banner).not.toBeVisible();
-        expect(banner?.querySelector('.bn-title')).toHaveTextContent('Fresh server copy');
-        expect(banner?.querySelector('[data-ro-action="retry"]')).toHaveTextContent('Try server');
-    });
-
-    test('history serialization preserves the exact original nested copy and accessibility state', () => {
-        vi.useFakeTimers();
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 5_000);
-        let banner = document.querySelector('.ro-stale-banner') as HTMLElement;
-        let message = banner.querySelector('.bn-text') as HTMLElement;
-        const originalMessage =
-            'Retrying <strong>very soon</strong> in <span data-stale-countdown="">…</span>.';
-        banner.setAttribute('aria-label', 'Original warning');
-        (banner.querySelector('.bn-title') as HTMLElement).textContent = 'Original stale title';
-        (banner.querySelector('[data-ro-action="retry"]') as HTMLElement).textContent =
-            'Try original';
-        message.innerHTML = originalMessage;
-        message.hidden = false;
-
-        markLiveUnavailable();
-        const serializedBody = document.body.innerHTML;
-        document.body.innerHTML = serializedBody;
-        banner = document.querySelector('.ro-stale-banner') as HTMLElement;
-        message = banner.querySelector('.bn-text') as HTMLElement;
-
-        expect(message).toBeVisible();
-        expect(banner.querySelector('.bn-title')).toHaveTextContent('Live unavailable, polling ·');
-        expect(banner).toHaveAttribute(
-            'aria-label',
-            'Live unavailable, polling. Retrying in 5s. Retry',
-        );
-        clearLiveUnavailable();
-
-        expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
-        expect(banner).toHaveAttribute('aria-label', 'Original warning');
-        expect(banner.querySelector('.bn-title')).toHaveTextContent('Original stale title');
-        expect(banner.querySelector('[data-ro-action="retry"]')).toHaveTextContent('Try original');
-        expect(message.hidden).toBe(false);
-        expect(message.innerHTML).toBe(originalMessage);
     });
 
     test.each(['htmx:responseError', 'htmx:sendError'])(
-        '%s records failure before revealing stale state',
+        '%s reveals stale state without arming any retry',
         (eventType) => {
-            const content = document.getElementById('resource-list-content');
+            vi.useFakeTimers();
 
-            document.dispatchEvent(htmxEvent(eventType, { target: content }));
+            document.dispatchEvent(htmxEvent(eventType, { target: content() }));
 
-            expect(refresh.noteRefreshFailure).toHaveBeenCalledOnce();
-            expect(document.getElementById('resource-list-content')).toHaveClass('ro-stale');
-            expect(refresh.noteRefreshFailure.mock.invocationCallOrder[0]).toBeLessThan(
-                refresh.refreshNextAtMs.mock.invocationCallOrder[0] as number,
-            );
+            expect(content()).toHaveClass('ro-stale');
+            expect(banner()).toBeVisible();
+            // Only the 1s repaint ticker: a failed list GET schedules no retry.
+            expect(vi.getTimerCount()).toBe(1);
+            expect(part('[data-stale-countdown]').textContent).toBe('…');
         },
     );
 
@@ -268,8 +194,223 @@ describe('stale UI lifecycle', () => {
                 htmxEvent(eventType, { target: document.createElement('main') }),
             );
 
-            expect(refresh.noteRefreshFailure).not.toHaveBeenCalled();
-            expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
+            expect(content()).not.toHaveClass('ro-stale');
         },
     );
+});
+
+describe('Live stale grace', () => {
+    test('semantic staleness lands immediately and the visual waits out the grace', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+
+        expect(content().dataset.roStale).toBe('true');
+        expect(content()).not.toHaveClass('ro-stale');
+        expect(banner()).not.toBeVisible();
+
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS - 1);
+        expect(banner()).not.toBeVisible();
+
+        vi.advanceTimersByTime(1);
+        expect(content()).toHaveClass('ro-stale');
+        expect(banner()).toBeVisible();
+        expect(part('.bn-body:not(.ro-stale-unavailable)')).toBeVisible();
+        expect(part('.ro-stale-unavailable').hidden).toBe(true);
+        expect(part('.ro-stale-retry').hidden).toBe(false);
+        expect(part('.ro-stale-reload').hidden).toBe(true);
+    });
+
+    test('a reconnect inside the grace leaves no visible trace', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS - 1);
+        clearLiveStale();
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS);
+
+        expect(content().dataset.roStale).toBeUndefined();
+        expect(content()).not.toHaveClass('ro-stale');
+        expect(banner()).not.toBeVisible();
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    test('re-marking an already stale projection cannot restart the grace', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS - 1);
+        markLiveStale();
+        vi.advanceTimersByTime(1);
+
+        expect(banner()).toBeVisible();
+        markLiveStale();
+        expect(banner()).toBeVisible();
+    });
+
+    test('the first failed reconnect ends the grace early', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+        revealLiveStale();
+
+        expect(banner()).toBeVisible();
+        expect(content()).toHaveClass('ro-stale');
+        // The armed grace is retired, not left to fire a second paint.
+        expect(vi.getTimerCount()).toBe(1);
+    });
+
+    // The transport parks deliberately (a user request takes over, the tab
+    // hides, the browser goes offline) INSIDE the grace. Nothing failed and no
+    // retry is armed, so the delayed warning must not land on rows the user's
+    // own request just refreshed.
+    test('parking the transport inside the grace retires the pending warning', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS - 1);
+        pauseLiveStaleGrace();
+        noteStaleRetryAt(0);
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS * 2);
+
+        expect(content()).not.toHaveClass('ro-stale');
+        expect(banner()).not.toBeVisible();
+        expect(vi.getTimerCount()).toBe(0);
+        // The projection is still last-known: only the VISUAL half is retired.
+        expect(content().dataset.roStale).toBe('true');
+    });
+
+    // Pausing is not clearing: the next real disconnect must be able to arm a
+    // fresh grace, or a parked-then-dropped stream would warn never.
+    test('a disconnect after a pause arms a fresh grace', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+        pauseLiveStaleGrace();
+        markLiveStale();
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS - 1);
+        expect(banner()).not.toBeVisible();
+
+        vi.advanceTimersByTime(1);
+        expect(banner()).toBeVisible();
+    });
+
+    // A warning already revealed was EARNED by a failed attempt; parking must
+    // not erase it.
+    test('a pause cannot retire an already revealed warning', () => {
+        vi.useFakeTimers();
+
+        revealLiveStale();
+        pauseLiveStaleGrace();
+
+        expect(content()).toHaveClass('ro-stale');
+        expect(banner()).toBeVisible();
+    });
+
+    test('the countdown follows the armed reconnect schedule', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-08-25T00:00:00Z'));
+
+        revealLiveStale();
+        noteStaleRetryAt(Date.now() + 5_000);
+        expect(part('[data-stale-countdown]')).toHaveTextContent('5s');
+
+        noteStaleRetryAt(Date.now() + 30_000);
+        expect(part('[data-stale-countdown]')).toHaveTextContent('30s');
+    });
+});
+
+describe('Live unavailable', () => {
+    test('swaps the copy variant and the action, with no grace and no countdown', () => {
+        vi.useFakeTimers();
+
+        markLiveUnavailable();
+
+        expect(content().dataset.roStale).toBe('true');
+        expect(content()).toHaveClass('ro-stale');
+        expect(banner()).toBeVisible();
+        expect(part('.bn-body:not(.ro-stale-unavailable)').hidden).toBe(true);
+        expect(part('.ro-stale-unavailable').hidden).toBe(false);
+        expect(part('.ro-stale-retry').hidden).toBe(true);
+        expect(part('.ro-stale-reload').hidden).toBe(false);
+        // Terminal: no retry to count down to, so no ticker is installed to
+        // repaint the hidden recoverable copy forever.
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    test('a pending grace cannot repaint the terminal banner back to recoverable', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+        markLiveUnavailable();
+        vi.advanceTimersByTime(LIVE_STALE_GRACE_MS * 2);
+
+        expect(part('.ro-stale-unavailable').hidden).toBe(false);
+        expect(part('.ro-stale-reload').hidden).toBe(false);
+    });
+
+    test('a committed snapshot clears the terminal state and restores the copy', () => {
+        vi.useFakeTimers();
+        markLiveUnavailable();
+
+        clearLiveStale();
+
+        expect(banner()).not.toBeVisible();
+        expect(content()).not.toHaveClass('ro-stale');
+        expect(content().dataset.roStale).toBeUndefined();
+        expect(part('.bn-body:not(.ro-stale-unavailable)').hidden).toBe(false);
+        expect(part('.ro-stale-unavailable').hidden).toBe(true);
+        expect(part('.ro-stale-retry').hidden).toBe(false);
+        expect(part('.ro-stale-reload').hidden).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+});
+
+describe('independent owners', () => {
+    test('clearing Live state cannot hide independently stale list data', () => {
+        vi.useFakeTimers();
+
+        markLiveStale();
+        revealLiveStale();
+        markListStale();
+
+        clearLiveStale();
+        expect(banner()).toBeVisible();
+        expect(content()).toHaveClass('ro-stale');
+        expect(content().dataset.roStale).toBeUndefined();
+
+        clearListStale();
+        expect(banner()).not.toBeVisible();
+        expect(content()).not.toHaveClass('ro-stale');
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    test('a recovered list request cannot clear a Live disconnect', () => {
+        vi.useFakeTimers();
+        markListStale();
+        markLiveStale();
+        revealLiveStale();
+
+        clearListStale();
+
+        expect(banner()).toBeVisible();
+        expect(content()).toHaveClass('ro-stale');
+        expect(content().dataset.roStale).toBe('true');
+    });
+
+    test('a list morph that re-renders the banner keeps the terminal Live copy', () => {
+        vi.useFakeTimers();
+        markLiveUnavailable();
+
+        // A `_table` morph re-renders the banner from the server template, so
+        // the fresh node arrives in its shipped (recoverable, hidden) state.
+        // Ownership lives in module state, not in serialized DOM attributes.
+        renderStaleUI();
+        clearListStale();
+
+        expect(banner()).toBeVisible();
+        expect(part('.ro-stale-unavailable').hidden).toBe(false);
+        expect(part('.ro-stale-retry').hidden).toBe(true);
+        expect(content()).toHaveClass('ro-stale');
+    });
 });

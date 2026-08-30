@@ -12,7 +12,7 @@ import { controlURL } from './playwright.config';
 //     Copy names joins the FULL names with newlines (inline "Copied", no
 //     toast), ✕ clears;
 //   - THE identity proof: selection is keyed by data-key, not row position --
-//     after a sort reorder AND a refresh-tick morph the SAME keys stay
+//     after a sort reorder AND a Refresh morph the SAME keys stay
 //     selected, so a bulk action can never hit the wrong objects;
 //   - an hx-boost navigation to another kind clears the selection.
 //
@@ -85,10 +85,13 @@ async function clickSort(page: Page, label: string): Promise<void> {
   await swapped;
 }
 
-// The navbar interval menu opens on hover (CSS :hover/:focus-within).
-async function pickInterval(page: Page, secs: number): Promise<void> {
-  await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
+// The one-shot Refresh button in the topbar: exactly one programmatic
+// `_table` re-fetch per click, no timer. It replaces the deleted interval
+// picker as the way a spec forces a full server fragment to morph in.
+async function refreshNow(page: Page): Promise<Response> {
+  const tick = waitForTick(page);
+  await page.locator('[data-ro-action="refresh-now"]').click();
+  return tick;
 }
 
 // selectRow toggles a row through the row-click gesture: the Ready cell
@@ -264,11 +267,9 @@ test('selection is keyed by name, not position: sort reorder + tick keep the SAM
   expect((await selectedKeys(page)).sort()).toEqual(['e2e/default/nginx', 'e2e/default/zeta']);
   await expect(page.locator('tr[data-key="e2e/default/my-app"]')).not.toHaveClass(/is-selected/);
 
-  // Force a refresh tick that lands a NEW object mid-list (omega sorts between
-  // nginx and zeta) -- a full server fragment morphs in and the positions
-  // shift again. The same two keys MUST come out selected: this is the proof
+  // Refresh in a NEW object mid-list (omega sorts between nginx and zeta) --
+  // a full server fragment morphs in and the positions shift again. The same two keys MUST come out selected: this is the proof
   // bulk actions can never hit wrong objects after reorders.
-  await pickInterval(page, 5);
   await scriptEvents([
     {
       path: PODS_LIST_PATH,
@@ -277,7 +278,7 @@ test('selection is keyed by name, not position: sort reorder + tick keep the SAM
       cells: ['omega', '1/1', 'Running', '0', '1y'],
     },
   ]);
-  await waitForTick(page);
+  await refreshNow(page);
   await expect(page.locator('#resource-list-content td.cell-name')).toHaveText([
     'my-app',
     'nginx',

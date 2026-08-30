@@ -113,13 +113,13 @@
         100% { background: transparent; }
     }
 
-    /* Reduced-motion: disable every decorative animation -- the navbar refresh-spin,
+    /* Reduced-motion: disable every decorative animation -- the in-flight Refresh spin,
        the in-flight progress sweep, and the changed-cell flash glow. The
        progress bar still FADES in/out (a static rail) and the table still morphs in
        place; users who asked for less motion just get no looping/sweeping/flashing.
        Honoured purely in CSS so it holds even where the JS hook did register. */
     @media (prefers-reduced-motion: reduce) {
-        #refresh-dropdown.refresh-on .refresh-icon svg { animation: none; }
+        .tb-btn.refresh-now:disabled .refresh-icon svg { animation: none; }
         .ro-progress .ro-progress-bar {
             animation: none;
             left: 0;
@@ -305,13 +305,18 @@
     .ro-firstrun .errdetail { text-align: left; }
 
     /* Stale (client-side). readout.js reveals the pre-rendered hidden
-       `.ro-stale-banner` and adds `.ro-stale` to #resource-list-content on an
-       auto-refresh error -- it never blanks the rows. `.ro-banner` sets
+       `.ro-stale-banner` and adds `.ro-stale` to #resource-list-content when the
+       data stops being current -- it never blanks the rows. `.ro-banner` sets
        display:flex, which overrides the UA [hidden]{display:none}, so the hidden
-       banner needs an explicit display:none until JS clears the attribute. The dim
+       banner needs an explicit display:none until JS clears the attribute; the
+       banner's two copy variants (`.bn-body`) and its two actions (Retry now /
+       Reload, which `.ro-btn` sets to inline-flex) need the same treatment,
+       since exactly one of each pair is unhidden at a time. The dim
        keeps the last-good data visible-but-muted (~.72) so the user reads it as
        stale, not gone; the morph that lands fresh rows clears the class. */
     .ro-banner.ro-stale-banner[hidden] { display: none; }
+    .ro-banner.ro-stale-banner .bn-body[hidden] { display: none; }
+    .ro-banner.ro-stale-banner .ro-btn[hidden] { display: none; }
     #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
 
     /* Loading skeleton. Rows mirror the visible column

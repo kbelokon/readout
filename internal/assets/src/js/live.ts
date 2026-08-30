@@ -1,22 +1,49 @@
-// live.ts -- Live v2 browser transport and lifecycle.
+// live.ts -- the Live v2 browser transport and its reconnect state machine.
+//
+// There is exactly ONE automatic update path: this SSE stream. Nothing here
+// falls back to polling `/_table` -- when the stream cannot be held, the rows
+// become last-known and the transport retries the stream itself (or stops and
+// says so). The eight states are the whole vocabulary:
+//
+//   off          nothing armed, no request, no warning;
+//   connecting   a stream request is out, no snapshot committed yet;
+//   open         a full snapshot is committed -- the only state that is "Live";
+//   reconnecting a retry is armed on the jittered ladder (live-policy.ts);
+//   suspended    a user list request owns the page; reopen after it settles;
+//   hidden       the tab is hidden; reopen once on visibilitychange;
+//   offline      the browser is offline; retries pause until `online`;
+//   unavailable  terminal (401/403, the `auth` terminal, a 204/404 gate, or an
+//                exhausted protocol resync budget) -- the Reload banner, no retry.
+//
+// Only a committed full snapshot enters `open` and clears stale state: response
+// headers and an accepted body are not enough.
 import { clearListValidator } from './list-etag.js';
+import { reconnectDelayMs, retryAfterMs, shouldResetBackoff } from './live-policy.js';
 import {
     applyLiveV2Delta,
     decodeLiveV2Envelope,
     type LiveV2Cursor,
     type LiveV2SnapshotEnvelope,
+    type LiveV2TerminalEnvelope,
 } from './live-protocol.js';
 import { type LiveSSEEvent, LiveSSEParser } from './live-sse.js';
 import { liveStreamBaseForURL, mintLiveGeneration } from './live-url.js';
 import {
+    isLiveEnabled,
     type ListRequestActivity,
     listRequestTrackerSnapshot,
-    refreshMode,
     resetListRequestTracker,
-    scheduleRefreshTick,
     subscribeListRequests,
 } from './refresh.js';
-import { clearLiveUnavailable, markLiveUnavailable } from './stale.js';
+import {
+    clearLiveStale,
+    markLiveStale,
+    markLiveUnavailable,
+    noteStaleRetryAt,
+    pauseLiveStaleGrace,
+    revealLiveStale,
+} from './stale.js';
+import { virtualizeReset } from './virtualizer.js';
 
 interface LiveSnapshotEventInfo {
     target: Element;
@@ -32,7 +59,15 @@ interface Htmx {
         swapOptions: { contextElement: Element; eventInfo: LiveSnapshotEventInfo },
     ): void;
 }
-export type LiveStatus = 'off' | 'connecting' | 'open' | 'suspended' | 'hidden' | 'fallback';
+export type LiveStatus =
+    | 'off'
+    | 'connecting'
+    | 'open'
+    | 'reconnecting'
+    | 'suspended'
+    | 'hidden'
+    | 'offline'
+    | 'unavailable';
 interface LiveConnection {
     readonly ctrl: AbortController;
     readonly generation: string;
@@ -51,7 +86,7 @@ const runtime: {
 const counters = {
     connections: 0,
     resyncs: 0,
-    fallbacks: 0,
+    reconnects: 0,
     v2Snapshots: 0,
     deltas: 0,
     terminals: 0,
@@ -68,23 +103,30 @@ const counters = {
 export type LiveDebugStats = Readonly<typeof counters> & {
     state: LiveStatus;
     seq: number;
+    attempt: number;
     inFlightRequests: number;
     resyncsInWindow: number;
 };
 type CounterName = keyof typeof counters;
 const RESYNC_WINDOW_MS = 30_000;
 const MAX_RESYNCS_PER_WINDOW = 2;
-const FALLBACK_RETRY_INITIAL_MS = 60_000;
-const FALLBACK_RETRY_MAX_MS = 300_000;
 export const LIVE_FIRST_FRAME_TIMEOUT_MS = 30_000;
+// After the first committed frame the deadline becomes an IDLE budget. The
+// server heartbeats every 20s, so silence past this is a dead transport, not a
+// quiet namespace -- and a blackholed connection (half-open TCP: no FIN, no
+// RST) would otherwise sit in `open` forever with frozen rows.
+export const LIVE_READ_IDLE_TIMEOUT_MS = 50_000;
 
 const completedSnapshotTxns = new WeakSet<object>();
-let liveFallbackSecs = 0;
 let resyncTimestamps: number[] = [];
-let resumeIntent: { base: string; waitForChangedBase?: true } | null = null;
+let resumeIntent: { base: string } | null = null;
 let requestSubscribed = false;
-let fallbackRetryTimerId: number | undefined;
-let fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
+let reconnectTimerId: number | undefined;
+// The rung of the reconnect ladder the next failure will draw from, and the
+// epoch ms at which the current connection first committed a snapshot (0 = it
+// never did). Together they decide whether a drop restarts the ladder.
+let reconnectAttempt = 0;
+let snapshotAt = 0;
 function addCounter(name: CounterName, amount = 1): void {
     counters[name] += amount;
 }
@@ -98,25 +140,79 @@ function currentStats(): LiveDebugStats {
         ...counters,
         state: runtime.status,
         seq: runtime.connection?.cursor?.seq || 0,
+        attempt: reconnectAttempt,
         inFlightRequests: listRequestTrackerSnapshot().count,
         resyncsInWindow: resyncTimestamps.length,
     };
 }
 
-export function liveFallbackSeconds(): number {
-    return liveFallbackSecs;
-}
-function liveSupported(): boolean {
+// liveCanStreamHere is the ONE answer to "would turning Live on do anything on
+// this page?". The stored preference is global; whether the stream applies is a
+// property of the page, and callers that confuse the two silently do nothing
+// (a multi-cluster or watchless list keeps the cookie but has no `_stream`).
+export function liveCanStreamHere(): boolean {
     const content = document.getElementById('resource-list-content') as HTMLElement | null;
     if (content?.dataset.liveUrl !== 'location') return false;
-    const option = document.querySelector(
-        '[data-ro-action="set-refresh"][data-ro-interval="Live"]',
-    ) as HTMLButtonElement | null;
-    return !!option && !option.disabled;
+    // The server renders the toggle only where `_stream` answers; a page that
+    // cannot stream omits it entirely rather than rendering it disabled.
+    return document.querySelector('[data-ro-action="toggle-live"]') !== null;
 }
 
 function liveStreamBase(): string {
     return liveStreamBaseForURL(new URL(window.location.href));
+}
+
+// --- the toggle's transport paint -------------------------------------------
+//
+// The toggle carries TWO independent readings and they must not be conflated.
+// `aria-pressed` is the stored PREFERENCE (the server renders it at SSR from
+// the cookie, refresh.ts re-derives it on every click) -- it answers "did the
+// user ask for Live?". `data-ro-live-state` is what the TRANSPORT actually
+// holds, and it is the only thing the green pulsing dot may hang off: green is
+// a live-health signal, so it must be impossible before a committed full
+// snapshot. A stream that is retrying or has stopped paints `problem`; every
+// other state (connecting, and the deliberate hidden/suspended pauses) stays
+// the neutral ghost dot, which is also what an absent attribute renders as --
+// so the SSR markup, which carries no transport reading at all, is never green.
+type LiveToggleState = 'open' | 'problem' | 'connecting';
+
+function liveToggleState(status: LiveStatus): LiveToggleState {
+    switch (status) {
+        case 'open':
+            return 'open';
+        case 'reconnecting':
+        case 'offline':
+        case 'unavailable':
+            return 'problem';
+        default:
+            return 'connecting';
+    }
+}
+
+// paintLiveToggleState repaints the current transport reading onto whatever
+// toggle is in the DOM now. Transitions paint themselves; this is for the other
+// direction -- a boosted body swap installs a fresh, SSR-painted button while
+// the transport state machine carries on untouched, so refresh.ts repaints it
+// alongside aria-pressed rather than leaving the new button unstyled.
+export function paintLiveToggleState(): void {
+    paintLiveToggle(runtime.status);
+}
+
+function paintLiveToggle(status: LiveStatus): void {
+    const toggle = document.querySelector('[data-ro-action="toggle-live"]');
+    if (!toggle) return;
+    if (status === 'off') {
+        toggle.removeAttribute('data-ro-live-state');
+        return;
+    }
+    toggle.setAttribute('data-ro-live-state', liveToggleState(status));
+}
+
+// setStatus is the ONE writer of runtime.status, so no transition can reach the
+// state machine without also reaching the chrome.
+function setStatus(next: LiveStatus): void {
+    runtime.status = next;
+    paintLiveToggle(next);
 }
 function isActive(connection: LiveConnection): boolean {
     return runtime.connection === connection;
@@ -144,75 +240,144 @@ function abortActiveConnection(): void {
     runtime.connection = null;
     connection?.ctrl.abort();
 }
-function clearFallbackRetry(): void {
-    window.clearTimeout(fallbackRetryTimerId);
-    fallbackRetryTimerId = undefined;
-}
-function resetFallbackRetry(): void {
-    clearFallbackRetry();
-    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
+function clearReconnectTimer(): void {
+    window.clearTimeout(reconnectTimerId);
+    reconnectTimerId = undefined;
 }
 
-function setOff(): void {
+// liveSetOff tears the transport down from ANY state: abort the stream, cancel
+// the armed retry, drop the resume intent, and clear the Live warning surface.
+// It issues no request -- turning Live off is silent.
+export function liveSetOff(): void {
     abortActiveConnection();
-    resetFallbackRetry();
+    clearReconnectTimer();
     resumeIntent = null;
-    liveFallbackSecs = 0;
-    runtime.status = 'off';
-    clearLiveUnavailable();
+    reconnectAttempt = 0;
+    snapshotAt = 0;
+    setStatus('off');
+    noteStaleRetryAt(0);
+    clearLiveStale();
 }
 
 export function liveResetPage(): void {
-    setOff();
+    liveSetOff();
     resetListRequestTracker();
     resyncTimestamps = [];
 }
-function scheduleFallbackRetry(): void {
-    fallbackRetryTimerId = window.setTimeout(() => {
-        fallbackRetryTimerId = undefined;
-        if (refreshMode() !== 'Live') return;
-        const base = liveSupported() ? liveStreamBase() : '';
-        fallbackRetryDelayMs = Math.min(fallbackRetryDelayMs * 2, FALLBACK_RETRY_MAX_MS);
-        openConnection(base);
-    }, fallbackRetryDelayMs);
+
+// enterUnavailable is the terminal stop: the server told us this session cannot
+// stream (or the client cannot mint an identity for it). No timer is armed and
+// no request is made -- the banner's Reload is the only way forward.
+function enterUnavailable(): void {
+    abortActiveConnection();
+    clearReconnectTimer();
+    resumeIntent = null;
+    setStatus('unavailable');
+    noteStaleRetryAt(0);
+    markLiveUnavailable();
 }
 
-function liveEngageFallback(): void {
+// enterDeferred parks the transport in a state that owns its own wake-up
+// (visibility, request settlement, or `online`). The stream is closed but the
+// page is not stale-by-failure, so no warning is raised.
+//
+// `offline` is the exception, and it is the whole point of the split. `hidden`
+// and `suspended` are deliberate parks over rows that are either unwatched or
+// being refreshed by the user's own request, so a delayed warning would be
+// noise. An offline browser is neither: nobody is refreshing anything, the
+// rows ARE frozen, the user IS looking, and nothing wakes up until
+// connectivity returns. With polling gone this banner is the only thing that
+// says so, so its grace must be left to run.
+function enterDeferred(status: 'hidden' | 'suspended' | 'offline', base: string): void {
+    resumeIntent = { base };
+    setStatus(status);
+    noteStaleRetryAt(0);
+    // Retiring the retry is not enough: a grace armed by the drop that got us
+    // here would still fire and raise a warning these two states do not own.
+    if (status !== 'offline') pauseLiveStaleGrace();
+}
+
+// noteDisconnected publishes the loss of a stream: the projection is last-known
+// from this instant (semantic stale + a dropped ETag validator, so the next
+// `_table` request cannot be answered 304 against data we no longer trust). The
+// visible dim waits out the grace, EXCEPT after a retry has already failed --
+// that proves the drop is not a rollout blip.
+function noteDisconnected(): void {
+    clearListValidator();
+    markLiveStale();
+    if (reconnectAttempt >= 1) revealLiveStale();
+}
+
+// scheduleReconnect owns every recoverable failure: fetch rejection, a non-200
+// reply, a dead reader, the first-frame deadline, and the non-auth terminals.
+// `delayMs` carries a server-dictated Retry-After; null falls back to the
+// jittered ladder.
+function scheduleReconnect(base: string, delayMs: number | null = null): void {
     abortActiveConnection();
-    resumeIntent = null;
-    runtime.status = 'fallback';
-    liveFallbackSecs = document.getElementById('resource-list-content') ? 5 : 0;
-    addCounter('fallbacks');
-    scheduleRefreshTick();
-    scheduleFallbackRetry();
-    markLiveUnavailable();
+    clearReconnectTimer();
+    if (!isLiveEnabled()) {
+        liveSetOff();
+        return;
+    }
+    // A connection that held a committed snapshot through the healthy window
+    // earns a fresh ladder; a stream that never stabilized keeps climbing.
+    if (shouldResetBackoff(snapshotAt, Date.now())) reconnectAttempt = 0;
+    noteDisconnected();
+    if (!window.navigator.onLine) {
+        enterDeferred('offline', base);
+        return;
+    }
+    reconnectAttempt += 1;
+    const delay = delayMs ?? reconnectDelayMs(reconnectAttempt);
+    setStatus('reconnecting');
+    addCounter('reconnects');
+    noteStaleRetryAt(Date.now() + delay);
+    reconnectTimerId = window.setTimeout(() => {
+        reconnectTimerId = undefined;
+        if (!isLiveEnabled()) {
+            liveSetOff();
+            return;
+        }
+        // Re-derive the target: the page may have moved while the retry waited.
+        openConnection(liveCanStreamHere() ? liveStreamBase() : '');
+    }, delay);
 }
 
 function openConnection(base: string): void {
     abortActiveConnection();
-    clearFallbackRetry();
-    liveFallbackSecs = 0;
+    clearReconnectTimer();
     runtime.streamPath = base;
+    snapshotAt = 0;
     if (!base) {
-        liveEngageFallback();
+        // This page cannot stream (a detail page, a watchless or multi-scope
+        // list). The stored preference stays; Live simply does not apply here.
+        liveSetOff();
         return;
     }
-    const deferredStatus = document.hidden
-        ? 'hidden'
-        : listRequestTrackerSnapshot().count > 0
-          ? 'suspended'
-          : null;
-    if (deferredStatus) {
-        resumeIntent = { base };
-        runtime.status = deferredStatus;
-        scheduleRefreshTick();
+    if (document.hidden) {
+        enterDeferred('hidden', base);
+        return;
+    }
+    if (listRequestTrackerSnapshot().count > 0) {
+        enterDeferred('suspended', base);
+        return;
+    }
+    if (!window.navigator.onLine) {
+        // Park like every other offline path -- and publish the loss first.
+        // `offline` is the one deferred state nothing refreshes and nothing
+        // wakes up until connectivity returns, so without this the rows the
+        // user is looking at freeze with no `data-ro-stale` marker and no
+        // banner: an initial load, a toggle, or hidden -> visible while the
+        // browser is offline would all silently show last-known data as live.
+        noteDisconnected();
+        enterDeferred('offline', base);
         return;
     }
     let generation: string;
     try {
         generation = mintLiveGeneration();
     } catch {
-        liveEngageFallback();
+        enterUnavailable();
         return;
     }
     const ctrl = new AbortController();
@@ -223,9 +388,8 @@ function openConnection(base: string): void {
         cursor: null,
     });
     runtime.connection = connection;
-    runtime.status = 'connecting';
+    setStatus('connecting');
     addCounter('connections');
-    scheduleRefreshTick();
     void liveConnect(connection);
 }
 
@@ -249,47 +413,100 @@ function acceptsV2Response(response: Response, connection: LiveConnection): bool
 }
 
 async function liveConnect(initial: LiveConnection): Promise<void> {
-    let firstFrameTimer: number | null = window.setTimeout(() => {
-        firstFrameTimer = null;
-        if (runtime.connection?.ctrl === initial.ctrl) {
-            liveEngageFallback();
-        }
-    }, LIVE_FIRST_FRAME_TIMEOUT_MS);
-    const clearFirstFrameTimer = () => {
-        if (firstFrameTimer !== null) {
-            window.clearTimeout(firstFrameTimer);
-            firstFrameTimer = null;
+    let deadlineTimer: number | null = null;
+    const clearDeadline = () => {
+        if (deadlineTimer !== null) {
+            window.clearTimeout(deadlineTimer);
+            deadlineTimer = null;
         }
     };
+    const armDeadline = (ms: number) => {
+        clearDeadline();
+        deadlineTimer = window.setTimeout(() => {
+            deadlineTimer = null;
+            if (runtime.connection?.ctrl === initial.ctrl) {
+                scheduleReconnect(initial.base);
+            }
+        }, ms);
+    };
+    armDeadline(LIVE_FIRST_FRAME_TIMEOUT_MS);
     try {
-        await runLiveConnection(initial, clearFirstFrameTimer);
+        await runLiveConnection(initial, () => armDeadline(LIVE_READ_IDLE_TIMEOUT_MS));
     } finally {
-        clearFirstFrameTimer();
+        clearDeadline();
     }
+}
+
+// acceptResponse maps the reply's status to this connection's next move and
+// returns the readable body only when the stream may proceed. A 429 is an
+// admission reject, so the server's own Retry-After outranks the ladder, and a
+// 408 is a timeout the next attempt may beat. Every OTHER 4xx is a request this
+// browser cannot fix by replaying it byte for byte -- 401/403 need a new
+// session, 404 means the server does not offer this stream, 400/406 mean the
+// handshake headers never arrived intact -- so they stop with the Reload banner
+// instead of retrying every 30s forever. 204 is the watchless-kind answer: a
+// successful "there is nothing here to stream".
+//
+// A redirect is the same class of answer as a 401. OIDC mode answers an expired
+// session on `_stream` with a 302 to the IdP, which no replay of this request
+// can satisfy; the fetch asks for it unfollowed (`redirect: 'manual'`) so the
+// browser hands back an opaque redirect instead of either chasing a
+// cross-origin URL with our RO-Live-* headers (a CORS failure that reads as a
+// transport blip and reconnects forever) or letting a foreign body reach the
+// frame parser.
+function acceptResponse(
+    response: Response,
+    connection: LiveConnection,
+): ReadableStream<Uint8Array> | null {
+    if (response.type === 'opaqueredirect' || response.redirected) {
+        enterUnavailable();
+        return null;
+    }
+    const status = response.status;
+    if (status === 429) {
+        scheduleReconnect(connection.base, retryAfterMs(responseHeader(response, 'Retry-After')));
+        return null;
+    }
+    if (status === 408) {
+        scheduleReconnect(connection.base);
+        return null;
+    }
+    if (status === 204 || (status >= 400 && status < 500)) {
+        enterUnavailable();
+        return null;
+    }
+    if (status !== 200 || !response.body) {
+        scheduleReconnect(connection.base);
+        return null;
+    }
+    return response.body;
 }
 
 async function runLiveConnection(
     initial: LiveConnection,
-    clearFirstFrameTimer: () => void,
+    noteLiveProgress: () => void,
 ): Promise<void> {
     let response: Response;
     try {
         response = await fetch(initial.base, {
             signal: initial.ctrl.signal,
+            // The stream target is same-origin by construction (live-url.ts)
+            // and must stay that way: an auth redirect is a terminal, not a
+            // hop. acceptResponse turns the resulting opaque redirect into the
+            // Reload banner.
+            redirect: 'manual',
             headers: {
                 'RO-Live-Version': '2',
                 'RO-Live-Generation': initial.generation,
             },
         });
     } catch {
-        if (isActive(initial)) liveEngageFallback();
+        if (isActive(initial)) scheduleReconnect(initial.base);
         return;
     }
     if (!isActive(initial)) return;
-    if (response.status !== 200 || !response.body) {
-        liveEngageFallback();
-        return;
-    }
+    const body = acceptResponse(response, initial);
+    if (!body) return;
     if (!acceptsV2Response(response, initial)) {
         rejectProtocol(initial);
         return;
@@ -298,11 +515,16 @@ async function runLiveConnection(
     if (!accepted) return;
     let connection = accepted;
     try {
-        const reader = response.body.getReader();
+        const reader = body.getReader();
         const parser = new LiveSSEParser();
+        // Before the first frame the first-frame deadline stands. After it,
+        // ANY inbound bytes -- a `: heartbeat` comment included -- renew the
+        // idle budget, which is what makes a silent transport detectable.
+        let sawFrame = false;
         const readNext = async (): Promise<LiveConnection | undefined> => {
             const result = await reader.read();
             if (!isActive(connection) || result.done) return;
+            if (sawFrame) noteLiveProgress();
             addCounter('rawBytes', result.value.byteLength);
             let events: LiveSSEEvent[];
             try {
@@ -318,13 +540,14 @@ async function runLiveConnection(
                 const current = runtime.connection;
                 if (!current || current.ctrl !== connection.ctrl) return;
                 connection = current;
-                clearFirstFrameTimer();
+                sawFrame = true;
+                noteLiveProgress();
             }
             return connection;
         };
         while (await readNext()) {}
     } catch {}
-    if (isActive(connection)) liveEngageFallback();
+    if (isActive(connection)) scheduleReconnect(connection.base);
 }
 
 function handleV2Frame(
@@ -349,6 +572,15 @@ function handleV2Frame(
         return;
     }
     if (!cursor) {
+        // A session can end BEFORE its first snapshot: a render or encode fault
+        // (an oversized list is the deterministic one) completes the handshake
+        // and writes the terminal as frame 1 precisely so the client stops.
+        // Treating that as an invalid frame would instead spend the whole
+        // resync budget re-running the identical failing render.
+        if (envelope.kind === 'terminal' && envelope.seq === 1) {
+            handleV2Terminal(connection, envelope);
+            return;
+        }
         if (envelope.kind !== 'snapshot' || envelope.seq !== 1) {
             rejectProtocol(connection);
             return;
@@ -359,18 +591,26 @@ function handleV2Frame(
     if (envelope.kind === 'delta') {
         const applied = applyLiveV2Delta(envelope, cursor);
         if (!applied.ok) {
+            // A transaction that fails mid-flight has already run its removes,
+            // so it drops the projection. Two things describe that same dead
+            // DOM and must go with it: the window geometry (or the next filter
+            // keystroke re-windows over an empty model and blanks the table)
+            // and the stored `_table` validator (or a 304 could answer for rows
+            // that are no longer there). The resync rebuilds both.
+            virtualizeReset();
+            clearListValidator();
             rejectProtocol(connection);
             return;
         }
-        if (!replaceConnection(connection, applied.cursor)) return;
         clearListValidator();
+        if (!replaceConnection(connection, applied.cursor)) return;
         addCounter('deltas');
         addCounter('deltaBytes', payloadBytes);
         addCounter('inserted', applied.summary.inserted);
         addCounter('updated', applied.summary.updated);
         addCounter('deleted', applied.summary.deleted);
         addCounter('projected', applied.summary.projected);
-        runtime.status = 'open';
+        setStatus('open');
         return;
     }
     if (envelope.seq !== cursor.seq + 1) {
@@ -385,8 +625,20 @@ function handleV2Frame(
         rejectProtocol(connection);
         return;
     }
+    handleV2Terminal(connection, envelope);
+}
+// Two terminals a retry cannot survive: `auth` (the session itself expired) and
+// `protocol` (the server could not render or encode this list, so the identical
+// next attempt fails identically). Every other reason -- a rolling pod, a failed
+// watch, a recycled 12h session -- is exactly what the reconnect ladder exists
+// for.
+function handleV2Terminal(connection: LiveConnection, envelope: LiveV2TerminalEnvelope): void {
     addCounter('terminals');
-    liveEngageFallback();
+    if (envelope.reason === 'auth' || envelope.reason === 'protocol') {
+        enterUnavailable();
+        return;
+    }
+    scheduleReconnect(connection.base);
 }
 function commitV2Snapshot(
     connection: LiveConnection,
@@ -409,9 +661,13 @@ function commitV2Snapshot(
     replaceConnection(connection, cursor);
     addCounter('v2Snapshots');
     addCounter('snapshotBytes', payloadBytes);
-    runtime.status = 'open';
-    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
-    clearLiveUnavailable();
+    setStatus('open');
+    // The ladder is NOT reset here: a snapshot alone does not prove the stream
+    // is healthy, only that it started. shouldResetBackoff reads this timestamp
+    // at the next drop and asks for continuity on top of it.
+    if (snapshotAt === 0) snapshotAt = Date.now();
+    noteStaleRetryAt(0);
+    clearLiveStale();
 }
 function swapSnapshot(html: string, connection: LiveConnection, txn: object): void {
     const content = document.getElementById('resource-list-content');
@@ -423,6 +679,10 @@ function swapSnapshot(html: string, connection: LiveConnection, txn: object): vo
         roLivePush: true,
         roLiveSnapshotTxn: txn,
     };
+    // A throwing swap must NOT escape to the read loop: there it would read as
+    // a transport drop and start the reconnect ladder. Swallowing it leaves the
+    // transaction uncommitted, which the caller turns into the bounded resync a
+    // rendering fault actually deserves.
     try {
         htmx.swap(content, html, { swapStyle: 'morph' }, { contextElement: content, eventInfo });
     } catch {}
@@ -433,10 +693,12 @@ function rejectProtocol(connection: LiveConnection, countInvalid = true): void {
     const base = connection.base;
     requestResync(base);
 }
+// A protocol failure is a bug on one side of the wire, not a transport blip, so
+// it gets a small bounded budget of immediate reopens and then stops for good.
 function requestResync(base: string): void {
     pruneResyncWindow();
     if (resyncTimestamps.length >= MAX_RESYNCS_PER_WINDOW) {
-        liveEngageFallback();
+        enterUnavailable();
         return;
     }
     resyncTimestamps.push(Date.now());
@@ -450,27 +712,26 @@ function requestActivity(activity: ListRequestActivity): void {
         if (connection) {
             // A request path is only an intent until its list swap lands. Pin the
             // last committed projection so cancellation/failure cannot redirect Live.
-            resumeIntent = { base: connection.base };
             abortActiveConnection();
-            runtime.status = document.hidden ? 'hidden' : 'suspended';
-        } else if (runtime.status === 'fallback' && !resumeIntent) {
-            // A fallback poll does not itself justify another stream attempt.
-            // Its successful swap may commit a different base below.
-            resumeIntent = { base: runtime.streamPath as string, waitForChangedBase: true };
+            enterDeferred(document.hidden ? 'hidden' : 'suspended', connection.base);
+        } else if (runtime.status === 'reconnecting' || runtime.status === 'offline') {
+            // An armed retry yields to the user's request; the request's own
+            // outcome decides which URL the stream reopens against.
+            clearReconnectTimer();
+            enterDeferred(
+                document.hidden ? 'hidden' : 'suspended',
+                resumeIntent?.base ?? (runtime.streamPath as string),
+            );
         }
         return;
     }
     if (!resumeIntent || activity.inFlight !== 0) return;
-    if (refreshMode() !== 'Live') {
-        setOff();
+    if (!isLiveEnabled()) {
+        liveSetOff();
         return;
     }
-    const { base, waitForChangedBase } = resumeIntent;
+    const { base } = resumeIntent;
     resumeIntent = null;
-    if (waitForChangedBase) {
-        runtime.status = 'fallback';
-        return;
-    }
     openConnection(base);
 }
 
@@ -480,10 +741,8 @@ export function liveOnListSwap(event: Event): void {
     const detail = Object((event as CustomEvent).detail) as Record<string, unknown>;
     if (detail.roLivePush !== true) {
         if (resumeIntent) {
-            const base = liveSupported() ? liveStreamBase() : '';
-            if (!resumeIntent.waitForChangedBase || base !== resumeIntent.base) {
-                resumeIntent = { base };
-            }
+            const base = liveCanStreamHere() ? liveStreamBase() : '';
+            resumeIntent = { base };
             runtime.streamPath = base;
         }
         return;
@@ -499,39 +758,76 @@ export function liveApply(force?: boolean): void {
         subscribeListRequests(requestActivity);
         requestSubscribed = true;
     }
-    if (refreshMode() !== 'Live') {
-        setOff();
+    if (!isLiveEnabled()) {
+        liveSetOff();
         return;
     }
-    const base = liveSupported() ? liveStreamBase() : '';
+    const base = liveCanStreamHere() ? liveStreamBase() : '';
     if (force) {
+        // An explicit user action (the toggle, the banner's Retry) starts from
+        // a clean slate: full resync budget, ladder rung 1, no warning.
         resyncTimestamps = [];
         resumeIntent = null;
-        resetFallbackRetry();
+        reconnectAttempt = 0;
+        clearReconnectTimer();
+        clearLiveStale();
     }
     if (!force && base === runtime.streamPath && runtime.status !== 'off') return;
     openConnection(base);
 }
 
+// A hidden tab holds no stream: the pod-local WatchHub keeps the shared watch
+// alive across the gap, so closing here costs one connection and nothing else.
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
         const connection = runtime.connection;
-        if (connection) resumeIntent = { base: connection.base };
-        const intent = resumeIntent;
-        if (!intent || intent.waitForChangedBase) return;
+        const armed = runtime.status === 'reconnecting' || runtime.status === 'offline';
+        const base = connection?.base ?? (armed ? runtime.streamPath : resumeIntent?.base);
+        // Off, unavailable, and an already-parked state have nothing to pause.
+        if (base === undefined) return;
         abortActiveConnection();
-        runtime.status = 'hidden';
+        clearReconnectTimer();
+        enterDeferred('hidden', base);
         return;
     }
     if (runtime.status === 'hidden' && resumeIntent) {
-        if (refreshMode() !== 'Live') {
-            setOff();
+        if (!isLiveEnabled()) {
+            liveSetOff();
             return;
         }
         const { base } = resumeIntent;
         resumeIntent = null;
         openConnection(base);
     }
+});
+
+// An offline browser cannot reach the pod: pause the ladder rather than burn
+// its rungs on attempts that are certain to fail, and reconnect ONCE on
+// `online` instead of waiting out a delay that no longer means anything.
+window.addEventListener('offline', () => {
+    const holding =
+        runtime.status === 'connecting' ||
+        runtime.status === 'open' ||
+        runtime.status === 'reconnecting';
+    const base = runtime.connection?.base ?? runtime.streamPath;
+    // A hidden or suspended tab already owns its own wake-up, and openConnection
+    // re-checks connectivity when it fires; only a live attempt is parked here.
+    if (!holding || !base) return;
+    abortActiveConnection();
+    clearReconnectTimer();
+    noteDisconnected();
+    enterDeferred('offline', base);
+});
+
+window.addEventListener('online', () => {
+    if (runtime.status !== 'offline' || !resumeIntent) return;
+    if (!isLiveEnabled()) {
+        liveSetOff();
+        return;
+    }
+    const { base } = resumeIntent;
+    resumeIntent = null;
+    openConnection(base);
 });
 
 window.roLive = { stats: currentStats };

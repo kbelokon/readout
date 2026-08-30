@@ -5,24 +5,30 @@ import { afterEach, expect, test, vi } from 'vitest';
 import type { LiveV2Cursor } from './live-protocol.js';
 
 const dependencies = vi.hoisted(() => ({
-    clearLiveUnavailable: vi.fn(),
+    clearLiveStale: vi.fn(),
+    markLiveStale: vi.fn(),
     markLiveUnavailable: vi.fn(),
-    refreshMode: vi.fn(() => 'Live'),
+    noteStaleRetryAt: vi.fn(),
+    pauseLiveStaleGrace: vi.fn(),
+    revealLiveStale: vi.fn(),
+    isLiveEnabled: vi.fn(() => true),
     resetListRequestTracker: vi.fn(),
-    scheduleRefreshTick: vi.fn(),
     subscribeListRequests: vi.fn(() => () => {}),
 }));
 
 vi.mock('./refresh.js', () => ({
+    isLiveEnabled: dependencies.isLiveEnabled,
     listRequestTrackerSnapshot: () => ({ count: 0 }),
-    refreshMode: dependencies.refreshMode,
     resetListRequestTracker: dependencies.resetListRequestTracker,
-    scheduleRefreshTick: dependencies.scheduleRefreshTick,
     subscribeListRequests: dependencies.subscribeListRequests,
 }));
 vi.mock('./stale.js', () => ({
-    clearLiveUnavailable: dependencies.clearLiveUnavailable,
+    clearLiveStale: dependencies.clearLiveStale,
+    markLiveStale: dependencies.markLiveStale,
     markLiveUnavailable: dependencies.markLiveUnavailable,
+    noteStaleRetryAt: dependencies.noteStaleRetryAt,
+    pauseLiveStaleGrace: dependencies.pauseLiveStaleGrace,
+    revealLiveStale: dependencies.revealLiveStale,
 }));
 
 afterEach(() => {
@@ -33,18 +39,18 @@ afterEach(() => {
     delete (window as unknown as { htmx?: unknown }).htmx;
 });
 
-test('module load publishes immutable diagnostics and registers one visibility lifecycle', async () => {
+test('module load publishes immutable diagnostics and registers the lifecycle listeners', async () => {
     vi.doUnmock('./live-protocol.js');
     vi.resetModules();
-    const addEventListener = vi.spyOn(document, 'addEventListener');
+    const documentListener = vi.spyOn(document, 'addEventListener');
+    const windowListener = vi.spyOn(window, 'addEventListener');
 
-    const { liveFallbackSeconds } = await import('./live.js');
+    await import('./live.js');
 
-    expect(liveFallbackSeconds()).toBe(0);
     expect(window.roLive.stats()).toStrictEqual({
         connections: 0,
         resyncs: 0,
-        fallbacks: 0,
+        reconnects: 0,
         v2Snapshots: 0,
         deltas: 0,
         terminals: 0,
@@ -59,10 +65,15 @@ test('module load publishes immutable diagnostics and registers one visibility l
         projected: 0,
         state: 'off',
         seq: 0,
+        attempt: 0,
         inFlightRequests: 0,
         resyncsInWindow: 0,
     });
-    expect(addEventListener).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+    // The three lifecycle signals the transport reacts to, and nothing else:
+    // the request tracker is only subscribed once liveApply actually runs.
+    expect(documentListener).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+    expect(windowListener).toHaveBeenCalledWith('offline', expect.any(Function));
+    expect(windowListener).toHaveBeenCalledWith('online', expect.any(Function));
     expect(dependencies.subscribeListRequests).not.toHaveBeenCalled();
 });
 
@@ -122,7 +133,7 @@ test.each([
     );
     document.body.innerHTML = `
         <div id="resource-list-content" data-live-url="location"></div>
-        <button data-ro-action="set-refresh" data-ro-interval="Live"></button>`;
+        <button data-ro-action="toggle-live" aria-pressed="true"></button>`;
     window.history.replaceState(null, '', '/clusters/prod/pods');
 
     const { liveApply, liveOnListSwap, liveResetPage } = await import('./live.js');

@@ -10,10 +10,10 @@
 // idiomorph extension exposes Idiomorph; htmx loads before this bundle), reached
 // through typeof guards -- never imported (no module exists for the vendored
 // libs). Cross-module surfaces this module's handleSwap calls
-// (prepare/cancelListProjectionSwap / virtualizePrepareSwap) ARE imported --
-// they live in the typed modules.
+// (prepareListProjectionSwap / virtualizePrepareSwap) ARE imported -- they live
+// in the typed modules.
 
-import { cancelListProjectionSwap, prepareListProjectionSwap } from './list-projection.js';
+import { prepareListProjectionSwap } from './list-projection.js';
 import { virtualizePrepareSwap } from './virtualizer.js';
 
 // Minimal vendor typings (classic-script globals). Only the surfaces this module
@@ -140,23 +140,23 @@ if (typeof htmx !== 'undefined' && typeof htmx.defineExtension === 'function' &&
             // complete list (no pagination), so rows, cards, identity order and
             // the filter model all come from one snapshot even when the live DOM
             // contains only a virtualized window.
-            try {
-                if (listTarget) {
-                    prepareListProjectionSwap(fragment);
-                    // Virtualization, AFTER the projection capture: a
-                    // >threshold fragment's rows are detached for adoption so
-                    // they never ride the morph (height-preserving spacers stand
-                    // in); virtualizeAfterSwap re-windows once the morph lands.
-                    virtualizePrepareSwap(fragment);
-                }
-                return idiomorph.morph(target, fragment.children, {
-                    morphStyle: 'innerHTML',
-                    ignoreActiveValue: true,
-                });
-            } catch (error) {
-                cancelListProjectionSwap(fragment);
-                throw error;
+            if (listTarget) {
+                prepareListProjectionSwap(fragment);
+                // Virtualization, AFTER the projection capture: a >threshold
+                // fragment's rows are detached for adoption so they never ride
+                // the morph (height-preserving spacers stand in);
+                // virtualizeAfterSwap re-windows once the morph lands.
+                virtualizePrepareSwap(fragment);
             }
+            // A throw here is NOT caught. htmx logs it and falls back to its
+            // default innerHTML swap, which lands the (already spacer-only)
+            // fragment -- so the only thing that can still put rows on screen is
+            // the prepared snapshot virtualizeAfterSwap adopts. Retiring that
+            // preparation on the way out would guarantee an empty list.
+            return idiomorph.morph(target, fragment.children, {
+                morphStyle: 'innerHTML',
+                ignoreActiveValue: true,
+            });
         },
     });
 }
