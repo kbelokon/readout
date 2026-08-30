@@ -81,9 +81,9 @@ const (
 // released for any non-terminal reason (unsubscribe, retention) carries the
 // empty reason: nothing failed, so the subscriber decides what to report.
 const (
-	hubTerminalAuth        = "auth"
-	hubTerminalWatchFailed = "watch-failed"
-	hubTerminalShutdown    = "shutdown"
+	hubTerminalAuth        = streamTerminalAuth
+	hubTerminalWatchFailed = streamTerminalWatchFailed
+	hubTerminalShutdown    = streamTerminalShutdown
 )
 
 var (
@@ -94,6 +94,12 @@ var (
 	// errHubSourceGone means the attach raced the source's own shutdown. It is
 	// internal to the hub: Subscribe retries against a fresh source.
 	errHubSourceGone = errors.New("live source is shutting down")
+
+	// errHubCacheLimit is the per-pod retained-state bound: the scope's own
+	// initial LIST pushed the hub past live.maxCacheAccountedBytes, so the new
+	// source is failed and its waiters are rejected before any of them
+	// commits to SSE. Sources that were already admitted keep serving.
+	errHubCacheLimit = errors.New("live cache limit reached")
 )
 
 // hubClock is the hub's time surface. Sources schedule retention, re-watch
@@ -219,6 +225,38 @@ type watchHub struct {
 	sources     map[watchHubKey]*hubSource
 	subscribers int
 	accounted   int64
+	// connections counts open Live SSE handlers on this pod. It is the first
+	// admission gate: a rejected connection never reaches a source, so an
+	// over-capacity pod does no upstream work at all.
+	connections int
+}
+
+// acquireConnection takes the first admission slot: one per open Live stream,
+// released on every handler exit. It is deliberately independent of source
+// sharing -- a hundred subscribers on one shared watch still cost a hundred
+// sockets, goroutines and render pipelines.
+func (h *watchHub) acquireConnection() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.connections >= h.limits.maxConnections {
+		return false
+	}
+	h.connections++
+	return true
+}
+
+func (h *watchHub) releaseConnection() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.connections > 0 {
+		h.connections--
+	}
+}
+
+func (h *watchHub) connectionCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.connections
 }
 
 func newWatchHub(ctx context.Context, limits liveLimits, tuning *streamTuning, clock hubClock, metrics hubMetricsSink) *watchHub {
@@ -352,6 +390,12 @@ func (h *watchHub) accountedBytes() int64 {
 // the number admission compares against live.maxCacheAccountedBytes.
 func (h *watchHub) cacheChargedBytes() int64 {
 	return h.accountedBytes() * cacheAccountingHeadroom
+}
+
+// overCacheLimit reports whether the retained state charged with headroom has
+// crossed the configured bound.
+func (h *watchHub) overCacheLimit() bool {
+	return h.cacheChargedBytes() > h.limits.maxCacheAccountedBytes
 }
 
 // sourceStats reports one source's actor-owned counters. The map lock is
@@ -508,6 +552,13 @@ func (s *hubSource) listed(table *kube.Table, err error) {
 	}
 	s.state = hubReady
 	s.adoptTable(table)
+	// The retained-state bound is checked on the source that would cross it,
+	// after its own LIST is measured and before any of its waiters commits to
+	// SSE. Sources already admitted are never evicted to make room.
+	if s.hub.overCacheLimit() {
+		s.failTerminal(hubTerminalWatchFailed, errHubCacheLimit)
+		return
+	}
 	s.lastRV = table.ResourceVersion
 	s.publish(s.table, false)
 	for _, waiter := range s.waiters {

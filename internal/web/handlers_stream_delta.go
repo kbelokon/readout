@@ -9,7 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kbelokon/readout/internal/kube"
 	"github.com/kbelokon/readout/internal/web/templates"
 )
 
@@ -69,8 +68,8 @@ const (
 )
 
 func (st *streamSession) currentListData() templates.ListData {
-	clone := cloneTableForRender(&st.snapshot)
-	lc := st.srv.streamListContext(st.renderReq, st.client, st.cluster, &clone, st.overlays)
+	clone := cloneTableForRender(st.rev.table)
+	lc := st.srv.streamListContext(st.renderReq, st.client, st.cluster, &clone, st.overlaysForRender())
 	view := st.srv.buildListView(st.renderReq, &lc)
 	return toListData(&view)
 }
@@ -231,6 +230,9 @@ func (st *streamSession) commitLivePush(prepared *livePreparedPush, now time.Tim
 	st.dirty = false
 	st.deletedKeys = nil
 	st.forceSnapshot = false
+	// The rendered revision is now the client-visible base, so the next push
+	// classifies deletions against exactly what the browser holds.
+	st.base = st.rev
 	st.lastPush = now
 	if prepared.kind == livePreparedNoop {
 		return
@@ -348,56 +350,6 @@ func liveHasControls(value string) bool {
 		}
 	}
 	return false
-}
-
-// noteWatchMutation records actual apiserver deletes independently from rows
-// that merely leave the current filter projection. The set is bounded; once it
-// cannot classify safely, the next v2 push is forced to a full snapshot.
-func (st *streamSession) noteWatchMutation(ev *kube.WatchEvent) {
-	if ev == nil || (ev.Type != kube.WatchDeleted && ev.Type != kube.WatchAdded) {
-		return
-	}
-	// Kubernetes watch predicate semantics map old-match/new-no-match to a
-	// synthetic DELETED. A label-filtered watch therefore has no wire-level
-	// distinction between selector exit and an actual delete, so never prune
-	// client selection from that ambiguous lane. With no selector, namespace and
-	// resource identity cannot transition; DELETED is an actual object deletion
-	// and is safe to classify as such.
-	// Consequently an actual deletion already outside the rendered projection
-	// (whether excluded by this selector or by readout-side f/filter) may leave
-	// latent cross-filter selection until a normal action/reload reconciles it.
-	// The v2 remove operation cannot fix that safely: it is a projection
-	// operation and the client rejects absent-key tombstones by contract.
-	if ev.Type == kube.WatchDeleted && st.selector != "" {
-		return
-	}
-	for i := range ev.Table.Rows {
-		row := &ev.Table.Rows[i]
-		name := nestedString(row.Object, "metadata", "name")
-		if name == "" {
-			continue
-		}
-		key := rowKey(st.cluster, nestedString(row.Object, "metadata", "namespace"), name)
-		if ev.Type == kube.WatchAdded {
-			delete(st.deletedKeys, key)
-			continue
-		}
-		if st.forceSnapshot {
-			continue
-		}
-		if _, exists := st.deletedKeys[key]; exists {
-			continue
-		}
-		if len(st.deletedKeys) >= streamMaxDeletedKeys {
-			st.deletedKeys = nil
-			st.forceSnapshot = true
-			continue
-		}
-		if st.deletedKeys == nil {
-			st.deletedKeys = make(map[string]struct{})
-		}
-		st.deletedKeys[key] = struct{}{}
-	}
 }
 
 func (st *streamSession) terminalLiveV2(reason string) {

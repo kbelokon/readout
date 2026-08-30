@@ -3,9 +3,10 @@ package web
 // stream_test.go pins the `_stream` SSE endpoint (the Live refresh mode) against
 // scripted fakeapi fixtures: the handshake + framing (generation echo), the
 // coalescing pacing (floor, ceiling, churn degradation), render-time filter
-// transitions over the unfiltered snapshot, the complete lifecycle (410
-// relist, EOF-storm terminal, auth terminal, idle cap, server shutdown), the
-// stream cap with slot release, and the metrics plumbing (histogram
+// transitions over the shared unfiltered snapshot, the complete lifecycle (410
+// relist, EOF-storm terminal, auth terminal, lifetime bound, server shutdown),
+// the staged admission limits with slot release, WatchHub sharing (N
+// subscribers, one LIST and one watch), and the metrics plumbing (histogram
 // exclusion, join sub-poll). Every branch is driven end to end through the
 // real middleware chain (a real httptest.Server — flushing through
 // statusWriter is part of what is under test).
@@ -425,7 +426,7 @@ func TestStreamInitialListFailureStaysPreHandshake(t *testing.T) {
 
 func TestStreamV2NegotiationSnapshotAndTerminal(t *testing.T) {
 	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
-		tuning.idleCap = 100 * time.Millisecond
+		tuning.maxLifetime = 100 * time.Millisecond
 		tuning.heartbeat = 10 * time.Millisecond
 	})
 	rawQuery := "g=query-generation&%67=encoded-generation&f=status%3DRunning,Pending"
@@ -459,7 +460,7 @@ func TestStreamV2NegotiationSnapshotAndTerminal(t *testing.T) {
 	if terminal.V != 2 || terminal.Kind != "terminal" || terminal.G != snapshot.G || terminal.Seq != 2 {
 		t.Fatalf("v2 terminal identity = %+v", terminal)
 	}
-	if terminal.Rev != snapshot.Rev || terminal.Schema != snapshot.Schema || terminal.Reason != "idle" {
+	if terminal.Rev != snapshot.Rev || terminal.Schema != snapshot.Schema || terminal.Reason != streamTerminalLifetime {
 		t.Fatalf("v2 terminal state = %+v, snapshot = %+v", terminal, snapshot)
 	}
 	s.requireClosed(t, time.Second)
@@ -585,7 +586,7 @@ func TestEncodeStreamPayloadIsBoundedAndDoesNotEscapeHTML(t *testing.T) {
 func TestStreamHeartbeatComment(t *testing.T) {
 	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
 		tuning.heartbeat = 10 * time.Millisecond
-		tuning.idleCap = 150 * time.Millisecond
+		tuning.maxLifetime = 150 * time.Millisecond
 	})
 	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "heartbeat")
 	defer func() { _ = resp.Body.Close() }()
@@ -601,8 +602,8 @@ func TestStreamHeartbeatComment(t *testing.T) {
 		if line == ": heartbeat\n" {
 			return
 		}
-		if strings.Contains(line, `"reason":"idle"`) {
-			t.Fatal("idle terminal arrived before heartbeat")
+		if strings.Contains(line, `"reason":"`+streamTerminalLifetime+`"`) {
+			t.Fatal("lifetime terminal arrived before heartbeat")
 		}
 	}
 }
@@ -786,12 +787,13 @@ func TestStreamFilterTransitions(t *testing.T) {
 	}
 }
 
-// TestStreamGoneRelists pins the 410 branch: a scripted GONE triggers a
-// silent relist + full push (never a terminal), and the re-watched stream
-// keeps delivering subsequent changes. The relist itself is proven by the
-// recorder — a fresh non-watch LIST must hit the pods path after the GONE.
-// The pushed "nginx" alone is NOT proof: the stale snapshot also contains it,
-// so a handler that skipped the relist would pass that needle.
+// TestStreamGoneRelists pins the 410 branch end to end through the shared
+// source: a scripted GONE triggers a silent relist + full push (never a
+// terminal), and the re-watched stream keeps delivering subsequent changes.
+// The relist itself is proven by the recorder — a fresh non-watch LIST must
+// hit the pods path after the GONE. The pushed "nginx" alone is NOT proof: the
+// stale snapshot also contains it, so a source that skipped the relist would
+// pass that needle.
 func TestStreamGoneRelists(t *testing.T) {
 	var mu sync.Mutex
 	goneArmed := false
@@ -901,10 +903,10 @@ func TestStreamForbiddenNamespaceStaysPreHandshake(t *testing.T) {
 }
 
 // TestStreamCapAndRelease pins the connection limit: the stream past
-// live.maxConnections gets 429 BEFORE SSE headers, and closing one stream
-// releases its slot so a replacement can connect (the deferred-release
-// cleanup contract). The limit comes from config, so the test configures a
-// small one instead of opening the 512-stream default.
+// live.maxConnections gets 429 BEFORE SSE headers with a Retry-After hint, and
+// closing one stream releases its slot so a replacement can connect (the
+// deferred-release cleanup contract). The limit comes from config, so the test
+// configures a small one instead of opening the 512-stream default.
 func TestStreamCapAndRelease(t *testing.T) {
 	const maxConnections = 4
 	fake := newServerFakeAPI(t)
@@ -937,6 +939,9 @@ func TestStreamCapAndRelease(t *testing.T) {
 	if over.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("stream %d status = %d, want 429", maxConnections+1, over.StatusCode)
 	}
+	if got := over.Header.Get("Retry-After"); got != "10" {
+		t.Fatalf("connection-limit Retry-After = %q, want 10", got)
+	}
 	if ct := over.Header.Get("Content-Type"); strings.Contains(ct, "text/event-stream") {
 		t.Fatalf("cap-exceeded stream got SSE headers (Content-Type %q) — it must 429 before them", ct)
 	}
@@ -958,11 +963,291 @@ func TestStreamCapAndRelease(t *testing.T) {
 	}
 }
 
+// TestStreamSourceLimitRejectsNewScopes pins admission stage two: distinct
+// scopes each need their own upstream watch, so the one past live.maxSources
+// is refused with 429 + Retry-After — while a second subscriber on an
+// ALREADY-OPEN scope still joins, because joining costs no source slot.
+func TestStreamSourceLimitRejectsNewScopes(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:           8080,
+		Clusters:       []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:   "dark",
+		LiveMaxSources: 1,
+	})
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	first := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "source-1")
+	first.requireEvent(t, "ro-live", 5*time.Second)
+
+	// Same key: shares the one admitted source.
+	shared := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "source-shared")
+	shared.requireEvent(t, "ro-live", 5*time.Second)
+
+	// Different namespace: a NEW upstream watch, and there is no room.
+	over := dialStream(t, ts.URL+"/clusters/test/namespaces/big/pods/_stream", "source-2")
+	_ = over.Body.Close()
+	assertStreamPreHandshakeResponse(t, over)
+	if over.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second-scope status = %d, want 429", over.StatusCode)
+	}
+	if got := over.Header.Get("Retry-After"); got != "10" {
+		t.Fatalf("source-limit Retry-After = %q, want 10", got)
+	}
+}
+
+// TestStreamCacheLimitRejectsOversizedScope pins admission stage three: a scope
+// whose own initial LIST pushes the pod past live.maxCacheAccountedBytes is
+// failed AFTER the measurement and BEFORE any SSE header, and its source is
+// dropped rather than retained. The 600-row "big" namespace is measured
+// against a deliberately tiny bound.
+func TestStreamCacheLimitRejectsOversizedScope(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                       8080,
+		Clusters:                   []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:               "dark",
+		LiveMaxCacheAccountedBytes: 1024,
+	})
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/big/pods/_stream", "cache-limit")
+	_ = resp.Body.Close()
+	assertStreamPreHandshakeResponse(t, resp)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("oversized-scope status = %d, want 429", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "10" {
+		t.Fatalf("cache-limit Retry-After = %q, want 10", got)
+	}
+	hub := app.liveHub()
+	waitFor(t, "the rejected source to be discarded", func() bool {
+		return hub.sourceCount() == 0 && hub.accountedBytes() == 0 && hub.connectionCount() == 0
+	})
+}
+
+// TestStreamSubscribersShareOneListAndWatch is the sharing contract end to
+// end: many browsers on one URL cost the apiserver ONE Table LIST and ONE
+// watch, every one of them receives the scripted change, and a scripted 410
+// gives every subscriber exactly one forced snapshot from the single shared
+// relist.
+func TestStreamSubscribersShareOneListAndWatch(t *testing.T) {
+	const subscribers = 8
+	var mu sync.Mutex
+	lists, watches := 0, 0
+	ts, fake := newStreamFixtureWithRecorder(t, func(r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/pods") {
+			return
+		}
+		mu.Lock()
+		if r.URL.Query().Get("watch") == "true" {
+			watches++
+		} else {
+			lists++
+		}
+		mu.Unlock()
+	}, func(tuning *streamTuning) {
+		tuning.heartbeat = 0
+		tuning.checkpointInterval = 0
+	})
+	counts := func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return lists, watches
+	}
+
+	streams := make([]*sseStream, 0, subscribers)
+	for i := 0; i < subscribers; i++ {
+		streams = append(streams, openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", fmt.Sprintf("share-%d", i)))
+	}
+	for _, stream := range streams {
+		if frame := decodeFrame(t, stream.requireEvent(t, "ro-live", 5*time.Second)); frame.Kind != "snapshot" {
+			t.Fatalf("first frame kind = %q, want snapshot", frame.Kind)
+		}
+	}
+	if got, _ := counts(); got != 1 {
+		t.Fatalf("pods LISTs for %d subscribers = %d, want exactly 1", subscribers, got)
+	}
+
+	waitForOpenWatch(t, fake.URL)
+	if _, got := counts(); got != 1 {
+		t.Fatalf("pods watches for %d subscribers = %d, want exactly 1", subscribers, got)
+	}
+
+	// One scripted change reaches every subscriber off the one shared watch.
+	postStreamScript(t, fake.URL, `{"events":[`+podModifiedEvent("Error", 0)+`]}`)
+	for _, stream := range streams {
+		requireFrameContaining(t, stream, "Error")
+	}
+
+	// One scripted 410 produces ONE shared relist and one forced snapshot each.
+	postStreamScript(t, fake.URL, fmt.Sprintf(`{"events":[{"path":%q,"type":"GONE"}]}`, streamPodsPath))
+	for _, stream := range streams {
+		frame := decodeFrame(t, stream.requireEvent(t, "ro-live", 5*time.Second))
+		if frame.Kind != "snapshot" {
+			t.Fatalf("post-410 frame kind = %q, want a forced snapshot", frame.Kind)
+		}
+	}
+	if got, _ := counts(); got != 2 {
+		t.Fatalf("pods LISTs after the shared 410 = %d, want the initial one plus one relist", got)
+	}
+}
+
+// requireFrameContaining reads frames until one carries the needle, so a test
+// is not sensitive to whether a change arrives as a delta or a coalesced
+// snapshot.
+func requireFrameContaining(t *testing.T, s *sseStream, needle string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		frame := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second))
+		if strings.Contains(frame.HTML, needle) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no frame carrying %q", needle)
+		}
+	}
+}
+
+// TestStreamScopeVariantsDoNotShareASource pins the key: an apiVersion,
+// namespace or selector that changes the upstream request creates its own
+// source, while a differently ORDERED but equivalent selector joins the
+// existing one (newWatchHubKey canonicalizes it).
+func TestStreamScopeVariantsDoNotShareASource(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
+	app.streamTuning.heartbeat = 0
+	app.streamTuning.checkpointInterval = 0
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+	base := ts.URL + "/clusters/test/namespaces/default/pods/_stream"
+
+	first := openStream(t, base+"?selector=app%3Dweb%2Ctier%3Dfront", "key-1")
+	first.requireEvent(t, "ro-live", 5*time.Second)
+	waitFor(t, "one source", func() bool { return app.liveHub().sourceCount() == 1 })
+
+	// Same selector, reversed order: one canonical key, still one source.
+	reordered := openStream(t, base+"?selector=tier%3Dfront%2Capp%3Dweb", "key-2")
+	reordered.requireEvent(t, "ro-live", 5*time.Second)
+	if got := app.liveHub().sourceCount(); got != 1 {
+		t.Fatalf("sources after an equivalent selector = %d, want 1", got)
+	}
+
+	// A different namespace is a different upstream collection.
+	other := openStream(t, ts.URL+"/clusters/test/namespaces/big/pods/_stream", "key-3")
+	other.requireEvent(t, "ro-live", 5*time.Second)
+	waitFor(t, "a second source", func() bool { return app.liveHub().sourceCount() == 2 })
+}
+
+// TestStreamSlowSubscriberDoesNotDelayAnother pins subscriber isolation: a
+// peer that stops reading wedges only itself. The fast subscriber on the SAME
+// shared source keeps receiving frames while the wedged one sits there, and
+// the wedged one is released by its own write deadline.
+func TestStreamSlowSubscriberDoesNotDelayAnother(t *testing.T) {
+	fake, err := fakeapi.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fake.Close)
+	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
+	app.streamTuning.writeTimeout = 250 * time.Millisecond
+	// Force every changed projection to a full snapshot so the non-reading peer
+	// blocks on a genuinely large downstream write.
+	app.streamTuning.checkpointDeltas = 1
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	const path = "/clusters/test/namespaces/big/pods/_stream"
+	fast := openStream(t, ts.URL+path, "fast")
+	fast.requireEvent(t, "ro-live", 10*time.Second)
+
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		if err := tcp.SetReadBuffer(1024); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: readout-test\r\n%s: 2\r\n%s: wedge\r\n\r\n", path, streamVersionHeader, streamGenerationHeader); err != nil {
+		t.Fatal(err)
+	}
+	hub := app.liveHub()
+	waitFor(t, "both subscribers to attach", func() bool { return hub.connectionCount() == 2 })
+
+	// The fast subscriber keeps seeing changes while the other is wedged, and
+	// the wedged one is eventually released by its own write deadline.
+	deadline := time.Now().Add(10 * time.Second)
+	for hub.connectionCount() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the wedged subscriber never hit its write deadline")
+		}
+		postStreamScript(t, fake.URL, `{"events":[{"path":"/api/v1/namespaces/big/pods","type":"MODIFIED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"big-pod-0001","namespace":"big"}}}]}`)
+		fast.requireEvent(t, "ro-live", 5*time.Second)
+		time.Sleep(50 * time.Millisecond)
+	}
+	fast.requireQuiet(t, 100*time.Millisecond)
+
+	// The wedged peer's single counted outcome is "slow-writer", not the
+	// ordinary client-gone exit: it was still connected, just not reading.
+	rec := httptest.NewRecorder()
+	app.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), `readout_stream_terminal_total{reason="`+streamTerminalSlowWriter+`"}`) {
+		t.Fatalf("no slow-writer terminal was counted; metrics:\n%.4000s", rec.Body.String())
+	}
+}
+
+// TestStreamShutdownRefusesNewStreamsAndReadyz pins the drain: from the
+// instant the app context is canceled, readiness answers 503 and no new Live
+// stream is admitted (again 503, never a half-open SSE response).
+func TestStreamShutdownRefusesNewStreamsAndReadyz(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app, err := New(ctx, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark", NoAccessLogs: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	ready, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = ready.Body.Close()
+	if ready.StatusCode != http.StatusOK {
+		t.Fatalf("/readyz before shutdown = %d, want 200", ready.StatusCode)
+	}
+
+	cancel()
+	draining, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = draining.Body.Close()
+	if draining.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz while draining = %d, want 503", draining.StatusCode)
+	}
+
+	resp := dialStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "draining")
+	_ = resp.Body.Close()
+	assertStreamPreHandshakeResponse(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("stream while draining = %d, want 503", resp.StatusCode)
+	}
+}
+
 // TestLiveLimitsResolveFromConfig pins that the three Live limits come from
 // the `live:` config block and nothing else: demo mode gets the same defaults
 // as any other deployment (no special-cased capacity), an omitted block
-// resolves to the package defaults, and the connection limit sizes the stream
-// slot channel.
+// resolves to the package defaults, and the resolved limits are what the
+// WatchHub admits against.
 func TestLiveLimitsResolveFromConfig(t *testing.T) {
 	fake := newServerFakeAPI(t)
 	demo := newTestServerWithConfig(t, &config.Config{
@@ -979,8 +1264,8 @@ func TestLiveLimitsResolveFromConfig(t *testing.T) {
 	if demo.limits != want {
 		t.Fatalf("demo limits = %+v, want the shared defaults %+v", demo.limits, want)
 	}
-	if got := cap(demo.streamSlots); got != want.maxConnections {
-		t.Fatalf("stream slot capacity = %d, want maxConnections %d", got, want.maxConnections)
+	if got := demo.liveHub().limits; got != want {
+		t.Fatalf("demo hub limits = %+v, want %+v", got, want)
 	}
 
 	tuned := newTestServerWithConfig(t, &config.Config{
@@ -991,39 +1276,28 @@ func TestLiveLimitsResolveFromConfig(t *testing.T) {
 		LiveMaxSources:             3,
 		LiveMaxCacheAccountedBytes: 4096,
 	})
-	if (tuned.limits != liveLimits{maxConnections: 7, maxSources: 3, maxCacheAccountedBytes: 4096}) {
+	small := liveLimits{maxConnections: 7, maxSources: 3, maxCacheAccountedBytes: 4096}
+	if tuned.limits != small {
 		t.Fatalf("configured limits = %+v", tuned.limits)
 	}
-	if got := cap(tuned.streamSlots); got != 7 {
-		t.Fatalf("stream slot capacity = %d, want 7", got)
+	hub := tuned.liveHub()
+	for i := 0; i < small.maxConnections; i++ {
+		if !hub.acquireConnection() {
+			t.Fatalf("connection %d rejected below the configured limit", i)
+		}
+	}
+	if hub.acquireConnection() {
+		t.Fatalf("connection %d admitted past the configured limit", small.maxConnections+1)
 	}
 }
 
-// TestStreamIdleTerminal pins the server-local idle cap: a stream with no
-// watch data for the cap emits a terminal `ro-live` envelope and closes.
-func TestStreamIdleTerminal(t *testing.T) {
-	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
-		tuning.idleCap = 250 * time.Millisecond
-	})
-	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "5")
-	s.requireEvent(t, "ro-live", 5*time.Second)
-	term := s.requireEvent(t, "ro-live", 3*time.Second)
-	frame := decodeFrame(t, term)
-	if frame.Reason != "idle" {
-		t.Fatalf("terminal reason = %q, want idle", frame.Reason)
-	}
-	if frame.G != "5" {
-		t.Fatalf("terminal generation = %q, want \"5\" (echoed in every message)", frame.G)
-	}
-	s.requireClosed(t, 2*time.Second)
-}
-
-// TestStreamEOFStormTerminal pins the storm rule: consecutive immediate EOFs
-// are retried with backoff a bounded number of times (observable as exactly
-// streamMaxImmediateEOFs watch connects — never a spin), then the stream
-// terminates with reason "watch-failed". The backoff schedule itself is
-// pinned at its real defaults by TestStreamBackoffSchedule; here it is
-// compressed so the storm completes quickly.
+// TestStreamEOFStormTerminal pins the storm rule through the shared source:
+// consecutive immediate EOFs are retried with backoff a bounded number of
+// times (observable as exactly streamMaxImmediateEOFs watch connects — never a
+// spin), then the source fails and closes its subscribers with reason
+// "watch-failed". The backoff schedule itself is pinned at its real defaults
+// by TestStreamBackoffSchedule; here it is compressed so the storm completes
+// quickly.
 func TestStreamEOFStormTerminal(t *testing.T) {
 	var mu sync.Mutex
 	watchConnects := 0
@@ -1095,7 +1369,6 @@ func TestStreamBackoffSchedule(t *testing.T) {
 func TestDefaultStreamTuning(t *testing.T) {
 	got := defaultStreamTuning()
 	want := streamTuning{
-		idleCap:               30 * time.Minute,
 		backoffBase:           250 * time.Millisecond,
 		backoffCap:            10 * time.Second,
 		healthyReset:          time.Minute,
@@ -1118,9 +1391,9 @@ func TestDefaultStreamTuning(t *testing.T) {
 	// Server (or accidental mutation of this Server in a test) cannot alter an
 	// already-running stream's timing behavior.
 	session := streamSession{tuning: got}
-	got.idleCap = time.Millisecond
-	if session.tuning.idleCap != 30*time.Minute {
-		t.Fatalf("session idle cap changed through server-local tuning: %s", session.tuning.idleCap)
+	got.writeTimeout = time.Millisecond
+	if session.tuning.writeTimeout != 30*time.Second {
+		t.Fatalf("session write timeout changed through server-local tuning: %s", session.tuning.writeTimeout)
 	}
 }
 
@@ -1165,21 +1438,27 @@ func TestStreamShutdownTerminal(t *testing.T) {
 
 	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "9")
 	s.requireEvent(t, "ro-live", 5*time.Second)
+	hub := app.liveHub()
+	waitFor(t, "the shared source to start", func() bool { return hub.sourceCount() == 1 })
 	cancel()
 	term := s.requireEvent(t, "ro-live", 3*time.Second)
-	if reason := decodeFrame(t, term).Reason; reason != "shutdown" {
+	if reason := decodeFrame(t, term).Reason; reason != streamTerminalShutdown {
 		t.Fatalf("terminal reason = %q, want shutdown", reason)
 	}
 	s.requireClosed(t, 2*time.Second)
+	// Shutdown closes the shared sources too — the retention window does not
+	// keep an upstream watch alive through a drain.
+	waitFor(t, "every hub source to close", func() bool {
+		return hub.sourceCount() == 0 && hub.accountedBytes() == 0
+	})
 }
 
 // TestStreamMaxLifetimeTerminal pins the hard lifetime bound (security
 // review, waves E+F): in trusted-headers/none auth modes a stream has no
-// per-session expiry, and the idle cap resets on every watch event — without
-// a total-lifetime bound a stream runs forever. The server-local 12h default
-// terminates it with reason "idle". The 30-minute default idle cap is four
-// orders of magnitude above the injected bound, so a terminal arriving within
-// seconds can only be the lifetime timer.
+// per-session expiry, so without a total-lifetime bound it would run forever.
+// The server-local 12h default terminates it with reason "lifetime". There is
+// no idle cap any more, so a terminal arriving within seconds can only be the
+// lifetime timer.
 func TestStreamMaxLifetimeTerminal(t *testing.T) {
 	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
 		tuning.maxLifetime = 300 * time.Millisecond
@@ -1187,10 +1466,31 @@ func TestStreamMaxLifetimeTerminal(t *testing.T) {
 	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "12")
 	s.requireEvent(t, "ro-live", 5*time.Second)
 	term := s.requireEvent(t, "ro-live", 3*time.Second)
-	if reason := decodeFrame(t, term).Reason; reason != "idle" {
-		t.Fatalf("terminal reason = %q, want idle", reason)
+	if reason := decodeFrame(t, term).Reason; reason != streamTerminalLifetime {
+		t.Fatalf("terminal reason = %q, want lifetime", reason)
 	}
 	s.requireClosed(t, 2*time.Second)
+}
+
+// TestStreamQuietStreamSurvivesTheDeletedIdleCap pins the removal of the
+// per-subscriber idle cap: a stream with no watch data at all stays open and
+// keeps heartbeating instead of being terminated for being quiet. The old cap
+// fired after 30 minutes of the SAME tuning clock this fixture compresses, so
+// a quiet window many multiples of every armed timer proves nothing is left
+// counting silence.
+func TestStreamQuietStreamSurvivesTheDeletedIdleCap(t *testing.T) {
+	ts, _ := newStreamFixture(t, func(tuning *streamTuning) {
+		tuning.maxLifetime = time.Hour
+		tuning.heartbeat = 30 * time.Millisecond
+		tuning.checkpointInterval = 0
+	})
+	s := openStream(t, ts.URL+"/clusters/test/namespaces/default/pods/_stream", "quiet")
+	if frame := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second)); frame.Kind != "snapshot" {
+		t.Fatalf("initial frame kind = %q, want snapshot", frame.Kind)
+	}
+	// requireQuiet fails on a closed stream as well as on any frame, so this
+	// covers both "no idle terminal" and "still connected".
+	s.requireQuiet(t, 600*time.Millisecond)
 }
 
 // TestStreamOIDCSessionExpiryTerminal pins the session-bound lifetime
@@ -1237,69 +1537,6 @@ func TestStreamOIDCSessionExpiryTerminal(t *testing.T) {
 		t.Fatalf("terminal reason = %q, want auth", reason)
 	}
 	s.requireClosed(t, 2*time.Second)
-}
-
-// TestStreamWriteDeadlineFreesWedgedSlot pins the non-draining-client armor
-// (security review, waves E+F): a connected peer that stops READING wedges
-// the SSE write (Fprintf/Flush block once TCP buffers fill) — the handler
-// never returns to its select loop, no timer can fire, and the deferred cap
-// slot leaks until restart. The server-local per-write deadline turns the wedge
-// into a write error — the normal client-gone exit — and the slot releases. The
-// 600-row "big" fixture makes each push large enough to fill the loopback
-// buffers within a few frames.
-func TestStreamWriteDeadlineFreesWedgedSlot(t *testing.T) {
-	fake, err := fakeapi.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(fake.Close)
-	app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
-	app.streamTuning.writeTimeout = 250 * time.Millisecond
-	// V2 normally emits a tiny row delta. Force every changed projection to a
-	// full checkpoint so the non-reading peer exercises a genuinely blocked
-	// downstream write rather than an obsolete v1 full-table assumption.
-	app.streamTuning.checkpointDeltas = 1
-	ts := httptest.NewServer(app.Handler())
-	t.Cleanup(ts.Close)
-
-	// A raw TCP client that sends the request and then NEVER reads: kernel
-	// buffers fill and the server's writes stop completing. Closed at cleanup
-	// FIRST (LIFO), so even a regressed (deadline-less) handler unblocks
-	// before ts.Close drains.
-	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tcp, ok := conn.(*net.TCPConn); ok {
-		if err := tcp.SetReadBuffer(1024); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	if _, err := fmt.Fprintf(conn, "GET /clusters/test/namespaces/big/pods/_stream HTTP/1.1\r\nHost: readout-test\r\n%s: 2\r\n%s: wedge\r\n\r\n", streamVersionHeader, streamGenerationHeader); err != nil {
-		t.Fatal(err)
-	}
-
-	// The handler acquired its slot (the request routed and the stream started).
-	acquire := time.Now().Add(5 * time.Second)
-	for len(app.streamSlots) == 0 {
-		if time.Now().After(acquire) {
-			t.Fatal("stream handler never acquired its cap slot")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Keep producing dirty state so the handler keeps writing frames until
-	// one wedges (the initial 600-row push may fit in the buffers); then the
-	// injected write deadline must error the write and release the slot.
-	deadline := time.Now().Add(10 * time.Second)
-	for len(app.streamSlots) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("cap slot still held — the wedged write never hit the deadline")
-		}
-		postStreamScript(t, fake.URL, `{"events":[{"path":"/api/v1/namespaces/big/pods","type":"MODIFIED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"big-pod-0001","namespace":"big"}}}]}`)
-		time.Sleep(150 * time.Millisecond)
-	}
 }
 
 // TestStreamMetricsJoinSubPoll pins the ?join=metrics plumbing: the initial

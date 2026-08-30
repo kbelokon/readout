@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/kbelokon/readout/internal/assets"
@@ -89,17 +90,48 @@ type Server struct {
 	// small limits rather than mutating a global.
 	limits liveLimits
 
-	// streamSlots caps concurrent Live streams: every open `_stream`
-	// handler holds one slot for its whole lifetime; when the channel is full
-	// the next stream gets 429 BEFORE any SSE headers. The slot releases on
-	// every handler exit path (deferred at acquisition). Its capacity is
-	// limits.maxConnections.
-	streamSlots chan struct{}
+	// hub owns every upstream list+watch a Live stream reads from, so N
+	// subscribers on one scope cost the apiserver one LIST and one watch. It
+	// is built on first use rather than in New because streamTuning (which the
+	// hub copies) is still settable until the server starts serving; hubCtx is
+	// the New() context, so hub sources are bounded by process lifetime and
+	// never by one subscriber's request.
+	hubCtx   context.Context
+	hubOnce  sync.Once
+	hub      *watchHub
+	hubClock hubClock
 
 	// shutdownCh mirrors the New() context's Done channel: when the process
-	// is shutting down, open Live streams emit a terminal `event: ro-live`
-	// envelope (reason "shutdown") and close instead of dying mid-frame.
+	// is shutting down, /readyz and new Live admissions answer 503 and open
+	// Live streams emit a terminal `event: ro-live` envelope (reason
+	// "shutdown") and close instead of dying mid-frame.
 	shutdownCh <-chan struct{}
+}
+
+// ShutdownGrace bounds the graceful drain after SIGINT/SIGTERM: long enough
+// for open Live streams to flush their `ro-live` terminal "shutdown" frames
+// before the listener dies. The stream's own shutdown write is bounded by the
+// same value, so a non-reading peer cannot consume the whole drain.
+const ShutdownGrace = 5 * time.Second
+
+// liveHub returns the process-local WatchHub, building it on first use.
+func (s *Server) liveHub() *watchHub {
+	s.hubOnce.Do(func() {
+		s.hub = newWatchHub(s.hubCtx, s.limits, &s.streamTuning, s.hubClock, nil)
+	})
+	return s.hub
+}
+
+// shuttingDown reports whether the process has begun its graceful drain.
+// Readiness and new Live admissions both answer 503 from that instant, so a
+// draining pod stops receiving work while its open streams finish.
+func (s *Server) shuttingDown() bool {
+	select {
+	case <-s.shutdownCh:
+		return true
+	default:
+		return false
+	}
 }
 
 var withBearerClient = func(client *kube.Client, token string) (*kube.Client, error) {
@@ -143,9 +175,9 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		searchBudget:       searchFanoutBudget,
 		streamTuning:       defaultStreamTuning(),
 		limits:             liveLimitsFromConfig(cfg),
+		hubCtx:             ctx,
 		shutdownCh:         ctx.Done(),
 	}
-	s.streamSlots = make(chan struct{}, s.limits.maxConnections)
 	// Wire domain metrics: the kube Manager bakes the per-cluster request
 	// observer into each Client (cluster name closed over), and the shared hooks
 	// client records call duration. Both observer surfaces are Prometheus-free in
@@ -328,11 +360,22 @@ func (s *Server) Handler() http.Handler {
 	return s.hostAllowlist(s.readOnly(s.sameOrigin(s.securityHeaders(s.observeMetrics(compressResponses(s.auth.Middleware(s.mux)))))))
 }
 
+// readyz reports whether this pod should receive new work. It answers 503
+// from the instant the graceful drain begins, so the Service takes the pod out
+// of rotation while its open Live streams flush their shutdown terminals.
+func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
+	if s.shuttingDown() {
+		http.Error(w, "shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	_, _ = io.WriteString(w, "OK")
+}
+
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /assets/{name...}", s.assetsHandler)
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
-	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "OK") })
+	s.mux.HandleFunc("GET /readyz", s.readyz)
 	if s.cfg.MetricsPort == 0 {
 		s.mux.HandleFunc("GET /metrics", s.metricsHandler)
 	} else {

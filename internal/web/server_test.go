@@ -587,13 +587,20 @@ func newTestServer(t *testing.T) *Server {
 	return newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
 }
 
+// newTestServerWithConfig builds a Server on a cancelable context so the
+// WatchHub sources a test starts are torn down with the test rather than
+// outliving it (the cleanup runs after the httptest server's, which is
+// registered later and therefore closes first).
 func newTestServerWithConfig(t *testing.T, cfg *config.Config) *Server {
 	t.Helper()
 	cfg.NoAccessLogs = true
-	app, err := New(context.Background(), cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	app, err := New(ctx, cfg)
 	if err != nil {
+		cancel()
 		t.Fatal(err)
 	}
+	t.Cleanup(cancel)
 	return app
 }
 

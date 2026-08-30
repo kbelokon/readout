@@ -38,7 +38,7 @@ func TestDomainMetricsScrape(t *testing.T) {
 		TrustedHeaderUser:    "X-Forwarded-User",
 		AuthorizationHookURL: hook.URL,
 	})
-	app.streamTuning.idleCap = 200 * time.Millisecond
+	app.streamTuning.maxLifetime = 200 * time.Millisecond
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
 
@@ -54,15 +54,15 @@ func TestDomainMetricsScrape(t *testing.T) {
 		t.Fatalf("list status = %d", listResp.StatusCode)
 	}
 
-	// 2) A stream driven to its idle terminal: increments the terminal counter.
+	// 2) A stream driven to its lifetime terminal: increments the terminal counter.
 	streamReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream", nil)
 	streamReq.Header.Set("X-Forwarded-User", "alice")
 	setTestLiveHeaders(streamReq, "metrics-domain")
 	s := openStreamRequest(t, streamReq)
 	s.requireEvent(t, "ro-live", 5*time.Second)
 	term := s.requireEvent(t, "ro-live", 3*time.Second)
-	if reason := decodeFrame(t, term).Reason; reason != "idle" {
-		t.Fatalf("terminal reason = %q, want idle", reason)
+	if reason := decodeFrame(t, term).Reason; reason != streamTerminalLifetime {
+		t.Fatalf("terminal reason = %q, want lifetime", reason)
 	}
 
 	// 3) Scrape /metrics (public, bypasses auth) through the real handler.
@@ -78,8 +78,8 @@ func TestDomainMetricsScrape(t *testing.T) {
 		`readout_kube_requests_total{operation="list",result="ok",target_cluster="test"}`,
 		// kube duration histogram for the same cluster/operation.
 		`readout_kube_request_duration_seconds_count{operation="list",target_cluster="test"}`,
-		// stream terminal counter for the idle reason.
-		`readout_stream_terminal_total{reason="idle"}`,
+		// stream terminal counter for the lifetime reason.
+		`readout_stream_terminal_total{reason="lifetime"}`,
 		// hook duration histogram for the authorization hook, ok result.
 		`readout_hook_duration_seconds_count{hook="authorization",result="ok"}`,
 	}
