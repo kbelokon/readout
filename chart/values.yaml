@@ -291,7 +291,8 @@ networkPolicy:
       #     matchLabels:
       #       kubernetes.io/metadata.name: ingress-nginx
     # Peers allowed to reach the metrics port (metrics.port) ONLY: your
-    # Prometheus / vmagent. Requires metrics.enabled (a render error otherwise).
+    # Prometheus / vmagent. Requires metrics.enabled: with the policy enabled, peers
+    # here without a metrics port fail the render.
     metricsFrom: []
       # - namespaceSelector:
       #     matchLabels:
@@ -299,15 +300,18 @@ networkPolicy:
   # When testFramework.enabled, one more rule admits the `helm test` pod (by its
   # instance + component labels, this namespace only) to the app port.
   # Egress from readout's pods. DNS (UDP/TCP 53) is always allowed when egress is
-  # rendered -- readout must resolve the apiserver and the OIDC issuer. Add the
-  # destinations readout reaches: the Kubernetes apiserver, your OIDC issuer, and
-  # any Argo host. Each entry is a verbatim NetworkPolicyEgressRule.
+  # rendered. Add EVERY destination readout dials: the in-cluster Kubernetes
+  # apiserver; each remote apiserver configured through config.kubeconfigPath,
+  # config.clusters, config.externalClusters or Argo CD cluster Secrets; your
+  # OIDC issuer; and the hook endpoints (config.hooks.authorizationUrl /
+  # resourcePrerenderUrl). Each entry is a verbatim NetworkPolicyEgressRule.
   egress:
     # Allow DNS resolution (kube-dns / CoreDNS). Set false only if you pin every
     # egress destination by ipBlock and need no name resolution.
     dns: true
     # Verbatim egress rules. Leave empty and readout can reach ONLY DNS -- which
-    # breaks apiserver/OIDC access -- so scope these to your endpoints.
+    # breaks every cluster view and OIDC login -- so scope these to the
+    # destinations listed above.
     to: []
       # Kubernetes apiserver (cluster-dependent; commonly the kubernetes.default
       # ClusterIP/443 or the control-plane node IPs). Example ipBlock:
@@ -317,8 +321,8 @@ networkPolicy:
       #   ports:
       #     - protocol: TCP
       #       port: 443
-      # OIDC issuer + Argo hosts reached over the internet (scope tighter if you
-      # can pin their egress CIDRs):
+      # OIDC issuer, remote cluster apiservers and hook endpoints reached over
+      # the network (scope tighter if you can pin their CIDRs):
       # - to:
       #     - ipBlock:
       #         cidr: 0.0.0.0/0
