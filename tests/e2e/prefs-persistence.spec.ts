@@ -11,8 +11,8 @@ import { controlURL } from './playwright.config';
 //   - sort click -> a later BARE-url load renders the cookie-filled sort
 //     (rows re-ordered + th.sorted) while the URL itself stays clean (the
 //     fill is render-only, never materialized into the address bar);
-//   - interval pick -> a reload renders the persisted mode into the topbar
-//     (#refresh-label text + the active .refresh-option);
+//   - Live toggle -> a reload renders the persisted mode into the topbar
+//     (the server-painted aria-pressed on [data-ro-action="toggle-live"]);
 //   - namespace switch -> the clusters page's entry link points into the
 //     persisted namespace's pods list.
 //
@@ -44,11 +44,7 @@ function rowNames(page: Page) {
   return page.locator('#resource-list-content table.ro-table tbody td.cell-name');
 }
 
-// The navbar interval menu opens on hover (CSS :hover/:focus-within).
-async function pickInterval(page: Page, secs: number): Promise<void> {
-  await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
-}
+const LIVE_TOGGLE = '[data-ro-action="toggle-live"]';
 
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
@@ -76,23 +72,27 @@ test('a sort click persists: a bare-URL load renders the cookie-filled sort', as
   expect(new URL(page.url()).search).toBe('');
 });
 
-test('an interval pick persists: a reload renders 30s active from the cookie', async ({ page }) => {
+test('the Live toggle persists: a reload renders it pressed from the cookie', async ({ page }) => {
   await page.goto(PODS);
+  const toggle = page.locator(LIVE_TOGGLE);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
 
-  // The direct interaction write: pick 30s in the topbar dropdown.
-  await pickInterval(page, 30);
-  await expect(page.locator('#refresh-label')).toHaveText('30s');
+  // The direct interaction write: one click on the topbar Live toggle.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
 
-  // A fresh server render carries the persisted mode at SSR: the label text,
-  // the active option, and ONLY that option active.
+  // A fresh server render carries the persisted mode at SSR -- the cookie is
+  // the only carrier across this reload, and the SERVER paints aria-pressed
+  // (asserted before any client JS could have re-synced it, via the markup the
+  // reload response delivered).
   await page.reload();
-  await expect(page.locator('#refresh-label')).toHaveText('30s');
-  await expect(page.locator('.refresh-option[data-ro-interval="30"]')).toHaveClass(
-    /is-active/
-  );
-  await expect(page.locator('.refresh-option[data-ro-interval="0"]')).not.toHaveClass(
-    /is-active/
-  );
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute('aria-pressed', 'true');
+
+  // ... and turning it back off persists the same way.
+  await page.locator(LIVE_TOGGLE).click();
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute('aria-pressed', 'false');
+  await page.reload();
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('a namespace switch persists: the clusters page entry link points into it', async ({

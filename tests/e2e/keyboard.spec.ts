@@ -12,7 +12,7 @@ import { controlURL } from './playwright.config';
 //   - the gesture keys are INERT while a text-entry surface or overlay owns
 //     the keyboard (the chips editor's ⏎-commits-a-chip protocol above all,
 //     and the ⌘K palette);
-//   - focus survives a refresh-tick morph (the identity proof, like the
+//   - focus survives a Refresh morph (the identity proof, like the
 //     row-selection one);
 //   - "?" toggles the keyboard-map overlay; esc/backdrop close it and restore
 //     the prior focus; keys are trapped while it is open;
@@ -82,10 +82,14 @@ async function clickSort(page: Page, label: string): Promise<void> {
   await swapped;
 }
 
-// The navbar interval menu opens on hover (CSS :hover/:focus-within).
-async function pickInterval(page: Page, secs: number): Promise<void> {
-  await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
+// The topbar's one-shot Refresh button drives the container-owned re-fetch the
+// morph assertions below need (the interval picker it replaced is gone). Row
+// focus lives in the identity-keyed store, not the DOM focus ring, so parking
+// the caret on the button cannot move it.
+async function refreshNow(page: Page): Promise<Response> {
+  const tick = waitForTick(page);
+  await page.locator('[data-ro-action="refresh-now"]').click();
+  return tick;
 }
 
 const focusedRow = '#resource-list-content tr.kfocus';
@@ -176,7 +180,7 @@ test('⏎ opens the focused row detail', async ({ page }) => {
   await expect(page.locator('.ro-topbar')).toBeVisible();
 });
 
-test('row focus survives a refresh-tick morph that reorders rows (keyed, not positional)', async ({
+test('row focus survives a Refresh morph that reorders rows (keyed, not positional)', async ({
   page,
 }) => {
   await seedThird();
@@ -194,9 +198,8 @@ test('row focus survives a refresh-tick morph that reorders rows (keyed, not pos
   await page.keyboard.press('j');
   await expectFocus(page, 'e2e/default/zeta');
 
-  // A tick lands omega, which sorts BETWEEN nginx and zeta: zeta's position
+  // A Refresh lands omega, which sorts BETWEEN nginx and zeta: zeta's position
   // shifts from 2 to 3. The focus must follow the key, never the position.
-  await pickInterval(page, 5);
   await scriptEvents([
     {
       path: PODS_LIST_PATH,
@@ -205,7 +208,7 @@ test('row focus survives a refresh-tick morph that reorders rows (keyed, not pos
       cells: ['omega', '1/1', 'Running', '0', '1y'],
     },
   ]);
-  await waitForTick(page);
+  await refreshNow(page);
   await expect(page.locator('#resource-list-content td.cell-name')).toHaveText([
     'my-app',
     'nginx',
@@ -236,11 +239,10 @@ test('deleting the focused row clears aria-activedescendant and kfocus; j clamps
   await page.keyboard.press('j');
   await expectFocus(page, 'e2e/default/zeta');
 
-  // Delete the focused row out from under its key: the next tick's morph
-  // drops the row, and the row-state re-apply must CLEAR the wrap's
+  // Delete the focused row out from under its key: the Refresh morph drops the
+  // row, and the row-state re-apply must CLEAR the wrap's
   // aria-activedescendant (never announce a row that left the
   // document) with zero kfocus rows -- the clear branch of the focus mirror.
-  await pickInterval(page, 5);
   await scriptEvents([
     {
       path: PODS_LIST_PATH,
@@ -248,7 +250,7 @@ test('deleting the focused row clears aria-activedescendant and kfocus; j clamps
       object: { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'zeta', namespace: 'default' } },
     },
   ]);
-  await waitForTick(page);
+  await refreshNow(page);
   await expect(page.locator('#resource-list-content td.cell-name')).toHaveText([
     'nginx',
     'my-app',

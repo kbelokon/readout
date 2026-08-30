@@ -16,12 +16,18 @@ package fakekube
 //	    the application AND the stream emission for race tests). The queue
 //	    also streams to open ?watch=true connections as Table watch frames;
 //	    BOOKMARK/GONE/EOF entries drive stream controls. See watch.go.
-//	/__control/watch-401
+//	/__control/watch-401[?path=<collection route>]
 //	    Arms a one-shot 401: the next ?watch=true request returns an
-//	    Unauthorized Status, then the flag clears.
+//	    Unauthorized Status, then the flag clears. With ?path= only a watch on
+//	    that EXACT route consumes it -- path aliases (/api/v1/pods and its
+//	    namespaced spelling) share one list state and are woken by the same
+//	    events, so an unscoped arm is a race between their reconnects.
 //	/__control/reset
 //	    Reseeds the fixture store and clears every control flag, the script
-//	    queue, and pending timers -- spec isolation for e2e runs.
+//	    queue, and pending timers -- spec isolation for e2e runs. Cursors
+//	    minted before the reset expire: the fresh collections restart above
+//	    every resourceVersion the old ones issued, so a consumer that
+//	    reconnects across a reset is answered 410 and relists.
 
 import (
 	"encoding/json"
@@ -29,6 +35,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -45,6 +52,9 @@ type controlState struct {
 	mu       sync.Mutex
 	failMode string // "" (off), "500", or "403"
 	watch401 bool
+	// watch401Path scopes the armed one-shot to one collection route; "" arms
+	// it for whichever watch reconnects first.
+	watch401Path string
 }
 
 func (c *controlState) setFailMode(mode string) {
@@ -59,19 +69,25 @@ func (c *controlState) failListsMode() string {
 	return c.failMode
 }
 
-func (c *controlState) armWatch401() {
+func (c *controlState) armWatch401(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.watch401 = true
+	c.watch401Path = path
 }
 
-// consumeWatch401 reports whether the one-shot 401 is armed and disarms it.
-func (c *controlState) consumeWatch401() bool {
+// consumeWatch401 reports whether the one-shot 401 is armed for this watch and
+// disarms it. An arm scoped to another route is left in place for its own
+// watch.
+func (c *controlState) consumeWatch401(path string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	armed := c.watch401
+	if !c.watch401 || (c.watch401Path != "" && c.watch401Path != path) {
+		return false
+	}
 	c.watch401 = false
-	return armed
+	c.watch401Path = ""
+	return true
 }
 
 func (c *controlState) reset() {
@@ -79,6 +95,7 @@ func (c *controlState) reset() {
 	defer c.mu.Unlock()
 	c.failMode = ""
 	c.watch401 = false
+	c.watch401Path = ""
 }
 
 func (s *Server) registerControl(mux *http.ServeMux) {
@@ -103,9 +120,10 @@ func (s *Server) handleFailLists(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"failLists": mode})
 }
 
-func (s *Server) handleWatch401(w http.ResponseWriter, _ *http.Request) {
-	s.ctrl.armWatch401()
-	writeJSON(w, http.StatusOK, map[string]any{"watch401": "armed"})
+func (s *Server) handleWatch401(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	s.ctrl.armWatch401(path)
+	writeJSON(w, http.StatusOK, map[string]any{"watch401": "armed", "path": path})
 }
 
 func (s *Server) handleWatchScript(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +212,38 @@ func (s *Server) resetWithStore(fresh *store, barrier func()) {
 	s.store.objects = fresh.objects
 	s.store.logs = fresh.logs
 	s.store.lists = fresh.lists
-	s.store.rv = fresh.rv
+	// A reset REPLACES the collections: their watch cache is gone, so a cursor
+	// minted before it can no longer be served. Start the fresh collections
+	// ABOVE every resourceVersion the old ones issued and floor the replay
+	// window there, so a consumer reconnecting with a pre-reset cursor is
+	// answered 410 Expired and relists -- exactly what a real apiserver does
+	// once its watch cache no longer covers the cursor. Without it, a consumer
+	// that holds a watch across the reset (readout's WatchHub retains a source
+	// for 30s after its last subscriber leaves) would silently keep serving the
+	// pre-reset table, and `reset` would stop meaning isolation.
+	baseline := s.store.rv + 1
+	if fresh.rv > baseline {
+		baseline = fresh.rv
+	}
+	s.store.rv = baseline
+	rv := strconv.FormatInt(baseline, 10)
+	seen := make(map[*listState]struct{}, len(fresh.lists))
+	for _, state := range fresh.lists {
+		if _, done := seen[state]; done {
+			continue // path aliases (/api/v1/pods and its namespaced spelling) share one state
+		}
+		seen[state] = struct{}{}
+		s.watches.replayFloor[state] = baseline
+		// The collection's own metadata must carry the baseline too: a relisting
+		// consumer re-watches from the LIST's resourceVersion, and a seeded value
+		// below the floor would 410 it straight back into another relist.
+		if state.table != nil {
+			setCollectionResourceVersion(state.table, rv)
+		}
+		if state.list != nil {
+			setCollectionResourceVersion(state.list, rv)
+		}
+	}
 }
 
 // serveListFailure renders the armed fail-lists mode as a real apiserver

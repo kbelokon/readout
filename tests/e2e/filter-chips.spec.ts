@@ -14,7 +14,7 @@ import { controlURL } from './playwright.config';
 //   - an unknown field on ⏎ shows the inline hint and creates NO chip;
 //   - clicking a label chip in a namespaces row appends the corresponding
 //     `label:key=value` chip and narrows the rows;
-//   - a focused draft AND its focus survive a refresh-tick morph (the
+//   - a focused draft AND its focus survive a Refresh morph (the
 //     ignoreActiveValue contract, asserted where the chips editor lives).
 //
 // Fixture state is scripted through the control surface and reset per spec.
@@ -71,10 +71,17 @@ function waitForTick(page: Page): Promise<Response> {
   return page.waitForResponse(isTickResponse, { timeout: 15_000 });
 }
 
-// The navbar interval menu opens on hover (CSS :hover/:focus-within).
-async function pickInterval(page: Page, secs: number): Promise<void> {
-  await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
+// requestListRefresh is the production container-owned re-fetch -- exactly what
+// the topbar's Refresh button calls. It is driven through the window seam here
+// rather than by clicking the button, because the test below asserts that the
+// filter draft keeps DOM FOCUS across the morph, and a button click would move
+// that focus itself.
+async function refreshList(page: Page): Promise<Response> {
+  const tick = waitForTick(page);
+  await page.evaluate(() =>
+    (window as unknown as { requestListRefresh(): void }).requestListRefresh()
+  );
+  return tick;
 }
 
 const filterInput = (page: Page) => page.locator('#ro-filter-input');
@@ -277,17 +284,16 @@ test('clicking a label chip in a namespaces row appends the label chip and narro
   await expect(visibleNames(page)).toHaveText(['default']);
 });
 
-test('a focused draft and its focus survive a refresh-tick morph', async ({ page }) => {
+test('a focused draft and its focus survive a Refresh morph', async ({ page }) => {
   await page.goto(PODS);
-  await pickInterval(page, 5);
 
   await filterInput(page).click();
   await filterInput(page).pressSequentially('ngi');
   await expect(visibleNames(page)).toHaveText(['nginx']);
 
-  // Change cluster state and let one tick morph the fragment under the draft.
+  // Change cluster state and let one refresh morph the fragment under the draft.
   await addPod('omega', ['omega', '1/1', 'Running', '0', '1y']);
-  await waitForTick(page);
+  await refreshList(page);
   // The morph applied: the new row is in the DOM (hidden by the live filter).
   await expect(page.locator('tr[data-key="e2e/default/omega"]')).toBeAttached();
 

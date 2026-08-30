@@ -8,7 +8,10 @@ import { defineConfig, devices } from '@playwright/test';
 // developer override these.
 const readoutPort = process.env.READOUT_E2E_PORT ?? '18090';
 const fakeapiPort = process.env.FAKEAPI_E2E_PORT ?? '18091';
-const baseURL = `http://127.0.0.1:${readoutPort}`;
+// Exported alongside controlURL: specs that need readout's OWN observability
+// surface (the /metrics families) address it directly rather than through the
+// page, so a barrier can be taken before the browser exists.
+export const baseURL = `http://127.0.0.1:${readoutPort}`;
 export const controlURL = `http://127.0.0.1:${fakeapiPort}`;
 
 // The demo suite (demo.spec.ts) drives a SECOND server: `readout --demo`, the

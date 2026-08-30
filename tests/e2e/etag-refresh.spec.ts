@@ -15,9 +15,10 @@ import { controlURL } from './playwright.config';
 //   - history never restores a windowed tbody slice into a bodyless 304: its
 //     validator is cleared before one unconditional full-model rebuild.
 //
-// The tests call window.requestListRefresh(), the production tick/Retry entry
-// point. They therefore exercise htmx:configRequest and its real request
-// headers without paying the 5s polling interval. A network response arrives
+// The tests call window.requestListRefresh(), the production entry point behind
+// the topbar's Refresh button and the stale banner's Retry. They therefore
+// exercise htmx:configRequest and its real request headers through the same
+// path a click takes, without a click's focus side effects. A network response arrives
 // before HTMX necessarily finishes its lifecycle, so every action also waits
 // for the list's htmx:afterRequest event through the page-side probe below.
 
@@ -405,7 +406,10 @@ test('a seeded validator never masks a 500; Retry now recovers with an unchanged
   expect(recovered.headers()['content-encoding']).toBeUndefined();
   await expect(page.locator('.ro-stale-banner')).toBeHidden();
   await expect(page.locator('#resource-list-content')).not.toHaveClass(/ro-stale/);
-  await expect(page.locator('#ro-toasts .ro-toast')).toHaveText('Refresh resumed');
+  // Recovery is SILENT: the "Refresh resumed" toast belonged to the polling
+  // recovery ladder, which no longer exists. Clearing the dim and the banner is
+  // the whole announcement.
+  await expect(page.locator('#ro-toasts .ro-toast')).toHaveCount(0);
   await expect(rowNames(page)).toHaveText(['nginx', 'my-app']);
   expect(await rememberedNginxRowIsCurrent(page)).toBe(true);
   expect(await lifecycleCounts(page)).toEqual({

@@ -13,7 +13,7 @@ import { controlURL } from './playwright.config';
 //   - j/k crosses a window boundary: the walker runs on the full visible list
 //     and the focus jump scrolls the window;
 //   - identity-keyed selection survives a sort swap while windowed;
-//   - an awaited tick while windowed leaves the window intact — no duplicate
+//   - an awaited Refresh while windowed leaves the window intact — no duplicate
 //     rows, stable scroll — and adopted changes flash exactly like the
 //     idiomorph path (the review-proven pass-with-bug hole #1);
 //   - the 600-row EVENTS fixture renders one-line clamped messages (full text
@@ -45,7 +45,7 @@ async function scriptEvents(events: object[]): Promise<void> {
   }
 }
 
-// A tick marks itself RO-No-Push (the refresh.spec.ts pattern).
+// A container-owned refresh marks itself RO-No-Push (the refresh.spec.ts pattern).
 function isTickResponse(r: Response): boolean {
   return r.url().includes('/_table') && r.request().headers()['ro-no-push'] === 'true';
 }
@@ -54,10 +54,15 @@ function waitForTick(page: Page): Promise<Response> {
   return page.waitForResponse(isTickResponse, { timeout: 15_000 });
 }
 
-async function pickInterval(page: Page, secs: number): Promise<void> {
-  await page.locator('#refresh-dropdown').hover();
-  await page.locator(`.refresh-option[data-ro-interval="${secs}"]`).click();
-  await page.mouse.move(200, 400); // park the cursor: close the hover menu
+// requestListRefresh is the production container-owned re-fetch (what the
+// topbar's Refresh button calls). It is driven through the window seam so the
+// mid-list scroll position under test is never disturbed by a click on chrome.
+async function refreshList(page: Page): Promise<Response> {
+  const tick = waitForTick(page);
+  await page.evaluate(() =>
+    (window as unknown as { requestListRefresh(): void }).requestListRefresh()
+  );
+  return tick;
 }
 
 function identityRows(page: Page) {
@@ -189,13 +194,12 @@ test.describe('windowing (desktop)', () => {
     expect(await identityRows(page).count()).toBeLessThan(100);
   });
 
-  test('an awaited tick while windowed leaves the window intact', async ({ page }) => {
+  test('an awaited Refresh while windowed leaves the window intact', async ({ page }) => {
     await page.goto(BIG_PODS);
     await expect(podRow(page, 1)).toBeVisible();
-    await pickInterval(page, 5);
 
     // Mutate a row through the fixture LIST state, then park mid-list: the
-    // tick must keep the window and the scroll position exactly.
+    // refresh must keep the window and the scroll position exactly.
     await scriptEvents([
       {
         path: BIG_PODS_LIST_PATH,
@@ -244,12 +248,11 @@ test.describe('windowing (desktop)', () => {
     ]);
     const scrollBefore = await page.evaluate(() => window.scrollY);
 
-    await waitForTick(page);
+    await refreshList(page);
     // Adoption barrier: the in-window row shows the mutated text, so the
     // swap AND the virtualizer's adoption have fully landed — the stable-
     // scroll and no-dupes asserts below run against the post-adoption DOM,
-    // never the pre-swap one. The generous timeout covers a tick that was
-    // already in flight when the mutation posted (the NEXT tick carries it).
+    // never the pre-swap one.
     await expect(podRow(page, inWindowPod).locator('td').nth(2)).toContainText(
       'ImagePullBackOff',
       { timeout: 15_000 }
@@ -286,7 +289,7 @@ test.describe('windowing (desktop)', () => {
         cells: ['big-pod-0002', '0/1', 'Error', '5', '10m'],
       },
     ]);
-    await waitForTick(page);
+    await refreshList(page);
     await expect(podRow(page, 2).locator('td').nth(2)).toContainText('Error');
     await expect(podRow(page, 2).locator('td').nth(2)).toHaveClass(/ro-cell-changed/);
     await expect(podRow(page, 2).locator('td.cell-name')).not.toHaveClass(/ro-cell-changed/);

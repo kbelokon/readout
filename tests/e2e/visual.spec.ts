@@ -23,8 +23,9 @@ import { controlURL } from './playwright.config';
 //     other behavioural specs assert and that a global flag would break;
 //   - `document.fonts.ready` is awaited before every snapshot so the
 //     self-hosted Geist / Geist Mono faces are painted, never a fallback;
-//   - the list refresh defaults to Off, so no polling/stream tick fires under
-//     a snapshot; the windowed list is scrolled to a stable top window first.
+//   - Live defaults to off and nothing refreshes on a timer, so no stream or
+//     list request can land mid-snapshot; the windowed list is scrolled to a
+//     stable top window first.
 //
 // Strict comparison: no global maxDiffPixels / threshold. The single mask is
 // the search timing meter (`.ro-phase-meta`, "searched M clusters in T s") —

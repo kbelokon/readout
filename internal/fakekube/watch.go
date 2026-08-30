@@ -1194,7 +1194,7 @@ func setCollectionResourceVersion(doc map[string]any, rv string) {
 // until a scripted GONE/EOF closes it, the client goes away, or the server
 // closes.
 func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request, path string) {
-	if s.ctrl.consumeWatch401() {
+	if s.ctrl.consumeWatch401(path) {
 		writeStatusJSON(w, http.StatusUnauthorized, unauthorizedStatus())
 		return
 	}

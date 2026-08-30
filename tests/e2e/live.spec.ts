@@ -1,41 +1,61 @@
-import {
-  test,
-  expect,
-  type Page,
-  type Request,
-  type Response,
-} from "@playwright/test";
+import { test, expect, type Page, type Request } from "@playwright/test";
 import { controlURL } from "./playwright.config";
+import { resetFixture } from "./hub";
 
-// Live mode, made deterministic by the fakeapi control
-// surface (watch-script with delayMs, watch-401, the openWatches snapshot):
+// Live mode, made deterministic by the fakeapi control surface (watch-script
+// with delayMs, watch-401, the openWatches snapshot) plus Playwright's page
+// clock. Live is the ONLY automatic update path now -- there is no polling to
+// fall back to -- so what a dropped stream does is as load-bearing as what an
+// open one delivers:
 //
-//   - enabling Live opens the `_stream` SSE fetch (with a client-minted
-//     generation header), pulses the topbar livedot, and a scripted pod
-//     status change lands as a PUSH -- well under any polling cadence -- and
-//     flashes exactly the changed cell through the semantic delta reducer;
-//   - the choice persists via the ro_prefs cookie (SSR renders Live + the
-//     stream reopens on reload);
+//   - the topbar toggle opens the `_stream` SSE fetch (with a client-minted
+//     generation header), presses aria-pressed, and a scripted pod status
+//     change lands as a PUSH that flashes exactly the changed cell through the
+//     semantic delta reducer; the choice persists via the ro_prefs cookie;
 //   - a filter-chip request synchronously aborts the OLD stream before the
 //     request leaves the browser, stays suspended while canonical state
 //     changes, then reopens with a FRESH generation carrying the f= query;
-//   - `/__control/watch-401` + a scripted EOF make readout's re-watch hit a
-//     401 -> the server emits a `ro-live` terminal (reason auth) -> the stale banner
-//     appears, 5s polling resumes, and a later tab-hide/show does NOT reopen
-//     the stream (the close-reason taxonomy: terminal fallback is sticky);
-//   - document.hidden closes a riding stream (the server-side watch tears
-//     down) and visibility return reopens it -- the ONLY visibility-return
-//     reopen the taxonomy allows;
-//   - a push into the 600-row windowed fixture keeps the window: no
-//     duplicate rows, two spacers, stable mid-list scroll, the changed cell
-//     flashes (the windowed-push review hole);
-//   - multi-type and multi-cluster pages render the Live option DISABLED
-//     with the scope title; the single-type page keeps it enabled.
+//   - a sort moves the stream to the new URL, while a FAILED one reopens
+//     against the PREVIOUS one: the browser follows what actually rendered,
+//     never what was attempted;
+//   - `/__control/watch-401` + a scripted EOF make readout's re-watch hit a 401
+//     -> the server emits a `ro-live` terminal (reason auth) -> the banner
+//     swaps to its terminal Unavailable copy whose action is Reload, and NO
+//     retry is ever armed (nothing polls in its place);
+//   - a 429 admission reject waits out the server's Retry-After rather than
+//     the client's own ladder;
+//   - a drop marks the projection last-known IMMEDIATELY but hides the dim and
+//     the banner for a three second grace, so a pod rollout does not flash a
+//     warning; the first FAILED reconnect ends that grace early;
+//   - document.hidden closes a riding stream and visibility return reopens it
+//     exactly once;
+//   - a push into the 600-row windowed fixture keeps the window: no duplicate
+//     rows, two spacers, stable mid-list scroll, the changed cell flashes;
+//   - pages `_stream` does not serve (multi-type, multi-cluster, detail, and a
+//     kind whose verbs lack `watch`) render Refresh and NO Live toggle at all.
+//
+// NOTE on openWatchCount: an upstream watch is owned by the pod-local WatchHub,
+// not by one browser (see hub.ts). A source is retained for 30 seconds after
+// its last subscriber leaves, so "the client stopped streaming" can NOT be
+// observed as "the upstream watch closed". Client-side disconnection is
+// asserted through the transport's own state (roLive.stats) and through the
+// absence of new `_stream` requests; openWatchCount is read only in the
+// positive direction, and resetFixture is what keeps a retained source from
+// bleeding its pre-reset table into the next spec.
 
 const PODS = "/clusters/e2e/namespaces/default/pods";
 const PODS_LIST_PATH = "/api/v1/namespaces/default/pods";
 const BIG_PODS = "/clusters/e2e/namespaces/big/pods";
 const BIG_PODS_LIST_PATH = "/api/v1/namespaces/big/pods";
+const NGINX_POD = "/clusters/e2e/namespaces/default/pods/nginx";
+// The metrics pseudo-type resolves with get/list verbs and no watch
+// (kube.metricsResourceType), so here it is the WATCH gate -- not the scope
+// gate -- that withholds the toggle. `_stream` answers this URL 204.
+const METRICS_PODS =
+  "/clusters/e2e/namespaces/default/pods?apiVersion=metrics.k8s.io%2Fv1beta1";
+
+const LIVE_TOGGLE = '[data-ro-action="toggle-live"]';
+const REFRESH_NOW = '[data-ro-action="refresh-now"]';
 
 async function control(path: string): Promise<void> {
   const res = await fetch(controlURL + path);
@@ -56,8 +76,7 @@ async function scriptEvents(events: object[]): Promise<void> {
 }
 
 // The fakeapi hub snapshot names every open ?watch=true connection -- the
-// server-side truth about whether a Live stream is riding (each open stream
-// holds exactly one upstream watch; nothing else in readout watches).
+// server-side truth about whether SOMETHING on the pod is watching this key.
 async function openWatchCount(): Promise<number> {
   const res = await fetch(`${controlURL}/__control/watch-script`);
   if (!res.ok) {
@@ -76,46 +95,48 @@ async function appliedScriptEventCount(): Promise<number> {
   return (body.events ?? []).filter((event) => event.applied === true).length;
 }
 
-function requestOwnershipStats(page: Page): Promise<{
+interface LiveStats {
   state: string;
   connections: number;
+  reconnects: number;
   inFlightRequests: number;
-}> {
+}
+
+function liveStats(page: Page): Promise<LiveStats> {
   return page.evaluate(() => {
     const stats = (
-      window as unknown as {
-        roLive: {
-          stats(): {
-            state: string;
-            connections: number;
-            inFlightRequests: number;
-          };
-        };
-      }
+      window as unknown as { roLive: { stats(): LiveStats } }
     ).roLive.stats();
     return {
       state: stats.state,
       connections: stats.connections,
+      reconnects: stats.reconnects,
       inFlightRequests: stats.inFlightRequests,
     };
   });
 }
 
-// A polling tick (or any programmatic re-fetch) marks itself RO-No-Push (the
-// refresh.spec.ts pattern) -- how the 5s fallback polling is awaited.
-function isTickResponse(r: Response): boolean {
-  return (
-    r.url().includes("/_table") &&
-    r.request().headers()["ro-no-push"] === "true"
-  );
+function liveState(page: Page): Promise<string> {
+  return liveStats(page).then((stats) => stats.state);
 }
 
 function isStreamRequest(url: string): boolean {
-  return url.includes("/_stream");
+  return new URL(url).pathname.endsWith("/_stream");
 }
 
 function streamGeneration(request: Request): string {
   return request.headers()["ro-live-generation"] ?? "";
+}
+
+// streamLog is the append-only record of every `_stream` request the page
+// issued. Reconnect assertions are about COUNTS and URLs, so the log is the
+// primary oracle for both "it retried" and "it did not".
+function streamLog(page: Page): string[] {
+  const urls: string[] = [];
+  page.on("request", (request) => {
+    if (isStreamRequest(request.url())) urls.push(request.url());
+  });
+  return urls;
 }
 
 function rowNames(page: Page) {
@@ -130,12 +151,21 @@ function podRow(page: Page, n: number) {
   );
 }
 
-// The navbar dropdown opens on hover; park the cursor afterwards so the open
-// menu never intercepts later clicks (the refresh.spec.ts pattern).
-async function pickLive(page: Page): Promise<void> {
-  await page.locator("#refresh-dropdown").hover();
-  await page.locator('.refresh-option[data-ro-interval="Live"]').click();
-  await page.mouse.move(200, 400);
+// enableLive clicks the topbar Live toggle and waits until a full snapshot has
+// been committed -- `open` is the only state that means "the rows on screen
+// came off this stream".
+async function enableLive(page: Page): Promise<Request> {
+  const opened = page.waitForRequest((r) => isStreamRequest(r.url()), {
+    timeout: 10_000,
+  });
+  await page.locator(LIVE_TOGGLE).click();
+  const request = await opened;
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("open");
+  return request;
 }
 
 // Simulate tab visibility for the document.hidden taxonomy: readout.js reads
@@ -154,42 +184,44 @@ async function setHidden(page: Page, hidden: boolean): Promise<void> {
   }, hidden);
 }
 
+// The semantic half of staleness: the projection is last-known from the instant
+// the stream drops, whatever the visual grace is still hiding.
+function semanticallyStale(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () =>
+      document.getElementById("resource-list-content")?.dataset.roStale ===
+      "true",
+  );
+}
+
 test.beforeEach(async ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== "desktop",
-    "the Live chrome (refresh dropdown, chips editor, windowing) is a desktop surface (below 760px the card layer replaces the table)",
+    "the Live chrome (topbar toggle, chips editor, windowing) is a desktop surface (below 760px the card layer replaces the table)",
   );
-  await control("/__control/reset");
+  await resetFixture();
 });
 
-test("Live opens the stream: livedot pulses, a status change lands as a push and flashes, the pick persists", async ({
+test("the Live toggle opens the stream: a status change lands as a push and flashes, and the pick persists", async ({
   page,
 }) => {
   await page.goto(PODS);
   await expect(rowNames(page)).toHaveText(["nginx", "my-app"]);
-
-  const streamReq = page.waitForRequest((r) => isStreamRequest(r.url()), {
-    timeout: 10_000,
-  });
-  await pickLive(page);
-  const gen = streamGeneration(await streamReq);
-  expect(gen).not.toBe(""); // the client minted a generation into the v2 request header
-  await expect(page.locator("#refresh-label")).toHaveText("Live");
-  await expect(
-    page.locator('.refresh-option[data-ro-interval="Live"]'),
-  ).toHaveClass(/is-active/);
-  await expect(page.locator("#refresh-dropdown .ro-livedot")).toHaveCSS(
-    "animation-name",
-    "ro-pulse",
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute(
+    "aria-pressed",
+    "false",
   );
+
+  const request = await enableLive(page);
+  expect(streamGeneration(request)).not.toBe(""); // the client minted a v2 generation
+  expect(request.headers()["ro-live-version"]).toBe("2");
   // The server-side watch is riding (fakeapi hub truth).
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
 
-  // A scripted change arrives as a PUSH: Live arms NO polling timer, so the
-  // cell update proves the stream delivered it — and the 1s budget
-  // pins it SUB-SECOND (push latency after the 300ms floor is ~tens of ms;
-  // no polling cadence could land this fast). The changed STATUS cell
-  // flashes; the untouched NAME cell does not.
+  // A scripted change arrives as a PUSH: nothing is on a timer, so the cell
+  // update proves the stream delivered it -- and the 1s budget pins it
+  // SUB-SECOND. The changed STATUS cell flashes; the untouched NAME cell
+  // does not.
   await scriptEvents([
     {
       path: PODS_LIST_PATH,
@@ -210,9 +242,7 @@ test("Live opens the stream: livedot pulses, a status change lands as a push and
   const nginx = page.locator('tr[data-key="e2e/default/nginx"]');
   await expect(nginx.locator("td:has(span.cell-status)")).toContainText(
     "CrashLoopBackOff",
-    {
-      timeout: 1_000,
-    },
+    { timeout: 1_000 },
   );
   await expect(nginx.locator("td:has(span.cell-status)")).toHaveClass(
     /ro-cell-changed/,
@@ -221,35 +251,35 @@ test("Live opens the stream: livedot pulses, a status change lands as a push and
     /ro-cell-changed/,
   );
 
-  // Persistence: a reload renders Live at SSR from the ro_prefs cookie
-  // and the stream reopens by itself (a fresh page init is a fresh attempt).
+  // Persistence: a reload renders the toggle pressed at SSR from the ro_prefs
+  // cookie and the stream reopens by itself (a fresh page init is a fresh
+  // attempt).
   const reopened = page.waitForRequest((r) => isStreamRequest(r.url()), {
     timeout: 10_000,
   });
   await page.reload();
-  await expect(page.locator("#refresh-label")).toHaveText("Live");
-  await expect(
-    page.locator('.refresh-option[data-ro-interval="Live"]'),
-  ).toHaveClass(/is-active/);
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await reopened;
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("open");
 });
 
 test("a filter request aborts the old generation before send, suspends, and reopens canonically", async ({
   page,
 }) => {
   await page.goto(PODS);
-  const firstStream = page.waitForRequest((r) => isStreamRequest(r.url()), {
-    timeout: 10_000,
-  });
-  await pickLive(page);
-  const gen1 = streamGeneration(await firstStream);
+  const streams = streamLog(page);
+  const gen1 = streamGeneration(await enableLive(page));
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
-  const before = await requestOwnershipStats(page);
+  const before = await liveStats(page);
+  expect(streams).toHaveLength(1);
 
   // Hold the exact user `_table` request at the browser boundary. The route
   // starts only after htmx:beforeRequest has given Live synchronous ownership
-  // and aborted the old connection, so the absence of an upstream watch below
-  // is causal evidence rather than a timing inference.
+  // and aborted the old connection, so the absence of a replacement `_stream`
+  // below is causal evidence rather than a timing inference.
   let markTableStarted!: () => void;
   let releaseTable!: () => void;
   const tableStarted = new Promise<void>((resolve) => {
@@ -258,15 +288,21 @@ test("a filter request aborts the old generation before send, suspends, and reop
   const tableRelease = new Promise<void>((resolve) => {
     releaseTable = resolve;
   });
-  await page.route(
-    "**/_table*",
-    async (route) => {
-      markTableStarted();
-      await tableRelease;
-      await route.continue();
-    },
-    { times: 1 },
-  );
+  // Self-retiring rather than `{ times: 1 }`: an exhausted times-limited route
+  // is torn down at the instant its last request resolves, and the request Live
+  // issues in that same turn can be dropped as interception unwinds. A handler
+  // that stays registered and falls through never toggles interception.
+  let tableHeld = false;
+  await page.route("**/_table*", async (route) => {
+    if (tableHeld) {
+      await route.fallback();
+      return;
+    }
+    tableHeld = true;
+    markTableStarted();
+    await tableRelease;
+    await route.continue();
+  });
 
   // Begin a status:Running commit. No replacement generation may open while
   // this request owns the persistent list container.
@@ -274,19 +310,17 @@ test("a filter request aborts the old generation before send, suspends, and reop
   await page.locator("#ro-filter-input").pressSequentially("status:Running");
   await page.locator("#ro-filter-input").press("Enter");
   await tableStarted;
-  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
-  await expect
-    .poll(() => requestOwnershipStats(page))
-    .toMatchObject({
-      state: "suspended",
-      connections: before.connections,
-      inFlightRequests: 1,
-    });
+  await expect.poll(() => liveStats(page)).toMatchObject({
+    state: "suspended",
+    connections: before.connections,
+    inFlightRequests: 1,
+  });
+  expect(streams).toHaveLength(1);
 
   // Mutate canonical state while both the old stream and the held list request
   // are unable to update the page. The fakeapi applied flag proves the event
-  // happened; zero watches plus the unchanged DOM prove there was no stale
-  // generation delivery to discard at morph time.
+  // happened; the unchanged DOM plus the single recorded stream request prove
+  // there was no stale generation delivery to discard at morph time.
   await scriptEvents([
     {
       path: PODS_LIST_PATH,
@@ -306,7 +340,7 @@ test("a filter request aborts the old generation before send, suspends, and reop
     },
   ]);
   await expect.poll(appliedScriptEventCount, { timeout: 5_000 }).toBe(1);
-  expect(await openWatchCount()).toBe(0);
+  expect(streams).toHaveLength(1);
   await expect(
     page.locator('tr[data-key="e2e/default/my-app"] td:has(span.cell-status)'),
   ).toContainText("Running");
@@ -326,7 +360,6 @@ test("a filter request aborts the old generation before send, suspends, and reop
   const req2 = await secondStream;
   expect(req2.url()).toContain("f=status");
   await expect(rowNames(page)).toHaveText(["nginx"]);
-  await page.unroute("**/_table*");
 
   // The reopened stream is functional: a further nginx change (still
   // Running, so it stays in the filtered view) pushes through.
@@ -353,102 +386,266 @@ test("a filter request aborts the old generation before send, suspends, and reop
   });
 });
 
-test("watch-401 terminal: banner persists during 5s polling; visibility does not force an early reopen", async ({
+test("a sort moves the stream to the new URL; a FAILED one keeps the previous", async ({
   page,
 }) => {
   await page.goto(PODS);
-  const stream = page.waitForRequest((r) => isStreamRequest(r.url()), {
-    timeout: 10_000,
-  });
-  await pickLive(page);
-  await stream;
-  await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
+  const streams = streamLog(page);
+  const first = await enableLive(page);
+  expect(new URL(first.url()).search).toBe("");
 
-  // Arm the one-shot 401, then cleanly EOF the riding watch: readout
-  // re-watches, hits the 401, and emits a `ro-live` terminal reason "auth".
-  await control("/__control/watch-401");
-  await scriptEvents([{ path: PODS_LIST_PATH, type: "EOF" }]);
+  // A SUCCESSFUL sort: the container swap commits the new URL, and the stream
+  // that reopens after it describes exactly those rows.
+  const sorted = page.waitForRequest(
+    (r) =>
+      isStreamRequest(r.url()) && new URL(r.url()).search === "?sort=Name",
+    { timeout: 10_000 },
+  );
+  await page.locator("thead th a", { hasText: "Name" }).first().click();
+  await sorted;
+  await expect(page).toHaveURL(/\?sort=Name$/);
+  await expect(rowNames(page)).toHaveText(["my-app", "nginx"]);
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("open");
+  const settled = streams.length;
 
-  // The taxonomy: terminal -> the Live-unavailable banner reveals and 5s
-  // polling resumes without claiming that the successfully rendered rows failed.
-  await expect(page.locator(".ro-stale-banner")).toBeVisible({
-    timeout: 10_000,
+  // A FAILED sort: fail exactly the list request at the browser boundary, so
+  // the server (and the hub source behind the stream) stays healthy. Same
+  // self-retiring shape as above, for the same reason -- this settlement is
+  // precisely what makes Live reopen.
+  let failedOnce = false;
+  await page.route("**/_table*", async (route) => {
+    if (failedOnce) {
+      await route.fallback();
+      return;
+    }
+    failedOnce = true;
+    await route.fulfill({ status: 500 });
   });
-  const tick = await page.waitForResponse(isTickResponse, { timeout: 15_000 });
-  expect(tick.ok()).toBe(true);
-  // A successful fallback poll makes the rows fresh, but Live is still
-  // unavailable, so its user-visible banner persists until a v2 snapshot lands.
+  const reopened = page.waitForRequest(
+    (r) => isStreamRequest(r.url()) && streams.length > settled,
+    { timeout: 10_000 },
+  );
+  await page.locator("thead th a", { hasText: "Name" }).first().click();
+  const second = await reopened;
+
+  // htmx does not swap on error, so neither the rendered projection nor the
+  // URL moved. The replacement stream describes what is actually on screen --
+  // a sort=Name:desc stream would be narrating rows nobody has.
+  expect(new URL(second.url()).search).toBe("?sort=Name");
+  await expect(page).toHaveURL(/\?sort=Name$/);
+  await expect(rowNames(page)).toHaveText(["my-app", "nginx"]);
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("open");
+
+  // Nothing was retried on the browser's own initiative -- the failed list
+  // request is the user's to repeat. Exactly one replacement stream opened,
+  // and its committed snapshot is what clears the failure's stale dim.
+  expect(streams).toHaveLength(settled + 1);
+  await expect(page.locator(".ro-stale-banner")).toBeHidden();
   await expect(page.locator("#resource-list-content")).not.toHaveClass(
     /ro-stale/,
   );
-  const liveUnavailableBanner = page.locator(".ro-stale-banner");
-  await expect(liveUnavailableBanner).toBeVisible();
-  await expect(liveUnavailableBanner.locator(".bn-title")).toHaveText(
-    "Live unavailable, polling ·",
-  );
-  await expect(liveUnavailableBanner).toHaveAttribute(
-    "aria-label",
-    /Live unavailable, polling\. Retrying in \d+s\. Retry/,
-  );
-  const fallback = await requestOwnershipStats(page);
-  expect(fallback).toMatchObject({ state: "fallback", inFlightRequests: 0 });
-
-  // A subsequent tab-hide/show must NOT bypass the fallback retry backoff.
-  // Await the visibility-return catch-up poll as the causal observation
-  // window; only an early /_stream is forbidden here.
-  const streamRequests: string[] = [];
-  page.on("request", (r) => {
-    if (isStreamRequest(r.url())) {
-      streamRequests.push(r.url());
-    }
-  });
-  const visibilityPoll = page.waitForResponse(isTickResponse, {
-    timeout: 15_000,
-  });
-  await setHidden(page, true);
-  await setHidden(page, false);
-  await visibilityPoll;
-  expect(await openWatchCount()).toBe(0);
-  expect(streamRequests).toEqual([]);
-  expect(await requestOwnershipStats(page)).toMatchObject({
-    state: "fallback",
-    connections: fallback.connections,
-    inFlightRequests: 0,
-  });
-
-  // Live stays the selected mode and the livedot keeps pulsing: the fallback
-  // is an ACTIVE polling mode (the livedot pulses for any active refresh mode).
-  await expect(page.locator("#refresh-label")).toHaveText("Live");
-  await expect(page.locator("#refresh-dropdown .ro-livedot")).toHaveCSS(
-    "animation-name",
-    "ro-pulse",
-  );
 });
 
-test("document.hidden closes the stream; visibility return reopens it (hidden-close only)", async ({
+test("the auth terminal makes Live unavailable: the Reload banner, no retry, no further stream", async ({
   page,
 }) => {
   await page.goto(PODS);
-  const stream = page.waitForRequest((r) => isStreamRequest(r.url()), {
-    timeout: 10_000,
-  });
-  await pickLive(page);
-  const gen1 = streamGeneration(await stream);
+  const streams = streamLog(page);
+  await enableLive(page);
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
+  expect(streams).toHaveLength(1);
 
-  // Hide: the client aborts the stream fetch; the server's upstream watch
-  // tears down with the request context (fakeapi hub truth).
+  // Arm the one-shot 401 for THIS collection route, then cleanly EOF the riding
+  // watch: the hub source re-watches, hits the 401, and closes every subscriber
+  // with reason "auth". The arm is path-scoped because `/api/v1/pods` is an
+  // alias of this route -- it shares the list state, so the EOF wakes an
+  // all-namespaces source too, and an unscoped 401 would be a coin flip
+  // between the two reconnects.
+  await page.clock.install();
+  await control(`/__control/watch-401?path=${PODS_LIST_PATH}`);
+  await scriptEvents([{ path: PODS_LIST_PATH, type: "EOF" }]);
+
+  // Terminal: the banner shows the UNAVAILABLE copy, whose action is Reload
+  // rather than Retry, and the recoverable copy with its countdown is hidden.
+  const banner = page.locator(".ro-stale-banner");
+  await expect(banner).toBeVisible({ timeout: 10_000 });
+  await expect(banner.locator(".bn-body.ro-stale-unavailable")).toBeVisible();
+  await expect(
+    banner.locator(".bn-body.ro-stale-unavailable .bn-title"),
+  ).toHaveText("Live updates unavailable — showing the last good data");
+  await expect(banner.locator(".ro-stale-reload")).toBeVisible();
+  await expect(banner.locator(".ro-stale-reload")).toHaveText("Reload");
+  await expect(banner.locator(".ro-stale-retry")).toBeHidden();
+  await expect(page.locator("#resource-list-content")).toHaveClass(/ro-stale/);
+  expect(await liveState(page)).toBe("unavailable");
+
+  // NOTHING replaces the stream: no retry is armed and no `_table` poll takes
+  // its place. An hour of page-owned time proves the terminal is terminal.
+  const tables: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/_table"))
+      tables.push(request.url());
+  });
+  await page.clock.fastForward(3_600_000);
+  await page.waitForTimeout(250);
+  expect(streams).toHaveLength(1);
+  expect(tables).toEqual([]);
+
+  // A tab hide/show cannot resurrect it either -- unavailable owns no wake-up.
   await setHidden(page, true);
-  await expect.poll(openWatchCount, { timeout: 5_000 }).toBe(0);
+  await setHidden(page, false);
+  await page.waitForTimeout(250);
+  expect(streams).toHaveLength(1);
+  expect(await liveState(page)).toBe("unavailable");
 
-  // Show: reopen under a FRESH generation -- the one visibility-return
-  // reopen the taxonomy allows.
+  // The rows themselves survived: the terminal dims the last good data, it
+  // never blanks it.
+  await expect(rowNames(page)).toHaveText(["nginx", "my-app"]);
+});
+
+test("a 429 admission reject waits out the server's Retry-After, not the client ladder", async ({
+  page,
+}) => {
+  await page.goto(PODS);
+  const streams = streamLog(page);
+  await page.clock.install();
+
+  // Every stream attempt is rejected with the admission status and a wait far
+  // longer than any rung of the client's own ladder (which caps at 1s for the
+  // first attempt), so the delay observed below can only be the header's.
+  await page.route("**/_stream*", (route) =>
+    route.fulfill({ status: 429, headers: { "Retry-After": "5" } }),
+  );
+
+  await page.locator(LIVE_TOGGLE).click();
+  await expect
+    .poll(() => streams.length, { timeout: 10_000 })
+    .toBe(1);
+  await expect
+    .poll(() => liveState(page), { timeout: 10_000 })
+    .toBe("reconnecting");
+
+  // Four seconds in: still exactly one attempt. The ladder alone would have
+  // retried three times over by now.
+  await page.clock.fastForward(4_000);
+  await page.waitForTimeout(250);
+  expect(streams).toHaveLength(1);
+
+  // Past the header's five seconds: exactly one retry.
+  await page.clock.fastForward(1_500);
+  await expect.poll(() => streams.length, { timeout: 10_000 }).toBe(2);
+  expect(await liveStats(page)).toMatchObject({ state: "reconnecting" });
+
+  // Turning Live off from a reconnecting state cancels the armed retry, issues
+  // no request, and clears the warning surface.
+  await page.locator(LIVE_TOGGLE).click();
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  expect(await liveState(page)).toBe("off");
+  await expect(page.locator(".ro-stale-banner")).toBeHidden();
+  await page.clock.fastForward(60_000);
+  await page.waitForTimeout(250);
+  expect(streams).toHaveLength(2);
+});
+
+test("a drop is stale at once but dims only after the three second grace", async ({
+  page,
+}) => {
+  await page.goto(PODS);
+  await enableLive(page);
+  const content = page.locator("#resource-list-content");
+  const banner = page.locator(".ro-stale-banner");
+  await page.clock.install();
+
+  // Going offline drops the stream through the transport's own lifecycle
+  // listener. With the clock frozen, no timer can fire between the drop and
+  // the assertions below, so the grace is observed, not raced.
+  await page.context().setOffline(true);
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("offline");
+  expect(await semanticallyStale(page)).toBe(true);
+  await expect(content).not.toHaveClass(/ro-stale/);
+  await expect(banner).toBeHidden();
+
+  // Three seconds later the grace expires: the dim and the RECOVERABLE banner
+  // appear together.
+  await page.clock.fastForward(3_000);
+  await expect(banner).toBeVisible();
+  await expect(banner.locator(".bn-body.ro-stale-unavailable")).toBeHidden();
+  await expect(banner.locator(".ro-stale-retry")).toBeVisible();
+  await expect(content).toHaveClass(/ro-stale/);
+  await expect(rowNames(page)).toHaveText(["nginx", "my-app"]);
+
+  // Coming back online reconnects ONCE, and only the committed snapshot clears
+  // both halves of the staleness.
+  await page.context().setOffline(false);
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("open");
+  await expect(banner).toBeHidden();
+  await expect(content).not.toHaveClass(/ro-stale/);
+  expect(await semanticallyStale(page)).toBe(false);
+});
+
+test("the first failed reconnect ends the stale grace early", async ({
+  page,
+}) => {
+  await page.goto(PODS);
+  const streams = streamLog(page);
+  await enableLive(page);
+  const banner = page.locator(".ro-stale-banner");
+  await page.clock.install();
+
+  // Every reconnect from here fails at the browser boundary.
+  await page.route("**/_stream*", (route) => route.abort());
+
+  await page.context().setOffline(true);
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("offline");
+  await expect(banner).toBeHidden();
+
+  // `online` reconnects once; that attempt fails. The FIRST failure is still
+  // inside the grace, which is deliberate -- one lost attempt is not yet
+  // evidence of a real outage.
+  await page.context().setOffline(false);
+  await expect.poll(() => streams.length, { timeout: 10_000 }).toBeGreaterThan(1);
+  await expect
+    .poll(() => liveState(page), { timeout: 10_000 })
+    .toBe("reconnecting");
+  await expect(banner).toBeHidden();
+
+  // Release ONE second of page-owned time -- a third of the grace -- which is
+  // enough for rung 1 of the ladder. When that retry fails the drop is no
+  // longer plausibly a rollout blip and the grace ends early: with the clock
+  // frozen again here, the three second timer provably never ran, so the
+  // banner below can only have come from the failed reconnect.
+  await page.clock.fastForward(1_000);
+  await expect(banner).toBeVisible();
+  expect(streams.length).toBeGreaterThan(2);
+  await expect(page.locator("#resource-list-content")).toHaveClass(/ro-stale/);
+  await expect(rowNames(page)).toHaveText(["nginx", "my-app"]);
+});
+
+test("document.hidden closes the stream; visibility return reopens it exactly once", async ({
+  page,
+}) => {
+  await page.goto(PODS);
+  const streams = streamLog(page);
+  const gen1 = streamGeneration(await enableLive(page));
+
+  // Hide: the client aborts the stream fetch and parks. It owns its own
+  // wake-up, so no retry is armed and no request is made.
+  await setHidden(page, true);
+  await expect.poll(() => liveState(page), { timeout: 5_000 }).toBe("hidden");
+  expect(streams).toHaveLength(1);
+
+  // Show: reopen under a FRESH generation -- exactly one reopen.
   const reopened = page.waitForRequest(
     (r) => isStreamRequest(r.url()) && streamGeneration(r) !== gen1,
     { timeout: 10_000 },
   );
   await setHidden(page, false);
   await reopened;
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("open");
+  expect(streams).toHaveLength(2);
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
 });
 
@@ -457,11 +654,7 @@ test("a Live push while windowed keeps the window: no duplicates, stable scroll,
 }) => {
   await page.goto(BIG_PODS);
   await expect(podRow(page, 1)).toBeVisible();
-  const stream = page.waitForRequest((r) => isStreamRequest(r.url()), {
-    timeout: 10_000,
-  });
-  await pickLive(page);
-  await stream;
+  await enableLive(page);
   await expect.poll(openWatchCount, { timeout: 5_000 }).toBeGreaterThan(0);
 
   // Push a change to an IN-WINDOW row (top of the list): the adopted cell
@@ -570,21 +763,27 @@ test("a Live push while windowed keeps the window: no duplicates, stable scroll,
   await expect(podRow(page, 600)).toBeVisible();
 });
 
-test("the Live option is disabled on multi-type and multi-cluster pages, enabled on single-type", async ({
+test("pages the stream does not serve render Refresh and no Live toggle", async ({
   page,
 }) => {
-  const live = page.locator('.refresh-option[data-ro-interval="Live"]');
+  // A rendered toggle is a promise `_stream` keeps, so every scope the endpoint
+  // refuses must offer none at all -- while Refresh, which always applies,
+  // renders everywhere. All three gates are covered: scope, page kind, and the
+  // watch verb.
+  for (const path of [
+    "/clusters/e2e/namespaces/default/all", // multi-type plural
+    "/clusters/e2e/namespaces/default/pods,services", // CSV multi-type
+    "/clusters/_all/namespaces/default/pods", // multi-cluster union
+    NGINX_POD, // a detail page has no list region to stream into
+    METRICS_PODS, // a kind whose verbs do not include watch
+  ]) {
+    await page.goto(path);
+    await expect(page.locator(LIVE_TOGGLE)).toHaveCount(0);
+    await expect(page.locator(REFRESH_NOW)).toHaveCount(1);
+  }
 
-  // Multi-type page (plural "all"): disabled with the scope title.
-  await page.goto("/clusters/e2e/namespaces/default/all");
-  await expect(live).toBeDisabled();
-  await expect(live).toHaveAttribute("title", /single-type, single-cluster/);
-
-  // Multi-cluster page (_all union): disabled.
-  await page.goto("/clusters/_all/pods");
-  await expect(live).toBeDisabled();
-
-  // Single-type, single-cluster list: enabled.
+  // Single-type, single-cluster list of a watchable kind: the toggle is there.
   await page.goto(PODS);
-  await expect(live).toBeEnabled();
+  await expect(page.locator(LIVE_TOGGLE)).toHaveCount(1);
+  await expect(page.locator(REFRESH_NOW)).toHaveCount(1);
 });
