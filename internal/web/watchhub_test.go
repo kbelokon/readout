@@ -307,6 +307,9 @@ type recordingHubMetrics struct {
 	sources     int
 	subscribers int
 	cache       int64
+	connections int
+	relists     int
+	snapshots   []int64
 }
 
 func newRecordingHubMetrics() *recordingHubMetrics {
@@ -330,6 +333,42 @@ func (m *recordingHubMetrics) observeHubCache(bytes int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cache = bytes
+}
+
+func (m *recordingHubMetrics) observeHubConnections(active int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.connections = active
+}
+
+func (m *recordingHubMetrics) observeHubRelist() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.relists++
+}
+
+func (m *recordingHubMetrics) observeHubSnapshotBytes(bytes int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshots = append(m.snapshots, bytes)
+}
+
+func (m *recordingHubMetrics) relistCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.relists
+}
+
+func (m *recordingHubMetrics) snapshotSamples() []int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]int64(nil), m.snapshots...)
+}
+
+func (m *recordingHubMetrics) connectionCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.connections
 }
 
 func (m *recordingHubMetrics) cacheBytes() int64 {
@@ -1437,4 +1476,64 @@ func TestWatchHubShutdownDuringInitializationFailsWaiters(t *testing.T) {
 		t.Fatal("timed out waiting for the waiter to be failed by hub shutdown")
 	}
 	up.openGate()
+}
+
+// The hub reports the three things its own state machine is the only witness
+// to: connection slots as they are taken and released, one relist per 410, and
+// the accounted size of each AUTHORITATIVE snapshot (the initial list and the
+// relist -- watch events adjust that size rather than restating it).
+func TestWatchHubReportsSlotsAndRecoveryToTheMetricsSink(t *testing.T) {
+	hub, _, metrics := newTestWatchHub(t, testHubLimits())
+	for i := range 2 {
+		if !hub.acquireConnection() {
+			t.Fatalf("the empty hub refused connection slot %d", i)
+		}
+	}
+	if got := metrics.connectionCount(); got != 2 {
+		t.Fatalf("reported connections = %d, want 2", got)
+	}
+	hub.releaseConnection()
+	if got := metrics.connectionCount(); got != 1 {
+		t.Fatalf("reported connections after one release = %d, want 1", got)
+	}
+
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	t.Cleanup(sub.Close)
+	waitFor(t, "the source watch to open", func() bool {
+		_, watches, _ := up.counts()
+		return watches == 1
+	})
+	if got := metrics.relistCount(); got != 0 {
+		t.Fatalf("reported relists on a healthy source = %d, want 0", got)
+	}
+
+	// An ordinary event changes the retained size without being a snapshot.
+	up.emit(t, hubTestEvent(kube.WatchAdded, "11", "beta"))
+	waitRevision(t, sub, 2)
+	if got := metrics.snapshotSamples(); len(got) != 1 {
+		t.Fatalf("snapshot samples after a watch event = %v, want only the initial list", got)
+	}
+
+	up.setTable(hubTestTable("20", "gamma"))
+	up.failWatch(t, fmt.Errorf("%w: too old", kube.ErrWatchGone))
+	waitRevision(t, sub, 3)
+	if got := metrics.relistCount(); got != 1 {
+		t.Fatalf("reported relists after one 410 = %d, want 1", got)
+	}
+	samples := metrics.snapshotSamples()
+	want := []int64{hubTableBytes(hubTestTable("10", "alpha")), hubTableBytes(hubTestTable("20", "gamma"))}
+	if len(samples) != len(want) || samples[0] != want[0] || samples[1] != want[1] {
+		t.Fatalf("snapshot samples = %v, want the initial list and the relist %v", samples, want)
+	}
+
+	hub.releaseConnection()
+	if got := metrics.connectionCount(); got != 0 {
+		t.Fatalf("reported connections after every release = %d, want 0", got)
+	}
 }

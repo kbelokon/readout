@@ -253,6 +253,10 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-store")
 	addVary(h, streamVersionHeader)
 	addVary(h, streamGenerationHeader)
+	// Time-to-snapshot and session duration are both measured from here: what
+	// an operator cares about is how long the BROWSER waited, which includes
+	// discovery and the shared source's LIST, not just the render.
+	started := time.Now()
 
 	clusterName := r.PathValue("cluster")
 	namespace := r.PathValue("namespace")
@@ -293,6 +297,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 	// and before SSE headers, released on EVERY exit path.
 	hub := s.liveHub()
 	if !hub.acquireConnection() {
+		s.observeLiveAdmission(liveAdmissionConnectionLimit)
 		streamOverCapacity(w, "too many live connections")
 		return
 	}
@@ -351,15 +356,17 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		lifetime:       lifetime,
 		lifetimeReason: lifetimeReason,
 		tuning:         s.streamTuning,
+		startedAt:      started,
 	}
 	// Admission stages two and three live inside the hub: joining an existing
 	// source costs nothing, creating one is bounded by live.maxSources and then
 	// -- once its own LIST is measured -- by live.maxCacheAccountedBytes.
 	sub, rev, err := hub.Subscribe(handshakeCtx, s.streamSourceSpec(&key, client, &rt, listNS, selector), sess.demand())
 	if err != nil {
-		streamSubscribeFailure(w, err)
+		s.streamSubscribeFailure(w, err)
 		return
 	}
+	s.observeLiveAdmission(liveAdmissionAccepted)
 	defer sub.Close()
 	sess.sub = sub
 	sess.run(ctx, handshakeCtx, rev)
@@ -377,11 +384,13 @@ func streamOverCapacity(w http.ResponseWriter, message string) {
 // handshake fails with: the two capacity bounds are 429s the client retries
 // later, a timed-out shared LIST is a 502, and an upstream denial keeps the
 // classifier's own status.
-func streamSubscribeFailure(w http.ResponseWriter, err error) {
+func (s *Server) streamSubscribeFailure(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errHubSourceLimit):
+		s.observeLiveAdmission(liveAdmissionSourceLimit)
 		streamOverCapacity(w, "too many live sources")
 	case errors.Is(err, errHubCacheLimit):
+		s.observeLiveAdmission(liveAdmissionCacheLimit)
 		streamOverCapacity(w, "live cache is at capacity")
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		// The shared initialization outlived this subscriber's handshake budget
@@ -497,6 +506,11 @@ type streamSession struct {
 	lifetimeReason string
 	tuning         streamTuning
 
+	// startedAt is when the request arrived. It is the origin of both Live
+	// latency metrics: time-to-snapshot ends at the first flushed frame,
+	// session duration at the single terminal outcome.
+	startedAt time.Time
+
 	dirty    bool
 	lastPush time.Time
 	// churn carries the SOURCE's sustained-event-rate verdict: only the source
@@ -557,6 +571,7 @@ func (st *streamSession) run(ctx, handshakeCtx context.Context, rev *hubRevision
 		st.finish(streamFailureReason(err))
 		return
 	}
+	st.srv.observeLiveTimeToSnapshot(time.Since(st.startedAt))
 	st.loop(ctx)
 }
 
@@ -844,6 +859,19 @@ func (st *streamSession) finish(reason string) {
 	}
 	st.finished = true
 	st.srv.observeStreamTerminal(reason)
+	st.srv.observeLiveSessionDuration(time.Since(st.startedAt))
+}
+
+// observeFlush records how long the change this frame carries took to reach
+// the browser, measured from the SOURCE's own event timestamp — the only place
+// the pre-render half of the latency is visible. A session assembled directly
+// by a render unit test has no server and no published revision behind it, so
+// there is nothing to sample.
+func (st *streamSession) observeFlush(now time.Time) {
+	if st.srv == nil || st.rev == nil || st.rev.eventAt.IsZero() {
+		return
+	}
+	st.srv.observeLiveEventToFlush(now.Sub(st.rev.eventAt))
 }
 
 // terminal writes a v2 ro-live terminal frame and records the outcome.

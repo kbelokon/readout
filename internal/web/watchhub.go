@@ -137,13 +137,25 @@ type hubMetricsSink interface {
 	// observeHubCache reports the hub-wide accounted retained bytes after a
 	// change.
 	observeHubCache(bytes int64)
+	// observeHubConnections reports the open Live connection slots after a
+	// change. Slots are the first admission gate, so this is the gauge that
+	// says whether the pod is full.
+	observeHubConnections(active int)
+	// observeHubRelist records one 410 recovery LIST.
+	observeHubRelist()
+	// observeHubSnapshotBytes records the accounted size of one authoritative
+	// snapshot (an initial list or a relist).
+	observeHubSnapshotBytes(bytes int64)
 }
 
 type noopHubMetrics struct{}
 
-func (noopHubMetrics) observeHubSource(string)   {}
-func (noopHubMetrics) observeHubCounts(int, int) {}
-func (noopHubMetrics) observeHubCache(int64)     {}
+func (noopHubMetrics) observeHubSource(string)       {}
+func (noopHubMetrics) observeHubCounts(int, int)     {}
+func (noopHubMetrics) observeHubCache(int64)         {}
+func (noopHubMetrics) observeHubConnections(int)     {}
+func (noopHubMetrics) observeHubRelist()             {}
+func (noopHubMetrics) observeHubSnapshotBytes(int64) {}
 
 // hubListFunc performs the source's authoritative Table LIST. hubWatchFunc
 // opens one watch from a resourceVersion. hubOverlayFunc resolves the join
@@ -242,6 +254,7 @@ func (h *watchHub) acquireConnection() bool {
 		return false
 	}
 	h.connections++
+	h.metrics.observeHubConnections(h.connections)
 	return true
 }
 
@@ -250,6 +263,7 @@ func (h *watchHub) releaseConnection() {
 	defer h.mu.Unlock()
 	if h.connections > 0 {
 		h.connections--
+		h.metrics.observeHubConnections(h.connections)
 	}
 }
 
@@ -703,6 +717,7 @@ func (s *hubSource) startRelist() {
 	}
 	s.cancelRewatch()
 	s.relisting = true
+	s.hub.metrics.observeHubRelist()
 	go func() {
 		table, err := s.spec.list(s.ctx)
 		s.post(func(s *hubSource) { s.relisted(&table, err) })
@@ -767,7 +782,12 @@ func (s *hubSource) applyEvent(ev *kube.WatchEvent) {
 // adjust the running total instead.
 func (s *hubSource) adoptTable(table *kube.Table) {
 	s.table = table
-	s.setAccounted(hubTableBytes(table))
+	size := hubTableBytes(table)
+	// One sample per authoritative snapshot: the distribution of retained
+	// scope sizes is what live.maxCacheAccountedBytes has to be set against,
+	// and watch events adjust that size rather than restating it.
+	s.hub.metrics.observeHubSnapshotBytes(size)
+	s.setAccounted(size)
 }
 
 // setAccounted moves this source to a new retained-bytes total and reports the

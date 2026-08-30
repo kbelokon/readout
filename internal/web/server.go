@@ -117,7 +117,7 @@ const ShutdownGrace = 5 * time.Second
 // liveHub returns the process-local WatchHub, building it on first use.
 func (s *Server) liveHub() *watchHub {
 	s.hubOnce.Do(func() {
-		s.hub = newWatchHub(s.hubCtx, s.limits, &s.streamTuning, s.hubClock, nil)
+		s.hub = newWatchHub(s.hubCtx, s.limits, &s.streamTuning, s.hubClock, s.metrics)
 	})
 	return s.hub
 }
@@ -184,6 +184,10 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// their own packages — the closures here own the metric types.
 	manager.SetRequestObserverFactory(s.metrics.kubeObserverFactory())
 	hooksClient.SetObserver(s.metrics.hookObserver())
+	// The resolved Live bounds are published as capacity gauges here, not when
+	// the hub is first used: a pod that has never served a Live stream still
+	// has to report what it would admit.
+	s.metrics.setLiveCapacity(s.limits)
 	s.routes()
 	s.warnMissingSessionSecret()
 	warnUnauthenticatedExposure(&s.cfg, manager.Clusters())

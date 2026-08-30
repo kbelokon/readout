@@ -238,6 +238,9 @@ func (st *streamSession) commitLivePush(prepared *livePreparedPush, now time.Tim
 		return
 	}
 	st.seq++
+	// The frame is on the wire, so this is the moment the source's change
+	// became visible to this browser.
+	st.observeFlush(now)
 	if prepared.kind == livePreparedSnapshot {
 		st.lastSnapshotAt = now
 		st.lastSnapshotBytes = len(prepared.payload)
