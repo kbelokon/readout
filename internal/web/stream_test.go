@@ -1142,6 +1142,118 @@ func TestStreamScopeVariantsDoNotShareASource(t *testing.T) {
 	waitFor(t, "a second source", func() bool { return app.liveHub().sourceCount() == 2 })
 }
 
+// TestStreamSharingScalesWithPodsNotBrowsers pins the pod-local half of the
+// sharing claim, the one that only shows up ACROSS servers: the hub belongs to
+// the process, so three replicas serving the very same key cost three upstream
+// LIST+watch pairs -- one per pod -- no matter how many browsers each replica
+// is fanning out to. Cost scales with replicas, never with clients.
+func TestStreamSharingScalesWithPodsNotBrowsers(t *testing.T) {
+	const pods = 3
+	const browsersPerPod = 4
+	var mu sync.Mutex
+	lists, watches := 0, 0
+	fake, err := fakeapi.New(fakeapi.WithListRecorder(func(r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/pods") {
+			return
+		}
+		mu.Lock()
+		if r.URL.Query().Get("watch") == "true" {
+			watches++
+		} else {
+			lists++
+		}
+		mu.Unlock()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fake.Close)
+	counts := func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return lists, watches
+	}
+
+	replicas := make([]*httptest.Server, 0, pods)
+	for range pods {
+		app := newTestServerWithConfig(t, &config.Config{Port: 8080, Clusters: []config.ClusterConnection{{Name: "test", Server: fake.URL}}, DefaultTheme: "dark"})
+		app.streamTuning.heartbeat = 0
+		app.streamTuning.checkpointInterval = 0
+		ts := httptest.NewServer(app.Handler())
+		t.Cleanup(ts.Close)
+		replicas = append(replicas, ts)
+	}
+
+	for i, replica := range replicas {
+		for browser := range browsersPerPod {
+			s := openStream(t, replica.URL+"/clusters/test/namespaces/default/pods/_stream", fmt.Sprintf("pod-%d-browser-%d", i, browser))
+			if frame := decodeFrame(t, s.requireEvent(t, "ro-live", 5*time.Second)); frame.Kind != "snapshot" {
+				t.Fatalf("first frame kind = %q, want snapshot", frame.Kind)
+			}
+		}
+	}
+
+	if got, _ := counts(); got != pods {
+		t.Fatalf("pods LISTs for %d replicas x %d browsers = %d, want %d (one per pod)", pods, browsersPerPod, got, pods)
+	}
+	waitFor(t, "one open watch per replica", func() bool {
+		_, w := counts()
+		return w == pods
+	})
+	// Opening the watches did not cost a second LIST anywhere.
+	if got, _ := counts(); got != pods {
+		t.Fatalf("pods LISTs once every watch was riding = %d, want %d", got, pods)
+	}
+}
+
+// TestStreamViewerTokensDoNotShareASource pins the other half: with
+// session-token passthrough on, the source key commits to the VIEWER's bearer,
+// so two viewers of one scope are two sources with two upstream watches (each
+// carrying that viewer's own RBAC), while the same viewer opening a second tab
+// joins the source they already own.
+func TestStreamViewerTokensDoNotShareASource(t *testing.T) {
+	fake := newServerFakeAPI(t)
+	app := newTestServerWithConfig(t, &config.Config{
+		Port:                       8080,
+		Clusters:                   []config.ClusterConnection{{Name: "test", Server: fake.URL}},
+		DefaultTheme:               "dark",
+		ClusterAuthUseSessionToken: true,
+		SessionSecret:              "test-secret",
+	})
+	app.streamTuning.heartbeat = 0
+	app.streamTuning.checkpointInterval = 0
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	openAs := func(token, generation string) {
+		t.Helper()
+		sealed, err := app.auth.SealSession(&auth.Session{AccessToken: token, Expires: time.Now().Add(time.Hour).Unix()}, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodGet, ts.URL+"/clusters/test/namespaces/default/pods/_stream", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		setTestLiveHeaders(req, generation)
+		req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sealed})
+		openStreamRequest(t, req).requireEvent(t, "ro-live", 5*time.Second)
+	}
+
+	openAs("viewer-one", "viewer-1-tab-1")
+	waitFor(t, "the first viewer's source", func() bool { return app.liveHub().sourceCount() == 1 })
+
+	// The same viewer's second tab joins the source that viewer already owns.
+	openAs("viewer-one", "viewer-1-tab-2")
+	if got := app.liveHub().sourceCount(); got != 1 {
+		t.Fatalf("sources after the same viewer's second tab = %d, want 1", got)
+	}
+
+	// A different bearer is a different upstream identity: its own source.
+	openAs("viewer-two", "viewer-2-tab-1")
+	waitFor(t, "the second viewer's source", func() bool { return app.liveHub().sourceCount() == 2 })
+}
+
 // TestStreamSlowSubscriberDoesNotDelayAnother pins subscriber isolation: a
 // peer that stops reading wedges only itself. The fast subscriber on the SAME
 // shared source keeps receiving frames while the wedged one sits there, and

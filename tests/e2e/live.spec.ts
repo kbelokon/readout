@@ -27,6 +27,9 @@ import { resetFixture } from "./hub";
 //   - a drop marks the projection last-known IMMEDIATELY but hides the dim and
 //     the banner for a three second grace, so a pod rollout does not flash a
 //     warning; the first FAILED reconnect ends that grace early;
+//   - the recovered snapshot HEALS whatever the drop missed -- a change applied
+//     upstream while the browser was disconnected is on screen again the moment
+//     the reconnect commits, which is also the only thing that clears stale;
 //   - document.hidden closes a riding stream and visibility return reopens it
 //     exactly once;
 //   - a push into the 600-row windowed fixture keeps the window: no duplicate
@@ -584,6 +587,63 @@ test("a drop is stale at once but dims only after the three second grace", async
   await expect(banner).toBeHidden();
   await expect(content).not.toHaveClass(/ro-stale/);
   expect(await semanticallyStale(page)).toBe(false);
+});
+
+test("a reconnect snapshot heals the changes the drop missed and clears stale", async ({
+  page,
+}) => {
+  await page.goto(PODS);
+  await enableLive(page);
+  const content = page.locator("#resource-list-content");
+  const status = page
+    .locator('tr[data-key="e2e/default/nginx"]')
+    .locator("td:has(span.cell-status)");
+  await expect(status).toContainText("Running");
+
+  // Drop only the BROWSER. The pod-local WatchHub keeps its watch riding, so
+  // the change scripted below is applied upstream while this page provably
+  // cannot see it: nothing polls in the gap.
+  const listTraffic: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/_table"))
+      listTraffic.push(request.url());
+  });
+  await page.context().setOffline(true);
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("offline");
+  expect(await semanticallyStale(page)).toBe(true);
+
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: "MODIFIED",
+      object: {
+        apiVersion: "v1",
+        kind: "Pod",
+        metadata: {
+          name: "nginx",
+          namespace: "default",
+          uid: "00000000-0000-0000-0000-000000000001",
+        },
+        status: { phase: "Failed" },
+      },
+      cells: ["nginx", "0/1", "CrashLoopBackOff", "3", "10m"],
+    },
+  ]);
+  await expect
+    .poll(appliedScriptEventCount, { timeout: 10_000 })
+    .toBeGreaterThan(0);
+  // The page is still showing last-known rows -- it missed the change.
+  await expect(status).toContainText("Running");
+
+  // Reconnecting heals: the recovered snapshot carries the change the drop
+  // missed, and only that committed snapshot retires both halves of staleness.
+  await page.context().setOffline(false);
+  await expect.poll(() => liveState(page), { timeout: 10_000 }).toBe("open");
+  await expect(status).toContainText("CrashLoopBackOff");
+  expect(await semanticallyStale(page)).toBe(false);
+  await expect(content).not.toHaveClass(/ro-stale/);
+  await expect(page.locator(".ro-stale-banner")).toBeHidden();
+  expect(listTraffic).toEqual([]);
 });
 
 test("the first failed reconnect ends the stale grace early", async ({
