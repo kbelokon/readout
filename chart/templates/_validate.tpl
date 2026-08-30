@@ -9,6 +9,7 @@ startup checks and `readout config validate`.
 {{- define "readout.validate" -}}
 {{- include "readout.validate.selectorLabels" . -}}
 {{- include "readout.validate.pdb" . -}}
+{{- include "readout.validate.ports" . -}}
 {{- end -}}
 
 {{/*
@@ -42,6 +43,21 @@ validation pass. Fail at render time instead.
   {{- $maxSet := not (or (kindIs "invalid" $max) (eq (toString $max) "")) -}}
   {{- if and $minSet $maxSet -}}
     {{- fail (printf "podDisruptionBudget: minAvailable (%v) and maxUnavailable (%v) are mutually exclusive; set exactly one." $min $max) -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+metrics.port equal to config.port makes the app's second listener fail to bind
+("address already in use"). The app logs that and keeps serving; /metrics on
+the main port answers 404 (it moves off the main mux whenever metricsPort is
+set), so metrics silently vanish. Fail at render time naming both keys.
+*/}}
+{{- define "readout.validate.ports" -}}
+{{- if .Values.metrics.enabled -}}
+  {{- $app := int (.Values.config.port | default 8080) -}}
+  {{- if eq (int .Values.metrics.port) $app -}}
+    {{- fail (printf "metrics.port (%v) equals config.port (%v): the metrics listener cannot bind the app port and /metrics would silently disappear. Pick a different metrics.port." .Values.metrics.port $app) -}}
   {{- end -}}
 {{- end -}}
 {{- end -}}

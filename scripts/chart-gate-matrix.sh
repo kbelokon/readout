@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Assert the chart's template safety gates and values.schema.json reject the
 # inputs they must reject and accept the inputs they must accept. Each case
-# checks the exit code of `helm template`, so it works identically on helm 3
-# (CI) and helm 4 (local). A wrong exit code aborts the whole script non-zero.
+# checks the exit code of `helm template` -- or, for expect_grep, a line of its
+# rendered output -- so it works identically on helm 3 (CI) and helm 4 (local).
+# A wrong exit code aborts the whole script non-zero.
 set -uo pipefail
 
 CHART_DIR="${1:-chart}"
@@ -93,6 +94,12 @@ expect_fail "schema rejects ingress.enabled with zero hosts" \
   --set ingress.enabled=true
 expect_fail "schema rejects existingSecret with empty key" \
   --set auth.oidc.existingSecret=s --set auth.oidc.clientIdKey=""
+
+# Gate: a metrics listener on the app port cannot bind ("address already in
+# use"); the app logs it and keeps serving with /metrics gone (404 on the main
+# port). Rejected at render time instead of vanishing silently.
+expect_fail "gate rejects metrics.port equal to config.port" \
+  --set metrics.enabled=true --set metrics.port=8080
 
 # Rendered value: the app binds LOOPBACK when listenAddress is empty under
 # auth.mode none (its safe default for a bare binary). Inside a pod that means

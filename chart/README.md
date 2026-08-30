@@ -168,9 +168,10 @@ Widen either preset with `rbac.extraRules`, appended verbatim. Keep verbs within
 The chart **never refuses to render over a security or operational posture**: a
 valid-but-risky choice (no-auth exposure, multi-replica OIDC without a shared
 session secret) installs and prints a loud NOTES warning. The only render-time
-`fail`s are for **combinations the Kubernetes API itself rejects** — failing
-early with a clear message beats a cryptic apply error, and blocks nothing the
-cluster would have accepted. Every gate sees **chart values only**: config
+`fail`s are for **combinations the Kubernetes API itself rejects, or that would
+silently break the release** (a listener that cannot bind, a rule that cannot
+render) — failing early with a clear message beats a cryptic apply error or a
+quietly missing feature. Every gate sees **chart values only**: config
 delivered through `env`/`envFrom` (opaque references the chart cannot read)
 bypasses them entirely, backstopped by the **app's own startup checks** and
 `readout config validate` (see [Validating before install](#validating-before-install)).
@@ -200,8 +201,10 @@ Render-time `fail`s (the cluster would reject these anyway):
   key.
 - **Metrics guards** — `config.metricsPort` set to a value different from
   `metrics.port` is an error; `config.metricsPort` set while `metrics.enabled` is
-  false is an error; a `serviceMonitor` enabled without `metrics.enabled` does not
-  render a useful object. Drive the metrics port through `metrics.port` only.
+  false is an error; `metrics.port` equal to `config.port` is an error (the
+  second listener could not bind and `/metrics` would silently vanish); a
+  `serviceMonitor` enabled without `metrics.enabled` does not render a useful
+  object. Drive the metrics port through `metrics.port` only.
 - **Live capacity is not a render gate** — the `config.live` bounds are enforced
   at runtime by each pod, not by the chart; watch the per-pod `readout_live_*` /
   `readout_watchhub_*` families on the metrics listener for utilization and
