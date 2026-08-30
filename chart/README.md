@@ -191,7 +191,8 @@ Warnings (install proceeds, NOTES warns):
   `READOUT_SESSION_SECRET`, or `config.sessionSecretFile`; an opaque `envFrom`
   source is assumed to carry it and the warning softens to a reminder.
 
-Render-time `fail`s (the cluster would reject these anyway):
+Render-time `fail`s (the cluster would reject these anyway, or the release would
+be silently broken):
 
 - **PodDisruptionBudget** — `minAvailable` and `maxUnavailable` both set is
   rejected by the PDB API; the chart fails early naming the conflict.
@@ -201,10 +202,10 @@ Render-time `fail`s (the cluster would reject these anyway):
   key.
 - **Metrics guards** — `config.metricsPort` set to a value different from
   `metrics.port` is an error; `config.metricsPort` set while `metrics.enabled` is
-  false is an error; `metrics.port` equal to `config.port` is an error (the
-  second listener could not bind and `/metrics` would silently vanish); a
-  `serviceMonitor` enabled without `metrics.enabled` does not render a useful
-  object. Drive the metrics port through `metrics.port` only.
+  false is an error; `metrics.port` equal to `config.port` is an error (the two
+  listeners would fight for one port: the pod crash-loops or `/metrics` silently
+  vanishes); a `serviceMonitor` enabled without `metrics.enabled` does not render
+  a useful object. Drive the metrics port through `metrics.port` only.
 - **Live capacity is not a render gate** — the `config.live` bounds are enforced
   at runtime by each pod, not by the chart; watch the per-pod `readout_live_*` /
   `readout_watchhub_*` families on the metrics listener for utilization and

@@ -3,7 +3,7 @@
 # inputs they must reject and accept the inputs they must accept. Each case
 # checks the exit code of `helm template` -- or, for expect_grep, a line of its
 # rendered output -- so it works identically on helm 3 (CI) and helm 4 (local).
-# A wrong exit code aborts the whole script non-zero.
+# A wrong exit code, or a missing rendered line, makes the script exit non-zero.
 set -uo pipefail
 
 CHART_DIR="${1:-chart}"
@@ -95,9 +95,9 @@ expect_fail "schema rejects ingress.enabled with zero hosts" \
 expect_fail "schema rejects existingSecret with empty key" \
   --set auth.oidc.existingSecret=s --set auth.oidc.clientIdKey=""
 
-# Gate: a metrics listener on the app port cannot bind ("address already in
-# use"); the app logs it and keeps serving with /metrics gone (404 on the main
-# port). Rejected at render time instead of vanishing silently.
+# Gate: metrics.port on the app port. Whichever of the two listeners binds
+# second fails: the pod crash-loops, or /metrics silently vanishes (404 on the
+# main port). Rejected at render time instead of surfacing at runtime.
 expect_fail "gate rejects metrics.port equal to config.port" \
   --set metrics.enabled=true --set metrics.port=8080
 

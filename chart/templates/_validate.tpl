@@ -48,16 +48,18 @@ validation pass. Fail at render time instead.
 {{- end -}}
 
 {{/*
-metrics.port equal to config.port makes the app's second listener fail to bind
-("address already in use"). The app logs that and keeps serving; /metrics on
-the main port answers 404 (it moves off the main mux whenever metricsPort is
-set), so metrics silently vanish. Fail at render time naming both keys.
+metrics.port equal to config.port puts both listeners on one port. The app
+starts them in two goroutines with no ordering, so whichever binds second
+fails: if it is the app listener the process exits and the pod crash-loops;
+if it is the metrics listener the app logs and keeps serving while /metrics
+on the main port answers 404 (it moves off the main mux whenever metricsPort
+is set) -- metrics silently vanish. Fail at render time naming both keys.
 */}}
 {{- define "readout.validate.ports" -}}
 {{- if .Values.metrics.enabled -}}
   {{- $app := int (.Values.config.port | default 8080) -}}
   {{- if eq (int .Values.metrics.port) $app -}}
-    {{- fail (printf "metrics.port (%v) equals config.port (%v): the metrics listener cannot bind the app port and /metrics would silently disappear. Pick a different metrics.port." .Values.metrics.port $app) -}}
+    {{- fail (printf "metrics.port (%v) equals config.port (%v): both listeners would bind one port, so one of them fails -- the pod crash-loops or /metrics silently disappears. Pick a different metrics.port." .Values.metrics.port $app) -}}
   {{- end -}}
 {{- end -}}
 {{- end -}}

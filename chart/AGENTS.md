@@ -133,10 +133,12 @@ kubectl describe httproute readout    # check Parents/Conditions: Accepted=True,
 ## 7. Troubleshoot (gate failure → the value that fixes it)
 
 The chart `fail`s the render ONLY for combinations the Kubernetes API would
-reject anyway (failing early with a clear message). Security/operational postures
-— no-auth exposure, multi-replica OIDC without a shared session secret — are
-**never render-blocked**: they install and warn in NOTES (see §3). Map a render
-failure to its fix (the last row is a runtime symptom, not a chart gate):
+reject anyway, or that would silently break the release (a listener that cannot
+bind, a rule that cannot render) — failing early with a clear message.
+Security/operational postures — no-auth exposure, multi-replica OIDC without a
+shared session secret — are **never render-blocked**: they install and warn in
+NOTES (see §3). Map a render failure to its fix (the last row is a runtime
+symptom, not a chart gate):
 
 | Failure message contains | Fix |
 | --- | --- |
@@ -144,7 +146,7 @@ failure to its fix (the last row is a runtime symptom, not a chart gate):
 | `podDisruptionBudget: minAvailable (...) and maxUnavailable (...) are mutually exclusive` | Set exactly one of `podDisruptionBudget.minAvailable`/`maxUnavailable` — Kubernetes rejects both. |
 | `config.metricsPort (...) conflicts with metrics.port (...)` | Unset `config.metricsPort` and drive the port through `metrics.port`, or make them equal. |
 | `config.metricsPort (...) is set but metrics.enabled is false` | Set `metrics.enabled: true` (and `metrics.port`) instead of setting `config.metricsPort` directly. |
-| `metrics.port (...) equals config.port (...)` | Pick a `metrics.port` different from `config.port`; the metrics listener cannot bind the app port. |
+| `metrics.port (...) equals config.port (...)` | Pick a `metrics.port` different from `config.port`; the two listeners cannot share a port (the pod crash-loops or `/metrics` silently vanishes). |
 | HTTPRoute invalid / route never attaches | `gateway.parentRefs` is required when `gateway.enabled` — name the Gateway(s) to attach to. |
 | `serviceMonitor` renders nothing useful | Enable `metrics.enabled: true`; the ServiceMonitor needs the metrics Service. |
 | *(runtime)* `/_stream` answers `429` with `Retry-After: 10` and the page falls back to the Refresh button | A pod hit one of its per-pod `config.live` bounds. Scrape `readout_live_admissions_total{result!="accepted"}` on that pod to see which one refused — `connection_limit` → raise `config.live.maxConnections`; `source_limit` → raise `config.live.maxSources`; `cache_limit` → raise `config.live.maxCacheAccountedBytes` **and** `resources.limits.memory` with it. Adding replicas also raises the deployment-wide ceiling (each pod enforces its own copy). |
