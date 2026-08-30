@@ -16,6 +16,7 @@ const dependencies = vi.hoisted(() => {
         noteStaleRetryAt: vi.fn(),
         pauseLiveStaleGrace: vi.fn(),
         revealLiveStale: vi.fn(),
+        virtualizeReset: vi.fn(),
         isLiveEnabled: vi.fn(() => true),
         resetListRequestTracker: vi.fn(() => {
             if (snapshot.count === 0) return;
@@ -46,6 +47,9 @@ vi.mock('./stale.js', () => ({
     noteStaleRetryAt: dependencies.noteStaleRetryAt,
     pauseLiveStaleGrace: dependencies.pauseLiveStaleGrace,
     revealLiveStale: dependencies.revealLiveStale,
+}));
+vi.mock('./virtualizer.js', () => ({
+    virtualizeReset: dependencies.virtualizeReset,
 }));
 
 import {
@@ -287,6 +291,7 @@ beforeEach(() => {
     dependencies.markLiveUnavailable.mockReset();
     dependencies.noteStaleRetryAt.mockReset();
     dependencies.revealLiveStale.mockReset();
+    dependencies.virtualizeReset.mockReset();
     dependencies.snapshot.count = 0;
     document.body.replaceChildren();
     resetListProjection();
@@ -315,6 +320,7 @@ test('opens v2 with one header generation and preserves the raw list query', () 
         '/clusters/prod/pods/_stream?g=old&f=status:Running,Pending&%67=older&x=%ZZ',
         {
             signal: expect.any(AbortSignal),
+            redirect: 'manual',
             headers: {
                 'RO-Live-Version': '2',
                 'RO-Live-Generation': generation,
@@ -856,7 +862,9 @@ test('a snapshot whose swap throws resynchronizes instead of reconnecting', asyn
 });
 
 test('a decoded delta that cannot cover the final projection resynchronizes', async () => {
-    renderLivePage();
+    const content = renderLivePage();
+    content.dataset.roEtag = 'W/"ro-list-v1-abc"';
+    content.dataset.roEtagPath = '/clusters/prod/pods/_table';
     installHtmx();
     const first = controlledStream();
     const fetchMock = installFetch(async () =>
@@ -878,6 +886,13 @@ test('a decoded delta that cannot cover the final projection resynchronizes', as
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(window.roLive.stats().seq).toBe(0);
+    // The transaction may already have detached rows before it gave up, so the
+    // two things describing that same DOM go with the projection: the window
+    // geometry (or a filter keystroke blanks the table) and the `_table`
+    // validator (or a 304 answers for rows that are gone).
+    expect(dependencies.virtualizeReset).toHaveBeenCalledOnce();
+    expect(content.dataset.roEtag).toBeUndefined();
+    expect(content.dataset.roEtagPath).toBeUndefined();
 });
 
 test('the third protocol failure in one window stops without a retry', async () => {
@@ -1047,6 +1062,28 @@ describe('reconnect schedule and recovery', () => {
             expect(dependencies.noteStaleRetryAt).toHaveBeenLastCalledWith(0);
         },
     );
+
+    // OIDC answers an expired session on `_stream` with a 302 to the IdP. That
+    // is a terminal, not a hop: the request is asked for unfollowed, so the
+    // browser never chases a cross-origin URL carrying RO-Live-* headers (a
+    // CORS rejection reads as a transport blip and would reconnect every 30s
+    // forever) and no foreign body ever reaches the frame parser.
+    test.each([
+        ['an opaque redirect', { ...response(0, null), type: 'opaqueredirect' }],
+        ['a followed redirect', { ...response(200, null), redirected: true }],
+    ] as const)('%s stops for good with the Reload banner', async (_name, redirect) => {
+        renderLivePage();
+        const fetchMock = installFetch(async () => redirect as unknown as Response);
+
+        liveApply();
+
+        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('unavailable'));
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(fetchMock.mock.calls[0][1]?.redirect).toBe('manual');
+        expect(window.roLive.stats().attempt).toBe(0);
+        expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
+        expect(dependencies.markLiveStale).not.toHaveBeenCalled();
+    });
 
     test('a 408 keeps climbing the ladder instead of giving up', async () => {
         vi.useFakeTimers();
@@ -1433,6 +1470,12 @@ describe('reconnect schedule and recovery', () => {
         window.dispatchEvent(new Event('offline'));
         expect(window.roLive.stats().state).toBe('offline');
         expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
+        // Unlike `hidden` and `suspended`, an offline park does NOT retire the
+        // grace. Nothing is refreshing these rows and nothing wakes up until
+        // connectivity returns, so the warning the drop armed has to be allowed
+        // to land -- with polling gone it is the only thing that tells the user
+        // the data stopped moving.
+        expect(dependencies.pauseLiveStaleGrace).not.toHaveBeenCalled();
         // A paused ladder burns no rungs on attempts that cannot succeed.
         await vi.advanceTimersByTimeAsync(300_000);
         expect(fetchMock).toHaveBeenCalledOnce();

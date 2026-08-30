@@ -1372,7 +1372,7 @@
     resumeIntent = { base };
     setStatus(status);
     noteStaleRetryAt(0);
-    pauseLiveStaleGrace();
+    if (status !== "offline") pauseLiveStaleGrace();
   }
   function noteDisconnected() {
     clearListValidator();
@@ -1488,6 +1488,10 @@
     }
   }
   function acceptResponse(response, connection) {
+    if (response.type === "opaqueredirect" || response.redirected) {
+      enterUnavailable();
+      return null;
+    }
     const status = response.status;
     if (status === 429) {
       scheduleReconnect(connection.base, retryAfterMs(responseHeader2(response, "Retry-After")));
@@ -1512,6 +1516,11 @@
     try {
       response = await fetch(initial.base, {
         signal: initial.ctrl.signal,
+        // The stream target is same-origin by construction (live-url.ts)
+        // and must stay that way: an auth redirect is a terminal, not a
+        // hop. acceptResponse turns the resulting opaque redirect into the
+        // Reload banner.
+        redirect: "manual",
         headers: {
           "RO-Live-Version": "2",
           "RO-Live-Generation": initial.generation
@@ -1592,6 +1601,8 @@
     if (envelope.kind === "delta") {
       const applied = applyLiveV2Delta(envelope, cursor);
       if (!applied.ok) {
+        virtualizeReset();
+        clearListValidator();
         rejectProtocol(connection);
         return;
       }
@@ -2654,6 +2665,9 @@
     }
     virtComputeVisible();
     virtRenderWindow();
+  }
+  function virtualizeReset() {
+    virtReset();
   }
   function virtualizeAfterDelta(previousByKey, focusKey = null) {
     if (!virtualizerActive()) return;

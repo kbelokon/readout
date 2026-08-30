@@ -5762,7 +5762,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .tb-btn.live-toggle[aria-pressed="true"] .ro-livedot, .ro-dot.pulse, .rep .rep-track i.updating {
+    .tb-btn.live-toggle[aria-pressed="true"][data-ro-live-state="open"] .ro-livedot, .ro-dot.pulse, .rep .rep-track i.updating {
       animation: none;
     }
 

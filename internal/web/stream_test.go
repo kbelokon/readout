@@ -1894,11 +1894,18 @@ func TestHeadRequestsKeepTheirRouteLabel(t *testing.T) {
 // arrives just as often through the shared source's Done channel -- and a peer
 // that stopped reading must not hold the handler past the grace on either path.
 func TestShutdownTerminalIsBoundedByTheDrainGrace(t *testing.T) {
+	// Strictly under the grace, not equal to it: main arms srv.Shutdown with
+	// ShutdownGrace, so a terminal that may spend all of it leaves the handler
+	// no room to unwind and the drain reports DeadlineExceeded.
+	if shutdownTerminalWriteBound >= ShutdownGrace {
+		t.Fatalf("shutdown terminal bound %s must be strictly under the %s drain",
+			shutdownTerminalWriteBound, ShutdownGrace)
+	}
 	tuning := defaultStreamTuning()
 	for _, reason := range streamTerminalReasons {
 		want := tuning.writeTimeout
 		if reason == streamTerminalShutdown {
-			want = ShutdownGrace
+			want = shutdownTerminalWriteBound
 		}
 		if got := terminalWriteBound(reason, tuning.writeTimeout); got != want {
 			t.Fatalf("terminal(%q) write bound = %s, want %s", reason, got, want)

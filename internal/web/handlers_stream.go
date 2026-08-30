@@ -889,6 +889,16 @@ func (st *streamSession) terminal(reason string) {
 	st.terminalLiveV2(reason)
 }
 
+// shutdownTerminalWriteBound is the slice of the drain that ONE non-reading
+// peer may spend on its terminal frame. It has to stay strictly under
+// ShutdownGrace: main arms srv.Shutdown with the same grace, and the handler
+// still has to flush, run its defers, and release its hub subscription before
+// Shutdown can see the connection go idle. A terminal allowed to spend the
+// whole grace therefore guarantees a DeadlineExceeded -- "graceful shutdown
+// failed" and exit code 1 on an ordinary rollout that happens to have a stalled
+// Live peer. Half leaves the drain as much room to finish as it gave away.
+const shutdownTerminalWriteBound = ShutdownGrace / 2
+
 // terminalWriteBound is the deadline the terminal frame is written under. The
 // drain bounds a shutdown terminal wherever it came from: shutdown cancels the
 // hub context too, so the reason arrives through the shared source's Done
@@ -896,7 +906,7 @@ func (st *streamSession) terminal(reason string) {
 // must not outlive the grace on either path.
 func terminalWriteBound(reason string, current time.Duration) time.Duration {
 	if reason == streamTerminalShutdown {
-		return ShutdownGrace
+		return shutdownTerminalWriteBound
 	}
 	return current
 }

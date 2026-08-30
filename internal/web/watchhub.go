@@ -400,23 +400,16 @@ func (h *watchHub) Subscribe(ctx context.Context, spec *hubSourceSpec, demand hu
 // into the map BEFORE any upstream I/O starts, so every concurrent attach for
 // the same key joins one initialization instead of racing to start its own.
 func (h *watchHub) source(spec *hubSourceSpec) (*hubSource, error) {
-	src, reclaimed, err := h.sourceLocked(spec)
-	if reclaimed {
-		// A reclaim returned another source's bytes under the lock; publish the
-		// new total outside it, exactly as noteAccounted does.
-		h.metrics.observeHubCache(h.accountedBytes())
-	}
-	return src, err
+	return h.sourceLocked(spec)
 }
 
-// sourceLocked is source's critical section. It also reports whether it
-// reclaimed, because the caller owes the cache gauge an update in that case.
-func (h *watchHub) sourceLocked(spec *hubSourceSpec) (*hubSource, bool, error) {
+// sourceLocked is source's critical section.
+func (h *watchHub) sourceLocked(spec *hubSourceSpec) (*hubSource, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if src, ok := h.sources[spec.key]; ok {
 		h.metrics.observeHubSource(hubSourceReused)
-		return src, false, nil
+		return src, nil
 	}
 	// A scope that already measured over the cache bound is refused here,
 	// before any upstream I/O, for the rest of its refusal window: re-listing it
@@ -424,24 +417,23 @@ func (h *watchHub) sourceLocked(spec *hubSourceSpec) (*hubSource, bool, error) {
 	// exactly the moment its retained state is at capacity.
 	if h.refusedLocked(&spec.key) {
 		h.metrics.observeHubSource(hubSourceFailed)
-		return nil, false, errHubCacheLimit
+		return nil, errHubCacheLimit
 	}
-	reclaimed := false
 	if len(h.sources) >= h.limits.maxSources {
 		// Retention is an optimization for the next visitor, not a reservation.
 		// Give the slot to the subscriber in front of us rather than answering
 		// 429 while a source nobody is watching sits out its window.
 		if !h.reclaimIdleLocked(1) {
-			return nil, false, errHubSourceLimit
+			return nil, errHubSourceLimit
 		}
-		reclaimed = true
+		h.observeCacheLocked()
 	}
 	src := newHubSource(h, spec)
 	h.sources[spec.key] = src
 	h.metrics.observeHubSource(hubSourceCreated)
 	h.observeCountsLocked()
 	go src.run()
-	return src, reclaimed, nil
+	return src, nil
 }
 
 // noteIdle tracks whether a source currently has anybody attached. Sources call
@@ -497,11 +489,10 @@ func (h *watchHub) reclaimIdleLocked(n int) bool {
 // not worth a 429.
 func (h *watchHub) reclaimIdle() bool {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	released := h.reclaimIdleLocked(len(h.idle))
-	sum := h.accounted
-	h.mu.Unlock()
 	if released {
-		h.metrics.observeHubCache(sum)
+		h.observeCacheLocked()
 	}
 	return released
 }
@@ -536,11 +527,9 @@ func (h *watchHub) noteSubscribers(delta int) {
 // decision that reclaimed it.
 func (h *watchHub) noteAccounted(src *hubSource, total int64) {
 	h.mu.Lock()
-	changed := h.setSourceAccountedLocked(src, total)
-	sum := h.accounted
-	h.mu.Unlock()
-	if changed {
-		h.metrics.observeHubCache(sum)
+	defer h.mu.Unlock()
+	if h.setSourceAccountedLocked(src, total) {
+		h.observeCacheLocked()
 	}
 }
 
@@ -560,6 +549,15 @@ func (h *watchHub) setSourceAccountedLocked(src *hubSource, total int64) bool {
 
 func (h *watchHub) observeCountsLocked() {
 	h.metrics.observeHubCounts(len(h.sources), h.subscribers)
+}
+
+// observeCacheLocked publishes the cache gauge while h.mu is still held, so
+// the value the gauge ends on is the value the hub ended on. Publishing after
+// the unlock lets two source actors interleave -- A reads 5MB, B reads 0 and
+// publishes first -- and the gauge then latches A's stale total until the next
+// accounting change, which on a draining pod may never come.
+func (h *watchHub) observeCacheLocked() {
+	h.metrics.observeHubCache(h.accounted)
 }
 
 func (h *watchHub) sourceCount() int {

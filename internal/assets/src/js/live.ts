@@ -42,6 +42,7 @@ import {
     pauseLiveStaleGrace,
     revealLiveStale,
 } from './stale.js';
+import { virtualizeReset } from './virtualizer.js';
 
 interface LiveSnapshotEventInfo {
     target: Element;
@@ -278,13 +279,21 @@ function enterUnavailable(): void {
 // enterDeferred parks the transport in a state that owns its own wake-up
 // (visibility, request settlement, or `online`). The stream is closed but the
 // page is not stale-by-failure, so no warning is raised.
+//
+// `offline` is the exception, and it is the whole point of the split. `hidden`
+// and `suspended` are deliberate parks over rows that are either unwatched or
+// being refreshed by the user's own request, so a delayed warning would be
+// noise. An offline browser is neither: nobody is refreshing anything, the
+// rows ARE frozen, the user IS looking, and nothing wakes up until
+// connectivity returns. With polling gone this banner is the only thing that
+// says so, so its grace must be left to run.
 function enterDeferred(status: 'hidden' | 'suspended' | 'offline', base: string): void {
     resumeIntent = { base };
     setStatus(status);
     noteStaleRetryAt(0);
     // Retiring the retry is not enough: a grace armed by the drop that got us
-    // here would still fire and raise the warning this state does not own.
-    pauseLiveStaleGrace();
+    // here would still fire and raise a warning these two states do not own.
+    if (status !== 'offline') pauseLiveStaleGrace();
 }
 
 // noteDisconnected publishes the loss of a stream: the projection is last-known
@@ -429,10 +438,22 @@ async function liveConnect(initial: LiveConnection): Promise<void> {
 // handshake headers never arrived intact -- so they stop with the Reload banner
 // instead of retrying every 30s forever. 204 is the watchless-kind answer: a
 // successful "there is nothing here to stream".
+//
+// A redirect is the same class of answer as a 401. OIDC mode answers an expired
+// session on `_stream` with a 302 to the IdP, which no replay of this request
+// can satisfy; the fetch asks for it unfollowed (`redirect: 'manual'`) so the
+// browser hands back an opaque redirect instead of either chasing a
+// cross-origin URL with our RO-Live-* headers (a CORS failure that reads as a
+// transport blip and reconnects forever) or letting a foreign body reach the
+// frame parser.
 function acceptResponse(
     response: Response,
     connection: LiveConnection,
 ): ReadableStream<Uint8Array> | null {
+    if (response.type === 'opaqueredirect' || response.redirected) {
+        enterUnavailable();
+        return null;
+    }
     const status = response.status;
     if (status === 429) {
         scheduleReconnect(connection.base, retryAfterMs(responseHeader(response, 'Retry-After')));
@@ -461,6 +482,11 @@ async function runLiveConnection(
     try {
         response = await fetch(initial.base, {
             signal: initial.ctrl.signal,
+            // The stream target is same-origin by construction (live-url.ts)
+            // and must stay that way: an auth redirect is a terminal, not a
+            // hop. acceptResponse turns the resulting opaque redirect into the
+            // Reload banner.
+            redirect: 'manual',
             headers: {
                 'RO-Live-Version': '2',
                 'RO-Live-Generation': initial.generation,
@@ -548,6 +574,14 @@ function handleV2Frame(
     if (envelope.kind === 'delta') {
         const applied = applyLiveV2Delta(envelope, cursor);
         if (!applied.ok) {
+            // A transaction that fails mid-flight has already run its removes,
+            // so it drops the projection. Two things describe that same dead
+            // DOM and must go with it: the window geometry (or the next filter
+            // keystroke re-windows over an empty model and blanks the table)
+            // and the stored `_table` validator (or a 304 could answer for rows
+            // that are no longer there). The resync rebuilds both.
+            virtualizeReset();
+            clearListValidator();
             rejectProtocol(connection);
             return;
         }

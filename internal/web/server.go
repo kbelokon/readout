@@ -110,8 +110,9 @@ type Server struct {
 
 // ShutdownGrace bounds the graceful drain after SIGINT/SIGTERM: long enough
 // for open Live streams to flush their `ro-live` terminal "shutdown" frames
-// before the listener dies. The stream's own shutdown write is bounded by the
-// same value, so a non-reading peer cannot consume the whole drain.
+// before the listener dies. The stream's own shutdown write is bounded by a
+// strict fraction of it (shutdownTerminalWriteBound), so a non-reading peer
+// cannot consume the whole drain and leave nothing for the unwind.
 const ShutdownGrace = 5 * time.Second
 
 // liveHub returns the process-local WatchHub, building it on first use.
