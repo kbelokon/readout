@@ -2922,7 +2922,7 @@
     if (appliedLiveFilter?.content === content && appliedLiveFilter.draft === draft && appliedLiveFilter.revision === revision) {
       return;
     }
-    const visible = liveNameMatchKeys(roRowModel.rows, draft);
+    const visible = roRowModel.rows.length ? liveNameMatchKeys(roRowModel.rows, draft) : null;
     setListProjectionVisibleKeys(visible);
     content.querySelectorAll("tbody tr[data-key], .ro-cardlist > .ro-pcard[data-key]").forEach((item) => {
       item.classList.toggle(
