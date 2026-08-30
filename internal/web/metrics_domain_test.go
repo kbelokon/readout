@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -485,4 +486,96 @@ func TestLiveMetricsRelistCounted(t *testing.T) {
 	// snapshot measurement on the one shared source.
 	requireMetric(t, body, "readout_watchhub_snapshot_bytes_count", 2)
 	requireMetric(t, body, `readout_watchhub_sources_total{result="created"}`, 1)
+}
+
+// statusWriter decides what the request counter's `status` label says, and it
+// sits under every handler in the process. Its two non-obvious rules -- an
+// informational response is not the final status, and a duplicate WriteHeader
+// neither re-labels the request nor reaches the connection -- have no other
+// coverage.
+func TestStatusWriterRecordsExactlyOneFinalStatus(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		write      func(w http.ResponseWriter)
+		wantStatus int
+		wantBody   string
+		wantCodes  []int
+	}{
+		{
+			name:       "an implicit body write is 200",
+			write:      func(w http.ResponseWriter) { _, _ = w.Write([]byte("hi")) },
+			wantStatus: http.StatusOK,
+			wantBody:   "hi",
+			wantCodes:  []int{http.StatusOK},
+		},
+		{
+			name: "early hints precede the final status without becoming it",
+			write: func(w http.ResponseWriter) {
+				w.WriteHeader(http.StatusEarlyHints)
+				w.WriteHeader(http.StatusNotFound)
+			},
+			wantStatus: http.StatusNotFound,
+			wantCodes:  []int{http.StatusEarlyHints, http.StatusNotFound},
+		},
+		{
+			name: "a duplicate WriteHeader is swallowed, not forwarded",
+			write: func(w http.ResponseWriter) {
+				w.WriteHeader(http.StatusCreated)
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("body"))
+			},
+			wantStatus: http.StatusCreated,
+			wantBody:   "body",
+			wantCodes:  []int{http.StatusCreated},
+		},
+		{
+			// The flush itself commits the header at the transport, so nothing
+			// is forwarded here -- but the label must still say 200 rather than
+			// whatever a later WriteHeader tries to claim.
+			name: "a flush with no prior write commits 200",
+			write: func(w http.ResponseWriter) {
+				_ = http.NewResponseController(w).Flush()
+				w.WriteHeader(http.StatusInternalServerError)
+			},
+			wantStatus: http.StatusOK,
+			wantCodes:  nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := &recordingHeaderWriter{ResponseRecorder: httptest.NewRecorder()}
+			w := &statusWriter{ResponseWriter: rec, status: http.StatusOK}
+			tc.write(w)
+			if w.status != tc.wantStatus {
+				t.Fatalf("recorded status = %d, want %d", w.status, tc.wantStatus)
+			}
+			if got := rec.Body.String(); got != tc.wantBody {
+				t.Fatalf("body = %q, want %q", got, tc.wantBody)
+			}
+			if !slices.Equal(rec.codes, tc.wantCodes) {
+				t.Fatalf("forwarded status codes = %v, want %v", rec.codes, tc.wantCodes)
+			}
+		})
+	}
+}
+
+// recordingHeaderWriter remembers every WriteHeader that actually reached the
+// transport, which httptest.ResponseRecorder collapses into one.
+type recordingHeaderWriter struct {
+	*httptest.ResponseRecorder
+	codes []int
+}
+
+func (w *recordingHeaderWriter) WriteHeader(status int) {
+	w.codes = append(w.codes, status)
+	w.ResponseRecorder.WriteHeader(status)
+}
+
+func (w *recordingHeaderWriter) Write(p []byte) (int, error) {
+	if len(w.codes) == 0 {
+		w.codes = append(w.codes, http.StatusOK)
+	}
+	return w.ResponseRecorder.Write(p)
 }

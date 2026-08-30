@@ -84,9 +84,17 @@ function waitForTick(page: Page): Promise<Response> {
 }
 
 async function clickSort(page: Page, label: string): Promise<void> {
+  const header = page.locator('thead th a', { hasText: label }).first();
+  const before = await header.getAttribute('href');
   const swapped = page.waitForResponse(isUserTableResponse);
-  await page.locator('thead th a', { hasText: label }).first().click();
+  await header.click();
   await swapped;
+  // The response is not the swap. Wait for the morphed header to publish its
+  // NEXT sort target: a second click issued before the morph lands would just
+  // re-request the direction that is already applied.
+  await expect
+    .poll(() => page.locator('thead th a', { hasText: label }).first().getAttribute('href'))
+    .not.toBe(before);
 }
 
 function rowNames(page: Page) {

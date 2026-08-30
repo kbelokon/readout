@@ -610,14 +610,10 @@ func TestStatesStaleHandlerInReadoutJS(t *testing.T) {
 	if !gatedResponseError.MatchString(js) {
 		t.Fatalf("htmx:responseError handler is not gated on isListRefreshEvent (would mark every htmx error stale)")
 	}
-	// The reveal/clear is not dropped: the two independent warning owners jointly
-	// control visibility, and a fully recovered banner also retires its ticker.
-	if !strings.Contains(js, "banner.hidden = !(listStale || liveUnavailable)") {
-		t.Fatalf("stale handler must derive banner visibility from both warning owners")
-	}
-	if !strings.Contains(js, "if (banner.hidden) stopStaleCountdown()") {
-		t.Fatalf("recovered refresh must stop the stale countdown")
-	}
+	// Banner visibility and the countdown's retirement are behavior-tested in
+	// stale.dom.test.ts. Do not pin their emitted JavaScript spelling here:
+	// equivalent expressions must remain a safe refactor (same rule as the
+	// prefs decoder contract).
 }
 
 // TestForbiddenDetailState proves the detail page also ships the forbidden state:

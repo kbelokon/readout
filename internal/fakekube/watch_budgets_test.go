@@ -144,6 +144,60 @@ func TestWatchRetainedBytesEvictAndAdvanceFloor(t *testing.T) {
 	}
 }
 
+// The block above proves the snapshot REPORTS each budget; it cannot prove any
+// of them is a sane value, because it compares each constant with itself. These
+// are the relationships the fixture's apiserver behaviour actually depends on.
+func TestWatchBudgetsHoldTheirRelationships(t *testing.T) {
+	for name, value := range map[string]int{
+		"watchScriptMaxBytes":       watchScriptMaxBytes,
+		"watchMaxEventBytes":        watchMaxEventBytes,
+		"watchPendingByteLimit":     watchPendingByteLimit,
+		"watchPendingCountLimit":    watchPendingCountLimit,
+		"watchHistoryByteLimit":     watchHistoryByteLimit,
+		"watchHistoryCountLimit":    watchHistoryCountLimit,
+		"watchReplayByteLimit":      watchReplayByteLimit,
+		"watchReplayCountLimit":     watchReplayCountLimit,
+		"watchConnectionLimit":      watchConnectionLimit,
+		"watchConnQueueCountLimit":  watchConnQueueCountLimit,
+		"watchConnQueueByteLimit":   watchConnQueueByteLimit,
+		"watchGlobalQueueByteLimit": watchGlobalQueueByteLimit,
+	} {
+		if value <= 0 {
+			t.Errorf("%s = %d, want a positive budget", name, value)
+		}
+	}
+	// A retained replay must be able to EXCEED one connection's delivery
+	// window: that gap is the only thing that makes the 410-instead-of-partial-
+	// replay path reachable, and readout's own relist tests depend on it.
+	if watchReplayByteLimit <= watchConnQueueByteLimit {
+		t.Fatalf("replay retention %d must exceed the per-connection queue %d, or a reconnect can never be Expired",
+			watchReplayByteLimit, watchConnQueueByteLimit)
+	}
+	// ...and a replay that DOES fit must be deliverable whole by count.
+	if watchConnQueueCountLimit < watchReplayCountLimit {
+		t.Fatalf("per-connection queue count %d is below the replay ring %d, so a full replay could never be delivered",
+			watchConnQueueCountLimit, watchReplayCountLimit)
+	}
+	if watchGlobalQueueByteLimit < watchConnQueueByteLimit {
+		t.Fatalf("global queue %d is below one connection's own budget %d", watchGlobalQueueByteLimit, watchConnQueueByteLimit)
+	}
+	// One event must fit the pending and history budgets, or nothing is ever
+	// queued or retained.
+	if watchMaxEventBytes >= watchPendingByteLimit || watchMaxEventBytes >= watchHistoryByteLimit {
+		t.Fatalf("one max-size event (%d) does not fit pending (%d) / history (%d)",
+			watchMaxEventBytes, watchPendingByteLimit, watchHistoryByteLimit)
+	}
+	if watchScriptMaxBytes < watchMaxEventBytes {
+		t.Fatalf("script body cap %d cannot carry one max-size event %d", watchScriptMaxBytes, watchMaxEventBytes)
+	}
+	if watchMaxDelayMs != int(watchMaxDelay/time.Millisecond) || watchMaxDelay <= 0 {
+		t.Fatalf("delay cap is inconsistent: %d ms vs %s", watchMaxDelayMs, watchMaxDelay)
+	}
+	if watchWriteTimeout <= 0 {
+		t.Fatalf("watch write timeout = %s, want a positive deadline", watchWriteTimeout)
+	}
+}
+
 func TestWatchPendingByteAdmissionAndSingleEventCap(t *testing.T) {
 	srv := newInternalFakeServer(t)
 	const padding = 220 << 10

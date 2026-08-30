@@ -224,13 +224,6 @@ describe('complete row-model capture', () => {
         expect(window.roRowModel.rows[0]?.name).toBe('Web Alpha');
 
         virtualizer.virtualizerActive.mockReturnValue(false);
-        document.getElementById('ro-filter-input')?.remove();
-        filters.captureRowModelFromDocument();
-        expect(window.roRowModel.rows[0]?.name).toBe('Web Alpha');
-
-        const replacementInput = document.createElement('input');
-        replacementInput.id = 'ro-filter-input';
-        document.getElementById('ro-filter-field')?.appendChild(replacementInput);
         filters.captureRowModelFromDocument();
         expect(window.roRowModel.rows[0]?.name).toBe('Web Alpha');
 

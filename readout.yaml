@@ -278,8 +278,15 @@ search:
 #                           namespace/selector with the same credentials share
 #                           ONE source, so this is usually far below
 #                           maxConnections.
+#                           With clusterAuthUseSessionToken, each viewer's own
+#                           token is its own source, so sources then scale with
+#                           viewers x scopes rather than with scopes.
 #   maxCacheAccountedBytes: retained object state summed across those sources,
-#                           as a Kubernetes quantity.
+#                           as a Kubernetes quantity. Admission charges the
+#                           encoded estimate a fixed 10x headroom, so this reads
+#                           as roughly the process memory held in shared Live
+#                           state. It is checked when a source is admitted, not
+#                           as an admitted scope grows.
 live:
   maxConnections: 512
   maxSources: 128

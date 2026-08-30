@@ -840,6 +840,9 @@ describe('refresh dispatcher bindings', () => {
     });
 });
 
+// KEEP THIS TEST LAST. The re-import below permanently registers a SECOND set
+// of document listeners and overwrites window.requestListRefresh, so anything
+// appended after it would see every tracker entry counted twice.
 test('registers every required resident listener and binding at module load', async () => {
     // The first import happens while Vitest collects this file, outside an
     // individual test's coverage window. Re-evaluate the side-effect module so

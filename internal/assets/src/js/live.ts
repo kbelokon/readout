@@ -562,6 +562,10 @@ function swapSnapshot(html: string, connection: LiveConnection, txn: object): vo
         roLivePush: true,
         roLiveSnapshotTxn: txn,
     };
+    // A throwing swap must NOT escape to the read loop: there it would read as
+    // a transport drop and start the reconnect ladder. Swallowing it leaves the
+    // transaction uncommitted, which the caller turns into the bounded resync a
+    // rendering fault actually deserves.
     try {
         htmx.swap(content, html, { swapStyle: 'morph' }, { contextElement: content, eventInfo });
     } catch {}

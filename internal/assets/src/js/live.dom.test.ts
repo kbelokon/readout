@@ -793,6 +793,36 @@ test('the auth terminal stops for good and asks for a reload', async () => {
     expect(fetchMock).toHaveBeenCalledOnce();
 });
 
+// A rendering fault is a bug on this side of the wire, not a transport blip:
+// it must take the bounded resync path, never the reconnect ladder.
+test('a snapshot whose swap throws resynchronizes instead of reconnecting', async () => {
+    renderLivePage();
+    const harness = installHtmx();
+    harness.swap.mockImplementation(() => {
+        throw new Error('morph exploded');
+    });
+    const streams = [controlledStream(), controlledStream()];
+    const fetchMock = installFetch(
+        async () => streams[fetchMock.mock.calls.length - 1]?.response ?? pendingFetch(),
+    );
+    const before = window.roLive.stats();
+
+    liveApply();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    streams[0].enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock))));
+
+    // The reopen is immediate and off the ladder: no backoff rung was burned
+    // and no stale banner was raised for what is a rendering fault.
+    await vi.waitFor(() => expect(window.roLive.stats().resyncs).toBe(before.resyncs + 1));
+    expect(window.roLive.stats()).toMatchObject({
+        attempt: 0,
+        reconnects: before.reconnects,
+        seq: before.seq,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(dependencies.markLiveStale).not.toHaveBeenCalled();
+});
+
 test('a decoded delta that cannot cover the final projection resynchronizes', async () => {
     renderLivePage();
     installHtmx();
@@ -1400,6 +1430,23 @@ describe('reconnect schedule and recovery', () => {
         expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
         await vi.advanceTimersByTimeAsync(300_000);
         expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
+    // Turning Live on while already offline must park, not burn a ladder rung
+    // on a fetch that cannot succeed.
+    test('turning Live on while offline parks without issuing a request', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        const fetchMock = installFetch(pendingFetch);
+        vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
+
+        liveApply();
+
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(window.roLive.stats()).toMatchObject({ state: 'offline', attempt: 0 });
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 
     test('an online event does not reopen a stream the user turned off while parked', async () => {
