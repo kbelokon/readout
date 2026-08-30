@@ -204,6 +204,11 @@ Warnings (install proceeds, NOTES warns):
   shared secret via `auth.sessionSecret.existingSecret`, an `env` entry named
   `READOUT_SESSION_SECRET`, or `config.sessionSecretFile`; an opaque `envFrom`
   source is assumed to carry it and the warning softens to a reminder.
+- **Metrics port unreachable under NetworkPolicy** — `networkPolicy.enabled` with
+  `metrics.enabled` and an empty `networkPolicy.ingress.metricsFrom` installs but
+  prints a NOTES warning: `ingress.from` opens the app port only, so on an
+  enforcing CNI nothing can scrape the metrics port and Prometheus targets go
+  down silently. List the scraper's peer in `ingress.metricsFrom`.
 
 Render-time `fail`s (the cluster would reject these anyway, or the release would
 be silently broken):
@@ -216,10 +221,11 @@ be silently broken):
   key.
 - **Metrics guards** — `config.metricsPort` set to a value different from
   `metrics.port` is an error; `config.metricsPort` set while `metrics.enabled` is
-  false is an error; `metrics.port` equal to `config.port` is an error (the two
-  listeners would fight for one port: the pod crash-loops or `/metrics` silently
-  vanishes); a `serviceMonitor` enabled without `metrics.enabled` does not render
-  a useful object. Drive the metrics port through `metrics.port` only.
+  false is an error; `metrics.port` equal to `config.port` while
+  `metrics.enabled` is true is an error (the two listeners would fight for one
+  port: the pod crash-loops or `/metrics` silently vanishes); a `serviceMonitor`
+  enabled without `metrics.enabled` does not render a useful object. Drive the
+  metrics port through `metrics.port` only.
 - **NetworkPolicy guard** — `networkPolicy.ingress.metricsFrom` set while
   `networkPolicy.enabled` is true and `metrics.enabled` is false is an error:
   there is no metrics port to open, and a silently missing rule would leave the
@@ -288,7 +294,10 @@ only the ingress/egress you explicitly allow.
   one more rule admitting the test pod (by `app.kubernetes.io/instance` +
   `app.kubernetes.io/component: test-connection`, this namespace only) to the
   app port. The test pod carries no `app.kubernetes.io/name`, so it is not a
-  target of the policy itself.
+  target of the policy itself. The rule stands for as long as
+  `testFramework.enabled` is true — it admits any pod in the release namespace
+  carrying that instance + component label pair to the app port — so enable the
+  test framework for the test run, not permanently.
 - **Egress** — `networkPolicy.egress.dns` (default `true`) allows DNS on UDP/TCP
   53. `networkPolicy.egress.to` is a list of verbatim `NetworkPolicyEgressRule`s
   for **every** destination readout dials: the in-cluster **Kubernetes

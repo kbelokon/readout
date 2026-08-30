@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Render the chart (default values + every examples/*.yaml) and validate each
-# manifest stream with kubeconform in strict mode. Core Kubernetes types use
-# the default upstream schema location; the three custom-resource kinds the
-# chart can emit (Gateway API HTTPRoute, Prometheus ServiceMonitor, Traefik
-# IngressRoute) resolve against the schemas vendored under chart/ci/schemas/.
+# Render the chart (default values, every examples/*.yaml, and every
+# ci/golden/*.values.yaml) and validate each manifest stream with kubeconform in
+# strict mode. Core Kubernetes types use the default upstream schema location;
+# the three custom-resource kinds the chart can emit (Gateway API HTTPRoute,
+# Prometheus ServiceMonitor, Traefik IngressRoute) resolve against the schemas
+# vendored under chart/ci/schemas/.
 # We never pass -ignore-missing-schemas: an unknown kind must fail, not skip.
 set -euo pipefail
 
@@ -21,6 +22,15 @@ helm template readout "$CHART_DIR" | validate
 
 for f in "$CHART_DIR"/examples/*.yaml; do
   echo "==> example: $f"
+  helm template readout "$CHART_DIR" -f "$f" | validate
+done
+
+# The NetworkPolicy renders only under networkPolicy.enabled, which no example
+# sets; the golden values files are the fixtures that do, so validate those
+# renders against the networking.k8s.io/v1 schema too -- a golden pins TEXT,
+# kubeconform pins the object's SHAPE.
+for f in "$CHART_DIR"/ci/golden/*.values.yaml; do
+  echo "==> golden values: $f"
   helm template readout "$CHART_DIR" -f "$f" | validate
 done
 

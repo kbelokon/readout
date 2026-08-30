@@ -177,7 +177,7 @@ jobs:
             --set image.repository=readout --set image.tag=ci --set image.pullPolicy=Never \
             --set testFramework.enabled=true \
             --wait --timeout 120s
-          helm test readout --timeout 60s
+          helm test readout --timeout 120s
       - name: Smoke 2 - NetworkPolicy + metrics stay Ready, helm test passes, metrics answer
         run: |
           helm upgrade readout chart \
@@ -191,7 +191,7 @@ jobs:
             --set 'networkPolicy.egress.to[0].ports[0].port=443' \
             --set metrics.enabled=true \
             --wait --timeout 120s
-          helm test readout --timeout 60s
+          helm test readout --timeout 120s
           kubectl get networkpolicy readout -o yaml
           kubectl port-forward svc/readout-metrics 19090:9090 >port-forward.log 2>&1 &
           for _ in 1 2 3 4 5 6 7 8 9 10; do

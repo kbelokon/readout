@@ -299,6 +299,8 @@ networkPolicy:
       #       kubernetes.io/metadata.name: monitoring
   # When testFramework.enabled, one more rule admits the `helm test` pod (by its
   # instance + component labels, this namespace only) to the app port.
+  # The rule stands while testFramework.enabled is true; enable it for the test
+  # run, not permanently.
 
   # Egress from readout's pods. DNS (UDP/TCP 53) is always allowed when egress is
   # rendered. Add EVERY destination readout dials: the in-cluster Kubernetes

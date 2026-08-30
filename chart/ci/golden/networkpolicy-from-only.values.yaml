@@ -1,0 +1,12 @@
+# Golden case: THE regression this branch exists to prevent. metrics.enabled
+# with a peer in `from` and nothing in `metricsFrom` must render ONE rule with
+# the app port only -- the peer must not receive the metrics port.
+metrics:
+  enabled: true
+networkPolicy:
+  enabled: true
+  ingress:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-nginx

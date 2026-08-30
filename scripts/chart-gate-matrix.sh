@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Assert the chart's template safety gates and values.schema.json reject the
 # inputs they must reject and accept the inputs they must accept. Each case
-# checks the exit code of `helm template` -- or, for expect_grep, a line of its
-# rendered output -- so it works identically on helm 3 (CI) and helm 4 (local).
-# A wrong exit code, or a missing rendered line, makes the script exit non-zero.
+# checks the exit code of `helm template` -- or, for expect_grep /
+# expect_no_grep, the presence or absence of a line of its rendered output -- so
+# it works identically on helm 3 (CI) and helm 4 (local). A wrong exit code, a
+# missing rendered line, or a line that must not render, exits non-zero.
 set -uo pipefail
 
 CHART_DIR="${1:-chart}"
@@ -42,6 +43,23 @@ expect_grep() {
   else
     echo "FAIL (pattern not rendered: $pattern): $desc"
     fail=1
+  fi
+}
+
+# expect_no_grep <description> <extended-regex> -- the render MUST succeed and
+# MUST NOT contain a line matching the regex. The render is captured first so
+# a failing helm (empty output) is a FAIL, never a false "absent".
+expect_no_grep() {
+  local desc="$1" pattern="$2"; shift 2
+  local out
+  if ! out="$(helm template readout "$CHART_DIR" "$@" 2>/dev/null)" || [ -z "$out" ]; then
+    echo "FAIL (render failed or empty): $desc"
+    fail=1
+  elif grep -q -E "$pattern" <<<"$out"; then
+    echo "FAIL (pattern rendered but must be absent: $pattern): $desc"
+    fail=1
+  else
+    echo "ok (absent): $desc"
   fi
 }
 
@@ -119,13 +137,9 @@ expect_grep "helm-test pod carries app.kubernetes.io/component: test-connection"
 # ...and must NOT carry app.kubernetes.io/name: every chart selector matches
 # name AND instance, so omitting name keeps the test pod out of the Deployment,
 # Service, PDB and NetworkPolicy podSelectors (it is a client, not a replica).
-if helm template readout "$CHART_DIR" --set testFramework.enabled=true -s templates/tests/test-connection.yaml 2>/dev/null \
-    | grep -q -E '^\s*app\.kubernetes\.io/name:'; then
-  echo "FAIL (helm-test pod must not carry app.kubernetes.io/name): test pod outside selectors"
-  fail=1
-else
-  echo "ok (absent): helm-test pod carries no app.kubernetes.io/name"
-fi
+expect_no_grep "helm-test pod carries no app.kubernetes.io/name" \
+  '^\s*app\.kubernetes\.io/name:' \
+  --set testFramework.enabled=true -s templates/tests/test-connection.yaml
 
 # Rendered value: the app binds LOOPBACK when listenAddress is empty under
 # auth.mode none (its safe default for a bare binary). Inside a pod that means

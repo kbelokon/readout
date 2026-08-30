@@ -95,6 +95,20 @@ AUTH POSTURE
 !! broken until you do.
 !! ===========================================================================
 {{- end }}
+{{- if and (.Values.networkPolicy).enabled .Values.metrics.enabled (not (.Values.networkPolicy.ingress).metricsFrom) }}
+
+!! ===========================================================================
+!! WARNING: METRICS ENABLED BUT NO PEER MAY REACH THE METRICS PORT
+!! ===========================================================================
+!! networkPolicy.enabled and metrics.enabled are both true, but
+!! networkPolicy.ingress.metricsFrom is empty. networkPolicy.ingress.from opens
+!! the APP port only, so on an enforcing CNI nothing can scrape the metrics
+!! port: Prometheus targets go down silently. Put your scraper's peer
+!! (namespaceSelector / podSelector) in networkPolicy.ingress.metricsFrom.
+!! Upgrading from chart <= 0.12: move it out of `from` -- `from` no longer
+!! opens the metrics port. This was NOT blocked.
+!! ===========================================================================
+{{- end }}
 {{- if .Values.gateway.enabled }}
 
 GATEWAY (HTTPRoute) ATTACHMENT
