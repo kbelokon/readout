@@ -9,11 +9,10 @@ import {
 import { type LiveSSEEvent, LiveSSEParser } from './live-sse.js';
 import { liveStreamBaseForURL, mintLiveGeneration } from './live-url.js';
 import {
+    isLiveEnabled,
     type ListRequestActivity,
     listRequestTrackerSnapshot,
-    refreshMode,
     resetListRequestTracker,
-    scheduleRefreshTick,
     subscribeListRequests,
 } from './refresh.js';
 import { clearLiveUnavailable, markLiveUnavailable } from './stale.js';
@@ -109,10 +108,10 @@ export function liveFallbackSeconds(): number {
 function liveSupported(): boolean {
     const content = document.getElementById('resource-list-content') as HTMLElement | null;
     if (content?.dataset.liveUrl !== 'location') return false;
-    const option = document.querySelector(
-        '[data-ro-action="set-refresh"][data-ro-interval="Live"]',
+    const toggle = document.querySelector(
+        '[data-ro-action="toggle-live"]',
     ) as HTMLButtonElement | null;
-    return !!option && !option.disabled;
+    return !!toggle && !toggle.disabled;
 }
 
 function liveStreamBase(): string {
@@ -153,7 +152,10 @@ function resetFallbackRetry(): void {
     fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
 }
 
-function setOff(): void {
+// liveSetOff tears the transport down from ANY state: abort the stream, cancel
+// every armed retry, drop the resume intent, and clear the warning surface. It
+// issues no request -- turning Live off is silent.
+export function liveSetOff(): void {
     abortActiveConnection();
     resetFallbackRetry();
     resumeIntent = null;
@@ -163,14 +165,14 @@ function setOff(): void {
 }
 
 export function liveResetPage(): void {
-    setOff();
+    liveSetOff();
     resetListRequestTracker();
     resyncTimestamps = [];
 }
 function scheduleFallbackRetry(): void {
     fallbackRetryTimerId = window.setTimeout(() => {
         fallbackRetryTimerId = undefined;
-        if (refreshMode() !== 'Live') return;
+        if (!isLiveEnabled()) return;
         const base = liveSupported() ? liveStreamBase() : '';
         fallbackRetryDelayMs = Math.min(fallbackRetryDelayMs * 2, FALLBACK_RETRY_MAX_MS);
         openConnection(base);
@@ -183,7 +185,6 @@ function liveEngageFallback(): void {
     runtime.status = 'fallback';
     liveFallbackSecs = document.getElementById('resource-list-content') ? 5 : 0;
     addCounter('fallbacks');
-    scheduleRefreshTick();
     scheduleFallbackRetry();
     markLiveUnavailable();
 }
@@ -205,7 +206,6 @@ function openConnection(base: string): void {
     if (deferredStatus) {
         resumeIntent = { base };
         runtime.status = deferredStatus;
-        scheduleRefreshTick();
         return;
     }
     let generation: string;
@@ -225,7 +225,6 @@ function openConnection(base: string): void {
     runtime.connection = connection;
     runtime.status = 'connecting';
     addCounter('connections');
-    scheduleRefreshTick();
     void liveConnect(connection);
 }
 
@@ -461,8 +460,8 @@ function requestActivity(activity: ListRequestActivity): void {
         return;
     }
     if (!resumeIntent || activity.inFlight !== 0) return;
-    if (refreshMode() !== 'Live') {
-        setOff();
+    if (!isLiveEnabled()) {
+        liveSetOff();
         return;
     }
     const { base, waitForChangedBase } = resumeIntent;
@@ -499,8 +498,8 @@ export function liveApply(force?: boolean): void {
         subscribeListRequests(requestActivity);
         requestSubscribed = true;
     }
-    if (refreshMode() !== 'Live') {
-        setOff();
+    if (!isLiveEnabled()) {
+        liveSetOff();
         return;
     }
     const base = liveSupported() ? liveStreamBase() : '';
@@ -524,8 +523,8 @@ document.addEventListener('visibilitychange', () => {
         return;
     }
     if (runtime.status === 'hidden' && resumeIntent) {
-        if (refreshMode() !== 'Live') {
-            setOff();
+        if (!isLiveEnabled()) {
+            liveSetOff();
             return;
         }
         const { base } = resumeIntent;

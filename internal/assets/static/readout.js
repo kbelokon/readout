@@ -1070,6 +1070,7 @@
 
   // internal/assets/src/js/stale.ts
   var staleCountdownId = null;
+  var staleRetryAt = 0;
   var listStaleOwner = /* @__PURE__ */ Symbol();
   var liveUnavailableOwner = /* @__PURE__ */ Symbol();
   var staleOwners = /* @__PURE__ */ new Set();
@@ -1151,7 +1152,7 @@
     if (!span) {
       return;
     }
-    const nextAt = refreshNextAtMs();
+    const nextAt = staleRetryAt;
     if (!nextAt) {
       span.textContent = "…";
     } else {
@@ -1195,13 +1196,11 @@
   }
   document.addEventListener("htmx:responseError", (event) => {
     if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
       markListStale();
     }
   });
   document.addEventListener("htmx:sendError", (event) => {
     if (isListRefreshEvent(event)) {
-      noteRefreshFailure();
       markListStale();
     }
   });
@@ -1256,16 +1255,13 @@
       resyncsInWindow: resyncTimestamps.length
     };
   }
-  function liveFallbackSeconds() {
-    return liveFallbackSecs;
-  }
   function liveSupported() {
     const content = document.getElementById("resource-list-content");
     if (content?.dataset.liveUrl !== "location") return false;
-    const option = document.querySelector(
-      '[data-ro-action="set-refresh"][data-ro-interval="Live"]'
+    const toggle = document.querySelector(
+      '[data-ro-action="toggle-live"]'
     );
-    return !!option && !option.disabled;
+    return !!toggle && !toggle.disabled;
   }
   function liveStreamBase() {
     return liveStreamBaseForURL(new URL(window.location.href));
@@ -1298,7 +1294,7 @@
     clearFallbackRetry();
     fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
   }
-  function setOff() {
+  function liveSetOff() {
     abortActiveConnection();
     resetFallbackRetry();
     resumeIntent = null;
@@ -1307,14 +1303,14 @@
     clearLiveUnavailable();
   }
   function liveResetPage() {
-    setOff();
+    liveSetOff();
     resetListRequestTracker();
     resyncTimestamps = [];
   }
   function scheduleFallbackRetry() {
     fallbackRetryTimerId = window.setTimeout(() => {
       fallbackRetryTimerId = void 0;
-      if (refreshMode() !== "Live") return;
+      if (!isLiveEnabled()) return;
       const base = liveSupported() ? liveStreamBase() : "";
       fallbackRetryDelayMs = Math.min(fallbackRetryDelayMs * 2, FALLBACK_RETRY_MAX_MS);
       openConnection(base);
@@ -1326,7 +1322,6 @@
     runtime.status = "fallback";
     liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
     addCounter("fallbacks");
-    scheduleRefreshTick();
     scheduleFallbackRetry();
     markLiveUnavailable();
   }
@@ -1343,7 +1338,6 @@
     if (deferredStatus) {
       resumeIntent = { base };
       runtime.status = deferredStatus;
-      scheduleRefreshTick();
       return;
     }
     let generation;
@@ -1363,7 +1357,6 @@
     runtime.connection = connection;
     runtime.status = "connecting";
     addCounter("connections");
-    scheduleRefreshTick();
     void liveConnect(connection);
   }
   function responseHeader2(response, name) {
@@ -1580,8 +1573,8 @@
       return;
     }
     if (!resumeIntent || activity.inFlight !== 0) return;
-    if (refreshMode() !== "Live") {
-      setOff();
+    if (!isLiveEnabled()) {
+      liveSetOff();
       return;
     }
     const { base, waitForChangedBase } = resumeIntent;
@@ -1614,8 +1607,8 @@
       subscribeListRequests(requestActivity);
       requestSubscribed = true;
     }
-    if (refreshMode() !== "Live") {
-      setOff();
+    if (!isLiveEnabled()) {
+      liveSetOff();
       return;
     }
     const base = liveSupported() ? liveStreamBase() : "";
@@ -1638,8 +1631,8 @@
       return;
     }
     if (runtime.status === "hidden" && resumeIntent) {
-      if (refreshMode() !== "Live") {
-        setOff();
+      if (!isLiveEnabled()) {
+        liveSetOff();
         return;
       }
       const { base } = resumeIntent;
@@ -1648,25 +1641,6 @@
     }
   });
   window.roLive = { stats: currentStats };
-
-  // internal/assets/src/js/live-policy.ts
-  function effectivePollSeconds(mode, intervalSeconds, liveFallbackSeconds2) {
-    if (intervalSeconds > 0) {
-      return intervalSeconds;
-    }
-    return mode === "Live" ? liveFallbackSeconds2 : 0;
-  }
-  function refreshDelaySeconds(effectiveSeconds, failureStage) {
-    const baseSeconds = Math.max(effectiveSeconds, 0);
-    if (failureStage <= 1) {
-      return baseSeconds;
-    }
-    const factor = failureStage === 2 ? 2 : 4;
-    return Math.min(baseSeconds * factor, 60);
-  }
-  function nextFailureStage(stage) {
-    return Math.min(stage + 1, 3);
-  }
 
   // internal/assets/src/js/prefs.ts
   var PREFS_MAX_ENCODED = 3072;
@@ -1853,12 +1827,6 @@
   function getHtmx() {
     return window.htmx;
   }
-  var refreshTimerId = null;
-  var refreshNextAt = 0;
-  var refreshFailureStage = 0;
-  function refreshNextAtMs() {
-    return refreshNextAt;
-  }
   var listRequestEpoch = 0;
   var listRequestsInFlight = /* @__PURE__ */ new Map();
   var listRequestSubscribers = /* @__PURE__ */ new Set();
@@ -1947,35 +1915,6 @@
     if (xhr instanceof XMLHttpRequest) settleListRequest(xhr);
   }
   document.addEventListener("htmx:afterRequest", handleRefreshAfterRequest);
-  function parseRefreshSeconds(mode) {
-    if (typeof mode !== "string") {
-      return 0;
-    }
-    const unsigned = mode.startsWith("+") ? mode.slice(1) : mode;
-    const seconds = Array.from(unsigned).reduce((value, char) => {
-      const digit = char.charCodeAt(0) - 48;
-      return digit >= 0 && digit <= 9 ? value * 10 + digit : Number.NaN;
-    }, 0);
-    return Number.isSafeInteger(seconds) ? seconds : 0;
-  }
-  function refreshMode() {
-    const stored = readPrefs().refresh;
-    if (stored) {
-      return stored;
-    }
-    let legacy = null;
-    try {
-      legacy = window.localStorage.getItem("roRefresh");
-    } catch {
-    }
-    if (!legacy) {
-      return "";
-    }
-    const secs = parseRefreshSeconds(legacy);
-    const mode = secs > 0 ? String(secs) : "Off";
-    roPrefsSetRefresh(mode);
-    return mode;
-  }
   function listTableURL() {
     const u = new URL(window.location.href);
     return `${u.pathname.replace(/\/+$/, "")}/_table${u.search}`;
@@ -1997,114 +1936,36 @@
     }
   }
   window.requestListRefresh = requestListRefresh;
-  function fireRefresh() {
-    if (document.hidden) {
-      return;
-    }
-    pruneSettledListRequests();
-    if (listRequestsInFlight.size > 0) {
-      return;
-    }
-    requestListRefresh();
+  function isLiveEnabled() {
+    return readPrefs().refresh === "Live";
   }
-  function effectivePollSeconds2() {
-    const mode = refreshMode();
-    return effectivePollSeconds(mode, parseRefreshSeconds(mode), liveFallbackSeconds());
+  function setLivePreference(on) {
+    roPrefsSetRefresh(on ? "Live" : "Off");
   }
-  function refreshDelaySeconds2() {
-    return refreshDelaySeconds(effectivePollSeconds2(), refreshFailureStage);
+  function liveToggleButton() {
+    return document.querySelector('[data-ro-action="toggle-live"]');
   }
-  function scheduleRefreshTick() {
-    if (refreshTimerId !== null) {
-      window.clearTimeout(refreshTimerId);
-      refreshTimerId = null;
-    }
-    const delay = refreshDelaySeconds2();
-    if (delay <= 0) {
-      refreshNextAt = 0;
-      updateStaleCountdown();
-      return;
-    }
-    const delayMs = delay * 1e3;
-    refreshNextAt = Date.now() + delayMs;
-    refreshTimerId = window.setTimeout(() => {
-      refreshTimerId = null;
-      scheduleRefreshTick();
-      fireRefresh();
-    }, delayMs);
-    updateStaleCountdown();
+  function syncLiveToggle() {
+    liveToggleButton()?.setAttribute("aria-pressed", isLiveEnabled() ? "true" : "false");
   }
-  function pauseRefresh() {
-    if (refreshTimerId !== null) {
-      window.clearTimeout(refreshTimerId);
-      refreshTimerId = null;
-    }
-    refreshNextAt = 0;
-    updateStaleCountdown();
+  function syncRefreshNowButton() {
+    const button = document.querySelector(
+      '[data-ro-action="refresh-now"]'
+    );
+    if (button) button.disabled = listRequestsInFlight.size > 0;
   }
-  function applyRefresh() {
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-  }
-  function syncRefreshUI() {
-    const mode = refreshMode();
-    const live = mode === "Live";
-    const secs = parseRefreshSeconds(mode);
-    const label = document.getElementById("refresh-label");
-    if (label) {
-      if (live) {
-        label.textContent = "Live";
-      } else if (secs > 0) {
-        label.textContent = `${secs}s`;
-      } else {
-        label.textContent = "Off";
-      }
-    }
-    document.querySelectorAll('[data-ro-action="set-refresh"]').forEach((opt) => {
-      const value = opt.dataset.roInterval;
-      opt.classList.toggle(
-        "is-active",
-        value !== void 0 && (live ? value === "Live" : value !== "Live" && parseRefreshSeconds(value) === secs)
-      );
-    });
-    const dropdown = document.getElementById("refresh-dropdown");
-    if (dropdown) {
-      dropdown.classList.toggle("refresh-on", live || secs > 0);
-    }
-  }
-  function noteRefreshFailure() {
-    refreshFailureStage = nextFailureStage(refreshFailureStage);
-    scheduleRefreshTick();
-  }
-  function noteRefreshRecovery() {
-    if (refreshFailureStage === 0) {
-      return;
-    }
-    refreshFailureStage = 0;
-    scheduleRefreshTick();
-    const toast = window.roToast;
-    if (typeof toast === "function") {
-      toast("Refresh resumed");
-    }
-  }
-  function handleRefreshVisibilityChange() {
-    if (!document.hidden && effectivePollSeconds2() > 0) {
-      fireRefresh();
-    }
-  }
-  document.addEventListener("visibilitychange", handleRefreshVisibilityChange);
+  subscribeListRequests(syncRefreshNowButton);
   var refreshBindings = [
-    // Stale-banner retry: re-fire the (read-only) auto-refresh GET on
+    // Stale-banner retry: re-fire the (read-only) list GET on
     // #resource-list-content through the shared refresh path (location-backed
     // lists derive `_table` from location.href; multi-type containers trigger
-    // their baked ro:refresh). On success the morph swaps fresh
-    // rows and the afterSwap handler clears the stale dim + re-hides the banner;
-    // on another failure the responseError handler keeps it stale. An in-flight
-    // container request (a HUNG tick is exactly the state this button exists for)
-    // is aborted first -- issuing a second container request would make htmx
-    // QUEUE it, and a queued request replays on the next htmx:abort with its stale
-    // queue-time URL (no queue may ever form). Pure DOM, GET-only -- the
-    // read-only floor is untouched.
+    // their baked ro:refresh). On success the morph swaps fresh rows and the
+    // afterSwap handler clears the stale dim + re-hides the banner; on another
+    // failure the responseError handler keeps it stale. An in-flight container
+    // request is aborted first -- issuing a second container request would make
+    // htmx QUEUE it, and a queued request replays on the next htmx:abort with
+    // its stale queue-time URL (no queue may ever form). Pure DOM, GET-only --
+    // the read-only floor is untouched.
     {
       event: "click",
       selector: '[data-ro-action="retry"]',
@@ -2116,7 +1977,7 @@
         if (content && htmx2) {
           htmx2.trigger(content, "htmx:abort");
         }
-        if (refreshMode() === "Live") {
+        if (isLiveEnabled()) {
           liveApply(true);
         } else {
           requestListRefresh();
@@ -2124,32 +1985,60 @@
         return true;
       }
     },
-    // Auto-refresh interval option (navbar #refresh-dropdown): persist the chosen
-    // mode in the ro_prefs cookie, re-arm the poll, and reflect it in the
-    // control. The Live option persists the literal 'Live' and rides
-    // the same path: liveApply opens/tears down the stream, applyRefresh then arms
-    // the poll chain per the EFFECTIVE seconds (0 while a stream is riding). A
-    // disabled Live option (multi-type/multi-cluster page) never fires (the
-    // browser suppresses clicks on disabled buttons). The dropdown opens through
-    // CSS hover/focus, so there is no open/close handler here -- only the
-    // selection. Kept its early-return (stop:true).
+    // The Live toggle: the whole update mode is this one boolean. Persist it
+    // first (the cookie is what a reload, and the server-rendered aria-pressed,
+    // read), then hand the transport its instruction -- liveApply(true) forces
+    // a fresh attempt even from a previously failed state, liveSetOff aborts
+    // and clears the warning surface without issuing any request. The toggle
+    // renders only where the server said `_stream` answers.
     {
       event: "click",
-      selector: '[data-ro-action="set-refresh"]',
+      selector: '[data-ro-action="toggle-live"]',
       stop: true,
-      handler: (event, matched) => {
-        const option = matched;
-        if (option.dataset.roInterval === "Live") {
-          roPrefsSetRefresh("Live");
-        } else {
-          const interval = parseRefreshSeconds(option.dataset.roInterval);
-          roPrefsSetRefresh(interval > 0 ? String(interval) : "Off");
-        }
-        liveApply(true);
-        syncRefreshUI();
-        applyRefresh();
-        option.blur();
+      handler: (event) => {
         event.preventDefault();
+        const on = !isLiveEnabled();
+        setLivePreference(on);
+        syncLiveToggle();
+        if (on) {
+          liveApply(true);
+        } else {
+          liveSetOff();
+        }
+        return true;
+      }
+    },
+    // Refresh now: EXACTLY one `_table` request per click, no timer armed, no
+    // preference written. The disabled paint is defence in depth -- a click
+    // arriving while the tracker is occupied (a queued keyboard repeat, a
+    // synthetic click) must not stack a second container request. Prune first:
+    // this click is the one gate that can rescue a tracker entry whose issuing
+    // element detached mid-request (its htmx:afterRequest never bubbled), so a
+    // swallowed terminal event cannot disable Refresh until a hard reload.
+    {
+      event: "click",
+      selector: '[data-ro-action="refresh-now"]',
+      stop: true,
+      handler: (event) => {
+        event.preventDefault();
+        pruneSettledListRequests();
+        if (listRequestsInFlight.size === 0) {
+          requestListRefresh();
+        }
+        syncRefreshNowButton();
+        return true;
+      }
+    },
+    // The Unavailable banner's Reload: this session can no longer stream (an
+    // auth terminal or a rejected admission), and no in-page retry can fix it.
+    // A full document load is the only recovery, so it is the only action.
+    {
+      event: "click",
+      selector: '[data-ro-action="reload"]',
+      stop: true,
+      handler: (event) => {
+        event.preventDefault();
+        window.location.reload();
         return true;
       }
     }
@@ -4637,12 +4526,13 @@
     // [data-ro-action="toggle-tools"]) and the v1 form glue (the data-ro-toggle-button
     // change + the tools-form submit) lifted out of the dismantled legacy.js.
     ...miscBindings,
-    // refresh-domain tails LAST: the retry + set-refresh hooks were
-    // the monolith big click listener's own trailing branches, so registering
-    // them after the migrated leaves preserves the C1 order -- every leaf
-    // front-ran the monolith, and these ran at its end. Neither co-matches any
-    // selector above, so the position is observationally free; LAST documents
-    // their monolith origin.
+    // refresh-domain tails LAST: the retry hook and the navbar update controls
+    // (toggle-live / refresh-now / the Unavailable banner's reload) were the
+    // monolith big click listener's own trailing branches, so registering them
+    // after the migrated leaves preserves the C1 order -- every leaf front-ran
+    // the monolith, and these ran at its end. None co-matches any selector
+    // above, so the position is observationally free; LAST documents their
+    // monolith origin.
     ...refreshBindings
   ];
 
@@ -4848,7 +4738,6 @@
       runInitStep(() => applyLiveRowDeletions(update.deletedKeys));
     }
     [
-      noteRefreshRecovery,
       clearListStale,
       reapplyRowState,
       applyLiveNameFilter,
@@ -4887,7 +4776,6 @@
   document.addEventListener("htmx:beforeSwap", (event) => {
     const detail = event.detail;
     if (suppressListNotModified(event)) {
-      noteRefreshRecovery();
       clearListStale();
       return;
     }
@@ -4905,7 +4793,6 @@
       closeRowMenu();
       clearRowState();
       clearListStale();
-      pauseRefresh();
       liveResetPage();
       queueMicrotask(() => {
         if (!event.defaultPrevented && detail.shouldSwap !== false) return;
@@ -4925,7 +4812,6 @@
   }
   function retireCurrentScreenForBodySwap() {
     clearListStale();
-    pauseRefresh();
     liveResetPage();
   }
   function reloadCurrentHistoryEntry() {
@@ -5020,7 +4906,7 @@
   function runInit(yamlFoldsBuilt = false) {
     if (bodySwapTicket || bodyReloading) return;
     const steps = [
-      syncRefreshUI,
+      syncLiveToggle,
       collapseSectionsFromHash,
       highlightYamlLine,
       initLogsFollow,
@@ -5049,15 +4935,12 @@
       // same store right after.
       reapplyRowState,
       updateBulkBar,
-      // Live opens only after every synchronous body/model repair. In
-      // particular, virtualizeInit may detect a history-restored viewport
-      // slice and synchronously issue the mandatory full `_table` rebuild;
-      // its beforeRequest ownership must exist before liveApply decides
-      // whether to open or suspend. Keep liveApply immediately BEFORE
-      // applyRefresh so the poll chain still arms against the resulting Live
-      // state: a riding stream disarms it, a fallback selects 5s.
-      liveApply,
-      applyRefresh
+      // Live opens only after every synchronous body/model repair, and is the
+      // LAST step for that reason. In particular, virtualizeInit may detect a
+      // history-restored viewport slice and synchronously issue the mandatory
+      // full `_table` rebuild; its beforeRequest ownership must exist before
+      // liveApply decides whether to open or suspend.
+      liveApply
     ];
     if (!yamlFoldsBuilt) steps.splice(1, 0, buildYamlFolds);
     steps.forEach(runInitStep);

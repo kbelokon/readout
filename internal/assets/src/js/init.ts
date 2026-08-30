@@ -34,7 +34,7 @@ import { LIST_DELTA_APPLIED_EVENT, type ListDeltaAppliedDetail } from './live-pr
 import { initLogsFollow } from './logs.js';
 import { collapseSectionsFromHash } from './misc-ui.js';
 import { roPrefsSetSort } from './prefs.js';
-import { applyRefresh, noteRefreshRecovery, pauseRefresh, syncRefreshUI } from './refresh.js';
+import { syncLiveToggle } from './refresh.js';
 import {
     applyLiveRowDeletions,
     clearRowState,
@@ -234,7 +234,6 @@ export function afterListUpdate(update: ListUpdate): void {
         runInitStep(() => applyLiveRowDeletions(update.deletedKeys));
     }
     [
-        noteRefreshRecovery,
         clearListStale,
         reapplyRowState,
         applyLiveNameFilter,
@@ -299,7 +298,6 @@ document.addEventListener('htmx:beforeSwap', (event) => {
     // no body to morph: keep the last-good DOM, recover stale/backoff state,
     // and return before the ordinary afterSwap repair/Live-reopen pipeline.
     if (suppressListNotModified(event)) {
-        noteRefreshRecovery();
         clearListStale();
         return;
     }
@@ -329,7 +327,6 @@ document.addEventListener('htmx:beforeSwap', (event) => {
         clearListStale();
         // Retire the old page before HTMX exposes the new mount; no push may
         // cross that ownership boundary. The settled page opens from clean Off.
-        pauseRefresh();
         liveResetPage(); // aborts Live and invalidates old continuations
         // Later beforeSwap listeners may cancel this response. Observe their
         // final decision in a microtask, but do not assume an accepted swap is
@@ -371,7 +368,6 @@ function completeBodySwap(): void {
 
 function retireCurrentScreenForBodySwap(): void {
     clearListStale();
-    pauseRefresh();
     liveResetPage();
 }
 
@@ -386,7 +382,7 @@ function reloadCurrentHistoryEntry(): void {
 function reloadFailedBodySwap(ticket: BodySwapTicket | null): void {
     if (!ticket || bodySwapTicket !== ticket) return;
     // Popstate already published the destination URL. If its cached body was
-    // cancelled or failed, old DOM + new URL has no coherent Live/polling
+    // cancelled or failed, old DOM + new URL has no coherent Live
     // owner. Clear the ticket before reloading so a late duplicate error or
     // cancellation microtask cannot request another navigation.
     reloadCurrentHistoryEntry();
@@ -530,7 +526,7 @@ function runInit(yamlFoldsBuilt = false): void {
     // failed and overlapping attempts stay inert.
     if (bodySwapTicket || bodyReloading) return;
     const steps = [
-        syncRefreshUI,
+        syncLiveToggle,
         collapseSectionsFromHash,
         highlightYamlLine,
         initLogsFollow,
@@ -559,15 +555,12 @@ function runInit(yamlFoldsBuilt = false): void {
         // same store right after.
         reapplyRowState,
         updateBulkBar,
-        // Live opens only after every synchronous body/model repair. In
-        // particular, virtualizeInit may detect a history-restored viewport
-        // slice and synchronously issue the mandatory full `_table` rebuild;
-        // its beforeRequest ownership must exist before liveApply decides
-        // whether to open or suspend. Keep liveApply immediately BEFORE
-        // applyRefresh so the poll chain still arms against the resulting Live
-        // state: a riding stream disarms it, a fallback selects 5s.
+        // Live opens only after every synchronous body/model repair, and is the
+        // LAST step for that reason. In particular, virtualizeInit may detect a
+        // history-restored viewport slice and synchronously issue the mandatory
+        // full `_table` rebuild; its beforeRequest ownership must exist before
+        // liveApply decides whether to open or suspend.
         liveApply,
-        applyRefresh,
     ];
     if (!yamlFoldsBuilt) steps.splice(1, 0, buildYamlFolds);
     steps.forEach(runInitStep);

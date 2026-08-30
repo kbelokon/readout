@@ -97,11 +97,12 @@ export const bindings: Binding[] = [
     // [data-ro-action="toggle-tools"]) and the v1 form glue (the data-ro-toggle-button
     // change + the tools-form submit) lifted out of the dismantled legacy.js.
     ...miscBindings,
-    // refresh-domain tails LAST: the retry + set-refresh hooks were
-    // the monolith big click listener's own trailing branches, so registering
-    // them after the migrated leaves preserves the C1 order -- every leaf
-    // front-ran the monolith, and these ran at its end. Neither co-matches any
-    // selector above, so the position is observationally free; LAST documents
-    // their monolith origin.
+    // refresh-domain tails LAST: the retry hook and the navbar update controls
+    // (toggle-live / refresh-now / the Unavailable banner's reload) were the
+    // monolith big click listener's own trailing branches, so registering them
+    // after the migrated leaves preserves the C1 order -- every leaf front-ran
+    // the monolith, and these ran at its end. None co-matches any selector
+    // above, so the position is observationally free; LAST documents their
+    // monolith origin.
     ...refreshBindings,
 ];

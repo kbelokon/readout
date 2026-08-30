@@ -12,7 +12,7 @@ const dependencies = vi.hoisted(() => {
     return {
         clearLiveUnavailable: vi.fn(),
         markLiveUnavailable: vi.fn(),
-        refreshMode: vi.fn(() => 'Live'),
+        isLiveEnabled: vi.fn(() => true),
         resetListRequestTracker: vi.fn(() => {
             if (snapshot.count === 0) return;
             snapshot.count = 0;
@@ -20,7 +20,6 @@ const dependencies = vi.hoisted(() => {
                 subscriber({ phase: 'settle', inFlight: 0 });
             });
         }),
-        scheduleRefreshTick: vi.fn(),
         snapshot,
         subscribers,
         subscribeListRequests: vi.fn((subscriber: (activity: Activity) => void) => {
@@ -31,10 +30,9 @@ const dependencies = vi.hoisted(() => {
 });
 
 vi.mock('./refresh.js', () => ({
+    isLiveEnabled: dependencies.isLiveEnabled,
     listRequestTrackerSnapshot: () => ({ ...dependencies.snapshot }),
-    refreshMode: dependencies.refreshMode,
     resetListRequestTracker: dependencies.resetListRequestTracker,
-    scheduleRefreshTick: dependencies.scheduleRefreshTick,
     subscribeListRequests: dependencies.subscribeListRequests,
 }));
 vi.mock('./stale.js', () => ({
@@ -72,10 +70,10 @@ function renderLivePage(path = '/clusters/prod/pods'): HTMLElement {
     const content = document.createElement('div');
     content.id = 'resource-list-content';
     content.dataset.liveUrl = 'location';
-    const option = document.createElement('button');
-    option.dataset.roAction = 'set-refresh';
-    option.dataset.roInterval = 'Live';
-    document.body.append(content, option);
+    const toggle = document.createElement('button');
+    toggle.dataset.roAction = 'toggle-live';
+    toggle.setAttribute('aria-pressed', 'true');
+    document.body.append(content, toggle);
     return content;
 }
 
@@ -257,10 +255,9 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
     liveResetPage();
-    dependencies.refreshMode.mockReset().mockReturnValue('Live');
+    dependencies.isLiveEnabled.mockReset().mockReturnValue(true);
     dependencies.resetListRequestTracker.mockClear();
     dependencies.clearLiveUnavailable.mockReset();
-    dependencies.scheduleRefreshTick.mockReset();
     dependencies.markLiveUnavailable.mockReset();
     dependencies.snapshot.count = 0;
     document.body.replaceChildren();
@@ -300,7 +297,6 @@ test('opens v2 with one header generation and preserves the raw list query', () 
         state: 'connecting',
         connections: before + 1,
     });
-    expect(dependencies.scheduleRefreshTick).toHaveBeenCalledOnce();
     expect(dependencies.subscribeListRequests).toHaveBeenCalledOnce();
 
     liveApply();
@@ -309,7 +305,6 @@ test('opens v2 with one header generation and preserves the raw list query', () 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(firstSignal.aborted).toBe(true);
     expect(requestGeneration(fetchMock, 1)).not.toBe(generation);
-    expect(dependencies.scheduleRefreshTick).toHaveBeenCalledTimes(2);
     expect(dependencies.subscribeListRequests).toHaveBeenCalledOnce();
 });
 
@@ -1062,7 +1057,7 @@ describe('visible fallback and recovery', () => {
 
         liveApply();
         await flush();
-        dependencies.refreshMode.mockReturnValue('Off');
+        dependencies.isLiveEnabled.mockReturnValue(false);
         await vi.advanceTimersByTimeAsync(60_000);
 
         expect(fetchMock).toHaveBeenCalledOnce();
@@ -1078,7 +1073,7 @@ describe('visible fallback and recovery', () => {
         await flush();
         await vi.advanceTimersByTimeAsync(0);
         expect(vi.getTimerCount()).toBe(1);
-        dependencies.refreshMode.mockReturnValue('Off');
+        dependencies.isLiveEnabled.mockReturnValue(false);
         liveApply();
         expect(vi.getTimerCount()).toBe(0);
         await vi.advanceTimersByTimeAsync(60_000);
@@ -1132,7 +1127,7 @@ test('turning Live off aborts the connection and makes a late response inert', a
 
     liveApply();
     const signal = fetchMock.mock.calls[0][1]?.signal as AbortSignal;
-    dependencies.refreshMode.mockReturnValue('Off');
+    dependencies.isLiveEnabled.mockReturnValue(false);
     liveApply();
 
     expect(signal.aborted).toBe(true);
@@ -1165,7 +1160,7 @@ test('turning Live off makes a late successful response opaque to the retired co
     });
 
     liveApply();
-    dependencies.refreshMode.mockReturnValue('Off');
+    dependencies.isLiveEnabled.mockReturnValue(false);
     liveApply();
     pending.resolve(lateResponse);
     await flush();
@@ -1181,7 +1176,9 @@ test.each(['wrong marker', 'missing option', 'disabled option', 'missing content
     '%s is an unsupported Live surface and enters visible fallback',
     (variant) => {
         const content = renderLivePage();
-        const option = document.querySelector('[data-ro-interval="Live"]') as HTMLButtonElement;
+        const option = document.querySelector(
+            '[data-ro-action="toggle-live"]',
+        ) as HTMLButtonElement;
         if (variant === 'wrong marker') content.dataset.liveUrl = 'baked';
         if (variant === 'missing option') option.remove();
         if (variant === 'disabled option') option.disabled = true;
@@ -1193,7 +1190,6 @@ test.each(['wrong marker', 'missing option', 'disabled option', 'missing content
         expect(fetchMock).not.toHaveBeenCalled();
         expect(window.roLive.stats().state).toBe('fallback');
         expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
-        expect(dependencies.scheduleRefreshTick).toHaveBeenCalledOnce();
         expect(liveFallbackSeconds()).toBe(variant === 'missing content' ? 0 : 5);
     },
 );
@@ -1225,7 +1221,6 @@ test('Live selected while hidden defers its first request until visibility retur
     liveApply();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(window.roLive.stats().state).toBe('hidden');
-    expect(dependencies.scheduleRefreshTick).toHaveBeenCalledOnce();
 
     hidden.mockReturnValue(false);
     document.dispatchEvent(new Event('visibilitychange'));
@@ -1291,7 +1286,6 @@ describe('one refresh request tracker subscription', () => {
 
         expect(fetchMock).not.toHaveBeenCalled();
         expect(window.roLive.stats().state).toBe('suspended');
-        expect(dependencies.scheduleRefreshTick).toHaveBeenCalledOnce();
         settleListRequest();
         expect(fetchMock).toHaveBeenCalledOnce();
         expect(fetchMock.mock.calls[0][0]).toBe('/clusters/prod/pods/_stream?sort=Name');
@@ -1332,7 +1326,7 @@ describe('one refresh request tracker subscription', () => {
         const fetchMock = installFetch(pendingFetch);
         liveApply();
         startListRequest();
-        dependencies.refreshMode.mockReturnValue('Off');
+        dependencies.isLiveEnabled.mockReturnValue(false);
 
         settleListRequest();
 
@@ -1590,7 +1584,7 @@ test('becoming visible after Live is turned Off clears the hidden intent', () =>
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
     const fetchMock = installFetch(pendingFetch);
     liveApply();
-    dependencies.refreshMode.mockReturnValue('Off');
+    dependencies.isLiveEnabled.mockReturnValue(false);
 
     hidden.mockReturnValue(false);
     document.dispatchEvent(new Event('visibilitychange'));

@@ -17,11 +17,12 @@
 // `htmx:responseError.{0,200}isListRefreshEvent` gate / the combined stale-owner
 // visibility assignment / NO `innerHTML = ''` (the data-never-disappears law).
 
-import { noteRefreshFailure, refreshNextAtMs } from './refresh.js';
-
 // The one 1s ticker repainting "Retrying in Ns" while either ordinary refresh
 // staleness or Live-unavailable state owns the visible banner.
 let staleCountdownId: number | null = null;
+// Epoch ms of the next reconnect attempt (0 = none armed). The Live transport
+// owns the schedule; the banner only paints what it publishes here.
+let staleRetryAt = 0;
 // Ordinary refresh failure and Live fallback are independent owners of the same
 // surface. An empty set is the natural fresh-page state; owner identity survives
 // list morphs without mirroring runtime state into serialized DOM attributes.
@@ -122,9 +123,16 @@ function paintStaleState(): void {
     else startStaleCountdown();
 }
 
+// noteStaleRetryAt publishes the armed reconnect time (0 clears it) and
+// repaints, so the banner's countdown always aims at the real next attempt.
+export function noteStaleRetryAt(atMs: number): void {
+    staleRetryAt = atMs;
+    updateStaleCountdown();
+}
+
 // updateStaleCountdown paints seconds-to-next-retry into the banner's
 // [data-stale-countdown] span. The span is re-queried on every paint. With no
-// retry armed (interval Off; the banner can still reveal when a user-initiated
+// retry armed (Live off; the banner can still reveal when a user-initiated
 // table request fails) the shipped "…" placeholder is restored.
 export function updateStaleCountdown(): void {
     const banner = bannerElement();
@@ -133,7 +141,7 @@ export function updateStaleCountdown(): void {
     if (!span) {
         return;
     }
-    const nextAt = refreshNextAtMs();
+    const nextAt = staleRetryAt;
     if (!nextAt) {
         span.textContent = '…';
     } else {
@@ -188,20 +196,17 @@ export function clearListStale(): void {
     paintStaleState();
 }
 
-// A non-2xx reply to the refresh GET: keep the rows (htmx does not swap on
-// error), dim them, reveal the stale banner. The failure note FIRST: it re-aims
-// the retry schedule, so the banner reveals with the countdown already pointing
-// at the real next attempt.
+// A non-2xx reply to the list GET: keep the rows (htmx does not swap on
+// error), dim them, reveal the stale banner. Nothing is retried on a schedule
+// -- the user's Refresh button (or Live's own reconnect) is the next attempt.
 document.addEventListener('htmx:responseError', (event) => {
     if (isListRefreshEvent(event)) {
-        noteRefreshFailure();
         markListStale();
     }
 });
-// A transport failure on the refresh GET: same stale treatment.
+// A transport failure on the list GET: same stale treatment.
 document.addEventListener('htmx:sendError', (event) => {
     if (isListRefreshEvent(event)) {
-        noteRefreshFailure();
         markListStale();
     }
 });

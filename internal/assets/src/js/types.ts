@@ -103,9 +103,11 @@ export interface KindPrefsWire {
     hide?: string[];
 }
 
-// prefs: the cookie envelope. Refresh is the auto-refresh MODE as a string
-// ("Off", an interval in seconds, or "Live"). Namespaces maps cluster name ->
-// last-used namespace ("_all" is valid).
+// prefs: the cookie envelope. Refresh is the update MODE as a string. This
+// build reads exactly one meaningful value, "Live", and writes only "Live" or
+// "Off"; the field stays a plain string because a profile written by an older
+// build can still carry a numeric cadence, which now reads as off on both
+// sides. Namespaces maps cluster name -> last-used namespace ("_all" is valid).
 export interface PrefsWire {
     kinds?: KindPrefsWire[];
     refresh?: string;

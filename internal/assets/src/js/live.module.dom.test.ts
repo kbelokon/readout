@@ -7,17 +7,15 @@ import type { LiveV2Cursor } from './live-protocol.js';
 const dependencies = vi.hoisted(() => ({
     clearLiveUnavailable: vi.fn(),
     markLiveUnavailable: vi.fn(),
-    refreshMode: vi.fn(() => 'Live'),
+    isLiveEnabled: vi.fn(() => true),
     resetListRequestTracker: vi.fn(),
-    scheduleRefreshTick: vi.fn(),
     subscribeListRequests: vi.fn(() => () => {}),
 }));
 
 vi.mock('./refresh.js', () => ({
+    isLiveEnabled: dependencies.isLiveEnabled,
     listRequestTrackerSnapshot: () => ({ count: 0 }),
-    refreshMode: dependencies.refreshMode,
     resetListRequestTracker: dependencies.resetListRequestTracker,
-    scheduleRefreshTick: dependencies.scheduleRefreshTick,
     subscribeListRequests: dependencies.subscribeListRequests,
 }));
 vi.mock('./stale.js', () => ({
@@ -122,7 +120,7 @@ test.each([
     );
     document.body.innerHTML = `
         <div id="resource-list-content" data-live-url="location"></div>
-        <button data-ro-action="set-refresh" data-ro-interval="Live"></button>`;
+        <button data-ro-action="toggle-live" aria-pressed="true"></button>`;
     window.history.replaceState(null, '', '/clusters/prod/pods');
 
     const { liveApply, liveOnListSwap, liveResetPage } = await import('./live.js');

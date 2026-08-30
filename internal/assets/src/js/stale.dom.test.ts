@@ -2,19 +2,13 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-const refresh = vi.hoisted(() => ({
-    noteRefreshFailure: vi.fn(),
-    refreshNextAtMs: vi.fn(() => 0),
-}));
-
-vi.mock('./refresh.js', () => refresh);
-
 import {
     clearListStale,
     clearLiveUnavailable,
     isListRefreshEvent,
     markListStale,
     markLiveUnavailable,
+    noteStaleRetryAt,
     updateStaleCountdown,
 } from './stale.js';
 
@@ -43,8 +37,7 @@ beforeEach(() => {
     clearLiveUnavailable();
     clearListStale();
     renderStaleUI();
-    refresh.noteRefreshFailure.mockReset();
-    refresh.refreshNextAtMs.mockReturnValue(0);
+    noteStaleRetryAt(0);
 });
 
 afterEach(() => {
@@ -87,20 +80,18 @@ describe('stale UI lifecycle', () => {
         expect(vi.getTimerCount()).toBe(1);
     });
 
-    test('paints a deterministic retry countdown and clamps at zero', () => {
+    test('paints the published reconnect time as a countdown and clamps at zero', () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-08-25T00:00:00Z'));
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 2501);
 
-        updateStaleCountdown();
+        noteStaleRetryAt(Date.now() + 2501);
         expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('3s');
 
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() - 1);
-        updateStaleCountdown();
+        noteStaleRetryAt(Date.now() - 1);
         expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('0s');
 
-        refresh.refreshNextAtMs.mockReturnValue(0);
-        updateStaleCountdown();
+        // 0 = nothing armed: the shipped placeholder comes back.
+        noteStaleRetryAt(0);
         expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('…');
     });
 
@@ -127,10 +118,10 @@ describe('stale UI lifecycle', () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 
-    test('Live fallback copy follows the actual 5/10/20 second retry schedule', () => {
+    test('Live-unavailable copy follows the armed reconnect schedule', () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-08-25T00:00:00Z'));
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 5_000);
+        noteStaleRetryAt(Date.now() + 5_000);
 
         markLiveUnavailable();
 
@@ -146,12 +137,10 @@ describe('stale UI lifecycle', () => {
         );
         expect(vi.getTimerCount()).toBe(1);
 
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 10_000);
-        updateStaleCountdown();
+        noteStaleRetryAt(Date.now() + 10_000);
         expect(banner?.querySelector('[data-stale-countdown]')).toHaveTextContent('10s');
 
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 20_000);
-        updateStaleCountdown();
+        noteStaleRetryAt(Date.now() + 20_000);
         expect(banner?.querySelector('[data-stale-countdown]')).toHaveTextContent('20s');
         expect(banner).toHaveAttribute(
             'aria-label',
@@ -161,7 +150,7 @@ describe('stale UI lifecycle', () => {
 
     test('clearing Live mode cannot hide independently stale list data', () => {
         vi.useFakeTimers();
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 5_000);
+        noteStaleRetryAt(Date.now() + 5_000);
         const banner = document.querySelector('.ro-stale-banner');
 
         markLiveUnavailable();
@@ -187,7 +176,7 @@ describe('stale UI lifecycle', () => {
 
     test('a successful polling morph cannot erase Live-unavailable ownership', () => {
         vi.useFakeTimers();
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 5_000);
+        noteStaleRetryAt(Date.now() + 5_000);
         markLiveUnavailable();
 
         const oldBanner = document.querySelector('.ro-stale-banner') as HTMLElement;
@@ -212,7 +201,7 @@ describe('stale UI lifecycle', () => {
 
     test('history serialization preserves the exact original nested copy and accessibility state', () => {
         vi.useFakeTimers();
-        refresh.refreshNextAtMs.mockReturnValue(Date.now() + 5_000);
+        noteStaleRetryAt(Date.now() + 5_000);
         let banner = document.querySelector('.ro-stale-banner') as HTMLElement;
         let message = banner.querySelector('.bn-text') as HTMLElement;
         const originalMessage =
@@ -247,17 +236,18 @@ describe('stale UI lifecycle', () => {
     });
 
     test.each(['htmx:responseError', 'htmx:sendError'])(
-        '%s records failure before revealing stale state',
+        '%s reveals stale state without arming any retry',
         (eventType) => {
+            vi.useFakeTimers();
             const content = document.getElementById('resource-list-content');
 
             document.dispatchEvent(htmxEvent(eventType, { target: content }));
 
-            expect(refresh.noteRefreshFailure).toHaveBeenCalledOnce();
             expect(document.getElementById('resource-list-content')).toHaveClass('ro-stale');
-            expect(refresh.noteRefreshFailure.mock.invocationCallOrder[0]).toBeLessThan(
-                refresh.refreshNextAtMs.mock.invocationCallOrder[0] as number,
-            );
+            expect(document.querySelector('.ro-stale-banner')).toBeVisible();
+            // Only the 1s repaint ticker: a failed list GET schedules no retry.
+            expect(vi.getTimerCount()).toBe(1);
+            expect(document.querySelector('[data-stale-countdown]')?.textContent).toBe('…');
         },
     );
 
@@ -268,7 +258,6 @@ describe('stale UI lifecycle', () => {
                 htmxEvent(eventType, { target: document.createElement('main') }),
             );
 
-            expect(refresh.noteRefreshFailure).not.toHaveBeenCalled();
             expect(document.getElementById('resource-list-content')).not.toHaveClass('ro-stale');
         },
     );

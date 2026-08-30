@@ -1,75 +1,124 @@
-// live-policy.test.ts -- Vitest for the PURE refresh + Live decision core
-// (live-policy.ts). The cadence math, failure backoff, and morph-time discard
-// gate are the load-bearing decisions exercised through the DOM by the e2e
-// suite; pinning them here catches a regression before it reaches a frame.
+// live-policy.test.ts -- Vitest for the PURE Live decision core
+// (live-policy.ts). The reconnect schedule, the server-dictated Retry-After
+// wait, the backoff reset predicate, and the morph-time discard gate are the
+// load-bearing decisions exercised through the DOM by the e2e suite; pinning
+// them here catches a regression before it reaches a frame.
 //
 // Run: `npm test`.
 
 import { expect, test } from 'vitest';
 
 import {
-    effectivePollSeconds,
-    nextFailureStage,
+    HEALTHY_CONTINUITY_MS,
     type PushDiscardFacts,
-    refreshDelaySeconds,
+    RECONNECT_DELAY_LADDER_MS,
+    reconnectDelayMs,
+    retryAfterMs,
     shouldDiscardPush,
+    shouldResetBackoff,
 } from './live-policy.js';
 
-// --- effectivePollSeconds ---------------------------------------------------
+// A seeded random so the jitter draw is reproducible: a tiny LCG over [0,1).
+function seededRandom(seed: number): () => number {
+    let state = seed >>> 0;
+    return () => {
+        state = (state * 1664525 + 1013904223) >>> 0;
+        return state / 0x1_0000_0000;
+    };
+}
 
-test('a chosen numeric interval wins over everything', () => {
-    expect(effectivePollSeconds('30', 30, 0)).toBe(30);
-    expect(effectivePollSeconds('5', 5, 0)).toBe(5);
-    // Even nominally in Live (it never happens together, but the interval wins).
-    expect(effectivePollSeconds('Live', 10, 5)).toBe(10);
+// --- reconnectDelayMs (full jitter over the ladder) --------------------------
+
+test('the ladder is the pinned 1s,2s,5s,10s,30s schedule', () => {
+    expect(RECONNECT_DELAY_LADDER_MS).toStrictEqual([1000, 2000, 5000, 10_000, 30_000]);
 });
 
-test('Off with no interval polls never', () => {
-    expect(effectivePollSeconds('Off', 0, 0)).toBe(0);
-    expect(effectivePollSeconds('', 0, 0)).toBe(0);
-    // A stale fallback value must not make a non-Live mode start polling.
-    expect(effectivePollSeconds('Off', 0, 5)).toBe(0);
+test('each attempt draws full jitter over its rung and later attempts stay at 30s', () => {
+    // random() === 1 is never produced by Math.random, so the cap is the
+    // supremum; drive the extremes explicitly.
+    const caps = [1, 2, 3, 4, 5, 6, 12].map((attempt) => reconnectDelayMs(attempt, () => 1));
+    expect(caps).toStrictEqual([1000, 2000, 5000, 10_000, 30_000, 30_000, 30_000]);
+    expect([1, 2, 5].map((attempt) => reconnectDelayMs(attempt, () => 0))).toStrictEqual([0, 0, 0]);
+    expect(reconnectDelayMs(3, () => 0.5)).toBe(2500);
 });
 
-test('Live with a riding stream (fallback 0) self-disarms the poll chain', () => {
-    expect(effectivePollSeconds('Live', 0, 0)).toBe(0);
+test('a seeded random keeps every draw inside its rung', () => {
+    const random = seededRandom(20_260_830);
+    for (let attempt = 1; attempt <= 8; attempt += 1) {
+        const cap = RECONNECT_DELAY_LADDER_MS[
+            Math.min(attempt, RECONNECT_DELAY_LADDER_MS.length) - 1
+        ] as number;
+        for (let draw = 0; draw < 25; draw += 1) {
+            const delay = reconnectDelayMs(attempt, random);
+            expect(delay).toBeGreaterThanOrEqual(0);
+            expect(delay).toBeLessThanOrEqual(cap);
+            expect(Number.isInteger(delay)).toBe(true);
+        }
+    }
 });
 
-test('Live degraded to polling uses the 5s fallback cadence', () => {
-    expect(effectivePollSeconds('Live', 0, 5)).toBe(5);
+test('the draw actually varies rather than pinning one value', () => {
+    const random = seededRandom(7);
+    const draws = new Set(Array.from({ length: 20 }, () => reconnectDelayMs(5, random)));
+    expect(draws.size).toBeGreaterThan(1);
 });
 
-// --- refreshDelaySeconds (failure backoff) ----------------------------------
+test.each([0, -3, Number.NaN, Number.POSITIVE_INFINITY, 1.9])(
+    'a non-positive or non-integral attempt %j falls back to the first rung',
+    (attempt) => {
+        expect(reconnectDelayMs(attempt, () => 1)).toBe(1000);
+    },
+);
 
-test('a non-positive cadence arms no timer', () => {
-    expect(refreshDelaySeconds(0, 0)).toBe(0);
-    expect(refreshDelaySeconds(-1, 3)).toBe(0);
-    expect(refreshDelaySeconds(0, 2)).toBe(0);
+test.each([-0.5, 1.5, Number.NaN])('an out-of-range random draw %j clamps to the cap', (roll) => {
+    expect(reconnectDelayMs(2, () => roll)).toBeLessThanOrEqual(2000);
+    expect(reconnectDelayMs(2, () => roll)).toBeGreaterThanOrEqual(0);
 });
 
-test('healthy and the first failure both wait 1x', () => {
-    expect(refreshDelaySeconds(5, 0)).toBe(5); // stage 0 healthy
-    expect(refreshDelaySeconds(5, 1)).toBe(5); // stage 1: 1x retry
+// --- retryAfterMs (the server-dictated wait) ---------------------------------
+
+test('delta-seconds Retry-After becomes milliseconds', () => {
+    expect(retryAfterMs('10')).toBe(10_000);
+    expect(retryAfterMs(' 10 ')).toBe(10_000);
+    expect(retryAfterMs('0')).toBe(0);
 });
 
-test('the second failure doubles, the third (terminal) quadruples', () => {
-    expect(refreshDelaySeconds(5, 2)).toBe(10); // 2x
-    expect(refreshDelaySeconds(5, 3)).toBe(20); // 4x
+test('an HTTP-date Retry-After is measured from now', () => {
+    const now = Date.parse('2026-08-30T10:00:00Z');
+    expect(retryAfterMs('Sun, 30 Aug 2026 10:00:30 GMT', now)).toBe(30_000);
+    // A date already in the past is a zero wait, never a negative one.
+    expect(retryAfterMs('Sun, 30 Aug 2026 09:59:00 GMT', now)).toBe(0);
 });
 
-test('the backoff wait is capped at 60s', () => {
-    // 30s base: 2x = 60 (at cap), 4x = 120 -> clamped to 60.
-    expect(refreshDelaySeconds(30, 2)).toBe(60);
-    expect(refreshDelaySeconds(30, 3)).toBe(60);
-    // 60s base: even 1x is already the cap; 4x clamps.
-    expect(refreshDelaySeconds(60, 3)).toBe(60);
+test.each([null, '', 'soon', '-5', '5.5', '5junk'])(
+    'an absent or unparsable Retry-After %j yields no server wait',
+    (header) => {
+        expect(retryAfterMs(header)).toBeNull();
+    },
+);
+
+test('an absurd Retry-After is capped at the ladder maximum reconnect wait', () => {
+    expect(retryAfterMs('86400')).toBe(300_000);
 });
 
-test('nextFailureStage escalates 0->1->2->3 and clamps at 3', () => {
-    expect(nextFailureStage(0)).toBe(1);
-    expect(nextFailureStage(1)).toBe(2);
-    expect(nextFailureStage(2)).toBe(3);
-    expect(nextFailureStage(3)).toBe(3); // terminal stage stays
+// --- shouldResetBackoff -----------------------------------------------------
+
+test('the healthy-continuity window is 30s of committed snapshot', () => {
+    expect(HEALTHY_CONTINUITY_MS).toBe(30_000);
+});
+
+test('a connection that held a snapshot for 30s resets the attempt counter', () => {
+    const at = 1_000_000;
+    expect(shouldResetBackoff(at, at + 30_000)).toBe(true);
+    expect(shouldResetBackoff(at, at + 45_000)).toBe(true);
+});
+
+test('a short-lived or never-committed connection keeps escalating', () => {
+    const at = 1_000_000;
+    expect(shouldResetBackoff(at, at + 29_999)).toBe(false);
+    expect(shouldResetBackoff(0, at)).toBe(false);
+    // A clock that jumped backwards must not look like continuity.
+    expect(shouldResetBackoff(at, at - 60_000)).toBe(false);
 });
 
 // --- shouldDiscardPush (morph-time gate) ------------------------------------

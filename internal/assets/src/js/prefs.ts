@@ -324,10 +324,11 @@ export function roPrefsSetHiddenColumns(plural: string, names: string[]): void {
     writePrefs(prefs);
 }
 
-// roPrefsSetRefresh persists the auto-refresh mode ('Off', seconds-as-string,
-// future 'Live') -- the interval picker writes through it; Live mode
-// will too.
-export function roPrefsSetRefresh(mode: string): void {
+// roPrefsSetRefresh persists the update mode. This build writes exactly two
+// values -- the Live toggle is the only writer -- and the type says so: a
+// numeric cadence from an older profile can still be READ out of the cookie,
+// but nothing writes one again.
+export function roPrefsSetRefresh(mode: 'Live' | 'Off'): void {
     const prefs = readPrefs();
     prefs.refresh = mode;
     writePrefs(prefs);

@@ -2,13 +2,6 @@
 
 import { afterEach, expect, test, vi } from 'vitest';
 
-const refresh = vi.hoisted(() => ({
-    noteRefreshFailure: vi.fn(),
-    refreshNextAtMs: vi.fn(() => 0),
-}));
-
-vi.mock('./refresh.js', () => refresh);
-
 afterEach(() => {
     document.body.replaceChildren();
     vi.restoreAllMocks();
@@ -42,11 +35,9 @@ test('both HTMX error events drive the observable stale lifecycle after a fresh 
     for (const eventType of ['htmx:responseError', 'htmx:sendError']) {
         document.dispatchEvent(new CustomEvent(eventType, { detail: { target: content } }));
 
-        expect(refresh.noteRefreshFailure).toHaveBeenCalledOnce();
         expect(content.className).toBe('ro-stale');
         expect(document.querySelector('.ro-stale-banner')).toBeVisible();
 
         stale.clearListStale();
-        refresh.noteRefreshFailure.mockClear();
     }
 });

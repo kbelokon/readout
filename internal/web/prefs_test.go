@@ -497,9 +497,9 @@ func TestLiveToggleScopeGate(t *testing.T) {
 // TestPrefsReadoutJSContract pins the JS writer half needle-style (the suite
 // has no JS runtime; the e2e layer exercises the live behavior): the cookie
 // name/envelope/cap/attribute constants, the four user-interaction write
-// surfaces (sort click, column-visibility toggle, interval pick, namespace
-// switch), the programmatic do-not-write guards, and the roRefresh migration
-// (read-once fallback only -- the legacy localStorage WRITE is retired).
+// surfaces (sort click, column-visibility toggle, Live toggle, namespace
+// switch), the programmatic do-not-write guards, and the total absence of the
+// legacy roRefresh localStorage key (the cookie is the only store).
 func TestPrefsReadoutJSContract(t *testing.T) {
 	js := readoutJS(t)
 	for _, needle := range []string{
@@ -512,12 +512,11 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 		"'; Secure'",
 		"roPrefsSetSort",          // sort-click write
 		"roPrefsSetHiddenColumns", // the column-visibility toggle surface
-		"roPrefsSetRefresh",       // interval pick (+ Live mode)
+		"roPrefsSetRefresh",       // the Live toggle's persist
 		"roPrefsSetNamespace",     // namespace switch
 		"closest('thead th')",     // sort writes ONLY from header gestures
 		"#namespace-dropdown [data-ro-action='pick-namespace']", // the namespace-switch surface
-		"localStorage.getItem('roRefresh')",                     // the read-once roRefresh migration
-		"refreshMode",                                           // cookie-canonical mode reader
+		"isLiveEnabled", // cookie-canonical Live reader
 	} {
 		if !strings.Contains(js, needle) {
 			t.Fatalf("readout.js prefs contract missing %q", needle)
@@ -535,9 +534,10 @@ func TestPrefsReadoutJSContract(t *testing.T) {
 	if !strings.Contains(js, "roPrefsSetSort(plural, sort)") {
 		t.Fatalf("sort-write hook lost its roPrefsSetSort write")
 	}
-	// The legacy roRefresh localStorage WRITE is gone: the cookie is canonical
-	// (the key survives only as refreshMode()'s migration read).
-	if strings.Contains(js, "localStorage.setItem('roRefresh'") {
-		t.Fatalf("readout.js still WRITES the legacy roRefresh localStorage key; the ro_prefs cookie is canonical")
+	// The legacy roRefresh localStorage key is gone entirely -- neither written
+	// nor read as a migration fallback. A profile that still carries one reads
+	// as Live-off, exactly like any other non-"Live" value.
+	if strings.Contains(js, "roRefresh") {
+		t.Fatalf("readout.js still touches the legacy roRefresh localStorage key; the ro_prefs cookie is the only store")
 	}
 }
