@@ -309,12 +309,14 @@
        data stops being current -- it never blanks the rows. `.ro-banner` sets
        display:flex, which overrides the UA [hidden]{display:none}, so the hidden
        banner needs an explicit display:none until JS clears the attribute; the
-       banner's two copy variants (`.bn-body`) are flex children and need the
-       same treatment, since exactly one of them is unhidden at a time. The dim
+       banner's two copy variants (`.bn-body`) and its two actions (Retry now /
+       Reload, which `.ro-btn` sets to inline-flex) need the same treatment,
+       since exactly one of each pair is unhidden at a time. The dim
        keeps the last-good data visible-but-muted (~.72) so the user reads it as
        stale, not gone; the morph that lands fresh rows clears the class. */
     .ro-banner.ro-stale-banner[hidden] { display: none; }
     .ro-banner.ro-stale-banner .bn-body[hidden] { display: none; }
+    .ro-banner.ro-stale-banner .ro-btn[hidden] { display: none; }
     #resource-list-content.ro-stale { opacity: .72; transition: opacity 160ms ease; }
 
     /* Loading skeleton. Rows mirror the visible column

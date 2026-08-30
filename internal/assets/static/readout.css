@@ -5171,7 +5171,7 @@
     text-align: left;
   }
 
-  .ro-banner.ro-stale-banner[hidden], .ro-banner.ro-stale-banner .bn-body[hidden] {
+  .ro-banner.ro-stale-banner[hidden], .ro-banner.ro-stale-banner .bn-body[hidden], .ro-banner.ro-stale-banner .ro-btn[hidden] {
     display: none;
   }
 

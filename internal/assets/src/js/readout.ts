@@ -27,9 +27,11 @@
 //      already being live.
 //
 // Leaf feature modules with module-load side effects (theme's matchMedia
-// listener, stale/skeleton's own document listeners, the window debug seams
-// hung off row-selection/filters/virtualizer/palette/live/refresh) are pulled
-// in transitively: bindings.ts imports every feature module for its Binding
+// listener, stale/skeleton's own document listeners, live's transport lifecycle
+// listeners -- visibilitychange plus the window online/offline pair that park
+// and resume the SSE stream -- and the window debug seams hung off
+// row-selection/filters/virtualizer/palette/live/refresh) are pulled in
+// transitively: bindings.ts imports every feature module for its Binding
 // arrays, and init.ts imports the orchestrated surfaces, so the bundle includes
 // them all with no explicit side-effect import needed here.
 

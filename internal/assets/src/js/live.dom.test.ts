@@ -10,8 +10,11 @@ const dependencies = vi.hoisted(() => {
     const subscribers = new Set<(activity: Activity) => void>();
     const snapshot = { count: 0 };
     return {
-        clearLiveUnavailable: vi.fn(),
+        clearLiveStale: vi.fn(),
+        markLiveStale: vi.fn(),
         markLiveUnavailable: vi.fn(),
+        noteStaleRetryAt: vi.fn(),
+        revealLiveStale: vi.fn(),
         isLiveEnabled: vi.fn(() => true),
         resetListRequestTracker: vi.fn(() => {
             if (snapshot.count === 0) return;
@@ -36,8 +39,11 @@ vi.mock('./refresh.js', () => ({
     subscribeListRequests: dependencies.subscribeListRequests,
 }));
 vi.mock('./stale.js', () => ({
-    clearLiveUnavailable: dependencies.clearLiveUnavailable,
+    clearLiveStale: dependencies.clearLiveStale,
+    markLiveStale: dependencies.markLiveStale,
     markLiveUnavailable: dependencies.markLiveUnavailable,
+    noteStaleRetryAt: dependencies.noteStaleRetryAt,
+    revealLiveStale: dependencies.revealLiveStale,
 }));
 
 import {
@@ -45,13 +51,8 @@ import {
     listProjectionRowByKey,
     resetListProjection,
 } from './list-projection.js';
-import {
-    LIVE_FIRST_FRAME_TIMEOUT_MS,
-    liveApply,
-    liveFallbackSeconds,
-    liveOnListSwap,
-    liveResetPage,
-} from './live.js';
+import { LIVE_FIRST_FRAME_TIMEOUT_MS, liveApply, liveOnListSwap, liveResetPage } from './live.js';
+import { RECONNECT_DELAY_LADDER_MS } from './live-policy.js';
 import { LIST_DELTA_APPLIED_EVENT } from './live-protocol.js';
 import { isClientLiveGeneration } from './live-url.js';
 
@@ -223,6 +224,21 @@ function delta(generation: string, overrides: Record<string, unknown> = {}) {
     };
 }
 
+function terminalFrame(
+    generation: string,
+    reason: 'auth' | 'lifetime' | 'shutdown' | 'watch-failed',
+) {
+    return {
+        v: 2,
+        kind: 'terminal',
+        g: generation,
+        seq: 2,
+        rev: 'rev-1',
+        schema: 'schema-1',
+        reason,
+    };
+}
+
 function startListRequest(): void {
     dependencies.snapshot.count += 1;
     const activity = { phase: 'start' as const, inFlight: dependencies.snapshot.count };
@@ -257,8 +273,11 @@ beforeEach(() => {
     liveResetPage();
     dependencies.isLiveEnabled.mockReset().mockReturnValue(true);
     dependencies.resetListRequestTracker.mockClear();
-    dependencies.clearLiveUnavailable.mockReset();
+    dependencies.clearLiveStale.mockReset();
+    dependencies.markLiveStale.mockReset();
     dependencies.markLiveUnavailable.mockReset();
+    dependencies.noteStaleRetryAt.mockReset();
+    dependencies.revealLiveStale.mockReset();
     dependencies.snapshot.count = 0;
     document.body.replaceChildren();
     resetListProjection();
@@ -320,7 +339,7 @@ test('a response with stripped Live headers still commits a ro-live snapshot', a
     await vi.waitFor(() => expect(window.roLive.stats().state).toBe('open'));
     expect(window.roLive.stats().seq).toBe(1);
     expect(content.querySelector('[data-key="dev/a"]')).toHaveTextContent('Alpha');
-    expect(dependencies.clearLiveUnavailable).toHaveBeenCalledOnce();
+    expect(dependencies.clearLiveStale).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
 });
 
@@ -566,7 +585,7 @@ test('a late read failure from a replaced reader is inert', async () => {
     const fetchMock = installFetch(async () =>
         fetchMock.mock.calls.length === 1 ? readerResponse(() => oldRead.promise) : pendingFetch(),
     );
-    const before = window.roLive.stats().fallbacks;
+    const before = window.roLive.stats().reconnects;
 
     liveApply();
     await flush();
@@ -575,7 +594,7 @@ test('a late read failure from a replaced reader is inert', async () => {
     await flush();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(window.roLive.stats()).toMatchObject({ state: 'connecting', fallbacks: before });
+    expect(window.roLive.stats()).toMatchObject({ state: 'connecting', reconnects: before });
 });
 
 test('a committed snapshot accepts the next delta and advances the cursor after DOM work', async () => {
@@ -649,7 +668,7 @@ test('a cursor-matching terminal with a sequence gap resynchronizes', async () =
             seq: 3,
             rev: 'rev-1',
             schema: 'schema-1',
-            reason: 'idle',
+            reason: 'shutdown',
         }),
     );
 
@@ -712,7 +731,7 @@ test.each([
             kind: 'terminal',
             g: generation,
             seq: 2,
-            reason: 'idle',
+            reason: 'shutdown',
             ...cursorFields,
         }),
     );
@@ -724,35 +743,47 @@ test.each([
     });
 });
 
-test('a cursor-matching terminal enters polling fallback without a resync', async () => {
+test.each(['shutdown', 'watch-failed', 'lifetime'] as const)(
+    'the %s terminal reconnects without a resync',
+    async (reason) => {
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async () => stream.response);
+        const before = window.roLive.stats();
+
+        liveApply();
+        const generation = requestGeneration(fetchMock);
+        stream.enqueue(sse('ro-live', snapshot(generation)));
+        await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(1));
+        stream.enqueue(sse('ro-live', terminalFrame(generation, reason)));
+
+        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('reconnecting'));
+        expect(window.roLive.stats()).toMatchObject({
+            attempt: 1,
+            terminals: before.terminals + 1,
+            resyncs: before.resyncs,
+        });
+        expect(dependencies.markLiveUnavailable).not.toHaveBeenCalled();
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
+    },
+);
+
+test('the auth terminal stops for good and asks for a reload', async () => {
     renderLivePage();
     installHtmx();
     const stream = controlledStream();
     const fetchMock = installFetch(async () => stream.response);
-    const before = window.roLive.stats();
 
     liveApply();
     const generation = requestGeneration(fetchMock);
     stream.enqueue(sse('ro-live', snapshot(generation)));
     await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(1));
-    stream.enqueue(
-        sse('ro-live', {
-            v: 2,
-            kind: 'terminal',
-            g: generation,
-            seq: 2,
-            rev: 'rev-1',
-            schema: 'schema-1',
-            reason: 'idle',
-        }),
-    );
+    stream.enqueue(sse('ro-live', terminalFrame(generation, 'auth')));
 
-    await vi.waitFor(() => expect(window.roLive.stats().state).toBe('fallback'));
-    expect(window.roLive.stats()).toMatchObject({
-        terminals: before.terminals + 1,
-        resyncs: before.resyncs,
-    });
+    await vi.waitFor(() => expect(window.roLive.stats().state).toBe('unavailable'));
     expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
 });
 
 test('a decoded delta that cannot cover the final projection resynchronizes', async () => {
@@ -780,7 +811,7 @@ test('a decoded delta that cannot cover the final projection resynchronizes', as
     expect(window.roLive.stats().seq).toBe(0);
 });
 
-test('the third protocol failure in one window enters visible polling fallback', async () => {
+test('the third protocol failure in one window stops without a retry', async () => {
     renderLivePage();
     const streams = [controlledStream(), controlledStream(), controlledStream()];
     const fetchMock = installFetch(
@@ -794,13 +825,15 @@ test('the third protocol failure in one window enters visible polling fallback',
         streams[index].enqueue(sse('other', {}));
     }
 
-    await vi.waitFor(() => expect(window.roLive.stats().state).toBe('fallback'));
+    // A protocol fault is a bug on one side of the wire, not a transport blip:
+    // the bounded resync budget is the whole recovery, and then it stops.
+    await vi.waitFor(() => expect(window.roLive.stats().state).toBe('unavailable'));
     expect(window.roLive.stats()).toMatchObject({
         resyncs: before.resyncs + 2,
-        fallbacks: before.fallbacks + 1,
+        reconnects: before.reconnects,
     });
     expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
-    expect(liveFallbackSeconds()).toBe(5);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
 });
 
 test('diagnostics expire resyncs at the exact thirty-second boundary', async () => {
@@ -822,7 +855,7 @@ test('diagnostics expire resyncs at the exact thirty-second boundary', async () 
     expect(window.roLive.stats().resyncsInWindow).toBe(0);
 });
 
-test('a protocol failure prunes an expired resync budget before deciding fallback', async () => {
+test('a protocol failure prunes an expired resync budget before deciding to stop', async () => {
     renderLivePage();
     const now = vi.spyOn(Date, 'now').mockReturnValue(100_000);
     const streams = [controlledStream(), controlledStream(), controlledStream()];
@@ -860,7 +893,7 @@ test('an ordinary same-page apply cannot replenish the protocol resync budget', 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     streams[2].enqueue(sse('other', {}));
 
-    await vi.waitFor(() => expect(window.roLive.stats().state).toBe('fallback'));
+    await vi.waitFor(() => expect(window.roLive.stats().state).toBe('unavailable'));
     expect(fetchMock).toHaveBeenCalledTimes(3);
 });
 
@@ -890,63 +923,203 @@ test('a forced retry explicitly replenishes the protocol resync budget', async (
     expect(window.roLive.stats().state).toBe('connecting');
 });
 
-describe('visible fallback and recovery', () => {
+describe('reconnect schedule and recovery', () => {
+    // Full jitter draws the WHOLE window, so pin the roll at 1 and every delay
+    // below is exactly its ladder rung -- the schedule is then assertable to
+    // the millisecond without re-testing live-policy's own math.
+    function pinJitter(): void {
+        vi.spyOn(Math, 'random').mockReturnValue(1);
+    }
+
     test.each([
-        ['fetch rejection', async () => Promise.reject(new Error('offline'))],
-        [
-            'HTTP rejection',
-            async () =>
-                response(429, controlledStream().response.body, {
-                    'Content-Type': 'text/event-stream',
-                }),
-        ],
-        ['missing response body', async () => response(200, null)],
-    ] as const)('%s always reveals the Live-unavailable banner', async (_name, result) => {
+        ['fetch rejection', async () => Promise.reject(new Error('down'))],
+        ['a server error', async () => response(500, null)],
+        ['a missing response body', async () => response(200, null)],
+    ] as const)('%s arms a retry and marks the projection stale', async (_name, result) => {
         renderLivePage();
         const fetchMock = installFetch(result);
         const before = window.roLive.stats();
 
         liveApply();
 
-        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('fallback'));
+        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('reconnecting'));
         expect(fetchMock).toHaveBeenCalledOnce();
         expect(window.roLive.stats()).toMatchObject({
+            attempt: 1,
+            reconnects: before.reconnects + 1,
             resyncs: before.resyncs,
             invalidFrames: before.invalidFrames,
         });
-        expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
-        expect(liveFallbackSeconds()).toBe(5);
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
+        // The first drop keeps its visual grace: no dim, no banner yet.
+        expect(dependencies.revealLiveStale).not.toHaveBeenCalled();
+        expect(dependencies.markLiveUnavailable).not.toHaveBeenCalled();
     });
 
-    test('reader acquisition, reader failure, and clean EOF all reveal fallback', async () => {
+    test.each([401, 403, 204, 404] as const)(
+        'a %d reply stops for good with the Reload banner',
+        async (status) => {
+            renderLivePage();
+            const fetchMock = installFetch(async () => response(status, null));
+
+            liveApply();
+
+            await vi.waitFor(() => expect(window.roLive.stats().state).toBe('unavailable'));
+            expect(fetchMock).toHaveBeenCalledOnce();
+            expect(window.roLive.stats().attempt).toBe(0);
+            expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
+            expect(dependencies.markLiveStale).not.toHaveBeenCalled();
+            expect(dependencies.noteStaleRetryAt).toHaveBeenLastCalledWith(0);
+        },
+    );
+
+    test('a 429 waits exactly as long as its Retry-After', async () => {
+        vi.useFakeTimers();
+        pinJitter();
         renderLivePage();
-        const bodies = [
-            {
+        const fetchMock = installFetch(async () => response(429, null, { 'Retry-After': '7' }));
+
+        liveApply();
+        await flush();
+        expect(window.roLive.stats().state).toBe('reconnecting');
+
+        await vi.advanceTimersByTimeAsync(6_999);
+        expect(fetchMock).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('a 429 without a usable Retry-After falls back to the ladder', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        const fetchMock = installFetch(async () =>
+            response(429, null, { 'Retry-After': 'soonish' }),
+        );
+
+        liveApply();
+        await flush();
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[0] - 1);
+        expect(fetchMock).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('consecutive failures climb the ladder and flatten at its last rung', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        const fetchMock = installFetch(async () => Promise.reject(new Error('down')));
+
+        liveApply();
+        await flush();
+
+        const rungs = [...RECONNECT_DELAY_LADDER_MS, 30_000];
+        for (let index = 0; index < rungs.length; index += 1) {
+            expect(window.roLive.stats().attempt).toBe(index + 1);
+            await vi.advanceTimersByTimeAsync((rungs[index] as number) - 1);
+            expect(fetchMock).toHaveBeenCalledTimes(index + 1);
+            await vi.advanceTimersByTimeAsync(1);
+            await flush();
+            expect(fetchMock).toHaveBeenCalledTimes(index + 2);
+        }
+    });
+
+    test('the first failed retry ends the visual grace early', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        const fetchMock = installFetch(async () => Promise.reject(new Error('down')));
+
+        liveApply();
+        await flush();
+        expect(dependencies.revealLiveStale).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[0]);
+        await flush();
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(dependencies.revealLiveStale).toHaveBeenCalledOnce();
+    });
+
+    test('a healthy connection restarts the ladder, an unstable one does not', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        installHtmx();
+        const recovered = controlledStream();
+        const fetchMock = installFetch(async () =>
+            fetchMock.mock.calls.length < 3
+                ? Promise.reject(new Error('down'))
+                : recovered.response,
+        );
+
+        liveApply();
+        await flush();
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[0]);
+        await flush();
+        expect(window.roLive.stats().attempt).toBe(2);
+
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[1]);
+        await flush();
+        recovered.enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock, 2))));
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+        expect(window.roLive.stats().state).toBe('open');
+        // A snapshot alone is not health: the two rungs already climbed stand
+        // until the connection has held that snapshot through the healthy window.
+        expect(window.roLive.stats().attempt).toBe(2);
+
+        await vi.advanceTimersByTimeAsync(30_000);
+        recovered.close();
+        await flush();
+
+        expect(window.roLive.stats().attempt).toBe(1);
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[0]);
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    test.each([
+        [
+            'a reader that cannot be acquired',
+            () => ({
                 getReader() {
                     throw new Error('reader unavailable');
                 },
-            },
-            { getReader: () => ({ read: () => Promise.reject(new Error('read failed')) }) },
-            {
+            }),
+        ],
+        [
+            'a failing read',
+            () => ({ getReader: () => ({ read: () => Promise.reject(new Error('read failed')) }) }),
+        ],
+        [
+            'a clean EOF',
+            () => ({
                 getReader: () => ({
                     read: () => Promise.resolve({ done: true, value: undefined }),
                 }),
-            },
-        ];
+            }),
+        ],
+    ] as const)('%s reconnects on the ladder', async (_name, makeBody) => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
         const fetchMock = installFetch(async () =>
-            response(
-                200,
-                bodies[fetchMock.mock.calls.length - 1] as unknown as ReadableStream<Uint8Array>,
-                { 'Content-Type': 'text/event-stream' },
-            ),
+            response(200, makeBody() as unknown as ReadableStream<Uint8Array>, {
+                'Content-Type': 'text/event-stream',
+            }),
         );
 
-        for (let index = 0; index < bodies.length; index += 1) {
-            liveApply(true);
-            await vi.waitFor(() =>
-                expect(dependencies.markLiveUnavailable).toHaveBeenCalledTimes(index + 1),
-            );
-        }
+        liveApply();
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(window.roLive.stats()).toMatchObject({ state: 'reconnecting', attempt: 1 });
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
+
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[0]);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     test('the client waits thirty seconds for the first committed frame', async () => {
@@ -959,8 +1132,8 @@ describe('visible fallback and recovery', () => {
         expect(window.roLive.stats().state).toBe('connecting');
         await vi.advanceTimersByTimeAsync(1);
 
-        expect(window.roLive.stats().state).toBe('fallback');
-        expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
+        expect(window.roLive.stats().state).toBe('reconnecting');
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
     });
 
     test('an accepted response without a frame still expires at the first-frame deadline', async () => {
@@ -973,8 +1146,8 @@ describe('visible fallback and recovery', () => {
         await flush();
         await vi.advanceTimersByTimeAsync(LIVE_FIRST_FRAME_TIMEOUT_MS);
 
-        expect(window.roLive.stats().state).toBe('fallback');
-        expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
+        expect(window.roLive.stats().state).toBe('reconnecting');
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
     });
 
     test('a replaced connection cannot inherit the old first-frame deadline', async () => {
@@ -989,10 +1162,10 @@ describe('visible fallback and recovery', () => {
 
         expect(fetchMock).toHaveBeenCalledTimes(2);
         expect(window.roLive.stats().state).toBe('connecting');
-        expect(dependencies.markLiveUnavailable).not.toHaveBeenCalled();
+        expect(dependencies.markLiveStale).not.toHaveBeenCalled();
 
         await vi.advanceTimersByTimeAsync(LIVE_FIRST_FRAME_TIMEOUT_MS / 2);
-        expect(window.roLive.stats().state).toBe('fallback');
+        expect(window.roLive.stats().state).toBe('reconnecting');
     });
 
     test('the first accepted frame permanently clears its connection deadline', async () => {
@@ -1007,67 +1180,46 @@ describe('visible fallback and recovery', () => {
         await vi.advanceTimersByTimeAsync(0);
         await flush();
         expect(window.roLive.stats().state).toBe('open');
+        expect(dependencies.clearLiveStale).toHaveBeenCalledOnce();
 
         await vi.advanceTimersByTimeAsync(LIVE_FIRST_FRAME_TIMEOUT_MS);
         expect(window.roLive.stats().state).toBe('open');
-        expect(dependencies.markLiveUnavailable).not.toHaveBeenCalled();
+        expect(dependencies.markLiveStale).not.toHaveBeenCalled();
     });
 
     test('an early fetch failure clears its obsolete first-frame deadline', async () => {
         vi.useFakeTimers();
+        pinJitter();
         renderLivePage();
-        installFetch(async () => Promise.reject(new Error('offline')));
-        const before = window.roLive.stats().fallbacks;
+        installFetch(async () => Promise.reject(new Error('down')));
 
         liveApply();
         await flush();
         await vi.advanceTimersByTimeAsync(0);
-        expect(window.roLive.stats().fallbacks).toBe(before + 1);
+        // Exactly one timer survives the failure: the armed reconnect.
         expect(vi.getTimerCount()).toBe(1);
-
-        await vi.advanceTimersByTimeAsync(LIVE_FIRST_FRAME_TIMEOUT_MS);
-        expect(window.roLive.stats().fallbacks).toBe(before + 1);
     });
 
-    test('fallback retries after 60s and backs off to 120s after another failure', async () => {
+    test('a persisted mode change prevents an already-armed retry', async () => {
         vi.useFakeTimers();
+        pinJitter();
         renderLivePage();
-        const fetchMock = installFetch(async () => Promise.reject(new Error('offline')));
-
-        liveApply();
-        await flush();
-        expect(fetchMock).toHaveBeenCalledOnce();
-        await vi.advanceTimersByTimeAsync(59_999);
-        expect(fetchMock).toHaveBeenCalledOnce();
-        await vi.advanceTimersByTimeAsync(1);
-        expect(fetchMock).toHaveBeenCalledTimes(2);
-        await flush();
-        await vi.advanceTimersByTimeAsync(29_999);
-        expect(fetchMock).toHaveBeenCalledTimes(2);
-        await vi.advanceTimersByTimeAsync(1);
-        expect(fetchMock).toHaveBeenCalledTimes(2);
-        await vi.advanceTimersByTimeAsync(90_000);
-        expect(fetchMock).toHaveBeenCalledTimes(3);
-    });
-
-    test('a persisted mode change prevents an already-armed fallback retry', async () => {
-        vi.useFakeTimers();
-        renderLivePage();
-        const fetchMock = installFetch(async () => Promise.reject(new Error('offline')));
+        const fetchMock = installFetch(async () => Promise.reject(new Error('down')));
 
         liveApply();
         await flush();
         dependencies.isLiveEnabled.mockReturnValue(false);
-        await vi.advanceTimersByTimeAsync(60_000);
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[0]);
 
         expect(fetchMock).toHaveBeenCalledOnce();
-        expect(window.roLive.stats().state).toBe('fallback');
+        expect(window.roLive.stats().state).toBe('off');
     });
 
-    test('turning Live Off cancels the armed fallback retry', async () => {
+    test('turning Live Off cancels the armed retry', async () => {
         vi.useFakeTimers();
+        pinJitter();
         renderLivePage();
-        const fetchMock = installFetch(async () => Promise.reject(new Error('offline')));
+        const fetchMock = installFetch(async () => Promise.reject(new Error('down')));
 
         liveApply();
         await flush();
@@ -1079,43 +1231,103 @@ describe('visible fallback and recovery', () => {
         await vi.advanceTimersByTimeAsync(60_000);
 
         expect(fetchMock).toHaveBeenCalledOnce();
-        expect(window.roLive.stats().state).toBe('off');
+        expect(window.roLive.stats()).toMatchObject({ state: 'off', attempt: 0 });
+        expect(dependencies.clearLiveStale).toHaveBeenCalled();
     });
 
-    test('a forced fallback retry replaces the old deadline and resets its backoff', async () => {
+    test('a forced retry replaces the armed schedule and restarts the ladder', async () => {
         vi.useFakeTimers();
+        pinJitter();
         renderLivePage();
-        const fetchMock = installFetch(async () => Promise.reject(new Error('offline')));
+        const fetchMock = installFetch(async () => Promise.reject(new Error('down')));
 
         liveApply();
         await flush();
-        await vi.advanceTimersByTimeAsync(60_000);
-        expect(fetchMock).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[0]);
         await flush();
-        await vi.advanceTimersByTimeAsync(30_000);
+        expect(window.roLive.stats().attempt).toBe(2);
 
         liveApply(true);
         await flush();
         expect(fetchMock).toHaveBeenCalledTimes(3);
-
-        await vi.advanceTimersByTimeAsync(59_999);
-        expect(fetchMock).toHaveBeenCalledTimes(3);
-        await vi.advanceTimersByTimeAsync(1);
-        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(window.roLive.stats().attempt).toBe(1);
     });
 
     test('a retry rechecks that the current page still supports Live', async () => {
         vi.useFakeTimers();
+        pinJitter();
         const content = renderLivePage();
-        const fetchMock = installFetch(async () => Promise.reject(new Error('offline')));
+        const fetchMock = installFetch(async () => Promise.reject(new Error('down')));
 
         liveApply();
         await flush();
         content.dataset.liveUrl = 'baked';
-        await vi.advanceTimersByTimeAsync(60_000);
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[0]);
 
         expect(fetchMock).toHaveBeenCalledOnce();
-        expect(window.roLive.stats().state).toBe('fallback');
+        expect(window.roLive.stats().state).toBe('off');
+    });
+
+    test('going offline parks the transport and coming back reconnects once', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async () => stream.response);
+        const onLine = vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(true);
+
+        liveApply();
+        stream.enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock))));
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+        expect(window.roLive.stats().state).toBe('open');
+
+        onLine.mockReturnValue(false);
+        window.dispatchEvent(new Event('offline'));
+        expect(window.roLive.stats().state).toBe('offline');
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
+        // A paused ladder burns no rungs on attempts that cannot succeed.
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(window.roLive.stats().attempt).toBe(0);
+
+        onLine.mockReturnValue(true);
+        window.dispatchEvent(new Event('online'));
+        window.dispatchEvent(new Event('online'));
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(window.roLive.stats().state).toBe('connecting');
+    });
+
+    test('a failure while offline parks instead of arming a doomed retry', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        const onLine = vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(true);
+        const fetchMock = installFetch(async () => {
+            onLine.mockReturnValue(false);
+            return Promise.reject(new Error('down'));
+        });
+
+        liveApply();
+        await flush();
+
+        expect(window.roLive.stats()).toMatchObject({ state: 'offline', attempt: 0 });
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
+    test('an offline event is inert once the transport has stopped for good', async () => {
+        renderLivePage();
+        installFetch(async () => response(401, null));
+
+        liveApply();
+        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('unavailable'));
+        window.dispatchEvent(new Event('offline'));
+        window.dispatchEvent(new Event('online'));
+
+        expect(window.roLive.stats().state).toBe('unavailable');
     });
 });
 
@@ -1123,7 +1335,7 @@ test('turning Live off aborts the connection and makes a late response inert', a
     renderLivePage();
     const pending = deferred<Response>();
     const fetchMock = installFetch(() => pending.promise);
-    const before = window.roLive.stats().fallbacks;
+    const before = window.roLive.stats().reconnects;
 
     liveApply();
     const signal = fetchMock.mock.calls[0][1]?.signal as AbortSignal;
@@ -1132,10 +1344,11 @@ test('turning Live off aborts the connection and makes a late response inert', a
 
     expect(signal.aborted).toBe(true);
     expect(window.roLive.stats()).toMatchObject({ state: 'off', seq: 0 });
-    expect(dependencies.clearLiveUnavailable).toHaveBeenCalledOnce();
+    expect(dependencies.clearLiveStale).toHaveBeenCalledOnce();
     pending.reject(new Error('late rejection'));
     await flush();
-    expect(window.roLive.stats().fallbacks).toBe(before);
+    expect(window.roLive.stats().reconnects).toBe(before);
+    expect(dependencies.markLiveStale).not.toHaveBeenCalled();
 });
 
 test('turning Live off makes a late successful response opaque to the retired connection', async () => {
@@ -1168,12 +1381,15 @@ test('turning Live off makes a late successful response opaque to the retired co
     expect(inspected).toBe(0);
     expect(window.roLive.stats()).toMatchObject({
         state: 'off',
-        fallbacks: before.fallbacks,
+        reconnects: before.reconnects,
     });
 });
 
+// A page that cannot stream is not a failure: the stored Live preference is
+// kept and simply does not apply here (a detail page, a watchless kind, a
+// multi-cluster list). Nothing is requested and no warning is raised.
 test.each(['wrong marker', 'missing option', 'disabled option', 'missing content'] as const)(
-    '%s is an unsupported Live surface and enters visible fallback',
+    '%s is an unsupported Live surface and stays silently off',
     (variant) => {
         const content = renderLivePage();
         const option = document.querySelector(
@@ -1188,13 +1404,13 @@ test.each(['wrong marker', 'missing option', 'disabled option', 'missing content
         liveApply();
 
         expect(fetchMock).not.toHaveBeenCalled();
-        expect(window.roLive.stats().state).toBe('fallback');
-        expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
-        expect(liveFallbackSeconds()).toBe(variant === 'missing content' ? 0 : 5);
+        expect(window.roLive.stats().state).toBe('off');
+        expect(dependencies.markLiveUnavailable).not.toHaveBeenCalled();
+        expect(dependencies.markLiveStale).not.toHaveBeenCalled();
     },
 );
 
-test('generation failure enters visible fallback without issuing a request', () => {
+test('generation failure stops without issuing a request', () => {
     renderLivePage();
     vi.stubGlobal('crypto', {
         randomUUID: () => {
@@ -1209,7 +1425,7 @@ test('generation failure enters visible fallback without issuing a request', () 
     liveApply();
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(window.roLive.stats().state).toBe('fallback');
+    expect(window.roLive.stats().state).toBe('unavailable');
     expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
 });
 
@@ -1332,91 +1548,44 @@ describe('one refresh request tracker subscription', () => {
 
         expect(fetchMock).toHaveBeenCalledOnce();
         expect(window.roLive.stats().state).toBe('off');
-        expect(dependencies.clearLiveUnavailable).toHaveBeenCalledOnce();
+        expect(dependencies.clearLiveStale).toHaveBeenCalledOnce();
     });
 
-    test('a fallback retry waits for a request and resumes the committed URL after cancellation', async () => {
+    test('an armed retry yields to a user request and resumes the committed URL', async () => {
         vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(1);
         renderLivePage('/clusters/prod/pods?sort=Name');
         const fetchMock = installFetch(async () =>
-            fetchMock.mock.calls.length === 1
-                ? Promise.reject(new Error('offline'))
-                : pendingFetch(),
+            fetchMock.mock.calls.length === 1 ? Promise.reject(new Error('down')) : pendingFetch(),
         );
         liveApply();
         await flush();
+        expect(window.roLive.stats().state).toBe('reconnecting');
+
         startListRequest();
-
-        await vi.advanceTimersByTimeAsync(60_000);
-        expect(fetchMock).toHaveBeenCalledOnce();
         expect(window.roLive.stats().state).toBe('suspended');
-        settleListRequest();
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(fetchMock).toHaveBeenCalledOnce();
 
+        // The request was cancelled: no swap committed a new URL, so the stream
+        // reopens against the one it was already pinned to.
+        settleListRequest();
         expect(fetchMock).toHaveBeenCalledTimes(2);
         expect(fetchMock.mock.calls[1][0]).toBe('/clusters/prod/pods/_stream?sort=Name');
     });
 
-    test('ordinary fallback polling never creates a resume intent', async () => {
-        renderLivePage();
-        const fetchMock = installFetch(async () => Promise.reject(new Error('offline')));
-        liveApply();
-        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('fallback'));
-
-        startListRequest();
-        settleListRequest();
-
-        expect(fetchMock).toHaveBeenCalledOnce();
-        expect(window.roLive.stats().state).toBe('fallback');
-    });
-
-    test('hide and show cannot promote a fallback poll into a Live reopen', async () => {
-        renderLivePage();
-        const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
-        const fetchMock = installFetch(async () => Promise.reject(new Error('offline')));
-        liveApply();
-        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('fallback'));
-
-        startListRequest();
-        hidden.mockReturnValue(true);
-        document.dispatchEvent(new Event('visibilitychange'));
-        hidden.mockReturnValue(false);
-        document.dispatchEvent(new Event('visibilitychange'));
-
-        expect(window.roLive.stats().state).toBe('fallback');
-        settleListRequest();
-        expect(fetchMock).toHaveBeenCalledOnce();
-        expect(window.roLive.stats().state).toBe('fallback');
-    });
-
-    test('a successful same-base fallback poll stays on its scheduled retry', async () => {
-        renderLivePage('/clusters/prod/pods?sort=Name');
-        const fetchMock = installFetch(async () => Promise.reject(new Error('offline')));
-        liveApply();
-        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('fallback'));
-
-        startListRequest();
-        commitListSwap('/clusters/prod/pods?sort=Name');
-        settleListRequest();
-
-        expect(fetchMock).toHaveBeenCalledOnce();
-        expect(window.roLive.stats().state).toBe('fallback');
-    });
-
-    test('a changed fallback swap survives an earlier overlapping settlement', async () => {
+    test('a successful swap during an armed retry reopens on the new URL', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(1);
         renderLivePage('/clusters/prod/pods?sort=Name');
         const fetchMock = installFetch(async () =>
-            fetchMock.mock.calls.length === 1
-                ? Promise.reject(new Error('offline'))
-                : pendingFetch(),
+            fetchMock.mock.calls.length === 1 ? Promise.reject(new Error('down')) : pendingFetch(),
         );
         liveApply();
-        await vi.waitFor(() => expect(window.roLive.stats().state).toBe('fallback'));
+        await flush();
 
         startListRequest();
-        startListRequest();
-        settleListRequest();
         commitListSwap('/clusters/prod/pods?sort=Age');
-        expect(fetchMock).toHaveBeenCalledOnce();
         settleListRequest();
 
         expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -1424,19 +1593,43 @@ describe('one refresh request tracker subscription', () => {
         expect(window.roLive.stats().state).toBe('connecting');
     });
 
-    test('a successful changed-base fallback poll reopens and retires the old retry', async () => {
+    test('hide and show during a suspended retry still opens exactly one stream', async () => {
         vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(1);
+        renderLivePage();
+        const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+        const fetchMock = installFetch(async () =>
+            fetchMock.mock.calls.length === 1 ? Promise.reject(new Error('down')) : pendingFetch(),
+        );
+        liveApply();
+        await flush();
+
+        startListRequest();
+        hidden.mockReturnValue(true);
+        document.dispatchEvent(new Event('visibilitychange'));
+        hidden.mockReturnValue(false);
+        document.dispatchEvent(new Event('visibilitychange'));
+        expect(window.roLive.stats().state).toBe('suspended');
+        expect(fetchMock).toHaveBeenCalledOnce();
+
+        settleListRequest();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    test('a recovered reconnect after a swap retires the old schedule', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(1);
         renderLivePage('/clusters/prod/pods?sort=Name');
         installHtmx();
         const recovered = controlledStream();
         const fetchMock = installFetch(async () =>
             fetchMock.mock.calls.length === 1
-                ? Promise.reject(new Error('offline'))
+                ? Promise.reject(new Error('down'))
                 : recovered.response,
         );
         liveApply();
         await flush();
-        expect(window.roLive.stats().state).toBe('fallback');
+        expect(window.roLive.stats().state).toBe('reconnecting');
 
         startListRequest();
         commitListSwap('/clusters/prod/pods?sort=Age');
@@ -1450,7 +1643,7 @@ describe('one refresh request tracker subscription', () => {
         await flush();
         expect(window.roLive.stats().state).toBe('open');
 
-        await vi.advanceTimersByTimeAsync(60_000);
+        await vi.advanceTimersByTimeAsync(300_000);
         expect(fetchMock).toHaveBeenCalledTimes(2);
         expect(window.roLive.stats().state).toBe('open');
     });
@@ -1489,7 +1682,7 @@ test('a protocol resync observed after the tab hides waits for visibility', asyn
     expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 
-test('an unsupported committed list swap falls back instead of opening an invented base', () => {
+test('an unsupported committed list swap stops instead of opening an invented base', () => {
     const content = renderLivePage('/clusters/prod/pods?sort=Name');
     const fetchMock = installFetch(pendingFetch);
     liveApply();
@@ -1500,7 +1693,7 @@ test('an unsupported committed list swap falls back instead of opening an invent
     settleListRequest();
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(window.roLive.stats().state).toBe('fallback');
+    expect(window.roLive.stats().state).toBe('off');
 });
 
 test('visibility owns one pinned resume intent across a hidden request', () => {

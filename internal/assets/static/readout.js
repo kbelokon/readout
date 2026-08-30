@@ -697,6 +697,34 @@
     return true;
   }
 
+  // internal/assets/src/js/live-policy.ts
+  var RECONNECT_DELAY_LADDER_MS = [1e3, 2e3, 5e3, 1e4, 3e4];
+  function reconnectDelayMs(attempt, random = Math.random) {
+    const rung = Number.isInteger(attempt) && attempt >= 1 ? attempt : 1;
+    const cap = RECONNECT_DELAY_LADDER_MS[Math.min(rung, RECONNECT_DELAY_LADDER_MS.length) - 1];
+    const roll = random();
+    const fraction = Number.isFinite(roll) ? Math.min(Math.max(roll, 0), 1) : 1;
+    return Math.round(cap * fraction);
+  }
+  var RETRY_AFTER_MAX_MS = 3e5;
+  function retryAfterMs(header, now = Date.now()) {
+    if (header === null) return null;
+    const value = header.trim();
+    if (value === "") return null;
+    if (/^\d+$/.test(value)) {
+      return Math.min(Number(value) * 1e3, RETRY_AFTER_MAX_MS);
+    }
+    if (!/^[a-z]{3}/i.test(value)) return null;
+    const at = Date.parse(value);
+    if (Number.isNaN(at)) return null;
+    return Math.min(Math.max(at - now, 0), RETRY_AFTER_MAX_MS);
+  }
+  var HEALTHY_CONTINUITY_MS = 3e4;
+  function shouldResetBackoff(snapshotAt2, now) {
+    if (snapshotAt2 <= 0) return false;
+    return now - snapshotAt2 >= HEALTHY_CONTINUITY_MS;
+  }
+
   // internal/assets/src/js/live-protocol.ts
   var LIST_DELTA_APPLIED_EVENT = "ro:list-delta-applied";
   var BASE_FIELDS = /* @__PURE__ */ new Set(["v", "kind", "g", "seq", "rev", "rv", "schema"]);
@@ -815,7 +843,7 @@
     };
   }
   function decodeTerminal(record) {
-    if (!exactFields(record, /* @__PURE__ */ new Set([...BASE_FIELDS, "reason"])) || record.reason !== "idle" && record.reason !== "auth" && record.reason !== "watch-failed" && record.reason !== "shutdown") {
+    if (!exactFields(record, /* @__PURE__ */ new Set([...BASE_FIELDS, "reason"])) || record.reason !== "auth" && record.reason !== "lifetime" && record.reason !== "shutdown" && record.reason !== "watch-failed") {
       return { ok: false };
     }
     return { ok: true, value: seal(record) };
@@ -1072,46 +1100,29 @@
   var staleCountdownId = null;
   var staleRetryAt = 0;
   var listStaleOwner = /* @__PURE__ */ Symbol();
+  var liveStaleOwner = /* @__PURE__ */ Symbol();
   var liveUnavailableOwner = /* @__PURE__ */ Symbol();
   var staleOwners = /* @__PURE__ */ new Set();
+  var liveSemanticStale = false;
+  var liveGraceTimerId;
+  var LIVE_STALE_GRACE_MS = 3e3;
   function bannerElement() {
     return document.querySelector(".ro-stale-banner");
   }
   function bannerParts(banner) {
     return {
-      button: banner.querySelector('[data-ro-action="retry"]'),
-      message: banner.querySelector(".bn-text"),
-      title: banner.querySelector(".bn-title")
+      recoverable: banner.querySelector(".bn-body:not(.ro-stale-unavailable)"),
+      reload: banner.querySelector(".ro-stale-reload"),
+      retry: banner.querySelector(".ro-stale-retry"),
+      unavailable: banner.querySelector(".bn-body.ro-stale-unavailable")
     };
   }
-  function rememberBannerCopy(banner) {
-    const serialized = banner.dataset.roStaleOriginalCopy;
-    if (serialized) {
-      try {
-        return JSON.parse(serialized);
-      } catch {
-      }
-    }
-    const { button, message, title } = bannerParts(banner);
-    const copy = {
-      ariaLabel: banner.getAttribute("aria-label"),
-      buttonText: button.textContent,
-      messageHTML: message.innerHTML,
-      messageHidden: message.hidden,
-      titleText: title.textContent
-    };
-    banner.dataset.roStaleOriginalCopy = JSON.stringify(copy);
-    return copy;
-  }
-  function restoreBannerCopy(banner) {
-    const copy = rememberBannerCopy(banner);
-    const { button, message, title } = bannerParts(banner);
-    title.textContent = copy.titleText;
-    message.innerHTML = copy.messageHTML;
-    message.hidden = copy.messageHidden;
-    button.textContent = copy.buttonText;
-    if (copy.ariaLabel === null) banner.removeAttribute("aria-label");
-    else banner.setAttribute("aria-label", copy.ariaLabel);
+  function paintBannerVariant(banner, unavailable) {
+    const parts = bannerParts(banner);
+    if (parts.recoverable) parts.recoverable.hidden = unavailable;
+    if (parts.unavailable) parts.unavailable.hidden = !unavailable;
+    if (parts.retry) parts.retry.hidden = unavailable;
+    if (parts.reload) parts.reload.hidden = !unavailable;
   }
   function stopStaleCountdown() {
     if (staleCountdownId !== null) {
@@ -1125,25 +1136,32 @@
     }
     updateStaleCountdown();
   }
+  function clearLiveGrace() {
+    window.clearTimeout(liveGraceTimerId);
+    liveGraceTimerId = void 0;
+  }
   function paintStaleState() {
-    const listStale = staleOwners.has(listStaleOwner);
+    const listStale = staleOwners.has(listStaleOwner) || staleOwners.has(liveStaleOwner);
     const liveUnavailable = staleOwners.has(liveUnavailableOwner);
-    document.getElementById("resource-list-content")?.classList.toggle("ro-stale", listStale);
+    const content = document.getElementById("resource-list-content");
+    if (content) {
+      content.classList.toggle("ro-stale", listStale || liveUnavailable);
+      if (liveSemanticStale) content.dataset.roStale = "true";
+      else delete content.dataset.roStale;
+    }
     const banner = bannerElement();
     if (!banner) {
       stopStaleCountdown();
       return;
     }
-    restoreBannerCopy(banner);
-    if (liveUnavailable) {
-      const { button, message, title } = bannerParts(banner);
-      title.textContent = "Live unavailable, polling ·";
-      message.hidden = false;
-      button.textContent = "Retry";
-    }
+    paintBannerVariant(banner, liveUnavailable);
     banner.hidden = !(listStale || liveUnavailable);
     if (banner.hidden) stopStaleCountdown();
     else startStaleCountdown();
+  }
+  function noteStaleRetryAt(atMs) {
+    staleRetryAt = atMs;
+    updateStaleCountdown();
   }
   function updateStaleCountdown() {
     const banner = bannerElement();
@@ -1155,16 +1173,10 @@
     const nextAt = staleRetryAt;
     if (!nextAt) {
       span.textContent = "…";
-    } else {
-      const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
-      span.textContent = `${remaining}s`;
+      return;
     }
-    if (staleOwners.has(liveUnavailableOwner)) {
-      banner.setAttribute(
-        "aria-label",
-        `Live unavailable, polling. Retrying in ${span.textContent}. Retry`
-      );
-    }
+    const remaining = Math.max(0, Math.ceil((nextAt - Date.now()) / 1e3));
+    span.textContent = `${remaining}s`;
   }
   function isListRefreshEvent(event) {
     const detail = event.detail;
@@ -1182,11 +1194,28 @@
     staleOwners.add(listStaleOwner);
     paintStaleState();
   }
+  function markLiveStale() {
+    liveSemanticStale = true;
+    if (!staleOwners.has(liveStaleOwner) && liveGraceTimerId === void 0) {
+      liveGraceTimerId = window.setTimeout(revealLiveStale, LIVE_STALE_GRACE_MS);
+    }
+    paintStaleState();
+  }
+  function revealLiveStale() {
+    clearLiveGrace();
+    staleOwners.add(liveStaleOwner);
+    paintStaleState();
+  }
   function markLiveUnavailable() {
+    clearLiveGrace();
+    liveSemanticStale = true;
     staleOwners.add(liveUnavailableOwner);
     paintStaleState();
   }
-  function clearLiveUnavailable() {
+  function clearLiveStale() {
+    clearLiveGrace();
+    liveSemanticStale = false;
+    staleOwners.delete(liveStaleOwner);
     staleOwners.delete(liveUnavailableOwner);
     paintStaleState();
   }
@@ -1213,7 +1242,7 @@
   var counters = {
     connections: 0,
     resyncs: 0,
-    fallbacks: 0,
+    reconnects: 0,
     v2Snapshots: 0,
     deltas: 0,
     terminals: 0,
@@ -1229,16 +1258,14 @@
   };
   var RESYNC_WINDOW_MS = 3e4;
   var MAX_RESYNCS_PER_WINDOW = 2;
-  var FALLBACK_RETRY_INITIAL_MS = 6e4;
-  var FALLBACK_RETRY_MAX_MS = 3e5;
   var LIVE_FIRST_FRAME_TIMEOUT_MS = 3e4;
   var completedSnapshotTxns = /* @__PURE__ */ new WeakSet();
-  var liveFallbackSecs = 0;
   var resyncTimestamps = [];
   var resumeIntent = null;
   var requestSubscribed = false;
-  var fallbackRetryTimerId;
-  var fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
+  var reconnectTimerId;
+  var reconnectAttempt = 0;
+  var snapshotAt = 0;
   function addCounter(name, amount = 1) {
     counters[name] += amount;
   }
@@ -1251,6 +1278,7 @@
       ...counters,
       state: runtime.status,
       seq: runtime.connection?.cursor?.seq || 0,
+      attempt: reconnectAttempt,
       inFlightRequests: listRequestTrackerSnapshot().count,
       resyncsInWindow: resyncTimestamps.length
     };
@@ -1286,65 +1314,96 @@
     runtime.connection = null;
     connection?.ctrl.abort();
   }
-  function clearFallbackRetry() {
-    window.clearTimeout(fallbackRetryTimerId);
-    fallbackRetryTimerId = void 0;
-  }
-  function resetFallbackRetry() {
-    clearFallbackRetry();
-    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
+  function clearReconnectTimer() {
+    window.clearTimeout(reconnectTimerId);
+    reconnectTimerId = void 0;
   }
   function liveSetOff() {
     abortActiveConnection();
-    resetFallbackRetry();
+    clearReconnectTimer();
     resumeIntent = null;
-    liveFallbackSecs = 0;
+    reconnectAttempt = 0;
+    snapshotAt = 0;
     runtime.status = "off";
-    clearLiveUnavailable();
+    noteStaleRetryAt(0);
+    clearLiveStale();
   }
   function liveResetPage() {
     liveSetOff();
     resetListRequestTracker();
     resyncTimestamps = [];
   }
-  function scheduleFallbackRetry() {
-    fallbackRetryTimerId = window.setTimeout(() => {
-      fallbackRetryTimerId = void 0;
-      if (!isLiveEnabled()) return;
-      const base = liveSupported() ? liveStreamBase() : "";
-      fallbackRetryDelayMs = Math.min(fallbackRetryDelayMs * 2, FALLBACK_RETRY_MAX_MS);
-      openConnection(base);
-    }, fallbackRetryDelayMs);
-  }
-  function liveEngageFallback() {
+  function enterUnavailable() {
     abortActiveConnection();
+    clearReconnectTimer();
     resumeIntent = null;
-    runtime.status = "fallback";
-    liveFallbackSecs = document.getElementById("resource-list-content") ? 5 : 0;
-    addCounter("fallbacks");
-    scheduleFallbackRetry();
+    runtime.status = "unavailable";
+    noteStaleRetryAt(0);
     markLiveUnavailable();
+  }
+  function enterDeferred(status, base) {
+    resumeIntent = { base };
+    runtime.status = status;
+    noteStaleRetryAt(0);
+  }
+  function noteDisconnected() {
+    clearListValidator();
+    markLiveStale();
+    if (reconnectAttempt >= 1) revealLiveStale();
+  }
+  function scheduleReconnect(base, delayMs = null) {
+    abortActiveConnection();
+    clearReconnectTimer();
+    if (!isLiveEnabled()) {
+      liveSetOff();
+      return;
+    }
+    if (shouldResetBackoff(snapshotAt, Date.now())) reconnectAttempt = 0;
+    noteDisconnected();
+    if (!window.navigator.onLine) {
+      enterDeferred("offline", base);
+      return;
+    }
+    reconnectAttempt += 1;
+    const delay = delayMs ?? reconnectDelayMs(reconnectAttempt);
+    runtime.status = "reconnecting";
+    addCounter("reconnects");
+    noteStaleRetryAt(Date.now() + delay);
+    reconnectTimerId = window.setTimeout(() => {
+      reconnectTimerId = void 0;
+      if (!isLiveEnabled()) {
+        liveSetOff();
+        return;
+      }
+      openConnection(liveSupported() ? liveStreamBase() : "");
+    }, delay);
   }
   function openConnection(base) {
     abortActiveConnection();
-    clearFallbackRetry();
-    liveFallbackSecs = 0;
+    clearReconnectTimer();
     runtime.streamPath = base;
+    snapshotAt = 0;
     if (!base) {
-      liveEngageFallback();
+      liveSetOff();
       return;
     }
-    const deferredStatus = document.hidden ? "hidden" : listRequestTrackerSnapshot().count > 0 ? "suspended" : null;
-    if (deferredStatus) {
-      resumeIntent = { base };
-      runtime.status = deferredStatus;
+    if (document.hidden) {
+      enterDeferred("hidden", base);
+      return;
+    }
+    if (listRequestTrackerSnapshot().count > 0) {
+      enterDeferred("suspended", base);
+      return;
+    }
+    if (!window.navigator.onLine) {
+      enterDeferred("offline", base);
       return;
     }
     let generation;
     try {
       generation = mintLiveGeneration();
     } catch {
-      liveEngageFallback();
+      enterUnavailable();
       return;
     }
     const ctrl = new AbortController();
@@ -1380,7 +1439,7 @@
     let firstFrameTimer = window.setTimeout(() => {
       firstFrameTimer = null;
       if (runtime.connection?.ctrl === initial.ctrl) {
-        liveEngageFallback();
+        scheduleReconnect(initial.base);
       }
     }, LIVE_FIRST_FRAME_TIMEOUT_MS);
     const clearFirstFrameTimer = () => {
@@ -1395,6 +1454,22 @@
       clearFirstFrameTimer();
     }
   }
+  function acceptResponse(response, connection) {
+    const status = response.status;
+    if (status === 401 || status === 403 || status === 204 || status === 404) {
+      enterUnavailable();
+      return null;
+    }
+    if (status === 429) {
+      scheduleReconnect(connection.base, retryAfterMs(responseHeader2(response, "Retry-After")));
+      return null;
+    }
+    if (status !== 200 || !response.body) {
+      scheduleReconnect(connection.base);
+      return null;
+    }
+    return response.body;
+  }
   async function runLiveConnection(initial, clearFirstFrameTimer) {
     let response;
     try {
@@ -1406,14 +1481,12 @@
         }
       });
     } catch {
-      if (isActive(initial)) liveEngageFallback();
+      if (isActive(initial)) scheduleReconnect(initial.base);
       return;
     }
     if (!isActive(initial)) return;
-    if (response.status !== 200 || !response.body) {
-      liveEngageFallback();
-      return;
-    }
+    const body = acceptResponse(response, initial);
+    if (!body) return;
     if (!acceptsV2Response(response, initial)) {
       rejectProtocol(initial);
       return;
@@ -1422,7 +1495,7 @@
     if (!accepted) return;
     let connection = accepted;
     try {
-      const reader = response.body.getReader();
+      const reader = body.getReader();
       const parser = new LiveSSEParser();
       const readNext = async () => {
         const result = await reader.read();
@@ -1450,7 +1523,7 @@
       }
     } catch {
     }
-    if (isActive(connection)) liveEngageFallback();
+    if (isActive(connection)) scheduleReconnect(connection.base);
   }
   function handleV2Frame(connection, name, text, payloadBytes) {
     if (name !== "ro-live") {
@@ -1506,7 +1579,11 @@
       return;
     }
     addCounter("terminals");
-    liveEngageFallback();
+    if (envelope.reason === "auth") {
+      enterUnavailable();
+      return;
+    }
+    scheduleReconnect(connection.base);
   }
   function commitV2Snapshot(connection, envelope, payloadBytes) {
     const txn = Object.freeze({});
@@ -1526,8 +1603,9 @@
     addCounter("v2Snapshots");
     addCounter("snapshotBytes", payloadBytes);
     runtime.status = "open";
-    fallbackRetryDelayMs = FALLBACK_RETRY_INITIAL_MS;
-    clearLiveUnavailable();
+    if (snapshotAt === 0) snapshotAt = Date.now();
+    noteStaleRetryAt(0);
+    clearLiveStale();
   }
   function swapSnapshot(html, connection, txn) {
     const content = document.getElementById("resource-list-content");
@@ -1553,7 +1631,7 @@
   function requestResync(base) {
     pruneResyncWindow();
     if (resyncTimestamps.length >= MAX_RESYNCS_PER_WINDOW) {
-      liveEngageFallback();
+      enterUnavailable();
       return;
     }
     resyncTimestamps.push(Date.now());
@@ -1564,11 +1642,14 @@
     if (activity.phase === "start") {
       const connection = runtime.connection;
       if (connection) {
-        resumeIntent = { base: connection.base };
         abortActiveConnection();
-        runtime.status = document.hidden ? "hidden" : "suspended";
-      } else if (runtime.status === "fallback" && !resumeIntent) {
-        resumeIntent = { base: runtime.streamPath, waitForChangedBase: true };
+        enterDeferred(document.hidden ? "hidden" : "suspended", connection.base);
+      } else if (runtime.status === "reconnecting" || runtime.status === "offline") {
+        clearReconnectTimer();
+        enterDeferred(
+          document.hidden ? "hidden" : "suspended",
+          resumeIntent?.base ?? runtime.streamPath
+        );
       }
       return;
     }
@@ -1577,12 +1658,8 @@
       liveSetOff();
       return;
     }
-    const { base, waitForChangedBase } = resumeIntent;
+    const { base } = resumeIntent;
     resumeIntent = null;
-    if (waitForChangedBase) {
-      runtime.status = "fallback";
-      return;
-    }
     openConnection(base);
   }
   function liveOnListSwap(event) {
@@ -1590,9 +1667,7 @@
     if (detail.roLivePush !== true) {
       if (resumeIntent) {
         const base = liveSupported() ? liveStreamBase() : "";
-        if (!resumeIntent.waitForChangedBase || base !== resumeIntent.base) {
-          resumeIntent = { base };
-        }
+        resumeIntent = { base };
         runtime.streamPath = base;
       }
       return;
@@ -1615,7 +1690,9 @@
     if (force) {
       resyncTimestamps = [];
       resumeIntent = null;
-      resetFallbackRetry();
+      reconnectAttempt = 0;
+      clearReconnectTimer();
+      clearLiveStale();
     }
     if (!force && base === runtime.streamPath && runtime.status !== "off") return;
     openConnection(base);
@@ -1623,11 +1700,12 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       const connection = runtime.connection;
-      if (connection) resumeIntent = { base: connection.base };
-      const intent = resumeIntent;
-      if (!intent || intent.waitForChangedBase) return;
+      const armed = runtime.status === "reconnecting" || runtime.status === "offline";
+      const base = connection?.base ?? (armed ? runtime.streamPath : resumeIntent?.base);
+      if (base === void 0) return;
       abortActiveConnection();
-      runtime.status = "hidden";
+      clearReconnectTimer();
+      enterDeferred("hidden", base);
       return;
     }
     if (runtime.status === "hidden" && resumeIntent) {
@@ -1639,6 +1717,25 @@
       resumeIntent = null;
       openConnection(base);
     }
+  });
+  window.addEventListener("offline", () => {
+    const holding = runtime.status === "connecting" || runtime.status === "open" || runtime.status === "reconnecting";
+    const base = runtime.connection?.base ?? runtime.streamPath;
+    if (!holding || !base) return;
+    abortActiveConnection();
+    clearReconnectTimer();
+    noteDisconnected();
+    enterDeferred("offline", base);
+  });
+  window.addEventListener("online", () => {
+    if (runtime.status !== "offline" || !resumeIntent) return;
+    if (!isLiveEnabled()) {
+      liveSetOff();
+      return;
+    }
+    const { base } = resumeIntent;
+    resumeIntent = null;
+    openConnection(base);
   });
   window.roLive = { stats: currentStats };
 
