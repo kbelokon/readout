@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Assert the chart's template safety gates and values.schema.json reject the
 # inputs they must reject and accept the inputs they must accept. Each case
-# checks the exit code of `helm template`, so it works identically on helm 3
-# (CI) and helm 4 (local). A wrong exit code aborts the whole script non-zero.
+# checks the exit code of `helm template` -- or, for expect_grep /
+# expect_no_grep, the presence or absence of a line of its rendered output -- so
+# it works identically on helm 3 (CI) and helm 4 (local). A wrong exit code, a
+# missing rendered line, or a line that must not render, exits non-zero.
 set -uo pipefail
 
 CHART_DIR="${1:-chart}"
@@ -28,6 +30,36 @@ expect_pass() {
   else
     echo "FAIL (expected zero, got non-zero): $desc"
     fail=1
+  fi
+}
+
+# expect_grep <description> <extended-regex> -- the remaining args form a
+# `helm template` call whose rendered output MUST contain a line matching the
+# regex. Use it to pin a rendered VALUE, not just an exit code.
+expect_grep() {
+  local desc="$1" pattern="$2"; shift 2
+  if helm template readout "$CHART_DIR" "$@" 2>/dev/null | grep -q -E "$pattern"; then
+    echo "ok (rendered): $desc"
+  else
+    echo "FAIL (pattern not rendered: $pattern): $desc"
+    fail=1
+  fi
+}
+
+# expect_no_grep <description> <extended-regex> -- the render MUST succeed and
+# MUST NOT contain a line matching the regex. The render is captured first so
+# a failing helm (empty output) is a FAIL, never a false "absent".
+expect_no_grep() {
+  local desc="$1" pattern="$2"; shift 2
+  local out
+  if ! out="$(helm template readout "$CHART_DIR" "$@" 2>/dev/null)" || [ -z "$out" ]; then
+    echo "FAIL (render failed or empty): $desc"
+    fail=1
+  elif grep -q -E "$pattern" <<<"$out"; then
+    echo "FAIL (pattern rendered but must be absent: $pattern): $desc"
+    fail=1
+  else
+    echo "ok (absent): $desc"
   fi
 }
 
@@ -80,5 +112,40 @@ expect_fail "schema rejects ingress.enabled with zero hosts" \
   --set ingress.enabled=true
 expect_fail "schema rejects existingSecret with empty key" \
   --set auth.oidc.existingSecret=s --set auth.oidc.clientIdKey=""
+
+# Gate: metrics.port on the app port. Whichever of the two listeners binds
+# second fails: the pod crash-loops, or /metrics silently vanishes (404 on the
+# main port). Rejected at render time instead of surfacing at runtime.
+expect_fail "gate rejects metrics.port equal to config.port" \
+  --set metrics.enabled=true --set metrics.port=8080
+
+# Gate: metrics peers named while there is no metrics port. Without the gate
+# the metricsFrom rule silently does not render and the operator believes the
+# scraper is admitted.
+expect_fail "gate rejects networkPolicy.ingress.metricsFrom without metrics.enabled" \
+  --set networkPolicy.enabled=true \
+  --set 'networkPolicy.ingress.metricsFrom[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring'
+expect_pass "networkPolicy.ingress.metricsFrom with metrics.enabled renders" \
+  --set networkPolicy.enabled=true --set metrics.enabled=true \
+  --set 'networkPolicy.ingress.metricsFrom[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring'
+
+# Rendered value: the helm-test pod must carry the component label the
+# NetworkPolicy's helm-test rule selects...
+expect_grep "helm-test pod carries app.kubernetes.io/component: test-connection" \
+  '^\s*app\.kubernetes\.io/component: test-connection$' \
+  --set testFramework.enabled=true -s templates/tests/test-connection.yaml
+# ...and must NOT carry app.kubernetes.io/name: every chart selector matches
+# name AND instance, so omitting name keeps the test pod out of the Deployment,
+# Service, PDB and NetworkPolicy podSelectors (it is a client, not a replica).
+expect_no_grep "helm-test pod carries no app.kubernetes.io/name" \
+  '^\s*app\.kubernetes\.io/name:' \
+  --set testFramework.enabled=true -s templates/tests/test-connection.yaml
+
+# Rendered value: the app binds LOOPBACK when listenAddress is empty under
+# auth.mode none (its safe default for a bare binary). Inside a pod that means
+# kubelet probes and the Service cannot reach it, so the chart must render an
+# explicit all-interfaces bind by default.
+expect_grep "default config binds all interfaces (loopback is unreachable in a pod)" \
+  '^\s*listenAddress: "?0\.0\.0\.0"?$' -s templates/configmap.yaml
 
 exit "$fail"

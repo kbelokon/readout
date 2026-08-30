@@ -1,0 +1,24 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: readout
+  labels:
+    app.kubernetes.io/name: readout
+    app.kubernetes.io/instance: readout
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: readout
+      app.kubernetes.io/instance: readout
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

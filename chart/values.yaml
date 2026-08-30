@@ -163,6 +163,13 @@ gateway:
 # (see env / envFrom below), which override the file at startup.
 config:
   port: 8080
+  # Bind host for BOTH the app and metrics listeners. The app's own default for
+  # an EMPTY value under auth.mode "none" is loopback (127.0.0.1) -- a safe
+  # default for a bare binary, but inside a pod it means kubelet probes and the
+  # Service cannot reach readout at all: the pod never becomes Ready. 0.0.0.0
+  # is Go's "all interfaces" (dual-stack). Set 127.0.0.1 explicitly ONLY when an
+  # in-pod sidecar proxy (auth proxy etc.) is the sole client of readout.
+  listenAddress: "0.0.0.0"
   excludeNamespaces:
     - kube-.*
   showContainerLogs: false
@@ -270,32 +277,44 @@ automountServiceAccountToken: true
 # relying on it.
 networkPolicy:
   enabled: false
-  # Ingress to readout's pods. With enabled:true and no allowed sources below the
-  # policy is default-deny ingress (nothing may reach readout) -- uncomment and
-  # scope the sources your traffic actually comes from. Each entry is a verbatim
-  # NetworkPolicyPeer (podSelector/namespaceSelector/ipBlock).
+  # Ingress to readout's pods. With enabled:true and no peers below the policy is
+  # default-deny ingress (nothing may reach readout). Each list opens exactly ONE
+  # port to the peers it names, so a peer never gets a port it was not listed
+  # for: the ingress controller reaches the app port only, the scraper reaches
+  # the metrics port only. Each entry is a verbatim NetworkPolicyPeer
+  # (podSelector / namespaceSelector / ipBlock).
   ingress:
-    # The app/main port (config.port). When metrics.enabled, the metrics port is
-    # allowed from the same sources too.
+    # Peers allowed to reach the app port (config.port) ONLY: the ingress
+    # controller / reverse proxy / auth proxy that fronts readout.
     from: []
-      # Ingress controller / reverse-proxy / auth proxy that fronts readout:
       # - namespaceSelector:
       #     matchLabels:
       #       kubernetes.io/metadata.name: ingress-nginx
-      # Prometheus scraping the metrics port:
+    # Peers allowed to reach the metrics port (metrics.port) ONLY: your
+    # Prometheus / vmagent. Requires metrics.enabled: with the policy enabled,
+    # peers here without a metrics port fail the render.
+    metricsFrom: []
       # - namespaceSelector:
       #     matchLabels:
       #       kubernetes.io/metadata.name: monitoring
+  # When testFramework.enabled, one more rule admits the `helm test` pod (by its
+  # instance + component labels, this namespace only) to the app port.
+  # The rule stands while testFramework.enabled is true; enable it for the test
+  # run, not permanently.
+
   # Egress from readout's pods. DNS (UDP/TCP 53) is always allowed when egress is
-  # rendered -- readout must resolve the apiserver and the OIDC issuer. Add the
-  # destinations readout reaches: the Kubernetes apiserver, your OIDC issuer, and
-  # any Argo host. Each entry is a verbatim NetworkPolicyEgressRule.
+  # rendered. Add EVERY destination readout dials: the in-cluster Kubernetes
+  # apiserver; each remote apiserver configured through config.kubeconfigPath,
+  # config.clusters or Argo CD cluster Secrets; your OIDC issuer; and the hook
+  # endpoints (config.hooks.authorizationUrl / resourcePrerenderUrl). Each entry
+  # is a verbatim NetworkPolicyEgressRule.
   egress:
     # Allow DNS resolution (kube-dns / CoreDNS). Set false only if you pin every
     # egress destination by ipBlock and need no name resolution.
     dns: true
     # Verbatim egress rules. Leave empty and readout can reach ONLY DNS -- which
-    # breaks apiserver/OIDC access -- so scope these to your endpoints.
+    # breaks every cluster view and OIDC login -- so scope these to the
+    # destinations listed above.
     to: []
       # Kubernetes apiserver (cluster-dependent; commonly the kubernetes.default
       # ClusterIP/443 or the control-plane node IPs). Example ipBlock:
@@ -305,8 +324,8 @@ networkPolicy:
       #   ports:
       #     - protocol: TCP
       #       port: 443
-      # OIDC issuer + Argo hosts reached over the internet (scope tighter if you
-      # can pin their egress CIDRs):
+      # OIDC issuer, remote cluster apiservers and hook endpoints reached over
+      # the network (scope tighter if you can pin their CIDRs):
       # - to:
       #     - ipBlock:
       #         cidr: 0.0.0.0/0

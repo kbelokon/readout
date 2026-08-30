@@ -7,8 +7,10 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: "{{ include "readout.fullname.suffixed" (dict "context" . "suffix" "test-connection") }}"
+  # readout.testLabels, not readout.labels: no app.kubernetes.io/name, so this
+  # pod matches none of the chart's selectors (see _helpers.tpl).
   labels:
-    {{- include "readout.labels" . | nindent 4 }}
+    {{- include "readout.testLabels" . | nindent 4 }}
   annotations:
     helm.sh/hook: test
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded

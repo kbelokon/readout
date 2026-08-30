@@ -1,0 +1,19 @@
+# Golden case: with testFramework.enabled the policy admits the `helm test`
+# pod to the app port by its instance + component labels, from this namespace
+# only (no namespaceSelector). The test pod carries no app.kubernetes.io/name,
+# so it is NOT itself a target of this policy.
+metrics:
+  enabled: true
+testFramework:
+  enabled: true
+networkPolicy:
+  enabled: true
+  ingress:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-nginx
+    metricsFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring

@@ -1,0 +1,16 @@
+# Golden case: an ingress-controller peer in `from` and a scraper peer in
+# `metricsFrom` must land in two SEPARATE rules, each opening exactly one port.
+# A peer named for one purpose must never receive the other port.
+metrics:
+  enabled: true
+networkPolicy:
+  enabled: true
+  ingress:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-nginx
+    metricsFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring

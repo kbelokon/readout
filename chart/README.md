@@ -49,6 +49,20 @@ helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.12.0 -f m
 
 Fresh installs of 0.7 are unaffected.
 
+## Upgrading from ≤ 0.12 with a NetworkPolicy (behaviour change)
+
+`networkPolicy.ingress.from` now opens **only the app port** (`config.port`).
+Earlier charts also opened the metrics port (when `metrics.enabled`) to every
+`from` peer, which handed the (possibly unauthenticated) dashboard to your
+scraper and the metrics port to your ingress controller. Move scraper peers to
+the new `networkPolicy.ingress.metricsFrom`; until you do, Prometheus loses the
+scrape on an enforcing CNI. See [NetworkPolicy](#networkpolicy).
+
+Unrelated to the policy but in the same release: `config.listenAddress` now
+defaults to `"0.0.0.0"`. Installs on `config.auth.mode: none` that never became
+Ready (the app bound loopback) start working; nothing changes for `oidc` /
+`headers` installs.
+
 ## Values reference
 
 Every public key in `values.yaml`. Nested keys are described in the parent row.
@@ -67,14 +81,14 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | `metrics` | `{enabled: false, port: 9090, service: {...}, serviceMonitor: {...}}` | Separate metrics listener. When enabled, renders `config.metricsPort = metrics.port`, adds a `metrics` container port, a `<fullname>-metrics` Service, and an optional `serviceMonitor` (Prometheus Operator CRD). See the metrics guards below. |
 | `ingress` | `{enabled: false, className: "", annotations: {}, hosts: [], tls: []}` | Expose readout through a `networking.k8s.io/v1` Ingress. At least one `hosts` entry is required when enabled; `tls` passes through verbatim. |
 | `gateway` | `{enabled: false, apiVersion: gateway.networking.k8s.io/v1, parentRefs: [], hostnames: [], annotations: {}, rules: []}` | Expose readout by attaching an HTTPRoute to an existing Gateway. `parentRefs` is required when enabled. The chart never creates a Gateway or GatewayClass. |
-| `config` | `{port: 8080, excludeNamespaces: [kube-.*], showContainerLogs: false, includeSecrets: false, auth: {mode: none}}` | The readout app config, serialized verbatim into a ConfigMap as `readout.yaml` and mounted at `/etc/readout/readout.yaml`. Holds no secrets — those come from `env`/`envFrom`. Optional `argoCD` and `auth.trustedHeaders`/`auth.oidc` blocks live here too. |
+| `config` | `{port: 8080, listenAddress: "0.0.0.0", excludeNamespaces: [kube-.*], showContainerLogs: false, includeSecrets: false, auth: {mode: none}}` | The readout app config, serialized verbatim into a ConfigMap as `readout.yaml` and mounted at `/etc/readout/readout.yaml`. Holds no secrets — those come from `env`/`envFrom`. Optional `argoCD` and `auth.trustedHeaders`/`auth.oidc` blocks live here too. `listenAddress` is set explicitly because the app's default for an empty value under `auth.mode: none` is loopback — unreachable by probes and the Service inside a pod; change it only to `127.0.0.1` behind an in-pod sidecar proxy. |
 | `config.live` | app defaults `{maxConnections: 512, maxSources: 128, maxCacheAccountedBytes: 128Mi}` (commented out in `values.yaml`) | Per-pod bounds on the Live (SSE) surface: open Live streams, distinct upstream LIST+watch sources, and accounted retained object bytes. Browsers on the same scope and credentials share one source, so `maxSources` sits far below `maxConnections` — but under `config.clusterAuthUseSessionToken` each viewer's token is its own source, so size `maxSources` against concurrent viewers instead. Each pod enforces its own copy, so with `replicaCount > 1` the deployment-wide ceiling is that many times each value; a refused subscriber gets `429` with `Retry-After` and the page keeps working through Refresh. Lower `maxCacheAccountedBytes` when `resources.limits.memory` is below the chart default. |
 | `auth` | `{sessionSecret: {existingSecret: "", key: session-secret}, oidc: {existingSecret: "", clientIdKey: client-id, clientSecretKey: client-secret}}` | Typed secret wiring. Point at Secrets you already created; the chart renders matching `READOUT_*` env via `secretKeyRef`. Empty `existingSecret` disables a wiring. See [Secret wiring](#secret-wiring). |
 | `env` | `[]` | Literal extra `READOUT_*` env entries. Rendered after the typed `auth` entries, so an `env` entry of the same name wins. |
 | `envFrom` | `[]` | `envFrom` references to existing Secrets/ConfigMaps (e.g. a Secret holding `READOUT_SESSION_SECRET`). Opaque to the chart's gates. |
 | `resources` | `{requests: {cpu: 50m, memory: 128Mi}, limits: {cpu: 500m, memory: 512Mi}}` | Container resource requests/limits. Real defaults, not empty: an unbounded container is a DoS surface — one expensive list-and-render request (e.g. a namespace with thousands of objects, or a client looping such requests) drives CPU/heap until OOM. The limit caps the blast radius; the request reserves scheduler room. Tune for your cluster. |
 | `automountServiceAccountToken` | `true` | Explicit (not Kubernetes' silent default): readout reaches the apiserver with the SA token in Live/in-cluster mode, so it must be mounted. Set false only in a mode that never talks to the apiserver (then drop `rbac.create` too). |
-| `networkPolicy` | `{enabled: false, ingress: {from: []}, egress: {dns: true, to: []}}` | Opt-in `networking.k8s.io/v1` NetworkPolicy bounding readout's ingress/egress. Off by default. See [NetworkPolicy](#networkpolicy) — **enforced only by a CNI that implements NetworkPolicy.** |
+| `networkPolicy` | `{enabled: false, ingress: {from: [], metricsFrom: []}, egress: {dns: true, to: []}}` | Opt-in `networking.k8s.io/v1` NetworkPolicy bounding readout's ingress/egress. Off by default. `ingress.from` opens the app port only, `ingress.metricsFrom` the metrics port only. See [NetworkPolicy](#networkpolicy) — **enforced only by a CNI that implements NetworkPolicy.** |
 | `podSecurityContext` | `{runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}` | Pod-level security context. |
 | `securityContext` | `{allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}` | Container-level security context. |
 | `podAnnotations` | `{}` | Annotations added to the pod template only. |
@@ -90,7 +104,7 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | `extraContainers` | `[]` | Extra sidecar containers, rendered verbatim into the pod. |
 | `podDisruptionBudget` | `{enabled: false, minAvailable: "", maxUnavailable: ""}` | PodDisruptionBudget for readout pods. Set exactly one of `minAvailable`/`maxUnavailable` (Kubernetes rejects both). |
 | `extraObjects` | `[]` | Escape hatch for arbitrary Helm-owned objects (platform CRs, extra Secrets). Each entry is one YAML map; string values run through `tpl` with the chart root context. See [Exposure recipes](#exposure-recipes). |
-| `testFramework` | `{enabled: false, image: {repository: curlimages/curl, tag: "8.11.1"}}` | Opt-in `helm test` connectivity pod. When enabled, `helm test <release>` runs a curl pod against the Service's `/readyz`. |
+| `testFramework` | `{enabled: false, image: {repository: curlimages/curl, tag: "8.11.1"}}` | Opt-in `helm test` connectivity pod. When enabled, `helm test <release>` runs a curl pod against the Service's `/readyz`. The pod carries no `app.kubernetes.io/name`, so it is outside every chart selector; under `networkPolicy.enabled` the policy admits it automatically. |
 
 ## Exposure recipes
 
@@ -168,9 +182,10 @@ Widen either preset with `rbac.extraRules`, appended verbatim. Keep verbs within
 The chart **never refuses to render over a security or operational posture**: a
 valid-but-risky choice (no-auth exposure, multi-replica OIDC without a shared
 session secret) installs and prints a loud NOTES warning. The only render-time
-`fail`s are for **combinations the Kubernetes API itself rejects** — failing
-early with a clear message beats a cryptic apply error, and blocks nothing the
-cluster would have accepted. Every gate sees **chart values only**: config
+`fail`s are for **combinations the Kubernetes API itself rejects, or that would
+silently break the release** (a listener that cannot bind, a rule that cannot
+render) — failing early with a clear message beats a cryptic apply error or a
+quietly missing feature. Every gate sees **chart values only**: config
 delivered through `env`/`envFrom` (opaque references the chart cannot read)
 bypasses them entirely, backstopped by the **app's own startup checks** and
 `readout config validate` (see [Validating before install](#validating-before-install)).
@@ -189,8 +204,14 @@ Warnings (install proceeds, NOTES warns):
   shared secret via `auth.sessionSecret.existingSecret`, an `env` entry named
   `READOUT_SESSION_SECRET`, or `config.sessionSecretFile`; an opaque `envFrom`
   source is assumed to carry it and the warning softens to a reminder.
+- **Metrics port unreachable under NetworkPolicy** — `networkPolicy.enabled` with
+  `metrics.enabled` and an empty `networkPolicy.ingress.metricsFrom` installs but
+  prints a NOTES warning: `ingress.from` opens the app port only, so on an
+  enforcing CNI nothing can scrape the metrics port and Prometheus targets go
+  down silently. List the scraper's peer in `ingress.metricsFrom`.
 
-Render-time `fail`s (the cluster would reject these anyway):
+Render-time `fail`s (the cluster would reject these anyway, or the release would
+be silently broken):
 
 - **PodDisruptionBudget** — `minAvailable` and `maxUnavailable` both set is
   rejected by the PDB API; the chart fails early naming the conflict.
@@ -200,8 +221,15 @@ Render-time `fail`s (the cluster would reject these anyway):
   key.
 - **Metrics guards** — `config.metricsPort` set to a value different from
   `metrics.port` is an error; `config.metricsPort` set while `metrics.enabled` is
-  false is an error; a `serviceMonitor` enabled without `metrics.enabled` does not
-  render a useful object. Drive the metrics port through `metrics.port` only.
+  false is an error; `metrics.port` equal to `config.port` while
+  `metrics.enabled` is true is an error (the two listeners would fight for one
+  port: the pod crash-loops or `/metrics` silently vanishes); a `serviceMonitor`
+  enabled without `metrics.enabled` does not render a useful object. Drive the
+  metrics port through `metrics.port` only.
+- **NetworkPolicy guard** — `networkPolicy.ingress.metricsFrom` set while
+  `networkPolicy.enabled` is true and `metrics.enabled` is false is an error:
+  there is no metrics port to open, and a silently missing rule would leave the
+  operator believing the scraper is admitted.
 - **Live capacity is not a render gate** — the `config.live` bounds are enforced
   at runtime by each pod, not by the chart; watch the per-pod `readout_live_*` /
   `readout_watchhub_*` families on the metrics listener for utilization and
@@ -253,26 +281,43 @@ only the ingress/egress you explicitly allow.
 > (e.g. plain flannel) this object applies cleanly but enforces **nothing** — it
 > is not a security control there. Verify your CNI before relying on it.
 
-- **Ingress** — `networkPolicy.ingress.from` is a list of verbatim
-  `NetworkPolicyPeer`s allowed to reach readout's app port (`config.port`) and,
-  when `metrics.enabled`, the metrics port. **Left empty, ingress is
-  default-deny** — nothing reaches readout. Scope it to your ingress controller /
-  reverse proxy / auth proxy, and Prometheus if it scrapes metrics.
+- **Ingress** — two peer lists, each opening exactly **one** port, so a peer
+  never receives a port it was not listed for:
+  `networkPolicy.ingress.from` (verbatim `NetworkPolicyPeer`s) reaches the app
+  port `config.port` **only** — your ingress controller / reverse proxy / auth
+  proxy; `networkPolicy.ingress.metricsFrom` reaches the metrics port
+  `metrics.port` **only** — your Prometheus / vmagent (requires
+  `metrics.enabled`; the chart fails the render otherwise). **Both left empty,
+  ingress is default-deny** — nothing reaches readout (apart from the
+  `helm test` rule below).
+- **`helm test` under the policy** — with `testFramework.enabled` the policy adds
+  one more rule admitting the test pod (by `app.kubernetes.io/instance` +
+  `app.kubernetes.io/component: test-connection`, this namespace only) to the
+  app port. The test pod carries no `app.kubernetes.io/name`, so it is not a
+  target of the policy itself. The rule stands for as long as
+  `testFramework.enabled` is true — it admits any pod in the release namespace
+  carrying that instance + component label pair to the app port — so enable the
+  test framework for the test run, not permanently.
 - **Egress** — `networkPolicy.egress.dns` (default `true`) allows DNS on UDP/TCP
-  53 so readout can resolve the apiserver and OIDC issuer.
-  `networkPolicy.egress.to` is a list of verbatim `NetworkPolicyEgressRule`s for
-  the destinations readout reaches: the **Kubernetes apiserver**, your **OIDC
-  issuer**, and any **Argo host**. Left empty, readout can reach only DNS — which
-  breaks apiserver/OIDC access — so scope these to your endpoints.
+  53. `networkPolicy.egress.to` is a list of verbatim `NetworkPolicyEgressRule`s
+  for **every** destination readout dials: the in-cluster **Kubernetes
+  apiserver**; each **remote apiserver** configured through
+  `config.kubeconfigPath`, `config.clusters` or Argo CD cluster Secrets; your
+  **OIDC issuer**; and the **hook endpoints** (`config.hooks.authorizationUrl` /
+  `resourcePrerenderUrl`). Left empty, readout can reach only DNS — every
+  cluster view and OIDC login breaks — so scope these to your endpoints.
 
 ```yaml
+metrics:
+  enabled: true
 networkPolicy:
   enabled: true
   ingress:
-    from:
+    from:                          # app port only
       - namespaceSelector:
           matchLabels:
             kubernetes.io/metadata.name: ingress-nginx
+    metricsFrom:                   # metrics port only
       - namespaceSelector:
           matchLabels:
             kubernetes.io/metadata.name: monitoring
@@ -281,13 +326,13 @@ networkPolicy:
     to:
       - to:
           - ipBlock:
-              cidr: 10.0.0.1/32   # apiserver
+              cidr: 10.0.0.1/32   # in-cluster apiserver
         ports:
           - protocol: TCP
             port: 443
       - to:
           - ipBlock:
-              cidr: 0.0.0.0/0     # OIDC issuer / Argo (pin tighter if you can)
+              cidr: 0.0.0.0/0     # OIDC issuer, remote apiservers, hooks (pin tighter if you can)
         ports:
           - protocol: TCP
             port: 443
