@@ -108,6 +108,11 @@ type CounterName = keyof typeof counters;
 const RESYNC_WINDOW_MS = 30_000;
 const MAX_RESYNCS_PER_WINDOW = 2;
 export const LIVE_FIRST_FRAME_TIMEOUT_MS = 30_000;
+// After the first committed frame the deadline becomes an IDLE budget. The
+// server heartbeats every 20s, so silence past this is a dead transport, not a
+// quiet namespace -- and a blackholed connection (half-open TCP: no FIN, no
+// RST) would otherwise sit in `open` forever with frozen rows.
+export const LIVE_READ_IDLE_TIMEOUT_MS = 50_000;
 
 const completedSnapshotTxns = new WeakSet<object>();
 let resyncTimestamps: number[] = [];
@@ -141,10 +146,9 @@ function currentStats(): LiveDebugStats {
 function liveSupported(): boolean {
     const content = document.getElementById('resource-list-content') as HTMLElement | null;
     if (content?.dataset.liveUrl !== 'location') return false;
-    const toggle = document.querySelector(
-        '[data-ro-action="toggle-live"]',
-    ) as HTMLButtonElement | null;
-    return !!toggle && !toggle.disabled;
+    // The server renders the toggle only where `_stream` answers; a page that
+    // cannot stream omits it entirely rather than rendering it disabled.
+    return document.querySelector('[data-ro-action="toggle-live"]') !== null;
 }
 
 function liveStreamBase(): string {
@@ -331,41 +335,54 @@ function acceptsV2Response(response: Response, connection: LiveConnection): bool
 }
 
 async function liveConnect(initial: LiveConnection): Promise<void> {
-    let firstFrameTimer: number | null = window.setTimeout(() => {
-        firstFrameTimer = null;
-        if (runtime.connection?.ctrl === initial.ctrl) {
-            scheduleReconnect(initial.base);
-        }
-    }, LIVE_FIRST_FRAME_TIMEOUT_MS);
-    const clearFirstFrameTimer = () => {
-        if (firstFrameTimer !== null) {
-            window.clearTimeout(firstFrameTimer);
-            firstFrameTimer = null;
+    let deadlineTimer: number | null = null;
+    const clearDeadline = () => {
+        if (deadlineTimer !== null) {
+            window.clearTimeout(deadlineTimer);
+            deadlineTimer = null;
         }
     };
+    const armDeadline = (ms: number) => {
+        clearDeadline();
+        deadlineTimer = window.setTimeout(() => {
+            deadlineTimer = null;
+            if (runtime.connection?.ctrl === initial.ctrl) {
+                scheduleReconnect(initial.base);
+            }
+        }, ms);
+    };
+    armDeadline(LIVE_FIRST_FRAME_TIMEOUT_MS);
     try {
-        await runLiveConnection(initial, clearFirstFrameTimer);
+        await runLiveConnection(initial, () => armDeadline(LIVE_READ_IDLE_TIMEOUT_MS));
     } finally {
-        clearFirstFrameTimer();
+        clearDeadline();
     }
 }
 
 // acceptResponse maps the reply's status to this connection's next move and
-// returns the readable body only when the stream may proceed. The no-retry
-// statuses are the ones no amount of waiting can fix: 401/403 need a new
-// session, and 204/404 mean the server does not offer this stream at all. A 429
-// is an admission reject, so the server's own Retry-After outranks the ladder.
+// returns the readable body only when the stream may proceed. A 429 is an
+// admission reject, so the server's own Retry-After outranks the ladder, and a
+// 408 is a timeout the next attempt may beat. Every OTHER 4xx is a request this
+// browser cannot fix by replaying it byte for byte -- 401/403 need a new
+// session, 404 means the server does not offer this stream, 400/406 mean the
+// handshake headers never arrived intact -- so they stop with the Reload banner
+// instead of retrying every 30s forever. 204 is the watchless-kind answer: a
+// successful "there is nothing here to stream".
 function acceptResponse(
     response: Response,
     connection: LiveConnection,
 ): ReadableStream<Uint8Array> | null {
     const status = response.status;
-    if (status === 401 || status === 403 || status === 204 || status === 404) {
-        enterUnavailable();
-        return null;
-    }
     if (status === 429) {
         scheduleReconnect(connection.base, retryAfterMs(responseHeader(response, 'Retry-After')));
+        return null;
+    }
+    if (status === 408) {
+        scheduleReconnect(connection.base);
+        return null;
+    }
+    if (status === 204 || (status >= 400 && status < 500)) {
+        enterUnavailable();
         return null;
     }
     if (status !== 200 || !response.body) {
@@ -377,7 +394,7 @@ function acceptResponse(
 
 async function runLiveConnection(
     initial: LiveConnection,
-    clearFirstFrameTimer: () => void,
+    noteLiveProgress: () => void,
 ): Promise<void> {
     let response: Response;
     try {
@@ -405,9 +422,14 @@ async function runLiveConnection(
     try {
         const reader = body.getReader();
         const parser = new LiveSSEParser();
+        // Before the first frame the first-frame deadline stands. After it,
+        // ANY inbound bytes -- a `: heartbeat` comment included -- renew the
+        // idle budget, which is what makes a silent transport detectable.
+        let sawFrame = false;
         const readNext = async (): Promise<LiveConnection | undefined> => {
             const result = await reader.read();
             if (!isActive(connection) || result.done) return;
+            if (sawFrame) noteLiveProgress();
             addCounter('rawBytes', result.value.byteLength);
             let events: LiveSSEEvent[];
             try {
@@ -423,7 +445,8 @@ async function runLiveConnection(
                 const current = runtime.connection;
                 if (!current || current.ctrl !== connection.ctrl) return;
                 connection = current;
-                clearFirstFrameTimer();
+                sawFrame = true;
+                noteLiveProgress();
             }
             return connection;
         };
@@ -467,8 +490,8 @@ function handleV2Frame(
             rejectProtocol(connection);
             return;
         }
-        if (!replaceConnection(connection, applied.cursor)) return;
         clearListValidator();
+        if (!replaceConnection(connection, applied.cursor)) return;
         addCounter('deltas');
         addCounter('deltaBytes', payloadBytes);
         addCounter('inserted', applied.summary.inserted);

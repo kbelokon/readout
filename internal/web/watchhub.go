@@ -240,6 +240,15 @@ type watchHub struct {
 	sources     map[watchHubKey]*hubSource
 	subscribers int
 	accounted   int64
+	// idle records the sources nobody is attached to, in the order they went
+	// idle. They are still holding a slot, a watch and their retained bytes for
+	// the rest of the retention window, so they are what a limit reclaims
+	// before it refuses a subscriber who actually wants one.
+	idle    map[*hubSource]uint64
+	idleSeq uint64
+	// perSource is each live source's contribution to accounted, so a reclaim
+	// can return one source's bytes without waiting for its actor to stop.
+	perSource map[*hubSource]int64
 	// connections counts open Live SSE handlers on this pod. It is the first
 	// admission gate: a rejected connection never reaches a source, so an
 	// over-capacity pod does no upstream work at all.
@@ -288,12 +297,14 @@ func newWatchHub(ctx context.Context, limits liveLimits, tuning *streamTuning, c
 		metrics = noopHubMetrics{}
 	}
 	return &watchHub{
-		ctx:     ctx,
-		limits:  limits,
-		tuning:  *tuning,
-		clock:   clock,
-		metrics: metrics,
-		sources: map[watchHubKey]*hubSource{},
+		ctx:       ctx,
+		limits:    limits,
+		tuning:    *tuning,
+		clock:     clock,
+		metrics:   metrics,
+		sources:   map[watchHubKey]*hubSource{},
+		idle:      map[*hubSource]uint64{},
+		perSource: map[*hubSource]int64{},
 	}
 }
 
@@ -338,7 +349,12 @@ func (h *watchHub) source(spec *hubSourceSpec) (*hubSource, error) {
 		return src, nil
 	}
 	if len(h.sources) >= h.limits.maxSources {
-		return nil, errHubSourceLimit
+		// Retention is an optimization for the next visitor, not a reservation.
+		// Give the slot to the subscriber in front of us rather than answering
+		// 429 while a source nobody is watching sits out its window.
+		if !h.reclaimIdleLocked(1) {
+			return nil, errHubSourceLimit
+		}
 	}
 	src := newHubSource(h, spec)
 	h.sources[spec.key] = src
@@ -348,12 +364,70 @@ func (h *watchHub) source(spec *hubSourceSpec) (*hubSource, error) {
 	return src, nil
 }
 
+// noteIdle tracks whether a source currently has anybody attached. Sources call
+// it from their actor goroutine as the retention timer arms and cancels; it only
+// takes the map lock, never waits on an actor, so it cannot deadlock.
+func (h *watchHub) noteIdle(src *hubSource, idle bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !idle {
+		delete(h.idle, src)
+		return
+	}
+	if _, ok := h.idle[src]; ok {
+		return
+	}
+	h.idleSeq++
+	h.idle[src] = h.idleSeq
+}
+
+// reclaimIdleLocked releases up to n subscriber-less sources, oldest-idle
+// first, and reports whether it released any. Cancelling the source context is
+// what tears it down: its actor loop returns and its stop path releases the
+// watch, the subscribers it does not have, and its accounted bytes.
+func (h *watchHub) reclaimIdleLocked(n int) bool {
+	released := 0
+	for released < n {
+		var oldest *hubSource
+		var oldestSeq uint64
+		for src, seq := range h.idle {
+			if oldest == nil || seq < oldestSeq {
+				oldest, oldestSeq = src, seq
+			}
+		}
+		if oldest == nil {
+			break
+		}
+		delete(h.idle, oldest)
+		if current, ok := h.sources[oldest.spec.key]; ok && current == oldest {
+			delete(h.sources, oldest.spec.key)
+			h.observeCountsLocked()
+		}
+		// Return the bytes now. The source's own teardown is asynchronous, and
+		// the caller is about to re-check the bound it just reclaimed for.
+		h.setSourceAccountedLocked(oldest, 0)
+		oldest.cancel()
+		released++
+	}
+	return released > 0
+}
+
+// reclaimIdle releases every subscriber-less source. It is the cache bound's
+// last move before refusing a new source: retained bytes nobody is reading are
+// not worth a 429.
+func (h *watchHub) reclaimIdle() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.reclaimIdleLocked(len(h.idle))
+}
+
 // remove drops a source from the map, but only if it is still the source
 // registered for its key: a replacement created after this one started
 // shutting down must survive.
 func (h *watchHub) remove(src *hubSource) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	delete(h.idle, src)
 	if current, ok := h.sources[src.spec.key]; ok && current == src {
 		delete(h.sources, src.spec.key)
 		h.observeCountsLocked()
@@ -370,18 +444,33 @@ func (h *watchHub) noteSubscribers(delta int) {
 	h.observeCountsLocked()
 }
 
-// noteAccounted folds one source's change in retained bytes into the hub-wide
-// total. Sources report deltas rather than totals so the hub never has to walk
-// every source to answer "how much is retained right now?".
-func (h *watchHub) noteAccounted(delta int64) {
-	if delta == 0 {
-		return
-	}
+// noteAccounted moves one source to a new retained-bytes total. The hub keeps
+// the per-source figure so the sum is never recomputed AND so a reclaim can
+// return a source's bytes at the moment it is dropped -- the source's own
+// teardown runs on its goroutine, which is far too late for the admission
+// decision that reclaimed it.
+func (h *watchHub) noteAccounted(src *hubSource, total int64) {
 	h.mu.Lock()
-	h.accounted += delta
-	total := h.accounted
+	changed := h.setSourceAccountedLocked(src, total)
+	sum := h.accounted
 	h.mu.Unlock()
-	h.metrics.observeHubCache(total)
+	if changed {
+		h.metrics.observeHubCache(sum)
+	}
+}
+
+func (h *watchHub) setSourceAccountedLocked(src *hubSource, total int64) bool {
+	previous := h.perSource[src]
+	if previous == total {
+		return false
+	}
+	h.accounted += total - previous
+	if total == 0 {
+		delete(h.perSource, src)
+	} else {
+		h.perSource[src] = total
+	}
+	return true
 }
 
 func (h *watchHub) observeCountsLocked() {
@@ -415,16 +504,19 @@ func (h *watchHub) overCacheLimit() bool {
 	return h.cacheChargedBytes() > h.limits.maxCacheAccountedBytes
 }
 
-// sourceStats reports one source's actor-owned counters. The map lock is
-// released before the actor is asked, because the actor itself takes that lock.
-func (h *watchHub) sourceStats(key *watchHubKey) hubSourceStats {
+// sourceStats reports one source's actor-owned counters, and whether the key
+// still HAS a source. The two are distinct on purpose: a zero-valued answer for
+// a vanished source would satisfy every "…is back to zero" assertion by the
+// source simply not existing. The map lock is released before the actor is
+// asked, because the actor itself takes that lock.
+func (h *watchHub) sourceStats(key *watchHubKey) (hubSourceStats, bool) {
 	h.mu.Lock()
 	src, ok := h.sources[*key]
 	h.mu.Unlock()
 	if !ok {
-		return hubSourceStats{}
+		return hubSourceStats{}, false
 	}
-	return src.stats()
+	return src.stats(), true
 }
 
 // hubCommand is one unit of work executed on a source's own goroutine.
@@ -435,7 +527,6 @@ type hubCommand func(*hubSource)
 type hubSourceStats struct {
 	subscribers   int
 	waiters       int
-	revision      uint64
 	initialized   bool
 	accounted     int64
 	demandMetrics int
@@ -501,6 +592,11 @@ type hubSource struct {
 	overlayInFlight bool
 	overlayTimer    hubTimer
 	overlayGen      uint64
+	// overlayPolled is the demand the in-flight (or most recent) poll was
+	// started for; overlayDemandDirty records that demand grew past it while a
+	// poll was already running.
+	overlayPolled      hubDemand
+	overlayDemandDirty bool
 
 	// retention holds the no-subscriber release timer; idleGen invalidates a
 	// timer that already fired when a new subscriber arrives.
@@ -571,8 +667,10 @@ func (s *hubSource) listed(table *kube.Table, err error) {
 	s.adoptTable(table)
 	// The retained-state bound is checked on the source that would cross it,
 	// after its own LIST is measured and before any of its waiters commits to
-	// SSE. Sources already admitted are never evicted to make room.
-	if s.hub.overCacheLimit() {
+	// SSE. Sources with subscribers are never evicted to make room; sources in
+	// their retention window are, because holding bytes for a viewer who left
+	// is worth less than serving the one who is here.
+	if s.hub.overCacheLimit() && (!s.hub.reclaimIdle() || s.hub.overCacheLimit()) {
 		s.failTerminal(hubTerminalWatchFailed, errHubCacheLimit)
 		return
 	}
@@ -705,7 +803,7 @@ func (s *hubSource) cancelRewatch() {
 }
 
 func (s *hubSource) rewatchDue(gen uint64) {
-	if gen != s.rewatchGen || s.rewatch == nil || s.relisting {
+	if gen != s.rewatchGen || s.relisting {
 		return
 	}
 	s.rewatch = nil
@@ -799,9 +897,8 @@ func (s *hubSource) setAccounted(total int64) {
 	if total < 0 {
 		total = 0
 	}
-	delta := total - s.accounted
 	s.accounted = total
-	s.hub.noteAccounted(delta)
+	s.hub.noteAccounted(s, total)
 }
 
 // publish stores the next immutable revision and wakes every subscriber. The
@@ -990,19 +1087,30 @@ func (s *hubSource) detach(sub *hubSubscription) {
 	s.checkIdle()
 }
 
-// syncOverlayDemand starts or stops the shared join poll on the transition
-// between "somebody needs a join" and "nobody does". Gaining demand polls
-// immediately so the first subscriber does not stare at a missing join for a
-// whole interval; losing it cancels the pending timer, so an unwatched source
-// makes no upstream join requests at all.
+// syncOverlayDemand keeps the shared join poll aligned with what the attached
+// subscribers actually need. Demand is per KIND, not a single on/off: a source
+// already polling metrics must re-poll the moment somebody needs nodes, or that
+// subscriber stalls its whole handshake waiting for a join the running poll
+// never asked for. Losing all demand cancels the pending timer, so an unwatched
+// source makes no upstream join requests at all.
 func (s *hubSource) syncOverlayDemand() {
-	want := s.demandMetrics > 0 || s.demandNodes > 0
-	if want == s.overlayActive {
+	demand := hubDemand{metrics: s.demandMetrics > 0, nodes: s.demandNodes > 0}
+	if !demand.metrics && !demand.nodes {
+		s.overlayActive = false
+		s.overlayPolled = hubDemand{}
+		s.overlayDemandDirty = false
+		s.cancelOverlayTimer()
 		return
 	}
-	s.overlayActive = want
-	if !want {
-		s.cancelOverlayTimer()
+	gained := (demand.metrics && !s.overlayPolled.metrics) || (demand.nodes && !s.overlayPolled.nodes)
+	s.overlayActive = true
+	if !gained {
+		return
+	}
+	if s.overlayInFlight {
+		// The in-flight poll was started for a narrower demand. Re-poll the
+		// moment it lands instead of at the next interval.
+		s.overlayDemandDirty = true
 		return
 	}
 	s.pollOverlays()
@@ -1017,6 +1125,8 @@ func (s *hubSource) pollOverlays() {
 	s.cancelOverlayTimer()
 	s.overlayInFlight = true
 	demand := hubDemand{metrics: s.demandMetrics > 0, nodes: s.demandNodes > 0}
+	s.overlayPolled = demand
+	s.overlayDemandDirty = false
 	fetch := s.spec.overlay
 	timeout := s.hub.tuning.metricsRequestTimeout
 	go func() {
@@ -1039,9 +1149,14 @@ func (s *hubSource) overlaysFetched(overlays renderOverlays) {
 	if s.state == hubReady {
 		s.publish(s.table, false)
 	}
-	if s.overlayActive {
-		s.armOverlayTimer()
+	if !s.overlayActive {
+		return
 	}
+	if s.overlayDemandDirty {
+		s.pollOverlays()
+		return
+	}
+	s.armOverlayTimer()
 }
 
 func (s *hubSource) armOverlayTimer() {
@@ -1061,7 +1176,7 @@ func (s *hubSource) cancelOverlayTimer() {
 }
 
 func (s *hubSource) overlayDue(gen uint64) {
-	if gen != s.overlayGen || s.overlayTimer == nil {
+	if gen != s.overlayGen {
 		return
 	}
 	s.overlayTimer = nil
@@ -1081,6 +1196,7 @@ func (s *hubSource) armRetention() {
 	if s.retention != nil {
 		return
 	}
+	s.hub.noteIdle(s, true)
 	gen := s.idleGen
 	s.retention = s.hub.clock.AfterFunc(hubSourceRetention, func() {
 		s.post(func(s *hubSource) { s.retentionExpired(gen) })
@@ -1091,6 +1207,7 @@ func (s *hubSource) armRetention() {
 // that already fired, so the generation counter -- not the Stop result -- is
 // what makes the late command a no-op.
 func (s *hubSource) cancelRetention() {
+	s.hub.noteIdle(s, false)
 	if s.retention == nil {
 		return
 	}
@@ -1100,7 +1217,7 @@ func (s *hubSource) cancelRetention() {
 }
 
 func (s *hubSource) retentionExpired(gen uint64) {
-	if gen != s.idleGen || s.retention == nil {
+	if gen != s.idleGen {
 		return
 	}
 	s.retention = nil
@@ -1116,7 +1233,6 @@ func (s *hubSource) stats() hubSourceStats {
 		reply <- hubSourceStats{
 			subscribers:   len(s.subs),
 			waiters:       len(s.waiters),
-			revision:      s.revNum,
 			initialized:   s.state == hubReady,
 			accounted:     s.accounted,
 			demandMetrics: s.demandMetrics,
@@ -1288,38 +1404,14 @@ func (b *streamBackoff) noteAttempt(lived time.Duration) {
 // reference; the merge replaces them wholesale rather than editing in place,
 // so no subscriber can observe a half-applied object.
 //
-// It also reports the accounted-bytes delta for the rows the event names,
-// measured as the difference across the merge: a replacement subtracts the old
-// row and adds the new one, a delete subtracts, an add adds. Rows the event
-// does not name are not measured at all.
+// It also reports the accounted-bytes delta the merge produced: a replacement
+// subtracts the old row and adds the new one, a delete subtracts, an add adds.
+// Rows the event does not name are never measured.
 func hubApplyEvent(prev *kube.Table, ev *kube.WatchEvent) (*kube.Table, int64) {
 	next := *prev
 	next.Rows = make([]kube.Row, len(prev.Rows))
 	copy(next.Rows, prev.Rows)
-	before := hubEventRowBytes(&next, ev)
-	mergeTableEvent(&next, ev)
-	after := hubEventRowBytes(&next, ev)
-	return &next, after - before
-}
-
-// hubEventRowBytes sums the accounted size of the table rows the event names,
-// so the merge's effect can be measured without walking the whole table.
-func hubEventRowBytes(table *kube.Table, ev *kube.WatchEvent) int64 {
-	var total int64
-	for i := range table.Rows {
-		row := &table.Rows[i]
-		name := nestedString(row.Object, "metadata", "name")
-		ns := nestedString(row.Object, "metadata", "namespace")
-		for j := range ev.Table.Rows {
-			other := &ev.Table.Rows[j]
-			if nestedString(other.Object, "metadata", "name") == name &&
-				nestedString(other.Object, "metadata", "namespace") == ns {
-				total += hubRowBytes(row)
-				break
-			}
-		}
-	}
-	return total
+	return &next, mergeTableEvent(&next, ev)
 }
 
 // hubTableBytes is the full retained-state estimate for one Table: encoded

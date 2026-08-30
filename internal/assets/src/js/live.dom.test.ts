@@ -51,7 +51,13 @@ import {
     listProjectionRowByKey,
     resetListProjection,
 } from './list-projection.js';
-import { LIVE_FIRST_FRAME_TIMEOUT_MS, liveApply, liveOnListSwap, liveResetPage } from './live.js';
+import {
+    LIVE_FIRST_FRAME_TIMEOUT_MS,
+    LIVE_READ_IDLE_TIMEOUT_MS,
+    liveApply,
+    liveOnListSwap,
+    liveResetPage,
+} from './live.js';
 import { RECONNECT_DELAY_LADDER_MS } from './live-policy.js';
 import { LIST_DELTA_APPLIED_EVENT } from './live-protocol.js';
 import { isClientLiveGeneration } from './live-url.js';
@@ -746,6 +752,7 @@ test.each([
 test.each(['shutdown', 'watch-failed', 'lifetime'] as const)(
     'the %s terminal reconnects without a resync',
     async (reason) => {
+        vi.spyOn(Math, 'random').mockReturnValue(1);
         renderLivePage();
         installHtmx();
         const stream = controlledStream();
@@ -936,6 +943,7 @@ describe('reconnect schedule and recovery', () => {
         ['a server error', async () => response(500, null)],
         ['a missing response body', async () => response(200, null)],
     ] as const)('%s arms a retry and marks the projection stale', async (_name, result) => {
+        pinJitter();
         renderLivePage();
         const fetchMock = installFetch(result);
         const before = window.roLive.stats();
@@ -956,7 +964,12 @@ describe('reconnect schedule and recovery', () => {
         expect(dependencies.markLiveUnavailable).not.toHaveBeenCalled();
     });
 
-    test.each([401, 403, 204, 404] as const)(
+    // Every 4xx except 429 (admission, retryable on its own schedule) and 408
+    // (a timeout the next attempt may beat) describes a request this browser
+    // cannot fix by replaying it byte for byte: 400/406 mean the handshake
+    // headers never arrived intact, 401/403 need a new session, 404 means the
+    // server does not offer this stream. 204 is the watchless-kind answer.
+    test.each([400, 401, 403, 404, 406, 410, 204] as const)(
         'a %d reply stops for good with the Reload banner',
         async (status) => {
             renderLivePage();
@@ -972,6 +985,22 @@ describe('reconnect schedule and recovery', () => {
             expect(dependencies.noteStaleRetryAt).toHaveBeenLastCalledWith(0);
         },
     );
+
+    test('a 408 keeps climbing the ladder instead of giving up', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        const fetchMock = installFetch(async () => response(408, null));
+
+        liveApply();
+        await flush();
+
+        expect(window.roLive.stats().state).toBe('reconnecting');
+        expect(window.roLive.stats().attempt).toBe(1);
+        expect(dependencies.markLiveUnavailable).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(RECONNECT_DELAY_LADDER_MS[0] as number);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
 
     test('a 429 waits exactly as long as its Retry-After', async () => {
         vi.useFakeTimers();
@@ -1168,8 +1197,9 @@ describe('reconnect schedule and recovery', () => {
         expect(window.roLive.stats().state).toBe('reconnecting');
     });
 
-    test('the first accepted frame permanently clears its connection deadline', async () => {
+    test('the first accepted frame trades the first-frame deadline for the idle budget', async () => {
         vi.useFakeTimers();
+        pinJitter();
         renderLivePage();
         installHtmx();
         const stream = controlledStream();
@@ -1184,6 +1214,60 @@ describe('reconnect schedule and recovery', () => {
 
         await vi.advanceTimersByTimeAsync(LIVE_FIRST_FRAME_TIMEOUT_MS);
         expect(window.roLive.stats().state).toBe('open');
+        expect(dependencies.markLiveStale).not.toHaveBeenCalled();
+    });
+
+    // Live is the only update path, so a transport that goes silent WITHOUT
+    // closing (half-open TCP: no FIN, no RST) must not leave the page green and
+    // frozen. The server heartbeats every 20s; silence past the idle budget is
+    // a dead connection.
+    test('a silent open stream is reconnected once the idle budget expires', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async () => stream.response);
+
+        liveApply();
+        stream.enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock))));
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+        expect(window.roLive.stats().state).toBe('open');
+
+        await vi.advanceTimersByTimeAsync(LIVE_READ_IDLE_TIMEOUT_MS - 1);
+        expect(window.roLive.stats().state).toBe('open');
+        expect(fetchMock).toHaveBeenCalledOnce();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(window.roLive.stats().state).toBe('reconnecting');
+        expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
+    });
+
+    // A heartbeat carries no event, so only the raw read can renew the budget.
+    test('a server heartbeat renews the idle budget without a frame', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async () => stream.response);
+
+        liveApply();
+        stream.enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock))));
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+        expect(window.roLive.stats().state).toBe('open');
+
+        for (let beat = 0; beat < 4; beat += 1) {
+            await vi.advanceTimersByTimeAsync(LIVE_READ_IDLE_TIMEOUT_MS - 1000);
+            stream.enqueue(': heartbeat\n\n');
+            await vi.advanceTimersByTimeAsync(0);
+            await flush();
+        }
+
+        expect(window.roLive.stats().state).toBe('open');
+        expect(fetchMock).toHaveBeenCalledOnce();
         expect(dependencies.markLiveStale).not.toHaveBeenCalled();
     });
 
@@ -1318,6 +1402,60 @@ describe('reconnect schedule and recovery', () => {
         expect(fetchMock).toHaveBeenCalledOnce();
     });
 
+    test('an online event does not reopen a stream the user turned off while parked', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async () => stream.response);
+        const onLine = vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(true);
+
+        liveApply();
+        stream.enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock))));
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+        onLine.mockReturnValue(false);
+        window.dispatchEvent(new Event('offline'));
+        expect(window.roLive.stats().state).toBe('offline');
+
+        dependencies.isLiveEnabled.mockReturnValue(false);
+        onLine.mockReturnValue(true);
+        window.dispatchEvent(new Event('online'));
+
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(window.roLive.stats().state).toBe('off');
+    });
+
+    // The drop and the toggle race: the reader dies, and the user clicks Live
+    // off before the failure path reaches scheduleReconnect. No retry, no
+    // stale banner for a feature the user just switched off.
+    test('a drop that lands after Live was turned off arms nothing', async () => {
+        vi.useFakeTimers();
+        pinJitter();
+        renderLivePage();
+        installHtmx();
+        const stream = controlledStream();
+        const fetchMock = installFetch(async () => stream.response);
+
+        liveApply();
+        stream.enqueue(sse('ro-live', snapshot(requestGeneration(fetchMock))));
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+        expect(window.roLive.stats().state).toBe('open');
+
+        dependencies.isLiveEnabled.mockReturnValue(false);
+        stream.close();
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+
+        expect(window.roLive.stats().state).toBe('off');
+        expect(window.roLive.stats().attempt).toBe(0);
+        expect(vi.getTimerCount()).toBe(0);
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
     test('an offline event is inert once the transport has stopped for good', async () => {
         renderLivePage();
         installFetch(async () => response(401, null));
@@ -1388,7 +1526,7 @@ test('turning Live off makes a late successful response opaque to the retired co
 // A page that cannot stream is not a failure: the stored Live preference is
 // kept and simply does not apply here (a detail page, a watchless kind, a
 // multi-cluster list). Nothing is requested and no warning is raised.
-test.each(['wrong marker', 'missing option', 'disabled option', 'missing content'] as const)(
+test.each(['wrong marker', 'missing option', 'missing content'] as const)(
     '%s is an unsupported Live surface and stays silently off',
     (variant) => {
         const content = renderLivePage();
@@ -1397,7 +1535,6 @@ test.each(['wrong marker', 'missing option', 'disabled option', 'missing content
         ) as HTMLButtonElement;
         if (variant === 'wrong marker') content.dataset.liveUrl = 'baked';
         if (variant === 'missing option') option.remove();
-        if (variant === 'disabled option') option.disabled = true;
         if (variant === 'missing content') content.remove();
         const fetchMock = installFetch(pendingFetch);
 
@@ -1643,7 +1780,7 @@ describe('one refresh request tracker subscription', () => {
         await flush();
         expect(window.roLive.stats().state).toBe('open');
 
-        await vi.advanceTimersByTimeAsync(300_000);
+        await vi.advanceTimersByTimeAsync(LIVE_READ_IDLE_TIMEOUT_MS - 1);
         expect(fetchMock).toHaveBeenCalledTimes(2);
         expect(window.roLive.stats().state).toBe('open');
     });

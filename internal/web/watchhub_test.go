@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -524,7 +525,8 @@ func TestWatchHubConcurrentSubscribesShareOneSource(t *testing.T) {
 		}()
 	}
 	waitFor(t, "all subscribers to queue on the initializing source", func() bool {
-		return hub.sourceStats(key).waiters == subscribers
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.waiters == subscribers
 	})
 	up.openGate()
 
@@ -555,7 +557,8 @@ func TestWatchHubConcurrentSubscribesShareOneSource(t *testing.T) {
 	if lists != 1 || watches != 1 {
 		t.Fatalf("upstream calls = %d LIST / %d watch, want 1 / 1", lists, watches)
 	}
-	if got := hub.sourceStats(key).subscribers; got != subscribers {
+	stats, ok := hub.sourceStats(key)
+	if got := stats.subscribers; !ok || got != subscribers {
 		t.Fatalf("source subscribers = %d, want %d", got, subscribers)
 	}
 	if got := metrics.result(hubSourceCreated); got != 1 {
@@ -653,7 +656,7 @@ func TestWatchHubSubscribeRacingEventIsNeitherLostNorDuplicated(t *testing.T) {
 		// The revision is stored before subscribers are woken, so seeing it is
 		// not enough: one more actor round-trip guarantees that the attach and
 		// the publish (with its wakeups) have both finished.
-		hub.sourceStats(key)
+		_, _ = hub.sourceStats(key)
 
 		sawBeta := len(hubRowNames(raceRev.table)) == 2
 		notifications := drainNotifications(racer)
@@ -801,7 +804,8 @@ func TestWatchHubRetentionReleasesIdleSource(t *testing.T) {
 	sub.Close()
 	requireSignal(t, sub.Done(), "closed subscription")
 	waitFor(t, "the source to drop its subscriber", func() bool {
-		return hub.sourceStats(key).subscribers == 0
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.subscribers == 0
 	})
 	if hub.sourceCount() != 1 {
 		t.Fatal("the idle source was released before its retention window")
@@ -839,7 +843,8 @@ func TestWatchHubResubscribeCancelsRetention(t *testing.T) {
 	})
 	first.Close()
 	waitFor(t, "the source to drop its subscriber", func() bool {
-		return hub.sourceStats(key).subscribers == 0
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.subscribers == 0
 	})
 
 	second, rev, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
@@ -854,7 +859,8 @@ func TestWatchHubResubscribeCancelsRetention(t *testing.T) {
 	// The canceled timer must not fire late: give the hub a moment to prove it
 	// keeps the source that now has a subscriber.
 	waitFor(t, "the retained source to stay attached", func() bool {
-		return hub.sourceStats(key).subscribers == 1
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.subscribers == 1
 	})
 	if hub.sourceCount() != 1 {
 		t.Fatal("a canceled retention timer released a source with a subscriber")
@@ -882,7 +888,8 @@ func TestWatchHubInitialListFailureReachesEveryWaiter(t *testing.T) {
 		}()
 	}
 	waitFor(t, "all waiters to queue on the initializing source", func() bool {
-		return hub.sourceStats(key).waiters == waiters
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.waiters == waiters
 	})
 	up.openGate()
 	for range waiters {
@@ -913,7 +920,8 @@ func TestWatchHubInitializationSurvivesTheFirstSubscriber(t *testing.T) {
 		firstErr <- err
 	}()
 	waitFor(t, "the first subscriber to queue", func() bool {
-		return hub.sourceStats(key).waiters == 1
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.waiters == 1
 	})
 	secondErr := make(chan error, 1)
 	var second *hubSubscription
@@ -923,7 +931,8 @@ func TestWatchHubInitializationSurvivesTheFirstSubscriber(t *testing.T) {
 		secondErr <- err
 	}()
 	waitFor(t, "the second subscriber to queue", func() bool {
-		return hub.sourceStats(key).waiters == 2
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.waiters == 2
 	})
 
 	cancel()
@@ -936,7 +945,8 @@ func TestWatchHubInitializationSurvivesTheFirstSubscriber(t *testing.T) {
 	}
 	t.Cleanup(second.Close)
 	waitFor(t, "the source to settle with one subscriber", func() bool {
-		return hub.sourceStats(key).subscribers == 1
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.subscribers == 1
 	})
 	if lists, _, _ := up.counts(); lists != 1 {
 		t.Fatalf("LIST attempts = %d, want the one shared initialization", lists)
@@ -957,7 +967,8 @@ func TestWatchHubCanceledAttachLeavesNoSubscriber(t *testing.T) {
 		done <- err
 	}()
 	waitFor(t, "the subscriber to queue", func() bool {
-		return hub.sourceStats(key).waiters == 1
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.waiters == 1
 	})
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
@@ -965,7 +976,7 @@ func TestWatchHubCanceledAttachLeavesNoSubscriber(t *testing.T) {
 	}
 	up.openGate()
 	waitFor(t, "the abandoned source to settle", func() bool {
-		stats := hub.sourceStats(key)
+		stats, _ := hub.sourceStats(key)
 		return stats.initialized && stats.subscribers == 0 && stats.waiters == 0
 	})
 	clock.Advance(hubSourceRetention)
@@ -1326,7 +1337,8 @@ func TestWatchHubOverlayPollIsSharedAndDemandDriven(t *testing.T) {
 		subs = append(subs, sub)
 	}
 	waitFor(t, "the first shared join poll", func() bool { return up.overlayCount() == 1 })
-	if got := hub.sourceStats(key).demandMetrics; got != demanding {
+	stats, ok := hub.sourceStats(key)
+	if got := stats.demandMetrics; !ok || got != demanding {
 		t.Fatalf("metrics demand = %d, want %d", got, demanding)
 	}
 	rev := waitRevision(t, subs[0], 2)
@@ -1349,7 +1361,8 @@ func TestWatchHubOverlayPollIsSharedAndDemandDriven(t *testing.T) {
 		sub.Close()
 	}
 	waitFor(t, "the demand to drop back to zero", func() bool {
-		return hub.sourceStats(key).demandMetrics == 0
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.demandMetrics == 0
 	})
 	settled := up.overlayCount()
 	clock.Advance(5 * defaultStreamTuning().metricsPoll)
@@ -1411,7 +1424,8 @@ func TestWatchHubAccountsRetainedBytes(t *testing.T) {
 	if got, want := hub.cacheChargedBytes(), relisted*cacheAccountingHeadroom; got != want {
 		t.Fatalf("charged bytes = %d, want the accounted total with headroom %d", got, want)
 	}
-	if got := hub.sourceStats(key).accounted; got != relisted {
+	stats, ok := hub.sourceStats(key)
+	if got := stats.accounted; !ok || got != relisted {
 		t.Fatalf("source accounted bytes = %d, want %d", got, relisted)
 	}
 
@@ -1464,7 +1478,8 @@ func TestWatchHubShutdownDuringInitializationFailsWaiters(t *testing.T) {
 		done <- err
 	}()
 	waitFor(t, "the waiter to queue", func() bool {
-		return hub.sourceStats(key).waiters == 1
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.waiters == 1
 	})
 	cancel()
 	select {
@@ -1536,4 +1551,286 @@ func TestWatchHubReportsSlotsAndRecoveryToTheMetricsSink(t *testing.T) {
 	if got := metrics.connectionCount(); got != 0 {
 		t.Fatalf("reported connections after every release = %d, want 0", got)
 	}
+}
+
+// A source already polling one join kind must re-poll the moment a subscriber
+// needs the OTHER one. Overlay demand is per kind, and a single on/off flag
+// would leave the second subscriber's handshake blocked on a join the running
+// poll never asked for -- for the whole interval, holding a connection slot.
+func TestWatchHubOverlayDemandForASecondJoinPollsImmediately(t *testing.T) {
+	hub, clock, _ := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	metricsSub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{metrics: true})
+	if err != nil {
+		t.Fatalf("Subscribe with metrics demand failed: %v", err)
+	}
+	defer metricsSub.Close()
+	waitFor(t, "the first shared join poll", func() bool { return up.overlayCount() == 1 })
+
+	nodesSub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{nodes: true})
+	if err != nil {
+		t.Fatalf("Subscribe with nodes demand failed: %v", err)
+	}
+	defer nodesSub.Close()
+
+	// No clock advance: the re-poll must happen on demand, not on the interval.
+	waitFor(t, "the join re-poll for the newly demanded kind", func() bool {
+		return up.overlayCount() == 2
+	})
+	waitFor(t, "a revision carrying the nodes overlay", func() bool {
+		rev := nodesSub.Revision()
+		return rev != nil && rev.overlays.nodes != nil && rev.overlays.metrics != nil
+	})
+	stats, _ := hub.sourceStats(key)
+	if stats.demandMetrics != 1 || stats.demandNodes != 1 {
+		t.Fatalf("demand = %+v, want one of each kind", stats)
+	}
+
+	// One shared poll still serves both kinds from here on.
+	before := up.overlayCount()
+	advanceUntil(t, clock, defaultStreamTuning().metricsPoll, "the next interval poll", func() bool {
+		return up.overlayCount() == before+1
+	})
+	last := up.overlayDemand[len(up.overlayDemand)-1]
+	if !last.metrics || !last.nodes {
+		t.Fatalf("interval poll demand = %+v, want both kinds", last)
+	}
+}
+
+// Retention is an optimization for the next visitor, not a reservation. A pod
+// must not answer "too many live sources" while sources nobody is attached to
+// sit out their 30s window holding the slots.
+func TestWatchHubSourceLimitReclaimsAnIdleSource(t *testing.T) {
+	limits := testHubLimits()
+	limits.maxSources = 1
+	hub, _, _ := newTestWatchHub(t, limits)
+	first := newHubTestUpstream(hubTestTable("10", "alpha"))
+	first.openGate()
+	firstKey := hubTestKey("first")
+
+	sub, _, err := hub.Subscribe(context.Background(), first.spec(firstKey), hubDemand{})
+	if err != nil {
+		t.Fatalf("first Subscribe failed: %v", err)
+	}
+
+	second := newHubTestUpstream(hubTestTable("20", "beta"))
+	second.openGate()
+	secondKey := hubTestKey("second")
+	if _, _, err := hub.Subscribe(context.Background(), second.spec(secondKey), hubDemand{}); !errors.Is(err, errHubSourceLimit) {
+		t.Fatalf("Subscribe past the source limit err = %v, want errHubSourceLimit", err)
+	}
+
+	// The first viewer leaves. Its source is retained, not released -- and that
+	// retention must not cost the next viewer a 429.
+	sub.Close()
+	waitFor(t, "the first source to go idle", func() bool {
+		stats, ok := hub.sourceStats(firstKey)
+		return ok && stats.subscribers == 0
+	})
+
+	replacement, rev, err := hub.Subscribe(context.Background(), second.spec(secondKey), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe after the idle source was reclaimed failed: %v", err)
+	}
+	defer replacement.Close()
+	if rev == nil || rev.table.ResourceVersion != "20" {
+		t.Fatalf("revision = %+v, want the second scope's own snapshot", rev)
+	}
+	waitFor(t, "the reclaimed source to leave the hub", func() bool { return hub.sourceCount() == 1 })
+	if lists, _, _ := second.counts(); lists != 1 {
+		t.Fatalf("second scope LISTs = %d, want exactly one", lists)
+	}
+}
+
+// The same reclamation applies to the retained-bytes bound: holding a cache for
+// a viewer who left is worth less than admitting the one who is here.
+func TestWatchHubCacheLimitReclaimsAnIdleSource(t *testing.T) {
+	limits := testHubLimits()
+	limits.maxCacheAccountedBytes = hubTableBytes(hubTestTable("10", "alpha")) * cacheAccountingHeadroom * 3 / 2
+	hub, _, _ := newTestWatchHub(t, limits)
+	first := newHubTestUpstream(hubTestTable("10", "alpha"))
+	first.openGate()
+	firstKey := hubTestKey("first")
+
+	sub, _, err := hub.Subscribe(context.Background(), first.spec(firstKey), hubDemand{})
+	if err != nil {
+		t.Fatalf("first Subscribe failed: %v", err)
+	}
+
+	second := newHubTestUpstream(hubTestTable("20", "beta"))
+	second.openGate()
+	secondKey := hubTestKey("second")
+	if _, _, err := hub.Subscribe(context.Background(), second.spec(secondKey), hubDemand{}); err == nil {
+		t.Fatal("Subscribe past the cache bound succeeded, want a cache-limit failure")
+	}
+
+	sub.Close()
+	waitFor(t, "the first source to go idle", func() bool {
+		stats, ok := hub.sourceStats(firstKey)
+		return ok && stats.subscribers == 0
+	})
+
+	third := newHubTestUpstream(hubTestTable("30", "gamma"))
+	third.openGate()
+	replacement, _, err := hub.Subscribe(context.Background(), third.spec(hubTestKey("third")), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe after the idle cache was reclaimed failed: %v", err)
+	}
+	replacement.Close()
+}
+
+// The accounted-bytes estimate is what live.maxCacheAccountedBytes is measured
+// in, so it has to track a real encode -- not just agree with itself. Every
+// other accounting assertion computes its expectation with the function under
+// test, which would survive gutting the recursion entirely.
+func TestHubTableBytesTracksTheEncodedSize(t *testing.T) {
+	tests := []struct {
+		name  string
+		table *kube.Table
+	}{
+		{"flat rows", hubTestTable("10", "alpha", "beta", "gamma")},
+		{"rich objects", hubRichContractTable()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// The retained state that SCALES is the rows; the Table's own
+			// fixed struct fields are not what a memory bound is about.
+			encoded, err := json.Marshal(tc.table.Rows)
+			if err != nil {
+				t.Fatalf("marshal rows: %v", err)
+			}
+			estimate := hubTableBytes(tc.table) - hubTableMetaBytes(tc.table)
+			actual := int64(len(encoded))
+			// A deliberate approximation, but one that must stay the same
+			// ORDER OF MAGNITUDE as the bytes it stands in for.
+			if estimate < actual/2 || estimate > actual*2 {
+				t.Fatalf("row estimate = %d, encoded JSON = %d: not within 2x", estimate, actual)
+			}
+		})
+	}
+}
+
+// Each hubValueBytes arm pinned against a real encode of the same value, so a
+// dropped recursion (the map/slice arms are the ones that carry a Kubernetes
+// object) cannot pass by agreeing with itself.
+func TestHubValueBytesPerJSONShape(t *testing.T) {
+	values := []any{
+		nil,
+		"",
+		"readout",
+		true,
+		false,
+		float64(0),
+		float64(4711),
+		[]any{},
+		[]any{"a", "b", "c"},
+		map[string]any{},
+		map[string]any{"app": "readout"},
+		map[string]any{"metadata": map[string]any{"name": "api", "labels": map[string]any{"tier": "web"}}},
+		hubRichContractTable().Rows[0].Object,
+	}
+	for _, value := range values {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal %#v: %v", value, err)
+		}
+		estimate := hubValueBytes(value)
+		actual := int64(len(encoded))
+		if estimate < actual/2 || estimate > actual*2+8 {
+			t.Fatalf("hubValueBytes(%#v) = %d, encoded JSON = %d: not within 2x", value, estimate, actual)
+		}
+	}
+}
+
+// hubRichContractTable exercises every hubValueBytes arm: nested maps, arrays,
+// numbers, bools and nils inside a realistic object.
+func hubRichContractTable() *kube.Table {
+	return &kube.Table{
+		ResourceVersion: "4711",
+		Columns: []kube.Column{
+			{Name: "Name", Type: "string", Format: "name", Description: "the object name"},
+			{Name: "Ready", Type: "string"},
+		},
+		Clusters: []string{"prod", "staging"},
+		Rows: []kube.Row{{
+			Cluster: "prod",
+			Cells:   []any{"api-7c8d9", "2/3", 17, true, nil},
+			Object: map[string]any{
+				"apiVersion": "v1",
+				"kind":       "Pod",
+				"metadata": map[string]any{
+					"name":      "api-7c8d9",
+					"namespace": "default",
+					"labels":    map[string]any{"app": "readout", "tier": "web"},
+					"ownerReferences": []any{
+						map[string]any{"kind": "ReplicaSet", "name": "api", "controller": true},
+					},
+				},
+				"spec": map[string]any{
+					"nodeName": "node-a",
+					"containers": []any{
+						map[string]any{"name": "api", "image": "readout:1.2.3", "ports": []any{8080, 9090}},
+					},
+				},
+				"status": map[string]any{
+					"phase":             "Running",
+					"hostIP":            "10.0.0.4",
+					"containerStatuses": []any{map[string]any{"ready": true, "restartCount": 2}},
+					"terminationTime":   nil,
+				},
+			},
+		}},
+	}
+}
+
+// A browser can disconnect in the window between the actor granting a
+// subscription and the attaching goroutine reading its reply. The withdraw has
+// to release the granted subscription, not just dequeue a waiter: otherwise the
+// source never goes idle and its watch, retained bytes and join poll leak for
+// the pod's lifetime.
+func TestWatchHubWithdrawReleasesAnAlreadyGrantedSubscription(t *testing.T) {
+	hub, _, _ := newTestWatchHub(t, testHubLimits())
+	up := newHubTestUpstream(hubTestTable("10", "alpha"))
+	up.openGate()
+	key := hubTestKey("ns")
+
+	sub, _, err := hub.Subscribe(context.Background(), up.spec(key), hubDemand{})
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+	hub.mu.Lock()
+	src := hub.sources[*key]
+	hub.mu.Unlock()
+	if src == nil {
+		t.Fatal("no source for the subscribed key")
+	}
+
+	// A waiter that is granted a subscription and then withdrawn, exactly as a
+	// cancelled attach does through the actor.
+	waiter := &hubWaiter{reply: make(chan hubAttachResult, 1), demand: hubDemand{metrics: true}}
+	if !src.post(func(s *hubSource) { s.serveWaiter(waiter) }) {
+		t.Fatal("serveWaiter was not accepted")
+	}
+	waitFor(t, "the waiter to be granted a subscription", func() bool {
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.subscribers == 2 && stats.demandMetrics == 1
+	})
+	if !src.post(func(s *hubSource) { s.withdrawWaiter(waiter) }) {
+		t.Fatal("withdrawWaiter was not accepted")
+	}
+
+	waitFor(t, "the granted subscription to be released", func() bool {
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.subscribers == 1 && stats.demandMetrics == 0
+	})
+
+	// The surviving subscriber is untouched, and the source still publishes.
+	sub.Close()
+	waitFor(t, "the source to go idle once the real subscriber leaves", func() bool {
+		stats, ok := hub.sourceStats(key)
+		return ok && stats.subscribers == 0
+	})
 }

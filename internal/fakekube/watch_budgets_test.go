@@ -848,3 +848,174 @@ func TestResetStoreSwapIsAtomic(t *testing.T) {
 		}
 	}
 }
+
+// A reconnect whose retained replay does not fit the delivery window must be
+// answered 410 so the consumer relists. Partial replay is silent data loss, and
+// it is the exact shape readout's own 410/relist tests depend on this fixture
+// to produce.
+func TestWatchReplayTooLargeForTheQueueIsExpired(t *testing.T) {
+	srv := newInternalFakeServer(t)
+	seedRV := budgetTestListRV(t, srv)
+
+	// 24 x 128 KiB is over the 2 MiB per-connection queue but well under the
+	// 16 MiB replay retention, so the replay exists and simply does not fit.
+	const frames = 24
+	for i := range frames {
+		if err := srv.Apply(budgetTestEvent(128<<10, 0)); err != nil {
+			t.Fatalf("apply replay event %d: %v", i, err)
+		}
+	}
+
+	conn := newWatchConn(budgetTestPodsPath)
+	stale, accepted := srv.registerWatch(conn, seedRV)
+	if !stale || accepted {
+		t.Fatalf("registerWatch over the queue budget = stale %t accepted %t, want stale and refused", stale, accepted)
+	}
+	srv.watches.mu.Lock()
+	queued := conn.queuedFrames
+	registered := len(srv.watches.conns)
+	srv.watches.mu.Unlock()
+	if queued != 0 || registered != 0 {
+		t.Fatalf("an expired reconnect left state behind: queued=%d registered=%d", queued, registered)
+	}
+}
+
+// The sibling case: a replay that fits is delivered whole, not truncated.
+func TestWatchReplayWithinTheQueueIsDeliveredWhole(t *testing.T) {
+	srv := newInternalFakeServer(t)
+	seedRV := budgetTestListRV(t, srv)
+
+	const frames = 8 // 1 MiB, half the per-connection budget
+	for i := range frames {
+		if err := srv.Apply(budgetTestEvent(128<<10, 0)); err != nil {
+			t.Fatalf("apply replay event %d: %v", i, err)
+		}
+	}
+
+	conn := newWatchConn(budgetTestPodsPath)
+	stale, accepted := srv.registerWatch(conn, seedRV)
+	if stale || !accepted {
+		t.Fatalf("registerWatch within budget = stale %t accepted %t", stale, accepted)
+	}
+	defer srv.watches.removeConn(conn)
+	srv.watches.mu.Lock()
+	queued := conn.queuedFrames
+	srv.watches.mu.Unlock()
+	if queued != frames {
+		t.Fatalf("queued replay frames = %d, want the complete %d", queued, frames)
+	}
+}
+
+// The count arm of the same preflight. The replay ring itself is capped at
+// watchReplayCountLimit, so this bound is only reachable for a connection that
+// already holds frames -- exercise it directly rather than leaving it unproven.
+func TestWatchReplayCountPreflightRefusesAPartialWindow(t *testing.T) {
+	srv := newInternalFakeServer(t)
+	conn := registerBudgetWatch(t, srv, budgetTestPodsPath)
+	replay := make([]*emission, watchConnQueueCountLimit)
+	for i := range replay {
+		replay[i] = &emission{withoutCols: []byte("x")}
+	}
+
+	srv.watches.mu.Lock()
+	defer srv.watches.mu.Unlock()
+	if !srv.watches.canQueueReplayLocked(conn, replay) {
+		t.Fatal("a replay exactly at the count limit should fit an empty queue")
+	}
+	conn.queuedFrames = 1
+	if srv.watches.canQueueReplayLocked(conn, replay) {
+		t.Fatal("a replay past the count limit was accepted, which would truncate it")
+	}
+}
+
+// /__control/reset is what the serial Playwright suite leans on for cross-spec
+// isolation. A delayed event that fires after the swap must not reach the fresh
+// store: without the generation guard, reset silently stops meaning isolation.
+func TestWatchDelayedEventIsDroppedAcrossReset(t *testing.T) {
+	srv := newInternalFakeServer(t)
+	if err := srv.Apply(budgetTestEvent(64, 250)); err != nil {
+		t.Fatalf("apply delayed event: %v", err)
+	}
+	srv.watches.mu.Lock()
+	timers := len(srv.watches.timers)
+	srv.watches.mu.Unlock()
+	if timers != 1 {
+		t.Fatalf("pending timers before reset = %d, want 1", timers)
+	}
+
+	fresh, err := seedStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.resetWithStore(fresh, nil)
+	before := budgetTestListRV(t, srv)
+
+	// Well past the delay: the stale timer fires against the old generation.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		srv.watches.mu.Lock()
+		pending := len(srv.watches.timers)
+		history := srv.watches.historyLenLocked()
+		srv.watches.mu.Unlock()
+		if pending == 0 {
+			if history != 0 {
+				t.Fatalf("a delayed event from the old generation was applied: history = %d", history)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("delayed event timer never fired: pending = %d", pending)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if after := budgetTestListRV(t, srv); after != before {
+		t.Fatalf("reseeded store advanced from %q to %q after the stale timer", before, after)
+	}
+}
+
+// The history and replay rings reslice once their head passes 256 AND half the
+// backing array. Nothing reached that threshold before, so neither the leak it
+// closes nor an off-by-one in the reslice was covered.
+func TestWatchRingsCompactOnceTheirHeadPassesTheThreshold(t *testing.T) {
+	srv := newInternalFakeServer(t)
+	// Compaction needs head >= 256 AND head*2 >= len(ring); with a 1024-entry
+	// retention that first happens at 2048 applied events.
+	const applied = 2100
+	for i := range applied {
+		if err := srv.Apply(budgetTestEvent(0, 0)); err != nil {
+			t.Fatalf("apply event %d: %v", i, err)
+		}
+	}
+
+	srv.watches.mu.Lock()
+	defer srv.watches.mu.Unlock()
+	h := srv.watches
+	if got := h.historyLenLocked(); got != watchHistoryCountLimit {
+		t.Fatalf("retained history = %d, want %d", got, watchHistoryCountLimit)
+	}
+	if got := h.replayLenLocked(); got != watchReplayCountLimit {
+		t.Fatalf("retained replay = %d, want %d", got, watchReplayCountLimit)
+	}
+	// Compaction ran, so the heads are back near zero and the backing arrays
+	// never grew to applied-many slots.
+	if h.historyHead >= 256 || len(h.history) > 2*watchHistoryCountLimit {
+		t.Fatalf("history ring never compacted: head=%d len=%d", h.historyHead, len(h.history))
+	}
+	if h.replayHead >= 256 || len(h.replay) > 2*watchReplayCountLimit {
+		t.Fatalf("replay ring never compacted: head=%d len=%d", h.replayHead, len(h.replay))
+	}
+	// The retained window is still the newest events, in order.
+	if h.history[h.historyHead].resourceVersion == "" {
+		t.Fatal("compacted history head is not a live entry")
+	}
+}
+
+func budgetTestListRV(t *testing.T, srv *Server) string {
+	t.Helper()
+	srv.store.mu.Lock()
+	defer srv.store.mu.Unlock()
+	if srv.store.lists[budgetTestPodsPath] == nil {
+		t.Fatalf("no list state for %s", budgetTestPodsPath)
+	}
+	return strconv.FormatInt(srv.store.rv, 10)
+}

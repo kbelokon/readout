@@ -253,6 +253,16 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-store")
 	addVary(h, streamVersionHeader)
 	addVary(h, streamGenerationHeader)
+	// ServeMux routes HEAD to a GET pattern, and net/http silently discards
+	// every body byte written to a HEAD response. A HEAD stream would therefore
+	// never fail a write, never trip the write deadline, and never reach the
+	// slow-writer terminal -- it would hold a connection slot and a hub
+	// subscription until the 12h lifetime cap. Live is GET only.
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	// Time-to-snapshot and session duration are both measured from here: what
 	// an operator cares about is how long the BROWSER waited, which includes
 	// discovery and the shared source's LIST, not just the render.
@@ -304,11 +314,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 	defer hub.releaseConnection()
 
 	ctx := r.Context()
-	handshakeTimeout := s.streamTuning.handshakeTimeout
-	if handshakeTimeout <= 0 {
-		handshakeTimeout = defaultStreamTuning().handshakeTimeout
-	}
-	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshakeTimeout)
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, s.streamTuning.handshakeTimeout)
 	defer cancelHandshake()
 	client := s.kubeClient(r, cluster)
 	rt, err := client.FindResource(handshakeCtx, plural, namespace != "", apiVersionParam(r))
@@ -352,7 +358,7 @@ func (s *Server) resourceStream(w http.ResponseWriter, r *http.Request) {
 		selector:       selector,
 		gen:            negotiation.gen,
 		wantMetrics:    r.URL.Query().Get("join") == "metrics" && (plural == "pods" || plural == "nodes"),
-		wantNodes:      streamWantsNodeJoin(r, s.cfg.DefaultCustomColumns[plural], plural),
+		wantNodes:      streamWantsNodeJoin(r, s.cfg.DefaultCustomColumns[plural], rt.Kind),
 		lifetime:       lifetime,
 		lifetimeReason: lifetimeReason,
 		tuning:         s.streamTuning,
@@ -602,11 +608,7 @@ func (st *streamSession) awaitOverlays(ctx context.Context) {
 	if st.overlaysReady() {
 		return
 	}
-	timeout := st.tuning.initialMetricsTimeout
-	if timeout <= 0 {
-		timeout = defaultStreamTuning().initialMetricsTimeout
-	}
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(st.tuning.initialMetricsTimeout)
 	defer timer.Stop()
 	for {
 		select {
@@ -652,10 +654,12 @@ func (st *streamSession) overlaysForRender() renderOverlays {
 // streamWantsNodeJoin decides whether the stream must carry the ?join=nodes
 // overlay: Pod lists whose render actually has custom columns to evaluate it
 // in (the join only ever feeds a custom-column expression, so without one the
-// Nodes LIST would be pure waste).
-func streamWantsNodeJoin(r *http.Request, defaultCustom, plural string) bool {
+// Nodes LIST would be pure waste). The Kind test is the same one wantsNodeJoin
+// applies at render time -- the two must agree, or a render whose overlay was
+// never demanded falls back to fetching Nodes on every push.
+func streamWantsNodeJoin(r *http.Request, defaultCustom, kind string) bool {
 	q := r.URL.Query()
-	if q.Get("join") != "nodes" || plural != "pods" {
+	if q.Get("join") != "nodes" || kind != "Pod" {
 		return false
 	}
 	return first(q.Get("customcols"), q.Get("custom-columns"), defaultCustom) != ""
@@ -774,9 +778,6 @@ func (st *streamSession) loop(ctx context.Context) {
 			st.finish(streamTerminalClientClose)
 			return
 		case <-st.srv.shutdownCh:
-			// The drain bounds the terminal write too: a peer that stopped
-			// reading must not hold the whole grace period.
-			st.writeBound = ShutdownGrace
 			st.terminal(streamTerminalShutdown)
 			return
 		case <-st.sub.Notify():
@@ -880,8 +881,21 @@ func (st *streamSession) terminal(reason string) {
 	if st.finished {
 		return
 	}
+	st.writeBound = terminalWriteBound(reason, st.writeBound)
 	st.finish(reason)
 	st.terminalLiveV2(reason)
+}
+
+// terminalWriteBound is the deadline the terminal frame is written under. The
+// drain bounds a shutdown terminal wherever it came from: shutdown cancels the
+// hub context too, so the reason arrives through the shared source's Done
+// channel as readily as through shutdownCh, and a peer that stopped reading
+// must not outlive the grace on either path.
+func terminalWriteBound(reason string, current time.Duration) time.Duration {
+	if reason == streamTerminalShutdown {
+		return ShutdownGrace
+	}
+	return current
 }
 
 // streamWriteError marks a failure that happened while writing to the client,
@@ -1026,16 +1040,21 @@ func (st *streamSession) writeSSE(frame []byte) error {
 	return nil
 }
 
-// mergeTableEvent folds one watch data event into an unfiltered scope Table:
+// mergeTableEvent folds one watch data event into an unfiltered scope Table and
+// returns the change in accounted retained bytes. The merge already locates the
+// row each event names, so measuring the replaced/deleted/added rows here costs
+// one size computation per NAMED row rather than a table scan per event.
+//
 // ADDED/MODIFIED upsert the row by object identity (namespace/name), DELETED
 // removes it. Watch frames carry columnDefinitions only in the stream's
 // first event; the snapshot keeps the initial list's columns and adopts event
 // columns only if the list somehow had none — cells align either way because
 // both come from the same printer.
-func mergeTableEvent(snapshot *kube.Table, ev *kube.WatchEvent) {
+func mergeTableEvent(snapshot *kube.Table, ev *kube.WatchEvent) int64 {
 	if len(snapshot.Columns) == 0 && len(ev.Table.Columns) > 0 {
 		snapshot.Columns = ev.Table.Columns
 	}
+	var accounted int64
 	for _, row := range ev.Table.Rows {
 		name := nestedString(row.Object, "metadata", "name")
 		if name == "" {
@@ -1053,6 +1072,7 @@ func mergeTableEvent(snapshot *kube.Table, ev *kube.WatchEvent) {
 		switch ev.Type {
 		case kube.WatchDeleted:
 			if idx >= 0 {
+				accounted -= hubRowBytes(&snapshot.Rows[idx])
 				// A Live snapshot can outlive many delete events. slices.Delete
 				// preserves row order and clears the obsolete backing-array slot,
 				// so deleted row cells and object maps are not retained until the
@@ -1061,12 +1081,15 @@ func mergeTableEvent(snapshot *kube.Table, ev *kube.WatchEvent) {
 			}
 		default: // ADDED / MODIFIED
 			if idx >= 0 {
+				accounted -= hubRowBytes(&snapshot.Rows[idx])
 				snapshot.Rows[idx] = row
 			} else {
 				snapshot.Rows = append(snapshot.Rows, row)
 			}
+			accounted += hubRowBytes(&row)
 		}
 	}
+	return accounted
 }
 
 // cloneTableForRender deep-copies a published revision's table STRUCTURE

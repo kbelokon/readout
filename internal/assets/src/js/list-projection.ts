@@ -32,7 +32,6 @@ interface PreparedProjection {
     root: ParentNode;
     snapshot: ProjectionSnapshot;
     previousByKey: Map<string, HTMLElement>;
-    previousRevision: number;
 }
 
 export interface ListProjectionDeltaPlan {
@@ -188,12 +187,10 @@ export function ensureListProjection(root: ParentNode): boolean {
 export function prepareListProjectionSwap(root: ParentNode): PreparedListProjection {
     if (prepared?.root !== root) {
         const snapshot = snapshotFrom(root);
-        const previousRevision = projectionRevision;
         projectionRevision += 1;
         prepared = {
             root,
             snapshot,
-            previousRevision,
             // Snapshot maps are created once and never mutated or exposed. Keep
             // the immutable prior index by reference for the windowed cell diff.
             previousByKey: projection.byKey,
@@ -207,18 +204,6 @@ export function prepareListProjectionSwap(root: ParentNode): PreparedListProject
         rows: prepared.snapshot.rows,
         windowed: prepared.snapshot.windowed,
     };
-}
-
-// A synchronous morph failure leaves the connected DOM untouched, so retire
-// only the matching prepared snapshot and republish the still-authoritative
-// projection. The root identity prevents an older failing attempt from
-// cancelling a reentrant replacement.
-export function cancelListProjectionSwap(root: ParentNode): void {
-    const incoming = prepared;
-    if (!incoming || incoming.root !== root) return;
-    prepared = null;
-    projectionRevision = incoming.previousRevision;
-    publishModel(projection);
 }
 
 // Windowed rows remain detached; small lists re-adopt Idiomorph's connected DOM.
@@ -569,7 +554,12 @@ export function applyListProjectionDelta(plan: ListProjectionDeltaPlan): ListPro
         updateLiveStatus(summary);
         return { ok: true, focusKey: focus?.key || null, previousByKey, summary, restoreFocus };
     } catch {
+        // The removes above already ran, so the surviving projection describes
+        // a DOM that no longer exists. Drop it: the caller's answer to !ok is a
+        // full resync, and a stale index would otherwise decide what that
+        // resync morphs against.
         restoreFocus();
+        resetListProjection();
         return { ok: false };
     }
 }

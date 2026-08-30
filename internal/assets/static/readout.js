@@ -249,12 +249,10 @@
   function prepareListProjectionSwap(root) {
     if (prepared?.root !== root) {
       const snapshot = snapshotFrom(root);
-      const previousRevision = projectionRevision;
       projectionRevision += 1;
       prepared = {
         root,
         snapshot,
-        previousRevision,
         // Snapshot maps are created once and never mutated or exposed. Keep
         // the immutable prior index by reference for the windowed cell diff.
         previousByKey: projection.byKey
@@ -265,13 +263,6 @@
       rows: prepared.snapshot.rows,
       windowed: prepared.snapshot.windowed
     };
-  }
-  function cancelListProjectionSwap(root) {
-    const incoming = prepared;
-    if (!incoming || incoming.root !== root) return;
-    prepared = null;
-    projectionRevision = incoming.previousRevision;
-    publishModel(projection);
   }
   function commitListProjectionSwap() {
     if (!prepared) {
@@ -541,6 +532,7 @@
       return { ok: true, focusKey: focus?.key || null, previousByKey, summary, restoreFocus };
     } catch {
       restoreFocus();
+      resetListProjection();
       return { ok: false };
     }
   }
@@ -707,17 +699,21 @@
     return Math.round(cap * fraction);
   }
   var RETRY_AFTER_MAX_MS = 3e5;
+  var RETRY_AFTER_MIN_MS = 1e3;
   function retryAfterMs(header, now = Date.now()) {
     if (header === null) return null;
     const value = header.trim();
     if (value === "") return null;
     if (/^\d+$/.test(value)) {
-      return Math.min(Number(value) * 1e3, RETRY_AFTER_MAX_MS);
+      return clampRetryAfter(Number(value) * 1e3);
     }
     if (!/^[a-z]{3}/i.test(value)) return null;
     const at = Date.parse(value);
     if (Number.isNaN(at)) return null;
-    return Math.min(Math.max(at - now, 0), RETRY_AFTER_MAX_MS);
+    return clampRetryAfter(at - now);
+  }
+  function clampRetryAfter(ms) {
+    return Math.min(Math.max(ms, RETRY_AFTER_MIN_MS), RETRY_AFTER_MAX_MS);
   }
   var HEALTHY_CONTINUITY_MS = 3e4;
   function shouldResetBackoff(snapshotAt2, now) {
@@ -1092,7 +1088,9 @@
     return rawQuery === "" ? pathname : `${pathname}?${rawQuery}`;
   }
   function liveStreamBaseForURL(url) {
+    if (url.origin !== window.location.origin) return "";
     const pathname = `${url.pathname.replace(/\/+$/, "")}/_stream`;
+    if (!pathname.startsWith("/") || pathname.startsWith("//")) return "";
     return withRawQuery(pathname, url.search.slice(1));
   }
 
@@ -1259,6 +1257,7 @@
   var RESYNC_WINDOW_MS = 3e4;
   var MAX_RESYNCS_PER_WINDOW = 2;
   var LIVE_FIRST_FRAME_TIMEOUT_MS = 3e4;
+  var LIVE_READ_IDLE_TIMEOUT_MS = 5e4;
   var completedSnapshotTxns = /* @__PURE__ */ new WeakSet();
   var resyncTimestamps = [];
   var resumeIntent = null;
@@ -1286,10 +1285,7 @@
   function liveSupported() {
     const content = document.getElementById("resource-list-content");
     if (content?.dataset.liveUrl !== "location") return false;
-    const toggle = document.querySelector(
-      '[data-ro-action="toggle-live"]'
-    );
-    return !!toggle && !toggle.disabled;
+    return document.querySelector('[data-ro-action="toggle-live"]') !== null;
   }
   function liveStreamBase() {
     return liveStreamBaseForURL(new URL(window.location.href));
@@ -1436,32 +1432,41 @@
     return generation === null || generation === connection.generation;
   }
   async function liveConnect(initial) {
-    let firstFrameTimer = window.setTimeout(() => {
-      firstFrameTimer = null;
-      if (runtime.connection?.ctrl === initial.ctrl) {
-        scheduleReconnect(initial.base);
-      }
-    }, LIVE_FIRST_FRAME_TIMEOUT_MS);
-    const clearFirstFrameTimer = () => {
-      if (firstFrameTimer !== null) {
-        window.clearTimeout(firstFrameTimer);
-        firstFrameTimer = null;
+    let deadlineTimer = null;
+    const clearDeadline = () => {
+      if (deadlineTimer !== null) {
+        window.clearTimeout(deadlineTimer);
+        deadlineTimer = null;
       }
     };
+    const armDeadline = (ms) => {
+      clearDeadline();
+      deadlineTimer = window.setTimeout(() => {
+        deadlineTimer = null;
+        if (runtime.connection?.ctrl === initial.ctrl) {
+          scheduleReconnect(initial.base);
+        }
+      }, ms);
+    };
+    armDeadline(LIVE_FIRST_FRAME_TIMEOUT_MS);
     try {
-      await runLiveConnection(initial, clearFirstFrameTimer);
+      await runLiveConnection(initial, () => armDeadline(LIVE_READ_IDLE_TIMEOUT_MS));
     } finally {
-      clearFirstFrameTimer();
+      clearDeadline();
     }
   }
   function acceptResponse(response, connection) {
     const status = response.status;
-    if (status === 401 || status === 403 || status === 204 || status === 404) {
-      enterUnavailable();
-      return null;
-    }
     if (status === 429) {
       scheduleReconnect(connection.base, retryAfterMs(responseHeader2(response, "Retry-After")));
+      return null;
+    }
+    if (status === 408) {
+      scheduleReconnect(connection.base);
+      return null;
+    }
+    if (status === 204 || status >= 400 && status < 500) {
+      enterUnavailable();
       return null;
     }
     if (status !== 200 || !response.body) {
@@ -1470,7 +1475,7 @@
     }
     return response.body;
   }
-  async function runLiveConnection(initial, clearFirstFrameTimer) {
+  async function runLiveConnection(initial, noteLiveProgress) {
     let response;
     try {
       response = await fetch(initial.base, {
@@ -1497,9 +1502,11 @@
     try {
       const reader = body.getReader();
       const parser = new LiveSSEParser();
+      let sawFrame = false;
       const readNext = async () => {
         const result = await reader.read();
         if (!isActive(connection) || result.done) return;
+        if (sawFrame) noteLiveProgress();
         addCounter("rawBytes", result.value.byteLength);
         let events;
         try {
@@ -1515,7 +1522,8 @@
           const current = runtime.connection;
           if (!current || current.ctrl !== connection.ctrl) return;
           connection = current;
-          clearFirstFrameTimer();
+          sawFrame = true;
+          noteLiveProgress();
         }
         return connection;
       };
@@ -1555,8 +1563,8 @@
         rejectProtocol(connection);
         return;
       }
-      if (!replaceConnection(connection, applied.cursor)) return;
       clearListValidator();
+      if (!replaceConnection(connection, applied.cursor)) return;
       addCounter("deltas");
       addCounter("deltaBytes", payloadBytes);
       addCounter("inserted", applied.summary.inserted);
@@ -2752,19 +2760,14 @@
           return false;
         }
         const listTarget = target.id === "resource-list-content";
-        try {
-          if (listTarget) {
-            prepareListProjectionSwap(fragment);
-            virtualizePrepareSwap(fragment);
-          }
-          return idiomorph.morph(target, fragment.children, {
-            morphStyle: "innerHTML",
-            ignoreActiveValue: true
-          });
-        } catch (error) {
-          cancelListProjectionSwap(fragment);
-          throw error;
+        if (listTarget) {
+          prepareListProjectionSwap(fragment);
+          virtualizePrepareSwap(fragment);
         }
+        return idiomorph.morph(target, fragment.children, {
+          morphStyle: "innerHTML",
+          ignoreActiveValue: true
+        });
       }
     });
   }

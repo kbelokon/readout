@@ -13,8 +13,6 @@
 //   2. retryAfterMs -- the server-dictated wait a 429 admission reject carries.
 //   3. shouldResetBackoff -- when a connection lived long enough to count as
 //      healthy, so the next drop starts the ladder from the top again.
-//   4. shouldDiscardPush -- the morph-time generation/page discard gate: a Live
-//      frame is dropped whole, never deferred, when it is stale.
 
 // --- 1. reconnect schedule --------------------------------------------------
 
@@ -39,9 +37,11 @@ export function reconnectDelayMs(attempt: number, random: () => number = Math.ra
     return Math.round(cap * fraction);
 }
 
-// A Retry-After never buys more than the ladder's own longest wait: a hostile or
-// mistaken header cannot park a tab for an hour.
+// A Retry-After is clamped at both ends: a hostile or mistaken header can
+// neither park a tab for an hour nor -- with `0`, or a date already in the past
+// -- turn the reconnect into an unthrottled loop.
 const RETRY_AFTER_MAX_MS = 300_000;
+const RETRY_AFTER_MIN_MS = 1000;
 
 // retryAfterMs parses an RFC 9110 Retry-After (delta-seconds or an HTTP-date)
 // into a wait in milliseconds, or null when the header is absent or malformed
@@ -52,7 +52,7 @@ export function retryAfterMs(header: string | null, now: number = Date.now()): n
     const value = header.trim();
     if (value === '') return null;
     if (/^\d+$/.test(value)) {
-        return Math.min(Number(value) * 1000, RETRY_AFTER_MAX_MS);
+        return clampRetryAfter(Number(value) * 1000);
     }
     // All three HTTP-date spellings begin with a weekday NAME. Requiring one
     // keeps Date.parse's permissive readings of numeric junk ("-5" as a year,
@@ -60,7 +60,11 @@ export function retryAfterMs(header: string | null, now: number = Date.now()): n
     if (!/^[a-z]{3}/i.test(value)) return null;
     const at = Date.parse(value);
     if (Number.isNaN(at)) return null;
-    return Math.min(Math.max(at - now, 0), RETRY_AFTER_MAX_MS);
+    return clampRetryAfter(at - now);
+}
+
+function clampRetryAfter(ms: number): number {
+    return Math.min(Math.max(ms, RETRY_AFTER_MIN_MS), RETRY_AFTER_MAX_MS);
 }
 
 // --- 2. backoff reset -------------------------------------------------------
@@ -76,28 +80,4 @@ export const HEALTHY_CONTINUITY_MS = 30_000;
 export function shouldResetBackoff(snapshotAt: number, now: number): boolean {
     if (snapshotAt <= 0) return false;
     return now - snapshotAt >= HEALTHY_CONTINUITY_MS;
-}
-
-// --- 3. morph-time push discard ---------------------------------------------
-
-// The facts live.ts gathers at dispatch (which IS morph time -- synchronously
-// before htmx.swap). All are derived without touching this module: the frame's
-// echoed generation vs the minted one and the live stream identity vs the one
-// this stream was opened against. A current-list request synchronously aborts
-// the stream before dispatch, so request ownership cannot race this gate.
-export interface PushDiscardFacts {
-    frameGeneration: string;
-    currentGeneration: string;
-    liveStreamBase: string;
-    openedStreamBase: string;
-}
-
-// A boosted body swap changes the URL before liveApply reconciles. Reject a
-// pushed snapshot unless both its generation and its current page identity
-// still belong to this connection.
-export function shouldDiscardPush(facts: PushDiscardFacts): boolean {
-    return (
-        facts.frameGeneration !== facts.currentGeneration ||
-        facts.liveStreamBase !== facts.openedStreamBase
-    );
 }

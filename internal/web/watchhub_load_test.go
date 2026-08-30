@@ -237,7 +237,54 @@ func measureRetainedSourceHeap(t *testing.T) (accounted, heap int64) {
 	if accounted <= 0 || heap <= 0 {
 		t.Fatalf("retained-source measurement is not usable: accounted=%d heap=%d", accounted, heap)
 	}
+	// The measurement is not just for the printed table. cacheAccountingHeadroom
+	// is the ONLY thing that makes live.maxCacheAccountedBytes readable as
+	// bytes of process memory, so if the real ratio ever climbs above it the
+	// documented bound has silently become an under-estimate and a pod at its
+	// configured limit OOMs.
+	if heap > accounted*cacheAccountingHeadroom {
+		t.Fatalf("one retained source costs %d heap bytes for %d accounted (ratio %.2f), past cacheAccountingHeadroom = %d",
+			heap, accounted, float64(heap)/float64(accounted), cacheAccountingHeadroom)
+	}
 	return accounted, heap
+}
+
+// TestCacheAccountingHeadroomCoversOneRetainedSource is the ungated half of the
+// same invariant, measured on every CI run so a decoded-row layout change that
+// blows past the headroom fails here instead of in a pod. It uses the 600-row
+// scope on purpose: the multiplier models RETAINED ROWS, and a source's own
+// fixed cost (an actor goroutine, its channels and maps -- tens of KiB) swamps
+// a tiny scope's rows no matter what the multiplier is.
+func TestCacheAccountingHeadroomCoversOneRetainedSource(t *testing.T) {
+	clock := newLoadHubClock()
+	app, ts, _ := newLiveMetricsFixture(t, nil, func(app *Server) { app.hubClock = clock })
+	url := ts.URL + "/clusters/test/namespaces/big/pods/_stream"
+
+	// Warm first: the second measurement then brackets only the retained source.
+	warm := openStream(t, url, "headroom-warm")
+	warm.requireEvent(t, "ro-live", loadFrameTimeout)
+	warm.close()
+	releaseHub(t, app, clock)
+
+	s := openStream(t, url, "headroom")
+	s.requireEvent(t, "ro-live", loadFrameTimeout)
+	s.close()
+	hub := app.liveHub()
+	waitFor(t, "the subscriber to detach while the source is still retained", func() bool {
+		return hub.connectionCount() == 0 && hub.sourceCount() == 1
+	})
+	accounted := hub.accountedBytes()
+	withSource := heapInUseBytes()
+	releaseHub(t, app, clock)
+	heap := int64(withSource) - int64(heapInUseBytes())
+
+	if accounted <= 0 {
+		t.Fatalf("retained source accounted %d bytes, want a real measurement", accounted)
+	}
+	if heap > accounted*cacheAccountingHeadroom {
+		t.Fatalf("one retained source costs %d heap bytes for %d accounted (ratio %.2f), past cacheAccountingHeadroom = %d",
+			heap, accounted, float64(heap)/float64(accounted), cacheAccountingHeadroom)
+	}
 }
 
 // assertLimitsRejectBeforeTheirBound drives each of the three per-pod bounds

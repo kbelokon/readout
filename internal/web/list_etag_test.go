@@ -84,7 +84,12 @@ func TestResourceListETagSemanticNormalization(t *testing.T) {
 	}
 }
 
-func TestResourceListETagIgnoresClockOnlyEventAge(t *testing.T) {
+// The validator describes the bytes this request would render, clock-derived
+// cells included. The Live projection's row digest masks them (see
+// TestLiveProjectionVolatileEventAgeTracksResourceState); the validator must not,
+// or an Events list whose only visible change is its Last Seen column answers
+// 304 to its own Refresh button.
+func TestResourceListETagTracksClockOnlyEventAge(t *testing.T) {
 	data := liveProjectionFixture(1)
 	row := &data.Tables[0].Rows[0]
 	row.ResourceVersion = "101"
@@ -104,8 +109,16 @@ func TestResourceListETagIgnoresClockOnlyEventAge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ticked != base {
-		t.Fatalf("clock-only Event age changed ETag: %q != %q", ticked, base)
+	if ticked == base {
+		t.Fatalf("a repainted Event age kept ETag %q", base)
+	}
+
+	unchanged, err := resourceListETag(&data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged != base {
+		t.Fatalf("identical data changed ETag: %q != %q", unchanged, base)
 	}
 
 	clockTick.Tables[0].Rows[0].ResourceVersion = "102"
@@ -113,8 +126,8 @@ func TestResourceListETagIgnoresClockOnlyEventAge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if modified == base {
-		t.Fatalf("modified Event resource kept ETag %q", base)
+	if modified == ticked {
+		t.Fatalf("modified Event resource kept ETag %q", ticked)
 	}
 }
 

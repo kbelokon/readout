@@ -330,7 +330,11 @@ func (s *Server) observeMetrics(next http.Handler) http.Handler {
 		route := r.Pattern
 		if route == "" {
 			route = "__unmatched__"
-		} else if method, path, ok := strings.Cut(route, " "); ok && method == r.Method {
+		} else if _, path, ok := strings.Cut(route, " "); ok && strings.HasPrefix(path, "/") {
+			// A ServeMux pattern is "[METHOD ][HOST]/path". Strip the method
+			// whatever it says: a HEAD served by a `GET /x` pattern is still a
+			// request to /x, and labelling it "GET /x" splits one route into
+			// two series.
 			route = path
 		}
 		// The `_stream` SSE routes are excluded from the duration histogram:

@@ -1,8 +1,8 @@
 // live-policy.test.ts -- Vitest for the PURE Live decision core
 // (live-policy.ts). The reconnect schedule, the server-dictated Retry-After
-// wait, the backoff reset predicate, and the morph-time discard gate are the
-// load-bearing decisions exercised through the DOM by the e2e suite; pinning
-// them here catches a regression before it reaches a frame.
+// wait, and the backoff reset predicate are the load-bearing decisions
+// exercised through the DOM by the e2e suite; pinning them here catches a
+// regression before it reaches a frame.
 //
 // Run: `npm test`.
 
@@ -10,11 +10,9 @@ import { expect, test } from 'vitest';
 
 import {
     HEALTHY_CONTINUITY_MS,
-    type PushDiscardFacts,
     RECONNECT_DELAY_LADDER_MS,
     reconnectDelayMs,
     retryAfterMs,
-    shouldDiscardPush,
     shouldResetBackoff,
 } from './live-policy.js';
 
@@ -80,14 +78,21 @@ test.each([-0.5, 1.5, Number.NaN])('an out-of-range random draw %j clamps to the
 test('delta-seconds Retry-After becomes milliseconds', () => {
     expect(retryAfterMs('10')).toBe(10_000);
     expect(retryAfterMs(' 10 ')).toBe(10_000);
-    expect(retryAfterMs('0')).toBe(0);
 });
 
 test('an HTTP-date Retry-After is measured from now', () => {
     const now = Date.parse('2026-08-30T10:00:00Z');
     expect(retryAfterMs('Sun, 30 Aug 2026 10:00:30 GMT', now)).toBe(30_000);
-    // A date already in the past is a zero wait, never a negative one.
-    expect(retryAfterMs('Sun, 30 Aug 2026 09:59:00 GMT', now)).toBe(0);
+});
+
+// A 0 (or an already-elapsed date) is a real header value, and `??` in the
+// caller does not fall through on 0 -- unclamped it would replace the ladder
+// with an immediate, unthrottled reconnect loop.
+test('a zero or already-elapsed Retry-After still waits a full second', () => {
+    expect(retryAfterMs('0')).toBe(1000);
+    const now = Date.parse('2026-08-30T10:00:00Z');
+    expect(retryAfterMs('Sun, 30 Aug 2026 09:59:00 GMT', now)).toBe(1000);
+    expect(retryAfterMs('Sun, 30 Aug 2026 10:00:00 GMT', now)).toBe(1000);
 });
 
 test.each([null, '', 'soon', '-5', '5.5', '5junk'])(
@@ -97,8 +102,11 @@ test.each([null, '', 'soon', '-5', '5.5', '5junk'])(
     },
 );
 
-test('an absurd Retry-After is capped at the ladder maximum reconnect wait', () => {
+test('an absurd Retry-After is capped at five minutes', () => {
     expect(retryAfterMs('86400')).toBe(300_000);
+    expect(retryAfterMs('Mon, 31 Aug 2026 10:00:00 GMT', Date.parse('2026-08-30T10:00:00Z'))).toBe(
+        300_000,
+    );
 });
 
 // --- shouldResetBackoff -----------------------------------------------------
@@ -119,42 +127,4 @@ test('a short-lived or never-committed connection keeps escalating', () => {
     expect(shouldResetBackoff(0, at)).toBe(false);
     // A clock that jumped backwards must not look like continuity.
     expect(shouldResetBackoff(at, at - 60_000)).toBe(false);
-});
-
-// --- shouldDiscardPush (morph-time gate) ------------------------------------
-
-function push(over: Partial<PushDiscardFacts> = {}): PushDiscardFacts {
-    return {
-        frameGeneration: 'g1',
-        currentGeneration: 'g1',
-        liveStreamBase: '/clusters/c/pods/_stream',
-        openedStreamBase: '/clusters/c/pods/_stream',
-        ...over,
-    };
-}
-
-test('a fresh same-page frame morphs without a discard', () => {
-    expect(shouldDiscardPush(push())).toBe(false);
-});
-
-test('a stale generation is discarded', () => {
-    expect(
-        shouldDiscardPush(
-            push({
-                frameGeneration: 'g0',
-                currentGeneration: 'g1',
-            }),
-        ),
-    ).toBe(true);
-});
-
-test('a current-generation frame against a changed page is discarded', () => {
-    expect(
-        shouldDiscardPush(
-            push({
-                liveStreamBase: '/clusters/c/pods/_stream?f=status:Running',
-                openedStreamBase: '/clusters/c/pods/_stream',
-            }),
-        ),
-    ).toBe(true);
 });

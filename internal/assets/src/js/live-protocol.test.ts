@@ -225,6 +225,22 @@ describe('delta collection schema', () => {
         expectInvalid(invalidDelta(body));
     });
 
+    // A malformed CONTAINER, not a malformed item. Without the Array.isArray
+    // guard `order: 'dev/a'` would iterate the string's characters into a
+    // plausible-looking three-key order and silently reorder the table.
+    test.each([
+        { remove: {} },
+        { remove: 'dev/a' },
+        { upsert: null },
+        { upsert: { key: 'dev/a', row: '<tr></tr>' } },
+        { order: 'dev/a' },
+        { order: 7 },
+        { regions: 7 },
+        { regions: { region: 'count', html: '<span></span>' } },
+    ])('rejects a collection field that is not an array %#', (body) => {
+        expectInvalid(invalidDelta(body));
+    });
+
     test('rejects a delta revision that differs from its envelope revision', () => {
         expectInvalid(invalidDelta({ rev: 'other' }));
     });

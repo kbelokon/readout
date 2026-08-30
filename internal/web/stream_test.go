@@ -359,17 +359,17 @@ func TestMergeTableEventDeleteReleasesRows(t *testing.T) {
 	}
 
 	beta := deleted("beta")
-	mergeTableEvent(&snapshot, &beta)
+	_ = mergeTableEvent(&snapshot, &beta)
 	assertNames("alpha", "gamma")
 	assertClearedTail()
 
 	missing := deleted("missing")
-	mergeTableEvent(&snapshot, &missing)
+	_ = mergeTableEvent(&snapshot, &missing)
 	assertNames("alpha", "gamma")
 	assertClearedTail()
 
 	gamma := deleted("gamma")
-	mergeTableEvent(&snapshot, &gamma)
+	_ = mergeTableEvent(&snapshot, &gamma)
 	assertNames("alpha")
 	assertClearedTail()
 }
@@ -1820,5 +1820,88 @@ func TestStreamStatusWriterFlushUnwrap(t *testing.T) {
 	}
 	if sw.Unwrap() != rec {
 		t.Fatal("Unwrap must expose the wrapped ResponseWriter")
+	}
+}
+
+// ServeMux routes HEAD to a GET pattern, and net/http discards every body byte
+// written to a HEAD response. A HEAD stream could therefore never fail a write,
+// never trip the write deadline, and never reach the slow-writer terminal that
+// exists precisely to evict a connected-but-not-reading peer -- it would hold a
+// connection slot and a hub subscription until the 12h lifetime cap. Live is
+// GET only.
+func TestStreamRejectsNonGetRequests(t *testing.T) {
+	app, ts, _ := newLiveMetricsFixture(t, nil)
+	req, err := http.NewRequest(http.MethodHead, ts.URL+"/clusters/test/namespaces/default/pods/_stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTestLiveHeaders(req, "head-probe")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("HEAD /_stream status = %d, want 405", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Allow"); got != "GET" {
+		t.Fatalf("Allow = %q, want GET", got)
+	}
+	if got := resp.Header.Get("Content-Type"); strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want no SSE semantics", got)
+	}
+
+	body := scrapeMetrics(t, app)
+	requireMetric(t, body, "readout_live_connections_active", 0)
+	requireMetric(t, body, "readout_watchhub_sources_active", 0)
+	requireMetric(t, body, `readout_live_admissions_total{result="accepted"}`, 0)
+	// The rejection is a routed request, not an unmatched one: the HEAD
+	// representation pass must hand the matched pattern back to the metrics
+	// middleware, or every HEAD in the process lands on __unmatched__.
+	if _, ok := metricValue(t, body, `readout_http_requests_total{method="HEAD",path="/clusters/{cluster}/namespaces/{namespace}/{plural}/_stream",status="405"}`); !ok {
+		t.Fatalf("HEAD request was not labelled with its route:\n%s", body)
+	}
+}
+
+// A HEAD of an ordinary page runs gzhttp's representation negotiation against a
+// CLONED GET request. ServeMux records the matched route on the request it was
+// handed -- the clone -- so the pattern has to be copied back for the outer
+// metrics and access-log middleware to see it.
+func TestHeadRequestsKeepTheirRouteLabel(t *testing.T) {
+	app, ts, _ := newLiveMetricsFixture(t, nil)
+	resp, err := http.Head(ts.URL + "/clusters/test/namespaces/default/pods")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD list status = %d, want 200", resp.StatusCode)
+	}
+
+	body := scrapeMetrics(t, app)
+	const routed = `readout_http_requests_total{method="HEAD",path="/clusters/{cluster}/namespaces/{namespace}/{plural}",status="200"}`
+	if _, ok := metricValue(t, body, routed); !ok {
+		t.Fatalf("HEAD list request was not labelled with its route:\n%s", body)
+	}
+	if unmatched, ok := metricValue(t, body, `readout_http_requests_total{method="HEAD",path="__unmatched__",status="200"}`); ok && unmatched > 0 {
+		t.Fatalf("HEAD list request landed on __unmatched__ (%v)", unmatched)
+	}
+}
+
+// The drain budget belongs to the shutdown REASON, not to one arm of the
+// session's select. Shutdown cancels the hub context too, so the same terminal
+// arrives just as often through the shared source's Done channel -- and a peer
+// that stopped reading must not hold the handler past the grace on either path.
+func TestShutdownTerminalIsBoundedByTheDrainGrace(t *testing.T) {
+	tuning := defaultStreamTuning()
+	for _, reason := range streamTerminalReasons {
+		want := tuning.writeTimeout
+		if reason == streamTerminalShutdown {
+			want = ShutdownGrace
+		}
+		if got := terminalWriteBound(reason, tuning.writeTimeout); got != want {
+			t.Fatalf("terminal(%q) write bound = %s, want %s", reason, got, want)
+		}
 	}
 }

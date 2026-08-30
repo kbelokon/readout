@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestBreathingPulseLandsOnSeededPods(t *testing.T) {
@@ -48,18 +49,24 @@ func TestBreathingPulseLandsOnSeededPods(t *testing.T) {
 	// matched an existing row, not invented a dangling one). fakekube owns
 	// separate collection state per route, so checking both paths prevents the
 	// All-namespaces Live view from silently going static.
-	d.pulse()
-	for _, tg := range d.targets {
-		for _, path := range []string{tg.listPath, allNamespacesPodsPath} {
-			rv, restarts, found := breathingPodState(t, tg.server.URL, path, tg.name)
-			if !found {
-				t.Fatalf("breathing pod %q missing from %s after a pulse", tg.name, path)
-			}
-			if rv == beforeRV[tg.server.URL+path] {
-				t.Fatalf("list %s resourceVersion did not advance from %q", path, rv)
-			}
-			if restarts != 1 {
-				t.Fatalf("breathing pod %q restarts in %s = %v, want 1", tg.name, path, restarts)
+	// The breath ALTERNATES: one pulse proving "restarts == 1" would still pass
+	// with a constant, and a demo whose Live screens stop moving is the whole
+	// feature failing silently.
+	for beat, wantRestarts := range []float64{1, 0, 1, 0} {
+		d.pulse()
+		for _, tg := range d.targets {
+			for _, path := range []string{tg.listPath, allNamespacesPodsPath} {
+				rv, restarts, found := breathingPodState(t, tg.server.URL, path, tg.name)
+				if !found {
+					t.Fatalf("breathing pod %q missing from %s after beat %d", tg.name, path, beat)
+				}
+				if rv == beforeRV[tg.server.URL+path] {
+					t.Fatalf("beat %d: list %s resourceVersion did not advance from %q", beat, path, rv)
+				}
+				beforeRV[tg.server.URL+path] = rv
+				if restarts != wantRestarts {
+					t.Fatalf("beat %d: breathing pod %q restarts in %s = %v, want %v", beat, tg.name, path, restarts, wantRestarts)
+				}
 			}
 		}
 	}
@@ -117,13 +124,57 @@ func TestBreathingLifecycleIdempotent(t *testing.T) {
 	}
 	d := NewBreathingDriver(servers, names)
 
-	// Start/Pause/Start/Stop must not panic or deadlock, and repeated Pause/Stop
-	// are no-ops (a later snapshot unit relies on Pause being safe to call).
+	// Drive the real ticker path rather than calling pulse directly: without
+	// this the loop goroutine is never executed by any test, and a Stop gutted
+	// to a no-op would leak it for the process lifetime with everything green.
+	d.mu.Lock()
+	d.interval = 2 * time.Millisecond
+	d.mu.Unlock()
+
 	d.Start()
+	d.Start() // idempotent: still exactly one ticker and one goroutine
+	waitForBeats(t, d, 2)
+
 	d.Pause()
 	d.Pause()
+	paused := beats(d)
+	time.Sleep(30 * time.Millisecond)
+	if got := beats(d); got != paused {
+		t.Fatalf("a paused driver kept breathing: %d -> %d", paused, got)
+	}
+
+	// Resume, then stop for good.
 	d.Start()
+	waitForBeats(t, d, paused+2)
 	d.Stop()
 	d.Stop()
+	stopped := beats(d)
 	d.Start() // no-op after Stop
+	time.Sleep(30 * time.Millisecond)
+	if got := beats(d); got != stopped {
+		t.Fatalf("a stopped driver kept breathing: %d -> %d", stopped, got)
+	}
+	d.mu.Lock()
+	running, ticker := d.running, d.ticker
+	d.mu.Unlock()
+	if running || ticker != nil {
+		t.Fatalf("Stop left the loop armed: running=%t ticker=%v", running, ticker)
+	}
+}
+
+func beats(d *BreathingDriver) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.beat
+}
+
+func waitForBeats(t *testing.T, d *BreathingDriver, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for beats(d) < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("the breathing loop produced %d beats, want at least %d", beats(d), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }

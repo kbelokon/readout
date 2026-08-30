@@ -452,10 +452,42 @@ func TestWatchPendingAdmissionIsAtomic(t *testing.T) {
 		t.Fatalf("rejected batch partially queued state: %v", snap)
 	}
 
+	// Trailing padding after a complete 13-byte document: the FIRST decode
+	// succeeds and the 413 comes from the trailing-token pass.
 	oversizedBody := `{"events":[]}` + strings.Repeat(" ", (4<<20)+1)
 	code, response = postScript(t, srv, oversizedBody)
 	if code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("oversized script body status = %d body=%v, want 413", code, response)
+		t.Fatalf("oversized trailing body status = %d body=%v, want 413", code, response)
+	}
+
+	// A genuinely oversized FIRST document: the reader trips before the decode
+	// can finish, which is the branch the padding case never reaches.
+	oversizedDocument := `{"events":[{"path":"` + podsPath + `","type":"MODIFIED","note":"` +
+		strings.Repeat("x", (4<<20)+1) + `"}]}`
+	code, response = postScript(t, srv, oversizedDocument)
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized script document status = %d body=%v, want 413", code, response)
+	}
+
+	for _, tc := range []struct{ name, body, want string }{
+		{"truncated JSON", `{"events":`, "parse script"},
+		{"wrong element type", `{"events":7}`, "parse script"},
+		{"two documents", `{"events":[]}{"events":[]}`, "one JSON document"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, response := postScript(t, srv, tc.body)
+			if code != http.StatusBadRequest {
+				t.Fatalf("%s status = %d body=%v, want 400", tc.name, code, response)
+			}
+			if message, _ := response["error"].(string); !strings.Contains(message, tc.want) {
+				t.Fatalf("%s error = %q, want it to mention %q", tc.name, message, tc.want)
+			}
+		})
+	}
+
+	_, snap = get(t, srv.URL+"/__control/watch-script", "")
+	if snap["pendingEvents"] != float64(0) || len(snap["events"].([]any)) != 0 {
+		t.Fatalf("a rejected body mutated watch state: %v", snap)
 	}
 }
 

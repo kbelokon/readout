@@ -2,12 +2,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 
-import {
-    isClientLiveGeneration,
-    liveStreamBaseForURL,
-    liveStreamBaseFromTableRequest,
-    mintLiveGeneration,
-} from './live-url.js';
+import { isClientLiveGeneration, liveStreamBaseForURL, mintLiveGeneration } from './live-url.js';
 
 describe('Live generation', () => {
     test.each([
@@ -93,28 +88,12 @@ describe('Live raw URL identity', () => {
         expect(liveStreamBaseForURL(new URL('https://readout.test/pods'))).toBe('/pods/_stream');
     });
 
-    test('requires a real same-origin _table path', () => {
-        expect(liveStreamBaseFromTableRequest('/pods/_table')).toBe('/pods/_stream');
-        expect(liveStreamBaseFromTableRequest('?/pods/_table')).toBeNull();
-    });
-
-    test('normalizes same-origin table requests to a path-only stream identity', () => {
-        window.history.replaceState(null, '', '/');
-        expect(
-            liveStreamBaseFromTableRequest(
-                `${window.location.origin}/clusters/prod/pods/_table?sort=Name&%67=x#ignored`,
-            ),
-        ).toBe('/clusters/prod/pods/_stream?sort=Name&%67=x');
-        expect(liveStreamBaseFromTableRequest('./pods/_table?x=%ZZ&g=old#ignored')).toBe(
-            '/pods/_stream?x=%ZZ&g=old',
-        );
-    });
-
-    test('rejects foreign, non-table, malformed, and non-string request URLs', () => {
-        expect(liveStreamBaseFromTableRequest('https://foreign.invalid/pods/_table')).toBeNull();
-        expect(liveStreamBaseFromTableRequest('/pods?next=/_table')).toBeNull();
-        expect(liveStreamBaseFromTableRequest('?_table')).toBeNull();
-        expect(liveStreamBaseFromTableRequest('http://[invalid')).toBeNull();
-        expect(liveStreamBaseFromTableRequest(7)).toBeNull();
+    test('refuses to derive a stream target off this origin', () => {
+        expect(liveStreamBaseForURL(new URL('https://foreign.invalid/pods'))).toBe('');
+        // A protocol-relative pathname would make fetch() resolve to a foreign
+        // host even though the URL object itself is same-origin.
+        const smuggled = new URL('https://readout.test/pods');
+        Object.defineProperty(smuggled, 'pathname', { value: '//foreign.invalid/pods' });
+        expect(liveStreamBaseForURL(smuggled)).toBe('');
     });
 });

@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
+	"k8s.io/client-go/util/flowcontrol"
 )
 
 const discoveryTTL = 60 * time.Second
@@ -108,11 +109,16 @@ type Client struct {
 	// identity is the process-local key of the CREDENTIAL this client makes
 	// requests with -- see IdentityKey for the contract. It is guarded by mu
 	// because a client built as a struct literal fills it in on first use.
-	identity        string
-	discoveredAt    time.Time
-	namespacedTypes []ResourceType
-	clusterTypes    []ResourceType
-	preferred       map[string]string
+	identity string
+	// discoveryLimiter is the one client-side token bucket every discovery call
+	// on this client shares (client-go would otherwise mint a fresh one per
+	// discovery client). Built on first use because a struct-literal client has
+	// no config to size it from until then.
+	discoveryLimiter flowcontrol.RateLimiter
+	discoveredAt     time.Time
+	namespacedTypes  []ResourceType
+	clusterTypes     []ResourceType
+	preferred        map[string]string
 }
 
 // errAnonymousDenied is a Forbidden apiserver Status, so kube.IsForbidden
@@ -191,6 +197,9 @@ func newClientIdentity(cluster, host string) string {
 // The key is a map key, never a log line, a metric label, or a rendered value:
 // for a passthrough client it commits to the viewer's bearer token.
 func (c *Client) IdentityKey() string {
+	if c == nil {
+		return "|nil"
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.identity == "" {
@@ -356,6 +365,11 @@ func (rt contextRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	if err := rt.ctx.Err(); err != nil {
 		stop()
 		cancel()
+		// RoundTrip owns the request body once it is called, including on the
+		// paths where it never reaches the wire.
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
 		return nil, err
 	}
 	resp, err := rt.base.RoundTrip(req.Clone(requestCtx))
@@ -439,7 +453,12 @@ func (c *Client) discoverResources(ctx context.Context) ([]*metav1.APIResourceLi
 		base = http.DefaultTransport
 	}
 	httpClient.Transport = contextRoundTripper{ctx: ctx, base: base}
-	disco, err := discovery.NewDiscoveryClientForConfigAndClient(c.config, &httpClient)
+	// client-go builds a fresh token bucket for every discovery client it
+	// constructs, so a per-call client means a per-call full bucket and the
+	// configured QPS bounds nothing. Hand it the one bucket this Client shares.
+	cfg := *c.config
+	cfg.RateLimiter = c.discoveryRateLimiter()
+	disco, err := discovery.NewDiscoveryClientForConfigAndClient(&cfg, &httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -447,10 +466,42 @@ func (c *Client) discoverResources(ctx context.Context) ([]*metav1.APIResourceLi
 		_, lists, discoverErr := disco.ServerGroupsAndResources()
 		return lists, discoverErr
 	})
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	return discoveryOutcome(ctx.Err(), lists, err)
+}
+
+// discoveryOutcome decides what a finished discovery call reports. A completed
+// discovery is a completed discovery: the deadline is only reported when the
+// call itself came back empty-handed. Reporting it over a full result throws
+// the result away AND leaves the TTL cache empty, so the next request pays for
+// discovery all over again.
+func discoveryOutcome(ctxErr error, lists []*metav1.APIResourceList, err error) ([]*metav1.APIResourceList, error) {
+	if ctxErr != nil && (err != nil || len(lists) == 0) {
 		return nil, fmt.Errorf("kube discovery: %w", ctxErr)
 	}
 	return lists, err
+}
+
+// discoveryBurst matches client-go's own discovery burst: resolving every API
+// group in one pass is expected to be bursty.
+const discoveryBurst = 300
+
+// discoveryRateLimiter memoizes the token bucket every discovery call on this
+// client shares.
+func (c *Client) discoveryRateLimiter() flowcontrol.RateLimiter {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.discoveryLimiter == nil {
+		qps := c.config.QPS
+		if qps == 0 {
+			qps = rest.DefaultQPS
+		}
+		burst := c.config.Burst
+		if burst == 0 {
+			burst = discoveryBurst
+		}
+		c.discoveryLimiter = flowcontrol.NewTokenBucketRateLimiter(qps, burst)
+	}
+	return c.discoveryLimiter
 }
 
 func (c *Client) ResourceTypes(ctx context.Context) ([]ResourceType, []ResourceType, error) {

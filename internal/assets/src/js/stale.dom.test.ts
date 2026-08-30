@@ -127,6 +127,27 @@ describe('list stale lifecycle', () => {
         expect(part('[data-stale-countdown]').textContent).toBe('…');
     });
 
+    // The banner is a closed server template, but a partial render (a template
+    // edit that drops one node, an older cached document) must degrade rather
+    // than take the whole stale path down with it.
+    test.each([
+        '.bn-body:not(.ro-stale-unavailable)',
+        '.bn-body.ro-stale-unavailable',
+        '.ro-stale-retry',
+        '.ro-stale-reload',
+        '[data-stale-countdown]',
+    ])('a banner missing %s still paints both variants without throwing', (selector) => {
+        vi.useFakeTimers();
+        part(selector).remove();
+
+        expect(() => markListStale()).not.toThrow();
+        expect(banner()).toBeVisible();
+        expect(() => markLiveUnavailable()).not.toThrow();
+        expect(banner()).toBeVisible();
+        expect(() => noteStaleRetryAt(Date.now() + 5000)).not.toThrow();
+        expect(() => clearListStale()).not.toThrow();
+    });
+
     test('removing the stale UI stops its active countdown ticker', () => {
         vi.useFakeTimers();
 

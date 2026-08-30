@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	fakeapi "github.com/kbelokon/readout/internal/fakekube"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 )
 
@@ -769,4 +771,146 @@ func TestSetClusterIdentityNamesTheCredential(t *testing.T) {
 	if !strings.HasPrefix(viewer.IdentityKey(), client.IdentityKey()+":") {
 		t.Fatalf("derived identity %q should extend the named base identity", viewer.IdentityKey())
 	}
+}
+
+// contextRoundTripper is the only thing that binds client-go's context-less
+// discovery API to a deadline, and both of its defensive exits release a
+// context.AfterFunc registration. Neither is reachable through a real discovery
+// call, so they are exercised directly.
+func TestContextRoundTripperReleasesItsCancellationHooks(t *testing.T) {
+	t.Run("a context that expired before the call closes the request body", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		body := &closeCountingBody{}
+		req, err := http.NewRequest(http.MethodPost, "https://example.invalid/apis", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := contextRoundTripper{ctx: ctx, base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("an expired context must not reach the wire")
+			return nil, nil
+		})}
+		resp, err := rt.RoundTrip(req)
+		if resp != nil || !errors.Is(err, context.Canceled) {
+			t.Fatalf("RoundTrip = (%v, %v), want (nil, context.Canceled)", resp, err)
+		}
+		// RoundTrip owns the body once it is called, on every exit path.
+		if got := body.closes.Load(); got != 1 {
+			t.Fatalf("request body closes = %d, want 1", got)
+		}
+	})
+
+	t.Run("a bodyless response is returned as is", func(t *testing.T) {
+		rt := contextRoundTripper{ctx: context.Background(), base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusNoContent}, nil
+		})}
+		req, err := http.NewRequest(http.MethodGet, "https://example.invalid/apis", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := rt.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("RoundTrip: %v", err)
+		}
+		if resp.Body != nil {
+			t.Fatalf("body = %v, want the upstream's own nil body", resp.Body)
+		}
+	})
+
+	t.Run("an upstream error is returned as is", func(t *testing.T) {
+		want := errors.New("dial failed")
+		rt := contextRoundTripper{ctx: context.Background(), base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, want
+		})}
+		req, err := http.NewRequest(http.MethodGet, "https://example.invalid/apis", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rt.RoundTrip(req); !errors.Is(err, want) {
+			t.Fatalf("RoundTrip err = %v, want %v", err, want)
+		}
+	})
+}
+
+// A completed discovery is a completed discovery. Re-reporting the deadline
+// after a full result came back throws the result away AND leaves the 60s cache
+// empty, so the next request pays for discovery all over again.
+func TestDiscoveryKeepsAResultThatRacedItsOwnDeadline(t *testing.T) {
+	full := []*metav1.APIResourceList{{GroupVersion: "v1"}}
+	discoverErr := errors.New("apiserver said no")
+	tests := []struct {
+		name      string
+		ctxErr    error
+		lists     []*metav1.APIResourceList
+		err       error
+		wantLists int
+		wantErr   error
+	}{
+		{"a full result that raced the deadline is kept", context.DeadlineExceeded, full, nil, 1, nil},
+		{"an empty result under a live context is not an error", nil, nil, nil, 0, nil},
+		{"an empty result plus a deadline is the timeout", context.DeadlineExceeded, nil, nil, 0, context.DeadlineExceeded},
+		{"a failed call plus a deadline is the timeout", context.Canceled, full, discoverErr, 0, context.Canceled},
+		{"a failed call under a live context keeps its own error", nil, nil, discoverErr, 0, discoverErr},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lists, err := discoveryOutcome(tc.ctxErr, tc.lists, tc.err)
+			if len(lists) != tc.wantLists {
+				t.Fatalf("lists = %d, want %d", len(lists), tc.wantLists)
+			}
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// Every discovery call builds a fresh client-go discovery client, and client-go
+// mints a token bucket per client. Without one shared limiter the configured
+// QPS bounds nothing at all.
+func TestDiscoveryCallsShareOneRateLimiter(t *testing.T) {
+	client, err := NewClient(&rest.Config{Host: "https://one.example"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := client.discoveryRateLimiter()
+	if first == nil {
+		t.Fatal("discovery rate limiter is nil")
+	}
+	if second := client.discoveryRateLimiter(); second != first {
+		t.Fatal("each discovery call built its own token bucket")
+	}
+}
+
+// The shared identity derivation is reached with a nil base by anything that
+// caches a passthrough client; a panic there would take down the request.
+func TestIdentityKeyOfANilClientIsStable(t *testing.T) {
+	var client *Client
+	if got := client.IdentityKey(); got == "" {
+		t.Fatal("a nil client must still yield an identity")
+	}
+	if got, want := client.IdentityKey(), (*Client)(nil).IdentityKey(); got != want {
+		t.Fatalf("nil identity = %q, want the stable %q", got, want)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type closeCountingBody struct {
+	closes atomic.Int64
+}
+
+func (b *closeCountingBody) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (b *closeCountingBody) Close() error {
+	b.closes.Add(1)
+	return nil
 }
