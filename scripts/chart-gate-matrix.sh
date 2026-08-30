@@ -101,6 +101,16 @@ expect_fail "schema rejects existingSecret with empty key" \
 expect_fail "gate rejects metrics.port equal to config.port" \
   --set metrics.enabled=true --set metrics.port=8080
 
+# Gate: metrics peers named while there is no metrics port. Without the gate
+# the metricsFrom rule silently does not render and the operator believes the
+# scraper is admitted.
+expect_fail "gate rejects networkPolicy.ingress.metricsFrom without metrics.enabled" \
+  --set networkPolicy.enabled=true \
+  --set 'networkPolicy.ingress.metricsFrom[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring'
+expect_pass "networkPolicy.ingress.metricsFrom with metrics.enabled renders" \
+  --set networkPolicy.enabled=true --set metrics.enabled=true \
+  --set 'networkPolicy.ingress.metricsFrom[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring'
+
 # Rendered value: the app binds LOOPBACK when listenAddress is empty under
 # auth.mode none (its safe default for a bare binary). Inside a pod that means
 # kubelet probes and the Service cannot reach it, so the chart must render an

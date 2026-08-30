@@ -1,0 +1,8 @@
+# Golden case: enabled with no peers at all is default-deny ingress (a null
+# rule list under policyTypes Ingress) and DNS-only egress. This is the
+# baseline every NetworkPolicy install starts from; pin it so it cannot drift
+# into "allow something by default".
+metrics:
+  enabled: true
+networkPolicy:
+  enabled: true

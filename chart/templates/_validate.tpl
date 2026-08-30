@@ -10,6 +10,7 @@ startup checks and `readout config validate`.
 {{- include "readout.validate.selectorLabels" . -}}
 {{- include "readout.validate.pdb" . -}}
 {{- include "readout.validate.ports" . -}}
+{{- include "readout.validate.networkPolicy" . -}}
 {{- end -}}
 
 {{/*
@@ -59,7 +60,18 @@ is set) -- metrics silently vanish. Fail at render time naming both keys.
 {{- if .Values.metrics.enabled -}}
   {{- $app := int (.Values.config.port | default 8080) -}}
   {{- if eq (int .Values.metrics.port) $app -}}
-    {{- fail (printf "metrics.port (%v) equals config.port (%v): both listeners would bind one port, so one of them fails -- the pod crash-loops or /metrics silently disappears. Pick a different metrics.port." .Values.metrics.port $app) -}}
+    {{- fail (printf "metrics.port (%v) equals config.port (%v): both listeners would try to bind one port, so one of them fails -- the pod crash-loops or /metrics silently disappears. Pick a different metrics.port." .Values.metrics.port $app) -}}
   {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+networkPolicy.ingress.metricsFrom names peers for the metrics port. With
+metrics.enabled false there is no metrics port, so the rule would silently not
+render and the operator would believe the scraper is admitted. Fail instead.
+*/}}
+{{- define "readout.validate.networkPolicy" -}}
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.ingress.metricsFrom (not .Values.metrics.enabled) -}}
+  {{- fail "networkPolicy.ingress.metricsFrom is set but metrics.enabled is false: there is no metrics port to open. Set metrics.enabled=true, or move those peers to networkPolicy.ingress.from if they really need the app port." -}}
 {{- end -}}
 {{- end -}}

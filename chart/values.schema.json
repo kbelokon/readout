@@ -457,6 +457,12 @@
               "items": {
                 "type": "object"
               }
+            },
+            "metricsFrom": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
             }
           }
         },
