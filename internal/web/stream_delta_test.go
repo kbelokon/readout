@@ -737,6 +737,53 @@ func TestStreamLiveV2EncodedDeltaOver256KiBFallsBackWithoutConsumingSequence(t *
 	}
 }
 
+// The diff must stop at the wire budget rather than render the whole table and
+// have the handler throw it away: an over-budget delta is always replaced by a
+// full snapshot, so any fragment rendered past the limit is paid for twice.
+func TestStreamLiveV2OverBudgetDeltaStopsRenderingAtTheLimit(t *testing.T) {
+	const rowCount = 40
+	defaults := defaultStreamLiveRenderers()
+	rowRenders, cardRenders := 0, 0
+	renderers := streamLiveRenderers{
+		full: defaults.full,
+		projection: liveProjectionRenderers{
+			row: func(context.Context, *templates.ListData, *templates.TableData, *templates.TableRow) (string, error) {
+				rowRenders++
+				return "<tr>" + strings.Repeat("x", 40_000) + "</tr>", nil
+			},
+			card: func(context.Context, *templates.ListData, *templates.TableData, *templates.TableRow) (string, error) {
+				cardRenders++
+				return "<div>card</div>", nil
+			},
+			region: defaults.projection.region,
+		},
+	}
+	st := newLiveV2TestSession(renderers)
+	before := liveProjectionFixture(rowCount)
+	now := time.Unix(1_800_000_950, 0)
+	initial := prepareInitialLiveSnapshot(t, st, &before, now)
+	st.commitLivePush(&initial, now)
+	st.lastSnapshotBytes = streamMaxEventBytes
+	after := cloneLiveProjectionFixture(&before)
+	for i := range after.Tables[0].Rows {
+		after.Tables[0].Rows[i].StatusClass = "warn"
+	}
+
+	rowRenders, cardRenders = 0, 0
+	prepared, err := st.prepareLiveV2Data(context.Background(), &after, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.kind != livePreparedSnapshot || prepared.reason != liveSnapshotDeltaLimit {
+		t.Fatalf("over-budget delta = %d/%s, want snapshot/delta-limit", prepared.kind, prepared.reason)
+	}
+	// 40 KiB-ish per row crosses the 256 KiB delta budget on the seventh row.
+	const wantRenders = 7
+	if rowRenders != wantRenders || cardRenders != wantRenders {
+		t.Fatalf("renders = %d rows/%d cards, want %d each (of %d changed rows)", rowRenders, cardRenders, wantRenders, rowCount)
+	}
+}
+
 func TestStreamLiveV2CheckpointCountAndTime(t *testing.T) {
 	base := liveProjectionFixture(3)
 	now := time.Unix(1_800_000_900, 0)

@@ -130,7 +130,8 @@ type liveProjectionResult struct {
 
 // liveProjectionRenderers are injectable both to isolate the pure diff in tests
 // and to make render-count assertions exact. There is intentionally no full-list
-// renderer here: snapshot rendering and wire-size policy belong to the handler.
+// renderer here: the diff stops at the wire budget, but choosing and rendering
+// the snapshot that replaces an over-budget delta belongs to the handler.
 type liveProjectionRenderers struct {
 	row    func(context.Context, *templates.ListData, *templates.TableData, *templates.TableRow) (string, error)
 	card   func(context.Context, *templates.ListData, *templates.TableData, *templates.TableRow) (string, error)
@@ -264,10 +265,12 @@ func projectLiveList(data *templates.ListData) (liveProjectionState, error) {
 	return projection, nil
 }
 
-// diffLiveList renders only changed/new rows and changed closed regions. It does
-// not mutate previous or current. deletedKeys classifies a missing prior key as
-// an actual watch deletion; all other exits are projection changes (for example
-// a row no longer matching the active filter).
+// diffLiveList renders only changed/new rows and changed closed regions, and
+// stops as soon as the wire budget is spent so an over-budget delta never pays
+// for fragments the handler would throw away. It does not mutate previous or
+// current. deletedKeys classifies a missing prior key as an actual watch
+// deletion; all other exits are projection changes (for example a row no longer
+// matching the active filter).
 func diffLiveList(
 	ctx context.Context,
 	previous *liveProjectionState,
@@ -330,6 +333,20 @@ func diffLiveList(
 		delta.Removals = append(delta.Removals, liveProjectionRemoval{Key: key, Cause: cause})
 	}
 
+	// The wire budget is spent while the diff renders, not audited after it.
+	// An over-budget delta is discarded and the whole table is re-rendered as a
+	// snapshot, so every fragment produced past the limit is work paid twice.
+	// These checks mirror liveDeltaWireSafe exactly, so the fallback a caller
+	// sees is unchanged -- only the wasted rendering is gone.
+	if len(delta.Removals) > streamMaxDeltaOperations {
+		return liveProjectionSnapshot(&result, liveSnapshotDeltaLimit), nil
+	}
+	orderChanged := !slices.Equal(previous.order, current.order)
+	if orderChanged && len(current.order) > streamMaxDeltaOperations {
+		return liveProjectionSnapshot(&result, liveSnapshotDeltaLimit), nil
+	}
+	fragmentBytes := 0
+
 	table := &data.Tables[0]
 	for i := range table.Rows {
 		row := &table.Rows[i]
@@ -350,6 +367,9 @@ func diffLiveList(
 		if rowHTML == "" {
 			return liveProjectionResult{}, fmt.Errorf("render Live row %q: empty fragment", row.Key)
 		}
+		if len(rowHTML) > streamMaxFragmentBytes {
+			return liveProjectionSnapshot(&result, liveSnapshotDeltaLimit), nil
+		}
 		upsert := liveProjectionUpsert{Key: row.Key, RowHTML: rowHTML}
 		if current.mode == liveProjectionCards {
 			if renderers.card == nil {
@@ -362,11 +382,18 @@ func diffLiveList(
 			if cardHTML == "" {
 				return liveProjectionResult{}, fmt.Errorf("render Live card %q: empty fragment", row.Key)
 			}
+			if len(cardHTML) > streamMaxFragmentBytes {
+				return liveProjectionSnapshot(&result, liveSnapshotDeltaLimit), nil
+			}
 			upsert.CardHTML = cardHTML
 		}
 		delta.Upserts = append(delta.Upserts, upsert)
+		fragmentBytes += len(upsert.RowHTML) + len(upsert.CardHTML)
+		if fragmentBytes > streamMaxDeltaBytes || len(delta.Removals)+len(delta.Upserts) > streamMaxDeltaOperations {
+			return liveProjectionSnapshot(&result, liveSnapshotDeltaLimit), nil
+		}
 	}
-	if !slices.Equal(previous.order, current.order) {
+	if orderChanged {
 		delta.Order = slices.Clone(current.order)
 	}
 
@@ -392,7 +419,14 @@ func diffLiveList(
 		if html == "" {
 			return liveProjectionResult{}, fmt.Errorf("render Live %s region: empty fragment", region.name)
 		}
+		if len(html) > streamMaxFragmentBytes {
+			return liveProjectionSnapshot(&result, liveSnapshotDeltaLimit), nil
+		}
 		delta.Regions = append(delta.Regions, liveProjectionRegionPatch{Region: region.name, HTML: html})
+		fragmentBytes += len(html)
+		if fragmentBytes > streamMaxDeltaBytes {
+			return liveProjectionSnapshot(&result, liveSnapshotDeltaLimit), nil
+		}
 	}
 
 	if len(delta.Removals) == 0 && len(delta.Upserts) == 0 && len(delta.Order) == 0 && len(delta.Regions) == 0 {

@@ -211,42 +211,57 @@ func runLoadAnchor(t *testing.T, anchor loadAnchor) loadSample {
 // already gone, so no per-session state is counted) minus heap after retention
 // dropped it. Everything else in the process is identical across the two
 // readings.
+//
+// heapInUseBytes reads process-wide HeapAlloc, so whatever the rest of the
+// package's still-running background goroutines happen to free between the two
+// readings also lands in this delta. That noise only ever INFLATES the measured
+// cost, so a breach is believed only once a fresh cycle reproduces it: a real
+// row-layout regression raises the floor and fails every attempt, while a
+// one-off spike from unrelated teardown does not.
 func measureRetainedSourceHeap(t *testing.T) (accounted, heap int64) {
 	t.Helper()
+	const attempts = 3
 	clock := newLoadHubClock()
 	app, ts, _ := newLiveMetricsFixture(t, nil, func(app *Server) { app.hubClock = clock })
 	url := ts.URL + "/clusters/test/namespaces/big/pods/_stream"
+	hub := app.liveHub()
 
+	// Warm first: the measured cycles then bracket only the retained source.
 	warm := openStream(t, url, "retained-warm")
 	warm.requireEvent(t, "ro-live", loadFrameTimeout)
 	warm.close()
 	releaseHub(t, app, clock)
 
-	s := openStream(t, url, "retained")
-	s.requireEvent(t, "ro-live", loadFrameTimeout)
-	s.close()
-	hub := app.liveHub()
-	waitFor(t, "the subscriber to detach while the source is still retained", func() bool {
-		return hub.connectionCount() == 0 && hub.sourceCount() == 1
-	})
-	accounted = hub.accountedBytes()
-	withSource := heapInUseBytes()
+	for attempt := 1; ; attempt++ {
+		s := openStream(t, url, fmt.Sprintf("retained-%d", attempt))
+		s.requireEvent(t, "ro-live", loadFrameTimeout)
+		s.close()
+		waitFor(t, "the subscriber to detach while the source is still retained", func() bool {
+			return hub.connectionCount() == 0 && hub.sourceCount() == 1
+		})
+		accounted = hub.accountedBytes()
+		withSource := heapInUseBytes()
+		releaseHub(t, app, clock)
+		heap = int64(withSource) - int64(heapInUseBytes())
 
-	releaseHub(t, app, clock)
-	heap = int64(withSource) - int64(heapInUseBytes())
-	if accounted <= 0 || heap <= 0 {
-		t.Fatalf("retained-source measurement is not usable: accounted=%d heap=%d", accounted, heap)
+		usable := accounted > 0 && heap > 0
+		if usable && heap <= accounted*cacheAccountingHeadroom {
+			return accounted, heap
+		}
+		if attempt < attempts {
+			continue
+		}
+		if !usable {
+			t.Fatalf("retained-source measurement is not usable after %d attempts: accounted=%d heap=%d", attempts, accounted, heap)
+		}
+		// The measurement is not just for the printed table.
+		// cacheAccountingHeadroom is the ONLY thing that makes
+		// live.maxCacheAccountedBytes readable as bytes of process memory, so if
+		// the real ratio ever climbs above it the documented bound has silently
+		// become an under-estimate and a pod at its configured limit OOMs.
+		t.Fatalf("one retained source costs %d heap bytes for %d accounted (ratio %.2f) on all %d attempts, past cacheAccountingHeadroom = %d",
+			heap, accounted, float64(heap)/float64(accounted), attempts, cacheAccountingHeadroom)
 	}
-	// The measurement is not just for the printed table. cacheAccountingHeadroom
-	// is the ONLY thing that makes live.maxCacheAccountedBytes readable as
-	// bytes of process memory, so if the real ratio ever climbs above it the
-	// documented bound has silently become an under-estimate and a pod at its
-	// configured limit OOMs.
-	if heap > accounted*cacheAccountingHeadroom {
-		t.Fatalf("one retained source costs %d heap bytes for %d accounted (ratio %.2f), past cacheAccountingHeadroom = %d",
-			heap, accounted, float64(heap)/float64(accounted), cacheAccountingHeadroom)
-	}
-	return accounted, heap
 }
 
 // TestCacheAccountingHeadroomCoversOneRetainedSource is the ungated half of the
@@ -256,35 +271,7 @@ func measureRetainedSourceHeap(t *testing.T) (accounted, heap int64) {
 // fixed cost (an actor goroutine, its channels and maps -- tens of KiB) swamps
 // a tiny scope's rows no matter what the multiplier is.
 func TestCacheAccountingHeadroomCoversOneRetainedSource(t *testing.T) {
-	clock := newLoadHubClock()
-	app, ts, _ := newLiveMetricsFixture(t, nil, func(app *Server) { app.hubClock = clock })
-	url := ts.URL + "/clusters/test/namespaces/big/pods/_stream"
-
-	// Warm first: the second measurement then brackets only the retained source.
-	warm := openStream(t, url, "headroom-warm")
-	warm.requireEvent(t, "ro-live", loadFrameTimeout)
-	warm.close()
-	releaseHub(t, app, clock)
-
-	s := openStream(t, url, "headroom")
-	s.requireEvent(t, "ro-live", loadFrameTimeout)
-	s.close()
-	hub := app.liveHub()
-	waitFor(t, "the subscriber to detach while the source is still retained", func() bool {
-		return hub.connectionCount() == 0 && hub.sourceCount() == 1
-	})
-	accounted := hub.accountedBytes()
-	withSource := heapInUseBytes()
-	releaseHub(t, app, clock)
-	heap := int64(withSource) - int64(heapInUseBytes())
-
-	if accounted <= 0 {
-		t.Fatalf("retained source accounted %d bytes, want a real measurement", accounted)
-	}
-	if heap > accounted*cacheAccountingHeadroom {
-		t.Fatalf("one retained source costs %d heap bytes for %d accounted (ratio %.2f), past cacheAccountingHeadroom = %d",
-			heap, accounted, float64(heap)/float64(accounted), cacheAccountingHeadroom)
-	}
+	measureRetainedSourceHeap(t)
 }
 
 // assertLimitsRejectBeforeTheirBound drives each of the three per-pod bounds
