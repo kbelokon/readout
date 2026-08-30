@@ -292,11 +292,10 @@ only the ingress/egress you explicitly allow.
   53. `networkPolicy.egress.to` is a list of verbatim `NetworkPolicyEgressRule`s
   for **every** destination readout dials: the in-cluster **Kubernetes
   apiserver**; each **remote apiserver** configured through
-  `config.kubeconfigPath`, `config.clusters`, `config.externalClusters` or Argo
-  CD cluster Secrets; your **OIDC issuer**; and the **hook endpoints**
-  (`config.hooks.authorizationUrl` / `resourcePrerenderUrl`). Left empty, readout
-  can reach only DNS — every cluster view and OIDC login breaks — so scope these
-  to your endpoints.
+  `config.kubeconfigPath`, `config.clusters` or Argo CD cluster Secrets; your
+  **OIDC issuer**; and the **hook endpoints** (`config.hooks.authorizationUrl` /
+  `resourcePrerenderUrl`). Left empty, readout can reach only DNS — every
+  cluster view and OIDC login breaks — so scope these to your endpoints.
 
 ```yaml
 metrics:

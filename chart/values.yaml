@@ -299,12 +299,13 @@ networkPolicy:
       #       kubernetes.io/metadata.name: monitoring
   # When testFramework.enabled, one more rule admits the `helm test` pod (by its
   # instance + component labels, this namespace only) to the app port.
+
   # Egress from readout's pods. DNS (UDP/TCP 53) is always allowed when egress is
   # rendered. Add EVERY destination readout dials: the in-cluster Kubernetes
   # apiserver; each remote apiserver configured through config.kubeconfigPath,
-  # config.clusters, config.externalClusters or Argo CD cluster Secrets; your
-  # OIDC issuer; and the hook endpoints (config.hooks.authorizationUrl /
-  # resourcePrerenderUrl). Each entry is a verbatim NetworkPolicyEgressRule.
+  # config.clusters or Argo CD cluster Secrets; your OIDC issuer; and the hook
+  # endpoints (config.hooks.authorizationUrl / resourcePrerenderUrl). Each entry
+  # is a verbatim NetworkPolicyEgressRule.
   egress:
     # Allow DNS resolution (kube-dns / CoreDNS). Set false only if you pin every
     # egress destination by ipBlock and need no name resolution.
