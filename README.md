@@ -145,6 +145,7 @@ Everything that is not a flag is a field in `readout.yaml`, parsed with `sigs.k8
 - **sidebar** — an **ordered** list of navigation groups; groups render top-to-bottom in the order written, each a heading `label` plus its `resources`. Omit it to use the built-in default layout.
 - **preferredApiVersions** — pin a preferred `apiVersion` per resource-type plural when several versions are served.
 - **search** — `defaultResourceTypes`, `offeredResourceTypes`, and `maxConcurrency` for multi-resource search.
+- **live** — per-pod bounds on the Live (SSE) surface: `maxConnections` (open Live streams this pod serves, default 512), `maxSources` (distinct upstream LIST+watch streams it owns, 128), and `maxCacheAccountedBytes` (retained object state summed across those sources, `128Mi`). Browsers watching the same cluster/resource/namespace/selector under the same credentials share **one** upstream watch, so `maxSources` normally sits far below `maxConnections`. All three are checked independently at admission; a refused subscriber gets `429` with `Retry-After` and the page keeps working through the Refresh button. The values are per pod, not deployment-wide — see [Live capacity profile](#live-capacity-profile) for the measured numbers behind the defaults.
 - **namespaces** — `includeNamespaces` / `excludeNamespaces` RE2 regular expressions (exclude wins; empty include means all; cluster-scoped objects are never namespace-excluded).
 - **listenAddress** — bind host for **both** the app and metrics listeners (the port stays per-listener). Empty binds all interfaces (`:port`). **Safe default:** when `listenAddress` is empty **and** `auth.mode` is `none`, readout binds loopback (`127.0.0.1`) so a no-auth instance is not reachable off-host; an explicit value always wins. Binding a network address under `auth.mode: none` logs a loud startup warning (the loaded clusters and auth mode are named) but **never** refuses to start — there are no blocking startup gates. While bound to loopback under no-auth, request `Host` headers must be a loopback name (`localhost` / `127.0.0.1` / `[::1]`), a DNS-rebinding guard that never blocks your own local access.
 - **headers auth** — `auth.mode: headers` trusts the identity headers (`auth.trustedHeaders.user` / `email` / `groups`). By default any client that can reach readout directly can set `X-Forwarded-User` and impersonate any user, so headers mode logs a loud startup warning until you constrain it. Set `auth.trustedHeaders.trustedProxyCidrs` to your stripping proxy's CIDR(s): header identity is then honored only when the **TCP peer** (the real connection address — never a forwarded header like `X-Forwarded-For`) falls inside one of the CIDRs, and a peer outside the range (or one that does not resolve to an IP) is rejected. Leaving it empty keeps the trust-all behavior plus the warning; it is **never** a startup error. The groups header is bounded (group count and total length) so an oversized header cannot fan out.
@@ -230,13 +231,76 @@ The session secret can also be read from a mounted file via the top-level `sessi
 
 Prometheus metrics exposed at `/metrics`:
 
-| Metric                                  | Type      | Meaning                              |
-| --------------------------------------- | --------- | ------------------------------------ |
-| `readout_http_requests_total`           | counter   | HTTP requests served                 |
-| `readout_http_request_duration_seconds` | histogram | HTTP request latency                 |
-| `readout_up`                            | gauge     | process liveness (1 while serving)   |
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `readout_http_requests_total` | counter | `method`, `path`, `status` | HTTP requests served |
+| `readout_http_request_duration_seconds` | histogram | `method`, `path` | HTTP request latency |
+| `readout_up` | gauge | — | process liveness (1 while serving) |
+| `readout_kube_requests_total` | counter | `target_cluster`, `operation`, `result` | kube API calls made on a viewer's behalf |
+| `readout_kube_request_duration_seconds` | histogram | `target_cluster`, `operation` | kube API latency |
+| `readout_hook_duration_seconds` | histogram | `hook`, `result` | outbound JSON hook call latency |
+| `readout_live_connections_active` | gauge | — | open Live SSE connections on this pod |
+| `readout_live_connections_capacity` | gauge | — | resolved `live.maxConnections` |
+| `readout_live_admissions_total` | counter | `result` | Live admission decisions, one per request that reached a capacity decision |
+| `readout_live_time_to_snapshot_seconds` | histogram | — | Live request arriving → its first snapshot frame flushed |
+| `readout_live_session_duration_seconds` | histogram | — | how long an admitted session stayed connected, sampled once at its terminal |
+| `readout_stream_terminal_total` | counter | `reason` | Live stream terminations; exactly one per admitted session |
+| `readout_watchhub_sources_active` | gauge | — | distinct upstream LIST+watch sources this pod owns |
+| `readout_watchhub_sources_capacity` | gauge | — | resolved `live.maxSources` |
+| `readout_watchhub_subscribers_active` | gauge | — | Live subscriptions attached to those sources |
+| `readout_watchhub_sources_total` | counter | `result` | source lookups: a new watch, a shared one, or a failure |
+| `readout_watchhub_relists_total` | counter | — | recovery LISTs after an expired watch resourceVersion (410 Gone) |
+| `readout_watchhub_cache_accounted_bytes` | gauge | — | accounted retained Table state across this pod's sources |
+| `readout_watchhub_cache_accounted_bytes_capacity` | gauge | — | resolved `live.maxCacheAccountedBytes` |
+| `readout_watchhub_event_to_flush_seconds` | histogram | — | a source applying a change → a subscriber flushing the frame carrying it |
+| `readout_watchhub_snapshot_bytes` | histogram | — | accounted size of one authoritative snapshot (initial list or relist) |
+
+Every label enum is **closed**, and the counters are pre-initialized with all of their values — so an alert can tell "never happened" (an explicit `0`) from "the series does not exist":
+
+- `operation` — `discovery`, `list`, `get`, `table`, `watch`, `logs`
+- `result` on the kube metrics — `ok`, or the shared failure classification: `forbidden`, `unauthorized`, `not_found`, `timeout`, `unreachable`, `upstream_5xx`, `internal`
+- `hook` — `authorization`, `prerender`; its `result` — `ok`, `error`
+- `result` on `readout_live_admissions_total` — `accepted`, `connection_limit`, `source_limit`, `cache_limit` (one per Live bound)
+- `result` on `readout_watchhub_sources_total` — `created`, `reused`, `failed`
+- `reason` on `readout_stream_terminal_total` — `auth`, `watch-failed`, `shutdown`, `lifetime`, `client-close`, `slow-writer`, `protocol`
+
+`target_cluster` is bounded by your configured cluster names and `path` by the registered route patterns. Nothing on this surface is labelled by user, token, namespace, resource type, selector, or object, so the cardinality is bounded regardless of traffic.
 
 When `metricsPort` is set, `/metrics` moves to its own listener and is disabled on the main port; otherwise it is served on the main port.
+
+### Reading the Live surface
+
+Each pod publishes its own resolved bounds next to the current values, so utilization is readable from the scrape alone — you never have to know what that pod's config file said. (`pod` below comes from your scrape config, e.g. a ServiceMonitor's target labels; readout does not add it.)
+
+```promql
+# per-pod utilization of each Live bound (1.0 = full, admission starts refusing)
+readout_live_connections_active / readout_live_connections_capacity
+readout_watchhub_sources_active / readout_watchhub_sources_capacity
+readout_watchhub_cache_accounted_bytes / readout_watchhub_cache_accounted_bytes_capacity
+
+# sharing ratio: browsers served per upstream watch (1 = no sharing, higher is better)
+readout_watchhub_subscribers_active / clamp_min(readout_watchhub_sources_active, 1)
+
+# admission rejects, by the bound that refused -- any sustained nonzero is alert-worthy
+sum by (pod, result) (rate(readout_live_admissions_total{result!="accepted"}[5m]))
+
+# repeated watch failures: sources dying, and relist churn after expired resourceVersions
+sum by (pod) (rate(readout_stream_terminal_total{reason="watch-failed"}[5m]))
+sum by (pod) (rate(readout_watchhub_relists_total[5m]))
+
+# p99 delivery latency: a change lands in the cluster -> a browser gets the frame
+histogram_quantile(0.99, sum by (le) (rate(readout_watchhub_event_to_flush_seconds_bucket[5m])))
+```
+
+The p50 of `event_to_flush` normally sits near the push-coalescing floor (~300 ms) — that is the policy working, not latency. Watch the p99 and the utilization ratios instead.
+
+### Live across multiple replicas
+
+- **The `live` limits are per pod.** With N replicas the deployment-wide ceiling is N times each value, and each pod refuses on its own bounds — a `429` from one pod says nothing about the others.
+- **Sharing is per pod too.** Two browsers watching the same scope share one upstream LIST+watch only if they landed on the same pod, so the worst-case upstream cost of a scope is one watch per replica, never one per browser. Fewer, larger replicas share better; more, smaller replicas isolate better.
+- **No sticky sessions are required.** A Live stream is one long-lived request to whichever pod accepted it, and the WatchHub is process-local — it holds nothing another pod needs. A reconnect may land on any replica and simply re-snapshots there. Session affinity improves the sharing ratio; nothing breaks without it.
+- **OIDC across replicas needs one shared `READOUT_SESSION_SECRET`.** The OIDC session is a sealed cookie with no server-side store, so every replica must sign with the same secret — otherwise a reconnect that lands on another pod is logged out. The chart prints a loud NOTES warning for `auth.mode: oidc` with `replicaCount > 1` and no chart-visible secret.
+- **Inspect the Live gauges by pod.** Summing `_active` across replicas hides the case that matters: one saturated pod while the rest idle.
 
 ### Live capacity profile
 
