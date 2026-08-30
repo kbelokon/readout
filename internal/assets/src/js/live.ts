@@ -571,10 +571,12 @@ function handleV2Frame(
         return;
     }
     addCounter('terminals');
-    // `auth` is the one terminal a retry cannot survive: the session itself
-    // expired. Every other reason (a rolling pod, a failed watch, a recycled
-    // 12h session) is exactly what the reconnect ladder exists for.
-    if (envelope.reason === 'auth') {
+    // Two terminals a retry cannot survive: `auth` (the session itself expired)
+    // and `protocol` (the server could not render or encode this list, so the
+    // identical next attempt fails identically). Every other reason -- a
+    // rolling pod, a failed watch, a recycled 12h session -- is exactly what
+    // the reconnect ladder exists for.
+    if (envelope.reason === 'auth' || envelope.reason === 'protocol') {
         enterUnavailable();
         return;
     }

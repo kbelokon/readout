@@ -118,8 +118,9 @@ const (
 	streamChurnEvents = 10
 
 	// streamMaxEventBytes bounds one JSON payload before anything is written to
-	// the response. Live is optional, so an abnormally large rendered table can
-	// close the stream and fall back to the ordinary bounded polling path.
+	// the response. Live is optional, so an abnormally large rendered table
+	// closes the stream with the `protocol` terminal and the browser stops
+	// retrying it -- the one-shot Refresh button is still the way to re-read.
 	streamMaxEventBytes = 16 << 20
 
 	// A generation is reflected in every stream frame. Bound the v2 header
@@ -131,12 +132,14 @@ const (
 )
 
 // The closed terminal vocabulary. Exactly one of these is counted per session
-// (streamSession.finish), and the first four are also written to the client as
-// a terminal `ro-live` envelope. The browser's reconnect taxonomy reads them:
-// "auth" must never be retried, "watch-failed"/"shutdown"/"lifetime"
-// reconnect. The last three describe a session that can no longer be told
-// anything -- a peer that went away, one that stopped reading, or a render the
-// wire contract cannot carry.
+// (streamSession.finish), and every reason EXCEPT the two write failures is
+// also written to the client as a terminal `ro-live` envelope. The browser's
+// reconnect taxonomy reads them: "watch-failed"/"shutdown"/"lifetime" are what
+// the reconnect ladder exists for, while "auth" and "protocol" must never be
+// retried -- replaying the same request byte for byte reproduces the same
+// failure, so the browser stops instead of re-rendering an unencodable table
+// every thirty seconds forever. Only "client-close" and "slow-writer" go
+// unannounced: they describe a peer that cannot be told anything.
 const (
 	streamTerminalAuth        = "auth"
 	streamTerminalWatchFailed = "watch-failed"
@@ -574,7 +577,7 @@ func (st *streamSession) run(ctx, handshakeCtx context.Context, rev *hubRevision
 	h.Set(streamGenerationHeader, st.gen)
 	st.w.WriteHeader(http.StatusOK)
 	if err := st.push(ctx); err != nil {
-		st.finish(streamFailureReason(err))
+		st.failFrame(err)
 		return
 	}
 	st.srv.observeLiveTimeToSnapshot(time.Since(st.startedAt))
@@ -797,7 +800,7 @@ func (st *streamSession) loop(ctx context.Context) {
 			if st.dirty {
 				lastSnapshotAt := st.lastSnapshotAt
 				if err := st.push(ctx); err != nil {
-					st.finish(streamFailureReason(err))
+					st.failFrame(err)
 					return
 				}
 				if st.lastSnapshotAt != lastSnapshotAt {
@@ -806,7 +809,7 @@ func (st *streamSession) loop(ctx context.Context) {
 			}
 		case <-heartbeatCh:
 			if err := st.writeHeartbeat(); err != nil {
-				st.finish(streamFailureReason(err))
+				st.failFrame(err)
 				return
 			}
 		case <-checkpointCh:
@@ -918,6 +921,21 @@ func newStreamWriteError(err error) error {
 		timeout = errors.As(err, &netErr) && netErr.Timeout()
 	}
 	return &streamWriteError{err: err, timeout: timeout}
+}
+
+// failFrame ends the session on a frame that could not be delivered. A write
+// failure means the peer is already gone or has stopped reading, so nothing
+// more is sent. A render/encode fault is this SERVER's own and the connection
+// is still healthy, so the peer is told: a bare EOF is indistinguishable from a
+// transport drop, and the browser would climb its reconnect ladder and re-run
+// the same failing render every thirty seconds for the life of the tab.
+func (st *streamSession) failFrame(err error) {
+	reason := streamFailureReason(err)
+	if reason == streamTerminalProtocol {
+		st.terminal(reason)
+		return
+	}
+	st.finish(reason)
 }
 
 // streamFailureReason maps a failed frame to this session's terminal outcome:

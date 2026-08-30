@@ -24,6 +24,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -932,6 +933,16 @@ func (c *Client) tableURL(rt *ResourceType, namespace string) (*url.URL, error) 
 		parts = append(parts, "apis", rt.Group, rt.Version)
 	}
 	if rt.Namespaced && namespace != "" && namespace != AllNamespaces {
+		// The namespace arrives from a {namespace} path segment, which may carry
+		// an encoded separator or dot segment ("..", "a%2F..%2F.."). path.Join
+		// CLEANS what it joins, so an unchecked value rewrites the upstream URL
+		// into an arbitrary apiserver path -- past the include/exclude gate that
+		// was applied to the string, and into a distinct WatchHub source key for
+		// a request that is not the one the key describes. A real namespace is a
+		// DNS-1123 label, which admits neither.
+		if errs := validation.IsDNS1123Label(namespace); len(errs) > 0 {
+			return nil, errors.New("namespace is not a valid DNS-1123 label")
+		}
 		parts = append(parts, "namespaces", namespace)
 	}
 	parts = append(parts, rt.Plural)

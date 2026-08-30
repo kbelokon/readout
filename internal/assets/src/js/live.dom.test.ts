@@ -233,7 +233,7 @@ function delta(generation: string, overrides: Record<string, unknown> = {}) {
 
 function terminalFrame(
     generation: string,
-    reason: 'auth' | 'lifetime' | 'shutdown' | 'watch-failed',
+    reason: 'auth' | 'lifetime' | 'protocol' | 'shutdown' | 'watch-failed',
 ) {
     return {
         v: 2,
@@ -776,6 +776,35 @@ test.each(['shutdown', 'watch-failed', 'lifetime'] as const)(
         expect(dependencies.markLiveStale).toHaveBeenCalledOnce();
     },
 );
+
+// The server sends `protocol` when it could not render or encode this list at
+// all (a table over streamMaxEventBytes, a renderer fault). The identical next
+// request fails identically, so the ladder must not climb: without this the
+// browser re-runs the pod's most expensive render every 30s for the life of the
+// tab and never tells the user why.
+test('the protocol terminal stops for good instead of climbing the ladder', async () => {
+    renderLivePage();
+    installHtmx();
+    const stream = controlledStream();
+    const fetchMock = installFetch(async () => stream.response);
+    const before = window.roLive.stats();
+
+    liveApply();
+    const generation = requestGeneration(fetchMock);
+    stream.enqueue(sse('ro-live', snapshot(generation)));
+    await vi.waitFor(() => expect(window.roLive.stats().seq).toBe(1));
+    stream.enqueue(sse('ro-live', terminalFrame(generation, 'protocol')));
+
+    await vi.waitFor(() => expect(window.roLive.stats().state).toBe('unavailable'));
+    expect(window.roLive.stats()).toMatchObject({
+        attempt: before.attempt,
+        terminals: before.terminals + 1,
+        resyncs: before.resyncs,
+        invalidFrames: before.invalidFrames,
+    });
+    expect(dependencies.markLiveUnavailable).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+});
 
 test('the auth terminal stops for good and asks for a reload', async () => {
     renderLivePage();

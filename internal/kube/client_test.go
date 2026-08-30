@@ -675,6 +675,54 @@ func TestTableURLPreservesAPIServerBasePath(t *testing.T) {
 	}
 }
 
+// A {namespace} path segment is user input, and Go's ServeMux hands it over
+// with %2E and %2F already decoded. path.Join CLEANS what it joins, so an
+// unchecked value rewrites the upstream URL into an arbitrary apiserver path --
+// past the include/exclude gate that was applied to the string, and into a
+// WatchHub source key that no longer describes the request it made.
+func TestTableURLRejectsNamespacesThatEscapeTheCollection(t *testing.T) {
+	client, err := NewClient(&rest.Config{Host: "https://one.example"}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &ResourceType{Version: "v1", APIVersion: "v1", Plural: "pods", Namespaced: true}
+	for _, namespace := range []string{
+		"..",
+		"../secrets",
+		"a/../../namespaces/kube-system",
+		"x/..",
+		".",
+		"dev/",
+		"Dev",
+	} {
+		t.Run(namespace, func(t *testing.T) {
+			u, err := client.tableURL(rt, namespace)
+			if err == nil {
+				t.Fatalf("namespace %q built %q instead of failing", namespace, u.Path)
+			}
+			if strings.Contains(err.Error(), namespace) {
+				t.Fatalf("error echoes the raw namespace back: %v", err)
+			}
+		})
+	}
+
+	// The sentinel and ordinary namespaces are untouched.
+	for _, tc := range []struct{ namespace, want string }{
+		{"default", "/api/v1/namespaces/default/pods"},
+		{"kube-system", "/api/v1/namespaces/kube-system/pods"},
+		{AllNamespaces, "/api/v1/pods"},
+		{"", "/api/v1/pods"},
+	} {
+		u, err := client.tableURL(rt, tc.namespace)
+		if err != nil {
+			t.Fatalf("namespace %q: %v", tc.namespace, err)
+		}
+		if u.Path != tc.want {
+			t.Fatalf("namespace %q path = %q, want %q", tc.namespace, u.Path, tc.want)
+		}
+	}
+}
+
 // TestClientIdentityKeySeparatesCredentials pins the sharing decision every
 // per-viewer pool keys on: the same credential against the same connection is
 // one key, anything else is a different key, and the token never appears in it.

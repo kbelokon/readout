@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -1287,6 +1288,68 @@ func TestStreamLiveV2TerminalUsesCommittedSchemaAndSanitizesRV(t *testing.T) {
 	st.terminalLiveV2("shutdown")
 	if st.seq != 2 {
 		t.Fatalf("failed terminal advanced seq to %d", st.seq)
+	}
+}
+
+// A render/encode fault is this server's own, and the connection under it is
+// still healthy -- so the session must SAY so. A bare EOF is indistinguishable
+// from a transport drop, and the browser's reconnect ladder would re-run the
+// same failing render every thirty seconds for the life of the tab. A write
+// failure is the opposite case: the peer cannot be told anything, so nothing
+// more goes on the wire.
+func TestStreamProtocolFailureTellsTheClientToStop(t *testing.T) {
+	data := liveProjectionFixture(2)
+	now := time.Unix(1_800_002_200, 0)
+
+	w := &liveFaultWriter{writeN: -1}
+	st := newLiveV2TestSession(streamLiveRenderers{})
+	st.srv = &Server{metrics: newAppMetrics()}
+	initial := prepareInitialLiveSnapshot(t, st, &data, now)
+	st.commitLivePush(&initial, now)
+	st.w = w
+	st.rc = http.NewResponseController(w)
+
+	st.failFrame(errStreamEventTooLarge)
+	wire := w.buffer.String()
+	start := strings.Index(wire, "data: ")
+	if start < 0 {
+		t.Fatalf("protocol failure wrote no terminal frame: %q", wire)
+	}
+	var envelope testLiveEnvelope
+	if err := json.Unmarshal([]byte(strings.TrimSpace(wire[start+len("data: "):])), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Kind != "terminal" || envelope.Reason != streamTerminalProtocol || envelope.Rev != initial.projection.revision {
+		t.Fatalf("protocol terminal envelope = %+v", envelope)
+	}
+	if !st.finished {
+		t.Fatal("protocol failure did not finish the session")
+	}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"peer went away", newStreamWriteError(errors.New("broken pipe"))},
+		{"peer stopped reading", newStreamWriteError(os.ErrDeadlineExceeded)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			silent := &liveFaultWriter{writeN: -1}
+			session := newLiveV2TestSession(streamLiveRenderers{})
+			session.srv = &Server{metrics: newAppMetrics()}
+			committed := prepareInitialLiveSnapshot(t, session, &data, now)
+			session.commitLivePush(&committed, now)
+			session.w = silent
+			session.rc = http.NewResponseController(silent)
+
+			session.failFrame(tc.err)
+			if silent.buffer.Len() != 0 {
+				t.Fatalf("write failure still wrote %q", silent.buffer.String())
+			}
+			if !session.finished {
+				t.Fatal("write failure did not finish the session")
+			}
+		})
 	}
 }
 

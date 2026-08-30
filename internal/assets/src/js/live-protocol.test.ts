@@ -141,7 +141,7 @@ describe('Live v2 envelope schema', () => {
         });
     });
 
-    test.each(['auth', 'lifetime', 'shutdown', 'watch-failed'] as const)(
+    test.each(['auth', 'lifetime', 'protocol', 'shutdown', 'watch-failed'] as const)(
         'accepts the terminal reason %s',
         (reason) => {
             expect(decode(terminal({ reason }))).toMatchObject({

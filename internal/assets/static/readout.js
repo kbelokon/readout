@@ -839,7 +839,7 @@
     };
   }
   function decodeTerminal(record) {
-    if (!exactFields(record, /* @__PURE__ */ new Set([...BASE_FIELDS, "reason"])) || record.reason !== "auth" && record.reason !== "lifetime" && record.reason !== "shutdown" && record.reason !== "watch-failed") {
+    if (!exactFields(record, /* @__PURE__ */ new Set([...BASE_FIELDS, "reason"])) || record.reason !== "auth" && record.reason !== "lifetime" && record.reason !== "protocol" && record.reason !== "shutdown" && record.reason !== "watch-failed") {
       return { ok: false };
     }
     return { ok: true, value: seal(record) };
@@ -1615,7 +1615,7 @@
       return;
     }
     addCounter("terminals");
-    if (envelope.reason === "auth") {
+    if (envelope.reason === "auth" || envelope.reason === "protocol") {
       enterUnavailable();
       return;
     }
