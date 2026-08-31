@@ -31,7 +31,11 @@ annotations:
     - name: readout
       image: ghcr.io/kbelokon/readout:0.13.0
   artifacthub.io/changes: |
+    - kind: fixed
+      description: "Accept the two top-level keys a parent chart owns (`global`, and `enabled` for `condition: <name>.enabled`) so the chart can be used as a dependency of an umbrella chart. Every other unknown key stays rejected."
     - kind: added
       description: "New `imagePullSecrets` value, applied to both pods the chart renders: the readout Deployment and the `helm test` pod (which pulls a different image, from a different registry). Kubernetes-native shape -- a list of `{name: <secret>}`."
     - kind: security
       description: "The `helm test` pod no longer mounts the namespace default ServiceAccount's token. It curls the release's Service and never calls the apiserver, so the token was unnecessary. The readout pod's own automountServiceAccountToken is unchanged -- Live/in-cluster mode needs it."
+    - kind: added
+      description: "Document using the chart as a subchart, including that Helm does not print a subchart's NOTES unless you install with --render-subchart-notes -- this chart's safety warnings live there. Chart-only release: the application is unchanged at 0.13.0."
