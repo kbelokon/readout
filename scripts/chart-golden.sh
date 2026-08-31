@@ -3,11 +3,16 @@
 # exact shape matters (WHICH peers get WHICH port), so an exit-code assert is
 # not enough: each case under chart/ci/golden/ pairs <case>.values.yaml with
 # the expected render <case>.yaml of templates/networkpolicy.yaml, and any
-# drift fails with a diff. Runs identically on helm 3 (CI) and helm 4 (local).
+# drift fails with a diff. CI runs it on helm 3 and helm 4 alike (chart job matrix).
 #
 #   scripts/chart-golden.sh [chart-dir]        # assert
 #   UPDATE=1 scripts/chart-golden.sh [chart-dir]  # rewrite expected files
 set -uo pipefail
+
+# Helm binary to drive: CI's chart job runs this on both majors. Locally,
+# `mise exec helm@<version> -- ...` is enough; HELM takes a path to an
+# executable installed outside mise.
+HELM="${HELM:-helm}"
 
 CHART_DIR="${1:-chart}"
 GOLDEN_DIR="$CHART_DIR/ci/golden"
@@ -22,7 +27,7 @@ normalize() {
 }
 
 render() {
-  helm template readout "$CHART_DIR" -s "$TEMPLATE" -f "$1" | normalize
+  "$HELM" template readout "$CHART_DIR" -s "$TEMPLATE" -f "$1" | normalize
 }
 
 for values in "$GOLDEN_DIR"/*.values.yaml; do

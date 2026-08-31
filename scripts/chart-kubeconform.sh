@@ -8,6 +8,11 @@
 # We never pass -ignore-missing-schemas: an unknown kind must fail, not skip.
 set -euo pipefail
 
+# Helm binary to drive: CI's chart job runs this on both majors. Locally,
+# `mise exec helm@<version> -- ...` is enough; HELM takes a path to an
+# executable installed outside mise.
+HELM="${HELM:-helm}"
+
 CHART_DIR="${1:-chart}"
 SCHEMA_LOCATION="${CHART_DIR}/ci/schemas/{{ .Group }}/{{ .ResourceKind }}_{{ .ResourceAPIVersion }}.json"
 
@@ -18,11 +23,11 @@ validate() {
 }
 
 echo "==> default render"
-helm template readout "$CHART_DIR" | validate
+"$HELM" template readout "$CHART_DIR" | validate
 
 for f in "$CHART_DIR"/examples/*.yaml; do
   echo "==> example: $f"
-  helm template readout "$CHART_DIR" -f "$f" | validate
+  "$HELM" template readout "$CHART_DIR" -f "$f" | validate
 done
 
 # The NetworkPolicy renders only under networkPolicy.enabled, which no example
@@ -31,7 +36,7 @@ done
 # kubeconform pins the object's SHAPE.
 for f in "$CHART_DIR"/ci/golden/*.values.yaml; do
   echo "==> golden values: $f"
-  helm template readout "$CHART_DIR" -f "$f" | validate
+  "$HELM" template readout "$CHART_DIR" -f "$f" | validate
 done
 
 echo "OK"
