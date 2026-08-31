@@ -100,7 +100,8 @@ cluster, and it is what powers the public demo.
 **Deploying it publicly.** The demo serves only fabricated, read-only data, so
 it runs open (`auth.mode: none`). To make it reachable off-host, set an explicit
 non-loopback `listenAddress` (or front it with a reverse proxy) — for example
-`listenAddress: ":8099"` to bind all interfaces. Because the bind is not
+`listenAddress: "0.0.0.0"` to bind all interfaces (`listenAddress` is a bind
+host only; the port stays in `port`, e.g. `port: 8099`). Because the bind is not
 loopback, the anti-DNS-rebinding `Host` allowlist does not apply; that is
 acceptable here precisely because every object is fake and the binary is
 read-only by construction (no write verb reaches any backend). Do **not** point a
