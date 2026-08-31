@@ -3,9 +3,14 @@
 # inputs they must reject and accept the inputs they must accept. Each case
 # checks the exit code of `helm template` -- or, for expect_grep /
 # expect_no_grep, the presence or absence of a line of its rendered output -- so
-# it works identically on helm 3 (CI) and helm 4 (local). A wrong exit code, a
+# CI runs it on helm 3 and helm 4 alike (the chart job matrix). A wrong exit code, a
 # missing rendered line, or a line that must not render, exits non-zero.
 set -uo pipefail
+
+# Helm binary to drive: CI's chart job runs this on both majors. Locally,
+# `mise exec helm@<version> -- ...` is enough; HELM takes a path to an
+# executable installed outside mise.
+HELM="${HELM:-helm}"
 
 CHART_DIR="${1:-chart}"
 fail=0
@@ -14,7 +19,7 @@ fail=0
 # that MUST exit non-zero (a gate or schema rejection).
 expect_fail() {
   local desc="$1"; shift
-  if helm template readout "$CHART_DIR" "$@" >/dev/null 2>&1; then
+  if "$HELM" template readout "$CHART_DIR" "$@" >/dev/null 2>&1; then
     echo "FAIL (expected non-zero, got zero): $desc"
     fail=1
   else
@@ -25,7 +30,7 @@ expect_fail() {
 # expect_pass <description> -- the call MUST exit zero.
 expect_pass() {
   local desc="$1"; shift
-  if helm template readout "$CHART_DIR" "$@" >/dev/null 2>&1; then
+  if "$HELM" template readout "$CHART_DIR" "$@" >/dev/null 2>&1; then
     echo "ok (accepted): $desc"
   else
     echo "FAIL (expected zero, got non-zero): $desc"
@@ -38,7 +43,7 @@ expect_pass() {
 # regex. Use it to pin a rendered VALUE, not just an exit code.
 expect_grep() {
   local desc="$1" pattern="$2"; shift 2
-  if helm template readout "$CHART_DIR" "$@" 2>/dev/null | grep -q -E "$pattern"; then
+  if "$HELM" template readout "$CHART_DIR" "$@" 2>/dev/null | grep -q -E "$pattern"; then
     echo "ok (rendered): $desc"
   else
     echo "FAIL (pattern not rendered: $pattern): $desc"
@@ -52,7 +57,7 @@ expect_grep() {
 expect_no_grep() {
   local desc="$1" pattern="$2"; shift 2
   local out
-  if ! out="$(helm template readout "$CHART_DIR" "$@" 2>/dev/null)" || [ -z "$out" ]; then
+  if ! out="$("$HELM" template readout "$CHART_DIR" "$@" 2>/dev/null)" || [ -z "$out" ]; then
     echo "FAIL (render failed or empty): $desc"
     fail=1
   elif grep -q -E "$pattern" <<<"$out"; then
@@ -107,7 +112,8 @@ expect_pass "oidc multi-replica with name-only env husk renders (warns, never bl
   --set 'env[0].name=READOUT_SESSION_SECRET'
 
 # Schema conditional (if/then) branches -- the constructs most likely to
-# diverge between the helm 3 and helm 4 schema engines, so probe them on both.
+# diverge between the helm 3 and helm 4 schema engines; the chart job matrix
+# runs this file on both.
 expect_fail "schema rejects ingress.enabled with zero hosts" \
   --set ingress.enabled=true
 expect_fail "schema rejects existingSecret with empty key" \
@@ -147,5 +153,20 @@ expect_no_grep "helm-test pod carries no app.kubernetes.io/name" \
 # explicit all-interfaces bind by default.
 expect_grep "default config binds all interfaces (loopback is unreachable in a pod)" \
   '^\s*listenAddress: "?0\.0\.0\.0"?$' -s templates/configmap.yaml
+
+# Schema: the two top-level keys a PARENT chart owns are accepted. Helm copies
+# its `global` table into every subchart's values (even when the parent sets
+# none), and `condition: <name>.enabled` puts `enabled` in the child namespace.
+# A chart whose root schema rejects them cannot be used as a dependency at all.
+# The real subchart path is exercised by scripts/chart-umbrella.sh; these two
+# only pin the schema itself.
+expect_pass "schema accepts a parent-injected global block" \
+  --set-json 'global={"imageRegistry":"mirror.example.com"}'
+expect_pass "schema accepts a parent-injected enabled flag" \
+  --set enabled=true
+# ...while every OTHER unknown top-level key stays rejected, in an umbrella's
+# child namespace exactly as standalone.
+expect_fail "schema still rejects an unknown top-level key" \
+  --set replicaCounttypo=3
 
 exit "$fail"

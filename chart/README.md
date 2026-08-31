@@ -14,14 +14,14 @@ support subpath deployment, and `publicUrl` is validated as origin-only (scheme
 The chart is published as an OCI artifact:
 
 ```sh
-helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.13.0
+helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.13.1
 ```
 
 Or, with your own values:
 
 ```sh
 helm upgrade --install readout oci://ghcr.io/kbelokon/charts/readout \
-  --version 0.13.0 -f my-values.yaml
+  --version 0.13.1 -f my-values.yaml
 ```
 
 The smallest honest install (single replica, no auth, no exposure — reach it
@@ -29,6 +29,43 @@ with `kubectl port-forward`) is in [`examples/minimal.yaml`](examples/minimal.ya
 
 The image tag defaults to the chart's `appVersion`. Set `image.tag` to override,
 or `image.digest` to pin by digest — a digest always wins and the tag is ignored.
+
+## As a subchart
+
+The chart works as a dependency of an umbrella chart:
+
+```yaml
+# the parent's Chart.yaml
+dependencies:
+  - name: readout
+    version: 0.13.1
+    repository: oci://ghcr.io/kbelokon/charts
+```
+
+Four things are worth knowing.
+
+- **`global` is accepted and ignored.** Helm copies the parent's `global` table
+  into every subchart's values, even when the parent sets none, so the schema
+  declares it. This chart version reads nothing from it: `global.imageRegistry`,
+  `global.imagePullSecrets`, `global.commonLabels` and friends have no meaning
+  here. Use the chart's own values instead — `readout.image.repository` (and
+  `readout.testFramework.image.repository` when `testFramework.enabled`) point
+  the images at a mirror.
+- **`condition: readout.enabled` works.** The schema accepts the `enabled` key
+  Helm places in the child's namespace for it. The chart implements no
+  standalone on/off switch — installed directly, `enabled` does nothing.
+- **Every other unknown key is still rejected.** The root schema is closed, in
+  an umbrella exactly as standalone, so a typo in the parent's `readout:` block
+  fails the render with the offending key named. That is the schema working, not
+  the dependency being broken.
+- **NOTES are not printed by default — pass `--render-subchart-notes`.** This
+  chart warns rather than blocks (see [Safety gates](#safety-gates-and-the-env-boundary)),
+  and those warnings live in NOTES, which Helm suppresses for subcharts:
+
+  ```sh
+  helm upgrade --install platform . --render-subchart-notes
+  ```
+
 
 ## Upgrading from ≤ 0.6 (breaking)
 
@@ -44,7 +81,7 @@ migration is a clean reinstall with **no data loss**:
 
 ```sh
 helm uninstall readout
-helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.13.0 -f my-values.yaml
+helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.13.1 -f my-values.yaml
 ```
 
 Fresh installs of 0.7 are unaffected.
@@ -189,6 +226,13 @@ quietly missing feature. Every gate sees **chart values only**: config
 delivered through `env`/`envFrom` (opaque references the chart cannot read)
 bypasses them entirely, backstopped by the **app's own startup checks** and
 `readout config validate` (see [Validating before install](#validating-before-install)).
+
+**These warnings are only as good as their delivery.** They are printed by
+`helm install`/`helm upgrade`; `helm template` never prints NOTES at all, and
+neither do GitOps controllers that do not surface release notes. Installed as a
+subchart they are suppressed unless you pass `--render-subchart-notes` (see
+[As a subchart](#as-a-subchart)). On those paths, read this section instead of
+expecting the install to tell you.
 
 Warnings (install proceeds, NOTES warns):
 
@@ -345,7 +389,7 @@ Two complementary checks:
 - **Chart values** — render the manifests and let the gates run:
 
   ```sh
-  helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.13.0 -f my-values.yaml
+  helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.13.1 -f my-values.yaml
   ```
 
 - **Raw app config** — validate a `readout.yaml` exactly as startup would:
