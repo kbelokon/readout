@@ -4,6 +4,14 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "global": {
+      "type": "object",
+      "description": "Helm copies the parent chart's global table into every subchart's values, even when the parent sets none. Declared so this chart can be used as a dependency; this chart version accepts it and reads nothing from it."
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Consumed by a parent chart's dependency condition (condition: <name>.enabled). This chart implements no standalone on/off switch."
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,

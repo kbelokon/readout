@@ -27,16 +27,24 @@ jobs:
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
           printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-      - name: Guard - tag, chart metadata, and app image agree
+      # The tag pins the CHART version only. appVersion is independent by
+      # design -- a chart-only patch moves one and not the other -- so the app
+      # image is guarded by the metadata invariant plus its existence in the
+      # registry, not by tying it to the tag.
+      - name: Guard - tag matches the chart version
         run: |
           VERSION="${GITHUB_REF_NAME#chart-v}"
           CHART=$(awk '$1 == "version:" {print $2}' chart/Chart.yaml | tr -d '"')
-          APP=$(grep '^appVersion:' chart/Chart.yaml | awk '{print $2}' | tr -d '"')
           test -n "$VERSION"
           test -n "$CHART"
-          test -n "$APP"
           test "$VERSION" = "$CHART"
-          test "$VERSION" = "$APP"
+      # Re-run of the CI gate: a tag can be pushed at a commit CI never passed.
+      - name: Guard - chart image metadata agrees with appVersion
+        run: bash scripts/chart-metadata-check.sh chart
+      - name: Guard - the app image exists in the registry
+        run: |
+          APP=$(grep '^appVersion:' chart/Chart.yaml | awk '{print $2}' | tr -d '"')
+          test -n "$APP"
           docker manifest inspect "ghcr.io/kbelokon/readout:${APP}" > /dev/null
       - name: Package and push chart
         run: |

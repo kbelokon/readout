@@ -115,21 +115,29 @@ jobs:
           npm run build
           git diff --exit-code -- internal/assets/static
 
-  # Helm chart gate. Users run helm 3, so CI pins helm 3 (local dev runs helm 4;
-  # both must pass). Validates: lint, default + every example render through
-  # kubeconform -strict (core types from the upstream schema, the three CR kinds
-  # from the schemas vendored in chart/ci/schemas/ -- never -ignore-missing-schemas),
-  # then the template safety-gate and values.schema.json matrix as exit-code
-  # asserts, and the golden NetworkPolicy renders (scripts/chart-golden.sh).
+  # Helm chart gate, run against BOTH helm majors: users are on either, and the
+  # schema engine (the if/then branches in particular) is the part most likely
+  # to differ between them. Validates: lint, default + every example render
+  # through kubeconform -strict (core types from the upstream schema, the three
+  # CR kinds from the schemas vendored in chart/ci/schemas/ -- never
+  # -ignore-missing-schemas), the template safety-gate and values.schema.json
+  # matrix as exit-code asserts, the golden NetworkPolicy renders
+  # (scripts/chart-golden.sh), the chart rendered as a DEPENDENCY of an umbrella
+  # parent (scripts/chart-umbrella.sh), and the image-metadata invariant that
+  # the release workflow re-checks. Release packaging stays pinned to helm 3.
   chart:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        helm-version: [v3.21.0, v4.2.1]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.21.0
+          version: ${{ matrix.helm-version }}
       - name: Install kubeconform
         run: |
           curl -fsSL -o kubeconform.tar.gz \
@@ -148,6 +156,15 @@ jobs:
         run: bash scripts/chart-gate-matrix.sh chart
       - name: Gate - golden NetworkPolicy renders
         run: bash scripts/chart-golden.sh chart
+      - name: Gate - renders as a subchart of an umbrella parent
+        run: bash scripts/chart-umbrella.sh chart
+      - name: Gate - chart image metadata agrees with appVersion
+        run: bash scripts/chart-metadata-check.sh chart
+      # helm 3's `install --dry-run=client` still reaches for a cluster, so the
+      # NOTES premise/mitigation the README documents is asserted on helm 4 only.
+      - name: Gate - subchart NOTES caveat holds (helm 4)
+        if: matrix.helm-version == 'v4.2.1'
+        run: bash scripts/chart-subchart-notes.sh chart
 
   # Real install smoke on kind. The chart job only RENDERS, so anything that
   # depends on the app running inside a pod -- bind address vs. kubelet probes,

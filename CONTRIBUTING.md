@@ -20,6 +20,19 @@ additionally runs vet, `govulncheck`, frontend, Playwright, and chart jobs. Run 
 before sending a patch. Use `mise run doctor` to print the active tool versions
 when debugging local setup.
 
+The chart gates run against **both Helm majors** in CI. `.mise.toml` can pin only
+one, so it pins the helm 3 the release packaging uses; to reproduce the helm 4
+leg locally, install it alongside:
+
+```sh
+mise install helm@4.2.1
+mise exec helm@4.2.1 -- bash scripts/chart-gate-matrix.sh chart
+```
+
+Every `scripts/chart-*.sh` also honours a `HELM` variable holding a path to the
+executable, for a Helm installed outside mise. `scripts/chart-subchart-notes.sh`
+is helm 4 only: helm 3's `install --dry-run=client` still reaches for a cluster.
+
 The frontend has a separate fast gate:
 
 ```sh
