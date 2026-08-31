@@ -169,4 +169,25 @@ expect_pass "schema accepts a parent-injected enabled flag" \
 expect_fail "schema still rejects an unknown top-level key" \
   --set replicaCounttypo=3
 
+# Pull secrets reach BOTH pods that pull an image -- the helm-test pod pulls a
+# different image from a different registry. They are pinned on the PodSpecs
+# rather than on a ServiceAccount, which would tie them to an account's
+# identity and lifecycle and differ per managed/existing/default account.
+expect_grep "imagePullSecrets reach the readout Deployment" \
+  '^\s*- name: regcred$' \
+  --set 'imagePullSecrets[0].name=regcred' -s templates/deployment.yaml
+expect_grep "imagePullSecrets reach the helm-test pod" \
+  '^\s*- name: regcred$' \
+  --set 'imagePullSecrets[0].name=regcred' --set testFramework.enabled=true \
+  -s templates/tests/test-connection.yaml
+# Only the Kubernetes-native shape is accepted: a list of {name: <secret>}.
+# A bare string, a missing name, and an empty name are all rejected rather than
+# rendering a pull secret Kubernetes will silently ignore.
+expect_fail "schema rejects a string-form imagePullSecrets entry" \
+  --set-json 'imagePullSecrets=["regcred"]'
+expect_fail "schema rejects an imagePullSecrets entry without a name" \
+  --set-json 'imagePullSecrets=[{"secret":"regcred"}]'
+expect_fail "schema rejects an empty imagePullSecrets name" \
+  --set-json 'imagePullSecrets=[{"name":""}]'
+
 exit "$fail"

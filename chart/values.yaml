@@ -6,6 +6,17 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 
+# Pull secrets for BOTH pods this chart renders: the readout Deployment and the
+# `helm test` pod, which pulls a DIFFERENT image from a different registry.
+# They live on the PodSpecs rather than on a ServiceAccount (where Kubernetes
+# would also copy them into the pods) because that would tie registry
+# credentials to the identity and lifecycle of an account, and behave
+# differently again for a chart-managed, a pre-existing and the namespace
+# default one -- the test pod uses the last of those. Kubernetes-native shape:
+# LocalObjectReferences naming Secrets that already exist in the namespace.
+imagePullSecrets: []
+# - name: regcred
+
 # overrides for generated resource names
 nameOverride: ""
 fullnameOverride: ""
