@@ -15,6 +15,14 @@ metadata:
     helm.sh/hook: test
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  # curl only ever talks to the release's own Service. It has no business with
+  # the apiserver, so the namespace default account's token stays unmounted --
+  # unlike the readout pod, whose deliberate `true` the Live mode needs.
+  automountServiceAccountToken: false
   restartPolicy: Never
   containers:
     - name: test-connection

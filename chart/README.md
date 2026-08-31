@@ -14,14 +14,14 @@ support subpath deployment, and `publicUrl` is validated as origin-only (scheme
 The chart is published as an OCI artifact:
 
 ```sh
-helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.13.1
+helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.14.0
 ```
 
 Or, with your own values:
 
 ```sh
 helm upgrade --install readout oci://ghcr.io/kbelokon/charts/readout \
-  --version 0.13.1 -f my-values.yaml
+  --version 0.14.0 -f my-values.yaml
 ```
 
 The smallest honest install (single replica, no auth, no exposure — reach it
@@ -38,7 +38,7 @@ The chart works as a dependency of an umbrella chart:
 # the parent's Chart.yaml
 dependencies:
   - name: readout
-    version: 0.13.1
+    version: 0.14.0
     repository: oci://ghcr.io/kbelokon/charts
 ```
 
@@ -50,7 +50,8 @@ Four things are worth knowing.
   `global.imagePullSecrets`, `global.commonLabels` and `global.commonAnnotations`
   have no meaning here. Use the chart's own values instead —
   `readout.image.repository` (and `readout.testFramework.image.repository` when
-  `testFramework.enabled`) point the images at a mirror, and
+  `testFramework.enabled`) point the images at a mirror,
+  `readout.imagePullSecrets` covers both pods the chart renders, and
   `readout.commonLabels` / `readout.commonAnnotations` carry shared metadata.
 - **`condition: readout.enabled` works.** The schema accepts the `enabled` key
   Helm places in the child's namespace for it. The chart implements no
@@ -82,7 +83,7 @@ migration is a clean reinstall with **no data loss**:
 
 ```sh
 helm uninstall readout
-helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.13.1 -f my-values.yaml
+helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.14.0 -f my-values.yaml
 ```
 
 Fresh installs of 0.7 are unaffected.
@@ -108,6 +109,7 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | Key | Default | Description |
 | --- | --- | --- |
 | `image` | `{repository: ghcr.io/kbelokon/readout, tag: "", digest: "", pullPolicy: IfNotPresent}` | Container image. `tag` defaults to the chart `appVersion` when empty; `digest`, when set, wins over `tag`. |
+| `imagePullSecrets` | `[]` | Pull secrets for **both** pods the chart renders — the readout Deployment and the `helm test` pod, which pulls a different image from a different registry. Kubernetes-native shape: a list of `{name: <secret>}` naming Secrets that already exist in the release namespace. They live on the PodSpecs rather than on a ServiceAccount — Kubernetes would copy them into the pods from there too, but that ties registry credentials to an account's identity and lifecycle, and behaves differently for a chart-managed, a pre-existing and the namespace default account (the test pod uses the last). |
 | `nameOverride` | `""` | Override the chart name used in generated resource names. |
 | `fullnameOverride` | `""` | Override the fully-qualified release name outright. |
 | `commonLabels` | `{}` | Labels merged into every rendered resource (applied last, so they override standard chart labels of the same name). |
@@ -142,7 +144,7 @@ Every public key in `values.yaml`. Nested keys are described in the parent row.
 | `extraContainers` | `[]` | Extra sidecar containers, rendered verbatim into the pod. |
 | `podDisruptionBudget` | `{enabled: false, minAvailable: "", maxUnavailable: ""}` | PodDisruptionBudget for readout pods. Set exactly one of `minAvailable`/`maxUnavailable` (Kubernetes rejects both). |
 | `extraObjects` | `[]` | Escape hatch for arbitrary Helm-owned objects (platform CRs, extra Secrets). Each entry is one YAML map; string values run through `tpl` with the chart root context. See [Exposure recipes](#exposure-recipes). |
-| `testFramework` | `{enabled: false, image: {repository: curlimages/curl, tag: "8.11.1"}}` | Opt-in `helm test` connectivity pod. When enabled, `helm test <release>` runs a curl pod against the Service's `/readyz`. The pod carries no `app.kubernetes.io/name`, so it is outside every chart selector; under `networkPolicy.enabled` the policy admits it automatically. |
+| `testFramework` | `{enabled: false, image: {repository: curlimages/curl, tag: "8.11.1"}}` | Opt-in `helm test` connectivity pod. When enabled, `helm test <release>` runs a curl pod against the Service's `/readyz`. The pod carries no `app.kubernetes.io/name`, so it is outside every chart selector; under `networkPolicy.enabled` the policy admits it automatically. It mounts no ServiceAccount token (it only curls the Service) and honours `imagePullSecrets`. |
 
 ## Exposure recipes
 
@@ -390,7 +392,7 @@ Two complementary checks:
 - **Chart values** — render the manifests and let the gates run:
 
   ```sh
-  helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.13.1 -f my-values.yaml
+  helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.14.0 -f my-values.yaml
   ```
 
 - **Raw app config** — validate a `readout.yaml` exactly as startup would:
