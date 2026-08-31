@@ -47,10 +47,11 @@ Four things are worth knowing.
 - **`global` is accepted and ignored.** Helm copies the parent's `global` table
   into every subchart's values, even when the parent sets none, so the schema
   declares it. This chart version reads nothing from it: `global.imageRegistry`,
-  `global.imagePullSecrets`, `global.commonLabels` and friends have no meaning
-  here. Use the chart's own values instead — `readout.image.repository` (and
-  `readout.testFramework.image.repository` when `testFramework.enabled`) point
-  the images at a mirror.
+  `global.imagePullSecrets`, `global.commonLabels` and `global.commonAnnotations`
+  have no meaning here. Use the chart's own values instead —
+  `readout.image.repository` (and `readout.testFramework.image.repository` when
+  `testFramework.enabled`) point the images at a mirror, and
+  `readout.commonLabels` / `readout.commonAnnotations` carry shared metadata.
 - **`condition: readout.enabled` works.** The schema accepts the `enabled` key
   Helm places in the child's namespace for it. The chart implements no
   standalone on/off switch — installed directly, `enabled` does nothing.

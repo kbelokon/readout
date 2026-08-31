@@ -19,12 +19,14 @@ CHART_DIR="${1:-chart}"
 HELM="${HELM:-helm}"
 YQ="${YQ:-yq}"
 
-# Mike Farah's yq, not the Python wrapper of the same name: the expressions
-# below are its dialect, and the wrapper would parse them differently.
-if ! "$YQ" --version 2>/dev/null | grep -q 'github.com/mikefarah/yq'; then
-  echo "FAIL: need Mike Farah's yq v4 on PATH (got: $("$YQ" --version 2>&1 || echo none))"
-  exit 1
-fi
+# Mike Farah's yq v4, not the Python wrapper of the same name and not a future
+# major: the expressions below are that dialect, and another one would parse
+# them differently -- silently, since a wrong parse still prints something.
+yq_version="$("$YQ" --version 2>&1)" || yq_version="none"
+case "$yq_version" in
+  *github.com/mikefarah/yq*version\ v4.*) ;;
+  *) echo "FAIL: need Mike Farah's yq v4 on PATH (got: $yq_version)"; exit 1 ;;
+esac
 
 fail=0
 die() { echo "FAIL: $1"; fail=1; }

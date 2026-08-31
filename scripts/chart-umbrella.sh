@@ -42,8 +42,10 @@ expect_render() {
 mkdir -p "$work/charts"
 cp -R "$CHART_DIR" "$work/charts/readout"
 
-# Case 1: a plain dependency. The parent declares no `global` of its own; Helm
-# injects the key regardless, which is the whole point of the case.
+# Case 1: a plain dependency whose parent sets NO global of its own. Helm
+# coalesces the key in regardless -- that unconditional injection is what a
+# closed root schema has to survive, and it is the case an umbrella author
+# hits without ever writing the word `global`.
 cat > "$work/Chart.yaml" <<'EOF'
 apiVersion: v2
 name: wrapper
@@ -51,11 +53,8 @@ version: 0.1.0
 dependencies:
   - name: readout
 EOF
-cat > "$work/values.yaml" <<'EOF'
-global:
-  sentinel: from-the-parent
-EOF
-expect_render "plain dependency with a parent global block"
+printf '{}\n' > "$work/values.yaml"
+expect_render "plain dependency, parent sets no global at all"
 
 # Case 2: the dependency is gated by a Helm `condition`, whose value path sits
 # inside the subchart's OWN namespace -- so `enabled` reaches the child too.
