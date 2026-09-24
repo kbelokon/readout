@@ -14,14 +14,14 @@ support subpath deployment, and `publicUrl` is validated as origin-only (scheme
 The chart is published as an OCI artifact:
 
 ```sh
-helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.14.0
+helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.15.0
 ```
 
 Or, with your own values:
 
 ```sh
 helm upgrade --install readout oci://ghcr.io/kbelokon/charts/readout \
-  --version 0.14.0 -f my-values.yaml
+  --version 0.15.0 -f my-values.yaml
 ```
 
 The smallest honest install (single replica, no auth, no exposure — reach it
@@ -38,7 +38,7 @@ The chart works as a dependency of an umbrella chart:
 # the parent's Chart.yaml
 dependencies:
   - name: readout
-    version: 0.14.0
+    version: 0.15.0
     repository: oci://ghcr.io/kbelokon/charts
 ```
 
@@ -83,7 +83,7 @@ migration is a clean reinstall with **no data loss**:
 
 ```sh
 helm uninstall readout
-helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.14.0 -f my-values.yaml
+helm install readout oci://ghcr.io/kbelokon/charts/readout --version 0.15.0 -f my-values.yaml
 ```
 
 Fresh installs of 0.7 are unaffected.
@@ -392,7 +392,7 @@ Two complementary checks:
 - **Chart values** — render the manifests and let the gates run:
 
   ```sh
-  helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.14.0 -f my-values.yaml
+  helm template readout oci://ghcr.io/kbelokon/charts/readout --version 0.15.0 -f my-values.yaml
   ```
 
 - **Raw app config** — validate a `readout.yaml` exactly as startup would:
