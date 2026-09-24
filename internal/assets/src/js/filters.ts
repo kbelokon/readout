@@ -179,6 +179,14 @@ export function seedFilterDraft(): void {
     }
 }
 
+// htmx files its history snapshot of a page under the path it last pushed or
+// replaced itself, kept in session storage under this key (vendored htmx
+// 2.0.10). A replaceState it did not make leaves that path on the old URL: the
+// snapshot taken when the user leaves would be filed there, and Back to the
+// drafted URL would miss the cache -- a server re-render without the cookie
+// sort and without the scroll position. The key moves with the URL.
+const HTMX_HISTORY_PATH_KEY = 'htmx-current-path-for-history';
+
 // writeFilterDraftURL mirrors the draft into `q` now and cancels a pending
 // write. The text is liveDraftText: a chip in progress narrows nothing and so
 // never reaches the URL. history.state passes through untouched -- htmx only
@@ -197,9 +205,10 @@ export function writeFilterDraftURL(): void {
     }
     try {
         window.history.replaceState(window.history.state, '', pathname + next + hash);
+        window.sessionStorage.setItem(HTMX_HISTORY_PATH_KEY, pathname + next);
     } catch {
-        // Past the browser's replaceState budget; the next settled draft
-        // writes again.
+        // Past the browser's replaceState budget (the next settled draft
+        // writes again), or no session storage (Back re-renders instead).
     }
 }
 
@@ -207,6 +216,17 @@ function scheduleFilterDraftURL(): void {
     window.clearTimeout(draftURLTimer);
     draftURLTimer = window.setTimeout(writeFilterDraftURL, DRAFT_URL_DELAY_MS);
 }
+
+// Any request the page starts may leave it (a boosted link) or push a new
+// entry (a sort): the entry being left gets the draft typed a moment ago
+// before htmx files its snapshot, instead of losing the unwritten tail.
+function flushFilterDraftURL(): void {
+    if (draftURLTimer !== undefined) {
+        writeFilterDraftURL();
+    }
+}
+
+document.addEventListener('htmx:beforeRequest', flushFilterDraftURL);
 
 // A GET the list sends to its own page -- a sort header, a chip's ✕, the
 // columns popover, a label chip, a refresh -- carries the query the server

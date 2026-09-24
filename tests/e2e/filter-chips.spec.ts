@@ -462,6 +462,37 @@ test('the draft follows history across a sort push and a detail page', async ({ 
   await expect(visibleNames(page)).toHaveText(['nginx']);
 });
 
+test('Back to a list whose draft was typed comes from the history cache, cookie sort intact', async ({
+  page,
+}) => {
+  await addPod('zeta-web', ['zeta-web', '1/1', 'Running', '0', '1m']);
+  await addPod('alpha-web', ['alpha-web', '1/1', 'Running', '0', '2m']);
+  // A sort-header click stores the sort preference; a fresh visit without
+  // ?sort renders by it, and a server re-render of a history entry does not.
+  await page.goto(PODS);
+  const sorted = page.waitForResponse(isUserTableResponse);
+  await page.locator('table.ro-table thead th a', { hasText: 'Name' }).click();
+  await sorted;
+  await page.goto(PODS);
+  await typeDraft(page, 'web');
+  await expect(visibleNames(page)).toHaveText(['alpha-web', 'zeta-web']);
+  await expect.poll(() => urlDraft(page)).toBe('web');
+
+  const restores: string[] = [];
+  page.on('request', (r) => {
+    if (r.headers()['hx-history-restore-request'] === 'true') {
+      restores.push(r.url());
+    }
+  });
+  await page.locator('.ro-sidebar a', { hasText: 'Services' }).click();
+  await expect(page).toHaveURL(/\/services$/);
+  await page.goBack();
+
+  await expect(filterInput(page)).toHaveValue('web');
+  await expect(visibleNames(page)).toHaveText(['alpha-web', 'zeta-web']);
+  expect(restores).toEqual([]);
+});
+
 test('⏎ on plain text pins it as a name: chip with its commas kept literal', async ({ page }) => {
   await addPod('api-server', ['api-server', '1/1', 'Running', '0', '1m']);
   await page.goto(PODS);

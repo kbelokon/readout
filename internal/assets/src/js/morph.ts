@@ -76,9 +76,10 @@ const idiomorph =
 // (afterNodeMorphed), add a short-lived `ro-cell-changed` class whose CSS plays a
 // brief tint fade. Only cells whose rendered text genuinely changed flash -- not
 // the whole table on every poll. Pure DOM property writes (no eval, no inline
-// handler) -> CSP-clean. The morph ext calls Idiomorph.morph WITHOUT passing
-// callbacks, so it inherits Idiomorph.defaults.callbacks (set once here); the
-// vendored ext exposes Idiomorph as a classic-script global.
+// handler) -> CSP-clean. The ro-morph ext passes only its own
+// beforeAttributeUpdated veto, and idiomorph merges a config's callbacks over
+// Idiomorph.defaults.callbacks one by one, so these hooks (set once here) still
+// run; the vendored ext exposes Idiomorph as a classic-script global.
 //
 // Disabled entirely under prefers-reduced-motion: we never register the callbacks,
 // so those users get a silent in-place morph (the progress bar handles that case

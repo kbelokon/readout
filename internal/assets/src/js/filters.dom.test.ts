@@ -1141,6 +1141,56 @@ describe('the draft in the page URL', () => {
         expect(window.history.length).toBe(entries);
     });
 
+    test('moves the path htmx files its history snapshot under along with the URL', () => {
+        const { input } = renderEditor();
+        window.history.replaceState(null, '', '/pods?sort=Name#top');
+        window.sessionStorage.setItem('htmx-current-path-for-history', '/pods?sort=Name');
+        filters.seedFilterDraft();
+
+        input.value = 'ngi';
+        filters.writeFilterDraftURL();
+        expect(window.sessionStorage.getItem('htmx-current-path-for-history')).toBe(
+            '/pods?sort=Name&q=ngi',
+        );
+
+        // Without session storage the URL still follows the draft.
+        const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+            throw new DOMException('denied', 'SecurityError');
+        });
+        input.value = 'nginx';
+        expect(() => filters.writeFilterDraftURL()).not.toThrow();
+        expect(window.location.search).toBe('?sort=Name&q=nginx');
+        setItem.mockRestore();
+    });
+
+    test('a request the page starts first writes the draft still waiting for its delay', () => {
+        vi.useFakeTimers();
+        try {
+            const { content, input } = renderEditor();
+            filters.captureRowModel(content);
+            window.history.replaceState(null, '', '/pods');
+            filters.seedFilterDraft();
+            const replace = vi.spyOn(window.history, 'replaceState');
+            const inputBinding = binding('input', '#ro-filter-input');
+
+            // Nothing pending: a request writes nothing.
+            document.dispatchEvent(new CustomEvent('htmx:beforeRequest'));
+            expect(replace).not.toHaveBeenCalled();
+
+            input.value = 'ngi';
+            inputBinding.handler(new Event('input'), input);
+            document.dispatchEvent(new CustomEvent('htmx:beforeRequest'));
+            expect(window.location.search).toBe('?q=ngi');
+            expect(replace).toHaveBeenCalledOnce();
+
+            // The pending write was the one just made: the timer is gone.
+            vi.advanceTimersByTime(400);
+            expect(replace).toHaveBeenCalledOnce();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     test('never writes for an input this page did not seed', () => {
         const { input } = renderEditor();
         window.history.replaceState(null, '', '/pods');

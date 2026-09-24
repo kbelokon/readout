@@ -2976,6 +2976,7 @@
       input.value = draft;
     }
   }
+  var HTMX_HISTORY_PATH_KEY = "htmx-current-path-for-history";
   function writeFilterDraftURL() {
     window.clearTimeout(draftURLTimer);
     draftURLTimer = void 0;
@@ -2990,6 +2991,7 @@
     }
     try {
       window.history.replaceState(window.history.state, "", pathname + next + hash);
+      window.sessionStorage.setItem(HTMX_HISTORY_PATH_KEY, pathname + next);
     } catch {
     }
   }
@@ -2997,6 +2999,12 @@
     window.clearTimeout(draftURLTimer);
     draftURLTimer = window.setTimeout(writeFilterDraftURL, DRAFT_URL_DELAY_MS);
   }
+  function flushFilterDraftURL() {
+    if (draftURLTimer !== void 0) {
+      writeFilterDraftURL();
+    }
+  }
+  document.addEventListener("htmx:beforeRequest", flushFilterDraftURL);
   function carryFilterDraft(event) {
     const detail = Object(event.detail);
     const input = document.getElementById("ro-filter-input");
