@@ -217,13 +217,21 @@ export function rankValueSuggestions(
     }));
 }
 
+// liveDraftText is the part of a draft that live-matches names: the trimmed
+// free text, or '' for an empty draft and for a draft with an operator (a chip
+// in progress narrows nothing). It is also exactly what the page URL's `q`
+// carries, so the URL never holds text the rows are not filtered by.
+export function liveDraftText(draft: string): string {
+    return !draft || splitFilterDraft(draft) ? '' : trimFilterWhitespace(draft);
+}
+
 // liveNameMatchKeys computes the visible-key SET for a free-text draft: the keys
 // of rows whose name contains the draft (case-insensitive). null = no live
 // filter (empty draft, or a draft with an operator -- a chip in progress narrows
 // nothing). The MATCH runs on the full row model; the DOM application is the
 // caller's job.
 export function liveNameMatchKeys(rows: ModelRow[], draft: string): Set<string> | null {
-    const text = !draft || splitFilterDraft(draft) ? '' : trimFilterWhitespace(draft).toLowerCase();
+    const text = liveDraftText(draft).toLowerCase();
     if (!text) {
         return null;
     }
@@ -268,4 +276,36 @@ export function mergeColParams(
         });
     const query = kept.concat(fields).join('&');
     return pathname + (query ? `?${query}` : '');
+}
+
+// The free-text draft in the page URL: one `q` param. Both helpers treat the
+// query as raw `key=value` pairs, like mergeColParams, so every other pair --
+// the `?f=` chips with their wire-significant raw commas above all -- keeps its
+// exact bytes; only `q` pairs are read, dropped or appended.
+function isDraftPair(pair: string): boolean {
+    return pair.split('=', 1)[0] === 'q';
+}
+
+// draftFromSearch reads the draft back out of a query string: the decoded value
+// of the first `q` pair, '' when there is none.
+export function draftFromSearch(search: string): string {
+    const pair = search.replace(/^\?/, '').split('&').find(isDraftPair);
+    return pair === undefined ? '' : (new URLSearchParams(pair).get('q') ?? '');
+}
+
+// withDraftQuery returns `search` rewritten to carry `text` as its only `q`
+// (none when text is ''). A query that already says exactly that comes back
+// unchanged byte for byte, so rewriting is idempotent and a caller can compare
+// the result with its input to learn whether anything changed.
+export function withDraftQuery(search: string, text: string): string {
+    const pairs = search.replace(/^\?/, '').split('&');
+    const drafts = pairs.filter(isDraftPair);
+    if (drafts.length === (text ? 1 : 0) && draftFromSearch(search) === text) {
+        return search;
+    }
+    const kept = pairs.filter((pair) => pair && !isDraftPair(pair));
+    if (text) {
+        kept.push(`q=${encodeURIComponent(text)}`);
+    }
+    return kept.length ? `?${kept.join('&')}` : '';
 }

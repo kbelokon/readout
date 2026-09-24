@@ -10,10 +10,12 @@
 import { expect, test } from 'vitest';
 
 import {
+    draftFromSearch,
     fieldColumnIndex,
     fieldSuggestionText,
     filterFieldKnown,
     filterSuggestionFields,
+    liveDraftText,
     liveNameMatchKeys,
     type ModelField,
     type ModelRow,
@@ -24,6 +26,7 @@ import {
     rankValueSuggestions,
     splitFilterDraft,
     trimFilterWhitespace,
+    withDraftQuery,
 } from './filters-parse.js';
 
 // A pod-like model: Name + the data-hint Status/Node columns, plus a synthetic
@@ -469,4 +472,77 @@ test('an empty result query yields a bare pathname (no trailing ?)', () => {
 
 test('a question mark inside a raw value survives when search has no leading marker', () => {
     expect(mergeColParams('/p', 'f=note:?ready', new Set(), [])).toBe('/p?f=note:?ready');
+});
+
+// --- the draft in the page URL (`q`) -----------------------------------------
+
+test('the URL draft is exactly the text the live match narrows by', () => {
+    expect(liveDraftText('  ngi ')).toBe('ngi');
+    expect(liveDraftText('My App')).toBe('My App');
+    expect(liveDraftText('nginx,my')).toBe('nginx,my');
+    // An empty draft and a chip in progress narrow nothing, so carry nothing.
+    expect(liveDraftText('')).toBe('');
+    expect(liveDraftText(' \u0085 ')).toBe('');
+    expect(liveDraftText('status:Run')).toBe('');
+    expect(liveDraftText('restarts>0')).toBe('');
+    expect(liveDraftText('name!=api')).toBe('');
+    // Go whitespace is trimmed, U+FEFF is data.
+    expect(liveDraftText('\u0085\uFEFFapi\u0085')).toBe('\uFEFFapi');
+});
+
+test('the draft is read back from the first raw q pair, decoded', () => {
+    expect(draftFromSearch('')).toBe('');
+    expect(draftFromSearch('?')).toBe('');
+    expect(draftFromSearch('?f=status%3ARunning,Pending&sort=Name')).toBe('');
+    expect(draftFromSearch('?q=ngi')).toBe('ngi');
+    expect(draftFromSearch('q=ngi')).toBe('ngi');
+    expect(draftFromSearch('?sort=Name&q=my%20app&f=a,b')).toBe('my app');
+    // The server's own re-encoding writes spaces as `+`.
+    expect(draftFromSearch('?q=my+app')).toBe('my app');
+    expect(draftFromSearch('?q=a%2Bb%2Cc%26d')).toBe('a+b,c&d');
+    expect(draftFromSearch('?q=first&q=second')).toBe('first');
+    expect(draftFromSearch('?q')).toBe('');
+    expect(draftFromSearch('?q=')).toBe('');
+    // Only the key `q` counts -- not a longer key, not a value holding `q=`.
+    expect(draftFromSearch('?qq=1&sq=2&f=note:q=x')).toBe('');
+    // A malformed escape degrades instead of throwing.
+    expect(() => draftFromSearch('?q=%E0%A4')).not.toThrow();
+});
+
+test('rewriting q keeps every other pair byte-exact and appends the draft last', () => {
+    const chips = '?f=status%3ARunning,Pending&f=label%3Aapp%3Dweb&sort=Name';
+    expect(withDraftQuery(chips, 'ngi')).toBe(`${chips}&q=ngi`);
+    expect(withDraftQuery(`${chips}&q=old`, 'ngi')).toBe(`${chips}&q=ngi`);
+    expect(withDraftQuery('?q=old&f=a,b', 'ngi')).toBe('?f=a,b&q=ngi');
+    expect(withDraftQuery('', 'ngi')).toBe('?q=ngi');
+    expect(withDraftQuery('?', 'ngi')).toBe('?q=ngi');
+    // Text is encoded as one component: a comma, a space, `&`, `#` or `+`
+    // cannot leak into the query grammar.
+    expect(withDraftQuery('', 'a,b c&d#e+f')).toBe('?q=a%2Cb%20c%26d%23e%2Bf');
+    expect(draftFromSearch(withDraftQuery('', 'a,b c&d#e+f'))).toBe('a,b c&d#e+f');
+});
+
+test('clearing the draft drops every q pair and never leaves a bare question mark', () => {
+    expect(withDraftQuery('?q=ngi', '')).toBe('');
+    expect(withDraftQuery('?f=a,b&q=ngi&sort=Name', '')).toBe('?f=a,b&sort=Name');
+    expect(withDraftQuery('?q=a&f=a,b&q=b', '')).toBe('?f=a,b');
+    expect(withDraftQuery('?q=', '')).toBe('');
+    expect(withDraftQuery('?q=a&q=b', 'a')).toBe('?q=a');
+});
+
+test('a query that already carries exactly the draft comes back unchanged', () => {
+    for (const [search, text] of [
+        ['', ''],
+        ['?', ''],
+        ['?f=status%3ARunning,Pending', ''],
+        ['?a=1&&b=2', ''],
+        ['?q=ngi', 'ngi'],
+        ['?q=ngi&f=a,b', 'ngi'],
+        // Same text, the server's spelling: no churn for an equivalent pair.
+        ['?sort=Name&q=my+app', 'my app'],
+    ] as const) {
+        expect(withDraftQuery(search, text)).toBe(search);
+    }
+    const once = withDraftQuery('?f=a,b&q=old&sort=Name', 'new text');
+    expect(withDraftQuery(once, 'new text')).toBe(once);
 });

@@ -71,11 +71,13 @@ type ListData struct {
 }
 
 // FilterBarData is the chips editor: the plural (placeholder copy), the icon,
-// and the active `?f=` chips rendered server-side.
+// the active `?f=` chips rendered server-side, and whether the table has a
+// Name column (⏎ on plain text pins a `name:` chip only then).
 type FilterBarData struct {
 	Plural     string
 	FilterIcon string
 	Chips      []EditorChip
+	NameColumn bool
 }
 
 // EditorChip is one `.ro-scope-chip` in the editor. Field/Op/Value carry the

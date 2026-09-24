@@ -161,7 +161,7 @@ func toListData(v *listView) templates.ListData {
 		d.State = toListState(v.State)
 	}
 	if v.FilterBar != nil {
-		fb := &templates.FilterBarData{Plural: v.FilterBar.Plural, FilterIcon: icon("filter")}
+		fb := &templates.FilterBarData{Plural: v.FilterBar.Plural, FilterIcon: icon("filter"), NameColumn: v.FilterBar.NameColumn}
 		for _, chip := range v.FilterBar.Chips {
 			fb.Chips = append(fb.Chips, templates.EditorChip{
 				Field:      chip.Field,

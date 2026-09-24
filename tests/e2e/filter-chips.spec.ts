@@ -15,13 +15,23 @@ import { controlURL } from './playwright.config';
 //   - clicking a label chip in a namespaces row appends the corresponding
 //     `label:key=value` chip and narrows the rows;
 //   - a focused draft AND its focus survive a Refresh morph (the
-//     ignoreActiveValue contract, asserted where the chips editor lives).
+//     ignoreActiveValue contract, asserted where the chips editor lives);
+//   - an UNFOCUSED draft survives every full re-render too: a Refresh click, a
+//     Live reconnect after going offline, and a Live reopen on returning to the
+//     tab;
+//   - the draft rides the page URL as `q` (replaceState: no request, no history
+//     entry), so it survives a reload, history navigation and a sort push;
+//   - ⏎ on plain text pins it as a `name:` chip where the table has a Name
+//     column, and keeps it as live text where it has none (Events).
 //
 // Fixture state is scripted through the control surface and reset per spec.
 
 const PODS = '/clusters/e2e/namespaces/default/pods';
 const PODS_LIST_PATH = '/api/v1/namespaces/default/pods';
 const NAMESPACES = '/clusters/e2e/namespaces';
+const EVENTS = '/clusters/e2e/namespaces/default/events';
+const LIVE_TOGGLE = '[data-ro-action="toggle-live"]';
+const REFRESH_NOW = '[data-ro-action="refresh-now"]';
 
 async function control(path: string): Promise<void> {
   const res = await fetch(controlURL + path);
@@ -101,6 +111,51 @@ async function commitDraft(page: Page): Promise<void> {
   const swapped = page.waitForResponse(isUserTableResponse);
   await filterInput(page).press('Enter');
   await swapped;
+}
+
+// typeDraft types free text into the editor and waits for the live match.
+async function typeDraft(page: Page, text: string): Promise<void> {
+  await filterInput(page).click();
+  await filterInput(page).pressSequentially(text);
+}
+
+// The `q` param of the page URL, decoded; null when absent.
+function urlDraft(page: Page): string | null {
+  return new URL(page.url()).searchParams.get('q');
+}
+
+interface LiveStats {
+  state: string;
+  connections: number;
+  v2Snapshots: number;
+}
+
+function liveStats(page: Page): Promise<LiveStats> {
+  return page.evaluate(() => {
+    const stats = (window as unknown as { roLive: { stats(): LiveStats } }).roLive.stats();
+    return { state: stats.state, connections: stats.connections, v2Snapshots: stats.v2Snapshots };
+  });
+}
+
+// enableLive turns the topbar toggle on and waits for the first committed
+// snapshot: `open` is the only state whose rows came off the stream.
+async function enableLive(page: Page): Promise<void> {
+  await page.locator(LIVE_TOGGLE).click();
+  await expect(page.locator(LIVE_TOGGLE)).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(async () => (await liveStats(page)).state, { timeout: 10_000 }).toBe('open');
+}
+
+// Simulated tab visibility: live.ts reads document.hidden and listens for
+// visibilitychange, both overridable.
+async function setHidden(page: Page, hidden: boolean): Promise<void> {
+  await page.evaluate((h) => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => h });
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => (h ? 'hidden' : 'visible'),
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, hidden);
 }
 
 test.beforeEach(async ({}, testInfo) => {
@@ -302,4 +357,218 @@ test('a focused draft and its focus survive a Refresh morph', async ({ page }) =
   await expect(filterInput(page)).toHaveValue('ngi');
   await expect(filterInput(page)).toBeFocused();
   await expect(visibleNames(page)).toHaveText(['nginx']);
+});
+
+test('an unfocused draft survives a Refresh click', async ({ page }) => {
+  await page.goto(PODS);
+  await typeDraft(page, 'ngi');
+  await expect(visibleNames(page)).toHaveText(['nginx']);
+
+  // The click itself takes the focus off the input -- the reported case.
+  await addPod('omega', ['omega', '1/1', 'Running', '0', '1y']);
+  const tick = waitForTick(page);
+  await page.locator(REFRESH_NOW).click();
+  await tick;
+  await expect(page.locator('tr[data-key="e2e/default/omega"]')).toBeAttached();
+
+  await expect(filterInput(page)).not.toBeFocused();
+  await expect(filterInput(page)).toHaveValue('ngi');
+  await expect(visibleNames(page)).toHaveText(['nginx']);
+});
+
+test('an unfocused draft survives a Live reconnect after going offline', async ({ page }) => {
+  await page.goto(PODS);
+  await enableLive(page);
+  await typeDraft(page, 'ngi');
+  await filterInput(page).blur();
+  const before = await liveStats(page);
+
+  await page.context().setOffline(true);
+  await expect.poll(async () => (await liveStats(page)).state, { timeout: 10_000 }).toBe('offline');
+  await page.context().setOffline(false);
+  // The reconnect commits a fresh full snapshot: the whole list morphs.
+  await expect
+    .poll(async () => (await liveStats(page)).v2Snapshots, { timeout: 10_000 })
+    .toBeGreaterThan(before.v2Snapshots);
+
+  await expect(filterInput(page)).toHaveValue('ngi');
+  await expect(visibleNames(page)).toHaveText(['nginx']);
+});
+
+test('an unfocused draft survives Live reopening when the tab returns', async ({ page }) => {
+  await page.goto(PODS);
+  await enableLive(page);
+  await typeDraft(page, 'ngi');
+  await filterInput(page).blur();
+  const before = await liveStats(page);
+
+  await setHidden(page, true);
+  await expect.poll(async () => (await liveStats(page)).state, { timeout: 10_000 }).toBe('hidden');
+  await setHidden(page, false);
+  await expect
+    .poll(async () => (await liveStats(page)).v2Snapshots, { timeout: 10_000 })
+    .toBeGreaterThan(before.v2Snapshots);
+
+  await expect(filterInput(page)).toHaveValue('ngi');
+  await expect(visibleNames(page)).toHaveText(['nginx']);
+});
+
+test('the draft rides the URL as q and survives a reload', async ({ page }) => {
+  await page.goto(PODS);
+  await typeDraft(page, 'ngi');
+  await expect.poll(() => urlDraft(page)).toBe('ngi');
+
+  await page.reload();
+  await expect(filterInput(page)).toHaveValue('ngi');
+  await expect(visibleNames(page)).toHaveText(['nginx']);
+
+  // A chip in progress narrows nothing, so it never reaches the URL.
+  await filterInput(page).fill('status:Run');
+  await expect.poll(() => urlDraft(page)).toBeNull();
+  await expect(visibleNames(page)).toHaveText(['nginx', 'my-app']);
+});
+
+test('the draft follows history across a sort push and a detail page', async ({ page }) => {
+  await page.goto(PODS);
+  await typeDraft(page, 'ngi');
+  await expect.poll(() => urlDraft(page)).toBe('ngi');
+
+  // The sort header was rendered before the draft existed, so its link carries
+  // no q -- the pushed URL must still carry the field's text.
+  const sorted = page.waitForResponse(isUserTableResponse);
+  await page.locator('table.ro-table thead th a', { hasText: 'Status' }).click();
+  await sorted;
+  await expect(page).toHaveURL(/[?&]sort=/);
+  expect(urlDraft(page)).toBe('ngi');
+  await expect(filterInput(page)).toHaveValue('ngi');
+  await expect(visibleNames(page)).toHaveText(['nginx']);
+
+  await page.locator('tr[data-key="e2e/default/nginx"] td.cell-name a').click();
+  await expect(page).toHaveURL(/\/pods\/nginx$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/[?&]sort=/);
+  await expect(filterInput(page)).toHaveValue('ngi');
+  await expect(visibleNames(page)).toHaveText(['nginx']);
+
+  // One more step back is the entry from before the sort push.
+  await page.goBack();
+  await expect(page).not.toHaveURL(/[?&]sort=/);
+  await expect(filterInput(page)).toHaveValue('ngi');
+  await expect(visibleNames(page)).toHaveText(['nginx']);
+
+  await page.goForward();
+  await expect(page).toHaveURL(/[?&]sort=/);
+  await expect(filterInput(page)).toHaveValue('ngi');
+  await expect(visibleNames(page)).toHaveText(['nginx']);
+});
+
+test('Back to a list whose draft was typed comes from the history cache, cookie sort intact', async ({
+  page,
+}) => {
+  await addPod('zeta-web', ['zeta-web', '1/1', 'Running', '0', '1m']);
+  await addPod('alpha-web', ['alpha-web', '1/1', 'Running', '0', '2m']);
+  // A sort-header click stores the sort preference; a fresh visit without
+  // ?sort renders by it, and a server re-render of a history entry does not.
+  await page.goto(PODS);
+  const sorted = page.waitForResponse(isUserTableResponse);
+  await page.locator('table.ro-table thead th a', { hasText: 'Name' }).click();
+  await sorted;
+  await page.goto(PODS);
+  await typeDraft(page, 'web');
+  await expect(visibleNames(page)).toHaveText(['alpha-web', 'zeta-web']);
+  await expect.poll(() => urlDraft(page)).toBe('web');
+
+  const restores: string[] = [];
+  page.on('request', (r) => {
+    if (r.headers()['hx-history-restore-request'] === 'true') {
+      restores.push(r.url());
+    }
+  });
+  await page.locator('.ro-sidebar a', { hasText: 'Services' }).click();
+  await expect(page).toHaveURL(/\/services$/);
+  await page.goBack();
+
+  await expect(filterInput(page)).toHaveValue('web');
+  await expect(visibleNames(page)).toHaveText(['alpha-web', 'zeta-web']);
+  expect(restores).toEqual([]);
+});
+
+test('⏎ on plain text pins it as a name: chip with its commas kept literal', async ({ page }) => {
+  await addPod('api-server', ['api-server', '1/1', 'Running', '0', '1m']);
+  await page.goto(PODS);
+  await typeDraft(page, 'api');
+  await expect(visibleNames(page)).toHaveText(['api-server']);
+  await commitDraft(page);
+
+  await expect(editorChips(page)).toHaveCount(1);
+  await expect(editorChips(page).first()).toContainText('name');
+  await expect(editorChips(page).first()).toContainText('api');
+  await expect(page).toHaveURL(/[?&]f=name%3Aapi(?:&|$)/);
+  // The draft became the chip; it does not linger as q as well.
+  expect(urlDraft(page)).toBeNull();
+  await expect(filterInput(page)).toHaveValue('');
+  await expect(visibleNames(page)).toHaveText(['api-server']);
+
+  // Free text matches one literal substring, so a comma must not turn into
+  // the chip grammar's OR: `nginx,my` matches no name either way.
+  await filterInput(page).click();
+  await filterInput(page).press('Backspace');
+  await expect(editorChips(page)).toHaveCount(0);
+  await typeDraft(page, 'nginx,my');
+  await expect(visibleNames(page)).toHaveCount(0);
+  await commitDraft(page);
+  await expect(page).toHaveURL(/[?&]f=name%3Anginx%2Cmy(?:&|$)/);
+  await expect(visibleNames(page)).toHaveCount(0);
+});
+
+test('⏎ on plain text in a table without Name keeps it as live text', async ({ page }) => {
+  await page.goto(EVENTS);
+  const requests: string[] = [];
+  page.on('request', (r) => {
+    if (r.url().includes('/_table')) {
+      requests.push(r.url());
+    }
+  });
+
+  await typeDraft(page, 'nginx');
+  await filterInput(page).press('Enter');
+
+  await expect.poll(() => urlDraft(page)).toBe('nginx');
+  await expect(filterInput(page)).toHaveValue('nginx');
+  await expect(editorChips(page)).toHaveCount(0);
+  await page.waitForTimeout(750);
+  expect(requests).toEqual([]);
+  await expect(page).not.toHaveURL(/[?&]f=/);
+});
+
+test('typing adds no history entries, requests or Live reconnects', async ({ page }) => {
+  await page.goto(PODS);
+  await enableLive(page);
+  const before = await page.evaluate(() => ({
+    entries: window.history.length,
+    cookie: document.cookie,
+  }));
+  const live = await liveStats(page);
+  const requests: string[] = [];
+  page.on('request', (r) => {
+    requests.push(r.url());
+  });
+
+  // Bursts with pauses longer than any reasonable URL-write delay, so every
+  // settled draft has had its chance to reach the address bar.
+  await filterInput(page).click();
+  for (const chunk of ['my', '-a', 'pp']) {
+    await filterInput(page).pressSequentially(chunk);
+    await page.waitForTimeout(800);
+  }
+  await filterInput(page).press('Backspace');
+  await page.waitForTimeout(800);
+
+  expect(
+    await page.evaluate(() => ({ entries: window.history.length, cookie: document.cookie }))
+  ).toEqual(before);
+  expect(requests).toEqual([]);
+  const after = await liveStats(page);
+  expect(after.connections).toBe(live.connections);
+  expect(after.state).toBe('open');
 });

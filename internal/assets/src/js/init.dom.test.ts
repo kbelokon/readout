@@ -21,6 +21,7 @@ const steps = vi.hoisted(() => ({
     rememberListValidator: vi.fn(),
     reapplyRowState: vi.fn(),
     roPrefsSetSort: vi.fn(),
+    seedFilterDraft: vi.fn(),
     setColsPopOpen: vi.fn(),
     showToast: vi.fn(),
     syncColsPopState: vi.fn(),
@@ -32,6 +33,7 @@ const steps = vi.hoisted(() => ({
     virtualizeAfterDelta: vi.fn(),
     virtualizeAfterSwap: vi.fn(),
     virtualizeInit: vi.fn(),
+    writeFilterDraftURL: vi.fn(),
 }));
 
 vi.mock('./columns.js', () => ({
@@ -43,7 +45,9 @@ vi.mock('./context-menu.js', () => ({ closeRowMenu: steps.closeRowMenu }));
 vi.mock('./filters.js', () => ({
     applyLiveNameFilter: steps.applyLiveNameFilter,
     captureRowModelFromDocument: steps.captureRowModelFromDocument,
+    seedFilterDraft: steps.seedFilterDraft,
     updateFilterAC: steps.updateFilterAC,
+    writeFilterDraftURL: steps.writeFilterDraftURL,
 }));
 vi.mock('./list-etag.js', () => ({
     rememberListValidator: steps.rememberListValidator,
@@ -112,6 +116,7 @@ function expectInitOrder(): void {
         steps.initLogsFollow,
         steps.syncThemeTogglePostTarget,
         steps.captureRowModelFromDocument,
+        steps.seedFilterDraft,
         steps.applyLiveNameFilter,
         steps.virtualizeInit,
         steps.syncColsPopState,
@@ -130,6 +135,7 @@ function expectBodyInitOrder(): void {
         steps.initLogsFollow,
         steps.syncThemeTogglePostTarget,
         steps.captureRowModelFromDocument,
+        steps.seedFilterDraft,
         steps.applyLiveNameFilter,
         steps.virtualizeInit,
         steps.syncColsPopState,
@@ -510,10 +516,12 @@ describe('htmx swap lifecycle', () => {
             steps.rememberListValidator,
             steps.clearListStale,
             steps.reapplyRowState,
+            steps.seedFilterDraft,
             steps.applyLiveNameFilter,
             steps.updateFilterAC,
             steps.colsPopOpen,
             steps.setColsPopOpen,
+            steps.writeFilterDraftURL,
             steps.virtualizeAfterSwap,
             steps.liveOnListSwap,
         );
@@ -560,12 +568,15 @@ describe('htmx swap lifecycle', () => {
             steps.applyLiveRowDeletions,
             steps.clearListStale,
             steps.reapplyRowState,
+            steps.seedFilterDraft,
             steps.applyLiveNameFilter,
             steps.updateFilterAC,
             steps.colsPopOpen,
             steps.setColsPopOpen,
             steps.virtualizeAfterDelta,
         );
+        // A delta never moves the URL: nothing to bring back in line.
+        expect(steps.writeFilterDraftURL).not.toHaveBeenCalled();
         expect(steps.applyLiveRowDeletions).toHaveBeenCalledExactlyOnceWith(deletedKeys);
         expect(steps.virtualizeAfterDelta).toHaveBeenCalledExactlyOnceWith(previousByKey, focusKey);
         expect(steps.virtualizeAfterSwap).not.toHaveBeenCalled();
@@ -617,8 +628,10 @@ describe('htmx swap lifecycle', () => {
         expect(steps.rememberListValidator).not.toHaveBeenCalled();
         expect(steps.clearListStale).not.toHaveBeenCalled();
         expect(steps.reapplyRowState).not.toHaveBeenCalled();
+        expect(steps.seedFilterDraft).not.toHaveBeenCalled();
         expect(steps.applyLiveNameFilter).not.toHaveBeenCalled();
         expect(steps.updateFilterAC).not.toHaveBeenCalled();
+        expect(steps.writeFilterDraftURL).not.toHaveBeenCalled();
         expect(steps.colsPopOpen).not.toHaveBeenCalled();
         expect(steps.virtualizeAfterSwap).not.toHaveBeenCalled();
         expect(steps.liveOnListSwap).not.toHaveBeenCalled();
@@ -652,8 +665,10 @@ describe('htmx swap lifecycle', () => {
             steps.rememberListValidator,
             steps.clearListStale,
             steps.reapplyRowState,
+            steps.seedFilterDraft,
             steps.applyLiveNameFilter,
             steps.colsPopOpen,
+            steps.writeFilterDraftURL,
             steps.virtualizeAfterSwap,
             steps.liveOnListSwap,
         );

@@ -4,12 +4,11 @@
 //
 // The editor lives INSIDE the morphed fragment (server renders the chips + the
 // #ro-filter-input with a stable id), so a shareable URL lands with chips
-// visible and the ignoreActiveValue morph (still configured in legacy.js's
-// ro-morph handleSwap) keeps a focused draft + caret across refresh ticks. The
-// client owns: the live name match (NO request until an operator chip commits),
-// the chip-commit/pop requests (riding the v2 loop -- user-initiated `_table`
-// GETs the server answers with the canonical HX-Push-Url), and the schema/value
-// autocomplete.
+// visible and the ro-morph handleSwap (morph.ts) keeps the draft + caret across
+// every re-render. The client owns: the live name match (NO request until a
+// chip commits) and its mirror in the page URL (`q`), the chip-commit/pop
+// requests (riding the v2 loop -- user-initiated `_table` GETs the server
+// answers with the canonical HX-Push-Url), and the schema/value autocomplete.
 //
 // THE FULL ROW MODEL: every matcher/frequency scan reads the stable facade owned
 // by list-projection.ts. That module captures the COMPLETE server-rendered table
@@ -32,13 +31,16 @@
 import type { Binding } from './events.js';
 import {
     type ACItem,
+    draftFromSearch,
     filterFieldKnown,
     filterSuggestionFields,
+    liveDraftText,
     liveNameMatchKeys,
     rankFieldSuggestions,
     rankValueSuggestions,
     splitFilterDraft,
     trimFilterWhitespace,
+    withDraftQuery,
 } from './filters-parse.js';
 import {
     adoptListProjection,
@@ -139,6 +141,144 @@ export function applyLiveNameFilter(): void {
     appliedLiveFilter = { content, draft, revision };
 }
 
+// ---- the draft in the page URL (`q`) -----------------------------------------
+// The draft is client state the server never renders, so the page URL carries
+// it: a settled draft is mirrored into `q` with history.replaceState (no
+// request, no history entry), and an input this page has not seen yet -- first
+// paint, a restored history entry, a boosted navigation, the editor coming back
+// after a whole-list state card -- starts from the URL. While the page is open
+// the input is the source of truth and the URL only follows it.
+
+// The write waits for typing to settle: browsers cap replaceState (Safari
+// throws past 100 calls in 30 seconds), and a URL per keystroke buys nothing.
+const DRAFT_URL_DELAY_MS = 400;
+let draftURLTimer: number | undefined;
+
+// Every seeded input remembers the page it belongs to. A write still pending
+// while the browser steps to ANOTHER page (a history step whose body is still
+// loading keeps the old input on screen under the new URL) must not stamp this
+// draft onto that page.
+const draftInputPages = new WeakMap<HTMLInputElement, string>();
+
+function pagePath(pathname: string): string {
+    return pathname.replace(/\/+$/, '');
+}
+
+// seedFilterDraft fills an input the first time this page sees it and leaves
+// every later pass alone: the input a morph keeps is already seeded, so a
+// re-render can never overwrite what the user has typed since.
+export function seedFilterDraft(): void {
+    const input = document.getElementById('ro-filter-input') as HTMLInputElement | null;
+    if (!input || draftInputPages.has(input)) {
+        return;
+    }
+    draftInputPages.set(input, pagePath(window.location.pathname));
+    const draft = draftFromSearch(window.location.search);
+    if (draft && !input.value) {
+        input.value = draft;
+    }
+}
+
+// htmx files its history snapshot of a page under the path it last pushed or
+// replaced itself, kept in session storage under this key (vendored htmx
+// 2.0.10). A replaceState it did not make leaves that path on the old URL: the
+// snapshot taken when the user leaves would be filed there, and Back to the
+// drafted URL would miss the cache -- a server re-render without the cookie
+// sort and without the scroll position. The key moves with the URL.
+const HTMX_HISTORY_PATH_KEY = 'htmx-current-path-for-history';
+
+// writeFilterDraftURL mirrors the draft into `q` now and cancels a pending
+// write. The text is liveDraftText: a chip in progress narrows nothing and so
+// never reaches the URL. history.state passes through untouched -- htmx only
+// restores entries whose state it marked.
+export function writeFilterDraftURL(): void {
+    window.clearTimeout(draftURLTimer);
+    draftURLTimer = undefined;
+    const input = document.getElementById('ro-filter-input') as HTMLInputElement | null;
+    const { pathname, search, hash } = window.location;
+    if (!input || draftInputPages.get(input) !== pagePath(pathname)) {
+        return;
+    }
+    const next = withDraftQuery(search, liveDraftText(input.value));
+    if (next === search) {
+        return;
+    }
+    try {
+        window.history.replaceState(window.history.state, '', pathname + next + hash);
+        window.sessionStorage.setItem(HTMX_HISTORY_PATH_KEY, pathname + next);
+    } catch {
+        // Past the browser's replaceState budget (the next settled draft
+        // writes again), or no session storage (Back re-renders instead).
+    }
+}
+
+function scheduleFilterDraftURL(): void {
+    window.clearTimeout(draftURLTimer);
+    draftURLTimer = window.setTimeout(writeFilterDraftURL, DRAFT_URL_DELAY_MS);
+}
+
+// Any request the page starts may leave it (a boosted link) or push a new
+// entry (a sort): the entry being left gets the draft typed a moment ago
+// before htmx files its snapshot, instead of losing the unwritten tail.
+function flushFilterDraftURL(): void {
+    if (draftURLTimer !== undefined) {
+        writeFilterDraftURL();
+    }
+}
+
+document.addEventListener('htmx:beforeRequest', flushFilterDraftURL);
+
+// A GET the list sends to its own page -- a sort header, a chip's ✕, the
+// columns popover, a label chip, a refresh -- carries the query the server
+// rendered into that link (or the URL held when it was built), so its `q` may
+// be older than the input. The server echoes the query back as the pushed URL
+// (HX-Push-Url; a boosted link pushes its own path), so the request is
+// rewritten here to carry the draft the input holds now. Only the `q` pair
+// changes; requests to other pages are left alone.
+export function carryFilterDraft(event: Event): void {
+    const detail = Object((event as CustomEvent).detail) as {
+        elt?: unknown;
+        path?: unknown;
+        verb?: unknown;
+    };
+    const input = document.getElementById('ro-filter-input') as HTMLInputElement | null;
+    const content = document.getElementById('resource-list-content');
+    const path = detail.path;
+    if (
+        !input ||
+        !content ||
+        detail.verb !== 'get' ||
+        typeof path !== 'string' ||
+        !(detail.elt instanceof Node) ||
+        !content.contains(detail.elt)
+    ) {
+        return;
+    }
+    const hashAt = path.indexOf('#');
+    const beforeHash = hashAt < 0 ? path : path.slice(0, hashAt);
+    const queryAt = beforeHash.indexOf('?');
+    const route = queryAt < 0 ? beforeHash : beforeHash.slice(0, queryAt);
+    let target: URL;
+    try {
+        target = new URL(route, window.location.href);
+    } catch {
+        return;
+    }
+    const page = pagePath(window.location.pathname);
+    const targetPage = pagePath(target.pathname);
+    if (
+        target.origin !== window.location.origin ||
+        (targetPage !== page && targetPage !== `${page}/_table`)
+    ) {
+        return;
+    }
+    const search = queryAt < 0 ? '' : beforeHash.slice(queryAt);
+    detail.path =
+        route + withDraftQuery(search, liveDraftText(input.value)) + path.slice(beforeHash.length);
+}
+
+document.addEventListener('htmx:configRequest', carryFilterDraft);
+
 // ---- chip commit / pop: ride the v2 loop ------------------------------------
 // issueFilterNavigation GETs the `_table` partial for a CANONICAL list href,
 // sourced from the editor input -- a USER-initiated request (no RO-No-Push), so
@@ -167,23 +307,34 @@ export function issueFilterNavigation(href: string): void {
     void request?.catch(() => {});
 }
 
-// commitFilterChip materializes the draft as a `?f=` chip. The raw value is
-// encodeURIComponent with the OR-commas RESTORED raw -- typed input treats every
-// comma as OR (filter.go parses alternatives on raw commas), and the `?f=` pair
-// is appended by STRING CONCATENATION so sibling raw params keep their exact wire
-// encoding (never URLSearchParams over the whole query).
+// commitFilterChip materializes the draft as a `?f=` chip. A typed chip's raw
+// value is encodeURIComponent with the OR-commas RESTORED raw -- typed input
+// treats every comma as OR (filter.go parses alternatives on raw commas). Plain
+// text becomes a `name:` chip: the same case-insensitive substring match the
+// live filter runs, now on the server and in the URL. Its commas were literal
+// in the live match, so they stay encoded (%2C) -- a raw comma would split the
+// text into OR alternatives. The `?f=` pair is appended by STRING
+// CONCATENATION so sibling raw params keep their exact wire encoding (never
+// URLSearchParams over the whole query).
 function commitFilterChip(draft: string): void {
     const text = trimFilterWhitespace(draft);
     const parsed = splitFilterDraft(text);
-    if (!parsed) {
-        return; // free text never commits -- it live-matches only
+    let raw: string;
+    if (parsed) {
+        if (!filterFieldKnown(roRowModel.fields, parsed.field)) {
+            showFilterFieldHint();
+            return;
+        }
+        raw = encodeURIComponent(text).replace(/%2C/gi, ',');
+    } else if (text && filterFieldKnown(roRowModel.fields, 'name')) {
+        raw = encodeURIComponent(`name:${text}`);
+    } else {
+        return; // no Name column (Events): plain text stays a live match
     }
-    if (!filterFieldKnown(roRowModel.fields, parsed.field)) {
-        showFilterFieldHint();
-        return;
-    }
-    const raw = encodeURIComponent(text).replace(/%2C/gi, ',');
-    const search = window.location.search;
+    // The current entry keeps the draft (Back returns to the list as it was);
+    // the chip's URL must not carry it as `q` next to the chip it became.
+    writeFilterDraftURL();
+    const search = withDraftQuery(window.location.search, '');
     const href = `${window.location.pathname + (search ? `${search}&` : '?')}f=${raw}`;
     clearFilterDraft();
     issueFilterNavigation(href);
@@ -354,6 +505,7 @@ function acceptFilterAC(commitValues: boolean): void {
     } else {
         applyLiveNameFilter();
         updateFilterAC();
+        scheduleFilterDraftURL();
     }
 }
 
@@ -461,8 +613,8 @@ export const filtersBindings: Binding[] = [
         },
     },
     // Chips editor: every keystroke re-runs the live name match (model-
-    // driven, NO request) and the autocomplete; a fresh draft clears any
-    // unknown-field hint.
+    // driven, NO request) and the autocomplete, and queues the URL mirror; a
+    // fresh draft clears any unknown-field hint.
     {
         event: 'input',
         selector: '#ro-filter-input',
@@ -470,6 +622,7 @@ export const filtersBindings: Binding[] = [
             hideFilterFieldHint();
             applyLiveNameFilter();
             updateFilterAC();
+            scheduleFilterDraftURL();
             return true;
         },
         stop: true,

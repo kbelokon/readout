@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const dependencies = vi.hoisted(() => ({
@@ -23,6 +25,11 @@ interface MorphExtension {
 interface MorphCallbacks {
     beforeNodeMorphed?: (oldNode: Node) => boolean | undefined;
     afterNodeMorphed?: (oldNode: Node) => void;
+    beforeAttributeUpdated?: (
+        attributeName: string,
+        node: Element,
+        mutationType: 'update' | 'remove',
+    ) => boolean | undefined;
 }
 
 interface VendorHarness {
@@ -190,6 +197,7 @@ describe('ro-morph vendor guards and extension', () => {
         expect(vendor.morph).toHaveBeenCalledExactlyOnceWith(target, fragment.children, {
             morphStyle: 'innerHTML',
             ignoreActiveValue: true,
+            callbacks: { beforeAttributeUpdated: expect.any(Function) },
         });
     });
 
@@ -212,6 +220,7 @@ describe('ro-morph vendor guards and extension', () => {
         expect(vendor.morph).toHaveBeenCalledExactlyOnceWith(target, fragment.children, {
             morphStyle: 'innerHTML',
             ignoreActiveValue: true,
+            callbacks: { beforeAttributeUpdated: expect.any(Function) },
         });
     });
 
@@ -316,5 +325,87 @@ describe('changed-cell flash', () => {
         expect(vendor.matchMedia).toHaveBeenCalledExactlyOnceWith(
             '(prefers-reduced-motion: reduce)',
         );
+    });
+});
+
+describe('the filter draft across a morph', () => {
+    test('vetoes only the filter input value sync', async () => {
+        const vendor = installVendors();
+        await importMorph();
+        const target = document.createElement('div');
+        vendor.extension().handleSwap('morph', target, document.createDocumentFragment());
+        const config = vendor.morph.mock.calls[0]?.[2] as { callbacks: MorphCallbacks };
+        const veto = config.callbacks.beforeAttributeUpdated;
+
+        const draft = document.createElement('input');
+        draft.id = 'ro-filter-input';
+        const other = document.createElement('input');
+        other.id = 'ro-cols-labelcols';
+        expect(veto?.('value', draft, 'remove')).toBe(false);
+        expect(veto?.('value', draft, 'update')).toBe(false);
+        // The placeholder (empty once chips exist) and every other element
+        // keep idiomorph's normal sync.
+        expect(veto?.('placeholder', draft, 'update')).toBeUndefined();
+        expect(veto?.('value', other, 'remove')).toBeUndefined();
+    });
+
+    // The vendored library itself, not a stub: the value sync that blanked the
+    // draft lives in its minified bundle, so this is the check that breaks if
+    // an upgrade changes the callback contract.
+    test('the vendored idiomorph keeps an unfocused draft and still syncs the placeholder', async () => {
+        const source = readFileSync(
+            join(process.cwd(), 'internal/assets/static/idiomorph-ext.min.js'),
+            'utf8',
+        );
+        const realIdiomorph = new Function('htmx', `${source}\nreturn Idiomorph;`)({
+            defineExtension: () => {},
+        }) as unknown;
+        let registered: MorphExtension | undefined;
+        stubReducedMotion(true);
+        vi.stubGlobal('htmx', {
+            defineExtension: (_name: string, extension: MorphExtension) => {
+                registered = extension;
+            },
+        });
+        vi.stubGlobal('Idiomorph', realIdiomorph);
+        await importMorph();
+
+        const editor = (placeholder: string, chip: string) => `
+            <div id="ro-filter-field">${chip}
+                <input id="ro-filter-input" type="text" placeholder="${placeholder}">
+            </div>
+            <input id="ro-cols-labelcols" type="text">
+            <table><tbody><tr id="row-a"><td>a</td></tr></tbody></table>`;
+        document.body.innerHTML = `<div id="resource-list-content">${editor('Filter pods…', '')}</div>`;
+        const content = document.getElementById('resource-list-content') as HTMLElement;
+        const draft = document.getElementById('ro-filter-input') as HTMLInputElement;
+        const labelcols = document.getElementById('ro-cols-labelcols') as HTMLInputElement;
+        draft.value = 'ngi';
+        labelcols.value = 'app';
+        labelcols.focus(); // the draft is NOT the active element
+
+        const fragment = document
+            .createRange()
+            .createContextualFragment(
+                editor('', '<span class="ro-scope-chip">status:Running</span>'),
+            );
+        registered?.handleSwap('morph', content, fragment);
+
+        expect(document.getElementById('ro-filter-input')).toBe(draft);
+        expect(draft.value).toBe('ngi');
+        expect(draft.getAttribute('placeholder')).toBe('');
+        expect(content.querySelector('.ro-scope-chip')).toHaveTextContent('status:Running');
+        // Focused, the draft keeps its value through ignoreActiveValue alone.
+        draft.focus();
+        registered?.handleSwap(
+            'morph',
+            content,
+            document.createRange().createContextualFragment(editor('Filter pods…', '')),
+        );
+        expect(draft.value).toBe('ngi');
+        expect(draft.getAttribute('placeholder')).toBe('Filter pods…');
+        // The veto is scoped: an unfocused input with no server value still
+        // takes the server's (empty) value.
+        expect(labelcols.value).toBe('');
     });
 });

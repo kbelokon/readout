@@ -801,6 +801,14 @@ func TestListPartialPushURLContract(t *testing.T) {
 		t.Fatalf("user sort push = %q, want the canonical list URL", got)
 	}
 
+	// The free-text draft rides the query as `q`, byte for byte, next to raw
+	// OR-comma chips: the client rewrites `q` on the request, and the echo is
+	// what keeps the pushed URL in step with the input.
+	rec = tableGET("/clusters/test/namespaces/default/pods/_table?f=status%3ARunning,Pending&sort=Name&q=my%20app", map[string]string{"HX-Request": "true"})
+	if got := rec.Header().Get("HX-Push-Url"); got != "/clusters/test/namespaces/default/pods?f=status%3ARunning,Pending&sort=Name&q=my%20app" {
+		t.Fatalf("user push with a draft = %q, want the request query echoed as-is", got)
+	}
+
 	// Tick / programmatic re-fetch: marked RO-No-Push by the client -> no push.
 	rec = tableGET(partial, map[string]string{"HX-Request": "true", "RO-No-Push": "true"})
 	if got := rec.Header().Get("HX-Push-Url"); got != "" {
@@ -837,6 +845,9 @@ func TestListLoopReadoutJSContract(t *testing.T) {
 		"RO-No-Push",                      // programmatic requests opt out of history push
 		"listRequestsInFlight",            // one tracker owns both user and container requests
 		"listRequestTrackerSnapshot",      // Live and polling read the same request ownership
+		// An UNFOCUSED filter draft survives a morph too: ignoreActiveValue
+		// covers only the focused input, so its value sync is vetoed.
+		"beforeAttributeUpdated: keepFilterDraft",
 		// In-flight tracking is xhr-Set based, NOT a counter: htmx dispatches
 		// htmx:afterRequest on the issuing element, so a boosted swap that
 		// detaches that element mid-request swallows the event (no document

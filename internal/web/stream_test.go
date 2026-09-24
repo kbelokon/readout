@@ -1138,6 +1138,14 @@ func TestStreamScopeVariantsDoNotShareASource(t *testing.T) {
 		t.Fatalf("sources after an equivalent selector = %d, want 1", got)
 	}
 
+	// The page's free-text draft (`q`) and its chips change only the render,
+	// never the upstream request: a stream opened from such a URL joins too.
+	drafted := openStream(t, base+"?selector=app%3Dweb%2Ctier%3Dfront&f=status%3ARunning&q=web", "key-4")
+	drafted.requireEvent(t, "ro-live", 5*time.Second)
+	if got := app.liveHub().sourceCount(); got != 1 {
+		t.Fatalf("sources after a drafted page URL = %d, want 1", got)
+	}
+
 	// A different namespace is a different upstream collection.
 	other := openStream(t, ts.URL+"/clusters/test/namespaces/big/pods/_stream", "key-3")
 	other.requireEvent(t, "ro-live", 5*time.Second)
