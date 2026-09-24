@@ -27,7 +27,13 @@
 
 import { colsPopOpen, setColsPopOpen, syncColsPopState } from './columns.js';
 import { closeRowMenu } from './context-menu.js';
-import { applyLiveNameFilter, captureRowModelFromDocument, updateFilterAC } from './filters.js';
+import {
+    applyLiveNameFilter,
+    captureRowModelFromDocument,
+    seedFilterDraft,
+    updateFilterAC,
+    writeFilterDraftURL,
+} from './filters.js';
 import { rememberListValidator, suppressListNotModified } from './list-etag.js';
 import { liveApply, liveOnListSwap, liveResetPage } from './live.js';
 import { LIST_DELTA_APPLIED_EVENT, type ListDeltaAppliedDetail } from './live-protocol.js';
@@ -236,12 +242,22 @@ export function afterListUpdate(update: ListUpdate): void {
     [
         clearListStale,
         reapplyRowState,
+        // An editor this page has not seen (it came back after a whole-list
+        // state card) starts from the URL; the one every morph keeps is left
+        // alone.
+        seedFilterDraft,
         applyLiveNameFilter,
         refreshFilterAutocomplete,
         restoreColumnsPopover,
     ].forEach(runInitStep);
-    if (update.kind === 'swap') runInitStep(virtualizeAfterSwap);
-    else runInitStep(() => virtualizeAfterDelta(update.previousByKey, update.focusKey));
+    if (update.kind === 'swap') {
+        // A pushed list URL echoes its request's query, and the draft may
+        // have moved on while the request was in flight: bring `q` in line.
+        runInitStep(writeFilterDraftURL);
+        runInitStep(virtualizeAfterSwap);
+    } else {
+        runInitStep(() => virtualizeAfterDelta(update.previousByKey, update.focusKey));
+    }
     runInitStep(setupStickyNamespace);
 }
 
@@ -537,6 +553,10 @@ function runInit(yamlFoldsBuilt = false): void {
         // init that prunes rows from the DOM -- at this point
         // the DOM still IS the complete dataset.
         captureRowModelFromDocument,
+        // A freshly rendered editor input takes its draft from the URL's `q`
+        // (first paint, a restored history entry, a boosted navigation):
+        // the input is rendered without a value.
+        seedFilterDraft,
         // A new projection deliberately clears stale visibleKeys. Re-derive
         // them from the current draft before windowing so navigation/history
         // cannot carry an old page's filter set into this one.

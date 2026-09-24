@@ -122,8 +122,11 @@
       kind: "value"
     }));
   }
+  function liveDraftText(draft) {
+    return !draft || splitFilterDraft(draft) ? "" : trimFilterWhitespace(draft);
+  }
   function liveNameMatchKeys(rows, draft) {
-    const text = !draft || splitFilterDraft(draft) ? "" : trimFilterWhitespace(draft).toLowerCase();
+    const text = liveDraftText(draft).toLowerCase();
     if (!text) {
       return null;
     }
@@ -144,6 +147,25 @@
     });
     const query = kept.concat(fields).join("&");
     return pathname + (query ? `?${query}` : "");
+  }
+  function isDraftPair(pair) {
+    return pair.split("=", 1)[0] === "q";
+  }
+  function draftFromSearch(search) {
+    const pair = search.replace(/^\?/, "").split("&").find(isDraftPair);
+    return pair === void 0 ? "" : new URLSearchParams(pair).get("q") ?? "";
+  }
+  function withDraftQuery(search, text) {
+    const pairs = search.replace(/^\?/, "").split("&");
+    const drafts = pairs.filter(isDraftPair);
+    if (drafts.length === (text ? 1 : 0) && draftFromSearch(search) === text) {
+      return search;
+    }
+    const kept = pairs.filter((pair) => pair && !isDraftPair(pair));
+    if (text) {
+      kept.push(`q=${encodeURIComponent(text)}`);
+    }
+    return kept.length ? `?${kept.join("&")}` : "";
   }
 
   // internal/assets/src/js/list-projection.ts
@@ -2808,6 +2830,9 @@
       }
     };
   }
+  function keepFilterDraft(attributeName, node) {
+    return attributeName === "value" && node.id === "ro-filter-input" ? false : void 0;
+  }
   if (typeof htmx !== "undefined" && typeof htmx.defineExtension === "function" && idiomorph) {
     htmx.defineExtension("ro-morph", {
       isInlineSwap: (swapStyle) => swapStyle === "morph",
@@ -2822,7 +2847,8 @@
         }
         return idiomorph.morph(target, fragment.children, {
           morphStyle: "innerHTML",
-          ignoreActiveValue: true
+          ignoreActiveValue: true,
+          callbacks: { beforeAttributeUpdated: keepFilterDraft }
         });
       }
     });
@@ -2933,6 +2959,71 @@
     virtualizeOnFilterChange();
     appliedLiveFilter = { content, draft, revision };
   }
+  var DRAFT_URL_DELAY_MS = 400;
+  var draftURLTimer;
+  var draftInputPages = /* @__PURE__ */ new WeakMap();
+  function pagePath(pathname) {
+    return pathname.replace(/\/+$/, "");
+  }
+  function seedFilterDraft() {
+    const input = document.getElementById("ro-filter-input");
+    if (!input || draftInputPages.has(input)) {
+      return;
+    }
+    draftInputPages.set(input, pagePath(window.location.pathname));
+    const draft = draftFromSearch(window.location.search);
+    if (draft && !input.value) {
+      input.value = draft;
+    }
+  }
+  function writeFilterDraftURL() {
+    window.clearTimeout(draftURLTimer);
+    draftURLTimer = void 0;
+    const input = document.getElementById("ro-filter-input");
+    const { pathname, search, hash } = window.location;
+    if (!input || draftInputPages.get(input) !== pagePath(pathname)) {
+      return;
+    }
+    const next = withDraftQuery(search, liveDraftText(input.value));
+    if (next === search) {
+      return;
+    }
+    try {
+      window.history.replaceState(window.history.state, "", pathname + next + hash);
+    } catch {
+    }
+  }
+  function scheduleFilterDraftURL() {
+    window.clearTimeout(draftURLTimer);
+    draftURLTimer = window.setTimeout(writeFilterDraftURL, DRAFT_URL_DELAY_MS);
+  }
+  function carryFilterDraft(event) {
+    const detail = Object(event.detail);
+    const input = document.getElementById("ro-filter-input");
+    const content = document.getElementById("resource-list-content");
+    const path = detail.path;
+    if (!input || !content || detail.verb !== "get" || typeof path !== "string" || !(detail.elt instanceof Node) || !content.contains(detail.elt)) {
+      return;
+    }
+    const hashAt = path.indexOf("#");
+    const beforeHash = hashAt < 0 ? path : path.slice(0, hashAt);
+    const queryAt = beforeHash.indexOf("?");
+    const route = queryAt < 0 ? beforeHash : beforeHash.slice(0, queryAt);
+    let target;
+    try {
+      target = new URL(route, window.location.href);
+    } catch {
+      return;
+    }
+    const page = pagePath(window.location.pathname);
+    const targetPage = pagePath(target.pathname);
+    if (target.origin !== window.location.origin || targetPage !== page && targetPage !== `${page}/_table`) {
+      return;
+    }
+    const search = queryAt < 0 ? "" : beforeHash.slice(queryAt);
+    detail.path = route + withDraftQuery(search, liveDraftText(input.value)) + path.slice(beforeHash.length);
+  }
+  document.addEventListener("htmx:configRequest", carryFilterDraft);
   function issueFilterNavigation(href) {
     const content = document.getElementById("resource-list-content");
     const input = document.getElementById("ro-filter-input");
@@ -2954,15 +3045,20 @@
   function commitFilterChip(draft) {
     const text = trimFilterWhitespace(draft);
     const parsed = splitFilterDraft(text);
-    if (!parsed) {
+    let raw;
+    if (parsed) {
+      if (!filterFieldKnown(roRowModel.fields, parsed.field)) {
+        showFilterFieldHint();
+        return;
+      }
+      raw = encodeURIComponent(text).replace(/%2C/gi, ",");
+    } else if (text && filterFieldKnown(roRowModel.fields, "name")) {
+      raw = encodeURIComponent(`name:${text}`);
+    } else {
       return;
     }
-    if (!filterFieldKnown(roRowModel.fields, parsed.field)) {
-      showFilterFieldHint();
-      return;
-    }
-    const raw = encodeURIComponent(text).replace(/%2C/gi, ",");
-    const search = window.location.search;
+    writeFilterDraftURL();
+    const search = withDraftQuery(window.location.search, "");
     const href = `${window.location.pathname + (search ? `${search}&` : "?")}f=${raw}`;
     clearFilterDraft();
     issueFilterNavigation(href);
@@ -3093,6 +3189,7 @@
     } else {
       applyLiveNameFilter();
       updateFilterAC();
+      scheduleFilterDraftURL();
     }
   }
   function handleFilterInputKeydown(event) {
@@ -3192,8 +3289,8 @@
       }
     },
     // Chips editor: every keystroke re-runs the live name match (model-
-    // driven, NO request) and the autocomplete; a fresh draft clears any
-    // unknown-field hint.
+    // driven, NO request) and the autocomplete, and queues the URL mirror; a
+    // fresh draft clears any unknown-field hint.
     {
       event: "input",
       selector: "#ro-filter-input",
@@ -3201,6 +3298,7 @@
         hideFilterFieldHint();
         applyLiveNameFilter();
         updateFilterAC();
+        scheduleFilterDraftURL();
         return true;
       },
       stop: true
@@ -4896,12 +4994,20 @@
     [
       clearListStale,
       reapplyRowState,
+      // An editor this page has not seen (it came back after a whole-list
+      // state card) starts from the URL; the one every morph keeps is left
+      // alone.
+      seedFilterDraft,
       applyLiveNameFilter,
       refreshFilterAutocomplete,
       restoreColumnsPopover
     ].forEach(runInitStep);
-    if (update.kind === "swap") runInitStep(virtualizeAfterSwap);
-    else runInitStep(() => virtualizeAfterDelta(update.previousByKey, update.focusKey));
+    if (update.kind === "swap") {
+      runInitStep(writeFilterDraftURL);
+      runInitStep(virtualizeAfterSwap);
+    } else {
+      runInitStep(() => virtualizeAfterDelta(update.previousByKey, update.focusKey));
+    }
     runInitStep(setupStickyNamespace);
   }
   document.addEventListener(LIST_DELTA_APPLIED_EVENT, (event) => {
@@ -5073,6 +5179,10 @@
       // init that prunes rows from the DOM -- at this point
       // the DOM still IS the complete dataset.
       captureRowModelFromDocument,
+      // A freshly rendered editor input takes its draft from the URL's `q`
+      // (first paint, a restored history entry, a boosted navigation):
+      // the input is rendered without a value.
+      seedFilterDraft,
       // A new projection deliberately clears stale visibleKeys. Re-derive
       // them from the current draft before windowing so navigation/history
       // cannot carry an old page's filter set into this one.

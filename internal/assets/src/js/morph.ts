@@ -37,6 +37,11 @@ declare const htmx:
 interface IdiomorphCallbacks {
     beforeNodeMorphed?: (oldNode: Node) => boolean | undefined;
     afterNodeMorphed?: (oldNode: Node) => void;
+    beforeAttributeUpdated?: (
+        attributeName: string,
+        node: Element,
+        mutationType: 'update' | 'remove',
+    ) => boolean | undefined;
 }
 declare const Idiomorph:
     | {
@@ -44,7 +49,11 @@ declare const Idiomorph:
           morph(
               target: Element,
               content: HTMLCollection,
-              config: { morphStyle: string; ignoreActiveValue: boolean },
+              config: {
+                  morphStyle: string;
+                  ignoreActiveValue: boolean;
+                  callbacks?: IdiomorphCallbacks;
+              },
           ): boolean;
       }
     | undefined;
@@ -125,8 +134,20 @@ if (
 // "innerHTML" swaps the fragment INTO the persistent container; rows carry
 // data-key-derived ids, so idiomorph matches them by object identity and a
 // re-sorted fragment MOVES the existing <tr> nodes instead of rewriting them
-// positionally. defaults.callbacks (the cell-flash hooks above) still merge in:
-// an explicit config object without `callbacks` inherits Idiomorph.defaults.
+// positionally. defaults.callbacks (the cell-flash hooks above) still apply:
+// idiomorph merges the config's `callbacks` over its defaults one by one.
+//
+// ignoreActiveValue only covers a FOCUSED input. The server renders
+// #ro-filter-input without a value, and idiomorph blanks an unfocused input
+// whose incoming twin has none -- so a Refresh click (the click itself takes
+// the focus), a Live reconnect snapshot or a tab return used to wipe the draft
+// and bring every row back. keepFilterDraft vetoes exactly that one value sync:
+// the draft is client state the server never renders, while every other
+// attribute -- the placeholder that empties once chips exist -- keeps syncing.
+function keepFilterDraft(attributeName: string, node: Element): boolean | undefined {
+    return attributeName === 'value' && node.id === 'ro-filter-input' ? false : undefined;
+}
+
 if (typeof htmx !== 'undefined' && typeof htmx.defineExtension === 'function' && idiomorph) {
     htmx.defineExtension('ro-morph', {
         isInlineSwap: (swapStyle: string) => swapStyle === 'morph',
@@ -156,6 +177,7 @@ if (typeof htmx !== 'undefined' && typeof htmx.defineExtension === 'function' &&
             return idiomorph.morph(target, fragment.children, {
                 morphStyle: 'innerHTML',
                 ignoreActiveValue: true,
+                callbacks: { beforeAttributeUpdated: keepFilterDraft },
             });
         },
     });

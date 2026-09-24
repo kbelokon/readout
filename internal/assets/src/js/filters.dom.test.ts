@@ -854,8 +854,57 @@ describe('navigation and binding contracts', () => {
         expect(error).not.toHaveTextContent('label');
     });
 
-    test('keeps free text live-only and makes Backspace without chips a safe no-op', () => {
+    test('Enter pins plain text as a name: chip whose commas stay literal', () => {
         const { content, input } = renderEditor();
+        filters.captureRowModel(content);
+        const ajax = installHtmx();
+        window.history.replaceState(null, '', '/pods?f=label%3Aapp%3Dweb,api&sort=Name');
+        input.value = ' web, alpha ';
+        const enter = targetedKey(input, 'Enter');
+
+        binding('keydown').handler(enter, null);
+
+        expect(enter.defaultPrevented).toBe(true);
+        expect(input.value).toBe('');
+        // The typed chip's raw commas are OR; free text's comma is literal, so
+        // the name chip carries it encoded as one alternative.
+        expect(ajax).toHaveBeenCalledExactlyOnceWith(
+            'GET',
+            '/pods/_table?f=label%3Aapp%3Dweb,api&sort=Name&f=name%3Aweb%2C%20alpha',
+            {
+                source: input,
+                target: '#resource-list-content',
+                swap: 'morph',
+            },
+        );
+    });
+
+    test('the committed draft leaves q: the current entry keeps it, the chip URL does not', () => {
+        const { content, input } = renderEditor();
+        filters.captureRowModel(content);
+        const ajax = installHtmx();
+        window.history.replaceState({ htmx: true }, '', '/pods?q=we&sort=Name');
+        filters.seedFilterDraft();
+        expect(input.value).toBe('we');
+        input.value = 'web';
+
+        binding('keydown').handler(targetedKey(input, 'Enter'), null);
+
+        // Back returns to the list with the draft as it was typed...
+        expect(window.location.search).toBe('?sort=Name&q=web');
+        expect(window.history.state).toStrictEqual({ htmx: true });
+        // ...while the chip it became is the only trace in the next URL.
+        expect(ajax).toHaveBeenCalledExactlyOnceWith(
+            'GET',
+            '/pods/_table?sort=Name&f=name%3Aweb',
+            expect.anything(),
+        );
+    });
+
+    test('keeps plain text live-only without a Name column and makes Backspace a safe no-op', () => {
+        const { content, input } = renderEditor();
+        const name = content.querySelector('thead th') as HTMLElement;
+        name.textContent = 'Object';
         filters.captureRowModel(content);
         const ajax = installHtmx();
         input.value = 'web';
@@ -865,6 +914,20 @@ describe('navigation and binding contracts', () => {
 
         expect(enter.defaultPrevented).toBe(true);
         expect(input.value).toBe('web');
+        expect(ajax).not.toHaveBeenCalled();
+
+        // An unhinted (synthetic) Name header is no filterable column either.
+        name.textContent = 'Name';
+        delete name.dataset.hint;
+        filters.captureRowModel(content);
+        binding('keydown').handler(targetedKey(input, 'Enter'), null);
+        expect(ajax).not.toHaveBeenCalled();
+
+        // Whitespace alone is no text to pin, Name column or not.
+        name.dataset.hint = 'string';
+        filters.captureRowModel(content);
+        input.value = ' \u0085 ';
+        binding('keydown').handler(targetedKey(input, 'Enter'), null);
         expect(ajax).not.toHaveBeenCalled();
 
         input.value = '';
@@ -1008,5 +1071,255 @@ describe('navigation and binding contracts', () => {
         binding('keydown').handler(enter, null);
         expect(enter.defaultPrevented).toBe(false);
         expect(input.value).toBe('');
+    });
+});
+
+describe('the draft in the page URL', () => {
+    function configRequest(detail: Record<string, unknown>): CustomEvent {
+        return new CustomEvent('htmx:configRequest', { detail });
+    }
+
+    test('seeds a fresh input from q once, never over what the user typed', () => {
+        const first = renderEditor();
+        window.history.replaceState(null, '', '/pods?sort=Name&q=my%20app');
+
+        filters.seedFilterDraft();
+        expect(first.input.value).toBe('my app');
+
+        // A later pass over the SAME input (every morph keeps it) is a no-op,
+        // even after the user cleared it and the URL still says otherwise.
+        first.input.value = '';
+        filters.seedFilterDraft();
+        expect(first.input.value).toBe('');
+
+        // A re-rendered input is new to the page and starts from the URL...
+        const second = renderEditor();
+        filters.seedFilterDraft();
+        expect(second.input.value).toBe('my app');
+
+        // ...unless it already holds text.
+        const third = renderEditor();
+        third.input.value = 'typed';
+        filters.seedFilterDraft();
+        expect(third.input.value).toBe('typed');
+
+        // No q, no editor: nothing to do.
+        const fourth = renderEditor();
+        window.history.replaceState(null, '', '/pods');
+        filters.seedFilterDraft();
+        expect(fourth.input.value).toBe('');
+        document.body.innerHTML = '';
+        expect(() => filters.seedFilterDraft()).not.toThrow();
+    });
+
+    test('writes the live text into q in place, keeping history state, chips and hash', () => {
+        const { input } = renderEditor();
+        window.history.replaceState({ htmx: true }, '', '/pods?f=status%3ARunning,Pending#top');
+        filters.seedFilterDraft();
+        const replace = vi.spyOn(window.history, 'replaceState');
+        const push = vi.spyOn(window.history, 'pushState');
+        const entries = window.history.length;
+
+        input.value = ' my app ';
+        filters.writeFilterDraftURL();
+        expect(window.location.pathname + window.location.search + window.location.hash).toBe(
+            '/pods?f=status%3ARunning,Pending&q=my%20app#top',
+        );
+        expect(window.history.state).toStrictEqual({ htmx: true });
+        expect(replace).toHaveBeenCalledOnce();
+
+        // Unchanged text writes nothing.
+        filters.writeFilterDraftURL();
+        expect(replace).toHaveBeenCalledOnce();
+
+        // A chip in progress narrows nothing, so it clears q.
+        input.value = 'status:Run';
+        filters.writeFilterDraftURL();
+        expect(window.location.search).toBe('?f=status%3ARunning,Pending');
+
+        expect(push).not.toHaveBeenCalled();
+        expect(window.history.length).toBe(entries);
+    });
+
+    test('never writes for an input this page did not seed', () => {
+        const { input } = renderEditor();
+        window.history.replaceState(null, '', '/pods');
+        filters.seedFilterDraft();
+        const replace = vi.spyOn(window.history, 'replaceState');
+
+        // A history step to another page is loading while the old input is
+        // still on screen: its draft must not land on the new URL.
+        window.history.replaceState(null, '', '/pods/nginx');
+        replace.mockClear();
+        input.value = 'ngi';
+        filters.writeFilterDraftURL();
+        expect(replace).not.toHaveBeenCalled();
+        expect(window.location.search).toBe('');
+
+        // The same page with or without a trailing slash is the same page.
+        window.history.replaceState(null, '', '/pods/');
+        replace.mockClear();
+        filters.writeFilterDraftURL();
+        expect(window.location.search).toBe('?q=ngi');
+
+        // An input nobody seeded, or none at all, writes nothing.
+        const unseeded = renderEditor();
+        window.history.replaceState(null, '', '/pods');
+        replace.mockClear();
+        unseeded.input.value = 'x';
+        filters.writeFilterDraftURL();
+        document.body.innerHTML = '';
+        filters.writeFilterDraftURL();
+        expect(replace).not.toHaveBeenCalled();
+    });
+
+    test('a browser refusing replaceState does not break typing', () => {
+        const { input } = renderEditor();
+        window.history.replaceState(null, '', '/pods');
+        filters.seedFilterDraft();
+        const replace = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {
+            throw new DOMException('too many calls', 'SecurityError');
+        });
+
+        input.value = 'ngi';
+        expect(() => filters.writeFilterDraftURL()).not.toThrow();
+        expect(replace).toHaveBeenCalledOnce();
+        expect(window.location.search).toBe('');
+        replace.mockRestore(); // the shared teardown resets the URL through it
+    });
+
+    test('typing writes the URL once, after the draft settles', () => {
+        vi.useFakeTimers();
+        try {
+            const { content, input } = renderEditor();
+            filters.captureRowModel(content);
+            window.history.replaceState(null, '', '/pods');
+            filters.seedFilterDraft();
+            const replace = vi.spyOn(window.history, 'replaceState');
+            const inputBinding = binding('input', '#ro-filter-input');
+
+            for (const draft of ['w', 'we', 'web']) {
+                input.value = draft;
+                inputBinding.handler(new Event('input'), input);
+                vi.advanceTimersByTime(399);
+            }
+            expect(replace).not.toHaveBeenCalled();
+            expect(window.location.search).toBe('');
+
+            vi.advanceTimersByTime(1);
+            expect(replace).toHaveBeenCalledOnce();
+            expect(window.location.search).toBe('?q=web');
+
+            // Accepting a suggestion edits the draft without an input event;
+            // it is mirrored the same way.
+            input.value = 'sta';
+            inputBinding.handler(new Event('input'), input);
+            binding('keydown').handler(targetedKey(input, 'Tab'), null);
+            expect(input.value).toBe('status:');
+            vi.advanceTimersByTime(400);
+            expect(window.location.search).toBe('');
+
+            // A direct write cancels the pending one.
+            input.value = 'web';
+            inputBinding.handler(new Event('input'), input);
+            filters.writeFilterDraftURL();
+            replace.mockClear();
+            vi.advanceTimersByTime(400);
+            expect(replace).not.toHaveBeenCalled();
+            expect(window.location.search).toBe('?q=web');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    test('a GET the list sends to its own page carries the current draft as q', () => {
+        const { content, input } = renderEditor();
+        const header = document.createElement('a');
+        content.querySelector('thead th')?.appendChild(header);
+        window.history.replaceState(null, '', '/clusters/dev/namespaces/default/pods?q=old');
+        input.value = ' ngi ';
+
+        // A sort header rendered before the draft existed.
+        const sort = configRequest({
+            elt: header,
+            path: '/clusters/dev/namespaces/default/pods/_table?f=status%3ARunning,Pending&sort=Name',
+            verb: 'get',
+        });
+        filters.carryFilterDraft(sort);
+        expect(sort.detail.path).toBe(
+            '/clusters/dev/namespaces/default/pods/_table?f=status%3ARunning,Pending&sort=Name&q=ngi',
+        );
+
+        // A boosted link to the page itself (a label chip) with an older q and
+        // a fragment; a refresh issued by the container itself.
+        const label = configRequest({
+            elt: header,
+            path: '/clusters/dev/namespaces/default/pods?q=old&f=label%3Ateam%3Dcore#rows',
+            verb: 'get',
+        });
+        filters.carryFilterDraft(label);
+        expect(label.detail.path).toBe(
+            '/clusters/dev/namespaces/default/pods?f=label%3Ateam%3Dcore&q=ngi#rows',
+        );
+        const refresh = configRequest({
+            elt: content,
+            path: '/clusters/dev/namespaces/default/pods/_table?q=old',
+            verb: 'get',
+        });
+        filters.carryFilterDraft(refresh);
+        expect(refresh.detail.path).toBe('/clusters/dev/namespaces/default/pods/_table?q=ngi');
+
+        // A committed or emptied draft takes q off the request.
+        input.value = 'status:Run';
+        const cleared = configRequest({
+            elt: input,
+            path: '/clusters/dev/namespaces/default/pods/_table?q=old&sort=Name',
+            verb: 'get',
+        });
+        filters.carryFilterDraft(cleared);
+        expect(cleared.detail.path).toBe('/clusters/dev/namespaces/default/pods/_table?sort=Name');
+    });
+
+    test('requests that are not the list asking for its own page are left alone', () => {
+        const { content, input } = renderEditor();
+        window.history.replaceState(null, '', '/clusters/dev/namespaces/default/pods');
+        input.value = 'ngi';
+        const inside = content.querySelector('td') as HTMLElement;
+        const outside = document.createElement('a');
+        document.body.appendChild(outside);
+        const untouched = [
+            // another page: a row link, the all-namespaces view, a sibling list
+            { elt: inside, path: '/clusters/dev/namespaces/default/pods/nginx', verb: 'get' },
+            { elt: inside, path: '/clusters/dev/namespaces/_all/pods?q=x', verb: 'get' },
+            { elt: inside, path: '/clusters/dev/namespaces/default/podsx', verb: 'get' },
+            // another origin, a non-GET, a source outside the list, no source
+            {
+                elt: inside,
+                path: 'https://elsewhere.test/clusters/dev/namespaces/default/pods',
+                verb: 'get',
+            },
+            { elt: inside, path: '/clusters/dev/namespaces/default/pods', verb: 'post' },
+            { elt: outside, path: '/clusters/dev/namespaces/default/pods', verb: 'get' },
+            { elt: 'not a node', path: '/clusters/dev/namespaces/default/pods', verb: 'get' },
+            // a path htmx never produces, and an unparseable one
+            { elt: inside, path: 42, verb: 'get' },
+            { elt: inside, path: 'http://[bad', verb: 'get' },
+        ];
+        for (const detail of untouched) {
+            const event = configRequest({ ...detail });
+            filters.carryFilterDraft(event);
+            expect(event.detail.path).toBe(detail.path);
+        }
+
+        // Without the editor or the list there is no draft to carry.
+        input.remove();
+        const noInput = configRequest({
+            elt: inside,
+            path: '/clusters/dev/namespaces/default/pods?q=x',
+            verb: 'get',
+        });
+        filters.carryFilterDraft(noInput);
+        expect(noInput.detail.path).toBe('/clusters/dev/namespaces/default/pods?q=x');
+        expect(() => filters.carryFilterDraft(new CustomEvent('htmx:configRequest'))).not.toThrow();
     });
 });

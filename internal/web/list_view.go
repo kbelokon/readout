@@ -99,7 +99,11 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 	// applyTableOptions. The chips ride the morphed fragment, so a shareable URL
 	// lands with its chips visible and a chip-committing partial re-renders them.
 	if single {
-		v.FilterBar = &filterBarView{Plural: lc.Plural, Chips: buildFilterBarChips(r)}
+		v.FilterBar = &filterBarView{
+			Plural:     lc.Plural,
+			Chips:      buildFilterBarChips(r),
+			NameColumn: len(lc.Tables) > 0 && resolveFilterColumn(lc.Tables[0].Columns, "name") >= 0,
+		}
 	}
 
 	for ti := range lc.Tables {

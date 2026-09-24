@@ -80,9 +80,12 @@ type listView struct {
 // filterBarView is the resolved chips-editor state: the list's plural (the
 // input placeholder copy) and the active `?f=` chips. Chips render inside the
 // morphed fragment, so a chip-committing partial request re-renders them.
+// NameColumn reports a filterable Name column: only then does ⏎ on plain text
+// pin it as a `name:` chip, so only then does the legend promise it.
 type filterBarView struct {
-	Plural string
-	Chips  []filterChipView
+	Plural     string
+	Chips      []filterChipView
+	NameColumn bool
 }
 
 // listKind enumerates the whole-list failure/empty states. emptyState /

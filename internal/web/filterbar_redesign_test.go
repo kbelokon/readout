@@ -79,8 +79,44 @@ func TestFilterBarRendersChipsServerSide(t *testing.T) {
 	if doc.Find("#ro-filter-error[hidden]").Length() != 1 {
 		t.Fatalf("hidden #ro-filter-error mount missing")
 	}
-	if hint := normSpace(doc.Find(".filter-hint").Text()); !strings.Contains(hint, "free text matches the name") || !strings.Contains(hint, "removes the last chip") {
+	if hint := normSpace(doc.Find(".filter-hint").Text()); !strings.Contains(hint, "free text matches the name") || !strings.Contains(hint, "on free text makes a name: chip") || !strings.Contains(hint, "removes the last chip") {
 		t.Fatalf("filter-hint legend copy wrong: %q", hint)
+	}
+	// The draft is client state: the input never carries a server value or a
+	// name that would put it into a form submission.
+	if _, ok := input.Attr("value"); ok {
+		t.Fatalf("editor input renders a value attribute; the draft is client state")
+	}
+	if _, ok := input.Attr("name"); ok {
+		t.Fatalf("editor input renders a name attribute; the draft must not ride form submits")
+	}
+}
+
+// TestFilterBarLegendWithoutNameColumn: a table with no Name column (Events)
+// cannot pin plain text as a `name:` chip -- ⏎ on plain text keeps it a live
+// match there -- so the legend must not promise it.
+func TestFilterBarLegendWithoutNameColumn(t *testing.T) {
+	app := newServer(t, baseConfig(t), time.Now())
+	table := kube.Table{
+		Resource: kube.ResourceType{Plural: "events", Kind: "Event", Namespaced: true, Version: "v1", APIVersion: "v1"},
+		Clusters: []string{"test"},
+		Columns:  []kube.Column{{Name: "Last Seen"}, {Name: "Type"}, {Name: "Reason"}, {Name: "Object"}, {Name: "Message"}},
+		Rows: []kube.Row{
+			{Cluster: "test", Object: map[string]any{"metadata": map[string]any{"name": "nginx.0001", "namespace": "default"}}, Cells: []any{"1m", "Normal", "Scheduled", "pod/nginx", "assigned"}},
+		},
+	}
+	lc := &listContext{Cluster: "test", Namespace: "default", Plural: "events", ClusterCount: 1, Tables: []kube.Table{table}}
+	req := httptest.NewRequest(http.MethodGet, "/clusters/test/namespaces/default/events", nil)
+	req.SetPathValue("plural", "events")
+	v := app.buildListView(req, lc)
+	doc := renderListView(t, &v)
+
+	hint := normSpace(doc.Find(".filter-hint").Text())
+	if !strings.Contains(hint, "free text matches the name") || !strings.Contains(hint, "adds a removable chip") {
+		t.Fatalf("filter-hint legend lost its standing copy: %q", hint)
+	}
+	if strings.Contains(hint, "name: chip") {
+		t.Fatalf("legend promises a name: chip on a table without a Name column: %q", hint)
 	}
 }
 
