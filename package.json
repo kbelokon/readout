@@ -29,18 +29,18 @@
     "verify:vendor:upstream": "node scripts/check-vendor-upstream.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.13",
+    "@biomejs/biome": "2.5.14",
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/typescript-checker": "10.0.0",
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@testing-library/dom": "10.4.2",
     "@testing-library/jest-dom": "7.0.1",
-    "@types/node": "26.5.1",
+    "@types/node": "26.6.2",
     "@typescript/legacy": "npm:@typescript/typescript6@6.0.2",
     "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "5.0.1",
     "esbuild": "0.28.2",
-    "jsdom": "30.0.1",
+    "jsdom": "30.1.0",
     "lightningcss": "1.33.0",
     "typescript": "7.0.2",
     "vitest": "5.0.1"
