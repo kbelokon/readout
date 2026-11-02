@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.15.0
-appVersion: 0.15.0
+version: 0.15.1
+appVersion: 0.15.1
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,13 +29,11 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.15.0
+      image: ghcr.io/kbelokon/readout:0.15.1
   artifacthub.io/changes: |
     - kind: changed
-      description: "Update the default readout image to v0.15.0, released in lockstep with the chart."
-    - kind: fixed
-      description: "readout v0.15.0: the list filter keeps its free text through a Refresh click, a Live reconnect or tab return and the periodic Live snapshot, focused or not, instead of emptying and bringing every row back. The text rides the page URL as `q`, so a reload and Back/Forward keep it too."
-    - kind: added
-      description: "readout v0.15.0: ⏎ on plain filter text pins it as a `name:` chip where the table has a Name column."
+      description: "Update the default readout image to v0.15.1, released in lockstep with the chart."
+    - kind: security
+      description: "readout v0.15.1: built with Go 1.27.3 and golang.org/x/net v0.62.0, which fix reported vulnerabilities in crypto/tls, crypto/x509, net/http and HTTP/2."
     - kind: changed
-      description: "readout v0.15.0: Kubernetes client libraries 0.37.0 and routine dependency updates."
+      description: "readout v0.15.1: Kubernetes client libraries 0.37.1, go-oidc 3.21.0, x/oauth2 0.37.0 and routine dependency updates."
