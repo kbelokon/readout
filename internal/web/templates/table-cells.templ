@@ -40,7 +40,7 @@ templ tableCell(cell TableCell, windowed bool) {
 	} else if cell.Kind == CellRestarts {
 		<td class={ numColClass(cell.ColClass) }><span class={ restartsClassRD(cell.Tone) }>{ cell.Value }</span>
 			if cell.Ago != "" {
-				{ " " }<span class="ago">{ cell.Ago }</span>
+				{ " " }<span class="ago" { clockAttrs(cell.Clock)... }>{ cell.Ago }</span>
 			}
 			</td>
 	} else if cell.Kind == CellNode {
@@ -136,7 +136,7 @@ templ tableCell(cell TableCell, windowed bool) {
 			if cell.Value == "" {
 				<span class="faint">{ "<never>" }</span>
 			} else {
-				<span class={ cell.Class }>{ cell.Value }</span>
+				<span class={ cell.Class } { clockAttrs(cell.Clock)... }>{ cell.Value }</span>
 			}
 			</td>
 	} else if cell.Kind == CellKeys {
@@ -156,9 +156,9 @@ templ tableCell(cell TableCell, windowed bool) {
 			}
 		><span class="res-kind">@templ.Raw(cell.CellIcon)<span class="faint">{ cell.EvKind + "/" }</span>{ cell.EvName }</span></td>
 	} else if cell.Kind == CellEvAge {
-		<td class={ cell.ColClass }><span class={ cell.Class }>{ cell.Value }</span>
+		<td class={ cell.ColClass }><span class={ cell.Class } { clockAttrs(cell.Clock)... }>{ cell.Value }</span>
 			if cell.EvAgeRest != "" {
-				{ " " }<span class="faint evage-rest">{ cell.EvAgeRest }</span>
+				{ " " }<span class="faint evage-rest" { clockRestAttrs(cell.Clock)... }>{ cell.EvAgeRest }</span>
 			}
 			</td>
 	} else if cell.Kind == CellMsg {
@@ -172,7 +172,7 @@ templ tableCell(cell TableCell, windowed bool) {
 			}
 		>{ cell.Value }</td>
 	} else {
-		<td class={ cellTdClass(cell.Class, cell.ColClass) } title={ cell.Title }>
+		<td class={ cellTdClass(cell.Class, cell.ColClass) } title={ cell.Title } { clockAttrs(cell.Clock)... }>
 			switch cell.Kind {
 				case CellLabel:
 					if cell.Trunc {

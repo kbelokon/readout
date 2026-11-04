@@ -33,6 +33,7 @@
 // DIRECTLY (the Unit-12 dismantling of the window.roClusterBridge seam): the
 // virtualizer is a module now, so those callers reach it by name at call time.
 
+import { clockNow, paintClocks } from './clock-cells.js';
 import { clearListValidator } from './list-etag.js';
 import {
     commitListProjectionSwap,
@@ -232,8 +233,12 @@ function virtRenderWindow(): void {
     ((s.bottomSpacer as HTMLTableRowElement).firstElementChild as HTMLElement).style.height =
         `${heights.bottom}px`;
     const slice = s.visible.slice(s.start, s.end);
+    // Detached rows miss the page clock's ticks: bring their time cells to now
+    // before they are seen.
+    const now = clockNow();
     slice.forEach((tr) => {
         tr.classList.remove(FILTER_HIDE_CLASS);
+        paintClocks(tr, now);
     });
     tbody.replaceChildren(s.topSpacer as Node, ...slice, s.bottomSpacer as Node);
     reapplyRowState();

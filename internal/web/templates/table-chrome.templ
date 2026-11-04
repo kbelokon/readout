@@ -223,7 +223,7 @@ templ LiveTableRow(d ListData, table TableData, row TableRow) {
 			@tableCell(cell, tableWindowed(&table))
 		}
 		if !table.HideCreated {
-			<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</td>
+			<td class={ numClass(row.CreatedClass) } title={ row.CreatedTitle } { createdClockAttrs(row.CreatedSince)... }>{ row.CreatedText }</td>
 		}
 	</tr>
 }

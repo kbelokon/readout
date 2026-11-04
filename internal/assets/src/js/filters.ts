@@ -47,6 +47,7 @@ import {
     ensureListProjection,
     listProjectionRevision,
     listProjectionRowModel,
+    refreshListProjectionClocks,
     setListProjectionVisibleKeys,
 } from './list-projection.js';
 import { virtualizeOnFilterChange, virtualizerActive } from './virtualizer.js';
@@ -487,6 +488,7 @@ export function updateFilterAC(): void {
     // Top 8 distinct values by frequency, computed from the FULL row model.
     // Virtual `label` resolves as a valid filter but has no model-column index;
     // rankValueSuggestions returns before reading rows in that case.
+    refreshListProjectionClocks();
     openFilterAC(rankValueSuggestions(roRowModel.fields, roRowModel.rows, parsed));
 }
 

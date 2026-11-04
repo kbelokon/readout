@@ -261,8 +261,11 @@ type TableRow struct {
 	CreatedClass    string
 	CreatedText     string
 	CreatedTitle    string
-	Key             string
-	DomID           string
+	// CreatedSince is creationTimestamp in Unix seconds (0 when absent); the
+	// browser re-buckets the Created cell's age colour from it.
+	CreatedSince int64
+	Key          string
+	DomID        string
 
 	// Per-row gesture targets, set together with Key on
 	// single-type pages: the full untruncated object name plus the
@@ -287,6 +290,9 @@ type TableCell struct {
 	Href     string
 	// Volatile is projection-only metadata for clock-derived presentation.
 	Volatile bool
+	// Clock is the object timestamp behind a clock cell; the template emits it
+	// as data-ro-t/data-ro-tf on the element whose text the browser advances.
+	Clock CellClock
 
 	Tone     string // status-dot / cell-status tone (ok/warn/err/info/mute)
 	Ratio    string // ready ratio tone (full/partial/zero)
@@ -316,6 +322,18 @@ type TableCell struct {
 	EvName    string    // events object name, 20…8 middle-truncated (full name in Title)
 	EvAgeRest string    // faint 11px second layer of an events age cell
 	CellIcon  string    // pre-rendered glyph for the tls lock / evobj kind icon (raw trusted markup)
+}
+
+// CellClock is the clock descriptor of a cell whose text is a function of
+// "now" (Age, a restart suffix, a running Job's Duration, a CronJob's Last
+// Schedule, an Event's Last/First Seen). Since is the object timestamp in Unix
+// seconds and Format the data-ro-tf rendering contract with clock-cells.ts; an
+// empty Format means no clock. RestSince anchors the "(first … ago)" second
+// layer of an Event age (0 when that layer is not rendered).
+type CellClock struct {
+	Since     int64
+	Format    string
+	RestSince int64
 }
 
 // KeyChip is one configmap/secret data chip (`name · size`): the key name and

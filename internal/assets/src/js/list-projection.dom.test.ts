@@ -15,6 +15,7 @@ import {
     listProjectionSwapPending,
     listProjectionWindowed,
     prepareListProjectionSwap,
+    refreshListProjectionClocks,
     resetListProjection,
     setListProjectionVisibleKeys,
 } from './list-projection.js';
@@ -573,4 +574,27 @@ describe('server-trusting delta apply', () => {
         ).toStrictEqual(['dev/c', 'dev/b', 'dev/a']);
         expect(listProjectionCardByKey('dev/c')?.isConnected).toBe(true);
     });
+});
+
+test('refreshListProjectionClocks repaints detached rows and recaptures only changed model rows', () => {
+    const now = Date.UTC(2026, 10, 4, 16, 0, 0);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const content = buildList(['a', 'b'], { windowed: true });
+    const age = content.querySelector('tr[data-key="b"] td:last-child') as HTMLElement;
+    age.dataset.roT = String(now / 1000 - 125);
+    age.dataset.roTf = 'age';
+    age.textContent = '1s';
+    document.body.replaceChildren(content);
+    adoptListProjection(content);
+    const model = listProjectionRowModel();
+    const untouched = model.rows[0];
+    expect(model.rows[1].cells[1]).toBe('1s');
+
+    // Detached, as a windowed row outside the viewport would be.
+    content.remove();
+    refreshListProjectionClocks();
+
+    expect(age.textContent).toBe('2m5s');
+    expect(model.rows[1].cells[1]).toBe('2m5s');
+    expect(model.rows[0]).toBe(untouched);
 });

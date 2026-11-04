@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/a-h/templ"
 	"github.com/kbelokon/readout/internal/web/icons"
 )
 
@@ -490,3 +491,33 @@ func foundLine(totalRows, tableCount, clusterCount int, seconds float64) string 
 		clusterCount, pluralSuffix(clusterCount),
 		formatSeconds(seconds))
 }
+
+// clockAttrs renders a cell's clock as the data-ro-t (object timestamp, Unix
+// seconds) and data-ro-tf (rendering format) pair clock-cells.ts advances.
+// A cell without a clock renders no attributes.
+func clockAttrs(clock CellClock) templ.Attributes {
+	if clock.Format == "" {
+		return templ.Attributes{}
+	}
+	return templ.Attributes{"data-ro-t": strconv.FormatInt(clock.Since, 10), "data-ro-tf": clock.Format}
+}
+
+// clockRestAttrs renders the "(first … ago)" second layer of an Event age.
+func clockRestAttrs(clock CellClock) templ.Attributes {
+	if clock.Format == "" || clock.RestSince == 0 {
+		return templ.Attributes{}
+	}
+	return templ.Attributes{"data-ro-t": strconv.FormatInt(clock.RestSince, 10), "data-ro-tf": "evfirst"}
+}
+
+// createdClockAttrs lets the browser re-bucket the Created cell's age colour;
+// its absolute text never changes.
+func createdClockAttrs(since int64) templ.Attributes {
+	if since == 0 {
+		return templ.Attributes{}
+	}
+	return templ.Attributes{"data-ro-t": strconv.FormatInt(since, 10), "data-ro-tf": "created"}
+}
+
+// formatInt64 renders an integer attribute value (the ro-server-time meta).
+func formatInt64(n int64) string { return strconv.FormatInt(n, 10) }

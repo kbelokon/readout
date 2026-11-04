@@ -39,6 +39,10 @@ type LayoutData struct {
 	// shape is owned by package-web's paletteFeedView (its json tags are the wire
 	// contract).
 	PaletteJSON string
+
+	// ServerTimeMs is the server clock at render (Unix milliseconds), emitted
+	// as <meta name="ro-server-time"> for clock-cells.ts's skew estimate.
+	ServerTimeMs int64
 }
 
 type Navbar struct {
@@ -123,7 +127,7 @@ templ Layout(d LayoutData, body templ.Component) {
 }
 
 templ layoutHead(d LayoutData) {
-	<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{ d.Title } - readout</title><meta name="htmx-config" content={ htmxConfig }>
+	<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{ d.Title } - readout</title><meta name="htmx-config" content={ htmxConfig }><meta name="ro-server-time" content={ formatInt64(d.ServerTimeMs) }>
 		for _, src := range d.Scripts {
 			<script src={ src }></script>
 		}

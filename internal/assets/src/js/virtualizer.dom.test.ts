@@ -313,6 +313,26 @@ describe('engagement', () => {
         expect(dependencies.requestListRefresh).not.toHaveBeenCalled();
     });
 
+    test('brings detached time cells to now before mounting a row', () => {
+        const now = Date.UTC(2026, 10, 4, 16, 0, 0);
+        vi.spyOn(Date, 'now').mockReturnValue(now);
+        const keys = rowKeys(1000);
+        const tbody = renderList(keys);
+        const far = tbody.querySelector('tr[data-key="row-900"] td:last-child') as HTMLElement;
+        far.dataset.roT = String(now / 1000 - 125);
+        far.dataset.roTf = 'age';
+        far.textContent = '1s';
+        virtualizeInit();
+        expect(far.isConnected).toBe(false);
+        expect(far.textContent).toBe('1s');
+
+        expect(virtualizerSeam().scrollToKey('row-900')).toBe(true);
+        flushAnimationFrames();
+
+        expect(far.isConnected).toBe(true);
+        expect(far.textContent).toBe('2m5s');
+    });
+
     test('refetches a history snapshot that contains spacers but not the full row set', () => {
         const tbody = renderList(['cached-row']);
         const content = tbody.closest('#resource-list-content') as HTMLElement;

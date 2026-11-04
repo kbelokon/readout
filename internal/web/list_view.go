@@ -178,6 +178,9 @@ func (s *Server) buildListView(r *http.Request, lc *listContext) listView {
 				CreatedClass:    s.ageClass(nestedString(row.Object, "metadata", "creationTimestamp")),
 				CreatedText:     formatTimestamp(nestedString(row.Object, "metadata", "creationTimestamp")),
 			}
+			if created, ok := parseTimestamp(nestedString(row.Object, "metadata", "creationTimestamp")); ok {
+				rv.CreatedSince = created.Unix()
+			}
 			if single {
 				rv.Key = rowKey(row.Cluster, ns, name)
 				// Per-row gesture targets: server-resolved hrefs

@@ -246,6 +246,9 @@ type rowView struct {
 	Cells           []cellView
 	CreatedClass    string
 	CreatedText     string
+	// CreatedSince is creationTimestamp in Unix seconds (0 when absent): the
+	// browser re-buckets the Created cell's age colour from it.
+	CreatedSince int64
 
 	// Key is the row's stable object identity "cluster/ns/name" (empty segments
 	// collapsed) -- the row-identity contract. The renderer emits it as
@@ -286,6 +289,9 @@ type cellView struct {
 	// Volatile marks display text derived from the server clock rather than
 	// from a new Kubernetes resource state. It is projection metadata only.
 	Volatile bool
+	// Clock is the object timestamp behind a clock cell (see clock_cells.go):
+	// rendered as data attributes the browser advances every second.
+	Clock cellClock
 
 	// Tone is the redesign status-dot/cell-status tone (ok/warn/err/info/mute),
 	// mapped from the Bulma cellClass; "" means no tone colour (generic fallback).

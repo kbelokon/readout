@@ -22,6 +22,13 @@ package fakekube
 //	    that EXACT route consumes it -- path aliases (/api/v1/pods and its
 //	    namespaced spelling) share one list state and are woken by the same
 //	    events, so an unscoped arm is a race between their reconnects.
+//	/__control/printer-age?path=<collection route>
+//	    Gives that collection's Age column the Description every real
+//	    apiserver printer sends (metav1 creationTimestamp), which is how
+//	    readout recognises Age as a clock cell and re-derives it from the
+//	    object's creationTimestamp. Off by default, so every other spec and
+//	    screenshot keeps reading the frozen literal fixture ages. The route's
+//	    aliases share the list state; reset clears it.
 //	/__control/reset
 //	    Reseeds the fixture store and clears every control flag, the script
 //	    queue, and pending timers -- spec isolation for e2e runs. Cursors
@@ -38,6 +45,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const controlPrefix = "/__control/"
@@ -102,6 +111,7 @@ func (s *Server) registerControl(mux *http.ServeMux) {
 	mux.HandleFunc(controlPrefix+"fail-lists", s.handleFailLists)
 	mux.HandleFunc(controlPrefix+"watch-401", s.handleWatch401)
 	mux.HandleFunc(controlPrefix+"watch-script", s.handleWatchScript)
+	mux.HandleFunc(controlPrefix+"printer-age", s.handlePrinterAge)
 	mux.HandleFunc(controlPrefix+"reset", s.handleReset)
 }
 
@@ -118,6 +128,41 @@ func (s *Server) handleFailLists(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"failLists": mode})
+}
+
+// printerAgeDescription is the Description the apiserver's built-in printers
+// give their Age column.
+var printerAgeDescription = metav1.ObjectMeta{}.SwaggerDoc()["creationTimestamp"]
+
+func (s *Server) handlePrinterAge(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	ls := s.store.lists[path]
+	if ls == nil || ls.table == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no Table collection at " + path})
+		return
+	}
+	columns, _ := ls.table["columnDefinitions"].([]any)
+	marked := 0
+	for i, column := range columns {
+		definition, ok := column.(map[string]any)
+		if !ok || definition["name"] != "Age" {
+			continue
+		}
+		updated := make(map[string]any, len(definition)+1)
+		for key, value := range definition {
+			updated[key] = value
+		}
+		updated["description"] = printerAgeDescription
+		columns[i] = updated
+		marked++
+	}
+	if marked == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no Age column at " + path})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"printerAge": path})
 }
 
 func (s *Server) handleWatch401(w http.ResponseWriter, r *http.Request) {

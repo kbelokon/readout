@@ -62,7 +62,8 @@ func toLayoutData(v *layoutView) templates.LayoutData {
 		// emits it into a hidden <div> (NOT a <script>, which htmx would strip on
 		// swap). The package-web paletteFeedView's json tags ARE the pinned wire
 		// contract.
-		PaletteJSON: paletteFeedJSONString(&v.Palette),
+		PaletteJSON:  paletteFeedJSONString(&v.Palette),
+		ServerTimeMs: v.ServerTimeMs,
 	}
 }
 
@@ -293,6 +294,7 @@ func toTableData(t *tableView) templates.TableData {
 			ResourceVersion: row.ResourceVersion,
 			CreatedClass:    row.CreatedClass,
 			CreatedText:     row.CreatedText,
+			CreatedSince:    row.CreatedSince,
 			Key:             row.Key,
 			DomID:           rowDomID(row.Key),
 			Name:            row.Name,
@@ -307,12 +309,17 @@ func toTableData(t *tableView) templates.TableData {
 		for ci := range row.Cells {
 			cell := &row.Cells[ci]
 			tc := templates.TableCell{
-				Kind:         templates.CellKind(cell.Kind),
-				Value:        cell.Value,
-				Class:        cell.Class,
-				ColClass:     cell.ColClass,
-				Href:         cell.Href,
-				Volatile:     cell.Volatile,
+				Kind:     templates.CellKind(cell.Kind),
+				Value:    cell.Value,
+				Class:    cell.Class,
+				ColClass: cell.ColClass,
+				Href:     cell.Href,
+				Volatile: cell.Volatile,
+				Clock: templates.CellClock{
+					Since:     cell.Clock.Since,
+					Format:    string(cell.Clock.Format),
+					RestSince: cell.Clock.RestSince,
+				},
 				Tone:         cell.Tone,
 				Ratio:        cell.Ratio,
 				Pulse:        cell.Pulse,
