@@ -500,8 +500,14 @@
     }
     const now = clockNow();
     projection.rows.forEach((row, index) => {
-      if (paintClocks(row, now)) {
-        projection.modelRows[index] = captureModelRow(row);
+      if (!row.querySelector(CLOCK_SELECTOR)) {
+        return;
+      }
+      paintClocks(row, now);
+      const fresh = captureModelRow(row);
+      const held = projection.modelRows[index];
+      if (!held || held.cells.length !== fresh.cells.length || held.cells.some((cell, cellIndex) => cell !== fresh.cells[cellIndex])) {
+        projection.modelRows[index] = fresh;
       }
     });
   }

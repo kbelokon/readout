@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { paintClocks } from './clock-cells.js';
 import type { ListProjectionDeltaPlan } from './list-projection.js';
 import {
     adoptListProjection,
@@ -597,4 +598,27 @@ test('refreshListProjectionClocks repaints detached rows and recaptures only cha
     expect(age.textContent).toBe('2m5s');
     expect(model.rows[1].cells[1]).toBe('2m5s');
     expect(model.rows[0]).toBe(untouched);
+});
+
+test('refreshListProjectionClocks recaptures a row the page timer already painted', () => {
+    let now = Date.UTC(2026, 10, 4, 16, 0, 0);
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const content = buildList(['a'], {});
+    const age = content.querySelector('tr[data-key="a"] td:last-child') as HTMLElement;
+    age.dataset.roT = String(now / 1000 - 36);
+    age.dataset.roTf = 'age';
+    age.textContent = '36s';
+    document.body.replaceChildren(content);
+    adoptListProjection(content);
+    const model = listProjectionRowModel();
+    expect(model.rows[0].cells[1]).toBe('36s');
+
+    // The page timer moves the connected cell; the model still holds 36s.
+    now += 30_000;
+    expect(paintClocks(document, now)).toBe(true);
+    expect(age.textContent).toBe('66s');
+    expect(model.rows[0].cells[1]).toBe('36s');
+
+    refreshListProjectionClocks();
+    expect(model.rows[0].cells[1]).toBe('66s');
 });

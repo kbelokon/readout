@@ -17,7 +17,7 @@
 const DAY_SECONDS = 24 * 60 * 60;
 const AGE_GRACE_SECONDS = 60;
 const TICK_MS = 1000;
-const CLOCK_SELECTOR = '[data-ro-t]';
+export const CLOCK_SELECTOR = '[data-ro-t]';
 
 // humanDuration is apimachinery's duration.HumanDuration over a millisecond
 // difference (Go truncates toward zero at every unit; so does Math.trunc).
