@@ -5,6 +5,171 @@
     htmx.config.globalViewTransitions = false;
   }
 
+  // internal/assets/src/js/clock-cells.ts
+  var DAY_SECONDS = 24 * 60 * 60;
+  var AGE_GRACE_SECONDS = 60;
+  var TICK_MS = 1e3;
+  var CLOCK_SELECTOR = "[data-ro-t]";
+  function humanDuration(ms) {
+    const seconds = Math.trunc(ms / 1e3);
+    if (seconds < -1) {
+      return "<invalid>";
+    }
+    if (seconds < 0) {
+      return "0s";
+    }
+    if (seconds < 60 * 2) {
+      return `${seconds}s`;
+    }
+    const minutes = Math.trunc(ms / 6e4);
+    if (minutes < 10) {
+      const s = seconds % 60;
+      return s === 0 ? `${minutes}m` : `${minutes}m${s}s`;
+    }
+    if (minutes < 60 * 3) {
+      return `${minutes}m`;
+    }
+    const hours = Math.trunc(ms / 36e5);
+    if (hours < 8) {
+      const m = minutes % 60;
+      return m === 0 ? `${hours}h` : `${hours}h${m}m`;
+    }
+    if (hours < 48) {
+      return `${hours}h`;
+    }
+    if (hours < 24 * 8) {
+      const h = hours % 24;
+      const days = Math.trunc(hours / 24);
+      return h === 0 ? `${days}d` : `${days}d${h}h`;
+    }
+    if (hours < 24 * 365 * 2) {
+      return `${Math.trunc(hours / 24)}d`;
+    }
+    if (hours < 24 * 365 * 8) {
+      const dy = Math.trunc(hours / 24) % 365;
+      const years = Math.trunc(hours / 24 / 365);
+      return dy === 0 ? `${years}y` : `${years}y${dy}d`;
+    }
+    return `${Math.trunc(hours / 24 / 365)}y`;
+  }
+  function ageBucket(elapsedMs, graceSeconds) {
+    const seconds = Math.max(0, elapsedMs / 1e3 - graceSeconds);
+    const fraction = seconds / DAY_SECONDS;
+    if (fraction < 0.1) return "age-fresh";
+    if (fraction < 0.35) return "age-recent";
+    if (fraction < 0.65) return "age-day";
+    if (fraction < 1) return "age-week";
+    return "age-old";
+  }
+  function clockPaint(format, elapsedMs) {
+    const age = humanDuration(elapsedMs);
+    switch (format) {
+      case "age":
+        return { text: age, bucket: ageBucket(elapsedMs, AGE_GRACE_SECONDS) };
+      case "created":
+        return { text: null, bucket: ageBucket(elapsedMs, AGE_GRACE_SECONDS) };
+      case "ago":
+        return { text: `${age} ago`, bucket: ageBucket(elapsedMs, 0) };
+      case "dur":
+        return { text: age, bucket: null };
+      case "rago":
+        return { text: `(${age} ago)`, bucket: null };
+      case "ev":
+        return { text: age, bucket: ageBucket(elapsedMs, 0) };
+      case "evfirst":
+        return { text: `(first ${age} ago)`, bucket: null };
+    }
+    return null;
+  }
+  var offsetMs = 0;
+  function estimateClockOffset(doc = document) {
+    const meta = doc.querySelector('meta[name="ro-server-time"]');
+    const serverMs = Number(meta?.content);
+    if (!meta || !Number.isFinite(serverMs) || serverMs <= 0) {
+      return 0;
+    }
+    const entries = typeof performance.getEntriesByType === "function" ? performance.getEntriesByType("navigation") : [];
+    const nav = entries[0];
+    if (!nav || nav.type === "back_forward" || nav.transferSize === 0 || !nav.responseStart) {
+      return 0;
+    }
+    return serverMs - (performance.timeOrigin + nav.responseStart);
+  }
+  function setClockOffset(ms) {
+    offsetMs = ms;
+  }
+  function clockNow() {
+    return Date.now() + offsetMs;
+  }
+  function paintElement(el, nowMs) {
+    const since = Number(el.dataset.roT);
+    if (!Number.isFinite(since)) {
+      return false;
+    }
+    const paint = clockPaint(el.dataset.roTf || "", nowMs - since * 1e3);
+    if (!paint) {
+      return false;
+    }
+    let changed = false;
+    if (paint.text !== null && el.textContent !== paint.text) {
+      el.textContent = paint.text;
+      changed = true;
+    }
+    if (paint.bucket !== null && !el.classList.contains(paint.bucket)) {
+      for (const cls of Array.from(el.classList)) {
+        if (cls.startsWith("age-")) el.classList.remove(cls);
+      }
+      el.classList.add(paint.bucket);
+      changed = true;
+    }
+    return changed;
+  }
+  function paintClocks(root, nowMs = clockNow()) {
+    let changed = false;
+    if (root instanceof HTMLElement && root.matches(CLOCK_SELECTOR)) {
+      changed = paintElement(root, nowMs) || changed;
+    }
+    root.querySelectorAll(CLOCK_SELECTOR).forEach((el) => {
+      changed = paintElement(el, nowMs) || changed;
+    });
+    return changed;
+  }
+  var timer = null;
+  function tick() {
+    paintClocks(document);
+  }
+  function startTimer() {
+    if (timer === null) {
+      timer = setInterval(tick, TICK_MS);
+    }
+  }
+  function stopTimer() {
+    if (timer !== null) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+  function onVisibilityChange() {
+    if (document.hidden) {
+      stopTimer();
+      return;
+    }
+    tick();
+    startTimer();
+  }
+  var started = false;
+  function startClockCells() {
+    if (!started) {
+      started = true;
+      setClockOffset(estimateClockOffset());
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+    tick();
+    if (!document.hidden) {
+      startTimer();
+    }
+  }
+
   // internal/assets/src/js/filters-parse.ts
   var GO_FIELD_WHITESPACE_TRIM = /^\p{White_Space}+|\p{White_Space}+$/gu;
   var GO_FIELD_WHITESPACE_RUN = /\p{White_Space}+/gu;
@@ -328,6 +493,23 @@
   }
   function listProjectionRowModel() {
     return rowModel;
+  }
+  function refreshListProjectionClocks() {
+    if (prepared) {
+      return;
+    }
+    const now = clockNow();
+    projection.rows.forEach((row, index) => {
+      if (!row.querySelector(CLOCK_SELECTOR)) {
+        return;
+      }
+      paintClocks(row, now);
+      const fresh = captureModelRow(row);
+      const held = projection.modelRows[index];
+      if (!held || held.cells.length !== fresh.cells.length || held.cells.some((cell, cellIndex) => cell !== fresh.cells[cellIndex])) {
+        projection.modelRows[index] = fresh;
+      }
+    });
   }
   function setListProjectionVisibleKeys(keys) {
     rowModel.visibleKeys = keys;
@@ -2540,8 +2722,10 @@
     s.topSpacer.firstElementChild.style.height = `${heights.top}px`;
     s.bottomSpacer.firstElementChild.style.height = `${heights.bottom}px`;
     const slice = s.visible.slice(s.start, s.end);
+    const now = clockNow();
     slice.forEach((tr) => {
       tr.classList.remove(FILTER_HIDE_CLASS);
+      paintClocks(tr, now);
     });
     tbody.replaceChildren(s.topSpacer, ...slice, s.bottomSpacer);
     reapplyRowState();
@@ -3183,6 +3367,7 @@
       closeFilterAC();
       return;
     }
+    refreshListProjectionClocks();
     openFilterAC(rankValueSuggestions(roRowModel.fields, roRowModel.rows, parsed));
   }
   function acceptFilterAC(commitValues) {
@@ -5008,7 +5193,12 @@
       seedFilterDraft,
       applyLiveNameFilter,
       refreshFilterAutocomplete,
-      restoreColumnsPopover
+      restoreColumnsPopover,
+      // A swap or delta may carry rows rendered a moment ago or kept from an
+      // earlier revision; their time cells catch up now, not on the next tick.
+      () => {
+        paintClocks(document);
+      }
     ].forEach(runInitStep);
     if (update.kind === "swap") {
       runInitStep(writeFilterDraftURL);
@@ -5182,6 +5372,10 @@
       initLogsFollow,
       syncThemeTogglePostTarget,
       setupStickyNamespace,
+      // Time cells (Age and the like) advance on one page timer. Painting
+      // here, before the model capture and the windowing below, means the
+      // complete dataset is current when both read it.
+      startClockCells,
       // Chips-editor row model: captured from the full server-rendered
       // document. ORDER CONTRACT: this step must stay BEFORE the windowing
       // init that prunes rows from the DOM -- at this point

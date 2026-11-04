@@ -397,6 +397,7 @@ func (s *Server) buildCellView(r *http.Request, table *kube.Table, row kube.Row,
 			cv.Title = "created " + ts
 		}
 	}
+	s.attachCellClock(&cv, table, i, &row, value)
 	return cv
 }
 

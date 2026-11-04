@@ -2,6 +2,7 @@
 // row model always come from one complete snapshot. The virtualizer owns only
 // viewport geometry; this module retains the complete keyed dataset.
 
+import { CLOCK_SELECTOR, clockNow, paintClocks } from './clock-cells.js';
 import {
     fieldSuggestionText,
     type ModelField,
@@ -269,6 +270,36 @@ export function listProjectionCardByKey(key: string): HTMLElement | null {
 
 export function listProjectionRowModel(): RowModelWire {
     return rowModel;
+}
+
+// refreshListProjectionClocks brings the row model's clock cells (Age and the
+// other time cells) up to now. The model is text captured at the last swap or
+// delta, and the page timer moves only connected elements, so a windowed
+// list's detached rows hold older text too. Repaint every canonical row that
+// carries a clock, then recapture it when its cells differ from the model --
+// whoever painted the DOM since (this call, the page timer, a virtualizer
+// mount), so value suggestions read what the table would show. O(rows): call
+// it where the model is consumed, never per tick.
+export function refreshListProjectionClocks(): void {
+    if (prepared) {
+        return;
+    }
+    const now = clockNow();
+    projection.rows.forEach((row, index) => {
+        if (!row.querySelector(CLOCK_SELECTOR)) {
+            return;
+        }
+        paintClocks(row, now);
+        const fresh = captureModelRow(row);
+        const held = projection.modelRows[index];
+        if (
+            !held ||
+            held.cells.length !== fresh.cells.length ||
+            held.cells.some((cell, cellIndex) => cell !== fresh.cells[cellIndex])
+        ) {
+            projection.modelRows[index] = fresh;
+        }
+    });
 }
 
 export function setListProjectionVisibleKeys(keys: Set<string> | null): void {

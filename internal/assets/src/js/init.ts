@@ -25,6 +25,7 @@
 // Cross-module surfaces are imported by name (the bundle inlines them); vendor
 // globals (htmx) are reached through a typeof guard, never imported.
 
+import { paintClocks, startClockCells } from './clock-cells.js';
 import { colsPopOpen, setColsPopOpen, syncColsPopState } from './columns.js';
 import { closeRowMenu } from './context-menu.js';
 import {
@@ -249,6 +250,11 @@ export function afterListUpdate(update: ListUpdate): void {
         applyLiveNameFilter,
         refreshFilterAutocomplete,
         restoreColumnsPopover,
+        // A swap or delta may carry rows rendered a moment ago or kept from an
+        // earlier revision; their time cells catch up now, not on the next tick.
+        () => {
+            paintClocks(document);
+        },
     ].forEach(runInitStep);
     if (update.kind === 'swap') {
         // A pushed list URL echoes its request's query, and the draft may
@@ -548,6 +554,10 @@ function runInit(yamlFoldsBuilt = false): void {
         initLogsFollow,
         syncThemeTogglePostTarget,
         setupStickyNamespace,
+        // Time cells (Age and the like) advance on one page timer. Painting
+        // here, before the model capture and the windowing below, means the
+        // complete dataset is current when both read it.
+        startClockCells,
         // Chips-editor row model: captured from the full server-rendered
         // document. ORDER CONTRACT: this step must stay BEFORE the windowing
         // init that prunes rows from the DOM -- at this point

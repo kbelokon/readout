@@ -50,7 +50,7 @@ templ LiveResourceCard(d ListData, table TableData, row TableRow) {
 				}
 			}
 			if !table.HideCreated && row.CreatedText != "" {
-				<span class="m"><span class="k">created</span><span class={ numClass(row.CreatedClass) } title={ row.CreatedTitle }>{ row.CreatedText }</span></span>
+				<span class="m"><span class="k">created</span><span class={ numClass(row.CreatedClass) } title={ row.CreatedTitle } { createdClockAttrs(row.CreatedSince)... }>{ row.CreatedText }</span></span>
 			}
 			</div>
 		</div>
@@ -104,7 +104,7 @@ templ pcardCell(cell TableCell) {
 		case CellRestarts:
 			<span class={ restartsClassRD(cell.Tone) }>{ cell.Value }</span>
 			if cell.Ago != "" {
-				{ " " }<span class="ago">{ cell.Ago }</span>
+				{ " " }<span class="ago" { clockAttrs(cell.Clock)... }>{ cell.Ago }</span>
 			}
 		case CellNode:
 			<a href={ templ.SafeURL(cell.Href) }>{ cell.Value }</a>
@@ -179,7 +179,7 @@ templ pcardCell(cell TableCell) {
 			if cell.Value == "" {
 				<span class="faint">{ "<never>" }</span>
 			} else {
-				<span class={ cell.Class }>{ cell.Value }</span>
+				<span class={ cell.Class } { clockAttrs(cell.Clock)... }>{ cell.Value }</span>
 			}
 		case CellKeys:
 			if len(cell.Keys) == 0 {
@@ -197,9 +197,9 @@ templ pcardCell(cell TableCell) {
 				}
 			>@templ.Raw(cell.CellIcon)<span class="faint">{ cell.EvKind + "/" }</span>{ cell.EvName }</span>
 		case CellEvAge:
-			<span class={ cell.Class }>{ cell.Value }</span>
+			<span class={ cell.Class } { clockAttrs(cell.Clock)... }>{ cell.Value }</span>
 			if cell.EvAgeRest != "" {
-				{ " " }<span class="faint evage-rest">{ cell.EvAgeRest }</span>
+				{ " " }<span class="faint evage-rest" { clockRestAttrs(cell.Clock)... }>{ cell.EvAgeRest }</span>
 			}
 		case CellMsg:
 			<span class="ro-event-msg">{ cell.Value }</span>
@@ -207,7 +207,9 @@ templ pcardCell(cell TableCell) {
 			{ cell.Value + " MiB" }
 		default:
 			if vc := pcardValueClass(&cell); vc != "" {
-				<span class={ vc } title={ cell.Title }>{ cell.Value }</span>
+				<span class={ vc } title={ cell.Title } { clockAttrs(cell.Clock)... }>{ cell.Value }</span>
+			} else if cell.Clock.Format != "" {
+				<span { clockAttrs(cell.Clock)... }>{ cell.Value }</span>
 			} else {
 				{ cell.Value }
 			}

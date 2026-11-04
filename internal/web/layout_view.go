@@ -58,6 +58,11 @@ type layoutView struct {
 	Navbar  navbarView
 	Sidebar sidebarView
 	Palette paletteFeedView
+
+	// ServerTimeMs is the server clock at render (Unix milliseconds). The
+	// browser compares it with its own clock once per page load to advance clock
+	// cells on server time (clock-cells.ts).
+	ServerTimeMs int64
 }
 
 // navbarView is the resolved navbar contract: the cluster/namespace context
@@ -230,6 +235,7 @@ func (s *Server) buildLayoutViewScopedWithClients(r *http.Request, title, cluste
 		Navbar:        navbar,
 		Sidebar:       sidebar,
 		Palette:       s.buildPaletteFeed(r, cluster, namespace, clients, &navbar, &sidebar),
+		ServerTimeMs:  s.clock().UnixMilli(),
 	}
 }
 

@@ -42,6 +42,10 @@ func (s *Server) applyTableOptions(r *http.Request, client *kube.Client, table *
 // applyTableOptionsWithOverlays is applyTableOptions with the pre-fetched
 // join overlays described by renderOverlays.
 func (s *Server) applyTableOptionsWithOverlays(r *http.Request, client *kube.Client, table *kube.Table, namespace string, allNamespaces bool, overlays renderOverlays) []columnVis {
+	// Clock cells first: everything below (filters, sort, the rendered text)
+	// must read ages as of this render, not as of the LIST or watch event that
+	// last carried the row.
+	refreshClockCells(table, s.clock())
 	q := r.URL.Query()
 	// Cookie fill: the ro_prefs colvis/sort prefs stand in for ABSENT URL
 	// params (URL always wins; single-type pages only; render-only -- r.URL is

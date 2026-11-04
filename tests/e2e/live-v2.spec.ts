@@ -132,6 +132,19 @@ async function scriptEvents(events: object[]): Promise<void> {
   }
 }
 
+// markPrinterAge gives a collection's Age column the apiserver's own
+// Description, the signal readout uses to treat Age as a clock cell (see
+// internal/web/clock_cells.go). The fixture default leaves it off so every
+// other spec reads the frozen literal ages; the next reset clears it.
+async function markPrinterAge(path: string): Promise<void> {
+  const response = await fetch(
+    `${controlURL}/__control/printer-age?path=${encodeURIComponent(path)}`
+  );
+  if (!response.ok) {
+    throw new Error(`printer-age: ${response.status} ${await response.text()}`);
+  }
+}
+
 // openWatchCount names every open ?watch=true connection on the fake
 // apiserver. It answers "is the POD watching this collection" and nothing
 // finer (see hub.ts): a zero here is never evidence that a browser stopped
@@ -1326,6 +1339,145 @@ test('a mobile delta updates the closed card island without an HTMX swap', async
   const after = await probeSnapshot(page);
   expect(after.lifecycle.afterSwaps).toBe(before.lifecycle.afterSwaps);
   expect(after.lifecycle.nativeStarts).toBe(before.lifecycle.nativeStarts);
+});
+
+test('a Live Age advances on the page clock and an unrelated update pushes no age-only row', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop table surface');
+  // The selector gives this spec a WatchHub source of its own: one retained
+  // from an earlier spec would still serve the Age column without the
+  // printer Description. The fake ignores the selector, so the rows are the
+  // namespace's usual two plus the pod added below.
+  await markPrinterAge(PODS_LIST_PATH);
+  const createdMs = Math.floor(Date.now() / 1000) * 1000 - 30_000;
+  const clockKey = 'e2e/default/aaa-clock';
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: 'ADDED',
+      object: {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: 'aaa-clock',
+          namespace: 'default',
+          creationTimestamp: new Date(createdMs).toISOString().replace('.000Z', 'Z'),
+        },
+        status: { phase: 'Running' },
+      },
+      // A printed Age from the moment of the event: the server must re-derive
+      // it from creationTimestamp instead of trusting this text.
+      cells: ['aaa-clock', '1/1', 'Running', '0', '1s'],
+    },
+  ]);
+  await page.clock.install();
+  await installLiveTransportProbe(page);
+  await page.goto(`${PODS}?selector=readout-clock%3De2e`);
+  const { generation } = await openLiveV2(page);
+
+  const age = page.locator(`tr[data-key="${clockKey}"] td[data-ro-tf="age"]`);
+  const cardAge = page.locator(`.ro-pcard[data-key="${clockKey}"] [data-ro-tf="age"]`);
+  await expect(age).toHaveAttribute('data-ro-t', String(createdMs / 1000));
+  await expect(age).toHaveText(/^[3-5]\ds$/u);
+
+  // No object event: only the browser clock moves (40s stays inside Live's
+  // 50s read-idle budget, so the stream itself is untouched).
+  await page.clock.fastForward(40_000);
+  await expect(age).toHaveText(/^[7-9]\ds$/u);
+  await expect(age).toHaveClass(/\bage-fresh\b/u);
+  expect(await cardAge.textContent()).toBe(await age.textContent());
+
+  // An unrelated object update re-renders the list on the server, where the
+  // clock pod's age text has moved on by now (delayMs holds the event a
+  // second on the fake). Only the changed object may be pushed.
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: 'MODIFIED',
+      delayMs: 1_100,
+      object: {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: 'nginx',
+          namespace: 'default',
+          creationTimestamp: '2024-03-01T10:00:00Z',
+        },
+      },
+      cells: ['nginx', '0/1', 'ClockError', '3', '10m'],
+    },
+  ]);
+  const delta = await waitForFrame(
+    page,
+    (frame) => frame.kind === 'delta' && frame.g === generation && frame.upsertKeys.includes(NGINX_KEY)
+  );
+  expect(delta.upsertKeys).toEqual([NGINX_KEY]);
+  await expect(age).toHaveText(/^\d{2,3}s$/u);
+});
+
+test('a quiet pod that crosses a Live Age filter appears on the next unrelated update', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop table surface');
+  // Time-based filters are re-evaluated when the source next changes, never by
+  // a timer: the pod below is younger than the filter when the page opens,
+  // crosses it with nothing happening to it, and must appear on the first
+  // update of ANOTHER pod. A selector of its own keeps the WatchHub source
+  // apart from any retained one (see the spec above).
+  await markPrinterAge(PODS_LIST_PATH);
+  // 114s old: the page opens well before the 2m mark, and the update below is
+  // held only a few seconds (waitForFrame polls for 10s).
+  const createdMs = Math.floor(Date.now() / 1000) * 1000 - 114_000;
+  const youngKey = 'e2e/default/aaa-young';
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: 'ADDED',
+      object: {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: 'aaa-young',
+          namespace: 'default',
+          creationTimestamp: new Date(createdMs).toISOString().replace('.000Z', 'Z'),
+        },
+        status: { phase: 'Running' },
+      },
+      cells: ['aaa-young', '1/1', 'Running', '0', '1s'],
+    },
+  ]);
+  await installLiveTransportProbe(page);
+  await page.goto(`${PODS}?selector=readout-clock%3Dfilter&f=age%3E2m`);
+  const { generation } = await openLiveV2(page);
+  const young = page.locator(`tr[data-key="${youngKey}"]`);
+  await expect(page.locator(`tr[data-key="${NGINX_KEY}"]`)).toBeVisible();
+  await expect(young).toHaveCount(0);
+
+  // The fake applies the unrelated update just after the young pod turns 2m.
+  await scriptEvents([
+    {
+      path: PODS_LIST_PATH,
+      type: 'MODIFIED',
+      delayMs: Math.max(0, createdMs + 120_000 + 1_500 - Date.now()),
+      object: {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: 'nginx',
+          namespace: 'default',
+          creationTimestamp: '2024-03-01T10:00:00Z',
+        },
+      },
+      cells: ['nginx', '0/1', 'FilterError', '3', '10m'],
+    },
+  ]);
+  await waitForFrame(
+    page,
+    (frame) => frame.kind === 'delta' && frame.g === generation && frame.upsertKeys.includes(youngKey)
+  );
+  await expect(young).toBeVisible();
+  await expect(young.locator('td[data-ro-tf="age"]')).toHaveText(/^2m(?:\ds)?$/u);
 });
 
 test('a sorted Live insert carries order and avoids an HTMX swap', async ({
