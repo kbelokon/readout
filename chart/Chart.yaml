@@ -2,8 +2,8 @@ apiVersion: v2
 name: readout
 description: Strictly read-only Kubernetes web viewer in Go
 type: application
-version: 0.15.1
-appVersion: 0.15.1
+version: 0.15.2
+appVersion: 0.15.2
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/kbelokon/readout
 sources:
@@ -29,11 +29,9 @@ annotations:
       url: https://github.com/kbelokon/readout/tree/main/chart
   artifacthub.io/images: |
     - name: readout
-      image: ghcr.io/kbelokon/readout:0.15.1
+      image: ghcr.io/kbelokon/readout:0.15.2
   artifacthub.io/changes: |
     - kind: changed
-      description: "Update the default readout image to v0.15.1, released in lockstep with the chart."
-    - kind: security
-      description: "readout v0.15.1: built with Go 1.27.3 and golang.org/x/net v0.62.0, which fix reported vulnerabilities in crypto/tls, crypto/x509, net/http and HTTP/2."
-    - kind: changed
-      description: "readout v0.15.1: Kubernetes client libraries 0.37.1, go-oidc 3.21.0, x/oauth2 0.37.0 and routine dependency updates."
+      description: "Update the default readout image to v0.15.2, released in lockstep with the chart."
+    - kind: fixed
+      description: "readout v0.15.2: with Live on, Age and the other elapsed-time cells (restart \"ago\", running Job Duration, CronJob Last Schedule, Event Last/First Seen) advance every second instead of freezing at the last watch event."
