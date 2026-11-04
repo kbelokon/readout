@@ -1348,7 +1348,11 @@ test('a Live Age advances on the page clock and an unrelated update pushes no ag
   // The selector gives this spec a WatchHub source of its own: one retained
   // from an earlier spec would still serve the Age column without the
   // printer Description. The fake ignores the selector, so the rows are the
-  // namespace's usual two plus the pod added below.
+  // usual two plus the pod added below. The page is the all-namespaces alias
+  // (/api/v1/pods shares the default collection): the source this spec leaves
+  // retained for 30s must not sit on the namespaced route, where live.spec's
+  // path-scoped one-shot watch-401 would go to whichever watch reconnects
+  // first.
   await markPrinterAge(PODS_LIST_PATH);
   const createdMs = Math.floor(Date.now() / 1000) * 1000 - 30_000;
   const clockKey = 'e2e/default/aaa-clock';
@@ -1373,7 +1377,7 @@ test('a Live Age advances on the page clock and an unrelated update pushes no ag
   ]);
   await page.clock.install();
   await installLiveTransportProbe(page);
-  await page.goto(`${PODS}?selector=readout-clock%3De2e`);
+  await page.goto(`${ALL_PODS}?selector=readout-clock%3De2e`);
   const { generation } = await openLiveV2(page);
 
   const age = page.locator(`tr[data-key="${clockKey}"] td[data-ro-tf="age"]`);
@@ -1423,8 +1427,9 @@ test('a quiet pod that crosses a Live Age filter appears on the next unrelated u
   // Time-based filters are re-evaluated when the source next changes, never by
   // a timer: the pod below is younger than the filter when the page opens,
   // crosses it with nothing happening to it, and must appear on the first
-  // update of ANOTHER pod. A selector of its own keeps the WatchHub source
-  // apart from any retained one (see the spec above).
+  // update of ANOTHER pod. A selector of its own on the all-namespaces alias
+  // keeps the WatchHub source apart from any retained one and off the
+  // namespaced route (see the spec above).
   await markPrinterAge(PODS_LIST_PATH);
   // 114s old: the page opens well before the 2m mark, and the update below is
   // held only a few seconds (waitForFrame polls for 10s).
@@ -1448,7 +1453,7 @@ test('a quiet pod that crosses a Live Age filter appears on the next unrelated u
     },
   ]);
   await installLiveTransportProbe(page);
-  await page.goto(`${PODS}?selector=readout-clock%3Dfilter&f=age%3E2m`);
+  await page.goto(`${ALL_PODS}?selector=readout-clock%3Dfilter&f=age%3E2m`);
   const { generation } = await openLiveV2(page);
   const young = page.locator(`tr[data-key="${youngKey}"]`);
   await expect(page.locator(`tr[data-key="${NGINX_KEY}"]`)).toBeVisible();
